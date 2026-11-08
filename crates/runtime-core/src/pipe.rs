@@ -2181,7 +2181,7 @@ mod tests {
             queue.reserved -= 1;
             queue.records.push(DeferredInFlightFdRelease {
                 ofd_id: OfdId(23), file_type: FileType::Regular, host_handle: 27,
-                pipe_ref_kind: None, prime_bo_id: None,
+                pipe_ref_kind: None, prime_bo_id: None, dri_state: None,
             });
             queue.reclaim_empty();
             assert_eq!(queue.records.len(), 1);

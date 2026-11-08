@@ -329,7 +329,7 @@ mod tests {
     fn an_unpin_with_no_pin_is_a_fatal_fault() {
         let index = with_memfds(|table| {
             let mut backing = crate::descriptor_backing::MemFdBacking::new();
-            backing.data = b"abc".to_vec();
+            backing.data = crate::IoBuffer::copy_from(b"abc").unwrap();
             table.alloc(backing)
         });
         let handle = mapping_handle_for(FileType::MemFd, -((index as i64) + 1)).unwrap();

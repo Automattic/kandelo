@@ -363,14 +363,9 @@ impl MemoryManager {
             addr
         };
 
-        // A middle replacement can add one fragment and the new mapping.
-        // Reserve both slots before carving any existing address-space region.
-        if self.reserve_mapping_slots(if fixed { 2 } else { 1 }).is_err() {
-            return wasm_posix_shared::mmap::MAP_FAILED;
-        }
-        if fixed {
-            self.munmap(addr, aligned_len);
-        }
+        // Both branches already admitted the complete final mapping count;
+        // MAP_FIXED also carved the old range after that admission. Reserving
+        // or unmapping again here could fail after losing the original VMA.
         // Insert sorted by address
         let pos = self.mappings.partition_point(|m| m.addr < addr);
         self.mappings.insert(pos, MappedRegion::anonymous(addr, aligned_len, prot, flags));
@@ -1912,6 +1907,12 @@ pub trait SharedMappingIo {
             Ok(Some(current))
         }
     }
+    /// Compare without allocating a replacement snapshot. None means the
+    /// backend has no comparator; callers must use their bounded read path.
+    /// A comparison is only this observation, never a future quiescence proof.
+    fn process_differs_from_snapshot(
+        &mut self, _pid: u32, _addr: u64, _len: usize, _snapshot: &[u8],
+    ) -> Result<Option<bool>, Errno> { Ok(None) }
     /// Copy `src` into process `pid`'s linear memory at `addr`.
     fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno>;
     /// Current size of process `pid`'s linear memory, or `None` if it is gone.
@@ -4260,77 +4261,56 @@ impl SharedMappingTable {
             return Ok(PullOutcome::Unchanged);
         }
         let observed = epoch.map(|epoch| CleanStamp { epoch, log_position });
-        let current = match io.read_process_if_changed(pid, map_addr, mapping.len, &snapshot) {
-            Ok(Some(current)) => current,
-            Ok(None) => {
-                mapping.snapshot = Some(snapshot);
-                mapping.clean = observed;
-                #[cfg(feature = "shared-mapping-proof-verify")]
-                if proved {
-                    PROOFS_VERIFIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                }
-                return Ok(PullOutcome::Unchanged);
-            }
+        let comparison = match io.process_differs_from_snapshot(pid, map_addr, mapping.len, &snapshot) {
+            Ok(comparison) => comparison,
             Err(err) => {
                 mapping.snapshot = Some(snapshot);
                 mapping.clean = None;
                 return Err(err);
             }
         };
-        if proved && (current.len() != snapshot.len() || range_differs_from_snapshot(&current, &snapshot)) {
-            // The host promised nothing could have changed these bytes since
-            // the stamp. A change means an epoch event was missed, and a
-            // skipped comparison would have lost this store silently.
-            crate::writeback_loss::shared_mapping_fault(format_args!(
-                "quiescence proof for pid {pid} mapping {map_addr:#x}+{} at epoch {:?} \
-                 missed a change",
-                mapping.len, epoch
-            ));
-        }
-        #[cfg(feature = "shared-mapping-proof-verify")]
-        if proved {
-            PROOFS_VERIFIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if comparison == Some(false) {
+            mapping.snapshot = Some(snapshot);
+            mapping.clean = observed;
+            #[cfg(feature = "shared-mapping-proof-verify")]
+            if proved { PROOFS_VERIFIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed); }
+            return Ok(PullOutcome::Unchanged);
         }
         let was_current = mapping.seen_version == backing.version;
         let mut changed = false;
         let mut failure = None;
+        // Publication is fixed-page scratch, as on the normal descriptor
+        // fence path. A full current copy would need another live mapping's
+        // credit while its original snapshot must remain owned for retry.
+        let mut current = [0u8; FILE_PAGE_SIZE];
         for offset in (0..mapping.len).step_by(FILE_PAGE_SIZE) {
             let chunk = FILE_PAGE_SIZE.min(mapping.len - offset);
-            let src = &current[offset..offset + chunk];
+            if let Err(err) = io.read_process(pid, map_addr + offset as u64, &mut current[..chunk]) {
+                failure = Some(err);
+                break;
+            }
+            let src = &current[..chunk];
             let snap = snapshot.get_mut(offset..offset + chunk).unwrap_or(&mut []);
-            if snap.len() == chunk && !range_differs_from_snapshot(src, snap) {
-                continue;
+            if !range_differs_from_snapshot(src, snap) { continue; }
+            if proved {
+                crate::writeback_loss::shared_mapping_fault(format_args!(
+                    "quiescence proof for pid {pid} mapping {map_addr:#x}+{} at epoch {:?} missed a change",
+                    mapping.len, epoch));
             }
             match backing.merge_changed_runs(src, snap, mapping.file_offset + offset as u64, io) {
                 Ok(true) => changed = true,
                 Ok(false) => {}
-                Err(err) => {
-                    failure = Some(err);
-                    break;
-                }
+                Err(err) => { failure = Some(err); break; }
             }
         }
-        if let Some(err) = failure {
-            // Keep the progress recorded by merge_changed_runs, including
-            // runs published before a later allocation refused. Retrying an
-            // already-published run could overwrite a peer's newer write;
-            // only the unmerged bytes must differ on the next pull. This is
-            // snapshot bookkeeping, never a refresh of guest source bytes.
-            mapping.snapshot = Some(snapshot);
-            mapping.clean = None;
-            return Err(err);
-        }
-        mapping.snapshot = Some(current);
-        // What was read is now the snapshot, so the observation stands
-        // whether or not it found a change.
-        mapping.clean = observed;
-        if !changed {
-            // A backend without the in-place comparator answers with a full
-            // copy even when nothing changed. Equal bytes are still an equal
-            // observation.
-            return Ok(PullOutcome::Unchanged);
-        }
-        // The merge owns version advancement, including partial progress.
+        // Only completed run merges advance the baseline. Storing a whole
+        // freshly read range here would hide unmerged bytes after a refusal.
+        mapping.snapshot = Some(snapshot);
+        mapping.clean = if failure.is_none() { observed } else { None };
+        if let Some(err) = failure { return Err(err); }
+        #[cfg(feature = "shared-mapping-proof-verify")]
+        if proved { PROOFS_VERIFIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed); }
+        if !changed { return Ok(PullOutcome::Unchanged); }
         if was_current {
             mapping.seen_version = backing.version;
         }
@@ -5526,7 +5506,7 @@ mod shared_mapping_tests {
         fail_pwrite: bool,
         pwrite_error: Option<Errno>,
         write_budget: Option<usize>,
-        fail_read_process_at: Option<u64>,
+        fail_read_process_address: Option<u64>,
         fail_write_process_at: Option<u64>,
         fail_read_process_at: Option<(u32, u64)>,
         /// pid -> process reads, i.e. snapshot comparisons and copies.
@@ -5556,7 +5536,7 @@ mod shared_mapping_tests {
                 fail_pwrite: false,
                 pwrite_error: None,
                 write_budget: None,
-                fail_read_process_at: None,
+                fail_read_process_address: None,
                 fail_write_process_at: None,
                 fail_read_process_at: None,
                 process_reads: BTreeMap::new(),
@@ -5661,7 +5641,7 @@ mod shared_mapping_tests {
     impl SharedMappingIo for MockIo {
         fn read_process(&mut self, pid: u32, addr: u64, dst: &mut [u8]) -> Result<(), Errno> {
             *self.process_reads.entry(pid).or_insert(0) += 1;
-            if self.fail_read_process_at == Some(addr) { return Err(Errno::EFAULT); }
+            if self.fail_read_process_address == Some(addr) { return Err(Errno::EFAULT); }
             let mem = self.procs.get(&pid).ok_or(Errno::ESRCH)?;
             let at = addr as usize;
             if at + dst.len() > mem.len() {
@@ -5916,13 +5896,13 @@ mod shared_mapping_tests {
         io.poke(1, 0, b"ABCDEFGH");
         let baseline = b"CDEF".to_vec();
         assert_eq!(io.read_process_if_changed(1, 2, 4, &baseline), Ok(None));
-        assert_eq!(io.read_process_if_changed(1, 2, 4, b"CD"), Ok(Some(b"CDEF".to_vec())));
-        assert_eq!(io.read_process_if_changed(1, 2, 4, b"CDEFX"), Ok(Some(b"CDEF".to_vec())));
+        assert_eq!(io.read_process_if_changed(1, 2, 4, b"CD").unwrap().as_deref(), Some(&b"CDEF"[..]));
+        assert_eq!(io.read_process_if_changed(1, 2, 4, b"CDEFX").unwrap().as_deref(), Some(&b"CDEF"[..]));
         assert_eq!(io.read_process_if_changed(99, u64::MAX, 0, &[]), Ok(None));
         assert_eq!(io.read_process_if_changed(99, 0, 1, b"A"), Err(Errno::ESRCH));
         assert_eq!(io.read_process_if_changed(1, 7, 2, b"H?"), Err(Errno::EFAULT));
         io.poke(1, 3, b"Z");
-        assert_eq!(io.read_process_if_changed(1, 2, 4, &baseline), Ok(Some(b"CZEF".to_vec())));
+        assert_eq!(io.read_process_if_changed(1, 2, 4, &baseline).unwrap().as_deref(), Some(&b"CZEF"[..]));
         io.fail_read_process_at = Some((1, 2));
         assert_eq!(io.read_process_if_changed(1, 2, 4, &baseline), Err(Errno::EFAULT));
         assert_eq!(baseline, b"CDEF".to_vec(), "failed partial read cannot change the baseline");
@@ -5939,7 +5919,7 @@ mod shared_mapping_tests {
         io.poke(1, 16, &baseline);
         table.file_backing_mut(&key).unwrap().ref_count += 1;
         table.insert_mapping(1, 16, SharedMapping::file(
-            3, 0, 8, true, true, key.clone(), baseline.clone(), 0,
+            3, 0, 8, true, true, key.clone(), IoBuffer::copy_from(&baseline).unwrap(), 0,
         ));
         // Alias zero is unchanged; the later alias fails after a partial read.
         io.poke(1, 16, b"....BBBB");
@@ -5991,7 +5971,7 @@ mod shared_mapping_tests {
         io.poke(1, 16, b"........");
         table.file_backing_mut(&key).unwrap().ref_count += 1;
         table.insert_mapping(1, 16, SharedMapping::file(
-            3, 0, 8, true, true, key.clone(), b"........".to_vec(), 0,
+            3, 0, 8, true, true, key.clone(), IoBuffer::copy_from(b"........").unwrap(), 0,
         ));
         io.poke(1, 16, b"....BBBB");
         table.sync_file_from_process(1, false, &mut io).unwrap();
@@ -6031,6 +6011,39 @@ mod shared_mapping_tests {
         table.sync_anonymous_from_process(1, false, &mut io).unwrap();
         table.sync_anonymous_from_process(2, false, &mut io).unwrap();
         assert_eq!(io.peek(2, 0, 8), b"AAAA\0\0\0\0".to_vec());
+    }
+
+    /// Retained mappings and an already-owned dirty page fit the limit;
+    /// publishing them must not require another mapping-sized live snapshot.
+    #[test]
+    fn bounded_publication_does_not_require_full_snapshot_copy_credit() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64)
+            .with_kernel_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        let retained = io.retained_count(10);
+        {
+            // This page and its dirty-byte owner are admitted before pressure,
+            // so failure cannot be attributed to new cache/dirty metadata.
+            let backing = table.file_backing_mut(&key).unwrap();
+            backing.write_range(4, b"Q", true, &mut io).unwrap();
+            backing.version += 1;
+        }
+        io.poke(1, 0, b"AA......");
+        let live = crate::io_buffer::IO_MEMORY.usage().0;
+        let result = {
+            // IoBuffer charges two credits per payload byte. Eight current
+            // bytes need16 extra; fixed-page publication needs none here.
+            let _limit = crate::io_buffer::test_budget(live + 15);
+            table.pull_mapping(1, 0, &mut io)
+        };
+        assert_eq!(result, Ok(PullOutcome::Published),
+            "valid retained mapping must publish without a second full snapshot");
+        assert_eq!(&table.mapping(1, 0).unwrap().snapshot.as_ref().unwrap()[..], b"AA......");
+        assert_eq!(io.files[&10], b"AA..Q...".to_vec());
+        assert_eq!(io.retained_count(10), retained);
+        assert_eq!(table.mapping(1, 0).unwrap().backing_key.as_deref(), Some(key.as_str()));
+        assert_eq!(table.file_backing(&key).unwrap().handle, 10);
     }
 
     #[test]
@@ -7287,14 +7300,14 @@ mod shared_mapping_tests {
             2 * FILE_PAGE_SIZE, true, true, &mut io).unwrap();
         io.poke(1, 0, b"A");
         io.poke(1, FILE_PAGE_SIZE as u64, b"B");
-        io.fail_read_process_at = Some(FILE_PAGE_SIZE as u64);
+        io.fail_read_process_address = Some(FILE_PAGE_SIZE as u64);
         assert_eq!(table.sync_file_from_process(1, true, &mut io), Err(Errno::EFAULT));
         let snapshot = table.mapping(1, 0).unwrap().snapshot.as_ref().unwrap();
         assert_eq!(snapshot[0], b'A');
         assert_eq!(snapshot[FILE_PAGE_SIZE], b'.');
         table.file_backing_mut(&key).unwrap().flush_range(0, 1, &mut io).unwrap();
         io.descriptor_write(10, 0, b"D");
-        io.fail_read_process_at = None;
+        io.fail_read_process_address = None;
         table.sync_file_from_process(1, true, &mut io).unwrap();
         assert_eq!(io.files[&10][0], b'D');
         assert_eq!(io.files[&10][FILE_PAGE_SIZE], b'B');
@@ -7632,9 +7645,14 @@ mod shared_mapping_tests {
             crate::prepared_map::fail_after_allocations(usize::MAX);
         }
         io.descriptor_write(10, 7, b"B");
-        table.flush_mappings(1, 0, 8, &mut io).unwrap();
+        // Background publication already recorded the loss. Persistence may
+        // recover now, but this mapping's first explicit sync reports that
+        // historical error once; it must not silently turn into success.
+        assert_eq!(table.flush_mappings(1, 0, 8, &mut io), Err(Errno::EIO));
         assert_eq!(io.files[&10], b"A.\0\0\0\0\0B");
         assert_eq!(io.peek(1, 0, 8), b"A.\0\0\0\0\0B");
+        table.flush_mappings(1, 0, 8, &mut io).unwrap();
+        assert!(!table.take_writeback_error(1, 0, 8), "the historical error is consumed exactly once");
     }
 
     #[test]
@@ -7699,11 +7717,16 @@ mod shared_mapping_tests {
         assert_eq!(table.sync_file_from_process(1, false, &mut io), Err(Errno::EIO));
         io.fail_pwrite = false;
         io.descriptor_write(10, 1, b"B");
-        table.flush_mappings(1, 0, 8, &mut io).unwrap();
+        // Background publication already recorded the loss. Persistence may
+        // recover now, but this mapping's first explicit sync reports that
+        // historical error once; it must not silently turn into success.
+        assert_eq!(table.flush_mappings(1, 0, 8, &mut io), Err(Errno::EIO));
         assert_eq!(io.files[&10], b"AB......");
         table.sync_file_from_process(2, false, &mut io).unwrap();
         assert_eq!(io.peek(2, 0, 8), b"AB......");
         assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 0);
+        table.flush_mappings(1, 0, 8, &mut io).unwrap();
+        assert!(!table.take_writeback_error(1, 0, 8), "the historical error is consumed exactly once");
     }
 
     #[test]
@@ -7720,9 +7743,14 @@ mod shared_mapping_tests {
         assert_eq!(io.files[&10], b"A.......");
         io.write_budget = None;
         io.descriptor_write(10, 0, b"B");
-        table.flush_mappings(1, 0, 8, &mut io).unwrap();
+        // Background publication already recorded the loss. Persistence may
+        // recover now, but this mapping's first explicit sync reports that
+        // historical error once; it must not silently turn into success.
+        assert_eq!(table.flush_mappings(1, 0, 8, &mut io), Err(Errno::EIO));
         assert_eq!(io.files[&10], b"BAAA....");
         assert_eq!(io.peek(1, 0, 8), b"BAAA....");
+        table.flush_mappings(1, 0, 8, &mut io).unwrap();
+        assert!(!table.take_writeback_error(1, 0, 8), "the historical error is consumed exactly once");
     }
 
     #[test]
@@ -7764,8 +7792,13 @@ mod shared_mapping_tests {
         assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 1);
 
         io.fail_pwrite = false;
-        table.flush_mappings(1, 0, 8, &mut io).unwrap();
+        // Background publication already recorded the loss. Persistence may
+        // recover now, but this mapping's first explicit sync reports that
+        // historical error once; it must not silently turn into success.
+        assert_eq!(table.flush_mappings(1, 0, 8, &mut io), Err(Errno::EIO));
         assert_eq!(io.files[&10], b"AAAA....".to_vec());
+        table.flush_mappings(1, 0, 8, &mut io).unwrap();
+        assert!(!table.take_writeback_error(1, 0, 8), "the historical error is consumed exactly once");
     }
 
     /// A refused writeback is reported to every mapping of the file, once:

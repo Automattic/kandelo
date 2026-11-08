@@ -2275,9 +2275,11 @@ mod tests {
         });
         parent.memory.set_mapping_file(addr, 0, file);
         let mut child = Process::new(8);
-        child.memory.set_mappings(parent.memory.mappings().iter()
-            .map(|m| crate::memory::MappedRegion::anonymous(m.addr, m.len, m.prot, m.flags))
-            .collect());
+        let mut mappings = crate::IoBuffer::try_with_capacity(parent.memory.mappings().len()).unwrap();
+        for mapping in parent.memory.mappings() {
+            mappings.push(crate::memory::MappedRegion::anonymous(mapping.addr, mapping.len, mapping.prot, mapping.flags));
+        }
+        child.memory.set_mappings(mappings);
         child.memory.inherit_mapping_files(parent.memory.mappings());
         assert_eq!(maps_text(&child, |_| None), maps_text(&parent, |_| None));
     }

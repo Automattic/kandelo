@@ -2410,7 +2410,10 @@ admission pressure, and prepares replacement pages before publishing a
 refresh. Failure invalidation walks resident cache entries without
 allocating a logical-page cohort. File publication reads process memory
 through fixed page scratch and streams changed runs, retaining accepted
-progress if a later page read fails. These changes are not in checkpoint
+progress if a later page read fails. The optional native comparison borrows
+the retained snapshot to recognize an unchanged range. A differing range
+still uses page scratch: requiring a second mapping-sized live copy can
+refuse publication even though the mapping itself was already admitted. These changes are not in checkpoint
 1.13. The subsequent chunk admits retained mapping snapshots,
 anonymous backing bytes, fork rollback/replacement payloads and mapping
 registry nodes. File mapping preparation runs before VM allocation in the

@@ -3439,11 +3439,6 @@ pub fn collect_dri_release_effects(
     effects
 }
 
-#[cfg(test)]
-pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host: &mut dyn HostIO) {
-    for effect in effects { apply_dri_release_effect(pid, effect, host); }
-}
-
 /// Build a synthetic WasmStat for a virtual device.
 fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
     use wasm_posix_shared::mode::S_IFCHR;
@@ -35578,12 +35573,12 @@ mod tests {
         let mut host = MockHostIO::new();
         let base = 0x04000000;
         let page = 0x10000;
-        let original = crate::memory::MappedRegion {
-            addr: base, len: 4 * page, prot: 3, flags: MAP_PRIVATE | MAP_ANONYMOUS,
-        };
-        proc.memory.set_mappings(crate::IoBuffer::copy_from(&[original]).unwrap());
+        let original = crate::memory::MappedRegion::anonymous(base, 4 * page, 3, MAP_PRIVATE | MAP_ANONYMOUS);
+        // This owned record can retain file identity; copying its bits is not
+        // authority to duplicate those owners. Admit an explicit clone instead.
+        proc.memory.set_mappings(crate::IoBuffer::try_adopt(vec![original.clone()]).unwrap());
         proc.dri_bindings.try_push(crate::process::DriBoBinding {
-            addr: base + page, len: page, bo_id: 7,
+            addr: base + page, len: page, bo_id: 7, bo_offset: 0,
         }).unwrap();
         proc.fb_binding = Some(crate::process::FbBinding {
             addr: base + page, len: page, w: 1, h: 1, stride: 4, fmt: 0,
@@ -35608,20 +35603,21 @@ mod tests {
     fn mremap_move_admits_both_new_mapping_and_old_mapping_split_before_mutation() {
         use wasm_posix_shared::mmap::MAP_PRIVATE;
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let base = 0x04000000;
         let page = 0x10000;
-        let original = crate::memory::MappedRegion {
-            addr: base, len: 4 * page, prot: 3, flags: MAP_PRIVATE | MAP_ANONYMOUS,
-        };
-        proc.memory.set_mappings(crate::IoBuffer::copy_from(&[original]).unwrap());
+        let original = crate::memory::MappedRegion::anonymous(base, 4 * page, 3, MAP_PRIVATE | MAP_ANONYMOUS);
+        // This owned record can retain file identity; copying its bits is not
+        // authority to duplicate those owners. Admit an explicit clone instead.
+        proc.memory.set_mappings(crate::IoBuffer::try_adopt(vec![original.clone()]).unwrap());
         {
             let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
-            assert_eq!(sys_mremap(&mut proc, base + page, page, 2 * page, 1), Err(Errno::ENOMEM));
+            assert_eq!(sys_mremap(&mut proc, &mut host, base + page, page, 2 * page, 1), Err(Errno::ENOMEM));
             assert_eq!(proc.memory.mappings(), &[original]);
         }
         let held = crate::io_buffer::IO_MEMORY.usage().0;
         let _limit = crate::io_buffer::test_budget(held + 6 * core::mem::size_of::<crate::memory::MappedRegion>());
-        let moved = sys_mremap(&mut proc, base + page, page, 2 * page, 1).unwrap();
+        let moved = sys_mremap(&mut proc, &mut host, base + page, page, 2 * page, 1).unwrap();
         assert_eq!(moved, base + 4 * page);
         assert_eq!(proc.memory.mappings().len(), 3);
         assert!(proc.memory.is_mapped(base));

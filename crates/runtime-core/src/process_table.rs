@@ -4292,28 +4292,31 @@ mod tests {
         use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState, PrimeBoState};
         use crate::fd::OpenFileDescRef;
         let _registry = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for parent_first in [false, true] {
         crate::dri::bo::reset_registry();
         let bos = core::array::from_fn::<_, 4, _>(|_| crate::dri::with_registry(|registry| registry.alloc(32, 32, 32).id));
         let mut table = ProcessTable::new();
         let parent_pid = table.create_process().unwrap();
         let parent = table.get_mut(parent_pid).unwrap();
         crate::syscalls::sys_pipe(parent).unwrap();
-        let mut render = DriFdState::default();
-        render.handles.insert(1, bos[0]);
-        render.handles.insert(2, bos[1]);
-        render.next_handle = 3;
-        let mut kms = KmsFdState::default();
-        kms.fbs.insert(1, KmsFb { bo_id: bos[2], width: 32, height: 32, pixel_format: 0, stride: 128 });
-        kms.next_fb_id = 1;
+        let render = DriFdState::default();
+        render.gem.borrow_mut().handles.insert(1, bos[0]);
+        render.gem.borrow_mut().handles.insert(2, bos[1]);
+        render.gem.borrow_mut().next_handle = 3;
+        let kms = KmsFdState::default();
+        // Framebuffer names are machine-wide; this fixture owns the file's entry.
+        kms.fbs.borrow_mut().insert(1, KmsFb { bo_id: bos[2], width: 32, height: 32, pixel_format: 0, stride: 128, offset: 0, flags: 0 });
+        let mut graphics_indices = Vec::new();
         for state in [
             DriOfdState::RenderNode(render),
-            DriOfdState::Card { dri: DriFdState::default(), kms },
+            DriOfdState::Card { dri: DriFdState::default(), kms: kms.into() },
             DriOfdState::PrimeBo(PrimeBoState { bo_id: bos[3], cookie: 71 }),
         ] {
             let index = parent.ofd_table.create(FileType::CharDevice, 0,
                 crate::ofd::PRIME_FD_HOST_HANDLE, b"/dev/dri/test-inheritance".to_vec());
             parent.ofd_table.get_mut(index).unwrap().dri_state = Some(crate::IoBox::new(state));
             parent.fd_table.alloc(OpenFileDescRef(index), 0).unwrap();
+            graphics_indices.push(index);
         }
         let baseline = crate::io_buffer::IO_MEMORY.usage().0;
         let process_count = table.processes.len();
@@ -4328,20 +4331,57 @@ mod tests {
             for bo in bos { assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(1)); }
         }
         let child_pid = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
-        for bo in bos { assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(2)); }
+        assert_eq!(table.get(parent_pid).unwrap().fork_count(), 1);
+        // GEM names and framebuffer entries belong to one shared DRM file;
+        // fork adds a file alias, not another BO hold per name. PRIME is an
+        // independently copied sidecar and still needs its second hold.
+        for (bo, expected) in bos.into_iter().zip([1, 1, 1, 2]) {
+            assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(expected));
+        }
+        {
+            let parent = table.get(parent_pid).unwrap();
+            let child = table.get(child_pid).unwrap();
+            for &index in &graphics_indices {
+                assert_eq!(parent.ofd_table.get(index).unwrap().ofd_id, child.ofd_table.get(index).unwrap().ofd_id);
+            }
+            let render_index = graphics_indices[0];
+            let source = parent.ofd_table.get(render_index).unwrap().dri().unwrap();
+            let inherited = child.ofd_table.get(render_index).unwrap().dri().unwrap();
+            assert!(core::ptr::eq(&*source.gem.borrow(), &*inherited.gem.borrow()));
+            assert_eq!(inherited.gem.borrow().handles.get(&1), Some(&bos[0]));
+            assert_eq!(inherited.gem.borrow().handles.get(&2), Some(&bos[1]));
+            let kms_index = graphics_indices[1];
+            let source = parent.ofd_table.get(kms_index).unwrap().kms().unwrap();
+            let inherited = child.ofd_table.get(kms_index).unwrap().kms().unwrap();
+            assert!(core::ptr::eq(&*source, &*inherited));
+            assert!(core::ptr::eq(&*source.fbs.borrow(), &*inherited.fbs.borrow()));
+            assert_eq!(inherited.fbs.borrow().get(&1).unwrap().bo_id, bos[2]);
+        }
+        let (first, survivor) = if parent_first { (parent_pid, child_pid) } else { (child_pid, parent_pid) };
         let mut host = crate::process::test_host::NoopHost;
         {
-            let (child, locks) = table.process_and_advisory_locks(child_pid).unwrap();
-            crate::syscalls::sys_exit_with_locks(child, locks, &mut host, 0);
+            let (proc, locks) = table.process_and_advisory_locks(first).unwrap();
+            crate::syscalls::sys_exit_with_locks(proc, locks, &mut host, 0);
         }
-        table.remove_process(child_pid).unwrap();
+        table.remove_process(first).unwrap();
         for bo in bos { assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(1)); }
+        // The remaining real descriptor graph must still name every buffer,
+        // including when the original parent was the process removed first.
         {
-            let (parent, locks) = table.process_and_advisory_locks(parent_pid).unwrap();
-            crate::syscalls::sys_exit_with_locks(parent, locks, &mut host, 0);
+            let survivor = table.get(survivor).unwrap();
+            let render = survivor.ofd_table.get(graphics_indices[0]).unwrap().dri().unwrap();
+            assert_eq!(render.gem.borrow().handles.get(&1), Some(&bos[0]));
+            assert_eq!(render.gem.borrow().handles.get(&2), Some(&bos[1]));
+            assert_eq!(survivor.ofd_table.get(graphics_indices[1]).unwrap().kms().unwrap().fbs.borrow().get(&1).unwrap().bo_id, bos[2]);
+            assert!(matches!(survivor.ofd_table.get(graphics_indices[2]).unwrap().dri_state.as_deref(), Some(DriOfdState::PrimeBo(prime)) if prime.bo_id == bos[3]));
         }
-        table.remove_process(parent_pid).unwrap();
+        {
+            let (proc, locks) = table.process_and_advisory_locks(survivor).unwrap();
+            crate::syscalls::sys_exit_with_locks(proc, locks, &mut host, 0);
+        }
+        table.remove_process(survivor).unwrap();
         for bo in bos { assert!(crate::dri::with_registry(|registry| registry.get(bo).is_none())); }
+        }
     }
 
     #[test]

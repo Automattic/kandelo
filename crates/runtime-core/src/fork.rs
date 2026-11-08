@@ -2356,7 +2356,7 @@ mod tests {
         let mut proc = Process::new(1);
         let index = proc.ofd_table.create(FileType::CharDevice, wasm_posix_shared::flags::O_RDWR, -9, b"/dev/dri/card0".to_vec());
         proc.ofd_table.get_mut(index).unwrap().dri_state = Some(crate::IoBox::try_new(
-            crate::ofd::DriOfdState::Card { dri: crate::ofd::DriFdState::default(), kms }).unwrap());
+            crate::ofd::DriOfdState::Card { dri: crate::ofd::DriFdState::default(), kms: kms.into() }).unwrap());
         {
             let held = crate::io_buffer::IO_MEMORY.usage().0;
             let _limit = crate::io_buffer::test_budget(held);
@@ -3923,6 +3923,19 @@ mod tests {
 
     #[test]
     fn gem_snapshot_preflight_rejects_invalid_tables_without_acquiring_references() {
+        use crate::ofd::{DriFdState, DriOfdState};
+        fn decode(words: &[u32]) -> Result<DriFdState, Errno> {
+            let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+            read_dri_fd_state(&mut Reader::new(&bytes))
+        }
+        fn fixture_table(snapshots: impl IntoIterator<Item = DriFdState>) -> OfdTable {
+            let mut table = OfdTable::new();
+            for snapshot in snapshots {
+                let index = table.create(FileType::CharDevice, 0, -9, b"/dev/dri/decoded-fixture".to_vec());
+                table.get_mut(index).unwrap().dri_state = Some(crate::IoBox::new(DriOfdState::RenderNode(snapshot)));
+            }
+            table
+        }
         let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::dri::bo::reset_registry();
         let bo = crate::dri::with_registry(|r| r.alloc(4, 4, 32).id);
@@ -3938,19 +3951,42 @@ mod tests {
             (alloc::vec![2, 1, bo, 2, u32::MAX, 3], Errno::EINVAL),
             (alloc::vec![2, 1, bo, 2, overflowing, 3], Errno::EOVERFLOW),
         ] {
-            let bytes: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
-            assert!(matches!(read_dri_fd_state(&mut Reader::new(&bytes)), Err(e) if e == expected));
+            // Parsing is metadata-only. Registry validity/overflow belongs to
+            // the complete OFD graph, after every fallible decoder has ended.
+            let result = match decode(&words) {
+                Err(error) => Err(error),
+                Ok(snapshot) => {
+                    assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
+                    let table = fixture_table([snapshot]);
+                    acquire_decoded_gem_refs(&table)
+                }
+            };
+            assert_eq!(result, Err(expected));
             assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
             assert_eq!(crate::dri::with_registry(|r| r.get(overflowing).unwrap().refcount), u32::MAX);
         }
-        // Multiple distinct handles may legitimately own the same storage.
-        let bytes: Vec<u8> = [2u32, 1, bo, 2, bo, 3].into_iter().flat_map(u32::to_le_bytes).collect();
-        let snapshot = read_dri_fd_state(&mut Reader::new(&bytes)).unwrap();
-        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 3);
-        let namespace = snapshot.gem.into_last().unwrap();
-        for bo in namespace.handles.into_values() {
-            crate::dri::with_registry(|r| { r.decref(bo); });
+        // A valid first file cannot acquire any hold if a later file refuses.
+        // A per-file acquire loop would leak the first file's BO on this path.
+        for (bad, expected) in [(u32::MAX, Errno::EINVAL), (overflowing, Errno::EOVERFLOW)] {
+            let table = fixture_table([decode(&[1, 1, bo, 2]).unwrap(), decode(&[1, 1, bad, 2]).unwrap()]);
+            assert_eq!(acquire_decoded_gem_refs(&table), Err(expected));
+            assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
+            assert_eq!(crate::dri::with_registry(|r| r.get(overflowing).unwrap().refcount), u32::MAX);
         }
+        // Multiple names may own the same storage. Decode does not acquire;
+        // aggregate admission must acquire both holds, or none on ENOMEM.
+        let snapshot = decode(&[2, 1, bo, 2, bo, 3]).unwrap();
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
+        let mut table = fixture_table([snapshot]);
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(acquire_decoded_gem_refs(&table), Err(Errno::ENOMEM));
+            assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
+        }
+        acquire_decoded_gem_refs(&table).unwrap();
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 3);
+        let state = table.get_mut(0).unwrap().dri_state.take();
+        assert!(crate::syscalls::collect_dri_release_effects(1, 0, state).is_empty());
         assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
         crate::dri::bo::reset_registry();
     }

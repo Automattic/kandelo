@@ -27323,3 +27323,21 @@ across actual flips and requires fresh colored, changing pixels before
 releasing in finally. The unchanged strict pixel thresholds pass on all
 three engines in the separate three-case candidate run (R858).
 This is rendering/input correctness evidence, not latency acceptance.
+
+Shared-file publication now retains its original snapshot and streams
+changed process pages through fixed scratch after the optional native
+equality check. A regression with enough credit for retained state but
+not a second full snapshot fails with ENOMEM on the parent and passes
+after this correction. Completed merge runs alone advance the baseline;
+error retry, quiescence proofs and all-read-before-write refresh staging
+remain intact. No budget, import, export or ABI version changes.
+
+The merge also left a duplicate reservation/unmap after MAP_FIXED's
+preflight and carve. Removing that tail prevents refusal after mutation;
+the original exact-quota tests pass without relaxed limits. Native fixture
+adaptations retain real OFD graph admission, shared GEM/KMS ownership,
+parent-first/child-first teardown and once-only historical writeback errors.
+The complete runtime-core library run reports 3,576 passed, four failed,
+zero skipped. All 183 memory tests pass. The four remaining graphics
+decode, CPU mapping and syscall controls remain open; rebuilt browser
+recovery and Node/browser acceptance are still required.

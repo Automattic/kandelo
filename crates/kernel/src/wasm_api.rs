@@ -1417,6 +1417,23 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         })
     }
 
+    fn process_differs_from_snapshot(
+        &mut self, pid: u32, addr: u64, len: usize, snapshot: &[u8],
+    ) -> Result<Option<bool>, Errno> {
+        if len == 0 { return Ok(Some(false)); }
+        if snapshot.len() != len { return Ok(None); }
+        let host_len = checked_host_buffer_len(len)?;
+        // Existing read-only comparator protocol: unavailable is not equality
+        // and must choose bounded reads, never a full replacement allocation.
+        let compared = unsafe { host_proc_compare_bytes(pid as i32, addr, snapshot.as_ptr(), host_len) };
+        match compared {
+            0 => Ok(Some(false)),
+            1 => Ok(Some(true)),
+            2 => Ok(None),
+            other => { i32_to_result(other)?; Err(Errno::EIO) }
+        }
+    }
+
     fn read_process_if_changed(
         &mut self,
         pid: u32,
