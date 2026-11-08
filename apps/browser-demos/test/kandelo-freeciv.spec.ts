@@ -3,6 +3,12 @@ import { gotoMachine as gotoDefaultMachine } from "./support/kandelo-machine";
 import { writeFileSync } from "node:fs";
 import { buildTerminalCommand, parseTerminalCommandResult } from "./support/terminal-command";
 
+// Parameters<T> retains only the last overload. Preserve both native
+// putImageData forms so probes never pad a three-argument call with undefined.
+type PutImageDataArgs = [imageData: ImageData, dx: number, dy: number]
+  | [imageData: ImageData, dx: number, dy: number, dirtyX: number, dirtyY: number,
+    dirtyWidth: number, dirtyHeight: number];
+
 const running = (page: Page) => expect(page.locator(".kdock-status-text"))
   .toHaveAttribute("data-status", "running", { timeout: 180_000 });
 const canvas = (page: Page) => page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
@@ -774,11 +780,11 @@ for (const density of [1, 2]) {
       await worker!.evaluate(() => {
         const proto = OffscreenCanvasRenderingContext2D.prototype;
         const put = proto.putImageData;
-        proto.putImageData = function (...args: Parameters<typeof put>) {
+        proto.putImageData = function (this: OffscreenCanvasRenderingContext2D, ...args: PutImageDataArgs) {
           if (args[0].width <= 64 && args[0].height <= 64) {
             (globalThis as any).__edgeCursor = { x: args[1], y: args[2] };
           }
-          return put.apply(this, args);
+          return Reflect.apply(put, this, args);
         };
       });
       await page.mouse.move(box.x + 60, box.y + 80);
@@ -1486,22 +1492,22 @@ for (const density of [1, 2]) {
         (globalThis as any).__freecivRenderProbe = state;
         const cursorProto = OffscreenCanvasRenderingContext2D.prototype;
         const put = cursorProto.putImageData;
-        cursorProto.putImageData = function (...args: Parameters<typeof put>) {
+        cursorProto.putImageData = function (this: OffscreenCanvasRenderingContext2D, ...args: PutImageDataArgs) {
           if (args[0].width <= 64 && args[0].height <= 64) {
             state.cursorPresents.push(performance.timeOrigin + performance.now());
           }
-          return put.apply(this, args);
+          return Reflect.apply(put, this, args);
         };
         const proto = WebGL2RenderingContext.prototype;
         const upload = proto.texSubImage2D;
-        proto.texSubImage2D = function (...args: any[]) {
+        proto.texSubImage2D = function (this: WebGL2RenderingContext, ...args: unknown[]) {
           if (typeof args[4] === "number" && typeof args[5] === "number") {
             const bytes = args[4] * args[5] * 4;
             state.uploadBytes += bytes;
             if (args[4] > 256) state.sceneUploadBytes += bytes;
           }
           return Reflect.apply(upload, this, args);
-        } as typeof upload;
+        };
         const create = proto.createTexture;
         proto.createTexture = function () {
           state.texturesCreated++;
@@ -1674,11 +1680,11 @@ for (const density of [1, 2]) {
       await worker!.evaluate(() => {
         const proto = OffscreenCanvasRenderingContext2D.prototype;
         const put = proto.putImageData;
-        proto.putImageData = function (...args: Parameters<typeof put>) {
+        proto.putImageData = function (this: OffscreenCanvasRenderingContext2D, ...args: PutImageDataArgs) {
           if (args[0].width <= 64 && args[0].height <= 64) {
             (globalThis as any).__cursorOrigin = { x: args[1], y: args[2] };
           }
-          return put.apply(this, args);
+          return Reflect.apply(put, this, args);
         };
       });
       const originNear = async (x: number, y: number) => {
