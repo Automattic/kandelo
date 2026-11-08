@@ -1,0 +1,11 @@
+[package]
+name="native-ecosystem-probe"
+version="0.1.0"
+edition="2024"
+[workspace]
+[build-dependencies]
+cc="=1.2.61"
+[profile.dev]
+debug=0
+codegen-units=1
+incremental=false

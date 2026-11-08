@@ -272,13 +272,57 @@ Node, Chromium, Firefox and WebKit acceptance run this same workload.
 The fixtures are `host/test/rust-compatibility-in-guest.test.ts` and
 `apps/browser-demos/test/rust-compatibility-in-guest.spec.ts`. This does not
 establish compatibility with arbitrary configure scripts, C++ exception unwinding across Rust, registry `libc`
-versions, or native-build helper crates such as `cc`.
+versions, or arbitrary native-build helper crates.
 
 Native linking currently warns about `UnwindRegistersSave.S.o` and
 `UnwindRegistersRestore.S.o` in the libc++ archives. These unused members
 are ARM64 Mach-O objects, which wasm-ld ignores. The libc++ recipe lacks an
 explicit assembly target; correcting it and validating rebuilt archives
 remains follow-up work.
+
+### Native dependency helpers
+
+The optional `rust-native-fixtures` package prepares unmodified, locked
+`cc` 1.2.61, `find-msvc-tools` and `shlex` sources with Cargo's checksum
+verification. The guest compiles those Rust crates and uses `cc` to build
+C/C++ archives, then executes a program calling both languages. Source
+preparation produces a verified ZIP; no build-machine executables enter
+the fixture.
+
+Node, Chromium and Firefox pass this configured case. The SDK exposes its
+public tools as `cc`, `c++` and `wasm32posix-*`; default `cc` discovery looks
+for `clang` on PATH and fails. Configure the real SDK drivers and its C++
+runtime explicitly:
+
+```sh
+export CC=wasm32posix-cc CXX=wasm32posix-c++ AR=wasm32posix-ar
+export CXXSTDLIB=c++
+cargo run --offline --locked -j1
+```
+
+WebKit currently fails earlier: guest rustc exhausts its native Wasm call
+stack compiling the `cc` crate and exits 139; Cargo returns 101. The browser
+acceptance requires both that compiler failure and the actual worker's
+`Maximum call stack size exceeded` diagnostic. It records an unsupported
+capability, not successful native compilation. Explicitly using 16
+code-generation units for build dependencies also failed. Cargo applies
+[separate profile settings to build dependencies](https://doc.rust-lang.org/cargo/reference/profiles.html#build-dependencies).
+Compiler symbols and the failing recursion path need further investigation.
+
+From the declared dev shell, prepare both optional artifacts:
+
+```sh
+cargo xtask build-deps resolve kandelo-rust-sdk --arch wasm32
+cargo xtask build-deps resolve rust-native-fixtures --arch wasm32
+```
+
+Set `KANDELO_GUEST_RUST_SDK_BUNDLE` to the first output root's
+`kandelo-rust-sdk.zip` and `KANDELO_GUEST_RUST_NATIVE_FIXTURES` to the second
+root's `share/kandelo/rust-native-fixtures.zip`. With
+`KANDELO_REQUIRE_GUEST_CARGO=1`, the Node and browser
+`rust-native-dependencies-in-guest` acceptance files fail when either input
+is missing. The `cc` parallel feature, unmodified registry `libc` versions
+and arbitrary configure scripts remain unvalidated.
 
 ### Formatting, linting and documentation
 
@@ -307,7 +351,7 @@ digest through guest linking remains follow-up work.
 |---|---|
 | Editor analysis and standard-library source navigation | Guest `rust-analyzer` and `rust-src` are not shipped |
 | External procedural macros, such as derive plugins | Target rejects the `proc-macro` crate type; expansion is unsupported |
-| Cargo dependencies that compile C/C++ or run configure tools | Direct guest SDK compilation, archive linking and native rebuilds are covered; general helper crates and configure scripts remain unvalidated |
+| Cargo dependencies that compile C/C++ or run configure tools | Direct guest SDK builds pass on all four hosts; configured cc-rs builds pass on Node/Chromium/Firefox and hit a compiler stack limit on WebKit; other helpers/configure scripts remain unvalidated |
 | `catch_unwind`, panic unwinding and backtraces | Unsupported; abort-mode libtest isolates tests instead |
 | Online registries, Git authentication and proxies | Transport defaults configured; end-to-end workflow unvalidated |
 | Incremental compilation on WebKit | Disabled in the tested profile because of native process memory limits |
