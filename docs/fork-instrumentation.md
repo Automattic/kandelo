@@ -1962,6 +1962,8 @@ representation is selected by value class:
 
 - scalar locals, parameters, arguments, and carryovers use the linked frame;
 - `funcref` values use an activation-scoped immutable function catalog;
+  the host validates every entry before publishing reverse recipes, so a
+  failed registration cannot leave aliases for an unregistered activation;
 - static references use the fresh instance's static-root catalog;
 - concrete and abstract GC references use versioned typed struct/array/i31
   recipes with graph identity established before recursive fields, preserving

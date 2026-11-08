@@ -2,6 +2,31 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Function-catalog registration now rejects partial state.** A failed
+registration previously left reverse recipes for entries before the first
+null, even though no module was published. Registration now validates the
+complete table before indexing its functions. A regression covers aliases,
+unregistered decoding, valid retry and unload; 32 focused source checks and
+three pure browser contracts pass on Chromium, Firefox and WebKit, with no
+skips or retries. Imported host callbacks also rebind to the fresh instance.
+This is a host correctness fix, not a memory or performance claim; no ABI,
+guest package or compiler behavior changes. Raw evidence is retained in the
+review checkout's `catalog-atomic-unit.log` and
+`catalog-atomic-browser-reports`.
+
+A separate bulk-table snapshot candidate remains outside this PR. Two real
+Node Go-consumer probes, 46 source/authority checks and three browser
+contracts pass; an expanded imported-callback check passes 38 source cases
+and all three browsers. One serial WebKit WordPress pair passes both sides,
+including 120 requests, crash recovery, held-request drain and destruction.
+OS-reported peaks are 14.3 GiB baseline and 11.7 GiB candidate, with 778.0
+and 675.2 MiB remaining sixty seconds after destruction. These observations
+under concurrent full-build load establish no repeatable improvement,
+allocation owner, throughput result or budget pass. Helper instances and
+private tables are outside the normal program-module cache counters. Keep
+the candidate isolated pending stronger evidence rather than adopt extra
+runtime machinery from one pair.
+
 **General fork-retirement admission now has cross-host evidence.** The host
 preflights temporary retirement debt before shared-mapping synchronization,
 continuation capture or Rust child creation. Host allocator callbacks run
