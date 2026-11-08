@@ -1941,7 +1941,7 @@ fn handle_dri_ioctl(
                 unsafe { core::ptr::read_unaligned(attrs_bytes.as_ptr() as *const _) };
             if (attrs.client_version != 2 && attrs.client_version != 3)
                 || attrs.context_id != 0
-                || attrs.reserved != 0
+                || attrs.flags != 0
             {
                 return Err(Errno::EINVAL);
             }

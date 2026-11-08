@@ -25,8 +25,12 @@ they do not supersede this latest maintainer decision.
 This main integration preserves the foundation's compositor work and main's
 process authority, admission and image layout. Its contract is program 56,
 host 4, GL 17 and fork 21. The minimum program baseline is 56, as already
-approved before deployment. ABI-55 fixtures remain unchanged; the foundation's
-ABI-56 fixture cohort must be freshly built for its source-derived digest.
+approved before deployment. ABI-55 fixtures and the approved ABI-56 fixture
+cohort remain unchanged. The foundation declares the complete shared wire
+contract of this unpublished family before B1 supplies its later operations;
+unknown operations still fail through ordinary dispatch in this increment.
+Both squash landings bind the same program digest, avoiding a temporary
+incompatible ABI-56 baseline between the two commits.
 B1 then supplies the subsequent graphics and shared-memory fixes; this first
 landing does not claim those fixes or the final native-feel targets.
 

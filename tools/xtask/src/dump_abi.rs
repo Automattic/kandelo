@@ -1486,6 +1486,25 @@ fn render_ts_module() -> String {
         shared::abi::ABI_KERNEL_EXPORT
     ));
 
+    // The opt-in image receipts are program-visible even in one unpublished
+    // ABI epoch. Project the shared source for checked host reply lengths.
+    for (name, value) in [
+        ("GL_QUERY_REPLY_MAGIC", shared::gl::QUERY_REPLY_MAGIC),
+        (
+            "GL_IMAGE_MUTATION_LEGACY_REPLY_BYTES",
+            shared::gl::IMAGE_MUTATION_LEGACY_REPLY_BYTES,
+        ),
+        (
+            "GL_IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES",
+            shared::gl::IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES,
+        ),
+        (
+            "GL_IMAGE_DELETION_CONTAINERS_REPLY_BYTES",
+            shared::gl::IMAGE_DELETION_CONTAINERS_REPLY_BYTES,
+        ),
+    ] {
+        out.push_str(&format!("export const {name} = {value} as const;\n"));
+    }
     // Not an ABI value: the one fixed instant image builders use when a fixed
     // time is needed (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). It
     // lives in this generated module so the TypeScript builders read the same
@@ -2729,7 +2748,12 @@ fn render_ts_module() -> String {
             field.name, field.offset, field.size, field.ty
         ));
     }
-    out.push_str("} as const;\n\n");
+    out.push_str("} as const;\n");
+    out.push_str(&format!(
+        "export const WAKEUP_EVENT_RESERVED_INDICES = {{\n  fenceReady: {},\n  fenceHostWork: {},\n}} as const;\n\n",
+        shared::wakeup_event_wire::IDX_FENCE_READY,
+        shared::wakeup_event_wire::IDX_FENCE_HOST_WORK
+    ));
     out.push_str(&render_ts_wait_completion_wire());
     out.push_str("export const POLL_EVENTS = {\n");
     for (name, value) in poll_events() {
@@ -4360,6 +4384,384 @@ fn declared_snapshot_sections() -> Sections {
     s.add(Program, "io_multiplexing", io_multiplexing());
     s.add(Program, "vfs_metadata", vfs_metadata());
     s.add(Program, "spawn_contract", spawn_contract());
+    s.add(Program, "gl_inline_client_draw", gl_inline_client_draw());
+    s.add(Program, "gl_compressed_upload", gl_compressed_upload());
+    s.add(Program, "gl_server_wait", json!({
+        "opcode": shared::gl::QOP_SERVER_WAIT,
+        "byte_order": "little-endian", "request_bytes": 8,
+        "request_fields": ["source_fd","source_fence_token"],
+        "destination": "ioctl-open-file-description",
+        "source": "capture-and-pin-original-source-ofd-once-before-admission",
+        "reply_bytes": 16, "reply_fields": ["status","source_fence_token","zero","magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "admission": "retain-exact-source-fence-and-destination-operation-ticket",
+        "completion": "native-same-context-wait-or-foreign-source-signaled",
+        "result_cancel": "accepted-server-command-survives-result-cancellation",
+        "sync_file_form": {
+            "request": "source_fd-is-a-sync_file-and-source_fence_token-is-zero",
+            "reply_token": 0,
+            "kernel_answers": "ordered-when-nothing-pending-client-signal-unless-one-pending-host-fence",
+            "host_request": ["session_zero", "export_id"],
+        },
+        "dispositions": {"ordered": shared::gl::SERVER_WAIT_ORDERED,
+            "client_signal": shared::gl::SERVER_WAIT_CLIENT_SIGNAL},
+    }));
+    s.add(Program, "dri_owned_resource", json!({
+        "request": shared::dri_owned::REQUEST,
+        "version": shared::dri_owned::VERSION,
+        "packet_bytes": core::mem::size_of::<shared::dri_owned::Packet>(),
+        "header_bytes": core::mem::offset_of!(shared::dri_owned::Packet,body),
+        "body_bytes": shared::dri_owned::BODY_BYTES,
+        "fields": ["version:u32","action:u32","transaction:u64","acknowledge:u64",
+            "token:u32","source_token:u32","fd:i32","request:u32","length:u32","flags:u32",
+            "result:i32","state:u32","magic:u32","reserved:u32","body:u8[256]"],
+        "carrier_fd": -1,
+        "legacy_fd_semantics": "unchanged",
+        "ownership": "exact-process-exec-generation-ofdid-and-independent-boid-pins",
+        "actions": {"open":shared::dri_owned::OPEN,"acquire":shared::dri_owned::ACQUIRE,
+            "ioctl":shared::dri_owned::IOCTL,"mmap":shared::dri_owned::MMAP,
+            "release":shared::dri_owned::RELEASE,"read_last":shared::dri_owned::READ_LAST,
+            "ack":shared::dri_owned::ACK,"dup_fd":shared::dri_owned::DUP_FD,
+            "bo_release":shared::dri_owned::BO_RELEASE,"bo_info":shared::dri_owned::BO_INFO,
+            "poll":shared::dri_owned::POLL,"cancel_poll":shared::dri_owned::CANCEL_POLL},
+        "flags": {"consume_fd":shared::dri_owned::CONSUME_FD,"capture_fd":shared::dri_owned::CAPTURE_FD,
+            "capture_bo":shared::dri_owned::CAPTURE_BO,"reuse_exact":shared::dri_owned::REUSE_EXACT,
+            "bo_bindings":shared::dri_owned::BO_BINDINGS,"borrow_alias":shared::dri_owned::BORROW_ALIAS,
+            "expect_sync_file":shared::dri_owned::EXPECT_SYNC_FILE},
+        "states": {"complete":shared::dri_owned::COMPLETE,"absent":shared::dri_owned::ABSENT,
+            "pending":shared::dri_owned::PENDING},
+        "magic":shared::dri_owned::MAGIC,
+        "bo_bindings": {"maximum":4,"location":"after-canonical-ioctl-bytes",
+            "words":["count", "canonical-byte-offset,bo-capability-token"]},
+        "release_source_token": {"live":0,"consumed":1},
+        "poll_body": ["events:u32","revents:u32","original_timeout_ms:i32","remaining_ms:i32"],
+        "remaining_ms": "complete-zero-pending-minus-one-infinite-or-positive-ceil-minimum-one",
+        "cancel_poll": "creator-tid-only-pending-poll-terminal-eintr-no-mutation-replay",
+        "mmap_bo_source": "offset-zero-or-exact-encoded-boid-origin",
+        "mmap_constructor": {"admission":"stage-allocator-before-native-bind","pending_outer_result":0,
+            "finish_export":"kernel_owned_mapping_finish","finish_args":["pid:u32","tid:u32","token:u32","transaction:u64","errno:u32"],
+            "finish_return":"zero-accepted-seal-negative-protocol-error","precommit_errors":[0,shared::Errno::ENOMEM as u32,shared::Errno::EIO as u32],
+            "receipt":"read-last-actual-native-bind-result-after-finish","publication":"zero-prime-before-entry-release-no-replay"},
+        "fork_storage":"same-token-child-scope-independent-pins-and-copied-completed-receipts-seeded-counter-pending-child-eintr",
+        "namespace_custody":"logical-caps-across-processes-only-temporary-work-retains-storage-not-name",
+        "recovery": "copied-once-only-receipt-never-replay-unknown-effects"
+    }));
+    s.add(Program, "dri_owned_exact_mappings", json!({
+        "request": shared::dri_owned::REQUEST,
+        "version": shared::dri_owned::VERSION,
+        "actions": {"mmap_exact":shared::dri_owned::MMAP_EXACT,"unmap_exact":shared::dri_owned::UNMAP_EXACT},
+        "mmap_body_bytes":40,"mmap_body":["address:u64","length:u64","offset:i64","prot:u32","flags:u32","reserved-zero-or-result-mapping-id:u64"],
+        "unmap_body_bytes":8,"unmap_body":["mapping-id:u64"],
+        "authority":"exact-process-exec-original-ofdid-and-optional-boid",
+        "identity":"nonzero-monotonic-never-recycled-after-failure-release-or-fork",
+        "fork":"rust-parent-metadata-and-full-counter-no-fork-wire-change",
+        "fragments":"retain-original-id-on-split-shrink-new-admission-gets-new-id",
+        "retirement":"all-original-surviving-fragments-only-already-gone-no-op-replacement-untouched",
+        "receipt":"existing-once-only-read-last-ack-no-operation-replay",
+        "constructor":"existing-optional-kernel_owned_mapping_finish-signature-unchanged",
+        "legacy_mmap_action_4":"unchanged"
+    }));
+    s.add(Program, "gl_export_fence", json!({
+        "ioctl": shared::dri_sync::DRM_IOCTL_WPK_EXPORT_FENCE,
+        "ioctl_bytes": core::mem::size_of::<shared::dri_sync::WpkDrmExportFence>(),
+        "ioctl_fields": ["token", "flags", "fd", "pad"],
+        "opcode": shared::gl::QOP_EXPORT_FENCE,
+        "issuer": "kernel-only",
+        "request_bytes": 8, "request_fields": ["fence_token", "export_id"],
+        "reply_bytes": 16, "reply_fields": ["status", "fence_token", "disposition", "magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "dispositions": {"ordered": shared::gl::EXPORT_FENCE_ORDERED,
+            "retained": shared::gl::EXPORT_FENCE_RETAINED},
+        "host_requests": {"record_bytes": 8, "fields": ["export_id", "request"],
+            // Stable program-wire values precede their B1 implementation.
+            "poll": 1,
+            "release": 2},
+    }));
+    s.add(Program, "gl_shader_program_creation", json!({
+        "opcode": shared::gl::QOP_CREATE_SHADER_PROGRAM,
+        "request_bytes": 12, "request_fields": ["object_kind", "shader_type_or_zero", "reserved_name"],
+        "object_kinds": {"shader": 4, "program": 5},
+        "reply_bytes": 12, "reply_fields": ["status", "accepted_name_or_zero", "magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "requires_current_context": true,
+        "query_dependencies": "ordinary-query-replay",
+    }));
+    s.add(Program, "gl_program_mutation", json!({
+        "opcode": shared::gl::QOP_PROGRAM_MUTATION,
+        "request_prefix": "u32 command_opcode",
+        "commands": {
+            "attach_shader": [shared::gl::OP_ATTACH_SHADER, 12],
+            "detach_shader": [shared::gl::OP_DETACH_SHADER, 12],
+            "delete_shader": [shared::gl::OP_DELETE_SHADER, 8],
+            "delete_program": [shared::gl::OP_DELETE_PROGRAM, 8],
+            "link_program": [shared::gl::OP_LINK_PROGRAM, 8],
+            "use_program": [shared::gl::OP_USE_PROGRAM, 8],
+        },
+        "reply_bytes": 12, "reply_fields": ["status", "accepted_boolean", "magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "requires_current_context": true,
+        "query_dependencies": "ordinary-query-replay",
+    }));
+    s.add(Program, "gl_program_capture", json!({
+        "opcode": shared::gl::QOP_PROGRAM_CAPTURE,
+        "commands": {"acquire": [1, 8], "select": [2, 12], "release": [3, 8]},
+        "request_fields": ["action", "name_or_handle", "select_handle_only"],
+        "reply_bytes": 16,
+        "reply_fields": ["status", "linked_or_accepted", "handle_or_zero", "magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "requires_current_context": true,
+        "query_dependencies": "ordinary-query-replay",
+        "lifetime": "acquiring-context-cache-with-independent-accepted-execution-custody",
+    }));
+    s.add(Program, "gl_program_journal", json!({
+        "opcode": shared::gl::QOP_PROGRAM_JOURNAL,
+        "actions": {"reserve":[1,12],"register":[2,12],"publish":[3,"12+32*count"],
+            "release":[4,16],"disable":[5,8],"read_last":[6,4],"snapshot":[7,8]},
+        "mutator_prefix": ["action","nonzero_transaction"],
+        "reserve_fields":["action","transaction","capacity"],
+        "register_fields":["action","transaction","own_context_capture_handle"],
+        "release_fields":["action","transaction","journal","generation"],
+        "snapshot_fields":["action","journal"],
+        "publish_fields": ["action","transaction","count","entries"],
+        "entry_fields": ["journal","slot","ticket_lo","ticket_hi","sequence_lo","sequence_hi","name","generation"],
+        "maximum_entries":256,"maximum_capacity":256,"maximum_input_bytes":8204,
+        "reply_bytes":48,"reply_fields":["status","transaction","action","journal","value",
+            "sequence_lo","sequence_hi","published_lo","published_hi","executed_lo","executed_hi","magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "status":{"accepted":0,"rejected":1,"indeterminate":2},
+        "selector_opcode":shared::gl::OP_USE_PROGRAM_JOURNAL,"selector_payload_bytes":16,
+        "selector_fields":["journal","slot","ticket_lo","ticket_hi"],
+        "counters":"nonzero-u53-little-endian-split-u32",
+        "handles":"monotonic-per-object-group-no-reuse-after-disable",
+        "generation_tokens":"nonzero-u32; never-wrap-or-reuse-within-journal",
+        "transactions":"next-nonzero-u32-per-outer-context; exhausted-or-indeterminate-rejects-new-entry",
+        "snapshot_flags":{"ready":1,"closed":2,"poisoned":4},
+        "authority":"own-current-tid-outer; live-same-pid-share-group-metadata; own-context-selector",
+        "recovery":"read-last-without-mutator-replay; status2-retains-uncertain-custody",
+        "preflight":"whole-publication-batch-before-any-intent",
+        "admission":"logical-metadata-only; synchronous-submit-executes-selectors; public-retirement-discards-unsubmitted-cells",
+        "query_dependencies":"metadata-only-no-buffer-sync",
+        "reads":"available-after-reset; no-native-replay-error-drain-or-upload-interruption",
+    }));
+    s.add(Program, "gl_program_uniform_signature", json!({
+        "opcode":shared::gl::QOP_PROGRAM_JOURNAL,"action":8,"request_bytes":16,
+        "request_fields":["action","own_journal","generation_token_or_installed_root_zero","signed_location"],
+        "reply_bytes":48,"reply_fields":["status","zero","action","journal","generation","location",
+            "type","remaining_array_elements","flags","zero","zero","magic"],
+        "reply_magic":shared::gl::QUERY_REPLY_MAGIC,
+        "status":{"available":0,"unavailable":1},
+        "flags":{"array":1,"native_location_present":2,"native_location_null":4},
+        "invalid_location":"available-with-zero-type-elements-and-flags",
+        "unavailable":"zero-type-elements-and-flags; ordinary-validation-required",
+        "unresolved_native_location":"neither-present-nor-null; positive-count-needs-ordinary-validation",
+        "authority":"own-current-context-tid-and-journal; immutable-owned-generation-only",
+        "effects":"read-only; no-selection-error-drain-upload-interruption-or-mutation-receipt-change",
+        "query_dependencies":"metadata-only-no-buffer-sync",
+    }));
+    s.add(Program, "gl_program_uniform_guest_signature", json!({
+        "opcode":shared::gl::QOP_PROGRAM_JOURNAL,"action":9,"request_bytes":16,
+        "request_fields":["action","own_journal","generation_token_or_installed_root_zero","signed_location"],
+        "reply_bytes":48,"reply_fields":["status","zero","action","journal","generation","location",
+            "native_type","remaining_array_elements","flags","guest_type","zero","magic"],
+        "reply_magic":shared::gl::QUERY_REPLY_MAGIC,
+        "status":{"available":0,"unavailable":1},
+        "flags":{"array":1,"native_location_present":2,"native_location_null":4},
+        "invalid_location":"available-with-zero-types-elements-and-flags",
+        "unavailable":"zero-types-elements-and-flags; ordinary-validation-required",
+        "unresolved_native_location":"neither-present-nor-null; positive-count-needs-ordinary-validation",
+        "authority":"own-current-context-tid-and-journal; immutable-owned-generation-only",
+        "effects":"read-only; no-selection-error-drain-upload-interruption-or-mutation-receipt-change",
+        "query_dependencies":"metadata-only-no-buffer-sync",
+        "legacy":"action8-unchanged; reserved-word9-stays-zero",
+    }));
+    s.add(Program, "gl_program_buffer_snapshots", json!({
+        "query":shared::gl::QOP_PROGRAM_JOURNAL,"prepare_action":10,
+        "prepare_request_bytes":16,"prepare_request_fields":["action","transaction","own_journal","capacity"],
+        "prepare_reply_bytes":48,"prepare_reply":"existing-sealed-journal-receipt; value-is-capacity",
+        "capacity":32,"maximum_definition_bytes":32768,
+        "definition_opcode":shared::gl::OP_BUFFER_DATA_SNAPSHOT,
+        "definition_header_bytes":24,
+        "definition_fields":["own_journal","cell","next_token","target","byte_length","usage"],
+        "definition_tail":"absent-for-zero-initialized-allocation; otherwise-exact-byte-length",
+        "authority":"own-current-context-tid-and-journal; no-lifecycle-barrier-or-peer-execution",
+        "generation":"strict-next-nonzero-u32-per-cell; no-wrap; consume-before-original-api-validation",
+        "recovery":"prepare-read-last-without-mutator-replay; partial-bank-retained-until-exact-retirement",
+        "definition":"independent-original-BufferData-validation; ordinary-storage-and-private-copy",
+        "ownership":"canonical-object-identity-and-byte-span; synchronous-borrow; ordered-cell-reuse",
+        "legacy":"all-existing-journal-actions-and-BufferData-records-unchanged",
+    }));
+    s.add(Program, "gl_program_buffer_attribute_capture", json!({
+        "query":shared::gl::QOP_PROGRAM_JOURNAL,"action":11,"request_bytes":24,
+        "request_fields":["action","transaction","own_journal","cell","next_token","attribute_index"],
+        "reply_bytes":48,"reply":"sealed-journal-receipt; value-is-copied-store-size-or-zero-unavailable",
+        "authority":"own-current-context-tid-journal-and-logical-attribute; no-public-name-resolution",
+        "maximum_bytes":32768,"maximum_attributes":16,
+        "effects":"cold-native-copy; source-buffer-and-layout-unchanged; strict-next-cell-token",
+        "recovery":"read-last-same-completed-copy; never-recapture-after-copyout-loss",
+        "unavailable":"completed-zero; no-new-guest-API-error; no-draw-authority",
+        "lifecycle_barrier":"forbidden",
+    }));
+    s.add(Program, "gl_buffer_snapshot_draw", json!({
+        "opcode":shared::gl::OP_DRAW_BUFFER_SNAPSHOTS,"header_bytes":20,"attribute_bytes":32,
+        "header_fields":["own_journal","mode","first","positive_count","attribute_count"],
+        "attribute_fields":["index","cell","token","size","type","normalized","stride","offset"],
+        "maximum_attributes":16,"maximum_cells":32,
+        "shape":"sorted-unique-attributes; GLES-native-layout; exact-whole-record-before-effects",
+        "authority":"own-context-live-journal; exact-canonical-object-token-and-byte-span-for-every-enabled-row",
+        "execution":"same-stack-borrow; native-pointer-substitution-and-exact-restoration; public-VAO-unchanged",
+        "validation":"original-program-framebuffer-and-shader-emulations; in-range-retained-storage-proof",
+        "lifetime":"journal-execution-lease; shared-original-logical-reset-identity",
+    }));
+    s.add(Program, "gl_program_framebuffer_snapshots", json!({
+        "query":shared::gl::QOP_PROGRAM_JOURNAL,"capture_action":12,"request_bytes":24,
+        "request_fields":["action","transaction","own_journal","cell","next_token","expected_framebuffer_name"],
+        "reply_bytes":48,"reply":"sealed-journal-mutation-receipt; value-one-complete-zero-unavailable",
+        "capacity":16,"maximum_input_units":16,
+        "authority":"own-current-context-tid-journal; expected-name-must-match-actual-selected-container",
+        "capture":"complete-positive-single-2D-color-attachment; exact-native-target-storage-and-sampling-handle-custody",
+        "ownership":"private-container; target-respecification-orphans-storage; input-replacement-preserves-native-identity-and-metadata; no-fake-EGLImage-export",
+        "feedback":"all-bound-ordinary-2D-input-identities-distinct-from-target; imported-cube-external-uncertainty-unavailable",
+        "draw_opcode":shared::gl::OP_DRAW_FRAMEBUFFER_SNAPSHOTS,"draw_header_bytes":28,"draw_attribute_bytes":32,
+        "draw_header_fields":["own_journal","mode","first","positive_count","attribute_count","target_cell","target_token"],
+        "draw":"original-buffer-snapshot-shape-and-authority; retained-target-and-input-substitution; exact-selector-restoration",
+        "clear_opcode":shared::gl::OP_CLEAR_FRAMEBUFFER_SNAPSHOT,"clear_bytes":16,
+        "clear_fields":["own_journal","target_cell","target_token","valid_clear_mask"],
+        "clear":"same-owned-target-authority; original-scissor-mask-and-write-accounting; no-program-or-vertex-dependency",
+        "accounting":"private-retained-attachment-level-and-native-write-destination; original-logical-reset-identity",
+        "recovery":"read-last-same-completed-capture; no-mutator-replay; failed-candidates-retained-until-cleanup",
+        "lifecycle_barrier":"forbidden; no-peer-encoder-execution",
+    }));
+    s.add(Program, "gl_owned_draw_cpu_preparation", json!({
+        "query":shared::gl::QOP_PROGRAM_JOURNAL,"action":13,"request_bytes":32,
+        "request_fields":["action","transaction","own_journal","ready_cell","next_token","family","target_cell_or_uintmax","target_token_or_zero"],
+        "family":{"owned_buffer":0,"inline_client":1},"capacity":16,
+        "reply_bytes":48,"reply":"sealed-journal-receipt; value-one-complete-zero-unavailable",
+        "authority":"own-current-context-tid-journal; exact-executable-input-identities-and-context-emulation-shape",
+        "lifecycle_barrier":"forbidden; no-peer-encoder-execution",
+        "refusal":"completed-zero-without-new-guest-API-error; original-observed-draw-remains-available",
+        "generation":"strict-next-nonzero-u32-per-cell; consume-before-cold-reservation; proven-nonentry-does-not-consume",
+        "readiness":"bounded-cold-CPU-receivers-and-native-variants; live-shared-uniform-mirror-only-for-used-authority",
+        "sampling":"at-most-two-ordinary2D-sampler-elements; current-sampler-depth-and-halfLOD-traits-select-cold-variants; other-valid-GL-observed",
+        "buffer_opcode":shared::gl::OP_DRAW_PREPARED_SNAPSHOTS,"buffer_header_bytes":36,
+        "buffer_fields":["own_journal","mode","first","positive_count","attribute_count","ready_cell","ready_token","target_cell_or_uintmax","target_token_or_zero"],
+        "buffer_attributes":"unchanged32-byte-buffer-snapshot-rows; exact-canonical-identity-and-span",
+        "inline_opcode":shared::gl::OP_DRAW_PREPARED_INLINE,"inline_header_bytes":28,
+        "inline_fields":["own_journal","ready_cell","ready_token","mode","first","positive_count","attribute_count"],
+        "compact_inline_opcode":shared::gl::OP_DRAW_PREPARED_INLINE_COMPACT,"compact_inline_header_bytes":16,
+        "compact_inline_fields":["mode3bits-rowcount5bits-cell5bits-count16bits-top3zero","full_signed_first","full_journal_u32","full_token_u32"],
+        "inline_attributes":"unchanged20-byte-client-rows-and-exact-packed-bytes; bounded-positive-count65535-for-compact; full-first-range-preserved",
+        "ownership":"same-stack-borrow; cold-independent-stream-only-for-inline-family; exact-native-restoration-and-original-logical-reset-authority",
+        "legacy":"all-existing-journal-actions-and-observed-draw-layouts-and-effects-remain-exact",
+    }));
+    s.add(Program, "gl_uniform_cpu_preparation", json!({
+        "query":shared::gl::QOP_PROGRAM_JOURNAL,"action":14,"request_bytes":12,
+        "request_fields":["action","transaction","own_journal"],
+        "reply_bytes":48,"reply":"sealed-journal-receipt; value16384-components-or-zero-unavailable",
+        "authority":"own-current-context-tid-journal; lifecycle-barrier-forbidden",
+        "storage":"private-fixed-Float32-and-Int32-inline-payload-banks; WebGL2-source-offset-length",
+        "ownership":"synchronous-borrow; no-retained-guest-memory; no-per-setter-view-allocation",
+        "metadata":"signature-reflection-cold-reserves-mutable-executable-uniform-and-sampler-write-cells",
+        "refusal":"completed-zero-without-new-guest-API-error; original-observed-setter-remains-available",
+        "recovery":"read-last-without-mutator-replay; context-retirement-releases-private-banks",
+        "legacy":"all-existing-query-shapes-and-setter-records-remain-unchanged",
+    }));
+    s.add(Program, "gl_error_drain_receipt", json!({
+        "query":shared::gl::QOP_GET_ERROR,
+        "request_mode":shared::gl::error_drain_receipt::REQUEST,
+        "request_bytes":shared::gl::error_drain_receipt::REQUEST_BYTES,
+        "request_fields":["client_error_mask","mode","transaction"],
+        "reply_bytes":shared::gl::error_drain_receipt::REPLY_BYTES,
+        "reply_fields":["status","transaction","count","retained","errors[8]","magic"],
+        "reply_magic":shared::gl::QUERY_REPLY_MAGIC,
+        "read_query":shared::gl::QOP_ERROR_DRAIN_RECEIPT,
+        "read_request_bytes":4,"read_request_field":"transaction",
+        "status":{"accepted":0,"not_entered":1,"indeterminate":2},
+        "transaction":"successor-wrapping-u32; one-outstanding-call-per-context",
+        "custody":"reserve-before-transfer; seal-before-copyout; retain-latest-result",
+        "recovery":"read-only-no-native-error-drain-replay-or-upload-interruption",
+        "authority":"own-current-context-and-tid; read-query-no-buffer-dependencies",
+        "legacy":"empty/4-byte pop and existing8-byte drain unchanged",
+    }));
+    s.add(Program, "gl_transport_error_observation", json!({
+        "opcode":shared::gl::OP_TRANSPORT_ERROR_OBSERVED,
+        "payload_bytes":0,
+        "returned_error":0x0502,
+        "effect":"consume-only-earlier-coalesced-invalid-operation-at-record-position",
+        "oracle":"no-exact-flag-proof; ordinary-error-observed-audit-unchanged",
+        "native_effects":false,
+    }));
+    s.add(Program, "gl_program_journal_barrier", json!({
+        "opcode":shared::gl::QOP_PROGRAM_JOURNAL_BARRIER,
+        "journal_protocol":"gl_program_journal",
+        "actions":[3,6,7],
+        "maximum_input_bytes":8204,"reply_bytes":48,
+        "authority":"creator-pid; live-public-object-context; mapped-native-resource-owner; no-current-binding-required",
+        "forbidden":"reserve; register; release; disable; native-selection; submit-prefix-without-own-current-tid",
+        "receipt_ledger":"same-outer-context-transaction-and-read-last-as-ordinary-journal",
+        "metadata_targets":"live-same-pid-share-group-journal-handles",
+        "dependencies":"metadata-only-no-buffer-sync; compound-prefix-keeps-ordinary-authority-and-dependencies",
+        "loss":"publication-refused-after-reset; read-only-recovery-does-not-revive-context",
+    }));
+    s.add(Program, "gl_context_reset_scope", json!({
+        "opcode": shared::gl::QOP_CONTEXT_RESET_SCOPE,
+        "request_bytes": 0, "reply_bytes": 12,
+        "reply_fields": ["status", "scope", "magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "scope": {"healthy": 0, "logical_context_reset": 1, "physical_renderer_loss": 2},
+        "available_after_reset": true,
+        "execution": "read-only-no-replay-no-native-error-drain",
+    }));
+    s.add(Program, "gl_object_capture", json!({
+        "opcode": shared::gl::QOP_OBJECT_CAPTURE,
+        "queries": {"shader_log":shared::gl::QOP_GET_SHADER_INFO_LOG,
+            "program_log":shared::gl::QOP_GET_PROGRAM_INFO_LOG,
+            "shader_source":shared::gl::QOP_GET_SHADER_SOURCE,
+            "active_attribute":shared::gl::QOP_GET_ACTIVE_ATTRIB,
+            "active_uniform":shared::gl::QOP_GET_ACTIVE_UNIFORM_INFO,
+            "attached_shaders":shared::gl::QOP_GET_ATTACHED_SHADERS},
+        "value": "original-unit-count,[active-size,active-type],requested-prefix",
+        "units": "bytes-except-attached-shaders-u32",
+        "byte_order": "little-endian",
+        "begin_bytes": 24, "begin_fields": ["action","token","query","object","index","limit_units"],
+        "chunk_bytes": 16, "chunk_fields": ["action","token","offset_bytes","count_bytes"],
+        "release_bytes": 8, "release_fields": ["action","token"],
+        "actions": {"begin":1,"chunk":2,"release":3},
+        "reply": "status,token,count,chunk-bytes,magic",
+        "reply_fixed_bytes": 16, "max_chunk_bytes": 65520,
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "tokens": "monotonic-per-context-no-query-replay",
+        "snapshot": "original-metadata-and-truncated-payload-one-query",
+        "copyout": "after-complete-transfer-and-release-ack"
+    }));
+    s.add(Program, "gl_readback_capture", json!({
+        "opcode": shared::gl::QOP_READBACK_CAPTURE,
+        "byte_order": "little-endian",
+        "begin_bytes": 36, "begin_fields": ["action","token","total","x","y","width","height","format","type"],
+        "chunk_bytes": 16, "chunk_fields": ["action","token","offset","count"],
+        "release_bytes": 8, "release_fields": ["action","token"],
+        "actions": {"begin":1,"chunk":2,"release":3},
+        "reply": "status,token,count,chunk-bytes,magic",
+        "reply_fixed_bytes": 16, "max_chunk_bytes": 65520,
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "tokens": "monotonic-per-context-no-capture-replay",
+        "native_capture": "one-original-read",
+        "copyout": "after-complete-transfer-and-release-ack"
+    }));
+    s.add(
+        Program,
+        "gl_image_container_receipts",
+        gl_image_container_receipts(),
+    );
+    s.add(Program, "gl_submit_query", json!({
+        "request": shared::gl::GLIO_SUBMIT_QUERY,
+        "phase_submit": shared::gl::SUBMIT_QUERY_PHASE_SUBMIT,
+        "phase_query": shared::gl::SUBMIT_QUERY_PHASE_QUERY,
+        "reply_magic": shared::gl::SUBMIT_QUERY_REPLY_MAGIC,
+        "nonempty_prefix": true,
+        "negative_phase_rc": "errno",
+        "outer_success": "phase-receipt-only",
+        "retry": "none",
+    }));
 
     s.add(Program, "channel_header", channel_header());
     s.add(Program, "channel_request_flags", channel_request_flags());
@@ -4412,6 +4814,91 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(Surface::KernelHost, "kernel_imports", kernel_imports(&wasm)?);
 
     Ok(s.finish())
+}
+
+fn gl_compressed_upload() -> Value {
+    use shared::gl;
+    json!({
+        "query": gl::QOP_COMPRESSED_UPLOAD,
+        "byte_order": "little-endian",
+        "begin_bytes": gl::compressed_upload::BEGIN_BYTES,
+        "begin_words": ["action=1", "token", "original_opcode", "target", "level_i32", "format",
+            "xoffset_i32", "yoffset_i32", "width_i32", "height_i32", "border_i32", "image_size_i32", "source_present_bool"],
+        "continuation_header_bytes": gl::compressed_upload::HEADER_BYTES,
+        "continuation_words": ["action", "token", "offset_or_zero"],
+        "actions": {"begin": 1, "chunk": 2, "commit": 3, "abort": 4},
+        "max_staged_bytes": gl::compressed_upload::MAX_BYTES,
+        "max_request_bytes": gl::MAX_QUERY_IN_LEN,
+        "reply_words": ["status", "echoed_token_or_zero", "completion_magic"],
+        "reply_magic": gl::QUERY_REPLY_MAGIC,
+        "begin_acceptance": "custody-only-not-native-storage-validation",
+        "commit": "complete-original-native-operation-once-no-bands",
+        "authority": "same-context-shadow-object-view-revision-and-selected-unit",
+        "unknown_commit": "no-replay-abort-drops-staging-only",
+        "failure_payload": "zero",
+    })
+}
+
+
+
+fn gl_image_container_receipts() -> Value {
+    use shared::gl;
+    // The unpublished epoch/op-table alone cannot distinguish older hosts that
+    // reject these opt-in sizes. Bind the reply agreement into the program digest.
+    json!({
+        "op_version": gl::OP_VERSION,
+        "byte_order": "little-endian",
+        "word_type": "u32",
+        "reply_magic": gl::QUERY_REPLY_MAGIC,
+        "success_status": 0,
+        "rejected_status": 1,
+        "accepted_payload": 1,
+        "failure_payload": "all-zero",
+        "legacy": {
+            "reply_bytes": gl::IMAGE_MUTATION_LEGACY_REPLY_BYTES,
+            "words": ["status", "accepted", "completion_magic"],
+            "unchanged": true,
+        },
+        "attachment": {
+            "query": gl::QOP_IMAGE_ATTACHMENT,
+            "container_reply_bytes": gl::IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES,
+            "words": ["status", "accepted", "container_name", "completion_magic"],
+            "success_container": "nonzero-context-local-logical-name",
+        },
+        "deletion": {
+            "query": gl::QOP_IMAGE_OBJECT_DELETE,
+            "containers_reply_bytes": gl::IMAGE_DELETION_CONTAINERS_REPLY_BYTES,
+            "words": ["status", "accepted", "draw_name", "read_name", "completion_magic"],
+            "default_container_name": 0,
+            "equal_draw_read_names": true,
+            "detachment_scope": "matching-object-in-invoking-context-selected-containers",
+        },
+        "identity_capture": "after-queued-prefix-before-query-effects",
+        "publication": "validated-complete-success-only",
+        "unknown_completion": "retain-input-ownership-no-replay",
+    })
+}
+
+fn gl_inline_client_draw() -> Value {
+    use shared::gl::{OP_DRAW_CLIENT_ARRAYS, OP_VERSION, inline_client_draw as wire};
+    // The payload is read by the host, but emitted by already-built programs.
+    // An unchanged unpublished epoch must not admit a different record digest.
+    json!({
+        "op_version": OP_VERSION,
+        "opcode": OP_DRAW_CLIENT_ARRAYS,
+        "byte_order": "little-endian",
+        "header_bytes": wire::HEADER_BYTES,
+        "header_fields": {"mode_u32": 0, "first_i32": 4, "count_i32": 8, "attribute_count_u32": 12},
+        "attribute_bytes": wire::ATTRIBUTE_BYTES,
+        "attribute_fields": {"index_u32": 0, "components_u32": 4, "type_u32": 8, "normalized_u32": 12, "packed_bytes_u32": 16},
+        "max_payload_bytes": wire::MAX_BYTES,
+        "max_attributes": wire::MAX_ATTRIBUTES,
+        "minimum_count": 1,
+        "attribute_order": "strictly-increasing-index",
+        "data_layout": "count-packed-elements-at-original-vertex-indices",
+        "component_types": [0x1400, 0x1401, 0x1402, 0x1403, 0x1406, 0x140c],
+        "public_buffer_names": false,
+    })
 }
 
 fn platform_limits() -> Value {
@@ -4562,6 +5049,10 @@ fn wakeup_event_wire() -> Value {
         "record_size": shared::wakeup_event_wire::RECORD_BYTES,
         "fields": fields,
         "types": types,
+        "reserved_indices": {
+            "fenceReady": shared::wakeup_event_wire::IDX_FENCE_READY,
+            "fenceHostWork": shared::wakeup_event_wire::IDX_FENCE_HOST_WORK,
+        },
     })
 }
 
@@ -5595,7 +6086,7 @@ fn channel_signal_area() -> Value {
 
 fn marshalled_structs() -> Value {
     use shared::dri::{
-        WpkDrmBindForeignTexture, WpkDrmImportImage, WpkDrmEventVblank, WpkDrmGemClose, WpkDrmGetCap,
+        WpkDrmBindForeignTexture, WpkDrmExportImage, WpkDrmImportImage, WpkDrmEventVblank, WpkDrmGemClose, WpkDrmGetCap,
         WpkDrmGpuBoCreate, WpkDrmModeCardRes, WpkDrmModeCreateDumb, WpkDrmModeCrtcPageFlip,
         WpkDrmModeDestroyDumb, WpkDrmModeFbCmd2, WpkDrmModeGetConnector, WpkDrmModeGetCrtc,
         WpkDrmModeGetEncoder, WpkDrmModeMapDumb, WpkDrmModeModeinfo, WpkDrmPrimeHandle,
@@ -5603,7 +6094,7 @@ fn marshalled_structs() -> Value {
         WpkDrmModeFbCmd, WpkDrmModeSetPlane,
     };
     use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
-    use shared::gl::{GlContextAttrs, GlInitInfo, GlMakeCurrent, GlQueryInfo, GlQueryInfo64, GlSubmitInfo, GlSurfaceAttrs, GlSurfaceFrontCopyInfo};
+    use shared::gl::{GlContextAttrs, GlInitInfo, GlMakeCurrent, GlQueryInfo, GlQueryInfo64, GlSubmitInfo, GlSubmitQueryResult, GlSubmitQueryInfo, GlSubmitQueryInfo64, GlSurfaceAttrs, GlSurfaceFrontCopyInfo};
     use shared::oss::{AudioBufInfo, CountInfo};
     use shared::pcm::PcmSharedControl;
     use shared::{
@@ -5846,6 +6337,11 @@ fn marshalled_structs() -> Value {
         "GlSubmitInfo".into(),
         struct_layout!(GlSubmitInfo { offset, length }),
     );
+    structs.insert("GlSubmitQueryResult".into(), struct_layout!(GlSubmitQueryResult {
+        completed_phase, submit_rc, query_rc, result_magic
+    }));
+    structs.insert("GlSubmitQueryInfo".into(), struct_layout!(GlSubmitQueryInfo { submit, query, result }));
+    structs.insert("GlSubmitQueryInfo64".into(), struct_layout!(GlSubmitQueryInfo64 { submit, query, result }));
     structs.insert(
         "GlMakeCurrent".into(),
         struct_layout!(GlMakeCurrent { context_id, draw_surface_id, read_surface_id }),
@@ -5855,7 +6351,7 @@ fn marshalled_structs() -> Value {
         struct_layout!(GlContextAttrs {
             client_version,
             share_context_id,
-            reserved,
+            flags,
             context_id
         }),
     );
@@ -5955,6 +6451,11 @@ fn marshalled_structs() -> Value {
     structs.insert(
         "WpkDrmImportImage".into(),
         struct_layout!(WpkDrmImportImage { bo_handle, ctx_id, width, height, format, pitch, offset, source }),
+    );
+    structs.insert(
+        "WpkDrmExportImage".into(),
+        struct_layout!(WpkDrmExportImage { ctx_id, target, name, level, bo_handle, width, height,
+            internal_format, source, revision, reserved }),
     );
     structs.insert(
         "WpkDrmBindForeignTexture".into(),
@@ -8257,7 +8758,31 @@ fn additive_top_level_section(section: &str) -> bool {
         // additive: those are classified by
         // `classify_removal_only_array_by_module_name`, under which an
         // added import is breaking.
-        "clipboard_device_abi"
+        // A new query on an unused GL17 opcode/action cannot alter old requests.
+        // Existing receipt fields remain exact-match and therefore breaking
+        // if changed; only adding this section is compatible.
+        // The unused e7 endpoint leaves all existing fd/ioctl semantics exact.
+        // Its one-time metadata introduction is additive; established field
+        // changes still use the ordinary exact-match breaking classifier.
+        "dri_owned_resource"
+            | "dri_owned_exact_mappings"
+            | "gl_context_reset_scope"
+            | "gl_shader_program_creation"
+            | "gl_program_mutation"
+            | "gl_program_capture"
+            | "gl_program_journal"
+            | "gl_program_journal_barrier"
+            | "gl_transport_error_observation"
+            | "gl_error_drain_receipt"
+            | "gl_program_uniform_signature"
+            | "gl_program_uniform_guest_signature"
+            | "gl_program_buffer_snapshots"
+            | "gl_program_buffer_attribute_capture"
+            | "gl_program_framebuffer_snapshots"
+            | "gl_owned_draw_cpu_preparation"
+            | "gl_uniform_cpu_preparation"
+            | "gl_buffer_snapshot_draw"
+            | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
             | "ioctl_request_families"
@@ -8564,6 +9089,110 @@ mod tests {
     }
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn compressed_upload_serializes_one_native_commit_and_signed_metadata() {
+        let value = gl_compressed_upload();
+        assert_eq!(value["query"], json!(shared::gl::QOP_COMPRESSED_UPLOAD));
+        assert_eq!(value["begin_bytes"], json!(52));
+        assert_eq!(value["max_staged_bytes"], json!(16 * 1024 * 1024));
+        assert_eq!(value["begin_words"][11], json!("image_size_i32"));
+        assert_eq!(value["begin_acceptance"], json!("custody-only-not-native-storage-validation"));
+        assert_eq!(value["commit"], json!("complete-original-native-operation-once-no-bands"));
+        assert_eq!(value["unknown_commit"], json!("no-replay-abort-drops-staging-only"));
+    }
+
+
+    #[test]
+    fn image_container_receipts_serialize_shared_values_and_generated_constants() {
+        let receipt = gl_image_container_receipts();
+        assert_eq!(receipt["legacy"]["reply_bytes"], json!(12));
+        assert_eq!(
+            receipt["attachment"]["query"],
+            json!(shared::gl::QOP_IMAGE_ATTACHMENT)
+        );
+        assert_eq!(receipt["attachment"]["container_reply_bytes"], json!(16));
+        assert_eq!(
+            receipt["deletion"]["query"],
+            json!(shared::gl::QOP_IMAGE_OBJECT_DELETE)
+        );
+        assert_eq!(receipt["deletion"]["containers_reply_bytes"], json!(20));
+        assert_eq!(receipt["reply_magic"], json!(shared::gl::QUERY_REPLY_MAGIC));
+        let root: JsonMap = receipt
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        let serialized = render_deterministic(&root);
+        assert_eq!(serde_json::from_str::<Value>(&serialized).unwrap(), receipt);
+        let rendered = render_ts_module();
+        for (name, value) in [
+            ("GL_QUERY_REPLY_MAGIC", shared::gl::QUERY_REPLY_MAGIC),
+            (
+                "GL_IMAGE_MUTATION_LEGACY_REPLY_BYTES",
+                shared::gl::IMAGE_MUTATION_LEGACY_REPLY_BYTES,
+            ),
+            (
+                "GL_IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES",
+                shared::gl::IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES,
+            ),
+            (
+                "GL_IMAGE_DELETION_CONTAINERS_REPLY_BYTES",
+                shared::gl::IMAGE_DELETION_CONTAINERS_REPLY_BYTES,
+            ),
+        ] {
+            assert!(rendered.contains(&format!("export const {name} = {value} as const;")));
+        }
+    }
+
+    #[test]
+    fn image_container_receipts_change_program_digest_without_changing_epoch() {
+        let snapshot = |include_receipt| {
+            let mut root = JsonMap::new();
+            root.insert("abi_version".into(), json!(shared::ABI_VERSION));
+            let mut sections = Sections {
+                root,
+                program: Vec::new(),
+                kernel_host: Vec::new(),
+            };
+            if include_receipt {
+                sections.add(
+                    Surface::Program,
+                    "gl_image_container_receipts",
+                    gl_image_container_receipts(),
+                );
+            }
+            Value::Object(sections.finish().into_iter().collect())
+        };
+        let old = snapshot(false);
+        let new = snapshot(true);
+        let digest = |value: &Value| {
+            crate::local_abi_identity::program_contract_digest(value, shared::ABI_VERSION).unwrap()
+        };
+        assert_eq!(old["abi_version"], new["abi_version"]);
+        assert_ne!(digest(&old), digest(&new));
+        assert!(
+            new[SURFACES_KEY]["program"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("gl_image_container_receipts"))
+        );
+        for path in [
+            "/gl_image_container_receipts/attachment/container_reply_bytes",
+            "/gl_image_container_receipts/deletion/containers_reply_bytes",
+            "/gl_image_container_receipts/reply_magic",
+            "/gl_image_container_receipts/identity_capture",
+        ] {
+            let mut changed = new.clone();
+            *changed.pointer_mut(path).unwrap() = json!("changed-wire-contract");
+            assert_ne!(
+                digest(&new),
+                digest(&changed),
+                "unbound receipt field {path}"
+            );
+        }
+    }
 
     #[test]
     fn syscall_log_names_match_existing_trace_spelling() {
@@ -9672,6 +10301,259 @@ mod tests {
             },
             "vfs_metadata": vfs_metadata()
         })
+    }
+
+    #[test]
+    fn owned_resource_endpoint_is_additive_but_established_wire_cannot_change() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["dri_owned_resource"]=json!({"request":shared::dri_owned::REQUEST,"packet_bytes":320,
+            "carrier_fd":-1,"actions":{"open":1,"release":5,"poll":11}});
+        let report=classify_compat_change(&old,&new).unwrap();assert!(report.breaking.is_empty(),"{report:?}");
+        assert_eq!(report.additive,vec!["added top-level section \"dri_owned_resource\""]);
+        let established=new.clone();
+        for field in ["request","packet_bytes","carrier_fd"] {
+            let mut changed=established.clone();changed["dri_owned_resource"][field]=json!(99);
+            assert!(!classify_compat_change(&established,&changed).unwrap().breaking.is_empty());
+        }
+        let mut changed=established.clone();changed["dri_owned_resource"]["actions"]["poll"]=json!(99);
+        assert!(!classify_compat_change(&established,&changed).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn exact_mapping_actions_are_additive_without_changing_established_owned_wire() {
+        let mut old=base_snapshot();
+        old["dri_owned_resource"]=json!({"request":shared::dri_owned::REQUEST,"actions":{"mmap":4}});
+        let mut new=old.clone();
+        new["dri_owned_exact_mappings"]=json!({"request":shared::dri_owned::REQUEST,"actions":{"mmap_exact":13,"unmap_exact":14},"mmap_body_bytes":40,"unmap_body_bytes":8});
+        let report=classify_compat_change(&old,&new).unwrap();
+        assert!(report.breaking.is_empty(),"{report:?}");
+        assert_eq!(report.additive,vec!["added top-level section \"dri_owned_exact_mappings\""]);
+        assert_eq!(new["dri_owned_resource"],old["dri_owned_resource"]);
+        let mut changed=new.clone();changed["dri_owned_exact_mappings"]["actions"]["unmap_exact"]=json!(15);
+        assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty());
+        changed=new.clone();changed["dri_owned_resource"]["actions"]["mmap"]=json!(13);
+        assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn reset_scope_query_is_additive_but_existing_receipt_cannot_change() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["gl_context_reset_scope"] = json!({"opcode": 0x37,
+            "request_bytes": 0, "reply_bytes": 12,
+            "scope": {"healthy": 0, "logical_context_reset": 1, "physical_renderer_loss": 2}});
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(report.additive, vec!["added top-level section \"gl_context_reset_scope\""]);
+        let established = new.clone();
+        for field in ["opcode", "request_bytes", "reply_bytes"] {
+            let mut changed = established.clone(); changed["gl_context_reset_scope"][field] = json!(99);
+            assert!(!classify_compat_change(&established, &changed).unwrap().breaking.is_empty());
+        }
+        new["gl_context_reset_scope"]["scope"]["logical_context_reset"] = json!(2);
+        assert!(!classify_compat_change(&established, &new).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn shader_program_creation_is_additive_but_existing_receipt_cannot_change() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["gl_shader_program_creation"] = json!({"opcode": 0x38,
+            "request_bytes": 12, "request_fields": ["object_kind", "shader_type_or_zero", "reserved_name"],
+            "object_kinds": {"shader": 4, "program": 5},
+            "reply_bytes": 12, "reply_fields": ["status", "accepted_name_or_zero", "magic"],
+            "reply_magic": 0x47514c33u32, "requires_current_context": true,
+            "query_dependencies": "ordinary-query-replay"});
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(report.additive, vec!["added top-level section \"gl_shader_program_creation\""]);
+        for field in new["gl_shader_program_creation"].as_object().unwrap().keys() {
+            let mut changed = new.clone();
+            changed["gl_shader_program_creation"][field] = json!("different");
+            assert!(!classify_compat_change(&new, &changed).unwrap().breaking.is_empty(), "{field}");
+            changed["gl_shader_program_creation"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new, &changed).unwrap().breaking.is_empty(), "{field}");
+        }
+        assert!(!classify_compat_change(&new, &old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn program_mutation_is_additive_but_existing_receipt_cannot_change() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["gl_program_mutation"] = json!({"opcode": 0x39,
+            "request_prefix": "u32 command_opcode", "commands": {"use_program": [0x307, 8]},
+            "reply_bytes": 12, "reply_fields": ["status", "accepted_boolean", "magic"],
+            "reply_magic": 0x47514c33u32, "requires_current_context": true,
+            "query_dependencies": "ordinary-query-replay"});
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(report.additive, vec!["added top-level section \"gl_program_mutation\""]);
+        for field in new["gl_program_mutation"].as_object().unwrap().keys() {
+            let mut changed = new.clone();
+            changed["gl_program_mutation"][field] = json!("different");
+            assert!(!classify_compat_change(&new, &changed).unwrap().breaking.is_empty(), "{field}");
+            changed["gl_program_mutation"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new, &changed).unwrap().breaking.is_empty(), "{field}");
+        }
+        assert!(!classify_compat_change(&new, &old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn program_capture_is_additive_but_existing_receipt_cannot_change() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["gl_program_capture"] = json!({"opcode": 0x3a,
+            "commands": {"acquire": [1,8],"select": [2,12],"release": [3,8]},
+            "request_fields": ["action","name_or_handle","select_handle_only"],
+            "reply_bytes": 16,"reply_fields": ["status","linked_or_accepted","handle_or_zero","magic"],
+            "reply_magic": 0x47514c33u32,"requires_current_context": true,
+            "query_dependencies": "ordinary-query-replay",
+            "lifetime": "acquiring-context-cache-with-independent-accepted-execution-custody"});
+        let report = classify_compat_change(&old,&new).unwrap();
+        assert!(report.breaking.is_empty(),"{report:?}");
+        assert_eq!(report.additive,vec!["added top-level section \"gl_program_capture\""]);
+        for field in new["gl_program_capture"].as_object().unwrap().keys() {
+            let mut changed = new.clone();
+            changed["gl_program_capture"][field] = json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_capture"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn program_journal_is_additive_but_existing_fields_cannot_change() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_program_journal"]=json!({"opcode":0x3b,"reply_bytes":48,
+            "selector_opcode":0x30c,"selector_payload_bytes":16,"maximum_entries":256,
+            "recovery":"no-mutator-replay","authority":"own-current-tid"});
+        let report=classify_compat_change(&old,&new).unwrap();
+        assert!(report.breaking.is_empty(),"{report:?}");
+        assert_eq!(report.additive,vec!["added top-level section \"gl_program_journal\""]);
+        for field in new["gl_program_journal"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_program_journal"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_journal"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn program_journal_barrier_is_additive_without_relaxing_ordinary_authority() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_program_journal_barrier"]=json!({"opcode":0x3c,"actions":[3,6,7],"reply_bytes":48,
+            "authority":"owned-live-public-context","native_selection":false});
+        let report=classify_compat_change(&old,&new).unwrap();assert!(report.breaking.is_empty(),"{report:?}");
+        assert_eq!(report.additive,vec!["added top-level section \"gl_program_journal_barrier\""]);
+        for field in new["gl_program_journal_barrier"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_program_journal_barrier"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_journal_barrier"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn transport_error_observation_is_additive_but_existing_semantics_are_exact() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_transport_error_observation"]=json!({"opcode":0x20,"payload_bytes":0,
+            "returned_error":0x502,"effect":"ordered-single-flag-observation"});
+        assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+        for field in new["gl_transport_error_observation"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_transport_error_observation"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_transport_error_observation"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn error_drain_receipt_is_additive_but_existing_fields_are_exact() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_error_drain_receipt"]=json!({"query":1,"request_mode":0x47524350u32,
+            "request_bytes":12,"reply_bytes":52,"read_query":0x3d,
+            "custody":"seal-before-copyout"});
+        assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+        for field in new["gl_error_drain_receipt"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_error_drain_receipt"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_error_drain_receipt"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn uniform_signature_is_additive_but_existing_generation_authority_is_exact() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_program_uniform_signature"]=json!({"opcode":0x3b,"action":8,
+            "request_bytes":16,"reply_bytes":48,"authority":"own-immutable-generation",
+            "effects":"read-only; no-error-drain-or-mutation-receipt-change"});
+        assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+        for field in new["gl_program_uniform_signature"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_program_uniform_signature"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_uniform_signature"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn guest_uniform_signature_is_additive_and_does_not_relax_the_legacy_action() {
+        let mut old=base_snapshot();
+        old["gl_program_uniform_signature"]=json!({"action":8,"reserved_word9":0});
+        let mut new=old.clone();
+        new["gl_program_uniform_guest_signature"]=json!({"opcode":0x3b,"action":9,
+            "request_bytes":16,"reply_bytes":48,"guest_type_word":9,
+            "authority":"own-immutable-generation","effects":"read-only","legacy":"action8-unchanged"});
+        assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+        for field in new["gl_program_uniform_guest_signature"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_program_uniform_guest_signature"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_uniform_guest_signature"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        let mut changed=new.clone();changed["gl_program_uniform_signature"]["reserved_word9"]=json!(1);
+        assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty());
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn buffer_snapshot_wire_is_additive_and_existing_fields_are_exact() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_program_buffer_snapshots"]=json!({"query":0x3b,"prepare_action":10,
+            "definition_opcode":0x107,"capacity":32,"maximum_definition_bytes":32768,
+            "authority":"own-current-context","recovery":"read-last-no-replay"});
+        assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+        for field in new["gl_program_buffer_snapshots"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_program_buffer_snapshots"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_program_buffer_snapshots"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn buffer_capture_and_draw_are_additive_but_existing_contracts_stay_exact() {
+        for section in ["gl_program_buffer_attribute_capture","gl_buffer_snapshot_draw","gl_program_framebuffer_snapshots","gl_uniform_cpu_preparation","gl_owned_draw_cpu_preparation"] {
+            let old=base_snapshot();let mut new=old.clone();
+            new[section]=json!({"authority":"own-context-exact-generations","layout":"bounded","recovery":"no-replay"});
+            assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+            for field in new[section].as_object().unwrap().keys() {
+                let mut changed=new.clone();changed[section][field]=json!("different");
+                assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{section}.{field}");
+                changed[section].as_object_mut().unwrap().remove(field);
+                assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{section}.{field}");
+            }
+            assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+        }
     }
 
     #[test]
