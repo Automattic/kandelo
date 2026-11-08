@@ -139,6 +139,11 @@ export async function buildWordPressFamilyImage(output: string): Promise<void> {
   writeVfsFile(fs, "/etc/kandelo/wordpress-backends", "sqlite\nmariadb\n");
   writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("selectable"));
   writeVfsFile(fs, "/srv/www/html/wp-config.php", renderWordPressConfig("selectable", "/app", "http"));
+  // FPM's account must be able to atomically replace mutable configuration,
+  // just as each backend's content directory permits normal plugin drop-ins.
+  fs.chown("/srv/www/html", 65534, 65534);
+  fs.chmod("/srv/www/html", 0o775);
+  fs.chown("/srv/www/html/wp-config.php", 65534, 65534);
   writeVfsFile(fs, "/usr/bin/kandelo-wordpress-select", `#!/bin/sh
 set -eu
 backend=\${1:-}

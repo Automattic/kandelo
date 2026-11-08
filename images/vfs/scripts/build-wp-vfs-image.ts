@@ -125,6 +125,7 @@ function populateNginxConfig(fs: VfsImageFilesystem): void {
             fastcgi_param CONTENT_LENGTH $content_length;
             fastcgi_param REQUEST_URI $request_uri;
             fastcgi_param SERVER_PROTOCOL $server_protocol;
+            fastcgi_param SERVER_SOFTWARE nginx/$nginx_version;
             fastcgi_param SERVER_PORT $server_port;
             fastcgi_param SERVER_NAME $server_name;
             fastcgi_param HTTP_HOST $http_host;
@@ -142,6 +143,7 @@ function populateNginxConfig(fs: VfsImageFilesystem): void {
             fastcgi_param CONTENT_LENGTH $content_length;
             fastcgi_param REQUEST_URI $request_uri;
             fastcgi_param SERVER_PROTOCOL $server_protocol;
+            fastcgi_param SERVER_SOFTWARE nginx/$nginx_version;
             fastcgi_param SERVER_PORT $server_port;
             fastcgi_param SERVER_NAME $server_name;
             fastcgi_param HTTP_HOST $http_host;
@@ -522,6 +524,12 @@ opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
       "/srv/www/html/wp-includes/SimplePie/autoloader.php",
     ],
   });
+  // Optional plugins create drop-ins and atomically replace wp-config.php.
+  // Give the real FPM account the required directory and file ownership;
+  // core/plugin source files retain their installed ownership and modes.
+  ensureWritableByPhpFpm(fs, "/srv/www/html");
+  ensureWritableByPhpFpm(fs, "/srv/www/html/wp-content");
+  fs.chown("/srv/www/html/wp-config.php", PHP_FPM_UID, PHP_FPM_GID);
   writeTrackedDemoConfig(fs, "packages/registry/wordpress/wordpress-demo.json");
 
   // Save image
