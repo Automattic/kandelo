@@ -1,0 +1,185 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/secure-network-contracts.md",
+    "findingIds": [
+      "S-009"
+    ],
+    "relatedFamilies": [
+      "network",
+      "async",
+      "streams",
+      "engine"
+    ],
+    "scope": "Partial normal-open TLS transport shutdown ownership only; no public_final/earlyhandshake/fullTLS or qualified finding closure.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/secure-network-contracts.md",
+        "findingId": "S-009",
+        "definitionKey": "tests/nodejs/audit/secure-network-contracts.md#S-009:L75",
+        "relation": "partial-owning-source",
+        "closed": false
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Actual existing ShutdownWrap/provider/frame/callback ownership with private retained TLS and TCP roots, no synthesized provider or raw fd authority.",
+    "Actual pending transport shutdown request temporarily admits only its same attached transport ciphertext/alert drain; retirement/close/detach clear the real request pointer.",
+    "Actual shared shutdown operation retains BIO flight until real TCP completion and acknowledgment before parent SHUT_WR; no peer-notify wait.",
+    "Actual observed fatal SSL/SYSCALL refuses new SSL_shutdown; original best-effort Close body is byte-preserved."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tls260-source-r2/report.json",
+    "sha256": "03c677d9d1d8d244bf55f2efdbbfa0ec4640f8d1ff528146a128152f09b6897d",
+    "guardedInputs": 910,
+    "scope": "Normal current source/native staging plus retained real TLS/socket/BIO component clean6/nativeShutdownWrap2. Dirty queue2TLS13 nonpasses retained, no public_final/earlyhandshake/guest/four-host closure. No new compiler, historical4pending once."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tls260-affected-r2.json",
+    "sha256": "b1da34cdb5ba551540fc66daefabfbd264e633e667200cda83e8451b5f358c58",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tls260-source-r2/report.json",
+    "sha256": "03c677d9d1d8d244bf55f2efdbbfa0ec4640f8d1ff528146a128152f09b6897d",
+    "cleanOwnerSubjects": 6,
+    "nativeReferenceSubjects": 2,
+    "newCompilerAttempts": 0,
+    "guestExecution": false,
+    "dirtyQueueTLS13NonpassesStillOpen": 2,
+    "publicFinalActivated": false,
+    "scope": "Reused actual production-header native component; native config, callback tickets and native reference are explicit dependencies, not guest JSAPI proof.",
+    "guardedInputs": 910,
+    "sourceChecks": 23,
+    "sourceCommands": 8,
+    "packagePassed": 14,
+    "currentSuccessfulAttempt": "node26-tls260-r2",
+    "originalAttemptOutcome": "harness-error",
+    "originalSourceCommitUnchanged": true,
+    "newRootCompilerAttempts": 0,
+    "historicalHelperAttempts": 4
+  },
+  "sealedEvidence": {
+    "report": ".context/tls-write-shutdown-owner-agent/report.json",
+    "sha256": "4fac23c1136fd2c6e8a5b96e9bf86bd8f05e906654664874341c9516f2951755",
+    "reusedEvidence": true,
+    "scope": "Historical source-equivalent native TLS/socket/BIO components and pinned native ShutdownWrap references; two dirty TLS1.3 queue-preservation nonpasses remain. New guest bridge and ordinary TCP-refactor regression uncompiled."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tls-write-shutdown-owner-agent/evidence-r3/owner-controls-stdout",
+      "sha256": "9cebbe919d20e000f072a5bdb9a20d03d4529005831b9145030d278d11e9f4bf",
+      "classification": "retained-component-runtime-nonpasses",
+      "scope": "Actual dirty injected-queue protocol subjects4pass2fail; TLS1.3 queue-preservation mismatch remains an implementation gap. Clean6 success never replaces these failures; not newly rerun root cases."
+    },
+    {
+      "report": ".context/tls-write-shutdown-owner-agent/control-accounting.json",
+      "sha256": "afda11a7ff2af61d8879be6d7dccd228f03f25db736f65bacb639fd0450a2258",
+      "classification": "complete-historical-attempt-accounting",
+      "scope": "Preserves initial alert-receipt partial-log limit, actual missing-permit EPIPE4of6, dirty queue2failures and authored source/reference fixtures. Four successful tiny compiler attempts/0fail counted once."
+    },
+    {
+      "report": ".context/tls260-tool-run-r1/source-receipt.json",
+      "sha256": "80be940613c36d2b2798a665795ac24ffb80532835bdd277e1f48ed59da939cd",
+      "classification": "harness-error",
+      "scope": "Actual source PID71040 exit1 JSONDecodeError after unchanged driver clean6/native2 completed; driver writes report but prints no JSON. Original V1 remains failed, not whole-source pass."
+    },
+    {
+      "report": ".context/tls260-tool-run-r1/guarded-owned-rollback.json",
+      "sha256": "16586122e4d7d6a19c5109b4f1e7c742e98ac61b26b523955708a410dda68757",
+      "classification": "administrative-exact-owned-rollback",
+      "scope": "Restore only12exactowned source paths to pushed259, preserving foreign/state identities. Initial read-only staging-assumption guard stopped before mutation and is retained. No source/assertion change between attempts."
+    },
+    {
+      "report": ".context/sqlite259-metadata-h30s2kfl/checkpoint.stderr",
+      "sha256": "bf446ab19336b51c4c26a5497b5651885c6ef72cae9c3d1ffef452d9df697e5f",
+      "classification": "administrative-index-lock-final-stage-failure",
+      "scope": "Previous259 metadata/snapshot were already written; final git add failed128 on index.lock during concurrent agent checkpoint. No runtime case, no metadata writer/checkpoint replay; exact stage-only recovery retained."
+    }
+  ],
+  "remaining": [
+    "Public _final activation is absent.",
+    "Early end-before-secure remains mismatched: ProgressWriteShutdown waits Open.",
+    "Pinned in_ssl_library_call deferral/session/handshake policy not established.",
+    "Whole write list waits current callback retirement; later-write admission and shutdown phase gating still require review/implementation.",
+    "TLS1.3 preexisting OpenSSL error queue preservation differs in two portable subjects; native references preserve it, cause/config/inputBIO parity unresolved.",
+    "Direct socket input BIO remains unlike complete Node ClearIn owner.",
+    "Best-effort Close destruction/fatal policy is unchanged and not claimed equivalent to Node DestroySSL.",
+    "New guest JSAPI/ShutdownWrap/realm/GC/OOM/fatal/Worker and ordinary TCP-refactor regression uncompiled/unexecuted; four-host evidence absent."
+  ],
+  "actualTlsShutdownControlReport": {
+    "report": ".context/tls260-root-controls-r2/report.json",
+    "sha256": "ebab8521a1ee2bea725a4c97c0b7a51d66ed65ad5af82c40a4284b6d7f744734",
+    "cleanOwnerSubjects": 6,
+    "nativeReferenceSubjects": 2,
+    "newCompilerAttempts": 0,
+    "guestExecution": false,
+    "dirtyQueueTLS13NonpassesStillOpen": 2,
+    "publicFinalActivated": false,
+    "scope": "Reused actual production-header native component; native config, callback tickets and native reference are explicit dependencies, not guest JSAPI proof."
+  },
+  "integrationTool": {
+    "ledger": ".context/agent-integrations/node26-tls260-r2/ledger.json",
+    "sha256": "94edcf93c59cb2fc56227ccee2fb50aae1ab103c50909056673ea9f002cb9c15",
+    "sourceBinding": "6223d4c145cf2d3380d08bcf37cab22fa126841cb2aa4a0069a8e6591345c6b9",
+    "allStepsDone": true,
+    "imports": [
+      3,
+      0
+    ],
+    "actualPids": [
+      19127,
+      19130
+    ],
+    "selectedBindingOnly": true,
+    "globalCacheKeyBindingClaimed": false,
+    "actualImporter": {
+      "path": ".context/import-successful-integration-receipts.py",
+      "sha256": "dba2ff1ccc5631a9ac164a4fbac8be1723bf9a64520f02faeda930f59bccd847"
+    },
+    "importPlan": {
+      "path": ".context/tls260-import-plan-r2.json",
+      "sha256": "f34a64060957e6d3cd4fc9efb0d2cfcac8a3fd2041d3c7a7f9d2d7ceb26c264e"
+    }
+  },
+  "sameSourceSuccessorHistory": {
+    "originalTask": "node26-tls260",
+    "originalCompleted": false,
+    "originalFailure": "harness-error JSONDecodeError after unchanged driver controls",
+    "originalFailedLedgerSha256": "f8036fd681735995c98ec12aeb6d288346d3c23b66a7e5013c021447003b9e1e",
+    "exactGuardedRollbackSha256": "16586122e4d7d6a19c5109b4f1e7c742e98ac61b26b523955708a410dda68757",
+    "sourceCommitUnchanged": "bfd485fde60bdc7a9d39935e20f7d0248bd711ce",
+    "successorTask": "node26-tls260-r2",
+    "wrapperPublishesExactActualReport": true,
+    "runtimeOrControlAssertionsChanged": false
+  },
+  "publicFinalActivated": false,
+  "twoQueueTls13NonpassesRemain": true,
+  "administrativePreviousStageFailure": {
+    "originalCommands": ".context/sqlite259-metadata-h30s2kfl/commands.json",
+    "originalCheckpointStderr": ".context/sqlite259-metadata-h30s2kfl/checkpoint.stderr",
+    "recoveryReceipt": ".context/sqlite259-metadata-final-stage-recovery-r1/receipt.json",
+    "classification": "administrative-index-lock-final-staging-failure",
+    "runtimeCases": 0,
+    "writerOrCheckpointReplayed": false
+  },
+  "contextualEngineComposition": {
+    "report": ".context/tls260-compose-r1/engine-roundtrip.json",
+    "sha256": "6bacbb6386a3bd8f36ba9ddac531bef734323e23a591ce45fbcd59b0b087a008",
+    "before": "70b5a2c7bbc96ee2f9da3e84c427a157c3b7332b7c86e1d184115797b9b3951b",
+    "after": "7d79c4c9afb10314a698bd3cea0b3bb4b81b729b4e8d76c99122248ee7be336d",
+    "zeroContextAppliedToDrift": false,
+    "bothConsumersForwardReverseForward": true
+  },
+  "at": "2026-11-08T06:44:04.432853+00:00",
+  "recipeRevision": 260,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

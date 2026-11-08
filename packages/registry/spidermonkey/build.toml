@@ -1,5 +1,7 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0181-node-tls-write-shutdown-owner.patch",
+  "third_party/node-core/tests/tls-write-shutdown-owner",
   "third_party/node-core/tests/sqlite-authorizer",
   "packages/registry/spidermonkey/patches/0180-node-server-listener-owner.patch",
   "third_party/node-core/tests/ec-pkcs8-owner",
@@ -791,4 +793,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 259
+revision = 260

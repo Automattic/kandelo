@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source260 adds normal-open TLS transport shutdown ownership over actual retained TCP/TLS/ShutdownWrap/BIO flight owners. Alert output waits real captured-parent completion/ack before SHUT_WR; public_final stays inactive and early-handshake/in-SSL deferral/full inputBIO/fatal/destruction/provider parity remain gaps. Actual successor normal910inputs/23sourcechecks/8commands pass, clean6protocol/native2actualShutdownWrap references and package14 independent. Two retained TLS1.3 injected-queue preservation nonpasses remain unresolved. Four historical tiny helper compiles counted once365 to369; zero new root compiler, no guest/four-host or full TLS shutdown claim.
+See [source scope](tls-write-shutdown-integration.md).
+
 Source259 connects actual sqlite3_set_authorizer to existing Connection/Statement/Session ownership, traced database callback registry and post-SQL exception_ptr/abrupt handoff. Separate limits correction permits real readonly cached limit access and guards actual mutations before value validation. Normal910inputs/19sourcechecks/8commands pass, correctedportable8/nativeLimit3/frontend12native+12candidate selected observations and package14 independent. Native backend/error/Values/parameter-free SQL dependencies do not execute new guest JSAPI bridge. Two historical helpers count once363 to365; zero root compiler, no engine patch/full SQLite or guest closure.
 See [source scope](sqlite-authorizer-integration.md).
 

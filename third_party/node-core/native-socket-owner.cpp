@@ -11,7 +11,7 @@ namespace {
 namespace SocketStreamStateFields = kandelo::socket::state;
 using KandeloSocketWriteMaterial = kandelo::socket::Write<JS::KandeloBacking::SpanRef>;
 enum KandeloSocketSlot { SocketState, SocketFrame, SocketDispatch,
-                         SocketExecutionResource, SocketParent, SocketCloseCallback, SocketStreamState, SocketOnRead, SocketSlots };
+                         SocketExecutionResource, SocketParent, SocketCloseCallback, SocketStreamState, SocketOnRead, SocketTransport, SocketSlots };
 struct KandeloSocketState {
   JSContext* cx;
   KandeloSocketState* next = nullptr;
@@ -19,6 +19,10 @@ struct KandeloSocketState {
   std::unique_ptr<PersistentRootedObject> accepted;
   std::unique_ptr<KandeloSocketWriteMaterial> write;
   std::unique_ptr<kandelo::socket::Shutdown> shutdown;
+  // The actual private SocketParent root protects this pointer until request
+  // retirement clears the parent's pending transport-drain reservation.
+  kandelo::socket::Owner* shutdownParent = nullptr;
+  std::unique_ptr<kandelo::socket::TransportShutdown> transportShutdown;
   std::shared_ptr<kandelo::socket::Read> delivering;
   std::unique_ptr<PersistentRootedObject> pending, liveRoot;
   js::shell::KandeloNativeAsyncState* lifetime = nullptr;
@@ -51,8 +55,13 @@ struct KandeloSocketState {
   void Close() {
     if (socket) socket->Close();
     CloseAccepted();
-    write.reset(); shutdown.reset();
+    if (shutdownParent && shutdown) shutdownParent->RetireShutdown(*shutdown);
+    shutdownParent = nullptr;
+    write.reset(); transportShutdown.reset(); shutdown.reset();
     delivering.reset(); readClaim.reset(); inflightReadClaim.reset();
+    // Context shutdown retires the new private TLS edge even if an init hook
+    // retained the JS request. The operation is already destroyed above.
+    if (shutdownResource && pending) JS::SetReservedSlot(*pending, SocketTransport, UndefinedValue());
     pending.reset(); liveRoot.reset(); closing = false; closeCompleted = true;
     if (!socket) Retire(); RefreshMemory();
   }
@@ -318,44 +327,53 @@ static void KandeloSocketRetireClosed(JSContext* cx, HandleObject owner,
   JS::SetReservedSlot(owner, SocketFrame, UndefinedValue());
 }
 static void KandeloRetireSocketRequest(HandleObject request, KandeloSocketState* state) {
-  state->pending.reset(); state->write.reset(); state->shutdown.reset(); state->Retire();
+  if (state->shutdownParent && state->shutdown) state->shutdownParent->RetireShutdown(*state->shutdown);
+  state->shutdownParent = nullptr;
+  state->transportShutdown.reset(); state->pending.reset(); state->write.reset(); state->shutdown.reset(); state->Retire();
   // ReqWrap disposal releases its native parent/callback/context-frame edges
   // even when an init hook retained the actual JS request object.
-  for (uint32_t slot : {SocketParent, SocketFrame, SocketDispatch})
+  for (uint32_t slot : {SocketParent, SocketFrame, SocketDispatch, SocketTransport})
     JS::SetReservedSlot(request, slot, UndefinedValue());
   state->RefreshMemory();
+}
+static bool KandeloCreateSocketShutdownRequest(JSContext* cx, HandleObject parent,
+                                                HandleObject transport, MutableHandleObject result) {
+  auto* parentState = KandeloSocketOwnerState(cx, parent); if (!parentState) return false;
+  JSAutoRealm realm(cx, parent);
+  RootedObject request(cx, JS_NewObject(cx, &KandeloSocketShutdownClass)); if (!request) return false;
+  RootedValue parentValue(cx, ObjectValue(*parent));
+  if (!JS_WrapValue(cx, &parentValue)) return false;
+  JS::SetReservedSlot(request, SocketParent, parentValue);
+  if (transport) {
+    RootedValue transportValue(cx, ObjectValue(*transport));
+    if (!JS_WrapValue(cx, &transportValue)) return false;
+    JS::SetReservedSlot(request, SocketTransport, transportValue);
+  }
+  RootedValue null(cx, NullValue());
+  if (!JS_DefineProperty(cx, request, "oncomplete", null, JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx, request, "callback", null, JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx, request, "handle", null, JSPROP_ENUMERATE)) return false;
+  result.set(request); return true;
 }
 static bool KandeloNativeCreateSocketShutdownRequest(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   if (!args.get(0).isObject()) { JS_ReportErrorASCII(cx, "Invalid TCP shutdown owner"); return false; }
-  RootedObject parent(cx, js::CheckedUnwrapStatic(&args[0].toObject()));
-  if (!KandeloSocketOwnerState(cx, parent)) return false;
-  RootedValue result(cx);
-  {
-    JSAutoRealm realm(cx, parent);
-    RootedObject request(cx, JS_NewObject(cx, &KandeloSocketShutdownClass));
-    if (!request) return false;
-    JS::SetReservedSlot(request, SocketParent, ObjectValue(*parent));
-    RootedValue null(cx, NullValue());
-    if (!JS_DefineProperty(cx, request, "oncomplete", null, JSPROP_ENUMERATE) ||
-        !JS_DefineProperty(cx, request, "callback", null, JSPROP_ENUMERATE) ||
-        !JS_DefineProperty(cx, request, "handle", null, JSPROP_ENUMERATE)) return false;
-    result.setObject(*request);
-  }
-  if (!JS_WrapValue(cx, &result)) return false;
+  RootedObject parent(cx, js::CheckedUnwrapStatic(&args[0].toObject())), transport(cx), request(cx);
+  if (!KandeloCreateSocketShutdownRequest(cx, parent, transport, &request)) return false;
+  RootedValue result(cx, ObjectValue(*request)); if (!JS_WrapValue(cx, &result)) return false;
   args.rval().set(result); return true;
 }
-static bool KandeloSocketShutdown(JSContext* cx, unsigned argc, Value* vp) {
-  CallArgs args = CallArgsFromVp(argc, vp);
-  auto* parentState = KandeloSocketThis(cx, args); if (!parentState) return false;
-  // StreamBase::JSMethod rejects kClosed before inspecting request arguments
-  // or creating its AsyncWrap. kClosing remains alive until close completion.
-  if (parentState->closeCompleted) { args.rval().setInt32(-EINVAL); return true; }
-  RootedObject parent(cx, js::CheckedUnwrapStatic(&args.thisv().toObject()));
-  RootedObject request(cx, args.get(0).isObject() ? js::CheckedUnwrapStatic(&args[0].toObject()) : nullptr);
-  if (!request || JS::GetClass(request) != &KandeloSocketShutdownClass ||
-      !JS::GetReservedSlot(request, SocketState).isUndefined() ||
-      JS::GetReservedSlot(request, SocketParent) != ObjectValue(*parent)) {
+static bool KandeloSubmitSocketShutdown(JSContext* cx, HandleObject parent, HandleObject request,
+                                         double trigger, kandelo::socket::TransportAttachment* authority,
+                                         std::unique_ptr<kandelo::socket::TransportShutdown> transport,
+                                         MutableHandleValue result) {
+  auto* parentState = KandeloSocketOwnerState(cx, parent); if (!parentState) return false;
+  if (parentState->closeCompleted) { result.setInt32(-EINVAL); return true; }
+  RootedObject requestParent(cx);
+  if (request && JS::GetClass(request) == &KandeloSocketShutdownClass &&
+      JS::GetReservedSlot(request, SocketParent).isObject())
+    requestParent = js::CheckedUnwrapStatic(&JS::GetReservedSlot(request, SocketParent).toObject());
+  if (!request || requestParent != parent || !JS::GetReservedSlot(request, SocketState).isUndefined()) {
     JS_ReportErrorASCII(cx, "Invalid or already submitted TCP shutdown request"); return false;
   }
   JSAutoRealm realm(cx, request);
@@ -364,28 +382,36 @@ static bool KandeloSocketShutdown(JSContext* cx, unsigned argc, Value* vp) {
     preparing = std::make_unique<KandeloSocketState>(cx);
     preparing->shutdownResource = true;
     preparing->shutdown = std::make_unique<kandelo::socket::Shutdown>(parentState->socket->Generation());
+    preparing->shutdownParent = parentState->socket.get();
+    preparing->transportShutdown = std::move(transport);
     const auto account = KandeloNativeMemoryOwner(cx);
     preparing->claims.Add(preparing->allocation.Handle(), account);
-    preparing->claims.Add(preparing->shutdown->allocation.Handle(), account); preparing->RefreshMemory();
+    preparing->claims.Add(preparing->shutdown->allocation.Handle(), account);
+    if (preparing->transportShutdown) preparing->claims.Add(preparing->transportShutdown->allocation.Handle(), account);
+    preparing->RefreshMemory();
   } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
-  auto* state = preparing.release();
-  JS::SetReservedSlot(request, SocketState, PrivateValue(state));
+  auto* state = preparing.release(); JS::SetReservedSlot(request, SocketState, PrivateValue(state));
   bool submitted = false;
-  auto abandon = mozilla::MakeScopeExit([&] {
-    if (!submitted) KandeloRetireSocketRequest(request, state);
-  });
+  auto abandon = mozilla::MakeScopeExit([&] { if (!submitted) KandeloRetireSocketRequest(request, state); });
   if (!KandeloSocketRootPending(cx, request, state)) return false;
   RootedValue execution(cx, ObjectValue(*request));
-  kandelo::async::DefaultTriggerScope triggerScope(cx->kandeloDefaultTrigger(), parentState->id);
-  if (!triggerScope.Ready()) { JS_ReportErrorASCII(cx, "TCP parent has no valid async identity"); return false; }
-  if (!KandeloSocketInitialize(cx, request, execution, parentState->id)) return false;
-  // Like StreamBase/uv_shutdown: init hooks run before native admission. A
-  // nested write belongs before this request; a nested close refuses it.
-  const int error = parentState->socket->QueueShutdown(*state->shutdown);
-  if (error) { args.rval().setInt32(-error); return true; }
+  kandelo::async::DefaultTriggerScope triggerScope(cx->kandeloDefaultTrigger(), trigger);
+  if (!triggerScope.Ready()) { JS_ReportErrorASCII(cx, "Shutdown parent has no valid async identity"); return false; }
+  if (!KandeloSocketInitialize(cx, request, execution, trigger)) return false;
+  const int error = authority ? parentState->socket->QueueTransportShutdown(*state->shutdown, *authority)
+                              : parentState->socket->QueueShutdown(*state->shutdown);
+  if (error) { result.setInt32(-error); return true; }
   state->shutdown->writeSequence = parentState->writeSequence;
   state->next = gKandeloSocketOwners; gKandeloSocketOwners = state;
-  submitted = true; args.rval().setInt32(0); return true;
+  submitted = true; result.setInt32(0); return true;
+}
+static bool KandeloSocketShutdown(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  auto* parentState = KandeloSocketThis(cx, args); if (!parentState) return false;
+  if (parentState->closeCompleted) { args.rval().setInt32(-EINVAL); return true; }
+  RootedObject parent(cx, js::CheckedUnwrapStatic(&args.thisv().toObject()));
+  RootedObject request(cx, args.get(0).isObject() ? js::CheckedUnwrapStatic(&args[0].toObject()) : nullptr);
+  return KandeloSubmitSocketShutdown(cx, parent, request, parentState->id, nullptr, nullptr, args.rval());
 }
 static bool KandeloSocketFd(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp); auto* state = KandeloSocketThis(cx, args);
@@ -1032,6 +1058,7 @@ static int KandeloDispatchSocketShutdown(JSContext* cx, KandeloSocketState* stat
     RootedObject earlier(cx, *prior->pending);
     if (JS::GetReservedSlot(earlier, SocketParent) == ObjectValue(*parent)) { earlierWrites = true; break; }
   }
+  if (state->transportShutdown && !state->transportShutdown->Progress(*state->shutdown, earlierWrites)) return 0;
   if (!parentState->socket->ProgressShutdown(*state->shutdown, earlierWrites)) return 0;
   state->callbackActive = true;
   auto leaveCallback = mozilla::MakeScopeExit([&] { state->callbackActive = false; });

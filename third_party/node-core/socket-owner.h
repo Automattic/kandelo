@@ -54,13 +54,24 @@ struct Read {
 template<class SpanRef>
 using Write = kandelo::stream::Write<SpanRef>;
 
+class TransportAttachment;
 struct Shutdown {
   const uint64_t generation;
   uint64_t writeSequence = 0;
+  TransportAttachment* authority = nullptr;
   bool queued = false, complete = false;
   int error = 0;
   memory::Allocation allocation{sizeof(Shutdown)};
   explicit Shutdown(uint64_t value) : generation(value) {}
+};
+
+// Owned by a real native ShutdownWrap. The request's private JS slots retain
+// the actual transport and TCP roots through callback-scope retirement.
+class TransportShutdown {
+ public:
+  memory::Allocation allocation{sizeof(TransportShutdown)};
+  virtual ~TransportShutdown() = default;
+  virtual bool Progress(Shutdown& request, bool earlierWrites) noexcept = 0;
 };
 
 // A transport layer consumes this actual stream exclusively. Its outstanding
@@ -98,6 +109,7 @@ class Owner {
   Lease descriptor_;
   TransportAttachment* transport_ = nullptr;
   TransportWrite* transportWrite_ = nullptr;
+  Shutdown* transportShutdown_ = nullptr;
   uint64_t nextTransportWrite_ = 0;
   const uint64_t generation_;
   uint64_t nextRead_ = 0;
@@ -120,14 +132,18 @@ class Owner {
     transport_ = transport; return true;
   }
   void DetachTransport(TransportAttachment* transport) noexcept {
-    if (transport_ == transport) { assert(!transportWrite_); transport_ = nullptr; }
+    if (transport_ == transport) { assert(!transportWrite_); transportShutdown_ = nullptr; transport_ = nullptr; }
   }
   bool HasTransport() const noexcept { return transport_ != nullptr; }
   int QueueTransportWrite(TransportAttachment& authority, TransportWrite& request,
                           const void* bytes, size_t length) noexcept {
     if (transport_ != &authority || transportWrite_ || request.Pending()) return EBUSY;
     if (closed_ || Fd() < 0) return EBADF;
-    if (writeShutdown_) return EPIPE;
+    // Only this real pending attached shutdown permits its preceding cipher
+    // flights/alert to drain. Normal and foreign writes remain refused.
+    if (writeShutdown_ && (!transportShutdown_ ||
+        transportShutdown_->authority != &authority ||
+        transportShutdown_->generation != generation_ || transportShutdown_->complete)) return EPIPE;
     if (!bytes || !length) return EINVAL;
     if (nextTransportWrite_ == UINT64_MAX) return EOVERFLOW;
     request.generation_ = generation_; request.sequence_ = ++nextTransportWrite_;
@@ -195,14 +211,24 @@ class Owner {
     if (transport_) return EBUSY; // TLS owns its own close_notify/stream layer.
     writeShutdown_ = true; request.queued = true; return 0;
   }
+  int QueueTransportShutdown(Shutdown& request, TransportAttachment& authority) noexcept {
+    if (request.generation != generation_ || request.queued || request.complete) return EINVAL;
+    if (closed_ || Fd() < 0 || writeShutdown_) return ENOTCONN;
+    if (transport_ != &authority) return EBUSY;
+    request.authority = &authority;transportShutdown_ = &request;
+    writeShutdown_ = true;request.queued = true;return 0;
+  }
+  void RetireShutdown(Shutdown& request) noexcept {
+    if (transportShutdown_ == &request) transportShutdown_ = nullptr;
+  }
   bool ProgressShutdown(Shutdown& request, bool earlierWrites) noexcept {
-    if (request.complete) return true;
+    if (request.complete) { RetireShutdown(request);return true; }
     if (!request.queued || request.generation != generation_) return false;
     // The caller also waits for earlier callbacks, not just consumed bytes.
     if (earlierWrites) return false;
-    if (closed_ || Fd() < 0) request.error = ECANCELED;
+    if (closed_ || Fd() < 0 || (request.authority && request.authority != transport_)) request.error = ECANCELED;
     else if (::shutdown(Fd(), SHUT_WR) < 0) request.error = errno;
-    request.complete = true; return true;
+    request.complete = true;RetireShutdown(request);return true;
   }
   bool Reading() const noexcept { return reading_; }
   bool Closed() const noexcept { return closed_; }
@@ -224,7 +250,7 @@ class Owner {
     closed_ = true; return true;
   }
   void Close() noexcept {
-    closed_ = true; reading_ = false;
+    closed_ = true; reading_ = false;transportShutdown_ = nullptr;
     if (transportWrite_) { transportWrite_->error_ = ECANCELED; transportWrite_->phase_ = TransportWrite::Phase::Ready; }
     descriptor_.Close();
     // This is a no-JS invalidation. SSL must never use a later reuse of the fd.

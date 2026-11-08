@@ -756,6 +756,8 @@
         tlsReadRelease(...args) { return native.tlsReadRelease(...args); },
         tlsWrite(handle, bytes) { return native.tlsWrite(handle, bytes); },
         tlsWriteRelease(...args) { return native.tlsWriteRelease(...args); },
+        tlsShutdownRequest(...args) { return native.tlsShutdownRequest(...args); },
+        tlsShutdown(...args) { return native.tlsShutdown(...args); },
         tlsClose(handle) { return native.tlsClose(handle); },
         tlsX509(...args) { return native.tlsX509(...args); },
     };

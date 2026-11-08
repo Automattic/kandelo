@@ -1,0 +1,89 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index 5d8240a35173287dbb3c876b7f95229019b23414..3d2b04ec543658bf68ea9f7ad958c7c0b61764e4 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2788,7 +2788,9 @@ static bool KandeloTlsHasReferences(JSContext* cx) {
+   return false;
+ }
+ static bool KandeloTlsRetry(KandeloTlsWatch* watch, int result) {
++  const int systemError = errno;
+   const int error = SSL_get_error(watch->state->owner.Ssl(), result);
++  watch->state->owner.NoteSslError(error, systemError);
+   if (error == SSL_ERROR_WANT_READ) { watch->events = POLLIN; return true; }
+   if (error == SSL_ERROR_WANT_WRITE) { watch->events = POLLOUT; return true; }
+   return false;
+@@ -3257,6 +3259,65 @@ static bool KandeloNativeTlsWriteRelease(JSContext* cx, unsigned argc, Value* vp
+   }
+   return true;
+ }
++// This real ShutdownWrap operation is owned by the shared native request.
++// Its private SocketTransport slot roots this exact TLS state through callback
++// and request retirement; the actual TCP parent is independently rooted too.
++class KandeloTlsShutdown final : public kandelo::tls::ShutdownOperation {
++  KandeloTlsState* state_;
++  bool HasEarlierWrites() const noexcept override { return state_->writes != nullptr; }
++ public:
++  explicit KandeloTlsShutdown(KandeloTlsState* state)
++      : kandelo::tls::ShutdownOperation(state->owner), state_(state) {
++    allocation.Resize(sizeof(KandeloTlsShutdown));
++  }
++  ~KandeloTlsShutdown() override {
++    Complete();state_->ReleaseClosedParent();
++  }
++};
++static bool KandeloNativeTlsShutdownRequest(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  RootedObject capability(cx), request(cx);
++  auto* state = KandeloTlsStateFor(cx, args.get(0), &capability); if (!state) return false;
++  RootedObject parent(cx, state->parent);
++  if (!parent) { JS_ReportErrorASCII(cx, "TLS shutdown owner has no live parent"); return false; }
++  if (!KandeloCreateSocketShutdownRequest(cx, parent, capability, &request)) return false;
++  RootedValue result(cx, ObjectValue(*request)); if (!JS_WrapValue(cx, &result)) return false;
++  args.rval().set(result); return true;
++}
++static bool KandeloNativeTlsShutdown(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  RootedObject capability(cx);
++  auto* state = KandeloTlsStateFor(cx, args.get(0), &capability); if (!state) return false;
++  // StreamBase's entry gate requires actual SSL and a live underlying owner.
++  if (!state->owner.Ssl() || !state->parentState || state->parentState->closeCompleted) {
++    args.rval().setInt32(-EINVAL); return true;
++  }
++  RootedObject request(cx, args.get(1).isObject()
++      ? js::CheckedUnwrapDynamic(&args[1].toObject(), cx) : nullptr);
++  if (args.get(1).isObject() && !request) {
++    if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);
++    return false;
++  }
++  RootedObject transport(cx);
++  if (request && JS::GetClass(request) == &KandeloSocketShutdownClass &&
++      JS::GetReservedSlot(request, SocketTransport).isObject())
++    transport = js::CheckedUnwrapDynamic(&JS::GetReservedSlot(request, SocketTransport).toObject(), cx);
++  if (request && JS::GetClass(request) == &KandeloSocketShutdownClass &&
++      JS::GetReservedSlot(request, SocketTransport).isObject() && !transport) {
++    if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);
++    return false;
++  }
++  if (!request || transport != capability) {
++    if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "TLS shutdown requires its actual private request");
++    return false;
++  }
++  RootedObject parent(cx, state->parent);
++  try {
++    auto operation = std::make_unique<KandeloTlsShutdown>(state);
++    return KandeloSubmitSocketShutdown(cx, parent, request, state->id,
++        &state->owner, std::move(operation), args.rval());
++  } catch (const std::bad_alloc&) { JS_ReportOutOfMemory(cx); return false; }
++}
+ static bool KandeloNativeTlsClose(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   RootedObject capability(cx); auto* state = KandeloTlsStateFor(cx, args.get(0), &capability);
+@@ -5027,6 +5088,8 @@ static bool DefineKandeloNodeNative(JSContext* cx) {
+       JS_FN("tlsReadRelease", KandeloNativeTlsReadRelease, 2, 0),
+       JS_FN("tlsWrite", KandeloNativeTlsWrite, 2, 0),
+       JS_FN("tlsWriteRelease", KandeloNativeTlsWriteRelease, 2, 0),
++      JS_FN("tlsShutdownRequest", KandeloNativeTlsShutdownRequest, 1, 0),
++      JS_FN("tlsShutdown", KandeloNativeTlsShutdown, 2, 0),
+       JS_FN("tlsClose", KandeloNativeTlsClose, 1, 0),
+       JS_FN("tlsInfo", KandeloNativeTlsInfo, 2, 0),
+       JS_FN("tlsX509", KandeloNativeTlsX509, 3, 0),

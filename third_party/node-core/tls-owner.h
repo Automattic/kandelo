@@ -46,6 +46,17 @@ struct PlaintextRead {
   }
 };
 
+// Local graceful-shutdown flight, owned by the actual native ShutdownWrap.
+// Sent is OpenSSL state, not proof of transport flush; only actual BIO receipt
+// acknowledgment permits localComplete and the parent's SHUT_WR operation.
+struct WriteShutdown {
+  const uint64_t generation;
+  bool attempted = false, sent = false, localComplete = false, failed = false;
+  int firstResult = 0, secondResult = 0;
+  int sslError = 0, systemError = 0;
+  explicit WriteShutdown(uint64_t value) : generation(value) {}
+};
+
 class Owner : public socket::TransportAttachment {
  public:
   enum class Phase { Preparing, Handshaking, Open, Closed };
@@ -61,6 +72,7 @@ class Owner : public socket::TransportAttachment {
   Phase phase_ = Phase::Preparing;
   uint64_t nextRead_ = 0;
   bool reading_ = false, eof_ = false;
+  int fatalSslError_ = 0, fatalSystemError_ = 0;
   std::shared_ptr<PlaintextRead> read_;
  public:
   Owner(uint64_t generation, OwnedContext context, OwnedSSL ssl) noexcept
@@ -138,6 +150,13 @@ class Owner : public socket::TransportAttachment {
     return generation == generation_ && phase_ != Phase::Closed && (!parent_ || ParentLive());
   }
   bool Open() const noexcept { return phase_ == Phase::Open && (!parent_ || ParentLive()); }
+  // Only actual owning SSL I/O supplies this error, never a JS capability flag.
+  void NoteSslError(int error, int systemError) noexcept {
+    if (error == SSL_ERROR_SSL || error == SSL_ERROR_SYSCALL) {
+      fatalSslError_ = error;
+      fatalSystemError_ = error == SSL_ERROR_SYSCALL ? systemError : 0;
+    }
+  }
   bool Adopt(socket::Lease& prior) noexcept {
     if (phase_ != Phase::Preparing || parent_ || !context_ || !ssl_ || !descriptor_.Adopt(prior)) return false;
     phase_ = Phase::Handshaking; return true;
@@ -191,10 +210,58 @@ class Owner : public socket::TransportAttachment {
     else {
       read->outcome = Outcome::Error; read->sslError = error;
       read->systemError = error == SSL_ERROR_SYSCALL ? systemError : 0;
+      NoteSslError(error, systemError);
       read->opensslError = ERR_peek_error();
     }
     ERR_pop_to_mark();
     return read->Complete();
+  }
+  bool ProgressWriteShutdown(WriteShutdown& shutdown, bool earlierWrites) noexcept {
+    if (shutdown.localComplete || shutdown.failed) return true;
+    if (!Matches(shutdown.generation) || !ssl_) {
+      shutdown.failed = true;shutdown.systemError = ECANCELED;return true;
+    }
+    // OpenSSL forbids shutdown after a fatal SSL/SYSCALL result. The owning
+    // read/retry path records it; do not repeat the old invalid abrupt fixture.
+    if (fatalSslError_) {
+      shutdown.failed = true;shutdown.sslError = fatalSslError_;
+      shutdown.systemError = fatalSystemError_;return true;
+    }
+    if (earlierWrites || !Open()) return false;
+    if (EncryptedPending()) {
+      const bool acknowledge = EncryptedNeedsAcknowledgment();
+      if (!acknowledge) {
+        pollfd descriptor{Fd(), POLLOUT, 0};
+        const int ready = poll(&descriptor, 1, 0);
+        if (ready == 0 || (ready < 0 && errno == EINTR)) return false;
+        if (ready < 0) { shutdown.failed = true;shutdown.systemError = errno;return true; }
+      }
+      (void)ProgressEncrypted(acknowledge);
+      if (const int error = EncryptedError()) {
+        shutdown.failed = true;shutdown.systemError = error;return true;
+      }
+      // A new real send completion must be acknowledged on continuation;
+      // producing or writing bytes alone is not an acknowledged BIO flush.
+      if (EncryptedPending()) return false;
+    }
+    if (!shutdown.attempted) {
+      ERR_set_mark();
+      shutdown.firstResult = SSL_shutdown(ssl_.get());
+      if (shutdown.firstResult == 0) shutdown.secondResult = SSL_shutdown(ssl_.get());
+      shutdown.sent = (SSL_get_shutdown(ssl_.get()) & SSL_SENT_SHUTDOWN) != 0;
+      ERR_pop_to_mark();
+      shutdown.attempted = true;
+      // Target DoShutdown does not wait for peer close_notify or turn its
+      // return into peer EOF. Preserve its two-call policy and actual output.
+      if (EncryptedPending()) {
+        (void)ProgressEncrypted(false);
+        if (const int error = EncryptedError()) {
+          shutdown.failed = true;shutdown.systemError = error;return true;
+        }
+        return false;
+      }
+    }
+    shutdown.localComplete = true;return true;
   }
   void Close(bool shutdown = true) noexcept {
     if (phase_ == Phase::Closed) return;
@@ -221,6 +288,34 @@ class Owner : public socket::TransportAttachment {
     ssl_.reset(); // No OpenSSL retry may retain application bytes past this.
     if (encrypted_) encrypted_->Cancel();
     encrypted_.reset(); context_.reset(); descriptor_.Close();
+  }
+};
+
+// The real native ShutdownWrap owns this operation; its JS private roots own
+// the actual TLS capability/parent. The caller supplies its real write-ticket
+// index, including callback-retiring entries, rather than a byte-count proxy.
+class ShutdownOperation : public socket::TransportShutdown {
+  Owner& owner_;
+  Owner::Request request_;
+  WriteShutdown flight_;
+ protected:
+  virtual bool HasEarlierWrites() const noexcept = 0;
+  void Complete() noexcept { request_.Complete(); }
+ public:
+  explicit ShutdownOperation(Owner& owner) noexcept
+      : owner_(owner), request_(owner), flight_(owner.Generation()) {
+    allocation.Resize(sizeof(ShutdownOperation));
+  }
+  ~ShutdownOperation() override = default;
+  const WriteShutdown& Flight() const noexcept { return flight_; }
+  bool Progress(socket::Shutdown& shutdown, bool parentEarlierWrites) noexcept final {
+    if (parentEarlierWrites || HasEarlierWrites()) return false;
+    if (!owner_.ProgressWriteShutdown(flight_, false)) return false;
+    if (flight_.failed) {
+      shutdown.error = flight_.systemError ? flight_.systemError : EPROTO;
+      shutdown.complete = true;
+    }
+    return true;
   }
 };
 }  // namespace kandelo::tls
