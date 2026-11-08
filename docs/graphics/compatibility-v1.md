@@ -27382,3 +27382,22 @@ and preserves the original failure and snapshot state. The full native
 runtime-core run passes 3,584 tests, zero failures or skips (128.09 seconds).
 The actual Sway report remains pending its normal diagnostic rebuild.
 No memory limit or acceptance requirement is changed.
+
+### B1 is the next shipping milestone, 2026-11-08
+
+The maintainer explicitly requests a concrete B1 shipment with the remaining
+work written as follow-up steps. Close the recorded B1 correctness, audit,
+cross-engine and measurement checks, publish its normal-built preview, and
+announce readiness immediately. B2–B6 and C1–C3 remain ordered campaign
+follow-ups; they must not silently become prerequisites for shipping B1.
+This changes delivery sequencing, not B1's acceptance requirements or the
+final native-feel ship bars.
+
+The R871 diagnostic normal build succeeds. R872 reads the real Sway
+process's procfs report: refresh of a 2,817,408-byte shared mapping fails
+with ENOMEM at 29,180,120 live I/O credits against a 31,457,280-credit
+limit. The replacement snapshot is admitted as additional retained storage
+while the old snapshot remains live. Temporary replacement ownership is
+being repaired; no limit increase or recovered-desktop claim is made.
+Sway Activity terminal launch and its actual Alt+Enter path remain checks
+before the preview is ready.
