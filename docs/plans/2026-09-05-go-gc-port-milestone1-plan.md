@@ -1,6 +1,80 @@
 # Go `GOOS=kandelo` Port — Milestone 1 Implementation Plan
 
-## Current checkpoint — 2026-11-07
+## Current checkpoint — 2026-11-08
+
+**Real file-picker uploads pass both services in all three engines:** job
+`wordpress-media-uploader-ready-1108-003452-b8e1` ends PASS in 12m26s;
+its six browser cases take 11.0 minutes, with zero skips or retries.
+The maintained media-library test now includes the classic and real Caddy
+profiles. Each opens WordPress's actual file chooser, uploads 2x2 and
+256x256 PNGs through multipart requests, disables the source image, reloads
+and requires byte-identical media recovery. The existing MariaDB/nginx
+oversized-request 413 check stays on its own stack and is not run in this
+selection. The exact revision-45 partial image, kernel, service-worker source
+and selected Go daemons pass identity checks before execution. This remains
+partial-image evidence, not final canonical acceptance.
+
+The first executed selection `ac35` ends 3 pass / 3 fail in 15m25s: classic
+on Chromium and both Firefox cases time out waiting for the first file
+chooser; Caddy on Chromium and both WebKit cases pass. Failures retain
+post-click uploader/input diagnostics and their original errors. The follow-up
+waits for the generated HTML5 upload input to exist and be enabled before
+clicking, and records document readiness/input bounds/hit targets without
+changing the application. All twelve before-click snapshots in the passing
+selection report a complete document. The previous failures did not capture
+that instant, so this establishes a passing readiness-aware test rather
+than proving the old click timing or fixing every editor intermittency.
+The original failure report and imported failure evidence stay separate in
+`.context/`; there is no application patch, forced click or chooser bypass.
+
+**Compiled module and source-buffer ownership measured:** two WebKit
+controls `aba9` pass in 2m29s without any guest instances or execution.
+Compiling the exact 184,971,404-byte Caddy module reaches about 1.3 GiB.
+Eight workers retaining only that module settle at a 708.8 MiB phase sample;
+retaining source-byte copies as well reaches 2.6 GiB. Sixty seconds after
+termination and dropping parent references, the samples are 682.3 MiB and
+2.1 GiB. An independent worker-detachment control `d1f9` passes in 69.7s
+of browser time (9m29s total including its prerequisite): each worker
+acknowledges a detached buffer, and post-destroy footprint reaches 685.4 MiB
+at sixty seconds. These are single diagnostic observations, not statistical
+or per-worker cost equivalence, instantiation costs, throughput or leak
+proof. Production already detaches these pthread payloads after setup;
+this supports the existing cleanup policy rather than introducing a new fix.
+The detailed memory report retains exact runs, source snapshots and limits.
+The first private probe `af44` fails during discovery from two Playwright
+installations; importing through the app fixture corrects the test setup.
+
+Live native sampling `wordpress-live-native-stack-attribution-1108-004045-8b6f`
+is now running. It triggers at inspector memory thresholds outside explicit
+phase callbacks, binds the owned content PID afresh and retains sampling
+start/finish/overlap records. It changes no engine flags or application
+algorithms and cannot by itself identify allocation ownership. Prior
+phase-bound samples paused request production and remain separate evidence.
+
+The normal final SDK/product refresh `go-final-sdk-product-refresh-1108-004841-b919`
+is queued after the old canonical publication, baseline preparation and old
+native diagnostic. It guards the frozen family source, verifies latest main
+still matches the recorded commit, fast-forwards to the reviewed SDK fix,
+bootstraps both of its own SDKs and publishes a new full validation projection.
+It preserves the old projection and the verified preview. The private
+validation set also admits the deferred standalone Caddy and MariaDB image
+needed by consumer/benchmark checks; shipped product exposure is unchanged.
+It records the normal cache plan, then requires browser supply, image layout
+and identities, four Go consumer Node checks and WordPress/family Node gates.
+No output from this queued refresh is claimed yet.
+
+The stale benchmark-source installer is updated to latest-main commit
+`faf9b31720e8`; its read-only plan verifies both manifest pins and archives.
+The queued installation `9347` waits for successful baseline publication,
+then extracts the verified archives afresh and invokes normal WordPress
+setup. It no longer trusts an old mutable extracted directory merely because
+its archive matches. The first queue wrapper `e520` fails before work because
+the old primary job tool has no scratch-directory variable; a private owned
+fallback report path fixes that wrapper. No source installation or timings
+have run. Final coherent artifact validation, broader lifecycle/accounting,
+allocation attribution, visitor-cache policy and all performance gates stay
+open. The current preview on 5492 remains pinned; no PHP/Go/Caddy algorithm
+changes are introduced by this checkpoint.
 
 **2026-11-08 server/thread memory controls:** job
 `wordpress-native-control-matrix-1108-000416-647f` passes both additional

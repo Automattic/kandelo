@@ -133,3 +133,61 @@ in the comparison checkout. The original phase records are in browser runs
 `2bd7017e-7048-46f1-b7d1-d126c05f71f9` and
 `2e070d06-9db9-4c55-a069-1b12611fadba`. Each direct kernel-worker observation
 ends with termination; it does not count nested guest workers.
+
+## Compilation and module-sharing control
+
+Job `wasm-module-cost-webkit-v2-1108-003348-aba9` passes two WebKit
+diagnostics in 2m29s using the exact 184,971,404-byte Caddy module
+`cfdba6545bd4`. It asynchronously compiles the real module, verifies its
+import/export interface in one and then eight workers, terminates those
+workers, drops the parent references and observes the same page for sixty
+seconds. It never instantiates the module, executes Go/PHP, creates guest
+memory or forces collection. Each selection gets its own content PID.
+
+| Phase | Compiled module only | Compiled module plus retained source-byte copies |
+| --- | ---: | ---: |
+| Empty page | 15.5 MiB | 15.5 MiB |
+| Source bytes loaded | 193.8 MiB | 191.8 MiB |
+| Module compiled | 1.2 GiB | 1.3 GiB |
+| Source detached in parent | 868.5 MiB | Kept for cloning |
+| Retained by eight workers | 708.8 MiB | 2.6 GiB |
+| Workers terminated and parent source detached | 701 MiB | 2.2 GiB |
+| Same page sixty seconds later | 682.3 MiB | 2.1 GiB |
+
+Compilation and module retention therefore have a substantial fixed native
+cost before guest execution. Sharing this one module with eight workers
+does not multiply the observed footprint by eight. The second control also
+intentionally retains an ordinary source-buffer clone in each worker until
+termination; it measures a different ownership policy. Neither control is
+an allocation census, a pure per-worker subtraction, an instantiation
+measurement or proof of a leak. Natural collection occurs between phases.
+
+The explicit worker-detachment control
+`wasm-module-cost-detached-bytes-1108-003900-d1f9` also passes. Its browser
+selection takes 69.7 seconds; the job's 9m29s includes waiting for the
+rendered upload suite. Each worker acknowledges that its source buffer is
+detached while retaining the compiled module. At eight workers the current
+footprint is 889.5 MiB (the parent still holds the source), then 883.1 MiB
+after termination and parent detachment, and 685.4 MiB sixty seconds later.
+Its OS historical peak is 1.4 GiB. This is another single observation, not
+a statistical equivalence claim about the two smaller retained footprints.
+
+The current production pthread path already detaches its source-byte copy
+after initialization when the host supports `ArrayBuffer.transfer`. Do not
+treat the intentionally retained copies as a description of that steady
+state, or remove bytes needed by reflection, ABI validation and fork
+identity. These results validate that cleanup policy rather than introduce
+a new production fix. Instantiation and live request costs remain separate
+investigations. Native stack sampling during active request production is
+running; the earlier phase-bound samples paused the producer.
+
+The first private attempt `af44` fails at discovery because its `expect`
+import resolves a second Playwright installation from the repository root.
+The successful attempt imports through the browser app's shared fixture.
+This is a test setup correction, not an engine defect. Raw evidence and
+`phase-summary.json` are under the comparison checkout's successful job
+`scratch/module-cost/`; the browser run is
+`1fb5c2a1-3c8f-4aa9-85a1-1004e4d3ac99`. The private source is retained with
+the job rather than inferred from a later edited probe.
+The detachment control's independent source, reports and derived phase
+summary are retained under its own job directory.
