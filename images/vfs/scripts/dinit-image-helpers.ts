@@ -237,7 +237,7 @@ function renderDinitEnvFile(env: Readonly<Record<string, string>>): string {
  * is a `key = value` line; multiple `depends-on` lines for multi-dep
  * services.
  */
-function renderService(svc: DinitService): string {
+export function renderService(svc: DinitService): string {
   const lines: string[] = [];
   lines.push(`type = ${svc.type ?? "process"}`);
   if (svc.command) lines.push(`command = ${svc.command}`);
