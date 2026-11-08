@@ -128,6 +128,30 @@ codegen-units = 1
 incremental = false
 ```
 
+The complete SDK installs a component identity manifest at
+`/usr/share/kandelo/rust-sdk/manifest.json`. Its identity binds the actual
+compiler, standard library, C SDK and related tool bytes. The public Cargo
+entry point selects a compiler link under
+`$CARGO_HOME/kandelo/compilers/<identity>/rustc` (default Cargo home:
+`$HOME/.cargo`). This invalidates Cargo's compiler-information cache after
+an SDK replacement, even when the installed compiler path, size and
+modification time stay the same. A namespaced `kandelo-sdk:` line in
+`rustc -vV` also invalidates crate and build-script fingerprints; upstream
+Rust release, commit and LLVM fields are preserved.
+
+An explicitly selected unrelated compiler keeps its normal `RUSTC`
+selection. Project `build.rustc`, `--config` and `CARGO_BUILD_RUSTC`
+settings retain Cargo's precedence: the default SDK alias is selected
+through `PATH` when `RUSTC` is unset. SDK build commands require a complete, valid manifest and a
+writable Cargo home. Cargo help/version queries do not create compiler
+cache entries. Upstream Cargo itself lives at `/usr/libexec/cargo`;
+invoking it directly bypasses the SDK compiler-cache selection.
+
+The identity describes the SDK actually installed in the guest. Replacing
+an image served by the browser does not replace files in an existing
+persistent machine. A complete SDK installation or a new machine is still
+required before its new components can be used.
+
 Incremental compilation is disabled for the WebKit acceptance workflow.
 During bring-up, Cargo's default incremental mode repeatedly made WebKit
 terminate its web process with `ExceededMemoryLimit` while compiling the build script.
@@ -340,10 +364,10 @@ For a denied Clippy lint, Cargo returns status 101 with the real diagnostic
 and reports the driver's abort-mode termination by `SIGABRT`, as with fatal
 rustc errors. Correcting the source allows the same lint policy to pass.
 
-Guest-linked executables currently lack the engine's newer
-`kandelo.abi.contract` digest stamp and trigger the host's existing warning.
-They use the matching SDK and numeric ABI marker; propagating the contract
-digest through guest linking remains follow-up work.
+Executables linked through the installed Rust and Clippy compiler entry
+points carry the SDK's `kandelo.abi.contract` digest. The host checks that
+digest against the kernel's program interface. A foreign or duplicate
+contract is rejected; incompatible executables must be rebuilt.
 
 ### Remaining development-tool gaps
 

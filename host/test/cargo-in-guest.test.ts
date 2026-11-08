@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NodeKernelHost } from "../src/node-kernel-host";
+import { assertRustProgramAbi } from "./fixtures/rust-program-abi";
 import { cargoProjectOutput, cargoTestArgs, cargoFailingTestArgs, cargoWrongPanicArgs } from "./fixtures/cargo-project";
 import { createRustCargoImage, resolveRustCargoArtifacts } from "./fixtures/rust-cargo";
 import { readRustCompilerJob, rustCompilerEnv } from "./fixtures/rust-compiler";
@@ -45,7 +46,9 @@ describe.skipIf(!available)("Cargo inside Kandelo", () => {
       expect((await cargo("metadata", "--offline", "--format-version=1")).stdout).toContain('"name":"message"');
       await cargo("check", "--offline");
       expect((await cargo("run", "--offline", "-j1", "-p", "cargo-hello")).stdout).toContain(cargoProjectOutput);
-      expect((await host.readFileFromVfs("/home/maker/project/target/debug/cargo-hello.wasm"))?.byteLength).toBeGreaterThan(0);
+      const compiled = await host.readFileFromVfs("/home/maker/project/target/debug/cargo-hello.wasm");
+      expect(compiled?.byteLength).toBeGreaterThan(0);
+      assertRustProgramAbi(compiled!, Uint8Array.from(kernel!).buffer);
       expect((await cargo("build", "--offline", "-j1")).stderr).not.toContain("Compiling");
       // This cold command links and prepares three separate libtest binaries.
       const tests = await run("/usr/bin/cargo", ["cargo", ...cargoTestArgs], 0, 600_000);

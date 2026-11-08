@@ -10,6 +10,9 @@ publish = false
 [dependencies]
 libc = "0.2"
 serde_json = "=1.0.149"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+wasm-artifact = { path = "../../crates/wasm-artifact" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("kandelo"))'] }
