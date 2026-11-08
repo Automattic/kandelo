@@ -2390,30 +2390,26 @@ selector remain proposed product controls, not implemented features or
 substitutes for working windowed bindings. Current graphics acceptance still
 requires the new desktop configs and native Swaybar on all three engines.
 
-### B1 shipment checkpoint after current graphical acceptance
+### B1 shipment checkpoint after current consumer acceptance
 
-The focused normal build now passes 21 graphical cases across Chromium,
-Firefox and WebKit, plus one actual HiDPI two-Foot Activity case. The
-current ownership selection passes 16 Node and 48 browser cases. The full
-consumer records 1,062 pass/12 fail; a correctly scoped fork fixture resolves
-those 12 in a separate focused pass on unchanged runtime. These are distinct
-runs, not a relabeled all-green full run.
+The current normal R914 graphical candidate completes all 28 Node and
+1,074 browser cases in the selected full consumer files, plus 22 Node and
+60 browser ownership cases, across Chromium, Firefox and WebKit. Both
+widths and the new child-wait visibility and failed-fork cleanup cases are
+included. Inventories and source/product guards pass; no cases are skipped
+or retried. These current results supersede the earlier pending rerun,
+while its original failures remain recorded in the compatibility ledger.
 
-Before complete B1, fix the demonstrated wait-completion BO visibility gap:
-child writes reach canonical shared storage, while the parent resumes with
-stale mapped bytes. Preserve replacement descriptors/resources, exact
-cleanup, output-write ordering and Node/browser parity. Finish the remaining
-B1 conformance, lifecycle and measurement checks; announce its normal preview
-immediately when those checks pass. B2 asynchronous bindings and its request
-gate, B3 queries, B4 interfaces, B5 fences and B6 inline draws follow B1; then
-C1 scheduling, C2 executor separation and C3 the GPU worker. Each stage stays
-separately landed, validated and measured; all final campaign gates remain.
+The focused graphical selection passes 20 of 21 cases. Firefox's direct
+Sway close failure remains intermittent and unresolved after an unchanged
+one-case diagnostic passes. Complete the B1 scoped conformance/libc,
+lifecycle, measurement and manual checks and resolve that failure before
+announcing complete B1 readiness. Passing consumer counts do not establish
+native desktop feel.
 
-The demonstrated child-wait BO visibility defect now has a shared-host
-repair and causal Node/browser regression evidence: nine new Node/unit
-failures become a59-case pass; twelve browser failures become twelve passes
-on both widths and all three engines. Output-write ordering, failed-wait
-errors and pending-reader custody remain protected. This closes the focused
-defect, not complete B1 or native-feel acceptance. Run the remaining B1
-release checks on the combined candidate, then ship the bounded milestone
-with the already listed B2–B6/C1–C3 follow-up steps.
+Ship B1 as the next concrete increment once its own checks pass. Follow
+with B2 asynchronous bindings and its ScummVM request gate, B3 local
+queries, B4 program interfaces, B5 native fences and B6 inline arrays;
+then C1 Rust scheduling, C2 executor separation and C3 the GPU worker.
+Land, validate and measure each stage separately in order. All final
+campaign, Freeciv/ScummVM and native-feel acceptance requirements remain.

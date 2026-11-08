@@ -27658,3 +27658,50 @@ Private-import adaptation is not committed. The new tracked test is
 classified prepared-product. This proves Node exported-kernel/host-import
 rollback, not a dedicated-kernel-worker or browser fault-injection result;
 the separate three-engine ordinary GBM wait cases remain distinct evidence.
+
+
+### Current combined B1 consumer acceptance, 2026-11-08
+
+The normal R914 graphical build succeeds on pushed source `19c24cebcd13`,
+including main `5f484a853e`. Its twelve selected graphical package roots
+reuse verified normal cache entries, and the canonical host build produces
+fresh compiled workers. The runnable Sway checkpoint remains
+`http://localhost:59237/?vfs=%2F%40kandelo-partial%2Fimage.vfs.zst&profile=sway`.
+Availability is separate from complete B1 readiness.
+
+R916 executes the complete current consumer and ownership inventories on
+those products, using the normal SDK and original assertions:
+
+| Selection | Node | Browser | Scope |
+| --- | --- | --- | --- |
+| Complete selected C consumers | 28 passed | 1,074 passed, 358 per engine | Seven Node files and seventeen full browser specs |
+| Resource ownership | 22 passed | 60 passed, 20 per engine | Descriptor reuse, shared mappings, fork/import/borrow, wait visibility and rollback |
+
+Both runs have zero failures, skips, retries or flakes. Inventories match
+execution. Authored sources, installed SDKs, tools, compiled workers and
+normal product namespaces pass their before/after guards. Ownership adds
+six Node and twelve browser cases to the historical inventory; no old case
+is removed. Exact commands are `scripts/dev-shell.sh bash
+../graphics-b1-release-runners-r916/run.sh consumer
+../graphics-b1-release-runners-r916/runs/consumer-r1` and the corresponding
+`ownership` command with `runs/ownership-r1`. Raw inventories, results,
+source/product receipts and judgments remain in those private directories.
+The original R885 full run remains failed evidence; this is a fresh complete
+run rather than replacement of its failed report.
+
+The separate R914 graphical selection passes 20 of 21 cases. Firefox's
+direct Sway case fails when Alt+Shift+Q does not close the second Foot
+window after workspace inspection. The Activity case passes, as do both
+WebKit Sway cases and the three-engine rendering selection. R917 executes
+the unchanged Firefox case once with passive key/focus diagnostics and
+passes. That mixed result remains an unresolved intermittent failure;
+the passing attempt does not establish a cause or a repair.
+
+Before the next scoped dEQP run, its browser suite now imports the shared
+quiet Playwright fixture. Case bodies, audit mode, assertions and deadlines
+are unchanged. No new conformance result is implied by that fixture change.
+Scoped fatal audit/conformance and libc, lifecycle, stage measurements and
+manual checks remain. There is no complete B1, merge-ready or performance
+claim. B2 asynchronous bindings/request budget, B3 local queries, B4 program
+interfaces, B5 native fences, B6 inline arrays, C1 Rust scheduling,
+C2 executor separation and C3 GPU execution remain ordered follow-ups.

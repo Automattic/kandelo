@@ -12,7 +12,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "@playwright/test";
+import { test } from "../playwright-test";
 import { chunkFileName } from "../../../tests/graphics/cts-plan.mjs";
 import { runChunk } from "../../../tests/graphics/cts-accounting.mjs";
 import { ctsAttemptCeilingMs, ctsDeadlineConfig, CtsHostDeadlineError,
