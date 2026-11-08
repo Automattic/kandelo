@@ -24,4 +24,6 @@ commit      = "UNPUBLISHED"
 # Kandelo.cmake, a Unix) instead of Generic, so libc++abi builds
 # cxa_thread_atexit.cpp and thread_local destructors run; seed
 # LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF (musl has no _impl).
-revision    = 9
+# Revision 10: compile libunwind assembly for the selected Wasm target and
+# reject native or wrong-width members in both static and PIC archives.
+revision    = 10

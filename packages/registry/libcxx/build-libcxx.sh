@@ -195,6 +195,36 @@ NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 CALLTYPES_PLUGIN="$(bash "$REPO_ROOT/scripts/calltypes-plugin.sh" "$LLVM_CLANG")"
 CALLTYPES_FLAGS="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $CALLTYPES_PLUGIN -Xclang -add-plugin -Xclang kandelo-fncasts -fpass-plugin=$CALLTYPES_PLUGIN"
 
+# Every emitted object must target this archive's Wasm address width.
+# Checking the container alone misses native assembly members that wasm-ld
+# warns about and ignores, leaving a contaminated archive looking usable.
+check_libcxx_archive() {
+    local archive="$1" expected_arch="$2" report="$3"
+    if ! "$LLVM_PREFIX/bin/llvm-readobj" --file-headers "$archive" > "$report" 2>&1; then
+        echo "ERROR: cannot inspect libc++ archive: $archive" >&2
+        cat "$report" >&2
+        return 1
+    fi
+    awk -v expected_arch="$expected_arch" '
+        /^File: / { member = $0 }
+        /^Format: / {
+            objects++
+            if ($0 != "Format: WASM") {
+                print member ": expected Wasm object, found " $0 > "/dev/stderr"
+                invalid = 1
+            }
+        }
+        /^Arch: / {
+            architectures++
+            if ($0 != "Arch: " expected_arch) {
+                print member ": expected " expected_arch ", found " $0 > "/dev/stderr"
+                invalid = 1
+            }
+        }
+        END { exit (!objects || objects != architectures || invalid) }
+    ' "$report"
+}
+
 # LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF: with
 # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY, CMake's check_library_exists
 # only compiles, never links, so it reports every function present. musl has
@@ -202,6 +232,7 @@ CALLTYPES_FLAGS="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall 
 # implementation of __cxa_thread_atexit (the answer is seeded, not probed).
 build_libcxx_variant() {
     local variant_build_dir="$1"; shift
+    local variant_asm_flags="$1"
     local variant_c_flags="$1 $CALLTYPES_FLAGS"; shift
     rm -rf "$variant_build_dir"
     mkdir -p "$variant_build_dir"
@@ -213,13 +244,16 @@ build_libcxx_variant() {
         -DCMAKE_SYSTEM_PROCESSOR="${ARCH}" \
         -DCMAKE_C_COMPILER="$LLVM_CLANG" \
         -DCMAKE_CXX_COMPILER="$LLVM_CLANG" \
+        -DCMAKE_ASM_COMPILER="$LLVM_CLANG" \
         -DCMAKE_AR="$LLVM_AR" \
         -DCMAKE_RANLIB="$LLVM_RANLIB" \
         -DCMAKE_NM="$LLVM_NM" \
         -DCMAKE_C_COMPILER_TARGET="${WASM_TARGET}" \
         -DCMAKE_CXX_COMPILER_TARGET="${WASM_TARGET}" \
+        -DCMAKE_ASM_COMPILER_TARGET="${WASM_TARGET}" \
         -DCMAKE_C_FLAGS="${variant_c_flags}" \
         -DCMAKE_CXX_FLAGS="${variant_c_flags}" \
+        -DCMAKE_ASM_FLAGS="${variant_asm_flags}" \
         -DCMAKE_SYSROOT="${SYSROOT}" \
         -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
         \
@@ -370,6 +404,11 @@ if [ -z "$LIBCXX_PIC_A" ] || [ -z "$LIBCXXABI_PIC_A" ]; then
 fi
 cp "$LIBCXX_PIC_A" "$INSTALL_DIR/lib/libc++-pic.a"
 cp "$LIBCXXABI_PIC_A" "$INSTALL_DIR/lib/libc++abi-pic.a"
+
+echo "==> Verifying every libc++ archive member targets ${ARCH}..."
+for archive in libc++.a libc++abi.a libc++-pic.a libc++abi-pic.a; do
+    check_libcxx_archive "$INSTALL_DIR/lib/$archive" "$ARCH" "$WORK_DIR/$archive.headers.log"
+done
 
 echo "==> Done!"
 echo "  libc++.a:        $(wc -c < "$INSTALL_DIR/lib/libc++.a" | tr -d ' ') bytes"

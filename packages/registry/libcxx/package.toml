@@ -51,3 +51,8 @@ script_path = "packages/registry/libcxx/build-libcxx.sh"
 # Additive: existing consumers keep using the non-PIC pair unchanged.
 libs = ["lib/libc++.a", "lib/libc++abi.a", "lib/libc++-pic.a", "lib/libc++abi-pic.a"]
 headers = ["include/c++/v1"]
+
+[[host_tools]]
+name = "llvm-readobj"
+version_constraint = ">=21.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
