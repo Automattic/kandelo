@@ -6,22 +6,25 @@ C/C++ compiled by the Kandelo SDK into that program.
 
 All four Go consumers now build with upstream's Go 1.28 development
 `wasm32` architecture and the immutable `go_toolchain` pin f6053060.
-All four normal consumers pass Node and the focused three-engine browser
-gate, plus independent same-key reproduction on this Mac. Cross-OS
-reproduction is unverified. WordPress replacement-image and release validation remain open.
+All four normal consumers have passed Node and the focused three-engine
+browser gate, plus independent same-key reproduction on this Mac. The newest
+cgo recipe revisions also reproduce exactly and pass their Node service
+checks; those observations do not replace the final browser gates. Cross-OS
+reproduction is unverified. Canonical-image and release validation remain open.
 
 | Consumer | Selected compiler/target |
 | --- | --- |
 | `go-hello`, `wasm32posix-go` | Go 1.28 development, `kandelo/wasm32`; four-byte Go/C pointers |
-| Custom classic FrankenPHP recipe | Same wasm32 target; 1.13.5/revision 39 passes normal build, Node, independent byte reproduction and three browsers |
-| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; standalone Caddy 2.11.9/revision 15 and combined FrankenPHP 1.13.5/revision 20 pass normal build, Node, independent byte reproduction and three browsers |
+| Custom classic FrankenPHP recipe | Same wasm32 target; revision 39 passed the focused three-browser gate; current 1.13.5/revision 41 reproduces exactly and passes Node |
+| Caddy and FrankenPHP+Caddy recipes | Same wasm32 target; standalone Caddy 2.11.9/revision 15 and combined revision 20 passed the focused three-browser gate; current combined 1.13.5/revision 22 reproduces exactly and passes Node |
 
 The [implementation checkpoint](plans/2026-09-05-go-gc-port-milestone1-plan.md)
 records the exact source pins, validation and remaining release gates.
 Neither target establishes complete upstream Go conformance or production
-readiness. The package-level gates above use the new target; historical
-WordPress service results below use the legacy target until replacement-image
-validation is recorded.
+readiness. The current normal partial WordPress image uses the new target.
+Its HTTP-level WebKit memory/lifecycle diagnostic passes, while rendered
+Firefox editor/persistence checks have mixed outcomes. Final canonical-image
+validation remains open; earlier consumer results are historical evidence.
 
 ## Building packages
 
@@ -103,8 +106,14 @@ The WordPress demo sizes both embedded-PHP services at two PHP threads.
 configuration substitution. The larger six-thread WebKit workload can
 exceed the content-process memory limit despite a much smaller guest heap.
 Native module/worker costs therefore remain part of service sizing and
-cannot be capped by `GOMEMLIMIT` alone. Final validation of the new image
-default is recorded in the implementation log.
+cannot be capped by `GOMEMLIMIT` alone. On the current two-thread wasm32
+partial image, a diagnostic traffic run peaks at 10.6 GiB of WebContent
+physical footprint while Go reports about 40–42 MiB of Sys memory. Sixty
+seconds after destruction, the same page retains 647 MiB of physical
+footprint. These are overlapping accounting views, not an allocation-owner
+breakdown or proof of a leak. See the
+[synchronized measurement report](plans/2026-11-08-wordpress-webkit-memory-checkpoint.md)
+for workload, artifact identities and limitations.
 
 Historical legacy-target allocation/reuse measurements illustrate this
 distinction. With a soft
@@ -142,7 +151,8 @@ The fresh compiler passes all five standard-library build modes, 18 Node
 runtime/cgo checks and the expanded three-engine compiler gate (297/297,
 zero skipped/flaky), including PHP embed, archive exports and signals.
 The real FrankenPHP+Caddy service also passes Node and three browsers.
-Normal package/image rebuilds and final WordPress validation remain pending.
+Current optimized package rebuilds and partial WordPress checks are recorded
+in the implementation log. Final canonical-image validation remains pending.
 Deep-pattern compilation is slower on tested Wasm hosts; the
 [upstream evaluation](plans/2026-11-07-go-regexp-upstream-evaluation.md)
 records that tradeoff without a request-throughput claim.
@@ -166,19 +176,23 @@ nginx/PHP-FPM for comparison.
 
 The generated services allow 30 seconds before forced termination. Classic
 HTTP shutdown and Caddy's configured grace period allow 20 seconds to drain
-requests before PHP cleanup. Actual request-draining validation on the final
-image passes in Node and all three browser engines with the two-thread
-default, including listener closure, complete held responses and cooperative
-machine retirement. Caddy also recovers after intentional guest SIGKILL.
-The earlier intermittent Node retirement exposed a terminal-wakeup defect;
-the corrected path passes the full final-image browser memory/lifecycle
-gate. Larger six-thread WebKit workloads can still exceed the content-process
-memory limit. The implementation log records the exact scopes and remaining
-sustained-load and persistence gates.
+requests before PHP cleanup. Earlier image cohorts passed request-draining
+checks on Node and all three browser engines, including listener closure,
+complete held responses and cooperative machine retirement. The current
+wasm32 partial-image WebKit diagnostic also passes those checks and four
+intentional guest SIGKILL/restart cycles with two PHP threads. The earlier
+intermittent Node retirement exposed a terminal-wakeup defect. These focused
+checks do not establish completion of the full browser memory-switch gate
+on the final canonical artifacts; that gate remains required. The
+implementation log records the exact cohorts and remaining sustained-load,
+rendered persistence and memory gates.
 
 These profiles use the classic PHP request lifecycle and file-cache-only
-OPcache. They do not provide a persistent WordPress PHP worker or a full-page
-cache. The [paired stack benchmark](../benchmarks/wordpress-stack.ts) measures
+OPcache. They do not provide a persistent WordPress PHP worker. The image
+also installs the stock WP Super Cache plugin, inactive by default. Enabling
+that optional page cache is a separate visitor-facing configuration; its
+expiry, garbage collection, invalidation and sustained-performance checks
+remain open. The [paired stack benchmark](../benchmarks/wordpress-stack.ts) measures
 startup, warm and parallel requests, and optional sustained traffic/RSS on
 Node and Chromium using the same image. Keep image identity, cache settings,
 worker counts, and background load with the result. Current release gates

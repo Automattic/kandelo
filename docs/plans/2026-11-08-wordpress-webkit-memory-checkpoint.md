@@ -83,3 +83,53 @@ Raw evidence is retained in the comparison checkout under
 and `reports/`. The original phase records are under browser run
 `f2925dd0-66ed-4549-8f63-0d9fda229181`. Prior failures and later final-cohort
 checks remain separate results.
+
+## Server and PHP-thread controls
+
+Job `wordpress-native-control-matrix-1108-000416-647f` passes both
+additional selections serially on the same verified partial image, kernel
+and consumer source. The classic selection takes 3.6 minutes and the
+one-PHP-thread Caddy selection takes 5.0 minutes. Both use the same HTTP
+login/editor workload, optimizer probes, request bursts, 120-second traffic
+phase, held-request drain and 60-second post-destroy observation. Only the
+Caddy selection includes the four crash recoveries. These instrumented
+runs are not throughput comparisons or isolated module-cost measurements.
+
+| Selection | Service ready | First HTTP response | Largest phase footprint | 60 seconds after destroy |
+| --- | ---: | ---: | ---: | ---: |
+| Classic, two configured PHP threads | 1.8 GiB | 2.4 GiB | 2.8 GiB | 976.8 MiB |
+| Caddy, one PHP thread | 3.2 GiB | 4.4 GiB | 13.8 GiB | 668.3 MiB |
+| Earlier Caddy, two PHP threads | 3.2 GiB | 4.6 GiB | 10.6 GiB | 647.1 MiB |
+
+These are rounded physical-footprint samples, not simultaneous measurements
+across selections. The separate OS historical-peak fields reach 2.9 GiB
+for classic and 14.3 GiB for one-thread Caddy, above their largest sampled
+current footprints. The classic traffic samples stay between 2.3 and 2.7 GiB
+with 665.9 MiB of process linear memory. Caddy's one-thread traffic samples
+reach 13.8 GiB, then fall naturally to 4.8 GiB before shutdown while its
+linear memory remains 646 MiB. No forced collection is used. The Caddy
+thread endpoint and metrics report one actual PHP thread throughout the
+observations; Go Sys stays between 40.7 and 42.4 MiB. Classic has no Caddy
+metrics endpoint, so no equivalent Go/PHP allocator measurement is claimed.
+
+At Caddy's 13.8 GiB sample, `vmmap` classifies 4.8 GiB as resident and
+7.5 GiB as `SWAPPED` in `WebKit Malloc`; `JS VM Reservations` has 551 MiB
+resident and 1.3 GiB `SWAPPED`. The process footprint is consequently not
+a claim that 13.8 GiB is currently resident RAM. These broad allocation
+classes still do not identify retained objects or allocation sites.
+
+Reducing PHP capacity to one thread therefore does not remove the large
+native peak. This directs the next investigation toward the Caddy workload,
+compiled module/instance costs and host reference lifetimes, rather than
+assuming that PHP thread count alone explains it. The two server modules
+have different sizes and code paths; their difference does not isolate a
+particular dependency or prove an engine defect. Classic also retains more
+physical footprint after destruction in this observation despite its smaller
+peak. Neither selection establishes an acceptable service memory budget.
+
+Raw results and derived `phase-summary.json` files are under the matrix
+job's `scratch/native-classic-two/` and `scratch/native-caddy-one/` directories
+in the comparison checkout. The original phase records are in browser runs
+`2bd7017e-7048-46f1-b7d1-d126c05f71f9` and
+`2e070d06-9db9-4c55-a069-1b12611fadba`. Each direct kernel-worker observation
+ends with termination; it does not count nested guest workers.

@@ -2,6 +2,43 @@
 
 ## Current checkpoint — 2026-11-07
 
+**2026-11-08 server/thread memory controls:** job
+`wordpress-native-control-matrix-1108-000416-647f` passes both additional
+WebKit HTTP/lifecycle selections on the same verified revision-45 partial
+image and consumer `2cabd2984735`. Classic with two configured PHP threads
+stays at 2.3–2.7 GiB during traffic, with a 2.8 GiB largest phase sample and
+2.9 GiB OS historical peak. Caddy with one actual PHP thread reaches a
+13.8 GiB phase sample (14.3 GiB OS historical peak), then falls naturally to
+4.8 GiB before shutdown while its linear memory stays 646 MiB. Go Sys is
+40.7–42.4 MiB; the released thread endpoint confirms one PHP thread at every
+measurement. Both selections pass unchanged PHP optimizer probes and held
+request draining; Caddy also passes four crash recoveries. They retain
+976.8 MiB and 668.3 MiB respectively sixty seconds after destruction.
+
+The one-thread peak rules out PHP capacity alone as a sufficient explanation.
+At its largest phase sample, `vmmap` reports 4.8 GiB resident and 7.5 GiB
+`SWAPPED` in the broad `WebKit Malloc` class. Physical footprint is not
+current resident RAM; these classes do not identify allocation sites or
+prove an engine defect. The
+[memory checkpoint](2026-11-08-wordpress-webkit-memory-checkpoint.md)
+retains the comparison, exact run identities and limitations. A separate
+compile/structured-clone-only control is queued behind rendered media tests;
+it will not instantiate guest modules or change Go/PHP algorithms.
+
+The completion audit finds the existing real file-picker test only covers
+MariaDB/PHP-FPM. It now selects both FrankenPHP profiles too, preserving the
+same small/thumbnail-sized multipart uploads and byte-for-byte recovery
+with the source image disabled. nginx's existing oversized-body 413 check
+remains on its own stack; no equivalent Caddy limit is assumed. The first
+private driver attempt `a378` fails before tests because an explicit fixture
+path contains `..`; the corrected canonical path starts `ac35`. Normal
+browser setup builds its own pinned ABI baseline fixtures rather than
+borrowing another SDK. Six browser cases are running; no pass is claimed.
+The Go overview is corrected to distinguish historical consumer checks,
+current optimized package/partial-image evidence and outstanding final
+canonical/full memory-switch gates. Optional stock page cache is installed
+but inactive by default. The running preview remains unchanged on 5492.
+
 **Both optimized cgo targets reproduce:** the separate Caddy continuation
 `go-caddy-o2-reproduction-1107-233634-d047` passes in 16m47s. Its normal
 published revision-22 binary reproduces all 184,971,404 bytes, SHA-256
