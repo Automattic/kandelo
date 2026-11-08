@@ -587,6 +587,19 @@ static bool KandeloKeyDispatch(JSContext* cx, const CallArgs& args, MutableHandl
           "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS" : "ERR_CRYPTO_OPERATION_FAILED");
     return KandeloKeyBytes(cx, bytes.value, output);
   }
+  if (name == "ecPkcs8") {
+    // Immutable role==private was admitted above before any backend access.
+    // Both the rooted material edge and owned BIO survive allocation/GC;
+    // no native borrowed pointer escapes and no public Buffer hook runs.
+    auto encoded = material->ExportEcPrivatePkcs8();
+    BUF_MEM* memory = encoded;
+    if (!memory) throw kandelo::crypto::KeyError(
+        "Unable to create BUF_MEM pointer", "ERR_CRYPTO_OPERATION_FAILED");
+    RootedObject bytes(cx, KandeloNewUint8ArrayCopy(cx,
+        reinterpret_cast<const uint8_t*>(memory->data), memory->length));
+    if (!bytes) return false;
+    output.setObject(*bytes); return true;
+  }
   if (name == "ecPublic" || name == "ecPrivate") {
     if (!material->asymmetric.isA("EC")) throw kandelo::crypto::KeyError(
         "The selected key encoding is incompatible with the key type", "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS");

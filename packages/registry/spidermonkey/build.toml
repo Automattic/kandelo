@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "third_party/node-core/tests/ec-pkcs8-owner",
   "packages/registry/spidermonkey/patches/0179-node-keypair-gen.patch",
   "packages/registry/spidermonkey/patches/0178-node-tls-encrypted-output.patch",
   "packages/registry/spidermonkey/patches/0177-node-tty-shared-io.patch",
@@ -785,4 +786,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 254
+revision = 255

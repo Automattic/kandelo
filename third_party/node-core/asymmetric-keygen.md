@@ -40,8 +40,12 @@ GC-owned material cell across real handle wrappers like pinned KeyObjectData.
 A newly added native fatal private-role admission guard covers reflectable
 rawPrivate/rawSeed/ecPrivate methods, including borrowed PrivateKeyObject.export
 on a public key, before accessing actual private material. It also guards the
-existing ecPkcs8 dispatcher name; that valid-private operation has no current
-implementation and stays an explicit gap. Public raw/JWK/export/clone gates stay authoritative: sharing private material
+existing ecPkcs8 dispatcher name. A bounded follow-up now supplies the real
+valid-private route through KeyMaterial::ExportEcPrivatePkcs8 and exact
+ncrypto::Ec::ExportPrivatePkcs8. It clones EC material, includes reconstructed
+public points and emits owned default-DER PKCS8 without generic Export
+substitution. The rooted material edge and owned BIO survive private byte
+allocation; new guest JSAPI/GC/role behavior remains uncompiled/unvalidated. Public raw/JWK/export/clone gates stay authoritative: sharing private material
 does not grant a public role private serialization. Serialized bytes come from
 the actual portable owner, including the real compressed-EC point fallback;
 private FastBuffer ownership constructs returned binary values. JWK uses the
@@ -88,3 +92,27 @@ has a separately recorded source discrepancy and is not silently rewritten.
 Skill feedback (porting-software-to-kandelo): used the normal declared input,
 private generator/staging and dependency boundary guidance; wrong: none found;
 missing: no additional requirement identified for this bounded owner.
+
+## Dedicated EC PKCS8 follow-up evidence
+
+Ordinary public KeyObject.export/generateKeyPair PKCS8 already use generic
+material.Export; they are not this private service gap. The existing private
+KeyObjectHandle.exportECPrivatePkcs8 wrapper now reaches a real native owner;
+this does not activate the still incomplete public WebCrypto algorithms or
+job/admission owners. Non-EC/failure retains ERR_CRYPTO_OPERATION_FAILED and
+"Failed to export EC private key", rather than generic export or incompatible
+options. The251immutable private-role fatal admission remains before access.
+
+Focused15groups compare actual helper/pinned wrapper outputs, named/explicit
+P256/P384/P521/secp256k1 and omitted-public-point SEC1, wrongtypeRSA/Ed25519/
+X25519, real BIO/material retention over V8GC/input mutation and no public
+Buffer.from hooks. Candidate material before/after SEC1/SPKI bytes match the
+corresponding native reference before/after outcomes. Both explicit cases
+normalize exported/reimported SPKI representation identically; semantic key
+equality is separately checked. Exact byte vectors are retained. Initial13/15
+wrong representation-stability assumptions remain, not passing evidence.
+Two tiny helpers/0compilerfailures, no library/engine/product rebuild. One fresh
+isolated native role-fatal negative with explicit coreSoftLimit0 is evidence
+for target policy,0compatibilitypasses and not guestguard execution. Native
+V8/DER-copy adoption/dependency configuration is distinct from guest JSAPI/
+realm/GC/finalizer/OOM/fatal and four-host conformance, all still open.

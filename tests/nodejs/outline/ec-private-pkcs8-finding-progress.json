@@ -1,0 +1,153 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/crypto.md",
+    "findingIds": [
+      "C-001",
+      "C-015"
+    ],
+    "scope": "Partial actual private KeyObjectHandle service/ownership prerequisite for public EC WebCrypto; C015grouped prose remains no recovered standalone definition, no audit/finding/namespace closure.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-001",
+        "definitionKey": "tests/nodejs/audit/crypto.md#C-001:L15",
+        "relation": "partial-owning-source",
+        "closed": false
+      }
+    ],
+    "proseReferences": [
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-015",
+        "line": 49,
+        "relation": "partial-owning-source",
+        "standaloneDefinitionRecovered": false,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-009",
+        "line": 45,
+        "relation": "shared-prerequisite",
+        "standaloneDefinitionRecovered": false,
+        "closed": false
+      }
+    ],
+    "relatedFamilies": [
+      "secure-network",
+      "async",
+      "web"
+    ]
+  },
+  "sourceImplemented": [
+    "Existing private adapter.ecPkcs8 route now has actual native dispatch through new consumed KeyMaterial::ExportEcPrivatePkcs8, using exact existing ncrypto::Ec::ExportPrivatePkcs8.",
+    "No generic material.Export substitution: ncrypto clones EC, clears EC_PKEY_NO_PUBKEY under actual configured legacy branch and emits defaultDERPKCS8; wrongtype/failure retains targetERR_CRYPTO_OPERATION_FAILED/Failed to export EC private key.",
+    "Preserve251native private-role admission before backend access. Actual rooted material edge and owned BIO retain real data through JS allocation; KandeloNewUint8ArrayCopy and unchanged private codecs.copyBytes own output without public Buffer.from hooks.",
+    "Ordinary KeyObject.export/generateKeyPair PKCS8 route alreadyworks and remains unchanged; this does not activate fullSubtle/job/algorithm/admission owners."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-ecpkcs8255-source-r1/report.json",
+    "sha256": "8dff4dcc28d7e329a3d7e1272501d449a8a5bb29c2093a4ab6b109ca9ca2dca2",
+    "guardedInputs": 908,
+    "scope": "Normal current root core/bootstrap/native staging plus genuine EC owner header/component. Original13/15 and fatal negative retained; no role/realm/GC/fatal/fourhost acceptance."
+  },
+  "packageChecks": {
+    "report": ".context/node26-ecpkcs8255-affected-r1.json",
+    "sha256": "c5daa323862112bf3eed9ee1a507d1ba14b1ce40f5fb69dbbe1779cf1f9e69eb",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-ecpkcs8255-source-r1/report.json",
+    "sha256": "8dff4dcc28d7e329a3d7e1272501d449a8a5bb29c2093a4ab6b109ca9ca2dca2",
+    "actualOwnerGroups": 15,
+    "ownerPassed": 15,
+    "ownerFailed": 0,
+    "guardedInputs": 908,
+    "sourceChecks": 5,
+    "sourceCommands": 8,
+    "packagePassed": 14,
+    "newRootCompilerAttempts": 0,
+    "historicalHelpers": 2,
+    "guestExecuted": false,
+    "publicSubtleImplemented": false,
+    "scope": "Actual shared helper/native private wrapper controls; native parsing/V8/DER-copy/GC dependencies, not guestJSAPI/Subtle/role-guard proof."
+  },
+  "sealedEvidence": {
+    "report": ".context/ec-pkcs8-owner-agent/report.json",
+    "sha256": "14dbc15653617d1c3c3dcf16b7254ac7f23bdcc228493d27c250d5a01da5a3d8",
+    "reusedEvidence": true,
+    "scope": "Two historical native component builds, actual ncrypto/OpenSSL3.5.9/V8/DER-copy/GC dependencies; not guest JSAPI or WebCrypto proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-ecpkcs8255-composed-r1/normal-current-core-generation-stderr",
+      "sha256": "5251916544edb5e03d30c77760b4fe589b903dd716b6f93b659337736b872cac",
+      "classification": "private-preparation-missing-source-input",
+      "scope": "Unchanged bootstrap omitted from private normal generator snapshot; no root change."
+    },
+    {
+      "report": ".context/ec255-patch-repair-r1/proof.json",
+      "sha256": "0102b11b3c3dadf3b380b40b9e70b03633ca46e1bea6ba10c573ad69cdd86a18",
+      "classification": "private-patch-encoding-error",
+      "scope": "Original difflib recipe EOF lines corrupt; Git probe128/applyscript1 before writes. Same eight postimages repaired by exact Git encoding. Raw probe stderr/PID/log not retained; never reconstruct."
+    },
+    {
+      "report": ".context/ec-pkcs8-owner-agent/evidence/owner-controls-r1/result.json",
+      "sha256": "485dd9f5e025ca29b4802ea78dc00897df2136f2ef05f11095a556032e57ff5a",
+      "classification": "authored-representation-stability-assumption-nonpass",
+      "scope": "Original13/15 exit1 retained; explicit-result SPKI normalization occurs in native and candidate. Exact PKCS8 already matched."
+    },
+    {
+      "report": ".context/ec-pkcs8-owner-agent/evidence/native-role-negative-r1/result.json",
+      "sha256": "d9c51aac9256c628f3bcd8532cd758c7ae53bb93b87b1838ac3e129751ebd86e",
+      "classification": "native-fatal-admission-negative",
+      "scope": "Actual native exit-6/coreSoftLimit0, zero compatibility passes. Guest private-role guard unexecuted."
+    }
+  ],
+  "remaining": [
+    "Actual guest native dispatcher/byte allocation/RootedValue/realm/CCW/GC/reentry/OOM/fatal/private-role execution and allfourhost conformance remain uncompiled/unexecuted.",
+    "Complete public WebCrypto export/import/algorithm/extractability/usages/job-admission and broader key services without treating this private backend prerequisite as wholeAPI support.",
+    "Opaque EVP/provider/BIO heap accounting and full per-callsite errors/security remain broader C009/crypto gaps; no RSS or complete heap graph claim."
+  ],
+  "actualEcPkcs8ControlReport": {
+    "report": ".context/node26-ecpkcs8255-source-r1/focused-controls/report.json",
+    "sha256": "c61ef235c354bd7afbb5efd1516468cf77427030b0c181f958579d744612190f",
+    "passed": 15,
+    "failed": 0,
+    "guestJSAPIExecuted": false,
+    "publicSubtleImplemented": false,
+    "scope": "Actual shared helper/native private wrapper controls; native parsing/V8/DER-copy/GC dependencies, not guestJSAPI/Subtle/role-guard proof."
+  },
+  "manualIntegration": {
+    "applicationReceipt": ".context/node26-ecpkcs8255-apply-r2/receipt.json",
+    "sha256": "c5d9daf1085e83e22de943d355836082e21076bd718229db00aa0e0dfd63dd73",
+    "exactOwnedPostimages": 8,
+    "actualCheckPids": [
+      4099,
+      4115
+    ],
+    "exit": [
+      0,
+      0
+    ],
+    "v1OperationClaimed": false,
+    "preparationFailures": {
+      "missingBootstrapSnapshot": ".context/ec-pkcs8255-tool-prep-r2/snapshot-input-repair.json",
+      "corruptDiffEncoding": ".context/ec255-patch-repair-r1/proof.json",
+      "rawGitProbeStderrRetained": false
+    }
+  },
+  "publicSubtleActivated": false,
+  "at": "2026-11-08T05:20:28.965630+00:00",
+  "recipeRevision": 255,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

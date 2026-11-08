@@ -225,6 +225,15 @@ struct KeyMaterial {
       throw KeyError("Failed to export JWK", "ERR_CRYPTO_OPERATION_FAILED");
     return bytes;
   }
+  // The dedicated pinned EC PKCS8 route deliberately clones EC material and
+  // clears EC_PKEY_NO_PUBKEY through ncrypto. It is not generic key Export.
+  // The caller owns native role admission; material roles live on handles.
+  ncrypto::BIOPointer ExportEcPrivatePkcs8() const {
+    auto encoded = ncrypto::Ec::ExportPrivatePkcs8(asymmetric);
+    if (!encoded)
+      throw KeyError("Failed to export EC private key", "ERR_CRYPTO_OPERATION_FAILED");
+    return encoded;
+  }
   ncrypto::DataPointer Export(Config config, bool privateKey) const {
     // Import has loaded the actual provider. Node configures its PQC encoding
     // policy once during crypto initialization; do the same before this owner's
