@@ -20,6 +20,11 @@ pub(super) fn run(
     let mut map_input = None;
     let mut map_output = None;
     if let Some(map) = source_map {
+        // Generated helper bodies intentionally have no user source rows.
+        // Keep the mapped call sites: inlining a helper would replace that
+        // call with its unmapped body inside the user's function.
+        // The mark covers both full and partial inlining, before -O runs.
+        command.arg("--no-inline=*");
         let mut source =
             tempfile::NamedTempFile::new().context("creating private optimizer map input")?;
         source.write_all(map.bytes())?;

@@ -45,3 +45,20 @@
              target_os = "android",
              target_os = "emscripten",
              target_os = "fuchsia",
+--- a/backtrace/src/print.rs
++++ b/backtrace/src/print.rs
+@@ -230,3 +230,5 @@
+         if let PrintFmt::Short = self.fmt.format {
+-            if frame_ip.is_null() {
++            // Kandelo can own a named frame without an instruction offset.
++            // Keep its symbols without inventing a code address.
++            if frame_ip.is_null() && !cfg!(target_os = "kandelo") {
+                 return Ok(());
+--- a/std/src/backtrace.rs
++++ b/std/src/backtrace.rs
+@@ -189,3 +189,4 @@
+         for frame in frames {
+-            if frame.frame.ip().is_null() {
++            // A Kandelo frame can own symbols even when its PC is unavailable.
++            if frame.frame.ip().is_null() && !cfg!(target_os = "kandelo") {
+                 continue;

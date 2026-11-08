@@ -352,7 +352,8 @@ digest through guest linking remains follow-up work.
 | Editor analysis and standard-library source navigation | Guest `rust-analyzer` and `rust-src` are not shipped |
 | External procedural macros, such as derive plugins | Target rejects the `proc-macro` crate type; expansion is unsupported |
 | Cargo dependencies that compile C/C++ or run configure tools | Direct guest SDK builds pass on all four hosts; configured cc-rs builds pass on Node/Chromium/Firefox and hit a compiler stack limit on WebKit; other helpers/configure scripts remain unvalidated |
-| `catch_unwind`, panic unwinding and backtraces | Unsupported; abort-mode libtest isolates tests instead |
+| `catch_unwind` and panic unwinding | Unsupported; abort-mode libtest isolates tests instead |
+| Backtraces | Experimental worker VM capture with owned names and available source locations; see below |
 | Online registries, Git authentication and proxies | Transport defaults configured; end-to-end workflow unvalidated |
 | Incremental compilation on WebKit | Disabled in the tested profile because of native process memory limits |
 | Parallel test harnesses, release/LTO builds, benchmarks and coverage | Need dedicated guest-toolchain validation; the tested command deadline belongs to the embedding owned-job API |
@@ -361,6 +362,55 @@ On the build machine, the cross-compilation wrapper can build test targets
 with `--no-run`, but its `test` subcommand still needs a Cargo runner that
 prepares and executes the hashed test artifacts. Guest Cargo executes its
 test artifacts directly through the installed compiler entry point.
+
+## Source diagnostics and backtraces
+
+The experimental Kandelo standard-library backend captures the executing
+worker's real VM stack. `Backtrace::force_capture()` captures regardless of
+`RUST_BACKTRACE`; `Backtrace::capture()` honors Rust's normal environment
+selection. `RUST_BACKTRACE=1` requests a trace when a panic aborts the process.
+Cross-compiled programs are validated on Node, Chromium, Firefox and WebKit,
+including captures retained across later captures, thread exit, subprocesses,
+and aborting panics. Node, Chromium and Firefox resolve the expected user
+source lines. The tested WebKit engine provides function names without
+instruction offsets, so its trace has names but no source lines.
+
+Build through the normal `wasm32posix-cargo` wrapper. It retains function
+names and prepares available DWARF source lines automatically. The guest
+compiler entry point selects the same preparation flags; acceptance of the
+rebuilt guest SDK is still pending. The host wrapper retains immutable
+original linker outputs below the Cargo target directory, so a no-change build
+can prepare from the original again. It does not instrument generated fork
+runtime code a second time. Release builds still need debug information for
+user source lines, for example:
+
+```toml
+[profile.release]
+debug = 1
+```
+
+For an individual artifact, capture its exact SHA-256 and resolve an absolute
+Wasm instruction offset with:
+
+```sh
+scripts/run-wasm-fork-instrument.sh program.wasm --debug-location 0x1234
+```
+
+This reads only diagnostic metadata in that artifact. Source paths are display
+strings, not permission to read the build machine or browser filesystem.
+A returned `null` location means the exact offset is unresolved. An engine
+that omits instruction offsets can still provide named frames, without source
+lines. Keep the actual final artifact when comparing traces: preparing or
+optimizing it again can change function indices and instruction offsets.
+
+Captured Rust frames own their symbol metadata, so a later capture or thread
+exit cannot replace a saved trace. The interface caps capture at 128 frames
+and 64 KiB of packet data. With multiple live guest modules, the host reports
+module ambiguity and omits guessed source locations. Generated fork helpers
+can appear without source lines. Inline virtual frames, local-variable
+inspection, interactive breakpoints and stepping are not implemented by this
+backend. The [program extension contract](program-extensions.md) describes
+wire versions, typed admission and module identity.
 
 ## Sharing libraries with C and C++
 
@@ -426,10 +476,10 @@ These return the correct failure (POSIX-honest), not a fake success:
 - **`panic = "abort"`** is the target default (unwinding is not wired):
   a panic prints its message and the process exits by `SIGABRT` (status
   134).
-- **Backtraces are unsupported**: there is no unwinder to walk the Wasm
-  stack, so `std::backtrace::Backtrace` reports `Unsupported` and
-  `RUST_BACKTRACE` adds nothing to a panic message. The std overlay selects
-  the backtrace crate's `noop` backend for Kandelo.
+- **Backtraces capture VM frames, not unwind state**: names can survive
+  without instruction offsets; source lines require an actual offset and a
+  matching map. Capturing a trace does not enable panic unwinding or
+  `catch_unwind`. See the workflow below.
 - **`std::net`**: external UDP is `ENETUNREACH` on Node; the browser host
   has no raw/server sockets; DNS/`getaddrinfo` is a stub (use literal IPs
   or resolve out-of-band).

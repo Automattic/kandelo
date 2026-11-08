@@ -127,6 +127,11 @@ pub(super) struct Cli {
     #[arg(long, requires = "output", conflicts_with = "retain_uninstrumented")]
     pub(super) debug_map: bool,
 
+    /// Preserve linked DWARF locations when available. Builds without usable
+    /// line information retain names only; malformed metadata is an error.
+    #[arg(long, requires = "output", conflicts_with_all = ["debug_map", "retain_uninstrumented"])]
+    pub(super) debug_map_if_present: bool,
+
     /// Resolve an absolute Wasm instruction byte offset using INPUT's
     /// embedded source map. Prints the exact module SHA-256 and source
     /// location, without opening source files. Decimal or 0x hexadecimal.

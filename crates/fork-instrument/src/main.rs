@@ -279,6 +279,7 @@ fn main() -> Result<()> {
             optimize: &cli.post_optimize,
             keep_names: cli.keep_names,
             debug_map: cli.debug_map,
+            debug_map_if_present: cli.debug_map_if_present,
             output_bytes: cli.max_output_bytes,
             original: original.as_ref(),
         },

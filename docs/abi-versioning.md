@@ -21,9 +21,11 @@ convention — CI enforces it.
 Program ABI 55 is the first declared supported baseline. The separate
 `abi/supported-program-baseline.json` gate preserves its program digest across
 kernel/host rebuilds; ordinary snapshot regeneration or a program version bump
-does not bypass it. The current gate also refuses additive program changes
-until an explicit required-extension contract is implemented. Kernel-host-only
-changes remain independently versioned and do not affect this baseline.
+does not bypass it. The gate also refuses additive changes to the base
+program surface. New interfaces use independently versioned, explicitly
+required [program imports](program-extensions.md) with their own admission
+checks. Kernel-host-only changes remain independently versioned and do not
+affect this baseline.
 
 Run `cargo xtask check-program-baseline` for the focused check. The ordinary
 ABI check and package/build/stamping entry points enforce it as well.

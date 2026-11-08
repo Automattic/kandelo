@@ -13,6 +13,7 @@ pub mod process_layout;
 // The program ABI is owned separately so host-only edits do not rebuild
 // fork-instrumented programs. Keep the Rust API stable for existing callers.
 pub use wasm_posix_program_abi::ABI_VERSION;
+pub use wasm_posix_program_abi::program_extensions;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///

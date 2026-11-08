@@ -92,8 +92,12 @@ impl<'a> NativePipeline<'a> {
         &self.components.activations
     }
 
-    pub(crate) fn enable_debug(&mut self, rows: usize) -> Result<()> {
-        self.debug = Some(crate::debug_info::Recorder::new(rows)?);
+    pub(crate) fn enable_debug(
+        &mut self,
+        rows: usize,
+        lines: std::sync::Arc<crate::debug_info::LineTable>,
+    ) -> Result<()> {
+        self.debug = Some(crate::debug_info::Recorder::new(rows, lines)?);
         Ok(())
     }
     pub(crate) fn take_debug(&mut self) -> Option<crate::debug_info::Recorder> {
