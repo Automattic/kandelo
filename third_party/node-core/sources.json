@@ -4422,6 +4422,11 @@
         "path": "upstream/path-metadata/deps/uv/src/unix/fs.c",
         "upstreamPath": "deps/uv/src/unix/fs.c",
         "sha256": "895d46c60b30e12249ed6a6696a184fcc594fccaefb008ddb3a3b6a694f0388b"
+      },
+      "statfs-utils": {
+        "path": "upstream/realpath/lib/internal/fs/utils.js",
+        "upstreamPath": "lib/internal/fs/utils.js",
+        "sha256": "8f4f44388934c9fd281a122122f667b1a92d41f9e558bfd45a83c9aff49f061b"
       }
     },
     "selections": {
@@ -4568,6 +4573,36 @@
         "start": "async function link(",
         "length": 465,
         "sha256": "3323a1200826d7405425f0aeeaa55dce254e2d45a25e60ba2507649814695546"
+      },
+      "shared-StatFs": {
+        "source": "statfs-utils",
+        "start": "class StatFs {",
+        "length": 291,
+        "sha256": "d235bc5c12922d478879a788e4f7c0dec3188995df8b7c40eb69ca248ebf943b"
+      },
+      "shared-getStatFsFromBinding": {
+        "source": "statfs-utils",
+        "start": "function getStatFsFromBinding(stats) {",
+        "length": 151,
+        "sha256": "13e749a18d209e368b3382054fc8715f8cfcb962e0f4e6c74388b62d3b498080"
+      },
+      "public-statfs": {
+        "source": "public",
+        "start": "function statfs(path, options = { __proto__: null, bigint: false }, callback) {",
+        "length": 786,
+        "sha256": "07bd1147280a98a2ae2a273c666433f2cbbf7aa5a5e34da0631c05d6b274af1b"
+      },
+      "public-statfsSync": {
+        "source": "public",
+        "start": "function statfsSync(path, options = { __proto__: null, bigint: false }) {",
+        "length": 335,
+        "sha256": "1cfe0dfc9988f76cbfca5329c467087a01f2105ae2f47865c39f60522657fb81"
+      },
+      "promises-statfs": {
+        "source": "promises",
+        "start": "async function statfs(path, options = { __proto__: null, bigint: false }) {",
+        "length": 429,
+        "sha256": "6f481704e69ba3e043c216cfe8581deaff1b62ae015cfcf273496ec2ef5e1173"
       }
     },
     "scope": "Exact public sync/callback/promise pathname access/mode/owner/time wrappers with native POSIX metadata and shared native system-error construction. Not complete permission/backend/four-host conformance."

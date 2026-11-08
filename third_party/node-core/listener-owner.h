@@ -20,7 +20,9 @@ class Owner {
   uint64_t Generation() const noexcept { return generation_; }
   bool Closed() const noexcept { return closed_; }
   bool Referenced() const noexcept { return referenced_; }
-  void Ref(bool value) noexcept { if (!closed_) referenced_ = value; }
+  // The backing native HandleWrap can still be ref/unref'ed while closing.
+  // Its consumer gates completed/detached phases; no descriptor is reopened.
+  void Ref(bool value) noexcept { referenced_ = value; }
   // Caller retains its fd on unsuccessful admission. All fallible allocation
   // and validation precedes this sole, no-JS ownership transfer.
   bool Admit(int fd) noexcept {

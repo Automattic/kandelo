@@ -18,6 +18,9 @@ struct KandeloFsRequestState {
   js::shell::KandeloNativeAsyncState* lifetime = nullptr;
   double id = -1, trigger = -1;
   bool dispatched = false, retired = false, closing = false;
+  // Native FSReqCallback constructor retains its initial strict-true policy.
+  // Callback bindings must not replace it with a later options getter value.
+  bool useBigInt = false;
   FsResourceKind kind = FsResourceKind::Callback;
   // Numeric observation only; the lease (or an admitted close job) owns fd.
   int fd = -1;
@@ -187,6 +190,8 @@ static bool KandeloNativeCreateFsRequest(JSContext* cx, unsigned argc, Value* vp
   }
   RootedObject prototype(cx, args[0].toObjectOrNull()), owner(cx);
   if (!KandeloCreateFsResource(cx, prototype, args[1], FsResourceKind::Callback, &owner)) return false;
+  auto* state = KandeloFsRequestStateOf(cx, owner);if (!state) return false;
+  state->useBigInt = args.get(2).isTrue();
   if (!KandeloInitializeFsResource(cx, owner)) return false;
   args.rval().setObject(*owner); return true;
 }

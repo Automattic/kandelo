@@ -1,5 +1,11 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0183-node-listener-statfs.patch",
+  "third_party/node-core/crypto-webidl-platform-adapter.js",
+  "third_party/node-core/crypto-webidl-sources.json",
+  "third_party/node-core/upstream/keys/lib/internal/crypto/webidl.js",
+  "third_party/node-core/crypto-webidl-owner.md",
+  "third_party/node-core/tests/crypto-webidl",
   "packages/registry/spidermonkey/patches/0182-node-builtin-esm-sync.patch",
   "third_party/node-core/tests/timer-returned-owner",
   "third_party/node-core/tests/timer-primitive-owner",
@@ -802,4 +808,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 261
+revision = 262

@@ -52,6 +52,6 @@ function _createNodeCryptoDigest(platform) {
         error.code = 'ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH'; throw error;
     }
     if (platform.captureHelpers !== undefined)
-        platform.captureHelpers({ getArrayBufferOrView, getBufferSourceBytes, filterDuplicateStrings });
+        platform.captureHelpers({ getArrayBufferOrView, getBufferSourceBytes, filterDuplicateStrings, getHashes });
     return { hash, getHashes, timingSafeEqual };
 }

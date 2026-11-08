@@ -1,0 +1,109 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index 3d2b04ec543658bf68ea9f7ad958c7c0b61764e4..e357cca7182dee734c6c720f74f0dea79489442b 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -646,4 +646,5 @@ struct KandeloSocketWatch {
+     // The actual owner root outlives this decrement and its read allocation.
+     if (terminalLease) { MOZ_RELEASE_ASSERT(terminalLease->requests);--terminalLease->requests; }
++    if (listenerState) { MOZ_RELEASE_ASSERT(listenerState->accepts);--listenerState->accepts; }
+   }
+ };
+@@ -680,5 +681,5 @@ static void KandeloSocketWatchUnlink(KandeloSocketWatch* target) {
+
+ static bool KandeloSocketHasWatches(JSContext* cx) {
+-  if (KandeloSocketOwnersHaveReferences(cx) || KandeloTlsHasReferences(cx) || KandeloTerminalHasReferences(cx)) return true;
++  if (KandeloListenerOwnersHaveReferences(cx) || KandeloSocketOwnersHaveReferences(cx) || KandeloTlsHasReferences(cx) || KandeloTerminalHasReferences(cx)) return true;
+   for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
+     if ((watch->kind == KandeloSocketWatchKind::Child) && watch->cx != cx) continue;
+@@ -1037,4 +1038,6 @@ static int KandeloSocketDispatch(JSContext* cx) {
+     return KandeloRejectSocketOperation(cx,promise,ECANCELED,"accept") ? 1 : -1;
+   }
++  const int listenerClosed=KandeloDispatchListenerOwners(cx);
++  if (listenerClosed) return listenerClosed;
+   const int terminalClosed = KandeloDispatchTerminalOwners(cx);
+   if (terminalClosed) return terminalClosed;
+@@ -1133,5 +1136,8 @@ static int KandeloSocketDispatch(JSContext* cx) {
+           // This helper owns the fd through actual owner init/adoption even
+           // when token/Promise publication fails.
+-          if (!KandeloResolveAcceptedSocket(cx, watch->promise, fd)) return -1;
++          kandelo::socket::Lease accepted(fd);
++          kandelo::async::DefaultTriggerScope trigger(cx->kandeloDefaultTrigger(),watch->listenerState?watch->listenerState->id:-1);
++          if (!trigger.Ready()) { JS_ReportErrorASCII(cx,"Listener default trigger is invalid");return -1; }
++          if (!KandeloResolveAcceptedSocket(cx,watch->promise,accepted.Release())) return -1;
+         } else if (!KandeloResolvePromiseWithInt(cx, watch->promise, fd)) {
+           close(fd);return -1;
+@@ -1339,4 +1345,7 @@ static bool KandeloNativeSocketListen(JSContext* cx, unsigned argc, Value* vp) {
+   RootedObject listenerOwner(cx);KandeloListenerState* listenerState;
+   if (!KandeloCreateListener(cx,&listenerOwner,&listenerState)) return false;
++  bool published=false;
++  auto abandonListener=mozilla::MakeScopeExit([&] { if (!published) listenerState->BeginClose(); });
++  if (listenerState->listener.Closed()) return KandeloThrowSocketError(cx,ECANCELED,"listen");
+   const int fd = socket(hints.ai_family, SOCK_STREAM, 0);
+   if (fd < 0) return KandeloThrowSocketError(cx, errno, "listen");
+@@ -1358,6 +1367,6 @@ static bool KandeloNativeSocketListen(JSContext* cx, unsigned argc, Value* vp) {
+   if (bind(fd, result->ai_addr, result->ai_addrlen) < 0 || listen(fd, backlog) < 0)
+     return KandeloThrowSocketError(cx, errno, "listen");
+-  MOZ_RELEASE_ASSERT(listenerState->listener.Admit(fd));
+-  retained = true;
++  if (!listenerState->listener.Admit(fd)) return KandeloThrowSocketError(cx,ECANCELED,"listen");
++  retained = true;published=true;
+   args.rval().setObject(*listenerOwner);
+   return true;
+@@ -1370,4 +1379,9 @@ static bool KandeloNativeSocketAccept(JSContext* cx, unsigned argc, Value* vp) {
+   if (!KandeloListenerFromValue(cx,args.get(0),&owner,&state)) return false;
+   if (!state && (args.length() < 1 || !JS::ToInt32(cx,args[0],&listener))) return false;
++  // Immediate accepted-client init can reenter the loop too. Keep the same
++  // request barrier as queued accepts until all actual creation/publication
++  // frames leave, even when close is requested from a child init hook.
++  if (state) ++state->accepts;
++  auto releaseAccept=mozilla::MakeScopeExit([&] { if (state) { MOZ_RELEASE_ASSERT(state->accepts);--state->accepts; } });
+   RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+   if (!promise) return false;
+@@ -1379,5 +1393,10 @@ static bool KandeloNativeSocketAccept(JSContext* cx, unsigned argc, Value* vp) {
+   const int fd = KandeloAcceptSocket(listener);
+   if (fd >= 0) {
+-    if (args.get(1).isTrue()) return KandeloResolveAcceptedSocket(cx, promise, fd);
++    if (args.get(1).isTrue()) {
++      kandelo::socket::Lease accepted(fd);
++      kandelo::async::DefaultTriggerScope trigger(cx->kandeloDefaultTrigger(),state?state->id:-1);
++      if (!trigger.Ready()) { JS_ReportErrorASCII(cx,"Listener default trigger is invalid");return false; }
++      return KandeloResolveAcceptedSocket(cx,promise,accepted.Release());
++    }
+     if (KandeloResolvePromiseWithInt(cx, promise, fd)) return true;
+     close(fd);
+@@ -1389,5 +1408,5 @@ static bool KandeloNativeSocketAccept(JSContext* cx, unsigned argc, Value* vp) {
+   if (!watch) { JS_ReportOutOfMemory(cx); return false; }
+   watch->leasedAccept = args.get(1).isTrue();
+-  if (state) { watch->listenerOwner = owner;watch->listenerState = state; }
++  if (state) { watch->listenerOwner = owner;watch->listenerState = state;++state->accepts; }
+   KandeloSocketWatchLink(watch);
+   return true;
+@@ -1411,5 +1430,5 @@ static bool KandeloNativeSocketRef(JSContext* cx, unsigned argc, Value* vp) {
+   RootedObject owner(cx);KandeloListenerState* state;
+   if (!KandeloListenerFromValue(cx,args[0],&owner,&state)) return false;
+-  if (state) { state->listener.Ref(referenced);args.rval().setUndefined();return true; }
++  if (state) { if (!state->initializing && !state->closeCompleted) state->listener.Ref(referenced);args.rval().setUndefined();return true; }
+   for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
+     const bool matches = args[0].isInt32() ? watch->fd == args[0].toInt32()
+@@ -1666,5 +1685,5 @@ static bool KandeloNativeSocketClose(JSContext* cx, unsigned argc, Value* vp) {
+     // No Promise/user callback under close; actual dispatch retires rooted
+     // accepts after the descriptor is closed and cannot accept a later reuse.
+-    state->listener.Close();args.rval().setUndefined();return true;
++    state->BeginClose();args.rval().setUndefined();return true;
+   }
+   int32_t fd;
+@@ -4415,4 +4434,7 @@ static bool KandeloNativeAsyncResourceInfo(JSContext* cx, unsigned argc, Value*
+     return KandeloSocketResourceInfo(cx, unwrapped, args.rval());
+   }
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloListenerClass) {
++    return KandeloListenerResourceInfo(cx,unwrapped,args.rval());
++  }
+   if (unwrapped && JS::GetClass(unwrapped) == &KandeloTlsClass) {
+     return KandeloTlsResourceInfo(cx, unwrapped, args.rval());
+@@ -4984,4 +5006,6 @@ static bool DefineKandeloNodeNative(JSContext* cx) {
+       JS_FN("fsPathSync", (KandeloFsPromiseGuard<KandeloFsPathSync>), 4, 0),
+       JS_FN("fsPathPromise", (KandeloFsPromiseGuard<KandeloFsPathPromise>), 5, 0),
++      JS_FN("fsStatfsSync", (KandeloFsPromiseGuard<KandeloFsStatfsSync>), 2, 0),
++      JS_FN("fsStatfsPromise", (KandeloFsPromiseGuard<KandeloFsStatfsPromise>), 3, 0),
+       JS_FN("fsMetadataSync", (KandeloFsPromiseGuard<KandeloFsMetadataSync>), 4, 0),
+       JS_FN("fsMetadataPromise", (KandeloFsPromiseGuard<KandeloFsMetadataPromise>), 5, 0),

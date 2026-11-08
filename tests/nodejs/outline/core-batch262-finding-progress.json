@@ -1,0 +1,347 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network.md",
+    "findingIds": [
+      "N-013"
+    ],
+    "prerequisiteFindingIds": [
+      "N-011"
+    ],
+    "relatedFamilies": [
+      "network",
+      "crypto",
+      "filesystem"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/network.md",
+        "findingId": "N-013",
+        "relation": "direct-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-013",
+        "relation": "direct-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/network.md",
+        "findingId": "N-011",
+        "relation": "shared-prerequisite-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-011",
+        "relation": "shared-prerequisite-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-001",
+        "relation": "shared-prerequisite-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-007",
+        "relation": "shared-prerequisite-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-015",
+        "relation": "shared-prerequisite-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/filesystem.md",
+        "findingId": "FS-006",
+        "relation": "direct-selected-partial"
+      },
+      {
+        "document": "tests/nodejs/audit/filesystem-contracts.md",
+        "findingId": "FS-016",
+        "relation": "direct-selected-partial"
+      }
+    ],
+    "scope": "Three partial feature contributions; statfs original P2 source correction is not runtime closure. No complete definition/range/API/family claim."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "listener-async-owner",
+      "scope": "Genuine native TCPSERVERWRAP ID/frame/ref/close/accept barrier prerequisite, no public onconnection MakeCallback or supplied-fd activation. Existing7native groups target-only and reused, zero candidate/guest runtime evidence."
+    },
+    {
+      "feature": "crypto-webidl",
+      "scope": "Whole unchanged pinned crypto WebIDL converters/validators consumed by real lazy KeyObject.toCryptoKey and actual private brands/usage/digest prerequisites;8candidate current-core selected groups vs reused native8. Two actual valid import/FIPS-validator frontiers remain nonpasses."
+    },
+    {
+      "feature": "statfs-corrected",
+      "scope": "Actual guest statfs work/frontends with separately reviewed per-environment/per-realm Number/BigInt shared binding arrays and fill-before-before-hook native ownership correction.8candidate frontend groups over native FS backend vs reused native8; cache JSAPI remains uncompiled/unexecuted. Backend fake capacity/type/inode measurements remain implementation gaps."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core262-batch-source-r1/report.json",
+    "sha256": "e3f77f49c663ad8595d4d130864f4bbe15ad571708f9102f7890fd08f35597a9",
+    "guardedInputs": 914,
+    "scope": "One source262 normal generation/staging/syntax/input pass; crypto8/statfs8 current-core frontend compositions versus exact historical native rows. Listener target-only7 and statfs cache JSAPI remain source-only, not fresh candidate proof. FIPS/normalizer and fabricated filesystem measurement gaps remain. Zero compilers/guest/overall/fullbuild."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core262-batch-affected-r1.json",
+    "sha256": "51d6fb3ce5254884d345161fa0031cde5697851c66052fcd1f24ca7d94dcdf3d",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core262-batch-source-r1/report.json",
+    "sha256": "e3f77f49c663ad8595d4d130864f4bbe15ad571708f9102f7890fd08f35597a9",
+    "guardedInputs": 914,
+    "sourcePredicates": 40,
+    "sourceCommands": 8,
+    "freshCandidateFrontendGroups": 16,
+    "groupsByFeature": {
+      "crypto": 8,
+      "statfs": 8,
+      "listener": 0
+    },
+    "nativeReferenceExecutions": 0,
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "statfsCacheOwnerExecuted": false,
+    "backendMeasurementGapsRemain": true
+  },
+  "sealedEvidence": {
+    "report": ".context/core262-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "273accf93fa84e3534b6f827bdd7d04c0ec3e718c2df4884a659da71b34a0758",
+    "reusedEvidence": true,
+    "scope": "Immutable original listener/WebIDL/statfs/correction source/component evidence and independent reviews, reused historical references; not guest/native-cache acceptance."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/server-listener-async-owner-agent/report.json",
+      "sha256": "79d9f1d41a6401396c7770a2eb9b18209b6377ea353b84e4b7f46676e861c5b6",
+      "classification": "Original2authored native assumption failures/cleanup observations and source-probe setup failure; first final wrapper status unknown. Existing native7target-only are not candidate evidence.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/crypto-webidl-owner-agent/report.json",
+      "sha256": "25851330314a6a190d64c135a8c332a825a14b4a93434ad02e80a757000749ac",
+      "classification": "Original setup/missing-patch generator/authored converter-vs-validator/namespace failures plus valid public import and FIPS-validator real nonpasses; original optional-chain before result exercised noFIPSvalidator.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/statfs-owner-agent/report.json",
+      "sha256": "50e3dde016ee71b1dc2a5da0ee1f7c3cbb11f42906f80637d33e712cd7579695",
+      "classification": "Original missing0044patch fixture source-setup failure, raw stderr not captured;8native-backend frontend groups do not execute new C++.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/statfs-review-agent/report.json",
+      "sha256": "536dabbd05770e581a67e60405bbda502b705b48368d635240f46e31ce8d75e2",
+      "classification": "Original verified STATFS-REVIEW-001 P2 shared-array/fill ownership mismatch; subsequent source correction retained separately, not runtime closure.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/statfs-binding-cache-correction-agent/report.json",
+      "sha256": "5f6a9dd61aad91918ef1952e0f7cc1add6c3afb5548eb3c2906fea2e16c5e9bc",
+      "classification": "Existing native-only2mode alias/transfer/fill chronology reference, new candidate cache uncompiled/unexecuted; transfer and backend limits preserved.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/core262-batch-root-controls-r1/report.json",
+      "sha256": "ceaaaec25c063ed2680228f37155c9c564535958f278492224630ec2c3ca6e6a",
+      "classification": "16passing selected frontend groups separate from2real crypto valid import/FIPS frontiers; candidate listener/cache JSAPI not executed.",
+      "freshlyRerun": "Current candidate frontend only; native rows reused."
+    },
+    {
+      "report": ".context/core262-batch-tool-run-r1/run-output-parser-failure.json",
+      "sha256": "e84e88b63d2ceec5b3ed7602b626a535c288378935f9de0a380f568ae3342dce",
+      "classification": "Tool applied source/returned3; wrapper incorrectly parsed humanstdout asJSON/exit1. Recovered read-only same-ledger handoff, apply not replayed; validation had not run at parserfailure.",
+      "runtimeCases": 0,
+      "compilerAttempts": 0
+    }
+  ],
+  "remaining": [
+    "Listener public onconnection/listening MakeCallback/exception/fatal choreography, full native prototype/init/receiver/close-publication and suppliedfd/cluster/transfer/fullServer remain open;7native-only target groups are not candidate proof.",
+    "New listener/statfs/cache JSAPI/class/context/root/realm/CCW/GC/OOM/finalizer/Worker teardown uncompiled and unexecuted.",
+    "Statfs original cache identity P2 has a source correction, not validated closure; callback and Promise owner/error/fatal/detach/transfer distinctions remain.",
+    "Existing statfs backend fabricated ENOSYS EXT2/4GB/2GB and rootfs/nominal tmpfs/inode measurements remain real kernel/backend implementation gaps, not accepted platform limits.",
+    "Crypto real FIPS state/generation and normalizer/import/Subtle/jobs/algorithm/provider/fourhost owners remain missing;2real nonpasses preserved apart from8selected groups.",
+    "Original failed native processes/authored assumptions/cleanup unknown wrapper, generation missing-patch fixture/setup/control/namespace failures and all historical nonpasses remain separate evidence.",
+    "No compiler/backend/overall/product rebuild or fourhost conformance in this batch; all19families partial, no finding closure."
+  ],
+  "featureContributions": [
+    {
+      "id": "listener-async-owner",
+      "family": "network",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/network.md",
+          "findingId": "N-013",
+          "relation": "direct-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-013",
+          "relation": "direct-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/network.md",
+          "findingId": "N-011",
+          "relation": "shared-prerequisite-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-011",
+          "relation": "shared-prerequisite-partial"
+        }
+      ],
+      "scope": "Genuine native TCPSERVERWRAP ID/frame/ref/close/accept barrier prerequisite, no public onconnection MakeCallback or supplied-fd activation. Existing7native groups target-only and reused, zero candidate/guest runtime evidence.",
+      "implementationComplete": false,
+      "freshEvidence": {
+        "report": ".context/core262-batch-root-controls-r1/report.json",
+        "sha256": "ceaaaec25c063ed2680228f37155c9c564535958f278492224630ec2c3ca6e6a",
+        "candidateGroups": 0,
+        "scope": "One candidate-current-core crypto8/statfs8 composition pass against SHA-bound prior native outputs. Native scheduler/key/Buffer/Values/EventPlatform/digest/fs/POSIX references are explicit native dependencies; no candidate listener/cache JSAPI/kernel/guest execution. Original statfs cache P2 correction is source-only; fabricated filesystem measurements/FIPS/normalizer remain real gaps. Original failures/timeouts not rerun or relabeled.",
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false
+      },
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "producerSeal": {
+        "path": ".context/server-listener-async-owner-agent/SEAL.json",
+        "sha256": "f12cddd90d1f9b37c76faf29d4ce58824ecfa858f047f7836bccee20d6c27985"
+      },
+      "currentSourceBinding": "658cd4315488571193edddbe9c3cb6b91563033b8de9c2fcf73a6cd0d40bbd4f",
+      "freshCandidateCompositionGroups": 0
+    },
+    {
+      "id": "crypto-webidl",
+      "family": "crypto",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/crypto.md",
+          "findingId": "C-001",
+          "relation": "shared-prerequisite-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/crypto.md",
+          "findingId": "C-007",
+          "relation": "shared-prerequisite-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/crypto.md",
+          "findingId": "C-015",
+          "relation": "shared-prerequisite-partial"
+        }
+      ],
+      "scope": "Whole unchanged pinned crypto WebIDL converters/validators consumed by real lazy KeyObject.toCryptoKey and actual private brands/usage/digest prerequisites;8candidate current-core selected groups vs reused native8. Two actual valid import/FIPS-validator frontiers remain nonpasses.",
+      "implementationComplete": false,
+      "freshEvidence": {
+        "report": ".context/core262-batch-root-controls-r1/report.json",
+        "sha256": "ceaaaec25c063ed2680228f37155c9c564535958f278492224630ec2c3ca6e6a",
+        "candidateGroups": 8,
+        "scope": "One candidate-current-core crypto8/statfs8 composition pass against SHA-bound prior native outputs. Native scheduler/key/Buffer/Values/EventPlatform/digest/fs/POSIX references are explicit native dependencies; no candidate listener/cache JSAPI/kernel/guest execution. Original statfs cache P2 correction is source-only; fabricated filesystem measurements/FIPS/normalizer remain real gaps. Original failures/timeouts not rerun or relabeled.",
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false
+      },
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "producerSeal": {
+        "path": ".context/crypto-webidl-owner-agent/SEAL.json",
+        "sha256": "b59ed25cb86c8629a22aff8ad093fd2984044e3999ddea47bb98fb43df9fa737"
+      },
+      "currentSourceBinding": "658cd4315488571193edddbe9c3cb6b91563033b8de9c2fcf73a6cd0d40bbd4f",
+      "freshCandidateCompositionGroups": 8
+    },
+    {
+      "id": "statfs-corrected",
+      "family": "filesystem",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/filesystem.md",
+          "findingId": "FS-006",
+          "relation": "direct-selected-partial"
+        },
+        {
+          "document": "tests/nodejs/audit/filesystem-contracts.md",
+          "findingId": "FS-016",
+          "relation": "direct-selected-partial"
+        }
+      ],
+      "scope": "Actual guest statfs work/frontends with separately reviewed per-environment/per-realm Number/BigInt shared binding arrays and fill-before-before-hook native ownership correction.8candidate frontend groups over native FS backend vs reused native8; cache JSAPI remains uncompiled/unexecuted. Backend fake capacity/type/inode measurements remain implementation gaps.",
+      "implementationComplete": false,
+      "freshEvidence": {
+        "report": ".context/core262-batch-root-controls-r1/report.json",
+        "sha256": "ceaaaec25c063ed2680228f37155c9c564535958f278492224630ec2c3ca6e6a",
+        "candidateGroups": 8,
+        "scope": "One candidate-current-core crypto8/statfs8 composition pass against SHA-bound prior native outputs. Native scheduler/key/Buffer/Values/EventPlatform/digest/fs/POSIX references are explicit native dependencies; no candidate listener/cache JSAPI/kernel/guest execution. Original statfs cache P2 correction is source-only; fabricated filesystem measurements/FIPS/normalizer remain real gaps. Original failures/timeouts not rerun or relabeled.",
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false
+      },
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "producerSeal": {
+        "path": ".context/statfs-owner-agent/SEAL.json",
+        "sha256": "dfd729749ef179e230a4d46f901e366d04f111b83710442c83b6254ad3660ad0"
+      },
+      "currentSourceBinding": "658cd4315488571193edddbe9c3cb6b91563033b8de9c2fcf73a6cd0d40bbd4f",
+      "additiveCorrectionSeal": {
+        "path": ".context/statfs-binding-cache-correction-agent/SEAL.json",
+        "sha256": "f7dfbe62d32c882ba29d8e60a61f4c715cda1a280292baa1eda6dd51bac4e34c"
+      },
+      "independentCorrectionReview": {
+        "path": ".context/statfs-cache-correction-root-review-r1/review.json",
+        "sha256": "77ab8601d91f2a9df87019bdf3e924bb73134840474e4e0b57b36d143cf71e62"
+      },
+      "freshCandidateCompositionGroups": 8
+    }
+  ],
+  "batchFocusedControlReport": {
+    "report": ".context/core262-batch-root-controls-r1/report.json",
+    "sha256": "ceaaaec25c063ed2680228f37155c9c564535958f278492224630ec2c3ca6e6a",
+    "scope": "One candidate-current-core crypto8/statfs8 composition pass against SHA-bound prior native outputs. Native scheduler/key/Buffer/Values/EventPlatform/digest/fs/POSIX references are explicit native dependencies; no candidate listener/cache JSAPI/kernel/guest execution. Original statfs cache P2 correction is source-only; fabricated filesystem measurements/FIPS/normalizer remain real gaps. Original failures/timeouts not rerun or relabeled."
+  },
+  "batchReceiptIndex": {
+    "report": ".context/core262-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "a07d6c78646774a3affcd685483ea81e4eb1350abfdbb2617441695226c048b9",
+    "scope": "Actual completed source binding/check/import receipts plus preserved failed-preparation/successor provenance, parent-reviewed; no global build-cache or guest proof."
+  },
+  "historicalOnlyEvidence": {
+    "crypto": {
+      "path": ".context/crypto-webidl-owner-agent/controls-r3/native.stdout",
+      "sha256": "9447622309462f4cddd4e95c64aaf2738f9d54bd703761d4417291af88d9c172"
+    },
+    "statfs": {
+      "path": ".context/statfs-owner-agent/evidence/native.stdout",
+      "sha256": "f5e07527cfacc99c875795f6724ec8d75f14d028154e74333668ae951ed6bf45"
+    },
+    "listener": {
+      "path": ".context/server-listener-async-owner-agent/evidence/native-r3.stdout",
+      "sha256": "23b271889f3ac63549ffdee50b545adef5d5ff6fd74c20235c5906cf2389d4d3"
+    }
+  },
+  "actualCryptoNonpasses": {
+    "validPublicImport": {
+      "name": "Error",
+      "code": "ERR_METHOD_NOT_IMPLEMENTED",
+      "message": "The WebCrypto algorithm/import owner method is not implemented"
+    },
+    "fipsDependentValidator": {
+      "name": "Error",
+      "code": "ERR_METHOD_NOT_IMPLEMENTED",
+      "message": "The Crypto FIPS state owner method is not implemented"
+    }
+  },
+  "statfsCacheOwnerExecuted": false,
+  "backendMeasurementGapsRemain": true,
+  "at": "2026-11-08T08:09:31.222104+00:00",
+  "recipeRevision": 262,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

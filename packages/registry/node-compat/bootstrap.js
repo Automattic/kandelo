@@ -1816,8 +1816,6 @@ const fs = (() => {
         futimesSync,
         fsyncSync,
         fdatasyncSync,
-        // No statfs primitive either; mirrors fs/promises.statfs (honest stub).
-        statfsSync: _notImpl('fs', 'statfsSync'),
         mkdtempSync,
 
         // Async versions
@@ -1918,7 +1916,6 @@ const fs = (() => {
     // surface without a real implementation. See docs/posix-status.md.
     mod.promises.link = _notImpl('fs/promises', 'link');
     mod.promises.lutimes = _notImpl('fs/promises', 'lutimes');
-    mod.promises.statfs = _notImpl('fs/promises', 'statfs');
 
     return mod;
 })();
@@ -3426,6 +3423,7 @@ Object.assign(crypto, _createNodeCryptoDigest({
 }));
 const _nodeKeyURLHref = Object.getOwnPropertyDescriptor(_nodeWebPlatform.URL.prototype, 'href').get;
 const _nodeCryptoKeys = _createNodeCryptoKeys({
+    webidl: _nodeEventPlatform.require('internal/webidl'),
     constants: _nodeConstantBinding,
     getX509: () => _nodeX509,
     native: _nodeNative, values: _nodeValues, Buffer, types: util.types,

@@ -1054,7 +1054,7 @@ if error_section.count(old) != 1:
 error_section = error_section.replace(old, '  if (ErrorCaptureStackTrace !== undefined) ErrorCaptureStackTrace(error, handleErrorFromBinding);')
 metadata_adapter = (root / 'path-metadata-adapter.js').read_text()
 for marker, content in [
-    ('/* NODE_METADATA_SHARED */', '\n'.join([metadata_sections.pop('public-makeCallback'), metadata_sections.pop('public-vfsVoid'), error_section])),
+    ('/* NODE_METADATA_SHARED */', '\n'.join([metadata_sections.pop('public-makeCallback'), metadata_sections.pop('public-vfsVoid'), metadata_sections.pop('shared-StatFs'), metadata_sections.pop('shared-getStatFsFromBinding'), error_section])),
     ('/* NODE_METADATA_PUBLIC */', '\n'.join(value for key, value in metadata_sections.items() if key.startswith('public-'))),
     ('/* NODE_METADATA_PROMISES */', '\n'.join(value for key, value in metadata_sections.items() if key.startswith('promises-'))),
 ]:
@@ -1733,6 +1733,34 @@ if hashlib.sha256(section.encode()).hexdigest() != selector['sha256']:
 if syntax_adapter.count('/* NODE_ENTRY_FORMAT_SELECTION */') != 1:
     raise ValueError('Review entry format marker')
 bundle += syntax_adapter.replace('/* NODE_ENTRY_FORMAT_SELECTION */', section) + '\n'
+crypto_webidl_spec = json.loads((root / 'crypto-webidl-sources.json').read_text())
+if crypto_webidl_spec['version'] != target['version'] or crypto_webidl_spec['commit'] != target['source']['commit']:
+    raise ValueError('Crypto WebIDL target pin mismatch')
+crypto_webidl_sources = {}
+for name, item in crypto_webidl_spec['sources'].items():
+    raw = (root / item['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != item['sha256']:
+        raise ValueError('Crypto WebIDL source identity mismatch: ' + name)
+    crypto_webidl_sources[name] = raw.decode('utf-8')
+crypto_webidl_helpers = []
+for name, selector in crypto_webidl_spec['helpers'].items():
+    raw = crypto_webidl_sources[selector['source']]
+    if raw.count(selector['start']) != 1:
+        raise ValueError('Ambiguous Crypto WebIDL helper: ' + name)
+    start = raw.index(selector['start'])
+    selected = raw[start:start + selector['length']]
+    if hashlib.sha256(selected.encode()).hexdigest() != selector['sha256']:
+        raise ValueError('Crypto WebIDL helper identity mismatch: ' + name)
+    crypto_webidl_helpers.append(selected)
+crypto_webidl_adapter = (root / 'crypto-webidl-platform-adapter.js').read_text()
+for marker, selected in [
+    ('/* NODE_CRYPTO_WEBIDL_HELPERS */', '\n'.join(crypto_webidl_helpers)),
+    ('/* NODE_CRYPTO_WEBIDL_MODULE */', crypto_webidl_sources['lib/internal/crypto/webidl.js']),
+]:
+    if crypto_webidl_adapter.count(marker) != 1:
+        raise ValueError('Review Crypto WebIDL marker: ' + marker)
+    crypto_webidl_adapter = crypto_webidl_adapter.replace(marker, selected)
+bundle += crypto_webidl_adapter + '\n'
 keys_spec = manifest['keysPlatform']
 for name, item in keys_spec['sources'].items():
     if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:

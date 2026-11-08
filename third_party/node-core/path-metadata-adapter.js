@@ -5,6 +5,7 @@ function _createNodePathMetadata(platform) {
         MathTrunc, NumberIsFinite, TypeError, RangeError, ObjectDefineProperty } = _createNodePrimordials();
     const { parseFileMode, validateFunction, validateInteger } = platform.values.validators;
     const { getValidatedPath, toUnixTimestamp, constants: { kMaxUserId } } = platform.utils;
+    const { kEmptyObject } = platform.values.util;
     const { FSReqCallback, vfsState, makeError } = platform.truncation;
     const { F_OK, R_OK, W_OK, X_OK } = platform.constants;
     const maximumAccessMode = F_OK | R_OK | W_OK | X_OK;
@@ -37,7 +38,15 @@ function _createNodePathMetadata(platform) {
         if (status < 0) throw makeError(status, name === 'utimes' ? 'utime' : name === 'lutimes' ? 'lutime' : name,
             path, name === 'link' ? first : undefined);
     }
+    function statfsBinding(path, bigint, request) {
+        if (request !== undefined) return platform.native.fsStatfsPromise(path, bigint,
+            request === kUsePromises ? makeError : request);
+        const result = platform.native.fsStatfsSync(path, bigint);
+        if (typeof result === 'number' && result < 0) throw makeError(result, 'statfs', path);
+        return result;
+    }
     const binding = {
+        statfs: statfsBinding,
         access: (path, mode, req) => operation('access', path, mode, undefined, req),
         chmod: (path, mode, req) => operation('chmod', path, mode, undefined, req),
         chown: (path, uid, gid, req) => operation('chown', path, uid, gid, req),
@@ -50,11 +59,11 @@ function _createNodePathMetadata(platform) {
     function publicAPIs() {
         /* NODE_METADATA_PUBLIC */
         return { access, accessSync, chmod, chmodSync, chown, chownSync,
-            lchown, lchownSync, utimes, utimesSync, lutimes, lutimesSync, link, linkSync };
+            lchown, lchownSync, utimes, utimesSync, lutimes, lutimesSync, link, linkSync, statfs, statfsSync };
     }
     function promiseAPIs() {
         /* NODE_METADATA_PROMISES */
-        return { access, chmod, chown, lchown, utimes, lutimes, link };
+        return { access, chmod, chown, lchown, utimes, lutimes, link, statfs };
     }
     return { api: publicAPIs(), promises: promiseAPIs() };
 }

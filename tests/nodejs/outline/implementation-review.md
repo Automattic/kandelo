@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source262 adds listener async ownership, Crypto WebIDL prerequisites and statfs shared-binding ownership in one source batch. Existing native evidence is reused with exact identity; new candidate frontend observations do not execute the new listener/cache JSAPI or kernel backend.
+See [source scope](core-batch262-implementation.md).
+
 Source261 combines returned timer/selected primitive-ID ownership, builtin ESM synchronization and CryptoKey usage-mask foundations in one source batch. Shared source/package reports and per-feature focused evidence retain explicit native dependencies. Historical component evidence, original timeouts and preparation failures stay separate; current guest/four-host conformance remains unestablished.
 See [source scope](core-batch261-implementation.md).
 

@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sources": {
+    "lib/internal/crypto/webidl.js": {
+      "path": "upstream/keys/lib/internal/crypto/webidl.js",
+      "upstreamPath": "lib/internal/crypto/webidl.js",
+      "sha256": "12470f06d41f4e32bc6a225fde6ccd7825bc57a73ed8dca7326adb4abcf16cdf"
+    },
+    "lib/internal/crypto/util.js": {
+      "path": "upstream/keys/lib/internal/crypto/util.js",
+      "upstreamPath": "lib/internal/crypto/util.js",
+      "sha256": "79c2825d2173435a80f914aeca952032826bb61ea5a2835c315f08ced5963337"
+    }
+  },
+  "helpers": {
+    "maxBufferLength": {
+      "source": "lib/internal/crypto/util.js",
+      "start": "const kMaxBufferLength = ",
+      "length": 40,
+      "sha256": "6d52cb23412b7b56dc891b5f100c3dae16487ca8d0588d9d79ee9d30cc9f97e4"
+    },
+    "namedCurves": {
+      "source": "lib/internal/crypto/util.js",
+      "start": "const kNamedCurveAliases = ",
+      "length": 105,
+      "sha256": "5331e583fe6616ce1bc4cf569d2aa0115bc5595ba77cd54aaf32052a86061e48"
+    },
+    "byteLength": {
+      "source": "lib/internal/crypto/util.js",
+      "start": "function getBufferSourceByteLength(",
+      "length": 444,
+      "sha256": "efbb005ba2c91ae8584436400f30fed47fbebe27bcdc6bc7efac2f9a637cf674"
+    },
+    "maxBufferValidation": {
+      "source": "lib/internal/crypto/util.js",
+      "start": "function validateMaxBufferLength(",
+      "length": 223,
+      "sha256": "7c87ff9a747373ab029084901c5a9cbb67e8f462d837b66b00ce999dfccf876c"
+    },
+    "kmacValidation": {
+      "source": "lib/internal/crypto/util.js",
+      "start": "function validateKmacKeyLength(",
+      "length": 153,
+      "sha256": "e89ef649e8b1176b6fc49ec4df791a8983478207082140a770510dd140915f69"
+    },
+    "publicExponent": {
+      "source": "lib/internal/crypto/util.js",
+      "start": "function bigIntArrayToUnsignedInt(",
+      "length": 441,
+      "sha256": "7f2085fd672ab39adf383ed4758b2aaf29f9b90d0daa8d6e921f996b43db7f91"
+    }
+  },
+  "scope": "Complete unchanged crypto WebIDL module and actual selected pure util helpers consumed by keys; no algorithm normalization/import/Subtle/provider/FIPS capability claim. FIPS-dependent validators require a missing real native state owner."
+}

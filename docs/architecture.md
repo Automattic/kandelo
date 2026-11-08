@@ -7327,3 +7327,7 @@ Source260 adds normal-open TLS transport shutdown ownership over actual retained
 ### Batched timer, builtin and key-rights foundations
 
 Source261 combines returned timer/selected primitive-ID ownership, builtin ESM synchronization and CryptoKey usage-mask foundations in one source batch. Shared source/package reports and per-feature focused evidence retain explicit native dependencies. Historical component evidence, original timeouts and preparation failures stay separate; current guest/four-host conformance remains unestablished.
+
+### Batched listener, crypto WebIDL and statfs ownership
+
+Source262 combines real listener async lifetime, complete pinned crypto WebIDL prerequisite and native statfs binding-cache correction. One actual shared source/package checkpoint preserves three feature scopes, reused native references, original failures and unresolved guest/backend obligations. Source implementation is not conformance.

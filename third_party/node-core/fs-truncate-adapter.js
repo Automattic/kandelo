@@ -22,12 +22,12 @@ function _createNodeFsTruncation(platform) {
         return ReflectApply(this.oncomplete, this,
             error !== null || value === undefined ? [error] : [null, value]);
     }
-    function FSReqCallback() {
+    function FSReqCallback(useBigInt = false) {
         if (new.target === undefined) throw new TypeError('Filesystem request requires new');
         const prototype = new.target.prototype;
         return platform.native.createFsRequest(
             prototype !== null && (typeof prototype === 'object' || typeof prototype === 'function') ? prototype : FSReqCallback.prototype,
-            complete);
+            complete, useBigInt === true);
     }
     ObjectDefineProperty(FSReqCallback.prototype, 'cancel', {
         value: function cancel() { return platform.native.cancelFsRequest(this); },

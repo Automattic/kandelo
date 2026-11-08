@@ -71,12 +71,17 @@ function _createNodeCryptoKeys(platform) {
     const keyUsages = _createNodeCryptoKeyUsages();
     function missingWebCrypto() { throw new ERR_METHOD_NOT_IMPLEMENTED('WebCrypto algorithm/import owner'); }
     /* NODE_KEY_BIGINT */
+    let cryptoWebIDL;
     const modules = new SafeMap();
     const factories = {
         /* NODE_KEY_MODULES */
     };
     function require(name) {
         if (modules.has(name)) return modules.get(name).exports;
+        if (name === 'internal/crypto/webidl') return cryptoWebIDL ??= _createNodeCryptoWebIDL({
+            values: platform.values, types: platform.types, webidl: platform.webidl,
+            keys: require('internal/crypto/keys'), digestHelpers: platform.digestHelpers,
+        });
         if (name === 'internal/crypto/x509') return platform.getX509();
         if (name === 'buffer') return { Buffer: platform.Buffer };
         if (name === 'internal/validators') return platform.values.validators;

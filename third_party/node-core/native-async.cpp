@@ -66,6 +66,9 @@ struct KandeloNativeAsyncState {
   // keys, so TCP prototypes do not keep otherwise-dead realms alive.
   JS::PersistentRootedObject socketPrototypes;
   JS::PersistentRootedObject terminalPrototypes;
+  // Per-realm filesystem BindingData storage, weakly keyed by realm globals.
+  // The process environment owns the map; native cache values own their spans.
+  JS::PersistentRootedObject statfsBindings;
   // Actual per-environment suppression storage, shared with the pinned JS
   // capture functions. Never retain a movable data pointer across JS or GC.
   JS::PersistentRootedObject uncaughtCaptureToggle;
@@ -357,6 +360,7 @@ static void KandeloShutdownNativeAsync(ShellContext* sc) {
   state->execution.Clear();
   state->socketPrototypes.reset();
   state->terminalPrototypes.reset();
+  state->statfsBindings.reset();
   state->domainTrampoline.reset();
   state->domainTrampolineGate.reset();
   state->uncaughtCaptureToggle.reset();
