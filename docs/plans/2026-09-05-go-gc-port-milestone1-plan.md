@@ -43,6 +43,31 @@ are corrected. Firefox's test-owned storage cleanup still reports EACCES;
 this does not turn the successful assertions into a cleanup guarantee.
 The current 33-case rendered WordPress/persistence run must be restarted.
 
+**Current kernel wait coverage and disk interruption:** all four existing,
+hash-verified f605 wait/netpoll programs pass Node with empty stderr and
+host diagnostics (`current-kernel-go-waits-1107-193622-9664`, 51 seconds).
+The corresponding 12 Chromium/Firefox/WebKit cases pass on kernel
+`6f5afada9ae3` (`current-kernel-go-browser-1107-194258-966b`, 1m07s job).
+This refreshes selected functional evidence, not fixture reproduction,
+physical reclamation or broad Go conformance. The latter run still uses
+the previous cleanup helper and retains its teardown EACCES separately.
+
+The 33-case retry `wordpress-current-browser33-v2-1107-193237-daeb` is
+stopped143 after 11m19s: six Chromium cases pass, the Caddy template case
+fails before WordPress boots with ENOSPC/overlay storage, and the rest
+remain incomplete. It is not an editor-save failure or a passing suite.
+Host disk falls from roughly 2 GiB to 600 MiB free. The normal cache-GC
+policy previously authorized by the user (unused for one day / below ABI
+50) identifies 16.3 GiB, but application safely skips the source cache
+because another workspace's build holds its lock; zero bytes are removed.
+The unrelated owner is Lansing job `mho22-setup-forkchurn-1107-181256-598b`;
+never stop it. Only this idle evaluation checkout's generated Rust debug
+outputs are removed, retaining all release binaries, SDK, source, reports,
+verified images and previews; free space then reaches 9.4 GiB. A one-case
+normal Caddy template rerun is pending after recovery. Wait for the peer
+build before applying the same protected cache-GC policy and starting the
+new cgo partial build; do not overlap its large memory/disk demands.
+
 **Private browser storage cleanup:** macOS's deny-delete directory ACLs
 are observed on both Firefox's Downloads and nested Library/Application
 Support in the run-owned home. Cleanup now visits owned directories only,
