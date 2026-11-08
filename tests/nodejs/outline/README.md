@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source267combines twoengine-metadata ownerpartials. Normal source/package evidence stays distinct from uncompiledCPP/realm/GC/lifecycle and publicAPIconformance; all19remainpartial.
+See [source scope](core-metadata-batch267-implementation.md).
+
 Source266adds four scoped IOowner contributions. PublicTTY/detailedTLS/fullFetch remain incomplete; source predicates and packagechecks are not APIpasses.
 See [source scope](core-io-batch266-implementation.md).
 

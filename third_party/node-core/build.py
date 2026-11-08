@@ -2177,7 +2177,35 @@ source_map_adapter = (root / 'source-map-platform-adapter.js').read_text()
 marker = '/* NODE_PUBLIC_SOURCE_MAP */'
 if source_map_adapter.count(marker) != 1:
     raise ValueError('Review public SourceMap marker')
-bundle += source_map_adapter.replace(marker, (root / source_map_spec['sources']['lib/internal/source_map/source_map.js']['path']).read_text()) + '\n'
+source_map_adapter = source_map_adapter.replace(marker, (root / source_map_spec['sources']['lib/internal/source_map/source_map.js']['path']).read_text())
+source_map_helpers = []
+for name, selection in source_map_spec['cacheHelpers'].items():
+    source = (root / source_map_spec['sources'][selection['source']]['path']).read_text()
+    if source.count(selection['start']) != 1:
+        raise ValueError('SourceMap cache helper selection ambiguity: ' + name)
+    begin = source.index(selection['start'])
+    text = source[begin:begin + selection['length']]
+    if hashlib.sha256(text.encode()).hexdigest() != selection['sha256']:
+        raise ValueError('SourceMap cache helper identity mismatch: ' + name)
+    source_map_helpers.append(text)
+source_map_factories = []
+for name, source_name in source_map_spec['cacheModules'].items():
+    text = (root / source_map_spec['sources'][source_name]['path']).read_text()
+    private = source_map_spec['cachePrivateStorage']
+    if source_name == private['source']:
+        for replacement in private['replacements']:
+            if text.count(replacement['before']) != replacement['count']:
+                raise ValueError('SourceMap private storage adaptation mismatch')
+            text = text.replace(replacement['before'], replacement['after'])
+    source_map_factories.append(json.dumps(name) + ': function(module, exports, require, primordials, internalBinding, process) {\n' + text + '\n},')
+for marker, text in {
+    '/* NODE_SOURCE_MAP_CACHE_HELPERS */': '\n'.join(source_map_helpers),
+    '/* NODE_SOURCE_MAP_CACHE_MODULES */': '\n'.join(source_map_factories),
+}.items():
+    if source_map_adapter.count(marker) != 1:
+        raise ValueError('SourceMap cache marker mismatch: ' + marker)
+    source_map_adapter = source_map_adapter.replace(marker, text)
+bundle += source_map_adapter + '\n'
 import_meta_spec = json.loads((root / 'import-meta-sources.json').read_text())
 if import_meta_spec['version'] != manifest['version'] or import_meta_spec['commit'] != manifest['commit']:
     raise ValueError('Import metadata target mismatch')

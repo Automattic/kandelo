@@ -4667,9 +4667,64 @@
         "path": "upstream/source-map/lib/module.js",
         "upstreamPath": "lib/module.js",
         "sha256": "3636f9bea504d82017b7e054810f88894e76e497f8e2dfd8ce8eb06d9083d0c2"
+      },
+      "lib/internal/source_map/source_map_cache_map.js": {
+        "path": "upstream/source-map/lib/internal/source_map/source_map_cache_map.js",
+        "upstreamPath": "lib/internal/source_map/source_map_cache_map.js",
+        "sha256": "56ed03526bdeed4f88fd84a14edb0c005a29bc4b4616e5596414b535a5926272"
+      },
+      "lib/internal/modules/helpers.js": {
+        "path": "upstream/source-map/lib/internal/modules/helpers.js",
+        "upstreamPath": "lib/internal/modules/helpers.js",
+        "sha256": "553da1691f5bae87b339d94322456d57078d6a8a0ad2721faf7bd7ccbf2c0039"
+      },
+      "lib/internal/util.js": {
+        "path": "upstream/source-map/lib/internal/util.js",
+        "upstreamPath": "lib/internal/util.js",
+        "sha256": "4aa900feab2a6cdb84060c0358c569578d31b6f0831224792868ece9b8899951"
       }
     },
-    "scope": "Full unchanged public SourceMap decoding/payload/lookup owner. Stored cache/namespace inputs are references; guest capture/cache/support/stack owners remain missing."
+    "scope": "Full unchanged public SourceMap decoder plus actual CJS compiled ScriptSource URL metadata, pinned cache/find algorithms and actual weak Module lifetime under the real NODE_V8_COVERAGE gate. V8 private slots use an actual SafeWeakMap. No coverage collector/output, enabling API, stack formatter, ESM/VM/generated capture, or conformance completion.",
+    "cacheHelpers": {
+      "getLazy": {
+        "source": "lib/internal/util.js",
+        "start": "function getLazy(initializer) {",
+        "length": 212,
+        "sha256": "acf0f0465c6837255d936e028e54376ebb499adae8d628b0e832d7fc888187b9"
+      },
+      "isUnderNodeModules": {
+        "source": "lib/internal/util.js",
+        "start": "const kNodeModulesRE =",
+        "length": 177,
+        "sha256": "aef023c4fa5fdc72b684434e7d0ad84aeacf83d1a6db87e98804727b37393593"
+      },
+      "normalizeReferrerURL": {
+        "source": "lib/internal/modules/helpers.js",
+        "start": "function normalizeReferrerURL(referrerName) {",
+        "length": 499,
+        "sha256": "98aea9a3de2a84f196e2bf43cfc2ec06eb10d5e40c8aaa65aa1613e95822c5e4"
+      }
+    },
+    "cacheModules": {
+      "internal/source_map/source_map_cache": "lib/internal/source_map/source_map_cache.js",
+      "internal/source_map/source_map_cache_map": "lib/internal/source_map/source_map_cache_map.js"
+    },
+    "cachePrivateStorage": {
+      "source": "lib/internal/source_map/source_map_cache_map.js",
+      "reason": "Replace V8 private-symbol slots with a genuine ephemeron SafeWeakMap keyed by the actual Module; ordinary reflected Symbol properties would expose internal state. All other full pinned cache-map algorithms remain unchanged.",
+      "replacements": [
+        {
+          "before": "moduleInstance[source_map_data_private_symbol] = sourceMapData;",
+          "after": "sourceMapModuleData.set(moduleInstance, sourceMapData);",
+          "count": 1
+        },
+        {
+          "before": "moduleInstance[source_map_data_private_symbol]",
+          "after": "sourceMapModuleData.get(moduleInstance)",
+          "count": 2
+        }
+      ]
+    }
   },
   "fsWholeSync": {
     "source": {

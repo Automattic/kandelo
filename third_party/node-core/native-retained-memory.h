@@ -5,6 +5,11 @@
 #include <atomic>
 #include <cassert>
 #include <cstddef>
+// Guest allocation snapshots use the declared musl allocator. Keep its
+// conditional declaration in the owning header, outside unity include lifting.
+#if defined(__wasm__)
+#  include <malloc.h>
+#endif
 #include <limits>
 #include <memory>
 #include <mutex>

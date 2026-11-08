@@ -10,6 +10,7 @@
 #include "js/ErrorReport.h"
 #include "js/Exception.h"
 #include "js/Modules.h"
+#include "vm/JSScript.h"
 #include "js/friend/ErrorMessages.h"
 namespace {
 static JSFunction* KandeloCompileCommonJsBody(JSContext* cx, HandleString source,
@@ -34,6 +35,32 @@ static bool KandeloTakeModuleSyntaxError(JSContext* cx, unsigned* number) {
   if (!report || report->exnType != JSEXN_SYNTAXERR) return false;
   *number = report->errorNumber;
   JS_ClearPendingException(cx); return true;
+}
+// Compile metadata comes from the actual rooted script, never a regexp over
+// source text or a guessed wrapper/source location. The synchronous private
+// cache consumer runs before any compiled body or patched wrapper executes.
+static bool KandeloPublishCommonJsSourceInfo(JSContext* cx,HandleScript script,
+                                             HandleValue capture) {
+  if(capture.isUndefined())return true;
+  if(!capture.isObject()||!JS::IsCallable(&capture.toObject())) {
+    JS_ReportErrorASCII(cx,"CommonJS source capture must be callable");return false;
+  }
+  auto* source=script->scriptSource();
+  if(!source->hasSourceMapURL()||!source->sourceMapURL()[0])return true;
+  RootedValue sourceURL(cx),sourceMapURL(cx);
+  if(source->hasDisplayURL()) {
+    RootedString value(cx,JS_NewUCStringCopyZ(cx,source->displayURL()));if(!value)return false;
+    sourceURL.setString(value);
+  }
+  RootedString map(cx,JS_NewUCStringCopyZ(cx,source->sourceMapURL()));if(!map)return false;
+  sourceMapURL.setString(map);
+  RootedObject info(cx,JS_NewObjectWithGivenProto(cx,nullptr,nullptr));if(!info)return false;
+  if(!JS_DefineProperty(cx,info,"sourceURL",sourceURL,JSPROP_ENUMERATE)||
+      !JS_DefineProperty(cx,info,"sourceMapURL",sourceMapURL,JSPROP_ENUMERATE))return false;
+  RootedValue metadata(cx,ObjectValue(*info)),ignored(cx);
+  // Ordinary synchronous compilation remains in its caller's execution
+  // scope. This is not a new AsyncWrap/MakeCallback or Promise boundary.
+  return JS_CallFunctionValue(cx,cx->global(),capture,JS::HandleValueArray(metadata),&ignored);
 }
 static bool KandeloNativeModuleSyntax(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -93,6 +120,7 @@ static bool KandeloNativeModuleSyntax(JSContext* cx, unsigned argc, Value* vp) {
     RootedScript script(cx, JS::Compile(cx, options, text)); if (!script) return false;
     RootedObject info(cx, js::CreateScriptPrivate(cx, file)); if (!info) return false;
     JS::SetScriptPrivate(script, ObjectValue(*info));
+    if(!KandeloPublishCommonJsSourceInfo(cx,script,args.get(3)))return false;
     return JS_ExecuteScript(cx, script, args.rval());
   }
   const bool compile = strcmp(mode.get(), "compile") == 0;
@@ -108,6 +136,7 @@ static bool KandeloNativeModuleSyntax(JSContext* cx, unsigned argc, Value* vp) {
     if (!script) return false;
     RootedObject info(cx, js::CreateScriptPrivate(cx, file)); if (!info) return false;
     JS::SetScriptPrivate(script, ObjectValue(*info));
+    if(!KandeloPublishCommonJsSourceInfo(cx,script,args.get(3)))return false;
     args.rval().setObject(*JS_GetFunctionObject(function)); return true;
   }
   if (compile) return false;

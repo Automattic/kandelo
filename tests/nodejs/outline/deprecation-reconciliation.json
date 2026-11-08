@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "c85c9100e91c812f290e8811334ecde4d5754bde3ecb0d56cae5b3ccc5d1fbff",
+    "packages/registry/node-compat/bootstrap.js": "84dd867b1ce6768c2343f5f37f1733a74362514b996e107d0bdc6d5c387733ff",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/asymmetric-keygen-platform-adapter.js": "94b3dc26b1f783b97cb38eaa91baff3be883c66f8d80a6c76568a72ebf0207b0",
@@ -75,7 +75,7 @@
     "third_party/node-core/module-hooks-platform-adapter.js": "a241506687a307fa48c26de60502b1c53fba0490ffae6394e7a8bac95a900e6d",
     "third_party/node-core/module-record-platform-adapter.js": "97f9efa6de24bd12f75f6caf819f6ed9ea5413176660ff1422a7b3f920d96cb7",
     "third_party/node-core/module-sync-resolver-adapter.js": "fff4e5924c1bbc351e785a61ecec79a8a89322466e4e4c47c7da7e9915192b40",
-    "third_party/node-core/module-syntax-platform-adapter.js": "9d414e514dcc5d9740591c2b2e4e29dc096b472269745d43e717300f19d4b272",
+    "third_party/node-core/module-syntax-platform-adapter.js": "d53b4209500d19a791c35385cb568c549c838b80d61a2606f1d3c360099094c6",
     "third_party/node-core/network-ip-adapter.js": "5e34e498fc85f4485d941780175c52676e84743b6bc91f649ed215769dd6912b",
     "third_party/node-core/object-marks-platform-adapter.js": "d22d7faba25610d81b9f8db8f3e509cec6c78b0cdf14d8137d8d7f1863dc5bd6",
     "third_party/node-core/os-platform-adapter.js": "654a45a4e799959eab045fdf5737828202bc24dcd2edf8fa2526cbfc45243a57",
@@ -101,7 +101,7 @@
     "third_party/node-core/server-constructor-adapter.js": "c296b58141685aa178836c01cb85e2e292f0f06641fd56dd31fa630002b61f3f",
     "third_party/node-core/signature-platform-adapter.js": "1e44bb8672c1d51c5b752a25b540e863cf93eecbd366091584fabda62443d7f2",
     "third_party/node-core/socket-stream-adapter.js": "bce6cf865b44a9b8015c541df240d04778e604c0bea7f1c7d0c4881d227243cb",
-    "third_party/node-core/source-map-platform-adapter.js": "cf215318dcfa6a95edd314d85b71a98c4b52f12dc10c646f3ed13a4a4b42c9fc",
+    "third_party/node-core/source-map-platform-adapter.js": "8542a68ffddf23221b3a5001796c990d760b58cff778000b868255f78f372045",
     "third_party/node-core/sqlite-platform-adapter.js": "eb092b1a61b4304b488cd46e888571288f89e6c1a1ec2a3b68df922ebbb387eb",
     "third_party/node-core/stat-watcher-platform-adapter.js": "a39ff9c4d95f076284eb1b3f74e2d3b1a6fd34854cc41e1f1789900904456602",
     "third_party/node-core/stdio-output-platform-adapter.js": "a69246b289cf0ce7d74cf3220cec5a928755c9b3bcd083f8f22dca9c0c23f07d",

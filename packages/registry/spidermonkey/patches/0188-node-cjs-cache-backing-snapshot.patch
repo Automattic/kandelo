@@ -1,0 +1,201 @@
+diff --git a/js/public/MemoryMetrics.h b/js/public/MemoryMetrics.h
+index 289558992d9f480e9d99436ef23e1b6ee8c9bf46..2353a64dd41bf595a8e645208c51c081c4c6d1b8 100644
+--- a/js/public/MemoryMetrics.h
++++ b/js/public/MemoryMetrics.h
+@@ -14,4 +14,5 @@
+ #include "mozilla/MemoryReporting.h"
+
++#include <stdint.h>
+ #include <string.h>
+ #include <type_traits>
+@@ -919,4 +920,35 @@ class ObjectPrivateVisitor {
+ };
+
++// Kandelo's current-runtime object census is deliberately not a V8/process
++// memoryUsage record. Only mallocUsableBytes measures allocator extent; inline
++// payload is logical object storage. Shared/mapped/Wasm/external/native-only
++// stores and unmaterialized views do not become guessed byte measurements.
++struct KandeloArrayBufferSnapshot {
++  uint64_t realms = 0;
++  uint64_t arrayBufferObjects = 0;
++  uint64_t detachedObjects = 0;
++  uint64_t noDataObjects = 0;
++  uint64_t inlineObjects = 0;
++  uint64_t inlinePayloadBytes = 0;
++  uint64_t mallocBackedObjects = 0;
++  uint64_t uniqueMallocAllocations = 0;
++  uint64_t mallocUsableBytes = 0;
++  uint64_t mappedObjects = 0;
++  uint64_t wasmObjects = 0;
++  uint64_t externalObjects = 0;
++  uint64_t userOwnedObjects = 0;
++  uint64_t sharedObjects = 0;
++  uint64_t unmaterializedTenuredTypedArrayObjects = 0;
++  bool nurseryEmpty = false;
++};
++enum class KandeloArrayBufferSnapshotStatus { Ok, Busy, OutOfMemory, Overflow };
++// No JS/object pointers escape the protected walk. Returns Busy rather than
++// finish an active incremental GC/reenter JS. The caller supplies its actual
++// allocator's usable-size operation; this does not infer malloc ownership for
++// any other backing category. Output is committed only on complete success.
++extern JS_PUBLIC_API KandeloArrayBufferSnapshotStatus
++CollectKandeloArrayBufferSnapshot(JSContext* cx, mozilla::MallocSizeOf mallocSizeOf,
++                                  KandeloArrayBufferSnapshot* result);
++
+ extern JS_PUBLIC_API bool CollectGlobalStats(GlobalStats* gStats);
+
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index 7072f226076779cf365746f4db9d894513494fc2..37ab847875eacd1c58bcab392965b8155a71a448 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4985,4 +4985,5 @@ static bool DefineKandeloNodeNative(JSContext* cx) {
+       JS_FN("getBufferLimits", KandeloNativeBufferLimits, 0, 0),
+       JS_FN("engineGcHeapLimit", KandeloNativeEngineGcHeapLimit, 0, 0),
++      JS_FN("backingAllocationSnapshot", KandeloNativeBackingSnapshot, 0, 0),
+       JS_FN("worker", KandeloNativeWorker, 3, 0),
+       JS_FN("locks", KandeloNativeLocks, 6, 0),
+diff --git a/js/src/vm/MemoryMetrics.cpp b/js/src/vm/MemoryMetrics.cpp
+index 8be8607a5b93e3da816d718ff031813405af3e4a..eb9a96597bdcd0fbf2afec24762ee3efa6672ac7 100644
+--- a/js/src/vm/MemoryMetrics.cpp
++++ b/js/src/vm/MemoryMetrics.cpp
+@@ -20,4 +20,5 @@
+ #include "js/HeapAPI.h"
+ #include "util/Text.h"
++#include "vm/ArrayBufferObject.h"
+ #include "vm/BigIntType.h"
+ #include "vm/HelperThreadState.h"
+@@ -28,5 +29,7 @@
+ #include "vm/Runtime.h"
+ #include "vm/Shape.h"
++#include "vm/SharedArrayObject.h"
+ #include "vm/StringType.h"
++#include "vm/TypedArrayObject.h"
+ #include "wasm/WasmInstance.h"
+ #include "wasm/WasmJS.h"
+@@ -771,4 +774,126 @@ JS_PUBLIC_API bool JS::CollectRuntimeStats(JSContext* cx, RuntimeStats* rtStats,
+ }
+
++namespace {
++enum class KandeloBufferKind { Inline, Malloc, Detached, NoData, Mapped, Wasm,
++                               External, UserOwned, Shared, UnmaterializedView };
++struct KandeloBufferRow {
++  KandeloBufferKind kind = KandeloBufferKind::NoData;
++  uintptr_t allocation = 0; // Native malloc identity only; never a GC-cell pointer.
++  uint64_t bytes = 0;
++};
++struct KandeloBufferWalk {
++  MallocSizeOf mallocSizeOf;
++  Vector<KandeloBufferRow, 0, SystemAllocPolicy> rows;
++  uint64_t realms = 0;
++  bool failed = false;
++  explicit KandeloBufferWalk(MallocSizeOf sizeOf) : mallocSizeOf(sizeOf) {}
++};
++void KandeloBufferZone(JSRuntime*, void*, Zone*, const JS::AutoRequireNoGC&) {}
++void KandeloBufferRealm(JSContext*, void* data, Realm*, const JS::AutoRequireNoGC&) {
++  ++static_cast<KandeloBufferWalk*>(data)->realms;
++}
++void KandeloBufferArena(JSRuntime*, void*, gc::Arena*, JS::TraceKind, size_t,
++                        const JS::AutoRequireNoGC&) {}
++void KandeloBufferCell(JSRuntime*, void* data, JS::GCCellPtr cell, size_t,
++                       const JS::AutoRequireNoGC&) {
++  auto* walk = static_cast<KandeloBufferWalk*>(data);
++  if (walk->failed || cell.kind() != JS::TraceKind::Object) return;
++  JSObject* object = &cell.as<JSObject>();
++  KandeloBufferRow row;
++  if (object->is<SharedArrayBufferObject>()) {
++    row.kind = KandeloBufferKind::Shared;
++  } else if (object->is<ArrayBufferObject>()) {
++    auto& buffer = object->as<ArrayBufferObject>();
++    if (buffer.isDetached()) row.kind = KandeloBufferKind::Detached;
++    else switch (buffer.bufferKind()) {
++      case ArrayBufferObject::INLINE_DATA:
++        row.kind = KandeloBufferKind::Inline;row.bytes = buffer.byteLength();break;
++      case ArrayBufferObject::MALLOCED_ARRAYBUFFER_CONTENTS_ARENA:
++      case ArrayBufferObject::MALLOCED_UNKNOWN_ARENA:
++        row.kind = KandeloBufferKind::Malloc;
++        row.allocation = reinterpret_cast<uintptr_t>(buffer.dataPointer());
++        row.bytes = row.allocation ? walk->mallocSizeOf(buffer.dataPointer()) : 0;
++        break;
++      case ArrayBufferObject::NO_DATA: row.kind = KandeloBufferKind::NoData;break;
++      case ArrayBufferObject::MAPPED: row.kind = KandeloBufferKind::Mapped;break;
++      case ArrayBufferObject::WASM: row.kind = KandeloBufferKind::Wasm;break;
++      case ArrayBufferObject::EXTERNAL: row.kind = KandeloBufferKind::External;break;
++      case ArrayBufferObject::USER_OWNED: row.kind = KandeloBufferKind::UserOwned;break;
++      default: MOZ_CRASH("unknown ArrayBuffer backing kind");
++    }
++  } else if (object->is<TypedArrayObject>() && !object->as<TypedArrayObject>().hasBuffer()) {
++    row.kind = KandeloBufferKind::UnmaterializedView;
++  } else return;
++  // System allocation cannot run JS or move GC things. A failed append stops
++  // observation, never publishes a partial success or exception under tracing.
++  if (!walk->rows.append(row)) walk->failed = true;
++}
++} // namespace
++JS_PUBLIC_API JS::KandeloArrayBufferSnapshotStatus
++JS::CollectKandeloArrayBufferSnapshot(JSContext* cx, MallocSizeOf mallocSizeOf,
++                                     KandeloArrayBufferSnapshot* result) {
++  using Status = KandeloArrayBufferSnapshotStatus;
++  MOZ_RELEASE_ASSERT(mallocSizeOf && result);
++  // IterateHeapUnbarriered internally prepares tracing by FinishGC. With no
++  // active incremental collection and no callback before entry, that operation
++  // cannot collect/reenter. Busy contexts fail before taking any data pointers.
++  if (RuntimeHeapIsBusy() || IsIncrementalGCInProgress(cx) || cx->suppressGC ||
++      !cx->isNurseryAllocAllowed()) return Status::Busy;
++  KandeloBufferWalk walk(mallocSizeOf);
++  KandeloArrayBufferSnapshot snapshot;
++  {
++    JS::AutoAssertNoGC nogc(cx);
++    WaitForAllHelperThreads();
++    snapshot.nurseryEmpty = cx->nursery().isEmpty();
++    IterateHeapUnbarriered(cx, &walk, KandeloBufferZone, KandeloBufferRealm,
++                           KandeloBufferArena, KandeloBufferCell);
++    if (walk.failed) return Status::OutOfMemory;
++    // ArrayBuffer allocation is explicitly tenured in this pin. Nursery-only
++    // unmaterialized typed views remain outside this census and are labeled.
++    // Deduplicate native allocation identities while no GC/JS can release them.
++    if (walk.rows.length() > 1) {
++      std::sort(walk.rows.begin(), walk.rows.end(), [](const auto& a, const auto& b) {
++        return a.allocation < b.allocation;
++      });
++    }
++    snapshot.realms = walk.realms;
++    uintptr_t previousAllocation = 0;
++    auto add = [](uint64_t* total, uint64_t bytes) {
++      if (bytes > UINT64_MAX - *total) return false;
++      *total += bytes;return true;
++    };
++    for (const auto& row : walk.rows) {
++      if (row.kind == KandeloBufferKind::Shared) { ++snapshot.sharedObjects;continue; }
++      if (row.kind == KandeloBufferKind::UnmaterializedView) {
++        ++snapshot.unmaterializedTenuredTypedArrayObjects;continue;
++      }
++      ++snapshot.arrayBufferObjects;
++      switch (row.kind) {
++        case KandeloBufferKind::Inline:
++          ++snapshot.inlineObjects;
++          if (!add(&snapshot.inlinePayloadBytes, row.bytes)) return Status::Overflow;
++          break;
++        case KandeloBufferKind::Malloc:
++          ++snapshot.mallocBackedObjects;
++          if (row.allocation && row.allocation != previousAllocation) {
++            ++snapshot.uniqueMallocAllocations;previousAllocation = row.allocation;
++            if (!add(&snapshot.mallocUsableBytes, row.bytes)) return Status::Overflow;
++          }
++          break;
++        case KandeloBufferKind::Detached: ++snapshot.detachedObjects;break;
++        case KandeloBufferKind::NoData: ++snapshot.noDataObjects;break;
++        case KandeloBufferKind::Mapped: ++snapshot.mappedObjects;break;
++        case KandeloBufferKind::Wasm: ++snapshot.wasmObjects;break;
++        case KandeloBufferKind::External: ++snapshot.externalObjects;break;
++        case KandeloBufferKind::UserOwned: ++snapshot.userOwnedObjects;break;
++        default: MOZ_CRASH("unexpected backing snapshot row");
++      }
++    }
++  }
++  // Only native scalars leave tracing. No moving object, raw data pointer or
++  // pending JS root escapes to the caller's subsequent object allocations.
++  *result = snapshot;return Status::Ok;
++}
++
+ JS_PUBLIC_API size_t JS::SystemCompartmentCount(JSContext* cx) {
+   size_t n = 0;

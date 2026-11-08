@@ -7347,3 +7347,7 @@ Source265 combines four scoped owners in one normal generation/check batch. Only
 ### Batched retained terminal IO, TLS certificate and private Fetch owners
 
 Source266 combines real terminal shutdown/completion and encoded-string owners with owned abbreviated TLS certificate material and private currentURL data dispatch. One normal source/package batch has no currentruntime/component evidence; historical TTY3compileattempts/2fixturefailures are credited once, not newrootcompilers.
+
+### Batched CJS source-map cache and backing allocation snapshot owners
+
+Source267adds real compile/cache/weakModule/sourceMap lookup routing and an internal protected backing category/allocator snapshot prerequisite. Ninecanonicalengine inputs and one normal source/package batch do not establish runtime, publicmemoryUsage, stackmapping, coverageoutput or APIclosure.

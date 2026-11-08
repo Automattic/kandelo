@@ -1,0 +1,184 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/loading-contracts.md",
+    "findingIds": [
+      "L-033"
+    ],
+    "relatedFamilies": [
+      "loading",
+      "observability"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/loading-contracts.md",
+        "findingId": "L-033",
+        "relation": "partial-CJS-compiled-source-cache-owner"
+      },
+      {
+        "document": "tests/nodejs/audit/loading.md",
+        "findingId": "L-009",
+        "relation": "partial-CJS-source-map-cache"
+      },
+      {
+        "document": "tests/nodejs/audit/observability.md",
+        "findingId": "O-012",
+        "relation": "partial-shared-measurement-prerequisite"
+      }
+    ],
+    "scope": "PartialCJScompile/cache and internalmeasurement prerequisites only; no publicsource-mapenables/memoryUsage/coverage/census closure."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "cjs-source-map-cache",
+      "scope": "ActualcompiledScript metadata\u2192synchronousrealModulecache admission\u2192pinnedweakidentity/findSourceMap; actualNODE_V8_COVERAGE gating only, native2processes targetreferences, no candidate."
+    },
+    {
+      "feature": "backing-allocation-snapshot",
+      "scope": "Internalcurrent-runtime/allrealms protectedArrayBuffercategory/actualallocatorusable-nominal scalar snapshot; no publicmemoryUsage activation."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core267-metadata-batch-source-r2/report.json",
+    "sha256": "6aace92b9d019b6c79616a7155c08e41bfa182f552930506da9dff5cf3a37857",
+    "guardedInputs": 925,
+    "scope": "One normal267generation/staging/syntax/input check; CJS/cache/nativebacking snapshot sourceonly. No native/currentcomponent reruns or compilers/guest/overall proof. Original R1 staging failure preserved; additive allocator include ownership correction, no generator guard change."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core267-metadata-batch-affected-r2.json",
+    "sha256": "3b6b8e265c5f176b752956da8fa3f72c9bd157b8d54be9ad3a7dabbe9be7b148",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core267-metadata-batch-source-r2/report.json",
+    "sha256": "6aace92b9d019b6c79616a7155c08e41bfa182f552930506da9dff5cf3a37857",
+    "reportScope": "One normal267generation/staging/syntax/input check; CJS/cache/nativebacking snapshot sourceonly. No native/currentcomponent reruns or compilers/guest/overall proof. Original R1 staging failure preserved; additive allocator include ownership correction, no generator guard change.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true,
+    "freshComponentGroups": 0,
+    "freshAPIConformancePasses": 0
+  },
+  "sealedEvidence": {
+    "report": ".context/core267-metadata-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "fcfa7303cc72ebf9cf6865c6abe0c2a5c6c7f84979c3f6afba88fcdbbf186d87",
+    "reusedEvidence": true,
+    "scope": "ExactCJS/backing producers/reviews/source versions and originalsetupnonpasses; native2processes targetonly; backing0runtime."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/cjs-source-map-cache-owner-agent/report.json",
+      "sha256": "29b5f77c93a77020cc87fa26d4f57ef231778a7fa4e937da81a8b2f11b7a38d7",
+      "classification": "Two native-onlyreference processes; first5usableobservations plus authoredwrapperSyntaxErrorsetupnonpass, secondcorrectedwrapperorderingonly. No candidate/runtime/APIpasses.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/backing-snapshot-owner-agent/report.json",
+      "sha256": "026478553067efe3a319a7127292ccf0c4eb7cb71b0ef9913ac2b3d2cfb672a2",
+      "classification": "Wrongarchiveprefix zero-leafguard failure beforeactualedits; source-setupfailure, not compiler/runtimefailure. Actualarchive/186inventory plus187shell-onlycoverage sourceevidence;0candidate/runtime/compilers.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/core267-metadata-batch-tool-run-r1/source-receipt.json",
+      "sha256": "2c525f1fe1b93158b85e882d0641bccc3f5a56c9e8fd73bc59ccec82eca0bef3",
+      "classification": "Actual retained R1 source failure; successor evidence is separate, not reclassification.",
+      "exit": 1,
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "NewCPP/GC/realm/cachelife/IOfailures uncompiled; ESM/VM/generatedcapture, sourceMapenables/formatter/coverageoutput remainmissing.",
+    "NewCPP/allocatorlink/GC/OOM/realm/Worker behavior uncompiled. Unknownraw/shared/Wasm/external/mapped/native-only/unmaterialized bytes excluded/notzeros; completeallocator/process/RSS/V8heap/external/census remainsmissing."
+  ],
+  "featureContributions": [
+    {
+      "id": "cjs-source-map-cache",
+      "family": "loading",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/loading-contracts.md",
+          "findingId": "L-033",
+          "relation": "partial-CJS-compiled-source-cache-owner"
+        },
+        {
+          "document": "tests/nodejs/audit/loading.md",
+          "findingId": "L-009",
+          "relation": "partial-CJS-source-map-cache"
+        }
+      ],
+      "scope": "ActualcompiledScript metadata\u2192synchronousrealModulecache admission\u2192pinnedweakidentity/findSourceMap; actualNODE_V8_COVERAGE gating only, native2processes targetreferences, no candidate.",
+      "remaining": "NewCPP/GC/realm/cachelife/IOfailures uncompiled; ESM/VM/generatedcapture, sourceMapenables/formatter/coverageoutput remainmissing.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "227a68a29b572b7cb928d3454046ae4e4598360309704953f7aa4b499ca3ab25",
+      "producerSeal": {
+        "path": ".context/cjs-source-map-cache-owner-agent/SEAL.json",
+        "sha256": "fe1134d3d5a4ca947d2b5de5e196b030675b0f78ddc47eed2dfe0e3677cbf9e9"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core267-metadata-batch-source-r2/report.json",
+        "sha256": "6aace92b9d019b6c79616a7155c08e41bfa182f552930506da9dff5cf3a37857",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    },
+    {
+      "id": "backing-allocation-snapshot",
+      "family": "observability",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/observability.md",
+          "findingId": "O-012",
+          "relation": "partial-shared-measurement-prerequisite"
+        }
+      ],
+      "scope": "Internalcurrent-runtime/allrealms protectedArrayBuffercategory/actualallocatorusable-nominal scalar snapshot; no publicmemoryUsage activation.",
+      "remaining": "NewCPP/allocatorlink/GC/OOM/realm/Worker behavior uncompiled. Unknownraw/shared/Wasm/external/mapped/native-only/unmaterialized bytes excluded/notzeros; completeallocator/process/RSS/V8heap/external/census remainsmissing.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "227a68a29b572b7cb928d3454046ae4e4598360309704953f7aa4b499ca3ab25",
+      "producerSeal": {
+        "path": ".context/backing-snapshot-owner-agent/SEAL.json",
+        "sha256": "45638f2e6866b864ca286023b9aeee685913d21973327bf7e0373a16f837206e"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core267-metadata-batch-source-r2/report.json",
+        "sha256": "6aace92b9d019b6c79616a7155c08e41bfa182f552930506da9dff5cf3a37857",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    }
+  ],
+  "batchReceiptIndex": {
+    "report": ".context/core267-metadata-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "c326230f02b9a99c176a41791466e6fb73767b52edc61f1aee4ed5cac30c03fd",
+    "scope": "Actual completed source/check/import receipts. Zero newcomponent/native/APIpasses; no historicalrecount or newcompiler/guest."
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "documentationGate": "Historical/native dependencies and failures retain originalscope; current source and package predicates do not establish APIpasses.",
+  "at": "2026-11-08T10:46:47.655033+00:00",
+  "recipeRevision": 267,
+  "lastAcceptedEngine": 263,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

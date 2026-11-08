@@ -29,11 +29,14 @@ function _createNodeModuleSyntax(platform) {
     function esmFormat(filename, source) {
         return platform.getFormat().defaultGetFormat(platform.pathToFileURL(filename), { source });
     }
-    function compile(source, filename) {
+    function compile(source, filename, capture) {
         const records = platform.getRecords();
         if (records.isWrapperPatched())
-            return platform.native.moduleSyntax('wrap', records.Module.wrap(source), filename);
-        return platform.native.moduleSyntax('compile', platform.normalizeSource(source), filename);
+            return platform.native.moduleSyntax('wrap', records.Module.wrap(source), filename,
+                capture === undefined ? undefined : info => capture(info, source));
+        const compiledSource = platform.normalizeSource(source);
+        return platform.native.moduleSyntax('compile', compiledSource, filename,
+            capture === undefined ? undefined : info => capture(info, compiledSource));
     }
     return { contains, commonJsFormat, initialCommonJsFormat, esmFormat, entryIsModule, compile };
 }

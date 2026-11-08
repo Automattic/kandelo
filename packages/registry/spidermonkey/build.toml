@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0188-node-cjs-cache-backing-snapshot.patch",
   "packages/registry/spidermonkey/patches/0187-node-terminal-shutdown-tls-legacy.patch",
   "packages/registry/spidermonkey/patches/0186-node-worker-exec-argv.patch",
   "third_party/node-core/upstream/testing/lib/internal/bench_runner/benchmark.js",
@@ -821,4 +822,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 266
+revision = 267

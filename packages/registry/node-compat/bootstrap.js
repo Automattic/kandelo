@@ -2079,10 +2079,10 @@ const util = (() => {
 
       // Using kDefaultMaxCallStackSizeToCapture as reference
       validateInteger(frameCount, 'frameCount', 1, 200);
-      // The real loader currently publishes no source-map cache entries. The
-      // pinned reconstruction path preserves each original native frame when
-      // no entry exists. Mapping and global source-map activation remain owning
-      // compile/cache/stack prerequisites, not an always-undefined public cache.
+      // CJS now has a real cache under its target environment admission, but
+      // SavedFrame-to-mapped-callsite reconstruction is still unimplemented.
+      // Keep raw frames explicit until that owner and native formatter exist;
+      // a populated map cache alone does not establish mapped stack support.
       // Keep the final observable option read in its target position.
       if (options.sourceMap === true) {
         return _nodeNative.captureCallSites(frameCount);
@@ -5598,7 +5598,11 @@ const _nodeModuleRecords = _createNodeModuleRecords({
 const Module = _nodeModuleRecords.Module;
 Module.Module = Module;
 Module.findPackageJSON = _nodePackageReader.findPackageJSON;
-Module.SourceMap = _createNodeSourceMapPlatform({ values: _nodeValues }).SourceMap;
+const _nodeSourceMaps = _createNodeSourceMapPlatform({
+    values: _nodeValues, process, Buffer, fs, path, url: _nodePackageURL, util,
+});
+Module.SourceMap = _nodeSourceMaps.SourceMap;
+Module.findSourceMap = _nodeSourceMaps.findSourceMap;
 _builtinModules.module = Module;
 _builtinModules.process = process;
 _nodeBuiltinExports = _createNodeBuiltinExports({
@@ -5758,7 +5762,8 @@ function _compileCommonJsModule(mod, source, filename, format) {
     if (format === 'module' || format === 'commonjs-typescript' || format === 'module-typescript' || format === 'typescript') {
         throw new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('Module._compile ' + format + ' source');
     }
-    const wrappedFn = _nodeModuleSyntax.compile(source, filename);
+    const wrappedFn = _nodeModuleSyntax.compile(source, filename, (info, compiledSource) =>
+        _nodeSourceMaps.captureCommonJS(mod, filename, compiledSource, info));
     const dirname = path.dirname(filename);
     const require = _nodeModuleRecords.make(filename, false, mod);
     // Node reads exports once: a getter must not choose a different receiver
