@@ -462,6 +462,7 @@ host/test/rust-compatibility-in-guest.test.ts	prepared-product
 host/test/rust-coverage-in-guest.test.ts	prepared-product
 host/test/rust-debugger.test.ts	prepared-product
 host/test/rust-devtools-in-guest.test.ts	prepared-product
+host/test/rust-man-pages.test.ts	prepared-product
 host/test/rust-native-dependencies-in-guest.test.ts	prepared-product
 host/test/rust-std.test.ts	prepared-product
 host/test/rustc-in-guest.test.ts	prepared-product

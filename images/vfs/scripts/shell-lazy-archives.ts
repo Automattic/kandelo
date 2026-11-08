@@ -99,6 +99,13 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
 
 export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
   {
+    id: "rust-docs",
+    dependency: "rust-docs",
+    resolverPath: "programs/wasm32/rust-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/rustc.1",
+  },
+  {
     id: "rust-profiler-runtime",
     dependency: "rust-profiler-runtime-bundle",
     resolverPath: "programs/wasm32/rust-profiler-runtime.zip",

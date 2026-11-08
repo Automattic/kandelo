@@ -1,0 +1,40 @@
+kind = "program"
+name = "rust-docs"
+version = "1.97.0-nightly-2026-04-27"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = []
+
+# The aggregation recipe is in this repository. Its documentation input is
+# the immutable nightly toolchain component pinned by flake.nix/flake.lock.
+[source]
+provider = "repository"
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT OR Apache-2.0"
+url = "https://github.com/rust-lang/rust/blob/ca9a134e0985765ded9cfdde4030a5df4db7e2bd/COPYRIGHT"
+
+[build]
+script_path = "packages/registry/rust-docs/build.sh"
+
+[[outputs]]
+name = "rust-docs"
+wasm = "rust-docs.zip"
+fork_instrumentation = "disabled"
+
+[[host_tools]]
+name = "rustc"
+version_constraint = ">=1.96"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "cargo"
+version_constraint = ">=1.96"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }

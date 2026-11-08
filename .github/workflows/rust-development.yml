@@ -68,6 +68,7 @@ jobs:
             ./run.sh partial shell cargo rustc kandelo-rustc \
               kandelo-sdk-browser-bundle wasm-fork-instrument \
               rust-profiler-runtime-bundle rust-coverage-tools \
+              rust-docs mandoc-browser-bundle \
               > .context/rust-development-reports/partial-build.log 2>&1
             host_target=$(rustc -vV | sed -n "s/^host: //p")
             for package in kandelo-rust-sdk rust-native-fixtures; do

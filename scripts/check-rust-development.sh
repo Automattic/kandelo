@@ -18,7 +18,7 @@ sdk="$(cd "$(dirname "$sdk")" && pwd)/$(basename "$sdk")"
 native="$(cd "$(dirname "$native")" && pwd)/$(basename "$native")"
 export KANDELO_GUEST_RUST_SDK_BUNDLE="$sdk"
 export KANDELO_GUEST_RUST_NATIVE_FIXTURES="$native"
-export KANDELO_REQUIRE_GUEST_CARGO=1 KANDELO_REQUIRE_GUEST_RUSTC=1
+export KANDELO_REQUIRE_GUEST_CARGO=1 KANDELO_REQUIRE_GUEST_RUSTC=1 KANDELO_REQUIRE_RUST_MANUALS=1
 export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
 export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="${WASM_POSIX_SOURCE_ONLY_BINARY_ROOT:-$repo/local-binaries/source-only-v1}"
 export KANDELO_TEST_REPORT_DIR="${KANDELO_TEST_REPORT_DIR:-$repo/.context/rust-development-reports}"
@@ -57,7 +57,8 @@ case "$mode" in
             test/rust-native-dependencies-in-guest.test.ts \
             test/rust-backtrace.test.ts \
             test/rust-debugger.test.ts \
-            test/rust-coverage-in-guest.test.ts
+            test/rust-coverage-in-guest.test.ts \
+            test/rust-man-pages.test.ts
         ;;
     browser)
         cd "$repo/apps/browser-demos"
@@ -69,6 +70,7 @@ case "$mode" in
             test/rust-native-dependencies-in-guest.spec.ts \
             test/rust-backtrace.spec.ts \
             test/rust-coverage-in-guest.spec.ts \
+            test/rust-man-pages.spec.ts \
             --project=chromium --project=firefox --project=webkit
         # The interactive browser command is specifically a Chromium CDP
         # capability. Select its supported project rather than recording six
