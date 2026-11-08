@@ -1,0 +1,188 @@
+diff --git a/js/src/builtin/Promise.cpp b/js/src/builtin/Promise.cpp
+index 805327ec34ec65ea73674d411427f6d1916b88c3..7ef855608b5b4cededd3c1783a2dcb28fd513660 100644
+--- a/js/src/builtin/Promise.cpp
++++ b/js/src/builtin/Promise.cpp
+@@ -5375,7 +5375,9 @@ static bool PromiseThenNewPromiseCapability(
+   cx->kandeloAsyncPromiseParent() = UndefinedValue();
+   if (C.get() == intrinsic.get() && cx->kandeloPromiseInitActive()) {
+-    double parentId;
+-    if (!GetKandeloPromiseParentId(cx, promiseObj, &parentId)) return false;
+-    cx->kandeloAsyncParentId() = parentId;
++    if (cx->kandeloPromiseAsyncIdsActive()) {
++      double parentId;
++      if (!GetKandeloPromiseParentId(cx, promiseObj, &parentId)) return false;
++      cx->kandeloAsyncParentId() = parentId;
++    }
+     cx->kandeloAsyncPromiseParent() = ObjectValue(*promiseObj);
+   }
+@@ -5435,7 +5437,9 @@ static bool PromiseThenNewPromiseCapability(
+   RootedValue priorParentPromise(cx, cx->kandeloAsyncPromiseParent());
+   if (cx->kandeloPromiseInitActive()) {
+-    double parentId;
+-    if (!GetKandeloPromiseParentId(cx, unwrappedPromise, &parentId)) return nullptr;
+-    cx->kandeloAsyncParentId() = parentId;
++    if (cx->kandeloPromiseAsyncIdsActive()) {
++      double parentId;
++      if (!GetKandeloPromiseParentId(cx, unwrappedPromise, &parentId)) return nullptr;
++      cx->kandeloAsyncParentId() = parentId;
++    }
+     cx->kandeloAsyncPromiseParent() = ObjectValue(*unwrappedPromise);
+   }
+@@ -5610,7 +5614,9 @@ static bool OriginalPromiseThenBuiltin(JSContext* cx, HandleValue promiseVal,
+     RootedValue priorParentPromise(cx, cx->kandeloAsyncPromiseParent());
+     if (cx->kandeloPromiseInitActive()) {
+-      double parentId;
+-      if (!GetKandeloPromiseParentId(cx, promise, &parentId)) return false;
+-      cx->kandeloAsyncParentId() = parentId;
++      if (cx->kandeloPromiseAsyncIdsActive()) {
++        double parentId;
++        if (!GetKandeloPromiseParentId(cx, promise, &parentId)) return false;
++        cx->kandeloAsyncParentId() = parentId;
++      }
+       cx->kandeloAsyncPromiseParent() = ObjectValue(*promise);
+     }
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index e6374c4c9ddc722e98f63bf9f6bd7ad53e2c6f47..aee8978bc8076ebe1e74cbe9e57bb94d13f1571a 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -5167,5 +5167,5 @@ static bool DefineKandeloNodeNative(JSContext* cx) {
+       JS_FN("swapDefaultTriggerAsyncId", KandeloNativeSwapDefaultTriggerAsyncId, 1, 0),
+       JS_FN("setAsyncLifecycle", KandeloNativeSetAsyncLifecycle, 1, 0),
+-      JS_FN("setPromiseHookMode", KandeloNativeSetPromiseHookMode, 3, 0),
++      JS_FN("setPromiseHookMode", KandeloNativeSetPromiseHookMode, 5, 0),
+       JS_FN("setAsyncDestroyTracking", KandeloNativeSetDestroyTracking, 1, 0),
+       JS_FN("drainNativeAsyncDestroyIds", KandeloNativeDrainDestroyIds, 0, 0),
+@@ -5269,4 +5269,5 @@ static bool DefineKandeloNodeNative(JSContext* cx) {
+       JS_FN("digestNames", (KandeloCryptoGuard<KandeloNativeDigestNames>), 0, 0),
+       JS_FN("macNames", (KandeloCryptoGuard<KandeloNativeMacNames>), 0, 0),
++      JS_FN("curveNames", (KandeloCryptoGuard<KandeloNativeCurveNames>), 0, 0),
+       JS_FN("getFipsCrypto", (KandeloCryptoGuard<KandeloNativeGetFipsCrypto>), 0, 0),
+       JS_FN("setFipsCrypto", (KandeloCryptoGuard<KandeloNativeSetFipsCrypto>), 1, 0),
+diff --git a/js/src/vm/JSContext.cpp b/js/src/vm/JSContext.cpp
+index 010a77f88c385cf6d1f63ed6a602611740d7c5a8..cdac842c8a68b9d7c7e0593e87b406fc62e913c4 100644
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -894,8 +894,13 @@ static bool EnsureKandeloPromiseData(JSContext* cx, HandleObject object,
+                                      bool parentOnly) {
+   MOZ_ASSERT(object->is<PromiseObject>());
+-  if (object->as<PromiseObject>().getReservedSlot(PromiseSlot_KandeloAsyncResource).isObject()) return true;
++  const Value prior = object->as<PromiseObject>().getReservedSlot(PromiseSlot_KandeloAsyncResource);
++  if (prior.isObject()) return true;
++  // Raw settled observation owns no AsyncWrap data/ID. Preserve its one-shot
++  // state if a later real async_hooks consumer first requests this identity.
++  const bool settledObserved = prior.isBoolean() && prior.toBoolean();
+   AutoRealm realm(cx, object);
+   Rooted<KandeloAsyncResourceData*> data(cx);
+   if (!NewKandeloAsyncData(cx, &data)) return false;
++  data->setReservedSlot(3, BooleanValue(settledObserved));
+   if (parentOnly) {
+     data->setReservedSlot(1, UndefinedValue());
+@@ -917,6 +922,10 @@ bool js::GetKandeloPromiseParentId(JSContext* cx, HandleObject promise, double*
+ bool js::InitKandeloPromiseResource(JSContext* cx, HandleObject promise) {
+   if (!cx->kandeloPromiseInitActive()) return true;
+-  if (!EnsureKandeloPromiseData(cx, promise, false)) return false;
+-  RootedObject data(cx, &promise->as<PromiseObject>().getReservedSlot(PromiseSlot_KandeloAsyncResource).toObject());
++  RootedValue frame(cx);
++  if (cx->kandeloPromiseAsyncIdsActive()) {
++    if (!EnsureKandeloPromiseData(cx, promise, false)) return false;
++    RootedObject data(cx, &promise->as<PromiseObject>().getReservedSlot(PromiseSlot_KandeloAsyncResource).toObject());
++    frame.set(data->as<KandeloAsyncResourceData>().getReservedSlot(2));
++  }
+   const double parent = cx->kandeloAsyncParentId();
+   RootedValue parentPromise(cx, cx->kandeloAsyncPromiseParent());
+@@ -929,5 +938,4 @@ bool js::InitKandeloPromiseResource(JSContext* cx, HandleObject promise) {
+     cx->kandeloAsyncPromiseParent() = parentPromise;
+   });
+-  RootedValue frame(cx, data->as<KandeloAsyncResourceData>().getReservedSlot(2));
+   return cx->notifyKandeloAsyncLifecycle("promise:init", promise, frame, parentPromise);
+ }
+@@ -936,10 +944,21 @@ bool js::ResolveKandeloPromiseResource(JSContext* cx, HandleObject promise) {
+   RootedObject object(cx, CheckedUnwrapStatic(promise));
+   if (!object || !object->is<PromiseObject>()) return true;
+-  if (!EnsureKandeloPromiseData(cx, object, false)) return false;
+-  Rooted<KandeloAsyncResourceData*> data(cx,
+-      &object->as<PromiseObject>().getReservedSlot(PromiseSlot_KandeloAsyncResource).toObject().as<KandeloAsyncResourceData>());
+-  if (data->getReservedSlot(3).toBoolean()) return true;
+-  data->setReservedSlot(3, BooleanValue(true));
+-  RootedValue frame(cx, data->getReservedSlot(2));
++  RootedValue slot(cx, object->as<PromiseObject>().getReservedSlot(PromiseSlot_KandeloAsyncResource));
++  if (slot.isBoolean() && slot.toBoolean()) return true;
++  if (cx->kandeloPromiseAsyncIdsActive()) {
++    if (!EnsureKandeloPromiseData(cx, object, false)) return false;
++    slot.set(object->as<PromiseObject>().getReservedSlot(PromiseSlot_KandeloAsyncResource));
++  }
++  RootedValue frame(cx);
++  if (slot.isObject()) {
++    Rooted<KandeloAsyncResourceData*> data(cx, &slot.toObject().as<KandeloAsyncResourceData>());
++    if (data->getReservedSlot(3).toBoolean()) return true;
++    data->setReservedSlot(3, BooleanValue(true));
++    frame.set(data->getReservedSlot(2));
++  } else {
++    // This existing private slot records actual observation, not a fabricated
++    // AsyncWrap identity or a persistent child->parent edge.
++    object->as<PromiseObject>().setReservedSlot(PromiseSlot_KandeloAsyncResource, BooleanValue(true));
++  }
+   return cx->notifyKandeloAsyncLifecycle("promise:resolve", promise, frame);
+ }
+@@ -1074,5 +1093,5 @@ void InternalJobQueue::runJobs(JSContext* cx) {
+       RootedObject actualResource(cx, resource ? CheckedUnwrapStatic(resource) : nullptr);
+       const bool promiseJob = actualResource && actualResource->is<PromiseObject>();
+-      const bool entered = resource && (!promiseJob || cx->kandeloPromiseHooksActive());
++      const bool entered = resource && (!promiseJob || cx->kandeloPromiseBeforeActive());
+       // Frames propagate even when no Promise observer is installed, without
+       // allocating an async id or entering a synthetic execution resource.
+@@ -1081,5 +1100,6 @@ void InternalJobQueue::runJobs(JSContext* cx) {
+         interrupted_ = true;break;
+       }
+-      if (entered && ((promiseJob && !EnsureKandeloPromiseData(cx, actualResource, false)) ||
++      if (entered && ((promiseJob && cx->kandeloPromiseAsyncIdsActive() &&
++          !EnsureKandeloPromiseData(cx, actualResource, false)) ||
+           !cx->notifyKandeloAsyncLifecycle(promiseJob ? "promise:before" : "before", resource, snapshot))) {
+         interrupted_ = true;break;
+@@ -1091,8 +1111,10 @@ void InternalJobQueue::runJobs(JSContext* cx) {
+         // witnessed before. The JS Promise owner then conditionally pops only
+         // its actual entered id, as in the pinned Promise after hook.
+-        if (promiseJob && (entered || cx->kandeloPromiseHooksActive())) {
+-          if (!EnsureKandeloPromiseData(cx, actualResource, false) ||
++        if (promiseJob && cx->kandeloPromiseAfterActive()) {
++          if ((cx->kandeloPromiseAsyncIdsActive() &&
++               !EnsureKandeloPromiseData(cx, actualResource, false)) ||
+               !cx->notifyKandeloAsyncLifecycle("promise:after", resource, snapshot)) interrupted_ = true;
+-        } else if (entered && !cx->notifyKandeloAsyncLifecycle("after", resource, snapshot)) interrupted_ = true;
++        } else if (!promiseJob && entered &&
++                   !cx->notifyKandeloAsyncLifecycle("after", resource, snapshot)) interrupted_ = true;
+       });
+       {
+diff --git a/js/src/vm/JSContext.h b/js/src/vm/JSContext.h
+index cbb46a5a80b1601e84c241537e4c5df9c2c1f313..aa47d11abed666140e421ed76b611228dda89563 100644
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -645,12 +645,23 @@ struct JS_PUBLIC_API JSContext : public JS::RootingContext,
+  public:
+   bool& kandeloAsyncJobActive() { return kandeloAsyncJobActive_.ref(); }
+-  enum KandeloPromiseMode : uint8_t { PromiseActive = 1, PromiseInit = 2, PromiseResolve = 4 };
+-  void setKandeloPromiseHookMode(bool active, bool init, bool resolve) {
+-    kandeloPromiseHookMode_ = active ? uint8_t(PromiseActive | (init ? PromiseInit : 0) |
+-                                            (resolve ? PromiseResolve : 0)) : uint8_t(0);
++  // Producer observation is independent from AsyncWrap identity allocation.
++  // Actual raw Promise observers need the object/parent, never an invented ID.
++  enum KandeloPromiseMode : uint8_t {
++    PromiseInit = 1, PromiseBefore = 2, PromiseAfter = 4,
++    PromiseResolve = 8, PromiseAsyncIds = 16
++  };
++  void setKandeloPromiseHookMode(bool init, bool before, bool after,
++                                 bool resolve, bool asyncIds) {
++    const uint8_t observations = uint8_t((init ? PromiseInit : 0) |
++        (before ? PromiseBefore : 0) | (after ? PromiseAfter : 0) |
++        (resolve ? PromiseResolve : 0));
++    kandeloPromiseHookMode_ = observations ?
++        uint8_t(observations | (asyncIds ? PromiseAsyncIds : 0)) : uint8_t(0);
+   }
+-  bool kandeloPromiseHooksActive() { return kandeloPromiseHookMode_.ref() & PromiseActive; }
+   bool kandeloPromiseInitActive() { return kandeloPromiseHookMode_.ref() & PromiseInit; }
++  bool kandeloPromiseBeforeActive() { return kandeloPromiseHookMode_.ref() & PromiseBefore; }
++  bool kandeloPromiseAfterActive() { return kandeloPromiseHookMode_.ref() & PromiseAfter; }
+   bool kandeloPromiseResolveActive() { return kandeloPromiseHookMode_.ref() & PromiseResolve; }
++  bool kandeloPromiseAsyncIdsActive() { return kandeloPromiseHookMode_.ref() & PromiseAsyncIds; }
+   bool& kandeloInternalMicrotask() { return kandeloInternalMicrotask_.ref(); }
+   double allocateKandeloAsyncId() { return ++kandeloAsyncIdCounter_.ref(); }

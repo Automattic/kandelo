@@ -441,7 +441,7 @@ digest_adapter = (root / 'crypto-digest-adapter.js').read_text()
 for marker, name in [('HASH', 'hash'), ('NORMALIZATION', 'normalization'),
                      ('FILTER_NAMES', 'filterNames'), ('BYTE_VALIDATION', 'getArrayBufferOrView'),
                      ('BUFFER_BYTES', 'getBufferSourceBytes'), ('RUNTIME_PROVIDER_CACHE', 'runtimeProviderCache'),
-                     ('GET_MACS', 'getMacs')]:
+                     ('GET_MACS', 'getMacs'), ('GET_CURVES', 'getCurves')]:
     token = '/* NODE_DIGEST_' + marker + ' */'
     if digest_adapter.count(token) != 1:
         raise ValueError('Review digest source marker: ' + marker)
@@ -2208,6 +2208,12 @@ for item in source_map_spec['sources'].values():
     if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:
         raise ValueError('SourceMap source identity mismatch: ' + item['path'])
 source_map_adapter = (root / 'source-map-platform-adapter.js').read_text()
+callsite_marker = '/* NODE_UTIL_CALLSITE_MAPPING */'
+if source_map_adapter.count(callsite_marker) != 1:
+    raise ValueError('Review util callsite mapping owner marker')
+source_map_adapter = source_map_adapter.replace(callsite_marker, '\n'.join(
+    selected_platform_section(util_algorithms, name)
+    for name in ['reconstructCallSite', 'mapCallSite']))
 marker = '/* NODE_PUBLIC_SOURCE_MAP */'
 if source_map_adapter.count(marker) != 1:
     raise ValueError('Review public SourceMap marker')

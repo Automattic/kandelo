@@ -73,13 +73,16 @@ function _createNodeAsyncPlatform(platform) {
         syncDestroyTracking();
         wantPromiseHook = true;
         promiseDestroyTracking = destroyHooksExist();
-        platform.native.setPromiseHookMode(true, initHooksExist() || promiseDestroyTracking,
-            hookExists('promiseResolve'));
+        // Observation channels and AsyncWrap identity admission are distinct.
+        // This existing consumer requires real IDs; raw public observers must
+        // use the shared registry/error owner before they may activate here.
+        platform.native.setPromiseHookMode(initHooksExist() || promiseDestroyTracking,
+            true, true, hookExists('promiseResolve'), true);
     }
     function disablePromiseHookIfNecessary() {
         if (!wantPromiseHook) {
             promiseDestroyTracking = false;
-            platform.native.setPromiseHookMode(false, false, false);
+            platform.native.setPromiseHookMode(false, false, false, false, false);
         }
     }
     function emit(kind, args, isPromise = false) {

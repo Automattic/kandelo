@@ -3,7 +3,7 @@
 function _createNodeSourceMapPlatform(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
-    const { SafeMap, SafeWeakMap, Symbol, RegExpPrototypeExec, StringPrototypeStartsWith, ReflectApply } = primordials;
+    const { ArrayPrototypePush, SafeMap, SafeWeakMap, Symbol, RegExpPrototypeExec, StringPrototypeStartsWith, ReflectApply } = primordials;
     const { ERR_METHOD_NOT_IMPLEMENTED } = platform.values.errors.codes;
     const path = platform.path, pathToFileURL = platform.url?.pathToFileURL;
     const URL = platform.url?.URL;
@@ -58,7 +58,12 @@ function _createNodeSourceMapPlatform(platform) {
     }
     const api = require('internal/source_map/source_map');
     const cache = () => require('internal/source_map/source_map_cache');
+    // This private lookup is the real cache module, independent of a mutable
+    // public Module.findSourceMap export. It does not enable stack formatting.
+    const lazySourceMap = cache;
+    /* NODE_UTIL_CALLSITE_MAPPING */
     return { SourceMap: api.SourceMap,
+        mapCallSites: mapCallSite,
         get findSourceMap() { return cache().findSourceMap; },
         get getSourceMapsSupport() { return cache().getSourceMapsSupport; },
         captureCommonJS(module, filename, source, info) {

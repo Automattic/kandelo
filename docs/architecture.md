@@ -7375,3 +7375,7 @@ Source 272 consumes real SQLite extension policy/loading and existing native cod
 ### HTTP parser resource epochs, TLS registered interest and early stdio constructors
 
 Source273 consumes actual parser reset/resource aliases and callback scopes, TLS registered event-interest/receipt/BIO retry causes, and one earlier actual net module construction with a shared lazy TTY cache. The normal shared source/package batch is not runtime/API conformance. Zero compiler/helper credit; accepted271 remains historical for current272/273 bytes.
+
+### Explicit call-site mapping, curve inventory, Promise producer admission and Fetch Request authority
+
+Source274 connects explicit util sourceMap mapping to the actual CJS map cache, real linked curve inventory and FIPS generation cache, separate Promise observation/identity producer admission consumed by existing async_hooks, and Fetch transport over the admitted private Request state. Public Promise hooks and full mapped stacks/normalizer/Fetch remain held or incomplete. Combined source/input and package checks are not runtime/API conformance; no new compiler credit.

@@ -2086,13 +2086,13 @@ const util = (() => {
 
       // Using kDefaultMaxCallStackSizeToCapture as reference
       validateInteger(frameCount, 'frameCount', 1, 200);
-      // CJS now has a real cache under its target environment admission, but
-      // SavedFrame-to-mapped-callsite reconstruction is still unimplemented.
-      // Keep raw frames explicit until that owner and native formatter exist;
-      // a populated map cache alone does not establish mapped stack support.
-      // Keep the final observable option read in its target position.
+      // Explicit mapping consumes only the actual captured source-map cache.
+      // Keep capture directly in this public function: the existing adapter
+      // trims exactly its own frame and this wrapper, before mapping runs.
+      // The CLI default --enable-source-maps owner remains unimplemented;
+      // this branch does not enable stack formatting or invent option state.
       if (options.sourceMap === true) {
-        return _nodeNative.captureCallSites(frameCount);
+        return _nodeSourceMaps.mapCallSites(_nodeNative.captureCallSites(frameCount));
       }
       return _nodeNative.captureCallSites(frameCount);
     }
@@ -6421,20 +6421,22 @@ globalThis.exports = globalThis.module.exports;
         // HTTP-facing getters or global URL constructor can intercept it.
         const currentURL = requestState.urlList[requestState.urlList.length - 1];
         if (currentURL.protocol === 'data:') return bodyPlatform.fetchDataURL(request);
-        const urlStr = request.url;
-        const mergedHeaders = request.headers;
+        // Undici dispatch consumes the internal Request record. Public
+        // Request URL/method/headers getters and a second global URL parse
+        // must not redirect transport authority after Request admission.
+        // Its public signal getter is deliberately retained by target fetch.
         const signal = request.signal;
-        const method = request.method;
+        const method = requestState.method;
         const requestBody = requestState.body;
 
-        const parsed = new URL(urlStr);
+        const parsed = currentURL;
         const client = parsed.protocol === 'https:' ? https : http;
         const port = parsed.port ? parseInt(parsed.port, 10)
             : (parsed.protocol === 'https:' ? 443 : 80);
 
         // Reduce headers to plain object for http.request
         const headerObj = Object.create(null);
-        const headerList = _nodeFormDataPlatform.headers.getHeadersList(mergedHeaders);
+        const headerList = requestState.headersList;
         for (const [k, v] of headerList) headerObj[k] = v;
         if (headerList.cookies !== null) headerObj['set-cookie'] = headerList.cookies.slice();
 
@@ -6499,7 +6501,7 @@ globalThis.exports = globalThis.module.exports;
                         status: res.statusCode || 0,
                         statusText: res.statusMessage || '',
                         headersList: _nodeFormDataPlatform.headers.getHeadersList(respHeaders),
-                        urlList: [new _nodeWebPlatform.URL(urlStr)],
+                        urlList: requestState.urlList,
                         type: 'basic',
                     }), 'immutable');
                     resolve(response);

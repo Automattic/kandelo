@@ -41,6 +41,7 @@ function _createNodeCryptoDigest(platform) {
     /* NODE_DIGEST_HASH */
     function getHashes() { return filterDuplicateStrings(platform.native.digestNames()); }
     const _getMacs = () => platform.native.macNames();
+    const _getCurves = () => platform.native.curveNames();
     const getFipsCryptoGeneration = platform.native.getFipsCryptoGeneration;
     let _macCache;
     function cachedArrayByFipsGeneration(fn, onRefresh) {
@@ -51,6 +52,7 @@ function _createNodeCryptoDigest(platform) {
         /* NODE_DIGEST_RUNTIME_PROVIDER_CACHE */
     }
     /* NODE_DIGEST_GET_MACS */
+    /* NODE_DIGEST_GET_CURVES */
     function timingSafeEqual(a, b) {
         const result = platform.native.timingSafeEqual(a, b);
         if (typeof result === 'boolean') return result;
@@ -64,5 +66,5 @@ function _createNodeCryptoDigest(platform) {
     }
     if (platform.captureHelpers !== undefined)
         platform.captureHelpers({ getArrayBufferOrView, getBufferSourceBytes, filterDuplicateStrings, getHashes, getMacs });
-    return { hash, getHashes, getMacs, timingSafeEqual };
+    return { hash, getHashes, getMacs, getCurves, timingSafeEqual };
 }

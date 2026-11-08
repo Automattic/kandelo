@@ -327,6 +327,34 @@ static bool KandeloNativeMacNames(JSContext* cx, unsigned argc, Value* vp) {
   }
   args.rval().setObject(*result);return true;
 }
+static bool KandeloNativeCurveNames(JSContext* cx, unsigned argc, Value* vp) {
+  CallArgs args = CallArgsFromVp(argc, vp);
+  std::vector<std::string> names;
+  {
+    // Enumerate through the linked ncrypto provider filter under the same
+    // default-property owner as setFips; no borrowed name survives the lock.
+    std::lock_guard<std::mutex> lock(gKandeloFipsStateMutex);
+    // ECDH::GetCurves also publishes the collected names without turning the
+    // backend's bool into a fabricated capability/error result.
+    ncrypto::Ec::GetCurves([&](std::string_view curve) -> bool {
+      names.emplace_back(curve);
+      return true;
+    });
+  }
+  if (names.size() > UINT32_MAX) { JS_ReportOutOfMemory(cx);return false; }
+  RootedObject result(cx, JS::NewArrayObject(cx, 0));
+  if (!result) return false;
+  for (size_t index = 0; index < names.size(); ++index) {
+    RootedString name(cx, JS_NewStringCopyUTF8N(cx,
+        JS::UTF8Chars(names[index].data(), names[index].size())));
+    if (!name) return false;
+    RootedValue value(cx, StringValue(name));
+    // Own-element publication matches the target native vector-to-array path;
+    // inherited numeric setters cannot intercept actual provider names.
+    if (!JS_DefineElement(cx, result, uint32_t(index), value, JSPROP_ENUMERATE)) return false;
+  }
+  args.rval().setObject(*result);return true;
+}
 static bool KandeloNativeTimingSafeEqual(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp); kandelo::crypto::Bytes a, b;
   KandeloCryptoByteSource first(cx), second(cx);

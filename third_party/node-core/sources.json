@@ -3182,6 +3182,11 @@
         "path": "upstream/digests/src/crypto/crypto_mac.cc",
         "upstreamPath": "src/crypto/crypto_mac.cc",
         "sha256": "14367ebc13307436693216e233818e5fbcb0ebb70de1cd7ddeec377c99ba9f74"
+      },
+      "src/crypto/crypto_ec.cc": {
+        "path": "upstream/keys/src/crypto/crypto_ec.cc",
+        "upstreamPath": "src/crypto/crypto_ec.cc",
+        "sha256": "526b35c048d2d82ac07b761c65d4b4a8c4079351c1bdf4815b48d81cef176123"
       }
     },
     "algorithms": {
@@ -3226,10 +3231,17 @@
         "start": "const getMacs = cachedArrayByFipsGeneration(",
         "length": 137,
         "sha256": "9a481aa7e23e8145cb8e06387def248c5f69ef5cbdf8371eca06ad8d1a586cf4"
+      },
+      "getCurves": {
+        "source": "lib/internal/crypto/util.js",
+        "start": "const getCurves = cachedArrayByFipsGeneration(",
+        "length": 93,
+        "sha256": "4b09a4a0efdfa0f17a9a2131bcc651393786c0cb6de05042ed8afd41d389f6b9"
       }
     },
     "scope": "Pinned one-shot/public algorithm helpers over actual uncached OpenSSL backend; incremental Hash/Hmac/keys/async/FIPS still separate gaps.",
-    "macInventoryScope": "Actual provider MAC names with exact normal-execution FIPS cache loop/getMacs source. V8 startup-snapshot serialization hook is not selected; no isBuildingSnapshot stub or alias-ID/cache claim. Full normalizer still requires genuine KmacJob/key-availability owner."
+    "macInventoryScope": "Actual provider MAC names with exact normal-execution FIPS cache loop/getMacs source. V8 startup-snapshot serialization hook is not selected; no isBuildingSnapshot stub or alias-ID/cache claim. Full normalizer still requires genuine KmacJob/key-availability owner.",
+    "curveInventoryScope": "Actual ncrypto Ec::GetCurves provider-filtered names, exact normal-execution getCurves/FIPS-generation cache and independent returned arrays. No algorithm/import support inference, startup snapshot hook, full WebCrypto normalization or Subtle activation."
   },
   "readlineInterfaces": {
     "sources": {
@@ -3579,9 +3591,21 @@
         "start": "let utilColors;",
         "length": 116,
         "sha256": "6296c75e8ab43c396afd9c7c9db2f096df3b8cc04b4eda24f83153c559dfd55c"
+      },
+      "reconstructCallSite": {
+        "source": "public",
+        "start": "function reconstructCallSite(",
+        "length": 554,
+        "sha256": "e631966b700e075a1141e1fbdbed15e96ce929d8eb8ce74cc28482ef37f38072"
+      },
+      "mapCallSite": {
+        "source": "public",
+        "start": "function mapCallSite(",
+        "length": 260,
+        "sha256": "90520176caadff02afbfc6ba6e6731c6079a6e992b076aaaad83a458746303eb"
       }
     },
-    "scope": "Full portable parseArgs/diff/debounce/throttle algorithms plus pinned styleText/ANSI cache helpers over actual owning dependencies. Native lazy DATA cells route actual export holders; guest timer/async/TTY/color/CLI/realm validation remains open."
+    "scope": "Full portable parseArgs/diff/debounce/throttle algorithms plus pinned styleText/ANSI cache and explicit callsite reconstruction helpers over actual owning dependencies. Native lazy DATA cells route actual export holders; guest timer/async/TTY/color/CLI/realm validation remains open."
   },
   "cryptoRandomJobs": {
     "sources": {

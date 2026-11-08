@@ -8171,13 +8171,16 @@ function _createNodeAsyncPlatform(platform) {
         syncDestroyTracking();
         wantPromiseHook = true;
         promiseDestroyTracking = destroyHooksExist();
-        platform.native.setPromiseHookMode(true, initHooksExist() || promiseDestroyTracking,
-            hookExists('promiseResolve'));
+        // Observation channels and AsyncWrap identity admission are distinct.
+        // This existing consumer requires real IDs; raw public observers must
+        // use the shared registry/error owner before they may activate here.
+        platform.native.setPromiseHookMode(initHooksExist() || promiseDestroyTracking,
+            true, true, hookExists('promiseResolve'), true);
     }
     function disablePromiseHookIfNecessary() {
         if (!wantPromiseHook) {
             promiseDestroyTracking = false;
-            platform.native.setPromiseHookMode(false, false, false);
+            platform.native.setPromiseHookMode(false, false, false, false, false);
         }
     }
     function emit(kind, args, isPromise = false) {
@@ -20012,6 +20015,7 @@ function normalizeCShakeParameter(value, name) {
 
     function getHashes() { return filterDuplicateStrings(platform.native.digestNames()); }
     const _getMacs = () => platform.native.macNames();
+    const _getCurves = () => platform.native.curveNames();
     const getFipsCryptoGeneration = platform.native.getFipsCryptoGeneration;
     let _macCache;
     function cachedArrayByFipsGeneration(fn, onRefresh) {
@@ -20038,6 +20042,8 @@ function normalizeCShakeParameter(value, name) {
   () => {
     _macCache = undefined;
   });
+    const getCurves = cachedArrayByFipsGeneration(
+  () => filterDuplicateStrings(_getCurves()));
     function timingSafeEqual(a, b) {
         const result = platform.native.timingSafeEqual(a, b);
         if (typeof result === 'boolean') return result;
@@ -20051,7 +20057,7 @@ function normalizeCShakeParameter(value, name) {
     }
     if (platform.captureHelpers !== undefined)
         platform.captureHelpers({ getArrayBufferOrView, getBufferSourceBytes, filterDuplicateStrings, getHashes, getMacs });
-    return { hash, getHashes, getMacs, timingSafeEqual };
+    return { hash, getHashes, getMacs, getCurves, timingSafeEqual };
 }
 
 // Ordinary-process public FIPS state over the actual linked native owner.
@@ -116195,7 +116201,7 @@ function _createNodeSysPlatform(platform) {
 function _createNodeSourceMapPlatform(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
-    const { SafeMap, SafeWeakMap, Symbol, RegExpPrototypeExec, StringPrototypeStartsWith, ReflectApply } = primordials;
+    const { ArrayPrototypePush, SafeMap, SafeWeakMap, Symbol, RegExpPrototypeExec, StringPrototypeStartsWith, ReflectApply } = primordials;
     const { ERR_METHOD_NOT_IMPLEMENTED } = platform.values.errors.codes;
     const path = platform.path, pathToFileURL = platform.url?.pathToFileURL;
     const URL = platform.url?.URL;
@@ -117304,7 +117310,37 @@ module.exports = {
     }
     const api = require('internal/source_map/source_map');
     const cache = () => require('internal/source_map/source_map_cache');
+    // This private lookup is the real cache module, independent of a mutable
+    // public Module.findSourceMap export. It does not enable stack formatting.
+    const lazySourceMap = cache;
+    function reconstructCallSite(callSite) {
+  const { scriptName, lineNumber, columnNumber } = callSite;
+  const sourceMap = lazySourceMap().findSourceMap(scriptName);
+  if (!sourceMap) return;
+  const entry = sourceMap.findEntry(lineNumber - 1, columnNumber - 1);
+  if (!entry?.originalSource) return;
+  return {
+    __proto__: null,
+    functionName: entry.name || callSite.functionName,
+    scriptName: entry.originalSource,
+    lineNumber: entry.originalLine + 1,
+    column: entry.originalColumn + 1,
+    columnNumber: entry.originalColumn + 1,
+  };
+}
+
+function mapCallSite(callSites) {
+  const result = [];
+  for (let i = 0; i < callSites.length; ++i) {
+    const callSite = callSites[i];
+    const found = reconstructCallSite(callSite);
+    ArrayPrototypePush(result, found ?? callSite);
+  }
+  return result;
+}
+
     return { SourceMap: api.SourceMap,
+        mapCallSites: mapCallSite,
         get findSourceMap() { return cache().findSourceMap; },
         get getSourceMapsSupport() { return cache().getSourceMapsSupport; },
         captureCommonJS(module, filename, source, info) {

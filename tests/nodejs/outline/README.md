@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Four reviewed partial source contributions batched once; source274 uncompiled/unexecuted, accepted271 historical. All19families remain partial.
+See [source scope](core-mapping-curves-promise-fetch-batch274-implementation.md).
+
 Three reviewed partial owning-source contributions batched once; source273 uncompiled/unexecuted. All19 families remain partial.
 See [source scope](core-http-parser-tls-interest-stdio-batch273-implementation.md).
 

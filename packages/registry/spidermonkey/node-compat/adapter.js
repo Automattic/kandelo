@@ -509,6 +509,7 @@
         hashDigest(algorithm, input, outputLength, digestOptions) { return native.hashDigest(algorithm, input, outputLength, digestOptions); },
         digestNames() { return native.digestNames(); },
         macNames() { return native.macNames(); },
+        curveNames() { return native.curveNames(); },
         getFipsCrypto() { return native.getFipsCrypto(); },
         setFipsCrypto(value) { return native.setFipsCrypto(value); },
         ownsCryptoProcessState() { return native.ownsCryptoProcessState(); },

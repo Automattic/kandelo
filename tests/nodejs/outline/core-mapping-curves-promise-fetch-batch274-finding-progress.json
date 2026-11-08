@@ -1,0 +1,373 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/values-contracts.md",
+    "findingIds": [],
+    "relatedFamilies": [
+      "values",
+      "crypto",
+      "async",
+      "web"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/values-contracts.md",
+        "findingId": "V-034",
+        "relation": "direct-partial",
+        "scope": "Explicit map consumer over actual captured CJS map cache only"
+      },
+      {
+        "document": "tests/nodejs/audit/async-context-contracts.md",
+        "findingId": "A-022",
+        "relation": "direct-partial-prerequisite",
+        "scope": "Actual consumed producer observation-vs-identity admission, not public Promise registry"
+      },
+      {
+        "document": "tests/nodejs/audit/web.md",
+        "findingId": "WEB-003",
+        "relation": "direct-partial",
+        "scope": "Actual private Request method/HeadersList/currentURL transport lineage only"
+      },
+      {
+        "document": "tests/nodejs/audit/web.md",
+        "findingId": "WEB-005",
+        "relation": "direct-partial",
+        "scope": "Actual private Request method/HeadersList/currentURL transport lineage only"
+      }
+    ],
+    "proseReferences": [
+      {
+        "document": "tests/nodejs/audit/crypto.md",
+        "findingId": "C-015",
+        "proseOnly": true,
+        "relation": "related-partial-provider-inventory",
+        "scope": "Broad missing public algorithm/key group; no new definition invented."
+      },
+      {
+        "document": "tests/nodejs/audit/crypto-contracts.md",
+        "section": "Metadata/FIPS/secure heap/engines",
+        "relation": "direct-partial-owning-row",
+        "scope": "Actual getCurves inventory only."
+      }
+    ],
+    "qualifiedRequirements": [
+      {
+        "document": "tests/nodejs/audit/crypto-requirements.json",
+        "selector": "memberRequirements[node:crypto].getCurves",
+        "obligationId": "export:node:crypto:43",
+        "relation": "direct-partial-public-inventory"
+      }
+    ],
+    "scope": "Direct partial values/Fetch source consumers and shared native Promise/curve prerequisites only. C-015 is qualified prose, not a newly invented definition. No API/finding/family closure."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "util-callsites-explicit-source-map",
+      "scope": "Exact pinned reconstruction/iteration selected by full/section hashes and consumed by existing explicit sourceMap:true wrapper. Actual SavedFrame capture and private cache retained."
+    },
+    {
+      "feature": "crypto-real-curve-inventory",
+      "scope": "Actual linked ncrypto Ec curve inventory under genuine FIPS state lock plus exact pinned FIPS-generation cache/copy route; actual public crypto export and native registration."
+    },
+    {
+      "feature": "promise-observation-identity-admission",
+      "scope": "Existing async_hooks consumes five admissions. Engine separates raw observation from ID allocation, retains actual parent/job state and settled-once marker. Public shared registry and ordinary-error activation remain held."
+    },
+    {
+      "feature": "fetch-private-request-transport",
+      "scope": "HTTP dispatch reuses real admitted Request state and URL instead of public method/headers/url getters and a second global URL; response consumes real URL-list clone owner."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core274-mapping-curves-promise-fetch-source-r1/report.json",
+    "sha256": "745a24581cad53732893561eb07793d355dd2de9decf831fa7e9ca6ad93c2574",
+    "guardedInputs": 934,
+    "scope": "One normal source274 source/staging/input check plus four owning contributions and retained273/272/271 guards; no native/component reruns, compiler or guest proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core274-mapping-curves-promise-fetch-affected-r1.json",
+    "sha256": "181cae438e19db1afb8fc412b74d86625b51563cdde5dd9da193649d97939eff",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core274-mapping-curves-promise-fetch-source-r1/report.json",
+    "sha256": "745a24581cad53732893561eb07793d355dd2de9decf831fa7e9ca6ad93c2574",
+    "reportScope": "One normal source274 source/staging/input check plus four owning contributions and retained273/272/271 guards; no native/component reruns, compiler or guest proof.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true,
+    "freshComponentGroups": 0,
+    "freshAPIConformancePasses": 0,
+    "sourceAddressingRequiresActualGuards": true
+  },
+  "sealedEvidence": {
+    "report": ".context/core274-mapping-curves-promise-fetch-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "1161f46a07161190a135dde5dbb0fd2c32d660744ecb25c06b445fd27e8eae1f",
+    "reusedEvidence": true,
+    "scope": "Four reviewed partial source owners with exact producer/reviewer identities, including both Promise reviews and held activation risk. Zero fresh runtime/API/native groups, helpers or compilers."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/node26-selected-engine-270-r1/terminal.json",
+      "sha256": "760189a1b98dc7d26b2b25933dcb8bcf058cf08f6290cedc07d5f595908be4b0",
+      "classification": "Previously counted actual failed source270 engine compilation; historical only, no new274 credit.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/node26-selected-engine-271-r1/terminal.json",
+      "sha256": "ff44d7fb1d0acb9224c1553e3159e3638c5c21a7d62ad5d0617c9ae6c6ba809b",
+      "classification": "Actual resolver0 with original wrapper retention harness1; corrected verifier0/accepted271 retained. Historical, not engine failure or274 execution.",
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "--enable-source-maps default CLI state owner remains absent; no static option value was added. Actual cache admission remains existing NODE_V8_COVERAGE path; no global setSourceMapsSupport or stack formatter activation. Full mapped Error stacks/prepareStackTrace/coverage collection and outputs remain missing. ESM/VM/generated-code capture and node_modules support policy are not implemented by this slice. Existing raw SavedFrame UTF8/VM-position/script identity negatives and native/candidate differences remain unresolved, not rerun or reclassified. Actual map matching for engine sourceURL/displayURL identity, GC/realm/Worker/four-host behavior remains unexecuted. No generated current bundle, native bridge or guest runtime evidence is established by the selected-section source observations.",
+    "V8 startup snapshot serialization lifecycle full normalizer dependencies in normalizer-dependencies.json algorithm import/KeyObject.toCryptoKey and Subtle/Crypto activation all existing crypto audit nonpasses and incomplete owners",
+    "The exact pinned internal/promise_hooks.js shared chronological registry is not yet wired into current async_hooks/public v8; no public promiseHooks export added. Current JS lifecycle directly calls nativeResource/getAsyncResourceInfo. A real shared raw dispatcher must bypass identity lookup for raw-only notifications and use actual existing async_hooks observers when registered. Single-fastpath and deferred multi-hook exceptions need genuine ordinary uncaught dispatch with fromPromise=false, preserving actual process handlers, stop/fatal and exception identity; asyncHookFatal is not an acceptable substitute. Current recoverKandeloUncaughtException is a pending-exception/event-boundary owner. Raw init/before/after invocation needs an entered-scope/epoch policy so reentrant handled errors neither restore retired scopes nor duplicate/skip after delivery. Shared registry activation must preserve ordered hook snapshots, stop callbacks, late-after enablement and deferred async_hooks removal without popping a newly entered ID. Existing custom species/foreign-realm/optimized async-await parent and job channels remain incomplete; no new channel or inferred parent is introduced. Existing destroy/provider/fatal/native queue and GC/realm/OOM/Worker/teardown/four-host gaps remain implementation or validation dependencies. Raw-only mode is not a supported JS caller path in the current adapter. Native lower-layer capacity cannot be interpreted as public runtime support. Future isolated/debugger queue or raw shared registry could remove after admission before an entered async ID retires. Separate actual identity retirement from raw after-observer admission before public activation. Ordinary current queue reentry is guarded; no current public failure established, and general Debugger/reentry/epoch conformance is not proven.",
+    "full SRI owner redirect/filtering/decompression/cache/CORS/dispatcher policy full request/response header policy and trailing-question-mark/URL path transport equivalence repeated public signal getter/abort-admission and scheme ordering body upload/lock/cancel/backpressure/EOF/error/realm/GC/lifetime behavior not newly tested full premature-close cause/socket metadata parity remains failed enqueue/desiredSize publication question remains unresolved four-host and identified guest runtime validation"
+  ],
+  "featureContributions": [
+    {
+      "id": "util-callsites-explicit-source-map",
+      "family": "values",
+      "qualifiedDefinitions": [
+        {
+          "document": "tests/nodejs/audit/values-contracts.md",
+          "findingId": "V-034",
+          "relation": "direct-partial",
+          "scope": "Explicit map consumer over actual captured CJS map cache only"
+        }
+      ],
+      "scope": "Exact pinned reconstruction/iteration selected by full/section hashes and consumed by existing explicit sourceMap:true wrapper. Actual SavedFrame capture and private cache retained.",
+      "remaining": "--enable-source-maps default CLI state owner remains absent; no static option value was added. Actual cache admission remains existing NODE_V8_COVERAGE path; no global setSourceMapsSupport or stack formatter activation. Full mapped Error stacks/prepareStackTrace/coverage collection and outputs remain missing. ESM/VM/generated-code capture and node_modules support policy are not implemented by this slice. Existing raw SavedFrame UTF8/VM-position/script identity negatives and native/candidate differences remain unresolved, not rerun or reclassified. Actual map matching for engine sourceURL/displayURL identity, GC/realm/Worker/four-host behavior remains unexecuted. No generated current bundle, native bridge or guest runtime evidence is established by the selected-section source observations.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "remainingList": [
+        "--enable-source-maps default CLI state owner remains absent; no static option value was added.",
+        "Actual cache admission remains existing NODE_V8_COVERAGE path; no global setSourceMapsSupport or stack formatter activation.",
+        "Full mapped Error stacks/prepareStackTrace/coverage collection and outputs remain missing.",
+        "ESM/VM/generated-code capture and node_modules support policy are not implemented by this slice.",
+        "Existing raw SavedFrame UTF8/VM-position/script identity negatives and native/candidate differences remain unresolved, not rerun or reclassified.",
+        "Actual map matching for engine sourceURL/displayURL identity, GC/realm/Worker/four-host behavior remains unexecuted.",
+        "No generated current bundle, native bridge or guest runtime evidence is established by the selected-section source observations."
+      ],
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/values-contracts.md",
+          "findingId": "V-034",
+          "relation": "direct-partial",
+          "scope": "Explicit map consumer over actual captured CJS map cache only"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "7c00394c4c50e18958e9f90f922561013c59807b7e3ab38616629d360b331201",
+      "producerSeal": {
+        "path": ".context/util-callsites-mapping-owner-agent/SEAL.json",
+        "sha256": "75593cfcaaafb5e9459156e420b2372f9df13bbef4895d0be86b57f3a8a68cc9"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core274-mapping-curves-promise-fetch-source-r1/report.json",
+        "sha256": "745a24581cad53732893561eb07793d355dd2de9decf831fa7e9ca6ad93c2574",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "crypto-real-curve-inventory",
+      "family": "crypto",
+      "qualifiedDefinitions": [],
+      "scope": "Actual linked ncrypto Ec curve inventory under genuine FIPS state lock plus exact pinned FIPS-generation cache/copy route; actual public crypto export and native registration.",
+      "remaining": "V8 startup snapshot serialization lifecycle full normalizer dependencies in normalizer-dependencies.json algorithm import/KeyObject.toCryptoKey and Subtle/Crypto activation all existing crypto audit nonpasses and incomplete owners",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "qualifiedProseReferences": [
+        {
+          "document": "tests/nodejs/audit/crypto.md",
+          "findingId": "C-015",
+          "proseOnly": true,
+          "relation": "related-partial-provider-inventory",
+          "scope": "Broad missing public algorithm/key group; no new definition invented."
+        },
+        {
+          "document": "tests/nodejs/audit/crypto-contracts.md",
+          "section": "Metadata/FIPS/secure heap/engines",
+          "relation": "direct-partial-owning-row",
+          "scope": "Actual getCurves inventory only."
+        }
+      ],
+      "qualifiedRequirements": [
+        {
+          "document": "tests/nodejs/audit/crypto-requirements.json",
+          "selector": "memberRequirements[node:crypto].getCurves",
+          "obligationId": "export:node:crypto:43",
+          "relation": "direct-partial-public-inventory"
+        }
+      ],
+      "remainingList": [
+        "V8 startup snapshot serialization lifecycle",
+        "full normalizer dependencies in normalizer-dependencies.json",
+        "algorithm import/KeyObject.toCryptoKey and Subtle/Crypto activation",
+        "all existing crypto audit nonpasses and incomplete owners"
+      ],
+      "auditRequirements": [],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "7c00394c4c50e18958e9f90f922561013c59807b7e3ab38616629d360b331201",
+      "producerSeal": {
+        "path": ".context/crypto-normalizer-owner-agent/SEAL.json",
+        "sha256": "75b44cadb5ee55ab69beae4554bbf299a220039de63f6d356031b42e202b05be"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core274-mapping-curves-promise-fetch-source-r1/report.json",
+        "sha256": "745a24581cad53732893561eb07793d355dd2de9decf831fa7e9ca6ad93c2574",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "promise-observation-identity-admission",
+      "family": "async",
+      "qualifiedDefinitions": [
+        {
+          "document": "tests/nodejs/audit/async-context-contracts.md",
+          "findingId": "A-022",
+          "relation": "direct-partial-prerequisite",
+          "scope": "Actual consumed producer observation-vs-identity admission, not public Promise registry"
+        }
+      ],
+      "scope": "Existing async_hooks consumes five admissions. Engine separates raw observation from ID allocation, retains actual parent/job state and settled-once marker. Public shared registry and ordinary-error activation remain held.",
+      "remaining": "The exact pinned internal/promise_hooks.js shared chronological registry is not yet wired into current async_hooks/public v8; no public promiseHooks export added. Current JS lifecycle directly calls nativeResource/getAsyncResourceInfo. A real shared raw dispatcher must bypass identity lookup for raw-only notifications and use actual existing async_hooks observers when registered. Single-fastpath and deferred multi-hook exceptions need genuine ordinary uncaught dispatch with fromPromise=false, preserving actual process handlers, stop/fatal and exception identity; asyncHookFatal is not an acceptable substitute. Current recoverKandeloUncaughtException is a pending-exception/event-boundary owner. Raw init/before/after invocation needs an entered-scope/epoch policy so reentrant handled errors neither restore retired scopes nor duplicate/skip after delivery. Shared registry activation must preserve ordered hook snapshots, stop callbacks, late-after enablement and deferred async_hooks removal without popping a newly entered ID. Existing custom species/foreign-realm/optimized async-await parent and job channels remain incomplete; no new channel or inferred parent is introduced. Existing destroy/provider/fatal/native queue and GC/realm/OOM/Worker/teardown/four-host gaps remain implementation or validation dependencies. Raw-only mode is not a supported JS caller path in the current adapter. Native lower-layer capacity cannot be interpreted as public runtime support. Future isolated/debugger queue or raw shared registry could remove after admission before an entered async ID retires. Separate actual identity retirement from raw after-observer admission before public activation. Ordinary current queue reentry is guarded; no current public failure established, and general Debugger/reentry/epoch conformance is not proven.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "remainingList": [
+        "The exact pinned internal/promise_hooks.js shared chronological registry is not yet wired into current async_hooks/public v8; no public promiseHooks export added.",
+        "Current JS lifecycle directly calls nativeResource/getAsyncResourceInfo. A real shared raw dispatcher must bypass identity lookup for raw-only notifications and use actual existing async_hooks observers when registered.",
+        "Single-fastpath and deferred multi-hook exceptions need genuine ordinary uncaught dispatch with fromPromise=false, preserving actual process handlers, stop/fatal and exception identity; asyncHookFatal is not an acceptable substitute.",
+        "Current recoverKandeloUncaughtException is a pending-exception/event-boundary owner. Raw init/before/after invocation needs an entered-scope/epoch policy so reentrant handled errors neither restore retired scopes nor duplicate/skip after delivery.",
+        "Shared registry activation must preserve ordered hook snapshots, stop callbacks, late-after enablement and deferred async_hooks removal without popping a newly entered ID.",
+        "Existing custom species/foreign-realm/optimized async-await parent and job channels remain incomplete; no new channel or inferred parent is introduced.",
+        "Existing destroy/provider/fatal/native queue and GC/realm/OOM/Worker/teardown/four-host gaps remain implementation or validation dependencies.",
+        "Raw-only mode is not a supported JS caller path in the current adapter. Native lower-layer capacity cannot be interpreted as public runtime support.",
+        "Future isolated/debugger queue or raw shared registry could remove after admission before an entered async ID retires. Separate actual identity retirement from raw after-observer admission before public activation. Ordinary current queue reentry is guarded; no current public failure established, and general Debugger/reentry/epoch conformance is not proven."
+      ],
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/async-context-contracts.md",
+          "findingId": "A-022",
+          "relation": "direct-partial-prerequisite",
+          "scope": "Actual consumed producer observation-vs-identity admission, not public Promise registry"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "7c00394c4c50e18958e9f90f922561013c59807b7e3ab38616629d360b331201",
+      "producerSeal": {
+        "path": ".context/public-promise-hooks-owner-agent/SEAL.json",
+        "sha256": "059dc92fbb0740634dcdfd91bc3db35f668f2fb6af76363c149c728b0316532d"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core274-mapping-curves-promise-fetch-source-r1/report.json",
+        "sha256": "745a24581cad53732893561eb07793d355dd2de9decf831fa7e9ca6ad93c2574",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    },
+    {
+      "id": "fetch-private-request-transport",
+      "family": "web",
+      "qualifiedDefinitions": [
+        {
+          "document": "tests/nodejs/audit/web.md",
+          "findingId": "WEB-003",
+          "relation": "direct-partial",
+          "scope": "Actual private Request method/HeadersList/currentURL transport lineage only"
+        },
+        {
+          "document": "tests/nodejs/audit/web.md",
+          "findingId": "WEB-005",
+          "relation": "direct-partial",
+          "scope": "Actual private Request method/HeadersList/currentURL transport lineage only"
+        }
+      ],
+      "scope": "HTTP dispatch reuses real admitted Request state and URL instead of public method/headers/url getters and a second global URL; response consumes real URL-list clone owner.",
+      "remaining": "full SRI owner redirect/filtering/decompression/cache/CORS/dispatcher policy full request/response header policy and trailing-question-mark/URL path transport equivalence repeated public signal getter/abort-admission and scheme ordering body upload/lock/cancel/backpressure/EOF/error/realm/GC/lifetime behavior not newly tested full premature-close cause/socket metadata parity remains failed enqueue/desiredSize publication question remains unresolved four-host and identified guest runtime validation",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "remainingList": [
+        "full SRI owner",
+        "redirect/filtering/decompression/cache/CORS/dispatcher policy",
+        "full request/response header policy and trailing-question-mark/URL path transport equivalence",
+        "repeated public signal getter/abort-admission and scheme ordering",
+        "body upload/lock/cancel/backpressure/EOF/error/realm/GC/lifetime behavior not newly tested",
+        "full premature-close cause/socket metadata parity remains failed",
+        "enqueue/desiredSize publication question remains unresolved",
+        "four-host and identified guest runtime validation"
+      ],
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/web.md",
+          "findingId": "WEB-003",
+          "relation": "direct-partial",
+          "scope": "Actual private Request method/HeadersList/currentURL transport lineage only"
+        },
+        {
+          "document": "tests/nodejs/audit/web.md",
+          "findingId": "WEB-005",
+          "relation": "direct-partial",
+          "scope": "Actual private Request method/HeadersList/currentURL transport lineage only"
+        }
+      ],
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "7c00394c4c50e18958e9f90f922561013c59807b7e3ab38616629d360b331201",
+      "producerSeal": {
+        "path": ".context/fetch-request-authority-owner-agent/SEAL.json",
+        "sha256": "6a2d13794078ba0ca49d6d85c6afc386e197aa3129620ceb203617b7ae097d5c"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core274-mapping-curves-promise-fetch-source-r1/report.json",
+        "sha256": "745a24581cad53732893561eb07793d355dd2de9decf831fa7e9ca6ad93c2574",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    }
+  ],
+  "batchReceiptIndex": {
+    "report": ".context/core274-mapping-curves-promise-fetch-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "7fd6340378eeda8ed6f49725004af8326e303949e4dbdbb1cd26a7696a61c07a",
+    "scope": "Actual completed source/check/import receipts. Zero new component/native/API passes; no historical recount or new compiler/guest run."
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "documentationGate": "Historical native observations and negative outcomes retain their original scope. Current source/package predicates do not establish API passes.",
+  "sourceAddressing": {
+    "report": ".context/core274-mapping-curves-promise-fetch-batch-metadata-bound-r1/source-addressed-gaps.json",
+    "sha256": "62c3ea70dfa2e766b6a6ca8b2fd3aca3d5407d136c09bfd25cce95f7af0611a4",
+    "scope": "Actual combined partial source ownership only; original findings/nonpasses remain immutable, no runtime or API closure."
+  },
+  "at": "2026-11-08T14:36:13.364948+00:00",
+  "recipeRevision": 274,
+  "lastAcceptedEngine": 271,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
