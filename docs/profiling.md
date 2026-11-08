@@ -527,6 +527,17 @@ real Caddy crash/restart cycles (default one). This is ordinary transport bindin
 checks every fetched body's size and digest. An image and another build's
 same-named utility are not an interchangeable artifact cohort.
 
+The same diagnostic supports fixed-count controls with
+`KANDELO_FRANKENPHP_SOAK_REQUESTS=120`, a minimum start-to-start cadence
+with `KANDELO_FRANKENPHP_SOAK_PACE_MS=500`, and a target selected by
+`KANDELO_FRANKENPHP_SOAK_WORKLOAD=wordpress|php-scalar|static`.
+Set either requests or `KANDELO_FRANKENPHP_SOAK_SECONDS`, not both.
+All targets retain the initial WordPress workload and lifecycle checks;
+the small PHP/static targets require exact response bytes. The attached
+`traffic-workload` records completed requests and elapsed time. These
+instrumented controls do not measure uninstrumented throughput or isolate
+allocation owners. See the checkpoint above for the measured limits.
+
 #### mariadb
 
 Runs MariaDB 10.5 with the Aria or InnoDB storage engine. Measures bootstrap (system table creation) and a sequence of SQL operations.

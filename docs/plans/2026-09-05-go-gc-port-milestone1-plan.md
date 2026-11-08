@@ -2,6 +2,20 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Latest main integrated without changing the live producer:** the review
+branch includes `c3703ba28d6e` (Rust guest tooling) and `b764fbf54856`
+(porting documentation). The existing full build keeps frozen source
+`04d6418ccf1b`; it has completed Clang/FFmpeg and is instrumenting Quickshell
+at the last status check. Its caches remain useful, but its products cannot
+serve as latest-main final acceptance. The original SDK-refresh driver
+retains its stale-main guard. A separate refresh job `e936` waits for that
+guarded driver to terminate, requires its failure and the unchanged family
+source, then fast-forwards to reviewed merge `401235689658` only if fetched
+main still matches `c3703ba28d6e`. It uses both of its own normal SDKs and a
+new immutable output projection. No output from that queued job is claimed.
+The previously prepared `faf9` benchmark baseline is now historical;
+latest-main benchmark acceptance still needs a corresponding baseline.
+
 **Controlled traffic and worker profiling close:** job `179b` passes three
 serial WebKit selections in 9m58s. Each uses the same verified revision-45
 partial image, two PHP threads, initial WordPress workload, 120 requests
