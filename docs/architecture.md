@@ -7359,3 +7359,7 @@ Source 268 adds an actual retained-source assertion diagnostic owner and real pr
 ### FIPS state, internal benchmark reporting and assertion source admission
 
 Source269 adds ordinary non-forced public FIPS state over the linked native owner, complete selected internal benchmark JSON/Spec consumers, and actual retained UTF-8 assertion extent admission. One shared source/input/package batch supplies source evidence only; forced startup, public benchmark and full stack/guest conformance remain open.
+
+### Listener acceptance, public TTY composition and SourceMap support reader
+
+Source 270 restores the consumed native listener accept provider and required export, routes public pinned TTY constructors through real native/Socket owners with actual ShutdownWrap packet values, and forwards the original SourceMap support reader. Actual combined source guards and one source/package batch support source addressing only; no guest or API conformance is claimed.

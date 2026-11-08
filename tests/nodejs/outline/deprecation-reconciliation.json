@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "d7ccf715a8a0fb10d48430abb90a5c3d6795dfbb98dc4b61e32fb3949523cfb1",
+    "packages/registry/node-compat/bootstrap.js": "1eb5a003fa9618b856a97efd7f0687762e53066294ad87ee94f6e7cce8a94720",
     "third_party/node-core/adapter.js": "62d08d0de6ea1b8aef5f0dc54c46e53b175e5cbbc481475cbfb2059ad912e292",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/asymmetric-keygen-platform-adapter.js": "94b3dc26b1f783b97cb38eaa91baff3be883c66f8d80a6c76568a72ebf0207b0",
@@ -101,8 +101,8 @@
     "third_party/node-core/sea-platform-adapter.js": "433a3ced7a166b8a7145b54ba844db3f4a39110483c833c67b2063170194ca0a",
     "third_party/node-core/server-constructor-adapter.js": "c296b58141685aa178836c01cb85e2e292f0f06641fd56dd31fa630002b61f3f",
     "third_party/node-core/signature-platform-adapter.js": "1e44bb8672c1d51c5b752a25b540e863cf93eecbd366091584fabda62443d7f2",
-    "third_party/node-core/socket-stream-adapter.js": "bce6cf865b44a9b8015c541df240d04778e604c0bea7f1c7d0c4881d227243cb",
-    "third_party/node-core/source-map-platform-adapter.js": "8542a68ffddf23221b3a5001796c990d760b58cff778000b868255f78f372045",
+    "third_party/node-core/socket-stream-adapter.js": "70dc7be11ff565ff961a0662d9e1b5732884c40bd3dd7b1d5f1757ee7fbea475",
+    "third_party/node-core/source-map-platform-adapter.js": "789a94b517205d749abdcfb50b2ebe84ceb5e1695e34b77da2492b5cf2d3912c",
     "third_party/node-core/sqlite-platform-adapter.js": "eb092b1a61b4304b488cd46e888571288f89e6c1a1ec2a3b68df922ebbb387eb",
     "third_party/node-core/stat-watcher-platform-adapter.js": "a39ff9c4d95f076284eb1b3f74e2d3b1a6fd34854cc41e1f1789900904456602",
     "third_party/node-core/stdio-output-platform-adapter.js": "a69246b289cf0ce7d74cf3220cec5a928755c9b3bcd083f8f22dca9c0c23f07d",
@@ -118,6 +118,7 @@
     "third_party/node-core/tls-context-adapter.js": "345706068e55beb99e0fe3fc747ad675b2bbc3091166766fb80970bafec3f767",
     "third_party/node-core/tls-identity-adapter.js": "7e1688bff98af17878908679a8c58fc084730e4c1dd6daa03975e0fcdb525760",
     "third_party/node-core/tracing-platform-adapter.js": "50da0b1c44db5fe14d61a7bc796e94d6619a4bd7bc8bad92b8bcd3c5cf54cc2b",
+    "third_party/node-core/tty-public-platform-adapter.js": "d448c3a64b0d3dead2d4c43e88609fb1264fa34d2ede74734186a557172a29d3",
     "third_party/node-core/url-path-platform-adapter.js": "bf72745440f0b19df5ba74f3989aa16951e2e64d478ab8d7d6835c92b1e036c0",
     "third_party/node-core/util-algorithms-adapter.js": "e8df257c32e038b5a7c891a7c6a7f1d5f565a4328e23f41f09ae749fef7b9096",
     "third_party/node-core/util-public-adapter.js": "67b2d08758d67b8d882868cd187bd50e3fe6729f5be4c9b437ef23713f31b430",

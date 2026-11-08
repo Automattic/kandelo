@@ -1,0 +1,116 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index 6662cbf7220dd55998a78fa055160779c7ce171e..c4d74039861f60ea458a820e59583b765420dfce 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -986,4 +986,66 @@ static int KandeloAcceptSocket(int listener) {
+ }
+
++// Restored consumed listener provider: source264 installed socketListenerStart
++// without retaining its matching engine dispatcher. Poll real nonblocking
++// listener descriptors; the native TCPSERVERWRAP owns callback/frame authority.
++static int KandeloDispatchListenerConnections(JSContext* cx) {
++  if (cx->isExceptionPending() || GetShellContext(cx)->quitting) return 0;
++  for (auto* state = gKandeloListeners; state; state = state->next) {
++    if (!KandeloListenerReadRegistered(cx,state) || !state->accepting ||
++        state->callbackActive || state->accepts || !state->liveRoot) continue;
++    pollfd descriptor = {state->listener.Fd(),POLLIN,0};
++    const int ready = poll(&descriptor,1,0);
++    if (ready <= 0 || !(descriptor.revents & (POLLIN|POLLERR|POLLHUP|POLLNVAL))) continue;
++    const int fd = KandeloAcceptSocket(descriptor.fd);
++    // Pinned POSIX uv__server_io only invokes connection_cb after successful
++    // accept. Failed readiness/accept does not invent an onconnection error.
++    // EMFILE load-shedding and retained unconsumed uv accepted_fd remain gaps.
++    if (fd < 0) continue;
++    kandelo::socket::Lease lease(fd);
++    RootedObject owner(cx,*state->liveRoot);JSAutoRealm realm(cx,owner);
++    ++state->accepts;state->callbackActive = true;
++    // Rotate before entering JS. No registry successor crosses client init,
++    // the callback property Get, before/after hooks, or its job checkpoint.
++    auto** link = &gKandeloListeners;
++    while (*link && *link != state) link = &(*link)->next;
++    MOZ_RELEASE_ASSERT(*link == state);
++    *link = state->next;state->next = nullptr;
++    auto** tail = &gKandeloListeners;
++    while (*tail) tail = &(*tail)->next;
++    *tail = state;
++    auto retire = mozilla::MakeScopeExit([&] {
++      MOZ_RELEASE_ASSERT(state->accepts);--state->accepts;state->callbackActive = false;
++    });
++    RootedObject accepted(cx);
++    {
++      kandelo::async::DefaultTriggerScope trigger(cx->kandeloDefaultTrigger(),state->id);
++      if (!trigger.Ready()) { JS_ReportErrorASCII(cx,"Listener default trigger is invalid");return -1; }
++      if (!KandeloCreateAcceptedSocket(cx,owner,lease.Release(),&accepted)) return -1;
++    }
++    // Unpublished capability rollback is native and allocation-free, retaining
++    // the exact pending exception. Successful JS adoption already emptied it.
++    auto release = mozilla::MakeScopeExit([&] {
++      auto* token = static_cast<KandeloSocketState*>(JS::GetReservedSlot(accepted,SocketState).toPrivate());
++      token->CloseAccepted();
++    });
++    // A client init hook can synchronously close this real listener. Pinned
++    // uv_accept would then decline admission; close only our captured lease.
++    if (!KandeloListenerReadRegistered(cx,state)) return 1;
++    RootedValue callback(cx);
++    if (!JS_GetProperty(cx,owner,"onconnection",&callback)) return -1;
++    if (callback.isObject() && JS::IsCallable(&callback.toObject())) {
++      JS::RootedValueArray<2> arguments(cx);
++      arguments[0].setInt32(0);arguments[1].setObject(*accepted);
++      RootedValue frame(cx,JS::GetReservedSlot(owner,ListenerFrame)),ignored(cx);
++      KandeloNativeCallbackScope scope(cx,owner,frame);
++      if (!scope.Enter()) return scope.Stopped() ? 1 : -1;
++      const bool called = scope.Call(callback,arguments,&ignored);
++      if (!(called ? scope.Close() : scope.Fail())) return -1;
++    }
++    return 1; // Resume through a fresh ordinary loop turn, never a stale next.
++  }
++  return 0;
++}
++
+ // A successful read callback may fail later in after hooks or tick/jobs.
+ // Preserve actual continuous demand through outer fatal recovery; never create
+@@ -1072,4 +1134,13 @@ static int KandeloSocketDispatch(JSContext* cx) {
+   }
+
++  // Existing TCP/TLS and child owners retain their turn before a busy
++  // listener. Snapshot legacy watches afresh after callback/checkpoint JS.
++  if (cx->isExceptionPending()) return -1;
++  if (GetShellContext(cx)->quitting) return processed;
++  const int listenerConnection = KandeloDispatchListenerConnections(cx);
++  if (listenerConnection < 0) return -1;
++  processed += listenerConnection;
++  if (GetShellContext(cx)->quitting) return processed;
++
+   int count = 0;
+   for (KandeloSocketWatch* watch = gKandeloSocketWatches; watch;
+@@ -1365,8 +1436,13 @@ static bool KandeloNativeSocketListen(JSContext* cx, unsigned argc, Value* vp) {
+       setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &enabled, sizeof(enabled)) < 0)
+     return KandeloThrowSocketError(cx, errno, "listen");
+-  if (bind(fd, result->ai_addr, result->ai_addrlen) < 0 || listen(fd, backlog) < 0)
++  if (bind(fd, result->ai_addr, result->ai_addrlen) < 0)
+     return KandeloThrowSocketError(cx, errno, "listen");
+   if (!listenerState->listener.Admit(fd)) return KandeloThrowSocketError(cx,ECANCELED,"listen");
+-  retained = true;published=true;
++  // After descriptor transfer only the native owner closes a failed listen.
++  // Its real successful syscall records the read registration consumed above.
++  retained = true;
++  const int listenError = listenerState->listener.Listen(backlog);
++  if (listenError) return KandeloThrowSocketError(cx,listenError,"listen");
++  published=true;
+   args.rval().setObject(*listenerOwner);
+   return true;
+@@ -1387,4 +1463,8 @@ static bool KandeloNativeSocketAccept(JSContext* cx, unsigned argc, Value* vp) {
+   if (!promise) return false;
+   args.rval().setObject(*promise);
++  // Callback-mode and legacy Promise-mode are distinct reader authorities.
++  // Promise construction may reenter and install a callback reader first.
++  if (state && state->accepting)
++    return KandeloRejectSocketOperation(cx,promise,EBUSY,"accept");
+   // Promise creation can reenter. The rooted real owner is rechecked after it,
+   // and its captured descriptor is consumed only inside this no-JS syscall.
+@@ -5109,4 +5189,5 @@ static bool DefineKandeloNodeNative(JSContext* cx) {
+       JS_FN("socketListen", KandeloNativeSocketListen, 6, 0),
+       JS_FN("socketListenerFd", KandeloNativeListenerFd, 1, 0),
++      JS_FN("socketListenerStart", KandeloNativeListenerStart, 2, 0),
+       JS_FN("socketAccept", KandeloNativeSocketAccept, 1, 0),
+       JS_FN("socketOwnerCreate", KandeloNativeCreateSocketOwner, 0, 0),

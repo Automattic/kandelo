@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Three reviewed partial source foundations are composed in one batch. Original source269 gaps remain preserved as historical evidence. All 19 families remain partial.
+See [source scope](core-ready-foundations-batch270-implementation.md).
+
 Source269 combines three reviewed partial source contributions. All component/native observations are exact historical evidence, not rerun or fresh conformance. All19families remain partial.
 See [source scope](core-fips-reporters-batch269-implementation.md).
 

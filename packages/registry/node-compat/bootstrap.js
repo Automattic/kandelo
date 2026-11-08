@@ -5305,7 +5305,7 @@ const _nodePublicConstants = _createNodePublicConstantModules({
     require: id => _builtinModules[id],
     compileSource: (source, filename) => _nodeNative.evalScriptAsFunction(source, filename, 1),
 });
-let _nodeDomain, _nodeFfi, _nodeVmInternal;
+let _nodeDomain, _nodeFfi, _nodeVmInternal, _nodePublicTTY;
 const _builtinModules = {
     'path': path,
     'events': events,
@@ -5336,11 +5336,10 @@ const _builtinModules = {
     '_http_agent': _nodeHttpAgent.module,
     get https() { _nodePublicConstants.load('tls'); return https; },
     get zlib() { return _nodeStreamPlatform.require('zlib'); },
-    'tty': {
-        isatty: _nodeReadlinePlatform.isatty,
-        ReadStream: class ReadStream extends stream.Readable {},
-        WriteStream: class WriteStream extends stream.Writable {},
-    },
+    get tty() { return _nodePublicTTY ??= _createNodePublicTerminalPlatform({
+        native: _nodeNative, values: _nodeValues, net,
+        isTTY: fd => os.isatty(fd), getReadline: () => _nodeReadlinePlatform.api,
+    }); },
     'module': null, // set below
     get constants() { return _nodePublicConstants.load('constants'); },
     get punycode() { return _nodeQueryCodecs.require('punycode'); },
@@ -5616,6 +5615,7 @@ const _nodeSourceMaps = _createNodeSourceMapPlatform({
 });
 Module.SourceMap = _nodeSourceMaps.SourceMap;
 Module.findSourceMap = _nodeSourceMaps.findSourceMap;
+Module.getSourceMapsSupport = _nodeSourceMaps.getSourceMapsSupport;
 _builtinModules.module = Module;
 _builtinModules.process = process;
 _nodeBuiltinExports = _createNodeBuiltinExports({

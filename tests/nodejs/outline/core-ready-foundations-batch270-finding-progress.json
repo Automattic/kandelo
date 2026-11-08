@@ -1,0 +1,311 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network-contracts.md",
+    "findingIds": [
+      "N-013",
+      "N-020"
+    ],
+    "prerequisiteFindingIds": [
+      "N-011"
+    ],
+    "relatedFamilies": [
+      "network",
+      "terminal",
+      "loading"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-013",
+        "relation": "partial-owning"
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-020",
+        "relation": "partial-owning"
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-011",
+        "relation": "shared-owning-prerequisite"
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-002",
+        "relation": "direct-partial",
+        "scope": "Complete pinned public constructor/class/Socket composition over actual native TTY owner"
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-007",
+        "relation": "direct-partial",
+        "scope": "Public pinned setRawMode consumes actual retained mode owner"
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-010",
+        "relation": "direct-partial",
+        "scope": "Pinned output color/window/cursor methods consume real existing owners"
+      },
+      {
+        "document": "tests/nodejs/audit/loading.md",
+        "findingId": "L-009",
+        "relation": "direct-partial",
+        "scope": "Exact public module.getSourceMapsSupport forwards actual existing cache function/state only"
+      }
+    ],
+    "scope": "Partial native listener ownership, public TTY composition and original SourceMap reader. Source-addressed gap records are not runtime or finding closures."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "listener-accept-consumer-and-export",
+      "scope": "Actual native accept callback consumer, required export and successful listen registration/liveness owner; source-addressed only after actual combined guards."
+    },
+    {
+      "feature": "public-tty-and-shutdown-envelope",
+      "scope": "Complete pinned public tty.js consumes actual native TTY and callable Socket; shutdown submits actual packet.value."
+    },
+    {
+      "feature": "source-map-support-reader",
+      "scope": "Public original reader forwards actual existing source-map cache state; no enable/setter/formatter/coverage activation."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core270-ready-foundations-batch-source-r1/report.json",
+    "sha256": "e7fc95f0305fe2dd4de666b9419978a097177fb747057a5f6528952d4ce461d6",
+    "guardedInputs": 934,
+    "scope": "One normal source 270 source/staging/input check plus listener definition/call/export and TTY packet/reader guards; no native/component reruns, compiler or guest proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core270-ready-foundations-batch-affected-r1.json",
+    "sha256": "ba1841550fc93c740d5e9c361f981e611a6ee50c7cc358f1826a5c908a6101f6",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core270-ready-foundations-batch-source-r1/report.json",
+    "sha256": "e7fc95f0305fe2dd4de666b9419978a097177fb747057a5f6528952d4ce461d6",
+    "reportScope": "One normal source 270 source/staging/input check plus listener definition/call/export and TTY packet/reader guards; no native/component reruns, compiler or guest proof.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true,
+    "freshComponentGroups": 0,
+    "freshAPIConformancePasses": 0,
+    "sourceAddressingRequiresActualGuards": true
+  },
+  "sealedEvidence": {
+    "report": ".context/core270-ready-foundations-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "146091e6e46b6be1df154cb0e2224b389ed6066e79fc7366b00f41a0f91bad0b",
+    "reusedEvidence": true,
+    "scope": "Exact reviewed listener consumer plus mandatory export, TTY plus native shutdown envelope and SourceMap reader source. Every current runtime, native, component and API group count remains zero."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/listener-accept-dispatch-source-gap-r1.json",
+      "sha256": "84cc1c8ac232aeca3fd0e37cb487278e001195329ad1202ecb2b79987aab9cd5",
+      "classification": "Original source269 missing listener callback consumer; source-addressed only after final actual270 definition/call/export/Listen guards. Historical finding unchanged.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/source264-engine-provenance-review-agent/REPORT.json",
+      "sha256": "aaab99717c4aef1daf9807f6e544373a7335badf1e265531bd1efdb33a4890af",
+      "classification": "Source264 raw-list schema omitted all three Server engine hunks, including native export; new export finding remains separate and only source-addressed after actual270 guards.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/tty-shutdown-request-envelope-source-gap-r1.json",
+      "sha256": "22d67e4d7b15340e29e1795d7495b5dfef159542c87c7dd1b3987e3711b07763",
+      "classification": "Original source269 real request packet/value mismatch; source-addressed only after actual270 packet.value/error guards. Historical finding unchanged.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/listener-accept-dispatch-owner-agent/history/packaging-setup-nonpass.json",
+      "sha256": "888be712bc1612d352c545fd405f2f21a72ec74184cf4faeef05ea23bc6d11b4",
+      "classification": "Private author replay setup FileNotFoundError before Git commands; no raw stderr file was captured, runtime or compiler did not run.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/tty-public-streams-owner-agent/root-shared-preimage-guard-failure.json",
+      "sha256": "3d38ce47870b7c48db36067fb1b3779c3855f7e20ca3597af85f7e9fc224b793",
+      "classification": "Expected committed parent drift stopped a private old-preimage guard; later actual269 contextual replay is separate source evidence.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/tcp-registration-review-agent/review.json",
+      "sha256": "e836a3aee87af9938517a3742ae78a645e2c6f325e474a519f189df5ae113cb2",
+      "classification": "TCP-REGISTRATION-REVIEW-001 remains open for held unintegrated TCP registration; pending helper/correction attempts are not credited by this batch.",
+      "freshlyRerun": false
+    },
+    {
+      "report": ".context/server-supplied-fd-review-agent/review.json",
+      "sha256": "b08fc0f5b8cc330c864873bbc38a87ff05049d6932c46bdc855e3272a4038cb1",
+      "classification": "Supplied-fd idle ownership versus active registration mismatch and underlying TLS/legacy composition remain held; no activation or unsafe duplicate-fd probe.",
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "Guest compilation/execution, exact retained accepted_fd/EMFILE/OOM/fatal/GC/realm/Worker, full public Server and modern TCP/TLS/legacy interest ownership.",
+    "Captured stdio public class identity, native fd/master/file/pipe admission, mixed/custom vectors, init-close, exact prototypes, GC/realm/Worker/four-host execution.",
+    "Mapped stacks/CLI/setSourceMapsSupport/ESM/VM map capture, compile cache and actual guest/realm/Worker conformance.",
+    "TCP-REGISTRATION-REVIEW-001 and supplied-fd/TLS/legacy event-interest prerequisites remain open and unintegrated."
+  ],
+  "featureContributions": [
+    {
+      "id": "listener-accept-consumer-and-export",
+      "family": "network",
+      "scope": "Actual native accept callback consumer, required export and successful listen registration/liveness owner; source-addressed only after actual combined guards.",
+      "remaining": "Guest compilation/execution, exact retained accepted_fd/EMFILE/OOM/fatal/GC/realm/Worker, full public Server and modern TCP/TLS/legacy interest ownership.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-013",
+          "relation": "partial-owning"
+        },
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-020",
+          "relation": "partial-owning"
+        },
+        {
+          "document": "tests/nodejs/audit/network-contracts.md",
+          "findingId": "N-011",
+          "relation": "shared-owning-prerequisite"
+        }
+      ],
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "d8dc3cb19b190e244e057a2ee68d751d0016ab76db80790671f4604d0ce45adb",
+      "producerSeal": {
+        "path": ".context/listener-accept-dispatch-owner-agent/SEAL.json",
+        "sha256": "9f12216e71bbf02df6a3a2589ad12a1eeb32a238ea630aad1a0b1614406af997"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core270-ready-foundations-batch-source-r1/report.json",
+        "sha256": "e7fc95f0305fe2dd4de666b9419978a097177fb747057a5f6528952d4ce461d6",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      },
+      "additionalProducerSeals": [
+        {
+          "path": ".context/listener-accept-registration-successor-agent/SEAL.json",
+          "sha256": "465c5303918653598845a9511857c9942d1b4e0dc400bab6074bbaa8c69db3aa"
+        }
+      ]
+    },
+    {
+      "id": "public-tty-and-shutdown-envelope",
+      "family": "terminal",
+      "scope": "Complete pinned public tty.js consumes actual native TTY and callable Socket; shutdown submits actual packet.value.",
+      "remaining": "Captured stdio public class identity, native fd/master/file/pipe admission, mixed/custom vectors, init-close, exact prototypes, GC/realm/Worker/four-host execution.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-002",
+          "relation": "direct-partial",
+          "scope": "Complete pinned public constructor/class/Socket composition over actual native TTY owner"
+        },
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-007",
+          "relation": "direct-partial",
+          "scope": "Public pinned setRawMode consumes actual retained mode owner"
+        },
+        {
+          "document": "tests/nodejs/audit/terminal.md",
+          "findingId": "T-010",
+          "relation": "direct-partial",
+          "scope": "Pinned output color/window/cursor methods consume real existing owners"
+        }
+      ],
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "d8dc3cb19b190e244e057a2ee68d751d0016ab76db80790671f4604d0ce45adb",
+      "producerSeal": {
+        "path": ".context/tty-public-streams-owner-agent/SEAL.json",
+        "sha256": "9fc6d46cd390fe048fbd6f1803efdfc1f75be82636b164a1db47b870c64a7736"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core270-ready-foundations-batch-source-r1/report.json",
+        "sha256": "e7fc95f0305fe2dd4de666b9419978a097177fb747057a5f6528952d4ce461d6",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      },
+      "additionalProducerSeals": [
+        {
+          "path": ".context/tty-shutdown-envelope-correction-agent/SEAL.json",
+          "sha256": "b860d1094544b31852917019493006704e9634165c86b157534c4189090498f0"
+        }
+      ]
+    },
+    {
+      "id": "source-map-support-reader",
+      "family": "loading",
+      "scope": "Public original reader forwards actual existing source-map cache state; no enable/setter/formatter/coverage activation.",
+      "remaining": "Mapped stacks/CLI/setSourceMapsSupport/ESM/VM map capture, compile cache and actual guest/realm/Worker conformance.",
+      "implementationComplete": false,
+      "findingClosed": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/loading.md",
+          "findingId": "L-009",
+          "relation": "direct-partial",
+          "scope": "Exact public module.getSourceMapsSupport forwards actual existing cache function/state only"
+        }
+      ],
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "d8dc3cb19b190e244e057a2ee68d751d0016ab76db80790671f4604d0ce45adb",
+      "producerSeal": {
+        "path": ".context/source-map-support-reader-owner-agent/SEAL.json",
+        "sha256": "7a5e7c7b6df3a4aca0ba2673caf7629b0cf6843a9d214757cacb9e7498f55369"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core270-ready-foundations-batch-source-r1/report.json",
+        "sha256": "e7fc95f0305fe2dd4de666b9419978a097177fb747057a5f6528952d4ce461d6",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; exact original native-dependent evidence is reused, with zero current API/component/native groups."
+      }
+    }
+  ],
+  "batchReceiptIndex": {
+    "report": ".context/core270-ready-foundations-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "256dbea60f604fedec1a774160f437726e3d543f12148bdb85bc172c9174d312",
+    "scope": "Actual completed source/check/import receipts. Zero new component/native/API passes; no historical recount or new compiler/guest run."
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "documentationGate": "Historical native observations and negative outcomes retain their original scope. Current source/package predicates do not establish API passes.",
+  "sourceAddressing": {
+    "report": ".context/core270-ready-foundations-batch-metadata-bound-r1/source-addressed-gaps.json",
+    "sha256": "faa6c8a673c9ef34733245e1e0c74c80e1747af25fb86219e232c939cdea93e5",
+    "scope": "Actual combined source guards address consumer/export/packet seams only; original source269 gaps remain historical, no runtime or API closure."
+  },
+  "at": "2026-11-08T12:13:14.595224+00:00",
+  "recipeRevision": 270,
+  "lastAcceptedEngine": 263,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

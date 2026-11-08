@@ -131,6 +131,12 @@ static bool KandeloListenerInitialize(JSContext* cx, HandleObject owner,
   JS::SetReservedSlot(owner,ListenerFrame,frame);
   return cx->notifyKandeloAsyncLifecycle("native:init",owner,frame);
 }
+// Both loop dispatch and future supplied-fd admission consume this same
+// actual successful-listen registration. Callback dispatch does not remove it.
+static bool KandeloListenerReadRegistered(JSContext* cx, const KandeloListenerState* state) {
+  return state->cx == cx && !state->detached && !state->initializing &&
+      !state->closing && !state->closeCompleted && state->listener.ReadRegistered();
+}
 // Ordinary loop continuation retires a closed native handle only after every
 // already admitted accept has relinquished its real owner root. No JS, fallible
 // rearming, or destruction hook is run by BeginClose or a GC finalizer.
@@ -161,7 +167,7 @@ static int KandeloDispatchListenerOwners(JSContext* cx) {
 static bool KandeloListenerOwnersHaveReferences(JSContext* cx) {
   for (auto* state=gKandeloListeners;state;state=state->next) {
     if (state->cx!=cx || state->detached) continue;
-    if (state->closing || (!state->listener.Closed() && state->listener.Fd()>=0 && state->listener.Referenced())) return true;
+    if (state->closing || (KandeloListenerReadRegistered(cx,state) && state->listener.Referenced())) return true;
   }
   return false;
 }
@@ -208,6 +214,12 @@ static bool KandeloNativeListenerStart(JSContext* cx, unsigned argc, Value* vp) 
   if (state->initializing || state->listener.Closed() || state->closeCompleted) {
     args.rval().setInt32(-EBADF);return true;
   }
+  if (!KandeloListenerReadRegistered(cx,state)) {
+    args.rval().setInt32(-EINVAL);return true;
+  }
+  // A legacy Promise accept owns a separate, explicitly queued reader.
+  // A callback reader must not compete for that same accepted descriptor.
+  if (state->accepts) { args.rval().setInt32(-EBUSY);return true; }
   state->accepting=true;args.rval().setInt32(0);return true;
 }
 static bool KandeloNativeListenerFd(JSContext* cx, unsigned argc, Value* vp) {

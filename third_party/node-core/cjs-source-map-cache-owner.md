@@ -38,3 +38,29 @@ getCallSites reconstruction; coverage collection/file output; and exact
 SpiderMonkey-versus-V8 parser metadata semantics. All new guest C++ and
 weak/finalizer/realm behavior require identified-artifact validation. This is
 partial L-033/L-009 implementation, not conformance or finding closure.
+
+
+## Public support-state reader
+
+`module.getSourceMapsSupport` is the exact unchanged function exported by the
+existing per-environment source-map cache. The platform forwards that function
+and bootstrap publishes it on the actual public Module namespace, as the pinned
+`lib/module.js` does. It returns the actual frozen support object used by
+maybeCacheSourceMap and maybeCacheGeneratedSourceMap, retaining object identity,
+null prototype and property descriptors. It does not construct a second status
+object or infer enabled state from NODE_V8_COVERAGE. That environment gate can
+admit actual CJS map metadata while source-map support is still disabled.
+
+The existing `Module.findSourceMap` publication initializes the same lazy cache
+immediately before the reader is captured. No user hook or extra module loading
+is introduced by the new reader publication. Public method replacement cannot
+replace the private cache's lexical state reader. Each bootstrap/Worker source-map
+factory retains its own real cache environment; this forwarding adds no shared
+cross-context store. Exact function name/length/prototype and ordinary public
+property attributes come from the original function and pinned-style assignment.
+
+This narrow reader does not expose setSourceMapsSupport, enable source maps,
+install a native mapped formatter or implement V8 coverage collection. Those
+remain implementation gaps. Source inspection and exact patch replay only were
+performed here; zero new runtime controls, generation or compilation ran. Guest,
+realm/Worker and four-host behavior still require identified-artifact evidence.

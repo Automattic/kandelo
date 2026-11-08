@@ -18,9 +18,11 @@ Captured stdio streams publish the actual owner as `_handle`; failed
 publication rolls back through its close method. A live read-only terminal
 rejects writes with EPIPE; a closed descriptor rejects with EBADF.
 
-Public `tty.ReadStream` and `WriteStream` remain placeholders. Native mixed/string entry methods,
-unreopenable/master/file/pipe admissions and exact prototype/descriptor/
-close-phase parity remain gaps. The terminal Socket final branch consumes
+Public `tty.ReadStream` and `WriteStream` now consume the complete pinned tty.js
+module over the genuine native TTY constructor and callable Socket owner; see
+[tty-public-streams-owner.md](tty-public-streams-owner.md). Native mixed-vector
+admission, unreopenable/master/file/pipe behavior and exact native
+prototype/descriptor/close-phase parity remain gaps. The terminal Socket final branch consumes
 the queued terminal shutdown owner; it does not use a numeric TCP route.
 Init-hook close parity is unresolved: current
 admission immediately retires any descriptor acquired under a closed owner.

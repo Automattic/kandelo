@@ -61,7 +61,13 @@ function _createNodeSocketStream(platform) {
     })(require('internal/util/debuglog').debuglog('net'));
     function shutdown(owner, cb, terminal = false) {
         const createShutdownRequest = terminal
-            ? owner => platform.native.operatingSystem('tty-stream-shutdown-request', owner)
+            ? owner => {
+                // This OS operation retains the normal error/value envelope.
+                // Submit its actual native request, never the packet itself.
+                const packet = platform.native.operatingSystem('tty-stream-shutdown-request', owner);
+                if (packet.error) throw new ErrnoException(packet.error, 'shutdown');
+                return packet.value;
+            }
             : owner => platform.native.socketShutdownRequest(owner);
         const { UV_ENOTCONN } = platform.uv.binding;
         /* NODE_SOCKET_SHUTDOWN_BODY */

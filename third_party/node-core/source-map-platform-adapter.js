@@ -60,6 +60,7 @@ function _createNodeSourceMapPlatform(platform) {
     const cache = () => require('internal/source_map/source_map_cache');
     return { SourceMap: api.SourceMap,
         get findSourceMap() { return cache().findSourceMap; },
+        get getSourceMapsSupport() { return cache().getSourceMapsSupport; },
         captureCommonJS(module, filename, source, info) {
             // Preserve target-disabled capture. This actual environment gate
             // admits map metadata only; it does not implement a V8 collector.

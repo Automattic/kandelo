@@ -1199,6 +1199,16 @@ if terminal_adapter.count('/* NODE_TERMINAL_OUTPUT_METHODS */') != 1:
     raise ValueError('Review terminal output embedding')
 bundle += terminal_adapter.replace('/* NODE_TERMINAL_SET_RAW */', selected).replace('/* NODE_TERMINAL_OUTPUT_METHODS */', output_methods) + '\n'
 
+# Complete public tty.js consumes the actual native TTY constructor and callable
+# Socket owner. Captured stdio keeps its independent publication/lifetime owner.
+terminal_public_adapter = (root / 'tty-public-platform-adapter.js').read_text()
+terminal_public_marker = '/* NODE_PUBLIC_TTY_MODULE */'
+if terminal_public_adapter.count(terminal_public_marker) != 1:
+    raise ValueError('Review public TTY module embedding')
+terminal_public_source = (root / terminal_spec['sources']['lib/tty.js']['path']).read_text()
+bundle += terminal_public_adapter.replace(terminal_public_marker, terminal_public_source) + '\n'
+
+
 readdir_spec = manifest['readdirPlatform']
 for name, item in readdir_spec['sources'].items():
     if hashlib.sha256((root / item['path']).read_bytes()).hexdigest() != item['sha256']:
