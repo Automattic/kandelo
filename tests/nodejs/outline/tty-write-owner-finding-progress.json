@@ -1,0 +1,155 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/terminal.md",
+    "findingIds": [],
+    "prerequisiteFindingIds": [
+      "T-002",
+      "T-010",
+      "T-006"
+    ],
+    "relatedFamilies": [
+      "terminal",
+      "streams",
+      "async",
+      "network"
+    ],
+    "scope": "Shared prerequisites only; no public class/API closure from stdio/vector consumers.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-002",
+        "relation": "shared-prerequisite",
+        "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete",
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-010",
+        "relation": "shared-prerequisite",
+        "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete",
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-006",
+        "relation": "shared-prerequisite",
+        "scope": "Captured Writable/vector request/material/completion owner only; publicTTY classes/cursor/resize methods remain incomplete",
+        "closed": false
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Factor unchanged TCP original-allocation material into an actual shared header consumed by captured TTY writes",
+    "Retain actual original spans and native WRITEWRAP/frame/default trigger through genuine queue/completion/cancel/close lifetimes",
+    "Consume real scalar/vector results in current stdio Writable, preserving committed callback/publication errors",
+    "Correct raw portable/staged header mapping, real closed/retired method admission and species-free indexed all-buffer preparation"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tty243-source-r1/report.json",
+    "sha256": "27da64e21cddc76df43e759bba8b76c73a54ef877808c88b0c60f8fac11bbd77",
+    "guardedInputs": 900,
+    "scope": "Actual root corrected TTY prerequisite over real PTYs/native Node TTY and one exact historical portable artifact. Distinct1/5/4subjects; eleven header conditions are annotations, not eleven APIs. No new guest JSAPI or four-host proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tty243-affected-r1.json",
+    "sha256": "a8eedb79cc6d31f0af62b4b1dd744198f81d7fa8d96a9b827c1bdbf0c4bdfabf",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tty243-source-r1/report.json",
+    "sha256": "27da64e21cddc76df43e759bba8b76c73a54ef877808c88b0c60f8fac11bbd77",
+    "portableArtifactSubjects": 1,
+    "portableConditionAnnotations": 11,
+    "nativeTargetSubjects": 5,
+    "candidateJsComponents": 4,
+    "newRootCompilerAttempts": 0,
+    "guestExecuted": false,
+    "fourHostConformance": false,
+    "scope": "Actual current-root TTY JavaScript over genuine native PTY/Node dependency:4components;5native target subjects and1reused portable artifact separately. Eleven condition labels are annotations. No new C++compiler/guest/fourhost evidence.",
+    "actualSubjectProcessCount": 9,
+    "actualSourceCommands": 8,
+    "guardedInputs": 900,
+    "supervisorReceipts": [
+      {
+        "path": ".context/node26-tty243-checks-r1/source-receipt.json",
+        "sha256": "37c45f856ca7eb5c3adb46a5d85d08064a15e4a2c6ecb25afb7f9c215ff021fe",
+        "log": ".context/node26-tty243-checks-r1/source.log",
+        "logSha256": "bd4f39354ae4bb9f87cb64cd483beaa65102ed218a891534d258493af823becc"
+      },
+      {
+        "path": ".context/node26-tty243-checks-r1/package-receipt.json",
+        "sha256": "64b28d5c8c67c2112a646f3db74eda62f2b52375c2028e252a3de7ea1e969400",
+        "log": ".context/node26-tty243-checks-r1/package.log",
+        "logSha256": "9324ed72392d25e823a89816417ff7b236e8ccf398cf6638a627a9f726a7469e"
+      }
+    ],
+    "manualExecutableBoundary": true,
+    "v1SourceBindingClaimed": false
+  },
+  "sealedEvidence": {
+    "report": ".context/tty-stream-write-correction-agent/report.json",
+    "sha256": "90ef0415caeefc91a82ea0f88f680be264ca4e27117bf0c2da5cc084bc20b634",
+    "reusedEvidence": true,
+    "scope": "Original and correction source/native dependency evidence plus independent reviews; no new guest JSAPI execution."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tty-stream-write-owner-agent/REPORT.md",
+      "sha256": "4693723a1d0fbd22e484677040cf6c12ec309b6137e323e86ae2cdeae316097d",
+      "scope": "Original lower/public TTY/guest and preserved master/restoration gaps."
+    },
+    {
+      "report": ".context/tty-stream-write-review-agent/report.json",
+      "sha256": "87c1a0c37d4ec66eb8efe0a6fd21126e6fdb23c99e018fd5184148aaef829566",
+      "scope": "Original three source P2s remain historically recorded, superseded only by explicit correction."
+    },
+    {
+      "report": ".context/tty-stream-write-correction-agent/report.json",
+      "sha256": "90ef0415caeefc91a82ea0f88f680be264ca4e27117bf0c2da5cc084bc20b634",
+      "scope": "Original raw missing-header compiler failure and authored phase/species/classifier/source-guard/packaging errors retained."
+    }
+  ],
+  "remaining": [
+    "Compile and execute actual new TTY JSAPI/CCW/GC/realm/frame/close/retirement/fatal paths on identified artifacts across all four hosts",
+    "Implement genuine public tty constructors and Socket adoption, full AsyncWrap/native init timing, mixed/string/input writes and real nonblocking/control/shutdown owners",
+    "Preserve private-fd/concurrent/fork/Worker and existing fallback nonpasses; no unsupported case is a passing API"
+  ],
+  "manualIntegration": {
+    "sourceHead": "19d392ee92daf09a03c85072fe0a79b7c90e1724",
+    "integrationSha256": "b7e20df064c4433182bac07deb25daf6dfb48fc633d9d73446b4a30964ef1f81",
+    "existingExecutableBoundary": true,
+    "v1OperationClaimed": false,
+    "rootCompilerAttempts": 0
+  },
+  "actualControlReport": {
+    "report": ".context/node26-tty243-source-r1/fresh-tty-controls/report.json",
+    "sha256": "88e15c74107d368dc7f6d2b25496f7486a3e59305443b9df1a749c794a08f955",
+    "portableArtifactSubjects": 1,
+    "portableConditionAnnotations": 11,
+    "nativeTargetSubjects": 5,
+    "currentRootJsComponents": 4,
+    "processSubjects": 9,
+    "scope": "Distinct subjects, not API or guest conformance passes"
+  },
+  "historicalCompilationReceipts": {
+    "originalReport": ".context/tty-stream-write-owner-agent/report.json",
+    "originalReportSha256": "46bc1d75fe12c0f83904696f9532f94eb48c7c6457fddc24b4c463d786f3d3f1",
+    "correctionReport": ".context/tty-stream-write-correction-agent/report.json",
+    "correctionReportSha256": "90ef0415caeefc91a82ea0f88f680be264ca4e27117bf0c2da5cc084bc20b634",
+    "attempts": 5,
+    "failures": 1,
+    "alreadyAccountedBeforeThisSlice": false
+  },
+  "at": "2026-11-08T00:31:14.487482+00:00",
+  "recipeRevision": 243,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

@@ -363,6 +363,8 @@ cp "$REPO_ROOT/third_party/node-core/sea-image-profile.h" "$SRC_DIR/js/src/shell
 mkdir -p "$SRC_DIR/third_party/kandelo-node/postject"
 cp "$REPO_ROOT/third_party/node-core/upstream/sea/deps/postject/postject-api.h" "$SRC_DIR/third_party/kandelo-node/postject/postject-api.h"
 cp "$REPO_ROOT/third_party/node-core/upstream/sea/deps/postject/LICENSE" "$SRC_DIR/third_party/kandelo-node/postject/LICENSE"
+cp "$REPO_ROOT/third_party/node-core/stream-write-material.h" "$SRC_DIR/js/src/shell/kandelo-node-stream-write-material.h"
+cp "$REPO_ROOT/third_party/node-core/terminal-write-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-terminal-write-owner.h"
 cp "$REPO_ROOT/third_party/node-core/terminal-operations.h" "$SRC_DIR/js/src/shell/kandelo-node-terminal-operations.h"
 cp "$REPO_ROOT/third_party/node-core/terminal-read-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-terminal-read-owner.h"
 python3 "$REPO_ROOT/third_party/node-core/generate-dotenv.py" --check

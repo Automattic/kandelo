@@ -51037,6 +51037,29 @@ WriteStream.prototype.getWindowSize = function() {
                 message: platform.uv.getSystemErrorMessage(packet.error), syscall: 'uv_tty_init' });
         }
         const owner = packet.value;
+        const { streamBaseState, kBytesWritten, kLastWriteErr } = platform.streamBinding;
+        try { owner.configureWrite(streamBaseState); }
+        catch (error) { try { owner.close(); } catch (_) {} throw error; }
+        function dispatched(ret, buffer, operation) {
+            if (typeof ret === 'number') return ret ? new ErrnoException(ret, 'write') : undefined;
+            const error = streamBaseState[kLastWriteErr];
+            if (error) return new ErrnoException(error, 'write', ret.error);
+            operation.published = true;
+            // Real queued native WRITEWRAP. Keep the actual Writable callback
+            // identity; this stdio consumer owns no Socket timer/_handle.
+            ret.handle = owner;
+            ret.oncomplete = function(status) {
+                if (operation.settled) return;
+                operation.settled = true;operation.entered = true;
+                if (typeof this.callback === 'function')
+                    this.callback(status < 0 ? new ErrnoException(status, 'write', this.error) : null);
+            };
+            ret.callback = operation.callback;
+            ret.async = true;ret.bytes = streamBaseState[kBytesWritten];ret.buffer = buffer;
+            const status = ret.writeStatus;
+            if (status !== null) { ret.writeStatus = null;ret.oncomplete(status); }
+            return true;
+        }
         return {
             // Bind by output object, never by a public descriptor number that
             // can be closed/reused after native initialization.
@@ -51044,11 +51067,11 @@ WriteStream.prototype.getWindowSize = function() {
             // Failed publication retires the actual captured descriptor through
             // its native queued-close owner, never the borrowed public fd.
             close() { return platform.native.operatingSystem('tty-output-close', owner); },
-            write(chunk) {
-                const result = platform.native.operatingSystem('tty-output-write', owner, chunk);
-                // Writable owns callback/drain/HWM behavior after the actual
-                // full synchronous native write/error.
-                return result.error ? new ErrnoException(result.error, 'write') : undefined;
+            write(chunk, operation) {
+                return dispatched(owner.writeBuffer(null, chunk), chunk, operation);
+            },
+            writev(chunks, operation) {
+                return dispatched(owner.writeVector(chunks), chunks, operation);
             },
         };
     }
@@ -90204,17 +90227,32 @@ function _createNodeFdStreamPlatform(platform) {
         // The generic async operation owns copied bytes through readiness
         // waits. Writable owns serialization, HWM, drain,
         // encoding, callback-once and end/final/error state above that seam.
+        function writeTerminal(chunk, callback, vector = false) {
+            const operation = { callback, entered: false, settled: false, published: false };
+            let status;
+            try { status = vector ? terminalOutput.writev(chunk, operation) : terminalOutput.write(chunk, operation); }
+            catch (error) {
+                // A replayed completion/user callback exception is not a
+                // second submission failure. Preserve it on its real path.
+                if (operation.entered || operation.published) throw error;
+                operation.settled = true;callback(error);return;
+            }
+            if (status !== true && !operation.settled) {
+                operation.settled = true;callback(status);
+            }
+        }
         let result;
         try { result = new Writable({
             ...options,
+            ...(terminalOutput ? { writev(chunks, callback) {
+                // Pinned all-buffer preparation mutates the already-owned
+                // entries by index. Array species/constructor hooks do not
+                // participate. Native mixed/string support is still separate.
+                for (let i = 0; i < chunks.length; i++) chunks[i] = chunks[i].chunk;
+                writeTerminal(chunks, callback, true);
+            } } : {}),
             write(chunk, encoding, callback) {
-                if (terminalOutput) {
-                    let error;
-                    try { error = terminalOutput.write(chunk); }
-                    catch (failure) { error = failure; }
-                    callback(error);
-                    return;
-                }
+                if (terminalOutput) return writeTerminal(chunk, callback);
                 let promise;
                 try { promise = platform.native.__kandeloFdWrite(fd, chunk); }
                 catch (error) { callback(error); return; }

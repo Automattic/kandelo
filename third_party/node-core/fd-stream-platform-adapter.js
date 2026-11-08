@@ -17,17 +17,32 @@ function _createNodeFdStreamPlatform(platform) {
         // The generic async operation owns copied bytes through readiness
         // waits. Writable owns serialization, HWM, drain,
         // encoding, callback-once and end/final/error state above that seam.
+        function writeTerminal(chunk, callback, vector = false) {
+            const operation = { callback, entered: false, settled: false, published: false };
+            let status;
+            try { status = vector ? terminalOutput.writev(chunk, operation) : terminalOutput.write(chunk, operation); }
+            catch (error) {
+                // A replayed completion/user callback exception is not a
+                // second submission failure. Preserve it on its real path.
+                if (operation.entered || operation.published) throw error;
+                operation.settled = true;callback(error);return;
+            }
+            if (status !== true && !operation.settled) {
+                operation.settled = true;callback(status);
+            }
+        }
         let result;
         try { result = new Writable({
             ...options,
+            ...(terminalOutput ? { writev(chunks, callback) {
+                // Pinned all-buffer preparation mutates the already-owned
+                // entries by index. Array species/constructor hooks do not
+                // participate. Native mixed/string support is still separate.
+                for (let i = 0; i < chunks.length; i++) chunks[i] = chunks[i].chunk;
+                writeTerminal(chunks, callback, true);
+            } } : {}),
             write(chunk, encoding, callback) {
-                if (terminalOutput) {
-                    let error;
-                    try { error = terminalOutput.write(chunk); }
-                    catch (failure) { error = failure; }
-                    callback(error);
-                    return;
-                }
+                if (terminalOutput) return writeTerminal(chunk, callback);
                 let promise;
                 try { promise = platform.native.__kandeloFdWrite(fd, chunk); }
                 catch (error) { callback(error); return; }

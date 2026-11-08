@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Partial native TTY write-request owner with independent source corrections, preserving existing stdio/read/resize owners and all unfinished public TTY/guest obligations.
+See [source scope](tty-write-owner-integration.md).
+
 Source242 adds real SQLite database image serialization/replacement over existing SQLite3.54owners. Normal source/input/staging and focused native-dependent evidence remain separate from new guestJSAPI/fourhost conformance. All19families partial; overall/fullproduct work deferred.
 See [source scope](sqlite-serialization-integration.md).
 

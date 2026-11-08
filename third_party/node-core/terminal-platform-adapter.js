@@ -49,6 +49,29 @@ function _createNodeTerminalPlatform(platform) {
                 message: platform.uv.getSystemErrorMessage(packet.error), syscall: 'uv_tty_init' });
         }
         const owner = packet.value;
+        const { streamBaseState, kBytesWritten, kLastWriteErr } = platform.streamBinding;
+        try { owner.configureWrite(streamBaseState); }
+        catch (error) { try { owner.close(); } catch (_) {} throw error; }
+        function dispatched(ret, buffer, operation) {
+            if (typeof ret === 'number') return ret ? new ErrnoException(ret, 'write') : undefined;
+            const error = streamBaseState[kLastWriteErr];
+            if (error) return new ErrnoException(error, 'write', ret.error);
+            operation.published = true;
+            // Real queued native WRITEWRAP. Keep the actual Writable callback
+            // identity; this stdio consumer owns no Socket timer/_handle.
+            ret.handle = owner;
+            ret.oncomplete = function(status) {
+                if (operation.settled) return;
+                operation.settled = true;operation.entered = true;
+                if (typeof this.callback === 'function')
+                    this.callback(status < 0 ? new ErrnoException(status, 'write', this.error) : null);
+            };
+            ret.callback = operation.callback;
+            ret.async = true;ret.bytes = streamBaseState[kBytesWritten];ret.buffer = buffer;
+            const status = ret.writeStatus;
+            if (status !== null) { ret.writeStatus = null;ret.oncomplete(status); }
+            return true;
+        }
         return {
             // Bind by output object, never by a public descriptor number that
             // can be closed/reused after native initialization.
@@ -56,11 +79,11 @@ function _createNodeTerminalPlatform(platform) {
             // Failed publication retires the actual captured descriptor through
             // its native queued-close owner, never the borrowed public fd.
             close() { return platform.native.operatingSystem('tty-output-close', owner); },
-            write(chunk) {
-                const result = platform.native.operatingSystem('tty-output-write', owner, chunk);
-                // Writable owns callback/drain/HWM behavior after the actual
-                // full synchronous native write/error.
-                return result.error ? new ErrnoException(result.error, 'write') : undefined;
+            write(chunk, operation) {
+                return dispatched(owner.writeBuffer(null, chunk), chunk, operation);
+            },
+            writev(chunks, operation) {
+                return dispatched(owner.writeVector(chunks), chunks, operation);
             },
         };
     }

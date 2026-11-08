@@ -12,6 +12,7 @@
 #include <pthread.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <termios.h>
 #include <unistd.h>
 namespace kandelo::terminal {
@@ -115,6 +116,30 @@ class OutputHandle {
   int GetWindowSize(std::array<unsigned, 2>* result) const {
     if (fd_ < 0) return -EBADF;
     return WindowSize(fd_, result);
+  }
+  // One true writev attempt precedes WRITEWRAP initialization. Only the
+  // submitted blocking remainder loops, matching uv__write's blocking path.
+  // The material keeps exact original allocation capabilities and vector
+  // progress; no syscall or retry consults the future borrowed fd number.
+  template<class Material>
+  bool ProgressWrite(Material& material, bool blockingRemainder = false) {
+    if (material.complete) return true;
+    if (fd_ < 0) { material.error = EBADF;material.complete = true;return true; }
+    if (!material.Remaining()) { material.complete = true;return true; }
+    do {
+      const size_t count = material.vectors.size() - material.vectorIndex;
+      const long limit = sysconf(_SC_IOV_MAX);
+      const size_t maximum = limit > 0 ? size_t(limit) : 1;
+      const int nbufs = int(std::min(count, maximum));
+      ssize_t size;
+      do { size = writev(fd_, material.vectors.data() + material.vectorIndex, nbufs); }
+      while (size < 0 && errno == EINTR);
+      if (size >= 0) material.Consume(size_t(size));
+      else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != ENOBUFS) {
+        material.error = errno;material.complete = true;
+      }
+      if (material.complete || !blockingRemainder) return material.complete;
+    } while (true);
   }
   WriteResult Write(const uint8_t* bytes, size_t length) {
     if (fd_ < 0) return {-EBADF, 0};

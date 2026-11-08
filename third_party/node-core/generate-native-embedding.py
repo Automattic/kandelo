@@ -51,7 +51,7 @@ def canonical_header(name, staged):
         name = 'shell/kandelo-node-' + name
     if name == 'sqlite-limit-names.h':
         name = 'shell/kandelo-node-sqlite-limits.h'
-    if name in ('http-connections.h', 'monotonic-clock.h'):
+    if name in ('http-connections.h', 'monotonic-clock.h', 'stream-write-material.h'):
         name = 'shell/kandelo-node-' + name
     if not name.startswith('shell/') and (staged / name).is_file():
         name = 'shell/' + name

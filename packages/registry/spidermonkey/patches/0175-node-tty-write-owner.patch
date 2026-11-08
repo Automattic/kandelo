@@ -1,0 +1,6 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4159,0 +4160,3 @@
++  }
++  if (unwrapped && JS::GetClass(unwrapped) == &KandeloTerminalWriteClass) {
++    return KandeloTerminalWriteResourceInfo(cx, unwrapped, args.rval());

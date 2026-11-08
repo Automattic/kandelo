@@ -7251,3 +7251,7 @@ The registered FileHandle transfer path now consumes actual native class/environ
 ### Owned SQLite database images
 
 Source242 connects the existing SQLite connection/statement owners to real sqlite3_serialize and sqlite3_deserialize. A temporary image owns allocator memory through export/copy; deserialize captures actual byte length before options, copies current storage afterward, finalizes existing statements before replacement and relinquishes the FREEONCLOSE allocation at actual SQLite entry. Fresh generated-root JavaScript/native-dependent controls, unchanged upstream cases and portable allocator controls are scoped evidence; new guest JSAPI and all-host behavior remain uncompiled/unexecuted.
+
+### Captured TTY writes retain original material through real request ownership
+
+Captured output leases consume real writev progress over original backing capabilities. Actual queued WRITEWRAP identity, frame/default trigger, completion/cancel and close barriers remain source work until compiled and validated. Closed/retired input gates and indexed all-buffer preparation preserve pinned native phase and species contracts. This does not activate public tty constructors or full StreamBase.
