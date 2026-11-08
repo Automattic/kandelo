@@ -851,15 +851,22 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 
 ## Graphics
 
-The next shipment is the complete B1 guest-validation increment, with its
-normal-built preview and recorded B1 checks. Remaining campaign work must
-be named as follow-up steps: B2 asynchronous bindings and its ScummVM
-request gate; B3 local queries; B4 program interfaces; B5 native fences;
-B6 inline draws; then C1 Rust asynchronous scheduling, C2 executor
-separation and C3 the GPU worker. Each stage still needs its own frozen
-validation and measurements. Final Freeciv/ScummVM, desktop, conformance
-and native-feel acceptance remain required; a B1 shipment does not claim
-the later stages or their performance results.
+The maintainer's release decision D-63 ships the current normally built B1
+graphics increment on the basis of generally working graphical demos. The
+selected 21-case graphical smoke across three engines and larger-viewport
+Firefox reproduction pass. This release does not claim full validation,
+conformance or native feel. See the current decision and exact evidence in
+[the compatibility ledger](graphics/compatibility-v1.md#b1-release-decision-d-63-2026-11-08).
+
+Follow-up steps are: repair the obsolete mapping fixtures; investigate the
+intermittent extra Foot launch; finish desktop/lifecycle/browser-memory and
+manual checks; qualify the display recorder and measure real frozen
+ScummVM/Freeciv workloads and Node/browser benchmarks. Then land B2 bindings
+and its request gate, B3 local queries, B4 program interfaces, B5 fences,
+B6 inline arrays, C1 Rust scheduling, C2 executor separation and C3 the GPU
+worker in order. Finish the full campaign audit, client-patch verification,
+conformance and native-feel gates. Unfinished validation remains unfinished;
+it is explicitly accepted as follow-up work for this shipment.
 
 The current normal partial B1 preview now includes the private-selector and
 framebuffer-retirement corrections. The combined prepared-kernel matrix passes

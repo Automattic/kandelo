@@ -6,6 +6,13 @@ This document describes the internal architecture of Kandelo. It is written for 
 lessons behind ownership boundaries, host bookkeeping, filesystem migrations
 and validation. This document remains the reference for implemented behavior.
 
+The B1 graphics shipment follows the maintainer's D-63 incremental release
+scope: the normal-built graphical demos pass their selected smoke checks;
+unresolved defects and full performance/conformance validation remain
+explicit follow-ups. The implemented ownership and publication contracts
+below still apply. See the [release decision and evidence](graphics/compatibility-v1.md#b1-release-decision-d-63-2026-11-08);
+this release makes no native-feel or full-conformance claim.
+
 ## Overview
 
 Kandelo is a shared, multi-process POSIX kernel that runs as WebAssembly. A single kernel Wasm instance manages all processes. The kernel **must** run in a dedicated worker thread (Web Worker in browsers, `worker_thread` in Node.js) — never on the main thread. Each process also runs in its own worker and communicates with the kernel via a SharedArrayBuffer-based channel.

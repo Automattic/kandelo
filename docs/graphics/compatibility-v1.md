@@ -8,6 +8,64 @@ tests retain both guest address widths. It is not a conformance
 claim. An ordinary defect remains open until implementation and executable
 validation cover it; a passing demo does not close an API family.
 
+## B1 release decision D-63, 2026-11-08
+
+The maintainer explicitly authorizes shipping the current B1 graphics
+increment while the graphical demos generally work, without first resolving
+more recorded issues. This supersedes earlier B1-only requirements to finish
+all outstanding defect diagnosis, desktop/lifecycle/manual validation and
+frozen performance measurements before release. It does not turn those
+unfinished checks into passes or establish native feel, complete conformance,
+or completion of B2–B6/C1–C3. They remain explicit campaign follow-ups.
+
+The release candidate is the normally built runtime at `a5da95812a` (R966),
+including the bounded shared-mapping publication repair. R971 passes all 21
+selected graphical cases across Chromium, Firefox and WebKit: Sway/Foot,
+ScummVM, Freeciv, fluid and GLSL/audio. There are no skipped, unexpected or
+flaky outcomes. R970 separately passes the original larger-viewport Firefox
+prefix with zero recorded shared-mapping failures and zero console errors.
+The repaired native library passes all 3,605 tests, including four publication
+pressure controls. These establish the recorded release smoke coverage,
+not full application or performance acceptance. No new runtime edits are
+needed for this release decision.
+
+The partial graphical preview is available on port 59241. Its normal image
+is 822,588 bytes, SHA-256
+`67f91d06af8acdb38f5465a1e12515c53643d5603a89f42bd2c49c0d966b285d`;
+its normal kernel SHA-256 is
+`ff2c824e7d060c7d7088dbe82c8f73ac431be43359ee2df7fbc1b20f48c84083`.
+HTTP image bytes are rechecked against the recorded normal manifest before
+preparing this release. Program 56 / host 4 / GL 17 / fork 21 stay unchanged.
+The package selection is the same twelve graphical roots recorded for R966.
+This is a graphical release checkpoint, not an all-packages build.
+
+Explicit follow-up steps after shipping B1:
+
+1. Correct and validate the obsolete shared-mapping test fixtures. R974
+   records 190 passes and two failures; the older normal-kernel control
+   reproduces all three cases in the two affected fixture files as EINVAL
+   on unprepared registration. Their private correction remains unrun.
+2. Diagnose the intermittent extra Foot launch and close remaining desktop,
+   lifecycle, browser-memory and manual-browser work. Later passing demo
+   runs do not prove the intermittent defect fixed.
+3. Repair and qualify the physical recorder's overlong window identifier;
+   complete frozen ScummVM/Freeciv measurements, Node/browser benchmarks,
+   baseline/native comparisons and instrumentation-overhead reporting.
+   The latest visible run refuses before input because its native title is
+   ellipsized; it provides no latency result or native-feel claim.
+4. Land B2 asynchronous bindings and its ScummVM request gate, then B3 local
+   queries, B4 cached program interfaces, B5 native fences and B6 inline
+   arrays. Preserve separate stage validation and measurement.
+5. Land C1 Rust asynchronous scheduling, C2 executor separation and C3 GPU
+   worker execution in order, with parity, ownership and fault validation.
+6. Finish the remaining graphics audit, four-client retirement verification,
+   broad conformance and final native-feel campaign gates. Propose remaining
+   driver work, GLES3, IGT and multiple displays for the next iteration.
+
+Historical statements below that require all B1 validation before shipment
+are superseded only for this release by D-63. Their evidence and adverse
+outcomes remain recorded.
+
 ## Current shipping priority, 2026-11-03
 
 The maintainer revised D-54 to make native desktop feel the primary
