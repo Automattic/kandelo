@@ -1,10 +1,18 @@
 script_path = "packages/registry/kandelo-rustc/build.sh"
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 3
+revision = 6
 inputs = [
   "packages/registry/kandelo-rustc/build.sh",
   "sdk/guest-rust",
+  "Cargo.toml",
+  "crates/wasm-artifact/Cargo.toml",
+  "crates/wasm-artifact/src",
+  "crates/program-abi/Cargo.toml",
+  "crates/program-abi/src",
+  "abi/snapshot.json",
+  "tools/xtask/src/local_abi_identity.rs",
+  "tools/xtask/src/stamp_abi_contract.rs",
   "scripts/package-build-roots.sh",
   "scripts/package-rust-build-env.sh",
   "scripts/build-rust-sysroot.sh",

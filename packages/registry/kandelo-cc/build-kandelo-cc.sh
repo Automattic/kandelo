@@ -5,11 +5,10 @@ set -euo pipefail
 # in resolver-owned roots.
 #
 # The crate lives in the repository workspace, whose other members target
-# other platforms. Copy just the driver into a one-member workspace under the
-# work dir, so nothing is written to the checkout and Cargo resolves only its
-# graph against the repository's Cargo.lock. Its dev-dependencies (the fork
-# instrumenter its tests check the driver's output against) are dropped: they
-# are not part of the program.
+# other platforms. Copy the driver and its local dependency closure into a
+# private workspace under the work dir, so nothing is written to the checkout
+# and Cargo resolves only its graph against the repository's Cargo.lock.
+# Development dependencies are not part of the packaged program.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -27,16 +26,18 @@ done
 SRC_DIR="$WORK_DIR/src"
 rm -rf "$SRC_DIR"
 mkdir -p "$SRC_DIR/crates"
-cp -R "$REPO_ROOT/crates/kandelo-cc" "$SRC_DIR/crates/kandelo-cc"
-rm -rf "$SRC_DIR/crates/kandelo-cc/target" "$SRC_DIR/crates/kandelo-cc/tests"
-# Everything from [dev-dependencies] to the next table goes.
-awk '/^\[dev-dependencies\]/ { skip = 1; next } /^\[/ { skip = 0 } !skip' \
-    "$REPO_ROOT/crates/kandelo-cc/Cargo.toml" > "$SRC_DIR/crates/kandelo-cc/Cargo.toml"
+for member in kandelo-cc wasm-artifact program-abi; do
+    cp -R "$REPO_ROOT/crates/$member" "$SRC_DIR/crates/$member"
+    rm -rf "$SRC_DIR/crates/$member/target" "$SRC_DIR/crates/$member/tests"
+    # Everything from [dev-dependencies] to the next table goes.
+    awk '/^\[dev-dependencies\]/ { skip = 1; next } /^\[/ { skip = 0 } !skip' \
+        "$REPO_ROOT/crates/$member/Cargo.toml" > "$SRC_DIR/crates/$member/Cargo.toml"
+done
 cp "$REPO_ROOT/Cargo.lock" "$SRC_DIR/Cargo.lock"
 # The workspace package fields and release profile the member inherits,
 # copied from the repository's Cargo.toml.
 {
-    printf '[workspace]\nresolver = "2"\nexclude = [".kandelo-rust", ".kandelo-patched-crates", ".kandelo-vendor"]\nmembers = ["crates/kandelo-cc"]\n\n'
+    printf '[workspace]\nresolver = "2"\nexclude = [".kandelo-rust", ".kandelo-patched-crates", ".kandelo-vendor"]\nmembers = ["crates/kandelo-cc", "crates/wasm-artifact", "crates/program-abi"]\n\n'
     sed -n '/^\[workspace.package\]/,/^$/p' "$REPO_ROOT/Cargo.toml"
     sed -n '/^\[profile.release\]/,/^$/p' "$REPO_ROOT/Cargo.toml"
 } > "$SRC_DIR/Cargo.toml"

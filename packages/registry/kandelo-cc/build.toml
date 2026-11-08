@@ -3,6 +3,10 @@ inputs = [
   "packages/registry/kandelo-cc/build-kandelo-cc.sh",
   "crates/kandelo-cc/Cargo.toml",
   "crates/kandelo-cc/src",
+  "crates/wasm-artifact/Cargo.toml",
+  "crates/wasm-artifact/src",
+  "crates/program-abi/Cargo.toml",
+  "crates/program-abi/src",
   "Cargo.lock",
   "Cargo.toml",
   "scripts/package-build-roots.sh",
@@ -13,4 +17,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 2
+revision    = 3

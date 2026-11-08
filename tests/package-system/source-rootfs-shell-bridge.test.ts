@@ -764,6 +764,17 @@ describe("canonical source-rootfs shell", () => {
 
     const fs = KandeloImageFs.create();
     fs.loadImage(first);
+    const sdkManifest = JSON.parse(new TextDecoder().decode(
+      fs.readFile("/usr/share/kandelo/rust-sdk/manifest.json"),
+    ));
+    const cargo = SHELL_LAZY_BINARY_SPECS.find(spec => spec.id === "cargo")!;
+    expect(cargo.vfsPath).toBe("/usr/libexec/cargo");
+    expect(fs.readlink("/usr/bin/cargo")).toBe("/usr/bin/kandelo-rustc");
+    expect(sdkManifest.components.cargo).toBe(createHash("sha256").update(
+      readFileSync(paths.resolveArtifact(cargo.resolverPath, "cargo")),
+    ).digest("hex"));
+    expect(sdkManifest.schema).toBe(1);
+    expect(sdkManifest.identity).toMatch(/^[0-9a-f]{64}$/);
     const composed = fs.lazyEntries();
     for (const path of SHELL_CA_BUNDLE.guestPaths) {
       expect(fs.stat(path)).toMatchObject({
