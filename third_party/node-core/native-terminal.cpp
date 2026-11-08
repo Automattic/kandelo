@@ -253,7 +253,7 @@ static bool KandeloTerminalSetBlocking(JSContext* cx, unsigned argc, Value* vp) 
 static bool KandeloTerminalConfigure(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);RootedObject owner(cx);
   auto* lease = KandeloTerminalThis(cx, args, &owner);if (!lease) return false;
-  if (!lease->inputOwner || lease->inputClosing || lease->io.Descriptor() < 0) {
+  if (lease->inputClosing || lease->io.Descriptor() < 0) {
     JS_ReportErrorASCII(cx, "TTY input is closed or unavailable");return false;
   }
   if (KandeloTerminalHasPendingRead(lease)) {
@@ -300,13 +300,13 @@ static bool KandeloTerminalOnReadSet(JSContext* cx, unsigned argc, Value* vp) {
 static bool KandeloTerminalReadStart(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);RootedObject owner(cx);
   auto* lease = KandeloTerminalThis(cx, args, &owner);if (!lease) return false;
-  if (!lease->inputOwner) { args.rval().setInt32(-EBADF);return true; }
+  if (!lease->io.Readable()) { args.rval().setInt32(lease->io.Descriptor() < 0 ? -EBADF : -ENOTCONN);return true; }
   return KandeloTerminalStreamStart(cx, owner, lease, args.rval());
 }
 static bool KandeloTerminalReadStop(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);RootedObject owner(cx);
   auto* lease = KandeloTerminalThis(cx, args, &owner);if (!lease) return false;
-  if (!lease->inputOwner) { args.rval().setInt32(-EBADF);return true; }
+  if (lease->io.Descriptor() < 0) { args.rval().setInt32(-EBADF);return true; }
   (void)KandeloTerminalStopRead(lease);args.rval().setInt32(0);return true;
 }
 static bool KandeloTerminalRef(JSContext* cx, unsigned argc, Value* vp) {
@@ -423,7 +423,7 @@ static void KandeloTerminalWriteResult(JSContext* cx, HandleObject view,
 static bool KandeloTerminalConfigureWrite(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);RootedObject owner(cx), view(cx);
   auto* lease = KandeloTerminalThis(cx, args, &owner);if (!lease) return false;
-  if (!lease->outputOwner || lease->closing || lease->closed) {
+  if (lease->closing || lease->closed || lease->io.Descriptor() < 0) {
     JS_ReportErrorASCII(cx, "TTY write configuration requires its live output owner");return false;
   }
   if (!KandeloTerminalWriteStateView(cx, args.get(0), &view)) return false;
@@ -456,9 +456,6 @@ static bool KandeloTerminalSubmitWrite(JSContext* cx, HandleObject parent,
     std::vector<JS::KandeloBacking::SpanRef> spans, MutableHandleValue result) {
   using Request = js::shell::KandeloTerminalWriteRequest;
   using Ticket = js::shell::KandeloTerminalWriteTicket;
-  if (!lease->outputOwner) {
-    JS_ReportErrorASCII(cx, "TTY write requires its actual output owner; input-kind writes remain unimplemented");return false;
-  }
   if (lease->closing || lease->closed || lease->io.Descriptor() < 0) {
     result.setInt32(-EBADF);return true;
   }
@@ -746,8 +743,73 @@ static bool KandeloTerminalDeliverStream(JSContext* cx, HandleObject owner,
   const bool called = scope.Call(callback, arguments, &ignored);
   return called ? scope.Close() : scope.Fail();
 }
+// Prepare the whole returned packet and resource before init can enter JS;
+// successful descriptor admission has no later wrapper allocation boundary.
+static bool KandeloTerminalOpenStream(JSContext* cx, const CallArgs& args,
+                                      MutableHandleValue result) {
+  int64_t fd;if (!KandeloFsInteger(cx, args.get(1), INT32_MIN, INT32_MAX, &fd)) return false;
+  auto* state = js::shell::KandeloGetNativeAsyncState(cx);if (!state) return false;
+  RootedObject prototype(cx);
+  if (!KandeloTerminalPrototype(cx, &prototype)) return false;
+  RootedObject object(cx, JS_NewObjectWithGivenProto(cx, &KandeloTerminalIOClass, prototype));
+  RootedObject packet(cx, JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
+  RootedValue zero(cx, Int32Value(0));
+  if (!object || !packet || !JS_DefineProperty(cx, packet, "value", object, JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx, packet, "error", zero, JSPROP_ENUMERATE)) return false;
+  if (js::shell::gKandeloTerminalGeneration == UINT64_MAX) {
+    JS_ReportErrorASCII(cx, "TTY owner generation exhausted");return false;
+  }
+  auto* lease = js_new<js::shell::KandeloTerminalLease>(cx, state);
+  if (!lease) { JS_ReportOutOfMemory(cx);return false; }
+  JS::AddAssociatedMemory(object, sizeof(*lease), JS::MemoryUse::Embedding3);
+  JS::SetReservedSlot(object, TerminalState, PrivateValue(lease));
+  // Real AsyncWrap init precedes descriptor/OFD publication, as TTYWrap's
+  // LibuvStreamWrap base constructor precedes uv_tty_init.
+  if (!KandeloTerminalInitializeIO(cx, object, lease)) return false;
+  int error = lease->io.OpenStream(int(fd));
+  lease->inputOwner = lease->io.Readable();lease->outputOwner = lease->io.Writable();
+  // A reentrant queued close remains authoritative. Never leave a newly
+  // acquired descriptor under an owner whose close was already published.
+  // Public constructor init-close parity still requires its native phase
+  // controls; these captured owners do not activate public tty classes.
+  if (lease->closing || lease->closed || lease->retired) lease->io.Close();
+  RootedValue status(cx, Int32Value(error));
+  if (!JS_SetProperty(cx, packet, "error", status)) return false;
+  result.setObject(*packet);return true;
+}
 static bool KandeloTerminalDispatch(JSContext* cx, const CallArgs& args,
                                     const char* name, MutableHandleValue value, int* error) {
+  if (strcmp(name, "tty-stream-open") == 0) return KandeloTerminalOpenStream(cx, args, value);
+  if (strcmp(name, "tty-stream-state") == 0) {
+    RootedObject owner(cx);
+    if (!KandeloTerminalCheckedObject(cx, args.get(1), &owner)) return false;
+    // Exact native class is the authority. Other types proceed to their own
+    // TCP validation; no JS tag/prototype/property is an admission token.
+    if (!owner || JS::GetClass(owner) != &KandeloTerminalIOClass) {
+      value.setUndefined();return true;
+    }
+    const auto slot = JS::GetReservedSlot(owner, TerminalState);
+    if (slot.isUndefined()) { JS_ReportErrorASCII(cx, "Uninitialized terminal stream owner");return false; }
+    auto* lease = static_cast<js::shell::KandeloTerminalLease*>(slot.toPrivate());
+    if (lease->cx != cx || lease->state->detached) {
+      JS_ReportErrorASCII(cx, "TTY owner belongs to a retired or different context");return false;
+    }
+    // Actual native ref state only; the typed identity is established above.
+    value.setBoolean(!lease->closed && lease->referenced);return true;
+  }
+  if (strcmp(name, "tty-stream-abort") == 0) {
+    RootedObject owner(cx);
+    if (!KandeloTerminalCheckedObject(cx, args.get(1), &owner)) return false;
+    if (!owner || JS::GetClass(owner) != &KandeloTerminalIOClass ||
+        JS::GetReservedSlot(owner, TerminalState).isUndefined()) {
+      JS_ReportErrorASCII(cx, "Terminal close requires its actual stream owner");return false;
+    }
+    auto* lease = static_cast<js::shell::KandeloTerminalLease*>(JS::GetReservedSlot(owner, TerminalState).toPrivate());
+    if (lease->cx != cx || lease->state->detached) {
+      JS_ReportErrorASCII(cx, "TTY owner belongs to a retired or different context");return false;
+    }
+    value.setUndefined();return KandeloTerminalBeginClose(cx, owner, lease);
+  }
   if (strcmp(name, "tty-size") == 0 || strcmp(name, "tty-open") == 0 || strcmp(name, "tty-output-open") == 0 || strcmp(name, "tty-input-open") == 0) {
     int64_t fd;if (!KandeloFsInteger(cx, args.get(1), INT32_MIN, INT32_MAX, &fd)) return false;
     if (strcmp(name, "tty-size") == 0) {

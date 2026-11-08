@@ -3734,10 +3734,11 @@ const net = (() => {
     };
     const socketTimeout = Symbol('socketTimeout');
     const socketNativeOwners = new WeakMap();
+    const socketTerminalOwners = new WeakSet();
     function prepareSocketOwner() {
         // Constructor reinitialization detaches the receiver association;
         // like Node it does not close an independently retained old handle.
-        socketNativeOwners.delete(this);
+        socketNativeOwners.delete(this);socketTerminalOwners.delete(this);
         this._fd = -1;
         this._handle = null;
         this._socketDestroyed = false;
@@ -3788,29 +3789,38 @@ const net = (() => {
         _ownSocketOwner(owner, preserveReference = false) {
             // Check real native authority before any mutable JS getter/binding
             // or replacement can affect the previous transport.
-            const referenced = nat.socketOwnerValidate(owner);
+            const terminalState = nat.operatingSystem('tty-stream-state', owner);
+            const terminal = terminalState !== undefined;
+            const referenced = terminal ? terminalState : nat.socketOwnerValidate(owner);
             const previous = socketNativeOwners.get(this);
             if (previous && previous !== owner) previous.close();
             // The private owner is installed before any fallible JS wrapper
             // publication. Cleanup never consults mutable public _handle/_fd.
             socketNativeOwners.set(this, owner);
+            if (terminal) socketTerminalOwners.add(this);else socketTerminalOwners.delete(this);
             try {
-                _nodeSocketStream.bind(owner, this);
+                _nodeSocketStream.bind(owner, this, terminal);
                 this._fd = owner.fd;
                 this._handle = owner;
                 this[_nodeAsyncPlatform.symbols.async_id_symbol] = owner.getAsyncId();
                 // Adopting an existing handle preserves its actual native ref
                 // state. Fresh connect/fd owners consume the Socket's policy.
                 if (preserveReference) this._referenced = referenced;
+                else if (terminal && this._referenced === false) owner.unref();
                 else owner.ref(this._referenced !== false);
-                nat.socketOwnerCommitAdoption(owner);
+                if (!terminal) nat.socketOwnerCommitAdoption(owner);
             } catch (error) {
                 // A caller-supplied handle remains that actual partial
                 // receiver's transport on failed binding, as in Node. A new
                 // internally acquired owner instead rolls back its lease.
                 if (!preserveReference) {
-                    if (socketNativeOwners.get(this) === owner) socketNativeOwners.delete(this);
-                    try { nat.socketOwnerAbortAdoption(owner); } catch (_) {}
+                    if (socketNativeOwners.get(this) === owner) {
+                        socketNativeOwners.delete(this);socketTerminalOwners.delete(this);
+                    }
+                    try {
+                        if (terminal) nat.operatingSystem('tty-stream-abort', owner);
+                        else nat.socketOwnerAbortAdoption(owner);
+                    } catch (_) {}
                 }
                 throw error;
             }
@@ -3839,6 +3849,9 @@ const net = (() => {
             // No acquired native stream exists to shut down. Complete the
             // actual Writable finalization rather than issuing shutdown(-1).
             if (!owner) return cb();
+            if (socketTerminalOwners.has(this)) {
+                return cb(new _nodeValues.errors.codes.ERR_METHOD_NOT_IMPLEMENTED('TTY native shutdown request ownership'));
+            }
             return _nodeSocketStream.shutdown(owner, cb);
         }
 
@@ -3957,12 +3970,16 @@ const net = (() => {
             this._connectOperation = null;
             if (operation) operation.cancel();
             const owner = socketNativeOwners.get(this);
-            socketNativeOwners.delete(this);
+            const terminal = socketTerminalOwners.has(this);
+            socketNativeOwners.delete(this);socketTerminalOwners.delete(this);
             if (owner) {
                 try { owner.close(() => this.emit('close', !!err)); }
                 catch (closeError) {
                     err ||= closeError;
-                    nat.socketOwnerAbortAdoption(owner);
+                    try {
+                        if (terminal) nat.operatingSystem('tty-stream-abort', owner);
+                        else nat.socketOwnerAbortAdoption(owner);
+                    } catch (abortError) { err ||= abortError; }
                     process.nextTick(() => this.emit('close', !!err));
                 }
             } else process.nextTick(() => this.emit('close', !!err));
@@ -3994,9 +4011,19 @@ const net = (() => {
         }
         setNoDelay() { return this; }
         setKeepAlive() { return this; }
-        address() { const fd = socketNativeOwners.get(this)?.fd ?? -1; return fd < 0 ? {} : nat.socketAddress(fd); }
+        address() {
+            // A genuine TTY has no getsockname method, just as in pinned net.
+            if (socketTerminalOwners.has(this)) return {};
+            const fd = socketNativeOwners.get(this)?.fd ?? -1;
+            return fd < 0 ? {} : nat.socketAddress(fd);
+        }
         ref() { this._referenced = true; this._connectOperation?.ref(true); socketNativeOwners.get(this)?.ref(true); return this; }
-        unref() { this._referenced = false; this._connectOperation?.ref(false); socketNativeOwners.get(this)?.ref(false); return this; }
+        unref() {
+            this._referenced = false;this._connectOperation?.ref(false);
+            const owner = socketNativeOwners.get(this);
+            if (socketTerminalOwners.has(this)) owner?.unref();else owner?.ref(false);
+            return this;
+        }
     }
 
     // Listeners own real kernel fds. A close stops accept immediately and

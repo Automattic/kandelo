@@ -1,4 +1,4 @@
-// Pinned stream read/write delivery over the genuine native TCP owner.
+// Pinned stream read/write delivery over genuine native TCP and TTY owners.
 function _createNodeSocketStream(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
@@ -36,8 +36,8 @@ function _createNodeSocketStream(platform) {
             prepareOwner(this);
             /* NODE_SOCKET_CONSTRUCTOR_NORMALIZE */
             initializeOwner(this, options);
-            // The admitted kinds here are actual TCP resources, not BoundSocket
-            // wrappers. BoundSocket/TTY/Pipe admission remains separate work.
+            // Handle admission below checks actual native TCP or terminal authority.
+            // BoundSocket/Pipe admission remains separate work.
             const boundNotConnected = false;
             /* NODE_SOCKET_CONSTRUCTOR_FLOW */
             finishOwner(this, options);
@@ -70,22 +70,28 @@ function _createNodeSocketStream(platform) {
     function applyOptions(self) {
         /* NODE_SOCKET_NET_APPLY */
     }
-    function bind(owner, stream) {
+    function bind(owner, stream, terminal = false) {
         owner[owner_symbol] = stream;
         owner.reading = false;
         owner.onread = onStreamRead;
         owner.configureRead(function(_status, buffer, onread) {
-            if (typeof onread !== 'function') throw new primordials.TypeError('TCP onread must be callable');
+            if (typeof onread !== 'function') throw new primordials.TypeError('Native stream onread must be callable');
             return ReflectApply(onread, this, [buffer]);
         }, streamBaseState);
-        const nativeWrite = owner.write;
-        owner.writeBuffer = function(_request, buffer) {
-            return ReflectApply(nativeWrite, this, [buffer]);
-        };
+        if (terminal) {
+            // Native TTY writeBuffer already has the genuine StreamBase ABI.
+            // Bind the same actual environment state used by its read owner.
+            owner.configureWrite(streamBaseState);
+        } else {
+            const nativeWrite = owner.write;
+            owner.writeBuffer = function(_request, buffer) {
+                return ReflectApply(nativeWrite, this, [buffer]);
+            };
+        }
         const nativeWriteVector = owner.writeVector;
         owner.writev = function(_request, chunks, allBuffers) {
             if (allBuffers !== true) {
-                const error = new primordials.Error('Mixed string TCP vectors require their native encoding owner');
+                const error = new primordials.Error('Mixed string stream vectors require their native encoding owner');
                 error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
             }
             return ReflectApply(nativeWriteVector, this, [chunks]);

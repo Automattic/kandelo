@@ -39,7 +39,7 @@ function _createNodeTerminalPlatform(platform) {
     }
     function openOutput(fd) {
         if (!platform.isTTY(fd)) return null;
-        const packet = platform.native.operatingSystem('tty-output-open', fd);
+        const packet = platform.native.operatingSystem('tty-stream-open', fd);
         if (packet.error) {
             const code = platform.uv.getSystemErrorName(packet.error);
             // Unsupported reopen/alias paths retain the real borrowed async
@@ -50,7 +50,11 @@ function _createNodeTerminalPlatform(platform) {
         }
         const owner = packet.value;
         const { streamBaseState, kBytesWritten, kLastWriteErr } = platform.streamBinding;
-        try { owner.configureWrite(streamBaseState); }
+        try {
+            const status = owner.setBlocking(true);
+            if (status) throw new ErrnoException(status, 'setBlocking');
+            owner.configureWrite(streamBaseState);
+        }
         catch (error) { try { owner.close(); } catch (_) {} throw error; }
         function dispatched(ret, buffer, operation) {
             if (typeof ret === 'number') return ret ? new ErrnoException(ret, 'write') : undefined;
@@ -75,10 +79,10 @@ function _createNodeTerminalPlatform(platform) {
         return {
             // Bind by output object, never by a public descriptor number that
             // can be closed/reused after native initialization.
-            bind(output) { outputOwners.set(output, { owner }); },
+            bind(output) { outputOwners.set(output, { owner });output._handle = owner; },
             // Failed publication retires the actual captured descriptor through
             // its native queued-close owner, never the borrowed public fd.
-            close() { return platform.native.operatingSystem('tty-output-close', owner); },
+            close() { owner.close(); },
             write(chunk, operation) {
                 return dispatched(owner.writeBuffer(null, chunk), chunk, operation);
             },
@@ -89,7 +93,7 @@ function _createNodeTerminalPlatform(platform) {
     }
     function openInput(fd) {
         if (!platform.isTTY(fd)) return null;
-        const packet = platform.native.operatingSystem('tty-input-open', fd);
+        const packet = platform.native.operatingSystem('tty-stream-open', fd);
         if (packet.error) {
             const code = platform.uv.getSystemErrorName(packet.error);
             // Preserve existing master/unreopenable fallback as an explicit gap.
@@ -110,7 +114,7 @@ function _createNodeTerminalPlatform(platform) {
             throw error;
         }
         return {
-            bind(input) { entries.set(input, owner);inputIOOwners.set(input, owner); },
+            bind(input) { entries.set(input, owner);inputIOOwners.set(input, owner);input._handle = owner; },
             // Native readStart is continuous. The borrowed fd-readable consumer
             // requests one completion at a time, so stop real native demand
             // before invoking it; Readable alone decides whether to rearm.

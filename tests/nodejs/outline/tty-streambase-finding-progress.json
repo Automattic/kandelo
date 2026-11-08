@@ -1,0 +1,194 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/terminal.md",
+    "findingIds": [],
+    "prerequisiteFindingIds": [
+      "T-002",
+      "T-007",
+      "T-009",
+      "T-010"
+    ],
+    "relatedFamilies": [
+      "streams",
+      "processes",
+      "async"
+    ],
+    "scope": "Partial shared native TTY/Socket/stdio prerequisite only; public TTY constructors inactive, no finding closures.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-002",
+        "definitionKey": "tests/nodejs/audit/terminal.md#T-002:L49",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-007",
+        "definitionKey": "tests/nodejs/audit/terminal.md#T-007:L54",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-009",
+        "definitionKey": "tests/nodejs/audit/terminal.md#T-009:L56",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/terminal.md",
+        "findingId": "T-010",
+        "definitionKey": "tests/nodejs/audit/terminal.md#T-010:L57",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "checked native terminal-class/context routes separately from TCP lease validation",
+    "real init-before-admission with actual O_ACCMODE/nonblocking policy",
+    "Socket consumes terminal read/write state and native requests, ID, ref/unref, close",
+    "stdio exposes real _handle; output explicitly selects blocking and rollback closes actual owner",
+    "readonly write EPIPE and closed EBADF; native TTY references separately confirm EPIPE/ENOTCONN"
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-tty254-source-r2/report.json",
+    "sha256": "b6fee49e8c2c3051269b0f50781130c1e47e220e0478fd22703c0a7e4c7a4948",
+    "guardedInputs": 908,
+    "scope": "Normal current bootstrap/native unity/header staging plus actual-root Socket/stdio native-dependent controls and exact source-equivalent portable header executable. Public constructors inactive, old3fixture protocols uncredited, init-close/fairness/guest GC/realm/Worker/four-host gaps explicit."
+  },
+  "packageChecks": {
+    "report": ".context/node26-tty254-affected-r1.json",
+    "sha256": "6ed6ea1856448154b8b21c1d6a3a19c45da51f32ece781c857f58b36cd2d56cd",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-tty254-source-r2/report.json",
+    "sha256": "b6fee49e8c2c3051269b0f50781130c1e47e220e0478fd22703c0a7e4c7a4948",
+    "portableGroups": 6,
+    "nativeAccessModes": 3,
+    "socketNativeGroups": 6,
+    "socketCandidateGroups": 6,
+    "baselineRejectedRealTty": true,
+    "stdioOutputGroups": 5,
+    "stdioInputGroups": 5,
+    "stdioRollbackGroups": 3,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "scope": "Actual current generated Socket/stdio JS plus genuine native Node TTY/stream dependency; exact source-equivalent portable IOHandle artifact reused. No candidate native JSAPI compilation/GC/realm/fatal/Worker/four-host proof; public TTY constructors inactive, original old3fixture protocols not passing coverage.",
+    "guardedInputs": 908,
+    "sourceChecks": 17,
+    "sourceCommands": 8,
+    "packagePassed": 14,
+    "originalV1Completed": false,
+    "originalV1SourceCheck": "harness-error",
+    "manualFollowupExit": 0
+  },
+  "sealedEvidence": {
+    "report": ".context/tty-streambase-owner-agent/report.json",
+    "sha256": "d098b0b958cf46bcee948f4cdcb1be297e7f12d1e2cebfc6c28653ffefebaa87",
+    "reusedEvidence": true,
+    "scope": "Historical source254 prerequisite and exactly one successful portable IOHandle helper compilation. No native JSAPI/guest proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/tty254-tool-run-r1/source-receipt.json",
+      "sha256": "f5744d0b1849234754472d57c0a84ca271fe1403655fc031b9f1c9aef0f4ce75",
+      "classification": "harness-error",
+      "scope": "Actual original source check exit1 after completed controls: final wrapper incorrectly required raw header equals normally include-formatted stage. Original V1 remains failed, not completed."
+    },
+    {
+      "report": ".context/tty-streambase-owner-agent/evidence/commands.json",
+      "sha256": "b591b41b2d320cacc2dd025b41a7446c75aa5bf4e9c2c81699f6fd47c10850c5",
+      "classification": "preserved-generator-setup-failure",
+      "scope": "Missing copied0044 normal input, no compiler."
+    },
+    {
+      "report": ".context/tty-streambase-owner-agent/frontend-final/report.json",
+      "sha256": "53337a0b1f186d9d22de38206338d700fa96720de5e9d5c55caf53bfe9a2efec",
+      "classification": "preserved-baseline-nonpass",
+      "scope": "TCP-only baseline rejects real native TTY; not passing compatibility."
+    },
+    {
+      "report": ".context/tty-streambase-owner-agent/root-owned-leaf-guard.json",
+      "sha256": "197df7be816126f95f2a233a9367d2ea57629596573c107bda834a2bf1cd7eb1",
+      "classification": "preserved-parent-drift-guard-failure",
+      "scope": "Actual FD252 parent drift separately classified; no root rollback."
+    }
+  ],
+  "remaining": [
+    "Public callable tty.ReadStream/WriteStream constructors, prototypes, descriptors and metadata remain inactive and incomplete.",
+    "Implement genuine terminal shutdown requests and native string/mixed write methods; these are not supplied by the new TTY kind route.",
+    "Resolve init-hook close-before-admission exact phase/status and all native method close phases, master/unreopenable/file/pipe admission, partial-EAGAIN readiness/fairness.",
+    "Validate actual guest native JSAPI/resource/GC/realm/OOM/fatal/Worker and four-host ownership on identified artifacts. Accepted239 is historical and stale for this candidate.",
+    "The three old tracked OutputHandle-only terminal fixtures use stale protocol and are explicitly uncredited; update them against genuine current owners in a separate reviewed fixture slice."
+  ],
+  "actualTtyControlReport": {
+    "report": ".context/tty254-root-controls-r2/report.json",
+    "sha256": "e02b5416bada9987509b7e395bef5a115d92b03553a2d02130efd6dc92de5549",
+    "portableGroups": 6,
+    "nativeAccessModes": 3,
+    "socketNativeGroups": 6,
+    "socketCandidateGroups": 6,
+    "baselineRejectedRealTty": true,
+    "stdioOutputGroups": 5,
+    "stdioInputGroups": 5,
+    "stdioRollbackGroups": 3,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "copiedInputs": {
+      "repo/packages/registry/node-compat/bootstrap.js": "41de7a7d3da35c0489e637ade243f56b58d35150347b5f801617995794e0ec64",
+      "repo/third_party/node-core/node-core.js": "92231d835a70d303ab8996356eb96b62e820cd09b7ab576a0d7149ff6e81fcc7",
+      "before/packages/registry/node-compat/bootstrap.js": "e441507b12e964819db877688062e599e03021c1974a75337c6e1d0ebed2628a",
+      "baseline-core.js": "e6149323741f23e90b05f7ce665292718e0683e5703b6e76a6c70aaa8134c66e",
+      "controls/frontend.cjs": "47e077575855d62c5ebf0ebf60174c9d13925b826dfdd17140ca6561b14b3438",
+      "controls/stdio.cjs": "72f4ae3ddcfa7573a9b25c98165823610db92fbf17457d7edfc139c3f7bb1e23",
+      "controls/native-access.cjs": "47d66f148c4403209be26ce111557ca897149d88b5ee8abd6bbd8a9143202e17",
+      "controls/run-frontend-final.py": "dc21c66da4b545b28be0f0e2070792c8953c564336637b2545b17be15666756d",
+      "controls/run-additional.py": "a9dcafaed358202c371c17b38645b0da9d03f31f1dd695c73610e1c2c223041d"
+    },
+    "scope": "Actual current generated Socket/stdio JS plus genuine native Node TTY/stream dependency; exact source-equivalent portable IOHandle artifact reused. No candidate native JSAPI compilation/GC/realm/fatal/Worker/four-host proof; public TTY constructors inactive, original old3fixture protocols not passing coverage."
+  },
+  "integrationHistory": {
+    "sourceAppliedViaOriginalV1": true,
+    "originalV1Completed": false,
+    "originalV1SourceBinding": "4272fe649ccc34286d293a275f9e0944d52317a8daf0c7d3df0ef79ceaf2d2c1",
+    "originalTerminalFailureLedger": {
+      "path": ".context/agent-integrations/node26-tty254/ledger.json",
+      "sha256": "415b1f80f95eb75959e38eeac94f22b974a5ee7ae6f73b9ec943b34640d52f9c"
+    },
+    "originalFailureClassification": "harness-error",
+    "manualReviewedPositiveFollowup": {
+      "receipt": ".context/tty254-manual-followup-r1/receipt.json",
+      "sha256": "707779ed5dd949c6696e7aaa20c7a33e8182aab75e48002f456a40d2fa765e41",
+      "sourceBinding": "ef3bee11e8e174b0364e3b54561d59f72dd77451a6d2ee94b0e009c251a43711",
+      "pid": 67771,
+      "exit": 0
+    },
+    "packageCheckPassedIndependently": true,
+    "scope": "Original apply completed; original source check remains terminal harness error. Positive source check is a separately reviewed manual follow-up using exact production formatter. No V1 completion or global cache-key claim."
+  },
+  "uncreditedStaleFixtures": [
+    "stdio-resize-owner/control.cjs",
+    "tty-output-publication/control.cjs",
+    "tty-output-owner/platform.cjs"
+  ],
+  "publicTtyConstructorsActivated": false,
+  "at": "2026-11-08T05:07:55.535978+00:00",
+  "recipeRevision": 254,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

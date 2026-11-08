@@ -67,7 +67,9 @@ static bool KandeloNativeOS(JSContext* cx,unsigned argc,Value* vp) {
   // Read/start/control results are the publication boundary for captured
   // input requests. A later packet OOM must not hide newly linked ownership
   // or an already-committed cancellation/reference transition.
-  if (strcmp(name, "tty-input-read") == 0 || strcmp(name, "tty-input-start") == 0 ||
+  if (strcmp(name, "tty-stream-open") == 0 || strcmp(name, "tty-stream-state") == 0 ||
+      strcmp(name, "tty-stream-abort") == 0 ||
+      strcmp(name, "tty-input-read") == 0 || strcmp(name, "tty-input-start") == 0 ||
       strcmp(name, "tty-input-stop") == 0 || strcmp(name, "tty-input-ref") == 0) {
     return KandeloTerminalDispatch(cx, args, name, args.rval(), &error);
   }

@@ -33826,7 +33826,7 @@ const STATUS_CODES = {
         isValidHeaderName: api.isValidHeaderName, isValidHeaderValue: api.isValidHeaderValue };
 }
 
-// Pinned stream read/write delivery over the genuine native TCP owner.
+// Pinned stream read/write delivery over genuine native TCP and TTY owners.
 function _createNodeSocketStream(platform) {
     'use strict';
     const primordials = _createNodePrimordials();
@@ -34052,8 +34052,8 @@ function onWriteComplete(status) {
   options.decodeStrings = false;
   stream.Duplex.call(this, options);
             initializeOwner(this, options);
-            // The admitted kinds here are actual TCP resources, not BoundSocket
-            // wrappers. BoundSocket/TTY/Pipe admission remains separate work.
+            // Handle admission below checks actual native TCP or terminal authority.
+            // BoundSocket/Pipe admission remains separate work.
             const boundNotConnected = false;
               // If we have a handle, then start the flow of data into the
   // buffer.  if not, then this will happen when we connect
@@ -34192,22 +34192,28 @@ Socket.prototype.setKeepAlive = function(enable, initialDelayMsecs,
     }
 
     }
-    function bind(owner, stream) {
+    function bind(owner, stream, terminal = false) {
         owner[owner_symbol] = stream;
         owner.reading = false;
         owner.onread = onStreamRead;
         owner.configureRead(function(_status, buffer, onread) {
-            if (typeof onread !== 'function') throw new primordials.TypeError('TCP onread must be callable');
+            if (typeof onread !== 'function') throw new primordials.TypeError('Native stream onread must be callable');
             return ReflectApply(onread, this, [buffer]);
         }, streamBaseState);
-        const nativeWrite = owner.write;
-        owner.writeBuffer = function(_request, buffer) {
-            return ReflectApply(nativeWrite, this, [buffer]);
-        };
+        if (terminal) {
+            // Native TTY writeBuffer already has the genuine StreamBase ABI.
+            // Bind the same actual environment state used by its read owner.
+            owner.configureWrite(streamBaseState);
+        } else {
+            const nativeWrite = owner.write;
+            owner.writeBuffer = function(_request, buffer) {
+                return ReflectApply(nativeWrite, this, [buffer]);
+            };
+        }
         const nativeWriteVector = owner.writeVector;
         owner.writev = function(_request, chunks, allBuffers) {
             if (allBuffers !== true) {
-                const error = new primordials.Error('Mixed string TCP vectors require their native encoding owner');
+                const error = new primordials.Error('Mixed string stream vectors require their native encoding owner');
                 error.code = 'ERR_NOT_IMPLEMENTED'; throw error;
             }
             return ReflectApply(nativeWriteVector, this, [chunks]);
@@ -51066,7 +51072,7 @@ WriteStream.prototype.getWindowSize = function() {
     }
     function openOutput(fd) {
         if (!platform.isTTY(fd)) return null;
-        const packet = platform.native.operatingSystem('tty-output-open', fd);
+        const packet = platform.native.operatingSystem('tty-stream-open', fd);
         if (packet.error) {
             const code = platform.uv.getSystemErrorName(packet.error);
             // Unsupported reopen/alias paths retain the real borrowed async
@@ -51077,7 +51083,11 @@ WriteStream.prototype.getWindowSize = function() {
         }
         const owner = packet.value;
         const { streamBaseState, kBytesWritten, kLastWriteErr } = platform.streamBinding;
-        try { owner.configureWrite(streamBaseState); }
+        try {
+            const status = owner.setBlocking(true);
+            if (status) throw new ErrnoException(status, 'setBlocking');
+            owner.configureWrite(streamBaseState);
+        }
         catch (error) { try { owner.close(); } catch (_) {} throw error; }
         function dispatched(ret, buffer, operation) {
             if (typeof ret === 'number') return ret ? new ErrnoException(ret, 'write') : undefined;
@@ -51102,10 +51112,10 @@ WriteStream.prototype.getWindowSize = function() {
         return {
             // Bind by output object, never by a public descriptor number that
             // can be closed/reused after native initialization.
-            bind(output) { outputOwners.set(output, { owner }); },
+            bind(output) { outputOwners.set(output, { owner });output._handle = owner; },
             // Failed publication retires the actual captured descriptor through
             // its native queued-close owner, never the borrowed public fd.
-            close() { return platform.native.operatingSystem('tty-output-close', owner); },
+            close() { owner.close(); },
             write(chunk, operation) {
                 return dispatched(owner.writeBuffer(null, chunk), chunk, operation);
             },
@@ -51116,7 +51126,7 @@ WriteStream.prototype.getWindowSize = function() {
     }
     function openInput(fd) {
         if (!platform.isTTY(fd)) return null;
-        const packet = platform.native.operatingSystem('tty-input-open', fd);
+        const packet = platform.native.operatingSystem('tty-stream-open', fd);
         if (packet.error) {
             const code = platform.uv.getSystemErrorName(packet.error);
             // Preserve existing master/unreopenable fallback as an explicit gap.
@@ -51137,7 +51147,7 @@ WriteStream.prototype.getWindowSize = function() {
             throw error;
         }
         return {
-            bind(input) { entries.set(input, owner);inputIOOwners.set(input, owner); },
+            bind(input) { entries.set(input, owner);inputIOOwners.set(input, owner);input._handle = owner; },
             // Native readStart is continuous. The borrowed fd-readable consumer
             // requests one completion at a time, so stop real native demand
             // before invoking it; Readable alone decides whether to rearm.

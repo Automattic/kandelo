@@ -225,9 +225,9 @@ class BorrowedInputMode {
   }
 };
 // A captured TTY has one actual descriptor/OFD for reads, writes, window
-// queries and mode changes. The two stdio policies differ only at admission:
-// input starts nonblocking and acquires mode restoration; output starts
-// blocking. This owner is not yet public TTY/Socket constructor admission.
+// queries and mode changes. Generic streams preserve actual access mode and
+// start nonblocking; captured output explicitly selects blocking afterwards.
+// The original standalone policy-specific Open contract is retained as well.
 class IOHandle {
   OutputHandle descriptor_;
   BorrowedInputMode mode_;
@@ -266,6 +266,24 @@ class IOHandle {
     }
     return status;
   }
+  // Generic uv_tty_init-style admission: preserve the actual access mode,
+  // start a successfully reopened stream nonblocking, and acquire termios
+  // restoration only when a real mode transition requests it.
+  int OpenStream(int supplied) {
+    int saved;do { saved = fcntl(supplied, F_GETFL); } while (saved < 0 && errno == EINTR);
+    if (saved < 0) return -errno;
+    int status = descriptor_.Open(supplied);
+    if (status) return status;
+    currentMode_ = 0;
+    int flags;do { flags = fcntl(Descriptor(), F_GETFL); } while (flags < 0 && errno == EINTR);
+    if (flags < 0) status = -errno;
+    else { access_ = flags & O_ACCMODE;status = descriptor_.SetBlocking(false); }
+    if (status) {
+      Close();currentMode_ = -1;
+      int restored;do { restored = fcntl(supplied, F_SETFL, saved); } while (restored < 0 && errno == EINTR);
+    }
+    return status;
+  }
   int SetMode(int mode) {
     if (mode == 3) mode = 1; // UNIX maps the two raw variants before equality.
     if (currentMode_ >= 0 && mode == currentMode_) return 0;
@@ -287,7 +305,7 @@ class IOHandle {
   template<class Material>
   bool ProgressWrite(Material& material, bool blockingRemainder = false) {
     if (material.complete) return true;
-    if (!Writable()) { material.error = EBADF;material.complete = true;return true; }
+    if (!Writable()) { material.error = Descriptor() < 0 ? EBADF : EPIPE;material.complete = true;return true; }
     // Input captures share this same owner but remain nonblocking. Never
     // apply the blocking-output retry loop to a nonblocking descriptor.
     int flags;do { flags = fcntl(Descriptor(), F_GETFL); } while (flags < 0 && errno == EINTR);
@@ -295,7 +313,7 @@ class IOHandle {
     return descriptor_.ProgressWrite(material, blockingRemainder && !(flags & O_NONBLOCK));
   }
   OutputHandle::WriteResult Write(const uint8_t* bytes, size_t length) {
-    if (!Writable()) return {-EBADF, 0};
+    if (!Writable()) return {Descriptor() < 0 ? -EBADF : -EPIPE, 0};
     return descriptor_.Write(bytes, length);
   }
   void Close() {

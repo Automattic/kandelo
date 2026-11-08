@@ -8,7 +8,7 @@
     "sha256": "83f70574b1d1275ff9a0fda466f4378b929e18debc1625c8187a1358c91e7481"
   },
   "selectedSourceScanIdentities": {
-    "packages/registry/node-compat/bootstrap.js": "582d7be28c312188dc65bccc3e67355509e6661ff3f92aba4bd9469cbfa2979d",
+    "packages/registry/node-compat/bootstrap.js": "41de7a7d3da35c0489e637ade243f56b58d35150347b5f801617995794e0ec64",
     "third_party/node-core/adapter.js": "50f13aa2c5be78e1af04aa3378d9b013688123360b80d9ce017f203521e8d7de",
     "third_party/node-core/address-rules-adapter.js": "b96f26d4fa6043d42889c5c2f37df68c7baa70147e92b2ec2de660eefe8160f5",
     "third_party/node-core/asymmetric-keygen-platform-adapter.js": "94b3dc26b1f783b97cb38eaa91baff3be883c66f8d80a6c76568a72ebf0207b0",
@@ -97,7 +97,7 @@
     "third_party/node-core/sea-platform-adapter.js": "433a3ced7a166b8a7145b54ba844db3f4a39110483c833c67b2063170194ca0a",
     "third_party/node-core/server-constructor-adapter.js": "c296b58141685aa178836c01cb85e2e292f0f06641fd56dd31fa630002b61f3f",
     "third_party/node-core/signature-platform-adapter.js": "1e44bb8672c1d51c5b752a25b540e863cf93eecbd366091584fabda62443d7f2",
-    "third_party/node-core/socket-stream-adapter.js": "5c1232496d8763bef5566688da43738621e5b46c143cabc056f52e24a3501343",
+    "third_party/node-core/socket-stream-adapter.js": "826624fec6c07de9b87dc3a511cb2e2f778cf63407916c2037a3c201585e3a2f",
     "third_party/node-core/source-map-platform-adapter.js": "cf215318dcfa6a95edd314d85b71a98c4b52f12dc10c646f3ed13a4a4b42c9fc",
     "third_party/node-core/sqlite-platform-adapter.js": "3f8d9ed6319e56c7afcd01082c7ea6b496af9888acb4ff2371504fd2ed6d21cc",
     "third_party/node-core/stat-watcher-platform-adapter.js": "a39ff9c4d95f076284eb1b3f74e2d3b1a6fd34854cc41e1f1789900904456602",
@@ -107,7 +107,7 @@
     "third_party/node-core/symmetric-keygen-platform-adapter.js": "33fcdeba5519f0431634c2f5e2b345800181ea1565373f6259bc15f098f5c201",
     "third_party/node-core/sys-platform-adapter.js": "795f104873cdfb340667f160d358f548984b3fe73b7f4db335624f4073774b44",
     "third_party/node-core/tempdir-platform-adapter.js": "5102bbeeeb0ca8ffe47dec42d4edad3a91e0e8c6842903b3d3fb904b237afa39",
-    "third_party/node-core/terminal-platform-adapter.js": "c070528403935d05d83f8d434ae79d4adde434328637bbf355d74e2b3efaf07e",
+    "third_party/node-core/terminal-platform-adapter.js": "dd3a8dc58b0744515a60b41c80e49798190a030cf60d8728bcfd07667fd535c7",
     "third_party/node-core/testing-platform-adapter.js": "9e8717598ae201818f3272c717ccc138196cacd92348e58e90531a7c2647567a",
     "third_party/node-core/testing-runner-adapter.js": "22eb03e53a82385215a23a6f382cf85101afcee1d86762a29b05e2812c02e7e6",
     "third_party/node-core/timers-promises-platform-adapter.js": "efb66d7b0d0f41f311d3bc05a0116b00800eb8780f3213ff6200244f96687e0c",

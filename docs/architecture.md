@@ -7295,3 +7295,7 @@ Source252adds private FastBuffer publication of actual native input Uint8Array s
 ### Fetch response pull and terminal ownership
 
 Source 253 adds the real response-body pull owner over actual IncomingMessage iteration, private independent byte-copy publication and real cancellation/terminal ownership. Namespace, retirement-before-controller-error and EOF-publication fixes address all three reviewed source findings. Actual normal source checks guard 908 inputs with ten source checks/eight commands; scoped native/candidate predicate groups are nine each, with separate namespace/error-hook/EOF-hook subjects. Full public Fetch cause/name/code/socket metadata equality remains FAILED. Fourteen package input cases pass separately. No guest, complete Fetch or four-host acceptance.
+
+### Captured TTY StreamBase prerequisite
+
+Source254 consumes actual captured TTY handles through native kind admission and Socket/stdio read/write/ref/close owners. Normal staging guards908inputs with17source checks and8commands. Scoped portable6/nativeaccess3/Socketnative6+candidate6/stdiooutput5+input5+rollback3 observations are dependency/component evidence, not public API or guest passes. Original V1 source check remains a harness error; separately reviewed exact-formatter manual follow-up passed. Package14 passed independently. Public TTY constructors, shutdown, string/mixed writes and guest/four-host conformance remain open.

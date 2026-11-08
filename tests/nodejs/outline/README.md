@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source254 consumes actual captured TTY handles through native kind admission and Socket/stdio read/write/ref/close owners. Normal staging guards908inputs with17source checks and8commands. Scoped portable6/nativeaccess3/Socketnative6+candidate6/stdiooutput5+input5+rollback3 observations are dependency/component evidence, not public API or guest passes. Original V1 source check remains a harness error; separately reviewed exact-formatter manual follow-up passed. Package14 passed independently. Public TTY constructors, shutdown, string/mixed writes and guest/four-host conformance remain open.
+See [source scope](tty-streambase-integration.md).
+
 Source 253 adds bounded real Fetch response pull/byte/cancel/terminal ownership with three source-review corrections. Public cause parity remains failed and the enqueue-publication question unresolved; no complete Web or guest compatibility claim.
 See [source scope](fetch-response-pull-integration.md).
 
