@@ -240,3 +240,76 @@ separate instantiation, engine compilation and host reference lifetimes.
 Any proposed outside-runtime defect still needs a standalone self-judging
 reproduction without Kandelo before it can be treated as confirmed. No
 browser flags, Go collector changes or PHP/Caddy adaptations are adopted.
+
+## Fixed-count traffic controls
+
+Job `wordpress-three-traffic-memory-controls-1108-011750-179b` passes all
+three serial WebKit selections in 9m58s. Each fresh browser uses the same
+verified image/kernel/Go artifacts above, two actual PHP threads and the
+same initial WordPress login/editor, optimizer probes, bursts and churn.
+Only the subsequent traffic target changes: WordPress, a tiny PHP response
+or a static file. Each completes exactly 120 requests with a minimum
+500 ms start-to-start cadence. Slow requests and observations extend that
+cadence; the producer never catches up with bursts. Every selection then
+passes one real Caddy crash recovery and held-request graceful shutdown,
+with sixty seconds of post-destroy observation. No collection is forced.
+
+| Traffic target | Before traffic | Selected traffic footprint | Whole-run OS peak | 60 seconds after destroy |
+| --- | ---: | ---: | ---: | ---: |
+| WordPress | 5.2 GiB | 5.1–7.3 GiB | 8.1 GiB | 851.6 MiB |
+| Tiny PHP | 5.3 GiB | 5.2–5.3 GiB | 5.7 GiB | 911.1 MiB |
+| Static | 5.1 GiB | 5.1 GiB | 5.7 GiB | 856.7 MiB |
+
+The WordPress traffic sample reaches 7.3 GiB at request 119; its later
+8.1 GiB historical peak includes the remaining lifecycle phases and cannot
+be assigned entirely to traffic. All traffic samples retain 685.9 MiB of
+Caddy linear memory, six module compilations and two actual PHP threads.
+Go Sys stays within approximately 40–42 MiB. These single observations
+suggest investigating WordPress execution beyond fixed module/thread counts;
+they do not isolate an allocation owner or a particular engine defect.
+Response sizes, elapsed times and collection timing differ, and a canonical
+build runs concurrently. Do not subtract these values as pure PHP or
+WordPress allocation costs or treat them as throughput comparisons.
+
+The maintained HTTP/lifecycle fixture accepts
+`KANDELO_FRANKENPHP_SOAK_REQUESTS=120`,
+`KANDELO_FRANKENPHP_SOAK_PACE_MS=500`, and
+`KANDELO_FRANKENPHP_SOAK_WORKLOAD=wordpress|php-scalar|static`.
+Request counts and duration mode are mutually exclusive. It checks exact
+bodies for the two small controls and retains the original WordPress
+response check. Its `traffic-workload` attachment records the actual count,
+cadence and instrumented duration. The existing duration mode separately
+passes classic and combined Caddy on Chromium in job `8598`: two passes,
+zero skips/retries, 53.3 seconds of browser time.
+
+Raw phases, native observations, workload attachments, fixture snapshot and
+source diff are retained in the review checkout under the `179b` job's
+`scratch/traffic-controls/{wordpress,php-scalar,static}/` directories.
+The duration-mode report is under job
+`wordpress-timed-traffic-mode-1108-013351-8598/scratch/timed-mode/wordpress/reports/`.
+
+## Direct kernel-worker CPU traces
+
+Job `wordpress-kernel-cpu-profiles-1108-013219-afe1` passes the same
+fixed-count WordPress/lifecycle selection with read-only ScriptProfiler
+tracking on the owned direct kernel worker. Two roughly ten-second windows
+retain 2,261 and 2,180 sampled stacks. The observer records inspector and
+receipt start/stop timestamps. Profiling may affect timing and memory;
+this run is separate from the unprofiled controls above. Nested Go/PHP
+process and pthread VMs are outside this profile's scope.
+
+The observed leaf is the first frame, checked against the actual chain from
+`flush` through syscall handling, Wasm, the clock import and byte access.
+The corrected `kernel-1-summary-v2.json` and `kernel-2-summary-v2.json`
+supersede the opposite-order initial summaries, which remain retained as
+failed analysis. Common observed leaves include atomic notification,
+kernel export dispatch, message posting and memory-view operations. This
+does not establish a dominant allocation owner or justify changing those
+operations. CPU samples do not measure allocated bytes or retained objects.
+
+Many trace timestamps are zero and cannot be assigned to precise request
+phases. Profile start/stop receipts establish bounded windows without
+inventing alignment for those samples. Source locations refer to the
+Vite-transformed JavaScript, not the same line in the original TypeScript.
+Raw events, traces and corrected summaries are retained under this job's
+`scratch/kernel-cpu/wordpress/cpu-profiles/` directory in the review checkout.

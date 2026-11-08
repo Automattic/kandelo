@@ -2,6 +2,38 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Controlled traffic and worker profiling close:** job `179b` passes three
+serial WebKit selections in 9m58s. Each uses the same verified revision-45
+partial image, two PHP threads, initial WordPress workload, 120 requests
+at a minimum 500 ms cadence, crash recovery and graceful drain. WordPress
+traffic grows from 5.2 to a selected 7.3 GiB footprint; tiny PHP and static
+traffic stay near 5.1–5.3 GiB. Caddy linear memory stays 685.9 MiB, Go Sys
+stays around 40–42 MiB and the module compilation count stays six. These
+are single instrumented observations with different response bodies and
+collection timing, not throughput or allocation-owner comparisons. The
+whole-run peaks are 8.1/5.7/5.7 GiB; the later WordPress peak must not be
+attributed entirely to traffic. Sixty-second post-destroy footprints are
+851.6/911.1/856.7 MiB. No production memory budget or leak fix is established.
+
+The maintained HTTP/lifecycle fixture now supports fixed request counts,
+minimum cadence and WordPress/static/tiny-PHP targets, with exact response
+validation and attached workload metadata. Existing duration mode remains
+separate and passes both services on Chromium in `8598`: two passes in
+53.3 seconds of browser time, zero skips/retries. No application change,
+forced collection or engine flag is involved.
+
+Read-only kernel-worker profiling `afe1` also passes, retaining two bounded
+CPU traces with 2,261 and 2,180 stacks. It excludes nested Go/PHP workers
+and does not measure allocation bytes. Corrected summaries use the first
+frame as the observed leaf; the initial opposite-order summaries remain
+non-authoritative evidence. Zero sample timestamps cannot be assigned to
+precise phases, and source lines refer to Vite-transformed code. No single
+allocation owner is established. See the detailed memory checkpoint for
+the raw paths and limits. The f605 runtime audit also finds its raw
+`atomicWait32` call only inside the bounded checkpoint helper; callers
+cover channel/bootstrap, runtime locks, notes and sleep. This source audit
+does not replace final runtime validation.
+
 **Live native sampling and browser identity close:** `8b6f` passes in
 12m28s including prerequisites (4.7 minutes in the browser). The same
 normal partial image handles two-thread WordPress traffic, unchanged PHP
@@ -68,7 +100,7 @@ The first private probe `af44` fails during discovery from two Playwright
 installations; importing through the app fixture corrects the test setup.
 
 Live native sampling `wordpress-live-native-stack-attribution-1108-004045-8b6f`
-is now running. It triggers at inspector memory thresholds outside explicit
+completed as recorded above. It triggers at inspector memory thresholds outside explicit
 phase callbacks, binds the owned content PID afresh and retains sampling
 start/finish/overlap records. It changes no engine flags or application
 algorithms and cannot by itself identify allocation ownership. Prior

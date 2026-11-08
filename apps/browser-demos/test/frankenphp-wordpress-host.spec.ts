@@ -36,6 +36,24 @@ const soakSeconds = Number(process.env.KANDELO_FRANKENPHP_SOAK_SECONDS ?? "0");
 if (!Number.isSafeInteger(soakSeconds) || soakSeconds < 0 || soakSeconds > 600) {
   throw new Error("KANDELO_FRANKENPHP_SOAK_SECONDS must be an integer from 0 to 600");
 }
+const soakRequestedCount = Number(process.env.KANDELO_FRANKENPHP_SOAK_REQUESTS ?? "0");
+const soakPaceMs = Number(process.env.KANDELO_FRANKENPHP_SOAK_PACE_MS ?? "0");
+const soakWorkload = process.env.KANDELO_FRANKENPHP_SOAK_WORKLOAD ?? "wordpress";
+if (!Number.isSafeInteger(soakRequestedCount) || soakRequestedCount < 0 || soakRequestedCount > 500) {
+  throw new Error("KANDELO_FRANKENPHP_SOAK_REQUESTS must be an integer from 0 to 500");
+}
+if (!Number.isSafeInteger(soakPaceMs) || soakPaceMs < 0 || soakPaceMs > 1000) {
+  throw new Error("KANDELO_FRANKENPHP_SOAK_PACE_MS must be an integer from 0 to 1000");
+}
+if (!["wordpress", "static", "php-scalar"].includes(soakWorkload)) {
+  throw new Error("KANDELO_FRANKENPHP_SOAK_WORKLOAD must be wordpress, static or php-scalar");
+}
+if ((soakWorkload !== "wordpress" || soakPaceMs > 0) && soakSeconds === 0 && soakRequestedCount === 0) {
+  throw new Error("A traffic workload or cadence requires a duration or request count");
+}
+if (soakRequestedCount > 0 && soakSeconds > 0) {
+  throw new Error("Select either a traffic duration or a fixed request count");
+}
 if (!Number.isSafeInteger(churnRequests) || churnRequests < 0 || churnRequests > 40) {
   throw new Error("KANDELO_FRANKENPHP_CHURN_REQUESTS must be an integer from 0 to 40");
 }
@@ -122,7 +140,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     });
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, metricsModuleUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, imageLazyAssetDirectory, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds, recoveryRounds, optimizerProbes }) => {
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, metricsModuleUrl, gracefulProbeUrl, runtimeUrlsModuleUrl, imageLazyAssetDirectory, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName, memoryDiagnostics, soakSeconds, soakRequestedCount, soakPaceMs, soakWorkload, numThreads, postDestroySeconds, recoveryRounds, optimizerProbes }) => {
       let readMemory: (() => Promise<unknown>) | undefined;
       const stage = async (message: string) => {
         let snapshot: unknown;
@@ -216,6 +234,15 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
           decoder.decode(template).replaceAll("@@APP_PATH@@", "/").replaceAll("@@PROTO@@", "http"),
         ));
         await kernel.writeFileToVfs("/srv/www/html/__kandelo_opcache_target.php", new TextEncoder().encode("<?php return 1;"));
+        // Keep the same image, PHP pool and initial WordPress exercise for all
+        // traffic controls. Only the later request target changes.
+        const soakText = "Kandelo memory control\n";
+        if (soakSeconds > 0 || soakRequestedCount > 0) {
+          await kernel.writeFileToVfs("/srv/www/html/__kandelo_static_soak.txt", new TextEncoder().encode(soakText));
+          await kernel.writeFileToVfs("/srv/www/html/__kandelo_scalar_soak.php", new TextEncoder().encode(
+            `<?php header('Content-Type: text/plain'); echo ${JSON.stringify(soakText)};`,
+          ));
+        }
         for (const probe of optimizerProbes) {
           await kernel.writeFileToVfs(`/srv/www/html/__kandelo_cfg_${probe.conditions}.php`, new TextEncoder().encode(probe.code));
         }
@@ -375,18 +402,27 @@ echo json_encode([
         const soakStarted = performance.now();
         let soakSampledAt = soakStarted;
         let soakRequests = 0;
-        while (performance.now() - soakStarted < soakSeconds * 1000) {
+        while (soakRequestedCount > 0
+          ? soakRequests < soakRequestedCount
+          : performance.now() - soakStarted < soakSeconds * 1000) {
+          const requestStarted = performance.now();
+          const path = soakWorkload === "static" ? "/__kandelo_static_soak.txt"
+            : soakWorkload === "php-scalar" ? "/__kandelo_scalar_soak.php" : "/";
           const response = await kernel.fetchInKernel(8080, {
-            method: "GET", url: `/?soak=${soakRequests}`, headers: { Host: "localhost:8080" }, body: null,
+            method: "GET", url: `${path}?soak=${soakRequests}`, headers: { Host: "localhost:8080" }, body: null,
           }, { timeoutMs: 30_000 });
-          if (response.status !== 200 || !decoder.decode(response.body).includes("WordPress on Kandelo")) {
-            throw new Error(`Soak request ${soakRequests} returned ${response.status}`);
+          const text = decoder.decode(response.body);
+          const bodyMatches = soakWorkload === "wordpress" ? text.includes("WordPress on Kandelo") : text === soakText;
+          if (response.status !== 200 || !bodyMatches) {
+            throw new Error(`${soakWorkload} soak request ${soakRequests} returned ${response.status}: ${text.slice(0, 200)}`);
           }
           soakRequests++;
           if (performance.now() - soakSampledAt >= 15_000) {
             await stage(`soak requests: ${soakRequests}`);
             soakSampledAt = performance.now();
           }
+          const remaining = soakPaceMs - (performance.now() - requestStarted);
+          if (remaining > 0) await new Promise(resolveDelay => setTimeout(resolveDelay, remaining));
         }
         const soakDurationMs = performance.now() - soakStarted;
         let restarted = false;
@@ -440,6 +476,9 @@ echo json_encode([
           parallelEditorCompleted: parallelEditorRequests,
           soakRequests,
           soakDurationMs,
+          soakWorkload,
+          soakRequestedCount,
+          soakPaceMs,
           restarted,
           serviceLog: decoder.decode(serviceLog),
           diagnostics,
@@ -472,7 +511,7 @@ echo json_encode([
       }
     }, {
       imageUrl, kernelUrl, browserKernelUrl, metricsModuleUrl, churnRequests, editorBurstRounds, parallelEditorRequests, serviceName,
-      memoryDiagnostics, soakSeconds, numThreads, postDestroySeconds, recoveryRounds,
+      memoryDiagnostics, soakSeconds, soakRequestedCount, soakPaceMs, soakWorkload, numThreads, postDestroySeconds, recoveryRounds,
       gracefulProbeUrl: new URL(`/@fs/${resolve(repoRoot, "host/test/support/frankenphp-graceful.ts")}`, baseURL!).href,
       runtimeUrlsModuleUrl: new URL("/lib/init/image-owned-runtime-urls.ts", baseURL!).href,
       imageLazyAssetDirectory,
@@ -492,6 +531,14 @@ echo json_encode([
     const serviceLogPath = test.info().outputPath(`${serviceName}.log`);
     writeFileSync(serviceLogPath, result.serviceLog);
     await test.info().attach("guest-service-log", { path: serviceLogPath, contentType: "text/plain" });
+    await test.info().attach("traffic-workload", {
+      body: JSON.stringify({ workload: result.soakWorkload, requestedCount: result.soakRequestedCount,
+        completedCount: result.soakRequests, minimumCadenceMs: result.soakPaceMs,
+        durationMs: result.soakDurationMs,
+        scope: "Request validation and optional memory diagnostics; not an uninstrumented throughput comparison." }),
+      contentType: "application/json",
+    });
+    if (soakRequestedCount > 0) expect(result.soakRequests).toBe(soakRequestedCount);
     if (memoryDiagnostics) {
       await test.info().attach("browser-memory-samples", {
         path: memoryEvidencePath, contentType: "application/x-ndjson",
