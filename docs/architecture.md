@@ -4382,9 +4382,12 @@ ordinary Dinit/curl scheduler of upstream `wp-cron.php`. The scheduler depends
 on its server, uses a sixty-second minimum restart interval and has one
 bounded HTTP request in flight. The builder installs its declared curl
 binary directly, so a partial shell need not supply it implicitly. Browser
-boot writes the scheduler's public host/prefix only after the service worker
-mints that machine's URL and before Dinit starts. Protected candidate boots
-retain their original image configuration. Node uses guest loopback directly.
+boot supplies generic `KANDELO_PUBLIC_URL` init metadata only after the
+service worker mints that machine's URL. An image-owned Dinit configuration
+service prepares curl's header file from that input before scheduling starts.
+Protected candidate boots retain their original environment; the service
+leaves configured headers unchanged when the input is absent. Node uses
+guest loopback directly.
 Current normal-image and end-to-end acceptance remains tracked in the
 [Go implementation plan](plans/2026-09-05-go-gc-port-milestone1-plan.md).
 

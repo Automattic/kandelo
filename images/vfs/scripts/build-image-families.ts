@@ -38,6 +38,7 @@ function serviceDeclarations(packageName: string) {
 function installWordPressFamilyCaddy(source: KandeloImageFs, fs: KandeloImageFs): void {
   for (const path of [
     "/usr/sbin/frankenphp-caddy",
+    "/usr/bin/curl",
     "/etc/frankenphp",
     "/etc/caddy",
     "/etc/dinit.d/frankenphp-caddy",

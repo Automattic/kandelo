@@ -192,7 +192,7 @@ The current source declares ordinary Dinit/curl schedulers with each
 WordPress activity. A complete Node control passes in 4m40s and its browser
 control passes all three engines in 14m37s, zero retries/skips. Those use
 retained normal45 with the new configuration and a test-owned WordPress
-action, not the stock cache hook or final normal48/family15 artifacts.
+action, not the stock cache hook or final normal49/family16 artifacts.
 A maintained shared regression then passes Node in 4m32s; its three-engine
 run is active. Earlier preload failures stay recorded independently.
 
@@ -206,8 +206,19 @@ older passes above remain evidence for explicit delivery only.
 Source inspection catches two integration details before replacement-preview
 acceptance. A partial shell does not install every built image dependency,
 so WordPress must install curl from its direct dependency itself. Also, the
-machine prefix is assigned after image composition. Browser boot must write
-cron URL metadata after the bridge handshake, before starting Dinit, rather
-than capture the pre-mint `/computer` placeholder. Normal48/family15 and
+machine prefix is assigned after image composition. Browser boot supplies generic public URL metadata after the bridge
+handshake. An image-owned Dinit service configures curl headers from it,
+rather than capture the pre-mint `/computer` placeholder. Normal49/family16 and
 actual app/cache validation of these paths remain open. The existing 5492
 preview is preserved.
+
+The final configuration owner is the image, not the app: generic
+`KANDELO_PUBLIC_URL` init metadata reaches an ordinary Dinit configuration
+service that atomically writes a curl header file. Control `a5bc` passes
+real header-file loading and all Node lifecycle phases in 4m40s. The earlier
+maintained shared scenario also passes all three browsers in 14m49s; the
+current regression now requires this image-owned configuration path and
+will rerun against normal49. The normal47 pipeline confirms the missing
+curl installation with ENOENT after completing its selected packages.
+Those completed current-SDK artifacts remain available for the normal49
+successor. No updated stock-cache app pass is claimed yet.

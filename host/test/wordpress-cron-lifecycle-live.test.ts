@@ -5,7 +5,7 @@ import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { configureWordPressRuntime, SERVICE_DEMO_ENV } from "../../packages/registry/service-vfs-demo";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { observeProcessExits } from "./support/frankenphp-graceful";
-import { prepareWordPressCronLifecycle, verifyWordPressCronLifecycle } from "./support/wordpress-cron-lifecycle";
+import { prepareWordPressCronLifecycle, verifyWordPressCronLifecycle, WORDPRESS_CRON_PUBLIC_URL } from "./support/wordpress-cron-lifecycle";
 
 const imagePath = process.env.KANDELO_WORDPRESS_CRON_IMAGE;
 it.skipIf(!imagePath)("owns WordPress cron across server stop, restart, crash recovery and switches in Node", async () => {
@@ -35,7 +35,7 @@ it.skipIf(!imagePath)("owns WordPress cron across server stop, restart, crash re
     await host.init();
     await prepareWordPressCronLifecycle(host, 8080);
     const init = await host.spawnFromVfs("/bin/sh", ["sh", "/sbin/kandelo-init", "frankenphp-caddy"], {
-      uid: 0, gid: 0, cwd: "/root", env: [...SERVICE_DEMO_ENV, "FRANKENPHP_NUM_THREADS=2"],
+      uid: 0, gid: 0, cwd: "/root", env: [...SERVICE_DEMO_ENV, "FRANKENPHP_NUM_THREADS=2", `KANDELO_PUBLIC_URL=${WORDPRESS_CRON_PUBLIC_URL}`],
     });
     await Promise.race([
       readiness,

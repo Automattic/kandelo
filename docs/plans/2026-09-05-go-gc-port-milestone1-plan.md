@@ -2,6 +2,44 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Image-owned public URL configuration and current-SDK rebuild.** The
+normal partial producer `1e5b` completes its own SDK and selected dependency
+builds, including both FrankenPHP programs, then fails after 48m30s exactly
+at `lstat /usr/bin/curl` during WordPress47 composition. It retains all
+completed cache entries. WordPress49 now installs the declared CLI itself;
+family16 copies that explicit image-owned command as well. The earlier
+source diagnosis is now reproduced by the normal pipeline, not just an
+inferred partial-shell rule.
+
+Fresh own-SDK outputs are kernel `7e2593cdb90a`, classic `380ff5931ad3`
+(69,939,907 bytes) and Caddy `b0f2985aef0c` (184,971,183 bytes). These differ
+from the retained older cohort and need their own final runtime validation.
+Read-only section comparison records the changed code/data/build-key
+sections; it is not an independent same-key reproducibility test and does
+not establish the cause of each byte difference. Identities are retained in
+`wordpress-cron-normal`'s completed-go-artifacts and section-comparison JSON.
+
+Browser init now supplies generic `KANDELO_PUBLIC_URL` metadata after bridge
+registration. An image-owned Dinit configuration service atomically prepares
+curl's header file from that input. The app no longer recognizes or rewrites
+WordPress configuration. Protected candidates retain their original init
+environment; absent metadata leaves configured headers unchanged. Control
+`a5bc` passes the complete Node scenario in 4m40s with real guest rendering
+of public host/prefix, actual curl `@header-file` loading, stop/restart,
+Caddy crash recovery, both service switches and held-PHP shutdown. This uses
+retained normal45 plus current ordinary configuration, not normal49
+acceptance. PHP/Go/compiler code and the guest ABI stay unchanged.
+
+The earlier maintained scenario passes Node (`1f11`, 4m32s) and all three
+browsers (`65e1`, 14m49s), zero retries/skips. Its current version now requires
+the image-owned configuration service and supplies generic metadata instead
+of injecting curl headers itself. That stronger final normal49 gate is
+pending, as are the updated stock-cache app test and expanded memory capture.
+The normal49 successor can fast-forward the completed own-SDK checkout and
+reuse its successful package builds; the full canonical 198-node producer
+continues separately on frozen source c51. The verified 5492 preview remains
+unchanged.
+
 **Current cron integration and maintained regressions.** The complete
 controlled browser scenario `2557` passes Chromium, Firefox and WebKit in
 14m37s, zero retries/skips. Its maintained shared Node regression `1f11`

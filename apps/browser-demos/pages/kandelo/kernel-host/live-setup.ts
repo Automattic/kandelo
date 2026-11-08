@@ -48,7 +48,6 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
-import { wordpressCronCurlConfig } from "../../../lib/init/wordpress-runtime-config";
 import {
   imageOwnedLazyAssetDirectory,
   type ImageOwnedRuntimeLazyAssets,
@@ -2223,18 +2222,6 @@ async function bootProfile(
       }
     }
 
-    if (bridgeSent && profile.candidateEvidence === undefined
-      && await kernel.readFileFromVfs("/etc/wordpress/cron.curl") !== null) {
-      // The service worker mints the public path at this handshake. Image
-      // composition only knows the pre-mint /computer placeholder. Configure
-      // scheduled requests before Dinit starts so their links address this VM.
-      const publicUrl = new URL(machineAppPrefix, window.location.href);
-      await kernel.writeFileToVfs("/etc/wordpress/cron.curl", new TextEncoder().encode(
-        wordpressCronCurlConfig(publicUrl.origin, publicUrl.pathname.replace(/\/$/, "") || "/"),
-      ));
-      assertCurrent();
-    }
-
     // ── Display size, then init and the command ─────────────────────────
     //
     // A client that picks its video mode (a Wayland compositor) reads the
@@ -2271,13 +2258,22 @@ async function bootProfile(
       );
       if (ignoredMessage !== null) tick(ignoredMessage);
       tick(`spawning ${initArgv[0]}...`);
+      // The bridge assigns this URL after image composition. Supply generic
+      // init metadata; image-owned services decide which configuration to render.
+      const initEnv = [...initLaunch.env];
+      if (bridgeSent && profile.candidateEvidence === undefined) {
+        const publicUrl = new URL(machineAppPrefix, window.location.href).href;
+        const previous = initEnv.findIndex(value => value.startsWith("KANDELO_PUBLIC_URL="));
+        if (previous !== -1) initEnv.splice(previous, 1);
+        initEnv.push(`KANDELO_PUBLIC_URL=${publicUrl}`);
+      }
       // The init binary lives in the kernel-owned VFS; spawn it by path rather
       // than shipping bytes the kernel already has.
       const { exit: initExit } = await kernel.spawnFromVfs(
         initArgv[0],
         initArgv,
         {
-          env: initLaunch.env,
+          env: initEnv,
           cwd: initLaunch.cwd,
           uid: initLaunch.uid,
           gid: initLaunch.gid,

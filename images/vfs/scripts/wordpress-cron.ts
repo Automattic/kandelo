@@ -4,11 +4,36 @@ import { wordpressCronCurlConfig } from "../../../apps/browser-demos/lib/init/wo
 
 /** Make ordinary Dinit service ownership include WordPress's HTTP scheduler. */
 export function installWordPressCron(fs: KandeloImageFs, targets: readonly string[]): void {
-  // The normal shell/partial dependency closure must provide this command.
+  // The image must install its declared scheduler/readiness command.
   // Fail during composition instead of shipping a scheduler that cannot run.
   fs.stat("/usr/bin/curl");
   ensureDirRecursive(fs, "/etc/wordpress");
-  writeVfsFile(fs, "/etc/wordpress/cron.curl", wordpressCronCurlConfig());
+  writeVfsFile(fs, "/etc/wordpress/cron.curl", `${wordpressCronCurlConfig()}header = "@/etc/wordpress/cron.headers"\n`);
+  writeVfsFile(fs, "/etc/wordpress/cron.headers", "");
+  ensureDirRecursive(fs, "/usr/libexec");
+  // Public URLs are host metadata; the image owns the software-specific
+  // configuration. This also runs normally inside protected/Node machines.
+  writeVfsFile(fs, "/usr/libexec/wordpress-cron-config", `#!/bin/sh
+set -eu
+public=\${KANDELO_PUBLIC_URL:-}
+[ -n "$public" ] || exit 0
+case "$public" in
+  http://*/*|https://*/*) ;;
+  *) echo 'Invalid public machine URL for WordPress cron' >&2; exit 2 ;;
+esac
+endpoint=\${public#*://}
+host=\${endpoint%%/*}
+prefix=/\${endpoint#*/}
+prefix=\${prefix%/}
+[ -n "$host" ] || exit 2
+umask 077
+printf 'X-Forwarded-Host: %s\\nX-Forwarded-Prefix: %s\\n' "$host" "\${prefix:-/}" > /etc/wordpress/cron.headers.pending
+mv /etc/wordpress/cron.headers.pending /etc/wordpress/cron.headers
+`, 0o755);
+  writeVfsFile(fs, "/etc/dinit.d/wordpress-cron-config", `type = scripted
+command = /usr/libexec/wordpress-cron-config
+restart = false
+`);
   for (const target of targets) {
     if (!/^[a-z][a-z0-9-]{0,47}$/.test(target)) throw new Error("Invalid WordPress service target");
     const path = `/etc/dinit.d/${target}`;
@@ -26,6 +51,7 @@ depends-on = ${target}-cron
     writeVfsFile(fs, `${path}-cron`, `type = process
 command = /usr/bin/curl --config /etc/wordpress/cron.curl
 depends-on = ${target}-server
+depends-on = wordpress-cron-config
 restart = true
 smooth-recovery = true
 restart-delay = 60

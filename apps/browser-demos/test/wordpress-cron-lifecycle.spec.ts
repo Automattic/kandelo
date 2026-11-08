@@ -60,7 +60,7 @@ artifactTest("WordPress cron follows server stops, restarts, crashes and service
   await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
   const result = await page.evaluate(async ({ imageUrl, kernelUrl, hostUrl, probeUrl, gracefulUrl, runtimeUrlsUrl }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ hostUrl);
-    const { prepareWordPressCronLifecycle, verifyWordPressCronLifecycle } = await import(/* @vite-ignore */ probeUrl);
+    const { prepareWordPressCronLifecycle, verifyWordPressCronLifecycle, WORDPRESS_CRON_PUBLIC_URL } = await import(/* @vite-ignore */ probeUrl);
     const { observeProcessExits } = await import(/* @vite-ignore */ gracefulUrl);
     const { imageOwnedLazyAssetDirectory } = await import(/* @vite-ignore */ runtimeUrlsUrl);
     const exits = observeProcessExits();
@@ -88,7 +88,7 @@ artifactTest("WordPress cron follows server stops, restarts, crashes and service
       await prepareWordPressCronLifecycle(host, 8080);
       const init = await host.spawnFromVfs("/bin/sh", ["sh", "/sbin/kandelo-init", "frankenphp-caddy"], {
         uid: 0, gid: 0, cwd: "/root", env: ["HOME=/root", "TMPDIR=/tmp", "TERM=xterm-256color",
-          "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin", "FRANKENPHP_NUM_THREADS=2"],
+          "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin", "FRANKENPHP_NUM_THREADS=2", `KANDELO_PUBLIC_URL=${WORDPRESS_CRON_PUBLIC_URL}`],
       });
       await Promise.race([
         readiness,

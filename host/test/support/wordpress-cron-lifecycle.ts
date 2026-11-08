@@ -1,9 +1,9 @@
-import { wordpressCronCurlConfig } from "../../../apps/browser-demos/lib/init/wordpress-runtime-config";
 import { verifyFrankenPhpGracefulShutdown } from "./frankenphp-graceful";
 
 export const WORDPRESS_CRON_COUNTER = "/tmp/kandelo-wordpress-cron-count";
 const publicOrigin = "http://public.example.test:9090";
 const publicPath = "/computer/cron-test";
+export const WORDPRESS_CRON_PUBLIC_URL = `${publicOrigin}${publicPath}/`;
 
 interface CronHost {
   readFileFromVfs(path: string): Promise<Uint8Array | null>;
@@ -32,12 +32,16 @@ export async function prepareWordPressCronLifecycle(host: CronHost, port: number
       throw new Error(`Image has no ${target} cron service; rebuild WordPress`);
     }
   }
+  if (!await host.readFileFromVfs("/etc/dinit.d/wordpress-cron-config")) {
+    throw new Error("Image has no WordPress public URL configuration service; rebuild WordPress");
+  }
   const write = (path: string, text: string) => host.writeFileToVfs(path, new TextEncoder().encode(text));
   const template = await host.readFileFromVfs("/etc/wp-config-template.php");
   if (!template) throw new Error("WordPress runtime config template is missing");
   await write("/srv/www/html/wp-config.php", decode(template).replaceAll("@@APP_PATH@@", "/").replaceAll("@@PROTO@@", "http"));
-  await write("/etc/wordpress/cron.curl", wordpressCronCurlConfig(publicOrigin, publicPath)
-    .replace(":8080/wp-cron.php", `:${port}/wp-cron.php`));
+  const cronConfig = await host.readFileFromVfs("/etc/wordpress/cron.curl");
+  if (!cronConfig) throw new Error("WordPress cron client configuration is missing");
+  await write("/etc/wordpress/cron.curl", decode(cronConfig).replace(":8080/wp-cron.php", `:${port}/wp-cron.php`));
   await write(WORDPRESS_CRON_COUNTER, "0");
   // Caddy and FPM use different credentials. This one disposable test counter
   // must permit both; it is not installed in the shipped image.
