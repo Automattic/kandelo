@@ -47,6 +47,20 @@ export interface VfsBinarySpec {
   dependency?: string;
 }
 
+/**
+ * The syslog daemon, eager rather than lazy because the shell image's init
+ * starts it at boot (see `/sbin/kandelo-shell-init`). /usr/sbin because it is
+ * a service daemon rather than boot administration; see
+ * docs/filesystem-layout.md.
+ */
+export const SHELL_SYSLOGD_PATH = "/usr/sbin/syslogd";
+
+/**
+ * The shell image's init: it starts the system log daemon and then becomes the
+ * login session. /sbin because starting the machine is boot administration.
+ */
+export const SHELL_INIT_PATH = "/sbin/kandelo-shell-init";
+
 export const SHELL_LAZY_URL_PREFIX = "kandelo-lazy:";
 
 /** The package whose output provides `spec`'s file. */
@@ -342,12 +356,4 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // should not carry them in the eager image every visitor downloads.
   { id: "dmesg", dependency: "toybox", resolverPath: "programs/toybox/dmesg.wasm", vfsPath: "/usr/bin/dmesg", symlinks: [] },
   { id: "logger", dependency: "toybox", resolverPath: "programs/toybox/logger.wasm", vfsPath: "/usr/bin/logger", symlinks: [] },
-  // The syslog daemon, in /usr/sbin because it is a service daemon rather
-  // than boot or recovery administration (docs/filesystem-layout.md); dinit
-  // is the /sbin case, and copying its placement would be wrong here. The
-  // shell image has no init, so nothing starts it: it is here so a machine
-  // can run one by hand (`sudo syslogd` -- binding /dev/log needs root) and
-  // have `logger` reach /var/log/messages. Images that do run an init
-  // supervise it through `addSyslogService` instead.
-  { id: "syslogd", dependency: "sysklogd", resolverPath: "programs/syslogd.wasm", vfsPath: "/usr/sbin/syslogd", symlinks: [] },
 ] as const satisfies readonly VfsBinarySpec[];
