@@ -1,0 +1,35 @@
+id = "FIREFOX-KEEPALIVE-SW-BYPASS"
+kind = "bug"
+status = "confirmed"
+runtimes = ["firefox", "firefox-stable"]
+summary = "Firefox sends controlled-document keepalive fetches directly to the network"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["firefox"]
+self_judging = true
+timeout_seconds = 30
+
+[[observed]]
+runtime = "firefox"
+version = "155.0"
+os = "macos"
+reproduced = true
+date = 2026-11-08
+source = "suite"
+released = false
+
+[[observed]]
+runtime = "firefox-stable"
+version = "159.0.1"
+os = "macos"
+reproduced = true
+date = 2026-11-08
+source = "manual"
+released = true
+
+[[sites_without_tags]]
+path = "docs/browser-support.md"
+note = "Documents the confirmed delivery limitation; no production workaround is adopted."
