@@ -59,9 +59,24 @@ describe.skipIf(!available)("Cargo inside Kandelo", () => {
       await host.destroy(); host = undefined;
       host = new NodeKernelHost({ ...options, requireExistingRootfsPersistence: true });
       await host.init(Uint8Array.from(kernel!).buffer);
-      expect((await cargo("run", "--offline", "-j1", "-p", "cargo-hello")).stdout).toBe(cargoProjectOutput);
+      const resumed = await cargo("run", "--offline", "-j1", "-vv", "-p", "cargo-hello");
+      expect(resumed.stdout).toBe(cargoProjectOutput);
+      expect(resumed.stderr).not.toContain("Compiling");
+      expect(resumed.stderr).toContain("Fresh cargo-hello");
       expect((await run("/home/maker/project/target/debug/cargo-hello.wasm", ["cargo-hello"])).stdout).toBe(cargoProjectOutput);
       expect((await cargo(...cargoTestArgs)).stdout).toContain("test result: ok. 4 passed; 0 failed; 2 ignored");
+      const saved = await cargo("build", "--offline", "-j1", "-vv");
+      expect(saved.stderr).not.toContain("Compiling");
+      expect(saved.stderr).toContain("Fresh cargo-hello");
+      await run("/home/maker/project/target/debug/cargo-hello.wasm", ["cargo-hello", "--update-source"]);
+      const changed = await cargo("build", "--offline", "-j1");
+      expect(changed.stderr).toContain("Compiling message");
+      expect(changed.stderr).toContain("Compiling cargo-hello");
+      expect((await run("/home/maker/project/target/debug/cargo-hello.wasm", ["cargo-hello"])).stdout)
+        .toBe(cargoProjectOutput.replace("child=42", "child=43"));
+      const cached = await cargo("build", "--offline", "-j1", "-vv");
+      expect(cached.stderr).not.toContain("Compiling");
+      expect(cached.stderr).toContain("Fresh cargo-hello");
     } finally {
       await host?.destroy();
       rmSync(work, { recursive: true, force: true });

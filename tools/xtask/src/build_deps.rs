@@ -35650,6 +35650,14 @@ printf 'PUBLIC\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
 
         let ordinary_cache_home = registry_root.join("ordinary-cache-home");
         let ordinary_home = registry_root.join("ordinary-home");
+        // SDK freshness checks may run Cargo before the fixture build. Keep
+        // that independent host-tool cache at its parent location: changing
+        // HOME here is intended to detect ordinary binary resolver caches.
+        let cargo_home = std::env::var_os("CARGO_HOME").unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").expect("test requires HOME or CARGO_HOME"))
+                .join(".cargo")
+                .into_os_string()
+        });
         let output = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -35661,6 +35669,7 @@ printf 'PUBLIC\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             .env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", &selected_base)
             .env("XDG_CACHE_HOME", &ordinary_cache_home)
             .env("HOME", &ordinary_home)
+            .env("CARGO_HOME", &cargo_home)
             .env_remove("WASM_POSIX_BINARY_CACHE_ROOT")
             .env_remove(SOURCE_ONLY_POLICY_ENV)
             .output()

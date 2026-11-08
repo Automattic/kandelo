@@ -100,7 +100,7 @@ test("guest Cargo builds and runs a workspace with a build script on a persisten
             results.push({ exitCode: job.exitCode, stdout, stderr });
             console.info("[cargo acceptance] completed", job.exitCode, stdout, stderr);
             if (job.exitCode !== expectedExit) throw new Error(JSON.stringify(results));
-            return;
+            return results[results.length - 1]!;
           }
           if (Date.now() >= deadline) throw new Error("Rust compiler family did not retire");
           if (!job.hasMore) await new Promise(resolve => setTimeout(resolve, 20));
@@ -130,9 +130,26 @@ test("guest Cargo builds and runs a workspace with a build script on a persisten
         await host.destroy();
         host = createHost();
         await host.initFromImage({ ...bootOptions, requireExistingRootfsPersistence: true });
-        await run("/usr/bin/cargo", ["cargo", "run", "--offline", "-j1", "-p", "cargo-hello"]);
+        await run("/usr/bin/cargo", ["cargo", "run", "--offline", "-j1", "-vv", "-p", "cargo-hello"]);
         await run("/home/maker/project/target/debug/cargo-hello.wasm", ["cargo-hello"]);
         await run("/usr/bin/cargo", ["cargo", ...testArgs]);
+        const saved = await run("/usr/bin/cargo", ["cargo", "build", "--offline", "-j1", "-vv"]);
+        if (saved.stderr.includes("Compiling") || !saved.stderr.includes("Fresh cargo-hello")) {
+          throw new Error(`Saved Cargo outputs were not reused: ${saved.stderr}`);
+        }
+        await run("/home/maker/project/target/debug/cargo-hello.wasm", ["cargo-hello", "--update-source"]);
+        const changed = await run("/usr/bin/cargo", ["cargo", "build", "--offline", "-j1"]);
+        if (!changed.stderr.includes("Compiling message") || !changed.stderr.includes("Compiling cargo-hello")) {
+          throw new Error(`Changed dependency was not rebuilt: ${changed.stderr}`);
+        }
+        const executed = await run("/home/maker/project/target/debug/cargo-hello.wasm", ["cargo-hello"]);
+        if (executed.stdout !== "Cargo inside Kandelo: child=43\n") {
+          throw new Error(`Changed source produced stale output: ${executed.stdout}`);
+        }
+        const cached = await run("/usr/bin/cargo", ["cargo", "build", "--offline", "-j1", "-vv"]);
+        if (cached.stderr.includes("Compiling") || !cached.stderr.includes("Fresh cargo-hello")) {
+          throw new Error(`Unchanged rebuilt workspace was not fresh: ${cached.stderr}`);
+        }
         return results;
       } finally { await host.destroy(); }
     }, { moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href, kernelUrl, imageUrl, lazyUrlMap,
@@ -148,6 +165,8 @@ test("guest Cargo builds and runs a workspace with a build script on a persisten
     expect(results[6]!.stdout).toContain("test result: FAILED. 0 passed; 1 failed");
     expect(results[7]!.stdout).toContain("panic did not contain expected string");
     expect(results[8]!.stdout).toBe(cargoProjectOutput);
+    expect(results[8]!.stderr).not.toContain("Compiling");
+    expect(results[8]!.stderr).toContain("Fresh cargo-hello");
     expect(results[9]!.stdout).toBe(cargoProjectOutput);
     expect(results[10]!.stdout).toContain("test result: ok. 4 passed; 0 failed; 2 ignored");
   } finally {
