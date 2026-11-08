@@ -32,8 +32,23 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
     // app-side demo name.
     .toMatch(/running \/usr\/bin\/sdl2/);
 
-  const canvas = page.locator(".kmodeset-canvas").first();
+  // Internals inspection is not the graphics endpoint. Close it normally
+  // before sampling; placeholder invisibility alone does not prove a flip.
+  await setInternalsOpen(page, false);
+  const graphics = page.getByLabel("Computer views").getByRole("button", { name: "Graphics", exact: true });
+  if (await graphics.getAttribute("aria-current") !== "true") await graphics.click();
+  const surface = page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-surface").first();
+  const canvas = surface.locator(".kmodeset-canvas").first();
   await expect(canvas).toBeVisible({ timeout: 30_000 });
+  const presents = async () => Number(await surface.getAttribute("data-kms-present-count"));
+  let firstPresent: number | undefined;
+  await expect.poll(async () => {
+    const currentOwner = Number(await surface.getAttribute("data-kms-owner-pid"));
+    const count = await presents();
+    if (!(currentOwner > 0 && count > 0)) return false;
+    firstPresent ??= count;
+    return count > firstPresent;
+  }, { timeout: 90_000, message: "actual KMS owner and advancing presented frames" }).toBe(true);
 
   /* Wait for the app's FIRST presented frame before sampling anything.
    * "running /usr/bin/sdl2" only means the process launched: between that and
@@ -65,6 +80,8 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
    *     above 3 KB even with cursor blink off. */
   const fullSizes: number[] = [];
   const leftSizes: number[] = [];
+  type SampleTiming = { start: number; fullEnd?: number; leftEnd?: number; fullBytes?: number; leftBytes?: number };
+  const sampleTimings: SampleTiming[] = [];
   const bb = await canvas.boundingBox();
   if (!bb) throw new Error("canvas bounding box unavailable");
   const leftClip = {
@@ -77,19 +94,30 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
    * 6×500 ms schedule: under software GL the app may present only a
    * few frames per second, so animation evidence needs a deadline,
    * not a fixed sample count. */
-  await expect
-    .poll(
-      async () => {
-        await page.waitForTimeout(500);
-        const full = await canvas.screenshot();
-        const left = await page.screenshot({ clip: leftClip });
-        fullSizes.push(full.byteLength);
-        leftSizes.push(left.byteLength);
-        return Math.max(...fullSizes) - Math.min(...fullSizes);
-      },
-      { timeout: 30_000, message: "right pane not animating (no PNG byte-size variance within 30 s)" },
-    )
-    .toBeGreaterThan(400);
+  try {
+    await expect
+      .poll(
+        async () => {
+          await page.waitForTimeout(500);
+          const timing: SampleTiming = { start: Date.now() };
+          sampleTimings.push(timing);
+          const full = await canvas.screenshot();
+          timing.fullEnd = Date.now(); timing.fullBytes = full.byteLength;
+          const left = await page.screenshot({ clip: leftClip });
+          timing.leftEnd = Date.now(); timing.leftBytes = left.byteLength;
+          fullSizes.push(full.byteLength);
+          leftSizes.push(left.byteLength);
+          return Math.max(...fullSizes) - Math.min(...fullSizes);
+        },
+        { timeout: 30_000, message: "right pane PNG sampling did not establish animation within 30 s; see sample counts/timings" },
+      )
+      .toBeGreaterThan(400);
+    expect(fullSizes.length, "animation requires at least two completed PNG pairs").toBeGreaterThanOrEqual(2);
+  } finally {
+    await test.info().attach("sdl-animation-samples.json", {
+      body: JSON.stringify({ fullSizes, leftSizes, sampleTimings }, null, 2), contentType: "application/json",
+    });
+  }
   for (const sz of fullSizes) {
     expect(
       sz,
