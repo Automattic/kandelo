@@ -2,6 +2,20 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Both optimized cgo targets reproduce:** the separate Caddy continuation
+`go-caddy-o2-reproduction-1107-233634-d047` passes in 16m47s. Its normal
+published revision-22 binary reproduces all 184,971,404 bytes, SHA-256
+`cfdba6545bd43e20862d0448d7bb29c0e44ed2b76b239ae4e5da303b5ba3f2c6`.
+The Node service check passes 32 requests at concurrency four while Go's
+GC count advances from13 to30, with no host diagnostics and SIGTERM exit0.
+Together with the retained classic proof, both newest C-O2 target binaries
+now reproduce exactly with original Go build IDs. This is a normal target
+recipe/output comparison on this Mac, not complete fresh-SDK or cross-host
+reproduction; the SDK input-stamp distinction remains in its evidence.
+No successful target is rerun merely because aggregate065a ended143.
+The normal SDK/image refresh after the native-plugin metadata fix remains
+separate required work; live old-source canonical inputs remain frozen.
+
 **Measured WebKit lifecycle and SDK reproducibility checkpoint:** job
 `wordpress-current-native-attribution-1107-230923-1640` passes in 5m50s
 (browser 4.7m) on the exact revision-45 partial image, current kernel and
