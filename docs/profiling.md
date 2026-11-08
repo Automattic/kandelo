@@ -538,6 +538,16 @@ the small PHP/static targets require exact response bytes. The attached
 instrumented controls do not measure uninstrumented throughput or isolate
 allocation owners. See the checkpoint above for the measured limits.
 
+The separate `wordpress-super-cache.spec.ts` functional gate activates the
+stock plugin through WordPress, selects clear-on-edit with stale rebuilds
+disabled, and checks anonymous hits, authenticated/POST bypass, saved post
+and template visibility, real-clock expiry and explicit WordPress cron GC.
+It does not establish automatic cron execution or throughput. Keep those
+settings distinct from an uncached server comparison; its two-second expiry
+is a test condition, not a recommended deployment TTL. See the
+[visitor-cache checkpoint](plans/2026-11-08-wordpress-visitor-cache-checkpoint.md)
+for measured results, retained failures and pending image acceptance.
+
 #### mariadb
 
 Runs MariaDB 10.5 with the Aria or InnoDB storage engine. Measures bootstrap (system table creation) and a sequence of SQL operations.

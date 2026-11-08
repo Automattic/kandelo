@@ -2,6 +2,42 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Normal PHP-FPM image configuration correction prepared:** the controlled
+CGI check observes missing server metadata, then `nginx/1.24.0` after adding
+nginx's standard FastCGI parameter; WordPress's expected permalink option
+then works (`ee8e`). Stock cache setup next reveals unwritable application
+configuration/content paths. A separate FPM control `a2be` observes real
+write checks false before ordinary UID/GID ownership changes and true
+afterwards, then passes activation/cache-hit/privacy checks. It fails later
+on a REST operation and is not full FPM acceptance. The source recipes now
+prepare metadata plus ownership of mutable configuration and its parent
+directories, with WordPress revision 46/family revision 12. Normal artifact
+builds and final Node/browser acceptance remain pending; there is no
+WordPress/plugin/PHP/Go algorithm patch. The pinned preview is unchanged.
+
+**Visitor-cache correctness advances:** maintained browser checks now cover
+stock plugin activation, anonymous cache hits, authenticated/POST bypass,
+post and site-template invalidation, real-clock expiry, and execution of
+the scheduled stock GC hook through actual `wp-cron.php`. The selected
+ordinary settings disable stale rebuilds and enable clear-on-edit; plugin
+and PHP algorithms remain unchanged. Chromium job `5f37` ends two pass /
+one fail, zero skips/retries: both FrankenPHP services pass every check;
+PHP-FPM fails earlier at its index-prefixed permalink controls. This is
+revision-45 partial evidence, not automatic-cron, performance or final
+canonical acceptance. See the [visitor-cache checkpoint](2026-11-08-wordpress-visitor-cache-checkpoint.md)
+for exact runs, configuration and retained failed attempts. Automatic cron
+is still disabled. FastCGI metadata and Firefox/WebKit controls are separate
+unfinished checks.
+
+The full frozen build has progressed past Quickshell to Ruby. Orphan-job
+cleanup removes 298 abandoned run payloads while preserving active jobs;
+removing only this effort's inactive debug caches restores free disk to
+15,600,844,800 bytes at measurement. The package cache dry-run finds another
+593 MiB eligible under the one-day/ABI-below-50 policy, but application
+correctly skips the SourceOnly cache because the running build holds its
+lock; zero package-cache bytes are removed. Release tools, SDKs, published
+projections and the preview are preserved.
+
 **Latest main integrated without changing the live producer:** the review
 branch includes `c3703ba28d6e` (Rust guest tooling) and `b764fbf54856`
 (porting documentation). The existing full build keeps frozen source
