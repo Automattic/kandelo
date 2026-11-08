@@ -6269,7 +6269,7 @@ globalThis.exports = globalThis.module.exports;
         return new Promise((resolve, reject) => {
             let settled = false;
             let resStream = null;
-            let resCtrl = null;
+            let responseBodyOwner = null;
             let abortDisposable;
             const cleanupAbort = () => {
                 abortDisposable?.[_nodeDispose](); abortDisposable = undefined;
@@ -6293,47 +6293,52 @@ globalThis.exports = globalThis.module.exports;
                 if (settled) return;
                 settled = true;
 
-                resStream = new WebReadableStream({
-                    start(c) {
-                        resCtrl = c;
-                        res.on('data', (chunk) => {
-                            try {
-                                const u8 = chunk instanceof Uint8Array ? chunk
-                                    : (chunk && chunk.buffer ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
-                                       : new TextEncoder().encode(String(chunk)));
-                                c.enqueue(u8);
-                            } catch (e) { c.error(e); }
+                try {
+                    const hasBody = method !== 'HEAD' && ![204, 205, 304].includes(res.statusCode);
+                    if (hasBody) {
+                        responseBodyOwner = bodyPlatform.responseBodyFromIncoming(res, {
+                            onTerminal: cleanupAbort,
+                            onCancel: reason => req.destroy(reason),
                         });
-                        res.on('end', () => { cleanupAbort(); try { c.close(); } catch {} });
-                        res.on('error', (e) => { cleanupAbort(); try { c.error(e); } catch {} });
-                    },
-                    cancel() { cleanupAbort(); res.destroy(); },
-                });
+                        resStream = responseBodyOwner.stream;
+                    } else {
+                        // Pinned Fetch null-body dump policy drains the actual
+                        // message without creating an unconsumed Web byte queue.
+                        res.once('end', cleanupAbort);
+                        res.once('error', cleanupAbort);
+                        res.resume();
+                    }
 
-                const respHeaders = new FetchHeaders();
-                for (const k of Object.keys(res.headers || {})) {
-                    const v = res.headers[k];
-                    if (Array.isArray(v)) for (const x of v) respHeaders.append(k, x);
-                    else if (v !== undefined) respHeaders.set(k, v);
+                    const respHeaders = new FetchHeaders();
+                    for (const k of Object.keys(res.headers || {})) {
+                        const v = res.headers[k];
+                        if (Array.isArray(v)) for (const x of v) respHeaders.append(k, x);
+                        else if (v !== undefined) respHeaders.set(k, v);
+                    }
+                    // The transport publishes the same genuine Response private owner
+                    // as public construction, with the actual response stream/header list.
+                    const response = bodyPlatform.fromInnerResponse(bodyPlatform.makeResponse({
+                        body: hasBody ? bodyPlatform.extractBody(resStream)[0] : null,
+                        status: res.statusCode || 0,
+                        statusText: res.statusMessage || '',
+                        headersList: _nodeFormDataPlatform.headers.getHeadersList(respHeaders),
+                        urlList: [new _nodeWebPlatform.URL(urlStr)],
+                        type: 'basic',
+                    }), 'immutable');
+                    resolve(response);
+                } catch (error) {
+                    cleanupAbort();
+                    if (responseBodyOwner) responseBodyOwner.abort(error);
+                    else res.destroy(error);
+                    req.destroy(error);
+                    reject(error);
                 }
-                const hasBody = method !== 'HEAD' && ![204, 205, 304].includes(res.statusCode);
-                // The transport publishes the same genuine Response private owner
-                // as public construction, with the actual response stream/header list.
-                const response = bodyPlatform.fromInnerResponse(bodyPlatform.makeResponse({
-                    body: hasBody ? bodyPlatform.extractBody(resStream)[0] : null,
-                    status: res.statusCode || 0,
-                    statusText: res.statusMessage || '',
-                    headersList: _nodeFormDataPlatform.headers.getHeadersList(respHeaders),
-                    urlList: [new _nodeWebPlatform.URL(urlStr)],
-                    type: 'basic',
-                }), 'immutable');
-                resolve(response);
             });
 
             req.on('error', (e) => {
                 cleanupAbort();
                 if (settled) {
-                    if (resCtrl) try { resCtrl.error(e); } catch {}
+                    responseBodyOwner?.error(e);
                     return;
                 }
                 settled = true;
@@ -6347,7 +6352,7 @@ globalThis.exports = globalThis.module.exports;
                     // Publish the abort reason before synchronous destruction
                     // can finish or error the body through transport listeners.
                     if (settled) {
-                        if (resCtrl) try { resCtrl.error(reason); } catch {}
+                        responseBodyOwner?.abort(reason);
                     } else {
                         settled = true;
                         reject(reason);

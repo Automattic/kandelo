@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source 253 adds bounded real Fetch response pull/byte/cancel/terminal ownership with three source-review corrections. Public cause parity remains failed and the enqueue-publication question unresolved; no complete Web or guest compatibility claim.
+See [source scope](fetch-response-pull-integration.md).
+
 Source252adds bounded private native FD input byte-span publication. Actual manually reviewed follow-up passes; original V1 harness failure and baseline ownership/error differences remain explicit. No package/Vitest or guest compatibility claim.
 See [source scope](fd-input-byte-publication-integration.md).
 

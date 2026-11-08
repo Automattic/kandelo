@@ -1,0 +1,245 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/web-contracts.md",
+    "findingIds": [
+      "WEB-009"
+    ],
+    "prerequisiteFindingIds": [
+      "WEB-005"
+    ],
+    "relatedFamilies": [
+      "streams",
+      "network",
+      "secure-network",
+      "async"
+    ],
+    "scope": "Partial actual response pull/terminal owner; no full Fetch/controller/body-policy or qualified finding closure.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/web-contracts.md",
+        "findingId": "WEB-009",
+        "definitionKey": "tests/nodejs/audit/web-contracts.md#WEB-009:L116",
+        "relation": "partial-owning-source",
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/web-contracts.md",
+        "findingId": "WEB-005",
+        "definitionKey": "tests/nodejs/audit/web-contracts.md#WEB-005:L112",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Actual IncomingMessage iteration is driven by genuine Web byte-stream demand, retaining one native read ticket and no flowing data listener for observable bodies. Byte HWM follows pinned default; real lower socket pause/read progression supplies bounded input rather than invented desiredSize or completion.",
+    "Capture private byte intrinsics before vendored module initialization and copy source bytes into independent allocation before byte-controller transfer, preserving the original native Buffer pool without public conversion hooks.",
+    "Destroy the real response/request before releasing a pending iterator on cancel/abort/error; real finally retirement precedes reflectable controller error and preserves the exact observed hook throw.",
+    "Use the actual errors.codes constructor owner for no-demand close-without-error. EOF publication cleanup and iterator release run in real finally, while its original unexpected close-hook error rejects the pull with exact identity.",
+    "Actual bootstrap consumes this owner, preserves upload, drains genuine null bodies and rolls back admitted response publication failures. Normally regenerate over preserved keypair/FD source; no engine hunk or new production input."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-fetch253-source-r1/report.json",
+    "sha256": "e1ddd6e71b569cc83fbb8c06b5d126ba5e628f842a2692e95deb2291c5c5dc49",
+    "guardedInputs": 908,
+    "scope": "Actual source253normal generation/bootstrap/native staging, scoped9predicate groups per native/candidate, real namespace/error-hook/EOF corrections and full current-source public cause mismatch FAILED. No complete Fetch, native metadata parity, guest/GC/provider/four-host claim."
+  },
+  "packageChecks": {
+    "report": ".context/node26-fetch253-affected-r1.json",
+    "sha256": "52927b34df7f82c78595a9a710dea607a9bf2cdda3ea9b639f8840611a02173c",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-fetch253-source-r1/report.json",
+    "sha256": "e1ddd6e71b569cc83fbb8c06b5d126ba5e628f842a2692e95deb2291c5c5dc49",
+    "nativePredicateGroups": 9,
+    "candidatePredicateGroups": 9,
+    "predicateUnhandledRejections": 0,
+    "causeEquality": "failed",
+    "causeNameEqual": false,
+    "causeCodeEqual": false,
+    "namespaceCloseCase": 1,
+    "errorHookSubjects": 2,
+    "eofHookSubjects": 2,
+    "actualNodeInvocations": 9,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "scope": "Source 253 adds the real response-body pull owner over actual IncomingMessage iteration, private independent byte-copy publication and real cancellation/terminal ownership. Namespace, retirement-before-controller-error and EOF-publication fixes address all three reviewed source findings. Actual normal source checks guard 908 inputs with ten source checks/eight commands; scoped native/candidate predicate groups are nine each, with separate namespace/error-hook/EOF-hook subjects. Full public Fetch cause/name/code/socket metadata equality remains FAILED. Fourteen package input cases pass separately. No guest, complete Fetch or four-host acceptance.",
+    "guardedInputs": 908,
+    "sourceChecks": 10,
+    "sourceCommands": 8,
+    "packagePassed": 14,
+    "actualSourcePid": 35856,
+    "actualPackagePid": 35839,
+    "publicCauseEquality": "failed",
+    "publicationErrorQuestion": "unresolved source question, not runtime confirmed",
+    "sourceCorrectionsAddressed": [
+      "ROOT-001",
+      "ROOT-002",
+      "ROOT-003"
+    ],
+    "newCompilerAttempts": 0,
+    "fourHostConformance": false
+  },
+  "sealedEvidence": {
+    "report": ".context/fetch-pull-eof-publication-correction-agent/handoff/report.json",
+    "sha256": "af30b45da5d90641680276408e6597139f909ab4eea74f16e9837796dddd65e8",
+    "reusedEvidence": true,
+    "scope": "Historical exact-source correction chain after original pull owner and retirement/namespace fixes; scoped native controls and explicit current/historical failed cause comparisons, never full Fetch/guest proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/fetch253-root-controls-r1/evidence/cause-comparison.json",
+      "sha256": "1ba7228dd41894c5260554b9d5f4a399543063950ddf500359add3e03c249d39",
+      "classification": "runtime-confirmed-component-cause-mismatch",
+      "status": "failed",
+      "scope": "Actual current root error/cause/stack/descriptors/socket metadata: native SocketError/UND_ERR_SOCKET versus candidate Error/ECONNRESET without socket metadata. Real implementation gap, no backend/platform exclusion."
+    },
+    {
+      "report": ".context/fetch-publication-open-question.json",
+      "sha256": "79c5ae640370e607ac3eb4c2446ed807580550cc34e16058bdec8faa6eaed74d",
+      "classification": "unresolved-source-question",
+      "runtimeConfirmed": false,
+      "scope": "enqueue/desiredSize publication throws may be wrapped rather than escaping original async pull. EOF flag covers EOF only; later targeted differential required, no assertion weakened."
+    },
+    {
+      "report": ".context/fetch-pull-close-error-correction-agent/hook-r1-timeout-observation.json",
+      "sha256": "e3c8776432c81e6a42b142621a3a13c0504bca8770a65e46cb66546ab27cb051",
+      "classification": "native-control-timeout-with-evidence-limit",
+      "scope": "Initial permanent-hook native diagnostic timed out10seconds without outcome; rawstderr not retained by that runner, no reconstruction or Node/runtime blame."
+    },
+    {
+      "report": ".context/fetch-pull-eof-publication-correction-agent/evidence-r1/before.json",
+      "sha256": "c26c165fc2e6a84412dd7a5c413c9082d00e6b471ea64222f6f8031cc0a0ef4f",
+      "classification": "preserved-source-failure",
+      "scope": "Prior EOF close hook swallowed original marker, pending read/cleanup0/iteratorreturn0; actual exit1 preserved."
+    },
+    {
+      "report": ".context/fetch-pull-close-error-correction-agent/evidence/before.stderr",
+      "sha256": "b83c38ea8b5778330e7bcf7aa55512113b07ddf8d01bec1606720d681033bfc3",
+      "classification": "preserved-source-failure",
+      "scope": "Prior genuine no-demand IncomingMessage no-error close throws namespace TypeError from missing actual constructor owner; actual exit1 retained."
+    },
+    {
+      "report": ".context/fetch-pull-close-error-correction-agent/hook-evidence-r2/before.json",
+      "sha256": "71ea33577eaf36300ee6dbdc200f80e33d3d8960beb7acaade261143940542b1",
+      "classification": "preserved-source-failure",
+      "scope": "Prior controller.error hook leaves actual peer open before fixture cleanup; exact marker captured, read pending, exit1 retained."
+    },
+    {
+      "report": ".context/fetch-response-pull-owner-agent/evidence-r1/native.stderr",
+      "sha256": "e9ee79646fae218c20235997110619cdf7d829058d90d823e0fa5a2f0fc8f56f",
+      "classification": "preserved-initial-control-or-source-nonpass",
+      "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+    },
+    {
+      "report": ".context/fetch-response-pull-owner-agent/evidence-r2/native.stderr",
+      "sha256": "8e4364d8d146ede951deb34fc550c565b82a9aa7a37537e9d8365aa6e84bb587",
+      "classification": "preserved-initial-control-or-source-nonpass",
+      "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+    },
+    {
+      "report": ".context/fetch-response-pull-owner-agent/evidence-r3/native.stderr",
+      "sha256": "8e4364d8d146ede951deb34fc550c565b82a9aa7a37537e9d8365aa6e84bb587",
+      "classification": "preserved-initial-control-or-source-nonpass",
+      "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+    },
+    {
+      "report": ".context/fetch-response-pull-owner-agent/evidence-r4/candidate.stderr",
+      "sha256": "ed0afb9e6e00163050d983744c286119ef068791212a211e6470721379ccecd3",
+      "classification": "preserved-initial-control-or-source-nonpass",
+      "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+    },
+    {
+      "report": ".context/fetch-response-pull-owner-agent/evidence-r5/candidate.stderr",
+      "sha256": "0c81243fa52f4c8a1585febf8754a8f0cb8bb6de18c6bac1a4722496a9526c46",
+      "classification": "preserved-initial-control-or-source-nonpass",
+      "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+    },
+    {
+      "report": ".context/fetch-response-pull-owner-agent/evidence-r6/candidate.stderr",
+      "sha256": "a73104a8624aea9ff57251ba5b994a4b1d0941f494e0ff3cfc3a054244e00ee5",
+      "classification": "preserved-initial-control-or-source-nonpass",
+      "scope": "Original peer-EPIPE/report-path/stale native fixture dependencies/actual late Uint8Array TDZ/false HWM hard-cap assumption, retained in exact original raw file. Not passing compatibility or unsupported."
+    }
+  ],
+  "remaining": [
+    "Implement genuine public SocketError/cause/code/socket metadata over retained actual transport state; current complete raw comparison is FAILED, never an accepted backend/platform exclusion.",
+    "Resolve the enqueue/desiredSize publication-error identity question through a later focused native differential; it is an unresolved source question, not a runtime-confirmed failure or closure from EOF handling.",
+    "Complete the full Fetch dispatcher/controller, redirects/filtering/CORS/integrity/decompression/upload/scheme policies independently; this response owner preserves existing upload but does not establish it.",
+    "Validate actual guest HTTP/stream/Socket/provider/ref/cancel/GC/realm/OOM/fatal/Worker and four-host ownership on identified artifacts within authorized build constraints.",
+    "Keep original setup/source nonpasses, the permanent error-hook timeout with missing rawstderr and unvalidated multiply failing hooks/cleanup paths visible."
+  ],
+  "actualControlReport": {
+    "report": ".context/fetch253-root-controls-r1/report.json",
+    "sha256": "59c0b1e91c3b3214cb5fc5185f76be30fbb1c8ac15dcc4e7d882ee0d3144ca61",
+    "nativePredicateGroups": 9,
+    "candidatePredicateGroups": 9,
+    "predicateUnhandledRejections": 0,
+    "causeEquality": "failed",
+    "causeNameEqual": false,
+    "causeCodeEqual": false,
+    "namespaceCloseCase": 1,
+    "errorHookSubjects": 2,
+    "eofHookSubjects": 2,
+    "actualNodeInvocations": 9,
+    "newCompilers": 0,
+    "guestExecuted": false,
+    "scope": "Actual applied root Fetch pull owner/three source corrections over explicit native dependencies; known full cause mismatch FAILED, hook body pending not manufactured, historical failures retained. No full Fetch/guest/four-host closure."
+  },
+  "causeEqualityFailed": {
+    "report": ".context/fetch253-root-controls-r1/evidence/cause-comparison.json",
+    "sha256": "1ba7228dd41894c5260554b9d5f4a399543063950ddf500359add3e03c249d39",
+    "status": "failed",
+    "classification": "Remaining public error/cause/socket metadata implementation gap, never an accepted platform/backend exclusion."
+  },
+  "sourcePublicationOpenQuestion": {
+    "report": ".context/fetch-publication-open-question.json",
+    "sha256": "79c5ae640370e607ac3eb4c2446ed807580550cc34e16058bdec8faa6eaed74d",
+    "classification": "unresolved audit question",
+    "runtimeConfirmed": false,
+    "scope": "EOF correction does not dispose enqueue/desiredSize publication throw identity; later focused differential required."
+  },
+  "sourceCorrectionsAddressed": [
+    "FETCH-PULL-ROOT-001",
+    "FETCH-PULL-ROOT-002",
+    "FETCH-PULL-ROOT-003"
+  ],
+  "integrationTool": {
+    "ledger": ".context/agent-integrations/node26-fetch253/ledger.json",
+    "sha256": "4389d9a310200cd49112a4e48404e3d02ee06ee7750505ff05b7523c204ca0c9",
+    "sourceBinding": "ecf83452a777b9fdd1f82a9ee63fae89ad286ce9c0f747720c438ea82cabded2",
+    "allStepsDone": true,
+    "imports": [
+      3,
+      0
+    ],
+    "finalizer": {
+      "path": ".context/finalize-fetch253.py",
+      "sha256": "7a72d3f13f7039f985c946e6a267e6e1fe6b384a85ce1c266bec48950808bc70"
+    },
+    "importsReport": {
+      "path": ".context/fetch253-tool-run-r1/imports.json",
+      "sha256": "d9b1befb3383c286230675ba536cc3f5b0c3ac4d1e2f6f75708bc9990d3692ad"
+    },
+    "actualPids": [
+      35856,
+      35839
+    ],
+    "selectedBindingOnly": true,
+    "globalCacheKeyBindingClaimed": false
+  },
+  "at": "2026-11-08T04:58:00.456341+00:00",
+  "recipeRevision": 253,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}
