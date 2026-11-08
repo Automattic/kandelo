@@ -39,6 +39,7 @@ host/test/bun-extract-guest.test.ts	prepared-product
 host/test/bun-run-guest.test.ts	prepared-product
 host/test/byte-range-fetch.test.ts	source-only
 host/test/cage-smoke.test.ts	prepared-product
+host/test/cargo-in-guest.test.ts	prepared-product
 host/test/catch-ref-fresh-worker.test.ts	prepared-product
 host/test/centralized-spawn.test.ts	prepared-product
 host/test/channel-completion-wait.test.ts	source-only
@@ -454,7 +455,11 @@ host/test/run-example-rootfs.test.ts	prepared-product
 host/test/run-example-vfs.test.ts	source-only
 host/test/runtime-memory-profile.test.ts	source-only
 host/test/rust-c-interop.test.ts	prepared-product
+host/test/rust-compatibility-in-guest.test.ts	prepared-product
+host/test/rust-devtools-in-guest.test.ts	prepared-product
+host/test/rust-native-dependencies-in-guest.test.ts	prepared-product
 host/test/rust-std.test.ts	prepared-product
+host/test/rustc-in-guest.test.ts	prepared-product
 host/test/sched-getaffinity.test.ts	prepared-product
 host/test/scm-rights-pipe-lifetime.test.ts	prepared-product
 host/test/scm-rights-semantics.test.ts	prepared-product

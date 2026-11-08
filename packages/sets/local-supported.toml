@@ -892,6 +892,14 @@ manifest = "images/vfs/products/browser-lamp.toml"
 name = "texlive"
 reason = "deferred software"
 
+[[packages]]
+name = "rustc"
+class = "user-software"
+
+[[packages]]
+name = "rust-llvm"
+class = "platform"
+
 [[exclusions]]
 name = "erlang"
 reason = "deferred software"
@@ -922,3 +930,19 @@ reason = "retired standalone browser product; use WordPress with MariaDB"
 id = "browser-redis"
 package = "redis-vfs"
 manifest = "images/vfs/products/browser-redis.toml"
+
+[[packages]]
+name = "cargo"
+class = "user-software"
+
+[[packages]]
+name = "kandelo-rustc"
+class = "user-software"
+
+[[exclusions]]
+name = "kandelo-rust-sdk"
+reason = "experimental guest Rust SDK bundle"
+
+[[exclusions]]
+name = "rust-native-fixtures"
+reason = "optional guest Rust native-dependency acceptance inputs"

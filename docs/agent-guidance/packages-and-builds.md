@@ -107,6 +107,16 @@ test it against a scratch `KANDELO_SOURCE_CACHE_ROOT`, and set
 `KANDELO_CACHE_GC_AUTO=0` when a build must not collect. See
 [Cache garbage collection](../package-management.md#cache-garbage-collection).
 
+## Man pages for ports
+
+When upstream provides man pages (including its normally generated pages),
+aim to include lazy references for them where possible. The shell's existing
+pattern is a separate `<program>-docs` ZIP package mounted at `/usr/`, with
+pages under `/usr/share/man`; an existing lazy runtime bundle can also carry
+them. Software without man pages needs none invented for now. Follow
+[Shipping man pages](../porting-guide.md#shipping-man-pages) for the package,
+image registration and validation details.
+
 ## Line editing for REPL CLIs
 
 A command-line program with an interactive REPL — a read-eval-print loop that

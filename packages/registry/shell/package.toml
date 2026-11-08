@@ -68,6 +68,9 @@ depends_on = [
   "coreutils-docs@9.6",
   "lsof-docs@0.1.0",
   "kandelo-sdk-browser-bundle@21.1.7",
+  "cargo@1.97.0-nightly-2026-04-27",
+  "rustc@1.97.0-nightly-2026-04-27",
+  "kandelo-rustc@0.1.0",
 ]
 
 # Composite VFS image for the browser shell demo: the rootfs package plus exact
