@@ -460,6 +460,7 @@ host/test/runtime-memory-profile.test.ts	source-only
 host/test/rust-backtrace.test.ts	prepared-product
 host/test/rust-c-interop.test.ts	prepared-product
 host/test/rust-compatibility-in-guest.test.ts	prepared-product
+host/test/rust-coverage-in-guest.test.ts	prepared-product
 host/test/rust-debugger.test.ts	prepared-product
 host/test/rust-devtools-in-guest.test.ts	prepared-product
 host/test/rust-native-dependencies-in-guest.test.ts	prepared-product

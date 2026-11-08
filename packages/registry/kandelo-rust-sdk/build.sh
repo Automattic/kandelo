@@ -9,6 +9,10 @@ stage="$work/stage"
 mkdir -p "$stage/bin" "$stage/libexec"
 unzip -q "${WASM_POSIX_DEP_KANDELO_SDK_BROWSER_BUNDLE_DIR:?missing C SDK}/kandelo-sdk.zip" -d "$stage"
 unzip -q "${WASM_POSIX_DEP_RUSTC_DIR:?missing compiler}/rust-std.zip" -d "$stage"
+unzip -q "${WASM_POSIX_DEP_RUST_PROFILER_RUNTIME_BUNDLE_DIR:?missing matching profiler runtime}/rust-profiler-runtime.zip" -d "$stage"
+for tool in llvm-cov llvm-profdata; do
+  install -m755 "${WASM_POSIX_DEP_RUST_COVERAGE_TOOLS_DIR:?missing matching coverage tools}/$tool.wasm" "$stage/bin/$tool"
+done
 install -m755 "$WASM_POSIX_DEP_RUSTC_DIR/rustc.wasm" "$stage/libexec/rustc"
 install -m755 "$WASM_POSIX_DEP_RUSTC_DIR/rustdoc.wasm" "$stage/libexec/rustdoc"
 install -m755 "$WASM_POSIX_DEP_RUSTC_DIR/clippy-driver.wasm" "$stage/libexec/clippy-driver"

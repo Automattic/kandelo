@@ -74,3 +74,75 @@ This is a local development command using Chromium's debugging protocol.
 It does not attach to existing browser tabs. Firefox and WebKit interactive
 source stepping are not implemented. Ordinary backtrace support and its
 engine limits are described in [the Rust target guide](rust-target.md).
+
+## Coverage inside Kandelo
+
+The guest Rust SDK includes the compiler's matching profiler runtime,
+`llvm-profdata` and `llvm-cov`. In a guest project, build with coverage
+instrumentation, then run the executable and merge its real profile files:
+
+```sh
+mkdir coverage-run-1
+RUSTFLAGS="-C instrument-coverage" cargo build --offline -j1
+LLVM_PROFILE_FILE="coverage-run-1/%p.profraw" target/debug/my_program.wasm
+llvm-profdata merge -sparse coverage-run-1/*.profraw -o coverage-run-1/merged.profdata
+llvm-cov show target/debug/my_program.wasm --instr-profile=coverage-run-1/merged.profdata
+llvm-cov export target/debug/my_program.wasm --instr-profile=coverage-run-1/merged.profdata
+llvm-cov show target/debug/my_program.wasm --instr-profile=coverage-run-1/merged.profdata \
+  --format=html --output-dir=coverage-run-1/html
+```
+
+Replace `my_program` with the Cargo binary's name. Keep the source files
+available at their recorded guest paths for text and HTML source display.
+Use a fresh output directory for each run; `%p` separates parent and child
+processes within that run, while process IDs can be reused after a reboot.
+These commands use the installed guest SDK.
+
+To collect unit-test profiles, set both variables on the test command:
+
+```sh
+RUSTFLAGS="-C instrument-coverage" LLVM_PROFILE_FILE="coverage-run-1/%p.profraw" \
+  cargo test --offline -j1 -- --test-threads=1
+```
+
+Report against the test executable returned by
+`cargo test --no-run --message-format=json`, rather than the ordinary
+application executable. Keep its coverage build flags the same. Profile
+updates are not atomic by default; the acceptance fixture synchronizes the
+function whose exact threaded call count it checks. Automatic atomic
+updates remain unvalidated. Aborting panics and forced termination may
+leave no profile; crash-profile recovery is not implemented.
+
+The checked-in acceptance builds an ordinary offline Cargo project and
+checks branch counts, separate parent/child profiles, 400 synchronized
+calls, both unit tests, source text and HTML. It also requires malformed
+profiles and incompatible raw-profile versions to fail. The same workflow
+passes on Node, Chromium, Firefox and WebKit using LLVM 22.1.2 reporters
+matched to the SDK compiler.
+
+## Clean-build acceptance
+
+The on-demand [Rust development workflow](../.github/workflows/rust-development.yml)
+starts with empty Kandelo source and binary caches, builds a partial Rust
+shell through the normal resolver, and runs the Node and three-browser
+development checks. Select a Linux runner with enough disk for building
+LLVM, Clang and Rust; a preinstalled Kandelo cache is not an input. The
+pinned Nix toolchain still uses its normal binary cache.
+
+For a prepared local checkout, the same strict checks accept explicit
+standalone SDK and native-fixture archives:
+
+```sh
+scripts/dev-shell.sh bash scripts/check-rust-development.sh node SDK.zip NATIVE-FIXTURES.zip
+scripts/dev-shell.sh bash scripts/check-rust-development.sh browser SDK.zip NATIVE-FIXTURES.zip
+```
+
+Build the partial shell with Cargo, rustc, kandelo-rustc,
+kandelo-sdk-browser-bundle, wasm-fork-instrument,
+rust-profiler-runtime-bundle, rust-coverage-tools, rust-docs and
+mandoc-browser-bundle first. Resolve `kandelo-rust-sdk` and
+`rust-native-fixtures` through the normal package resolver for the two
+archive arguments. The check refuses missing tools, libtest or the profiler
+runtime and records the archive hashes with its test reports. Interactive
+browser-debugger checks select Chromium, whose debugging protocol the
+command uses.
