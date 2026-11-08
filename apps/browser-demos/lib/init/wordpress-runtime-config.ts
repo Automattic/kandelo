@@ -202,3 +202,26 @@ export function patchWordPressMysqliPersistentSource(source: string): string {
     `mysqli_real_connect( $this->dbh, ${MYSQLI_PERSISTENT_HOST_EXPR}, $this->dbuser`,
   );
 }
+
+/** Stock wp-cron over guest loopback, with the preview's public URL metadata. */
+export function wordpressCronCurlConfig(publicOrigin?: string, appPath = "/"): string {
+  const lines = [
+    'url = "http://127.0.0.1:8080/wp-cron.php"',
+    "fail", "silent", "show-error", 'output = "/dev/null"',
+    "max-time = 25", "retry = 3", "retry-connrefused", "retry-delay = 1",
+    'write-out = "CRON_HTTP:%{http_code}\\n"',
+  ];
+  if (publicOrigin !== undefined) {
+    const origin = new URL(publicOrigin);
+    if (origin.origin !== publicOrigin || !["http:", "https:"].includes(origin.protocol)) {
+      throw new Error("Invalid WordPress cron public origin");
+    }
+    if (!appPath.startsWith("/") || /[\r\n]/.test(appPath)) {
+      throw new Error("Invalid WordPress cron public path");
+    }
+    const quoted = (value: string) => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"') + '"';
+    lines.push(`header = ${quoted(`X-Forwarded-Host: ${origin.host}`)}`);
+    lines.push(`header = ${quoted(`X-Forwarded-Prefix: ${appPath}`)}`);
+  }
+  return lines.join("\n") + "\n";
+}

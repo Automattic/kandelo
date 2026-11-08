@@ -42,6 +42,7 @@ import {
   patchWordPressMysqliPersistentSource,
   renderWordPressConfig,
   wordpressConfigTemplate,
+  wordpressCronCurlConfig,
   type WordPressDatabaseKind,
 } from "../../../lib/init/wordpress-runtime-config";
 import { MYSQL_BENCHMARK_PHP } from "../../../lib/init/mysql-benchmark";
@@ -140,6 +141,8 @@ export interface ComposeImageJob {
   appPath: string;
   /** "http" or "https", from the composing page's origin. */
   proto: string;
+  /** Public page origin for guest-scheduled HTTP requests, when embedding a preview. */
+  publicOrigin?: string;
   /**
    * Upper bound for an image's explicit pre-fork pool, from the host's
    * memory profile. Smaller configured pools remain smaller.
@@ -317,6 +320,9 @@ export async function composeKandeloImage(
         patchWordPressRuntimeConfig(buildFs, vfsPathExists(buildFs, "/etc/kandelo/wordpress-backends") ? "selectable" : "mariadb", job.appPath, job.proto);
       } else {
         patchWordPressRuntimeConfig(buildFs, "sqlite", job.appPath, job.proto);
+      }
+      if (vfsPathExists(buildFs, "/etc/wordpress/cron.curl") && job.publicOrigin !== undefined) {
+        writeVfsFile(buildFs, "/etc/wordpress/cron.curl", wordpressCronCurlConfig(job.publicOrigin, job.appPath));
       }
     }
     ensureDemoHomes(buildFs);
