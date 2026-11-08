@@ -645,6 +645,7 @@ tests/package-system/rootfs-package-manifest.test.ts	prepared-product
 tests/package-system/rootfs-verified-source-contract.test.ts	prepared-product
 tests/package-system/rust-package-workspace.test.ts	source-only
 tests/package-system/scummvm-play-download.test.ts	source-only
+tests/package-system/sdk-plugin-reproducibility.test.ts	source-only
 tests/package-system/sdl-dsp-packages.test.ts	source-only
 tests/package-system/shell-lazy-url-resolution.test.ts	prepared-product
 tests/package-system/source-only-vite-assets.test.ts	prepared-product
