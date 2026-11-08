@@ -7351,3 +7351,7 @@ Source266 combines real terminal shutdown/completion and encoded-string owners w
 ### Batched CJS source-map cache and backing allocation snapshot owners
 
 Source267adds real compile/cache/weakModule/sourceMap lookup routing and an internal protected backing category/allocator snapshot prerequisite. Ninecanonicalengine inputs and one normal source/package batch do not establish runtime, publicmemoryUsage, stackmapping, coverageoutput or APIclosure.
+
+### Assertion source capture and HTTP parser storage lifetimes
+
+Source 268 adds an actual retained-source assertion diagnostic owner and real private HTTP parser reset, storage reuse and deferred retirement. One normal source/package batch is separate from runtime conformance. Public stack mapping/capture, HTTPParser AsyncWrap/provider lifecycle and Server persistence remain incomplete.

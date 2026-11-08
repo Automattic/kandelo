@@ -1,0 +1,173 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/values.md",
+    "findingIds": [
+      "V-010"
+    ],
+    "relatedFamilies": [
+      "values",
+      "http"
+    ],
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/values.md",
+        "findingId": "V-010",
+        "relation": "partial-actual-retained-source-expression-owner"
+      },
+      {
+        "document": "tests/nodejs/audit/http-contracts.md",
+        "findingId": "H-003",
+        "relation": "partial-actual-framing-storage-lifetime-owner"
+      },
+      {
+        "document": "tests/nodejs/audit/http-contracts.md",
+        "findingId": "H-001",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true
+      }
+    ],
+    "scope": "Partial assertion source and parser storage prerequisites only; no full public diagnostic, HTTPParser or Server closure."
+  },
+  "sourceImplemented": [
+    {
+      "feature": "assertion-retained-source",
+      "scope": "Real function-boundary caller JSScript/PC/UTF-16 source extent and private scratch association feed the unchanged pinned Acorn tokenizer. One historical native reference process only."
+    },
+    {
+      "feature": "http-parser-reusable-storage",
+      "scope": "Actual llhttp reset/release, native active-frame deferred retirement and real private response storage pool consumed by current client terminal paths. One historical native reference process only."
+    }
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-core268-parser-assertion-batch-source-r1/report.json",
+    "sha256": "385c13ead944dba3ee7c91cb1939e15e667b0f4f4dbd64d6ba2b197674833421",
+    "guardedInputs": 930,
+    "scope": "One normal268 generation/staging/syntax/input check; retained assertion source and parser lifecycle only. No native/current component reruns, compilers, guest or overall proof."
+  },
+  "packageChecks": {
+    "report": ".context/node26-core268-parser-assertion-batch-affected-r1.json",
+    "sha256": "b723b3b2e2fe3bf9c6c0767f8e0a0b101f858f9893f2c154b68ce0f7add4c731",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-core268-parser-assertion-batch-source-r1/report.json",
+    "sha256": "385c13ead944dba3ee7c91cb1939e15e667b0f4f4dbd64d6ba2b197674833421",
+    "reportScope": "One normal268 generation/staging/syntax/input check; retained assertion source and parser lifecycle only. No native/current component reruns, compilers, guest or overall proof.",
+    "newCompilerAttempts": 0,
+    "guestRuntimeExecuted": false,
+    "ordinaryV1SourceApplication": true,
+    "all19FamiliesPartial": true,
+    "freshComponentGroups": 0,
+    "freshAPIConformancePasses": 0
+  },
+  "sealedEvidence": {
+    "report": ".context/core268-parser-assertion-batch-metadata-bound-r1/feature-evidence-index.json",
+    "sha256": "953adbfe1373339e3cbd395d9e03a754ea1e47894d99176a9cf75c79d81cfce1",
+    "reusedEvidence": true,
+    "scope": "Exact original producer/review source versions. One historical native assertion process and one historical native parser process, including the negative VM-offset observation; no fresh candidate, component or guest proof."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/assertion-source-owner-agent/report.json",
+      "sha256": "f508fba358258aec9993baba704b3714f52d73cb69324857e24a7d4ed54f908c",
+      "classification": "Actual pinned native VM first-line offset produced undefined-message ERR_INVALID_ARG_TYPE, not the intended source text. This is an unresolved diagnostic/parity observation, not a passing offset test or accepted engine boundary; no fresh candidate comparison.",
+      "freshlyRerun": false
+    }
+  ],
+  "remaining": [
+    "New C++ uncompiled; UTF-8, optimized/async/VM offset, mapped stacks and full public capture/filtering remain open. Preserve native VM offset undefined-message observation.",
+    "Public HTTPParser AsyncReset/provider/free/destroy, request pooling, StreamListener/consume, persistent Server and guest/GC/realm/reentry evidence remain incomplete; no public activation."
+  ],
+  "featureContributions": [
+    {
+      "id": "assertion-retained-source",
+      "family": "values",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/values.md",
+          "findingId": "V-010",
+          "relation": "partial-actual-retained-source-expression-owner"
+        }
+      ],
+      "scope": "Real function-boundary caller JSScript/PC/UTF-16 source extent and private scratch association feed the unchanged pinned Acorn tokenizer. One historical native reference process only.",
+      "remaining": "New C++ uncompiled; UTF-8, optimized/async/VM offset, mapped stacks and full public capture/filtering remain open. Preserve native VM offset undefined-message observation.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "d9d2a5f7f3e95c1b7c987fb1b355d048226e0eadabd4e7227d0cfb9d8940d2f4",
+      "producerSeal": {
+        "path": ".context/assertion-source-owner-agent/SEAL.json",
+        "sha256": "1e3581e9d762638ab37349347b399739750ebd159fce93dbf148b7c1a0d5dd1f"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core268-parser-assertion-batch-source-r1/report.json",
+        "sha256": "385c13ead944dba3ee7c91cb1939e15e667b0f4f4dbd64d6ba2b197674833421",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    },
+    {
+      "id": "http-parser-reusable-storage",
+      "family": "http",
+      "auditRequirements": [
+        {
+          "document": "tests/nodejs/audit/http-contracts.md",
+          "findingId": "H-003",
+          "relation": "partial-actual-framing-storage-lifetime-owner"
+        },
+        {
+          "document": "tests/nodejs/audit/http-contracts.md",
+          "findingId": "H-001",
+          "relation": "shared-prerequisite",
+          "prerequisiteOnly": true
+        }
+      ],
+      "scope": "Actual llhttp reset/release, native active-frame deferred retirement and real private response storage pool consumed by current client terminal paths. One historical native reference process only.",
+      "remaining": "Public HTTPParser AsyncReset/provider/free/destroy, request pooling, StreamListener/consume, persistent Server and guest/GC/realm/reentry evidence remain incomplete; no public activation.",
+      "findingClosed": false,
+      "implementationComplete": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "freshCandidateGroups": 0,
+      "freshCandidateCompositionGroups": 0,
+      "currentSourceBinding": "d9d2a5f7f3e95c1b7c987fb1b355d048226e0eadabd4e7227d0cfb9d8940d2f4",
+      "producerSeal": {
+        "path": ".context/http-parser-reuse-owner-agent/SEAL.json",
+        "sha256": "56f4c448764dea0cdefddf084b84d071e7479123e03d6ffffc2d35c7e7631a56"
+      },
+      "freshEvidence": {
+        "path": ".context/node26-core268-parser-assertion-batch-source-r1/report.json",
+        "sha256": "385c13ead944dba3ee7c91cb1939e15e667b0f4f4dbd64d6ba2b197674833421",
+        "candidateGroups": 0,
+        "nativeReferenceExecutions": 0,
+        "guestRuntimeExecuted": false,
+        "scope": "Source predicates only; original component/native histories retained, not rerun or fresh APIpasses."
+      }
+    }
+  ],
+  "batchReceiptIndex": {
+    "report": ".context/core268-parser-assertion-batch-metadata-bound-r1/receipt-index.json",
+    "sha256": "44b05ed23a5fb7d24a0f28255b27a642b3c99f0f0086f582fe78d1cf8b19fd5f",
+    "scope": "Actual completed source/check/import receipts. Zero new component/native/API passes; no historical recount or new compiler/guest run."
+  },
+  "currentCppExecuted": false,
+  "ordinaryV1SourceApplication": true,
+  "documentationGate": "Historical native observations and negative outcomes retain their original scope. Current source/package predicates do not establish API passes.",
+  "at": "2026-11-08T11:02:10.958458+00:00",
+  "recipeRevision": 268,
+  "lastAcceptedEngine": 263,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

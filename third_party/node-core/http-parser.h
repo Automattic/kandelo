@@ -82,6 +82,25 @@ class Parser final {
     settings_.on_chunk_extension_value = Extension;
     settings_.on_chunk_header = Chunk;
     settings_.on_chunk_complete = ChunkComplete;
+    Reset(std::move(method_), limit_, insecure, relaxed);
+  }
+  Parser(const Parser&) = delete;
+  Parser& operator=(const Parser&) = delete;
+  Parser(Parser&&) = delete;
+  Parser& operator=(Parser&&) = delete;
+
+  // Real private-owner reinitialization. Public HTTPParser AsyncReset/provider
+  // semantics are separate; no fake resource is emitted by this storage owner.
+  void Reset(std::string method, uint64_t limit, bool insecure, bool relaxed,
+             std::shared_ptr<ConnectionsList> list = {}, void* owner = nullptr) {
+    if (step_) throw std::logic_error("Cannot reset an executing HTTP parser");
+    if (list && !request_) throw std::logic_error("Connection list requires a request parser");
+    // Everything fallible is admitted before clearing the previous epoch.
+    const uint64_t admittedTime = list ? ConnectionNow() : 0;
+    connections_.Detach();
+    ClearState();
+    method_ = std::move(method);
+    limit_ = limit ? limit : 16 * 1024;
     llhttp_init(&parser_, request_ ? HTTP_REQUEST : HTTP_RESPONSE, &settings_);
     parser_.data = this;
     // Exactly Node's kLenientAll (bits 0..9). Header-value relaxation is a
@@ -99,12 +118,19 @@ class Parser final {
       llhttp_set_lenient_spaces_after_chunk_size(&parser_, 1);
     }
     if (relaxed) llhttp_set_lenient_header_value_relaxed(&parser_, 1);
+    if (list) connections_.AttachAt(std::move(list), owner, admittedTime);
   }
-  Parser(const Parser&) = delete;
-  Parser& operator=(const Parser&) = delete;
-  Parser(Parser&&) = delete;
-  Parser& operator=(Parser&&) = delete;
-
+  // Called only after the actual parse frame has unwound. Reset llhttp's raw
+  // input/error pointers, detach membership and clear retained parser bytes.
+  void Release() {
+    if (step_) throw std::logic_error("Cannot release an executing HTTP parser");
+    connections_.Detach();
+    ClearState();
+    method_.clear();
+    llhttp_init(&parser_, request_ ? HTTP_REQUEST : HTTP_RESPONSE, &settings_);
+    parser_.data = this;
+    removed_ = true;
+  }
   Step Feed(const uint8_t* bytes, size_t length, HeadersHandler headers = {}) {
     if (step_) throw std::logic_error("HTTP parser is already executing");
     if (oom_) throw std::bad_alloc();
@@ -191,6 +217,14 @@ class Parser final {
     const auto data = reinterpret_cast<uintptr_t>(value.data());
     const auto owner = reinterpret_cast<uintptr_t>(&value);
     return data >= owner && data - owner < sizeof(value) ? 0 : value.capacity() + 1;
+  }
+  void ClearState() {
+    status_.clear(); url_.clear(); field_.clear(); value_.clear();
+    errorCode_.clear(); errorReason_.clear(); headers_.clear();
+    headerBytes_ = extensionBytes_ = 0;
+    complete_ = upgrade_ = informational_ = false;
+    oom_ = unexpected_ = removed_ = false;
+    handler_ = {};
   }
   void Error(Step& step) const { step.code = errorCode_; step.reason = errorReason_; }
   void SaveError(llhttp_errno_t error) {

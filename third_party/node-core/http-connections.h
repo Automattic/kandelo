@@ -60,6 +60,7 @@ class ConnectionRecord final {
   ConnectionRecord& operator=(const ConnectionRecord&) = delete;
   ~ConnectionRecord() { Detach(); }
   void Attach(std::shared_ptr<ConnectionsList> list, void* owner);
+  void AttachAt(std::shared_ptr<ConnectionsList> list, void* owner, uint64_t now);
   void Detach();
   void Begin();
   void Headers() { headersCompleted_ = true; }
@@ -132,10 +133,14 @@ inline void ConnectionRecord::Detach() {
   all_.Remove(); active_.Remove(); list_.reset();
 }
 inline void ConnectionRecord::Attach(std::shared_ptr<ConnectionsList> list, void* owner) {
+  // Admit the actual clock read before changing old membership.
+  AttachAt(std::move(list), owner, ConnectionNow());
+}
+inline void ConnectionRecord::AttachAt(std::shared_ptr<ConnectionsList> list, void* owner, uint64_t now) {
   Detach();
   // Idle and active intentionally overlap before first received byte; Node
   // tracks this to reject a connection that never starts sending headers.
-  lastMessageStart_ = ConnectionNow();
+  lastMessageStart_ = now;
   headersCompleted_ = receivedData_ = false;
   owner_ = owner; list_ = std::move(list);
   if (list_) {

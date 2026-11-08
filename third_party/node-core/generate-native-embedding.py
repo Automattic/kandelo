@@ -26,7 +26,7 @@ FRAGMENTS = (
     'native-fs-promise.cpp', 'native-stat-watcher.cpp', 'native-copy-file.cpp', 'native-copy-directory.cpp', 'native-path-metadata.cpp', 'native-directory.cpp', 'native-readdir.cpp', 'native-dir.cpp', 'native-package.cpp', 'native-removal.cpp',
     'native-file-jobs.cpp', 'native-lazy-data.cpp', 'native-object-marks.cpp', 'native-environment-object.cpp', 'native-buffer.cpp', 'native-digests.cpp', 'native-http-parser.cpp', 'native-keys.cpp', 'native-secret-keygen.cpp', 'native-keypair-gen.cpp', 'native-x509.cpp', 'native-tls-context.cpp', 'native-incremental-hash.cpp', 'native-cipher.cpp', 'native-signature.cpp', 'native-signature-jobs.cpp',
     'native-random.cpp', 'native-kdf.cpp', 'native-address-rules.cpp', 'native-dns-lookup.cpp', 'native-dns-records.cpp', 'native-datagram.cpp',
-    'native-terminal.cpp', 'native-tracing.cpp', 'native-os.cpp', 'native-dotenv.cpp', 'native-vm-import.cpp', 'native-vm.cpp', 'native-vm-modules.cpp', 'native-module-syntax.cpp',
+    'native-terminal.cpp', 'native-tracing.cpp', 'native-os.cpp', 'native-dotenv.cpp', 'native-vm-import.cpp', 'native-vm.cpp', 'native-vm-modules.cpp', 'native-module-syntax.cpp', 'native-error-source.cpp',
     'native-sqlite.cpp', 'native-sqlite-backup.cpp', 'histogram-native.cpp', 'event-loop-delay-native.cpp', 'histogram-clone.cpp', 'native-ports.cpp', 'native-worker.cpp', 'native-locks.cpp',
     'native-signals.cpp', 'native-wasi.cpp', 'native-sea.cpp', 'native-ffi-library.cpp', 'native-ffi-memory.cpp',
 )

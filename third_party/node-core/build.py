@@ -26,9 +26,9 @@ for name, item in manifest['modules'].items():
         old = '  ErrorCaptureStackTrace(err, fn);'
         if source.count(old) != 1:
             raise ValueError('review assertion source-expression stack capability')
-        source = source.replace(old, '  if (typeof ErrorCaptureStackTrace !== "function") return;\n' + old)
-        # This engine has no Node error-source binding. Preserve the default
-        # assertion failure when no expression is available, rather than feed
+        source = source.replace(old, '  internalBinding("errors").captureAssertionSource(err, fn);')
+        # Retain the existing honest fallback when the actual source owner
+        # has no expression, rather than feed
         # an undefined message into the upstream message validator.
         old = 'messageArgs = [getErrMessage(fn)];'
         if source.count(old) != 1:
@@ -43,6 +43,29 @@ for name, item in manifest['modules'].items():
             raise ValueError('review assertion error stack capability')
         source = source.replace(old, '    if (typeof ErrorCaptureStackTrace === "function") {\n' + old + '\n    }')
     entries.append(json.dumps(name) + ': function(module, exports, require, primordials, internalBinding, process) {\n' + source + '\n}')
+assert_source_spec = manifest['assertionSource']
+assert_source_raw = (root / assert_source_spec['source']['path']).read_bytes()
+if hashlib.sha256(assert_source_raw).hexdigest() != assert_source_spec['source']['sha256']:
+    raise ValueError('Assertion source reference mismatch')
+assert_source_selection = assert_source_spec['tokenizer']
+assert_source_text = assert_source_raw.decode()
+if assert_source_text.count(assert_source_selection['start']) != 1:
+    raise ValueError('Assertion tokenizer selection ambiguity')
+assert_source_begin = assert_source_text.index(assert_source_selection['start'])
+assert_source_text = assert_source_text[assert_source_begin:assert_source_begin + assert_source_selection['length']]
+if hashlib.sha256(assert_source_text.encode()).hexdigest() != assert_source_selection['sha256']:
+    raise ValueError('Assertion tokenizer identity mismatch')
+assert_license = assert_source_spec['license']
+if hashlib.sha256((root / assert_license['path']).read_bytes()).hexdigest() != assert_license['sha256']:
+    raise ValueError('Assertion Acorn license mismatch')
+entries.append('"internal/errors/error_source": function(module, exports, require, primordials, internalBinding) {\n' +
+    'const { FunctionPrototypeBind, StringPrototypeSlice } = primordials;\n' +
+    'const { getErrorSourcePositions } = internalBinding("errors");\n' + assert_source_text +
+    '\nmodule.exports = { getErrorSourceExpression(error) {\n' +
+    '  const location = getErrorSourcePositions(error);\n' +
+    '  if (location === undefined || !location.sourceLine) return;\n' +
+    '  return getFirstExpression(location.sourceLine, location.startColumn);\n' +
+    '} };\n}')
 license_text = (root / 'LICENSE').read_text().split('The Node.js license applies', 1)[0]
 bundle = '/* Node.js ' + manifest['version'] + '\n' + license_text + '\n*/\n'
 inspection = (root / 'inspection-adapter.js').read_text()
@@ -2254,6 +2277,11 @@ for name, item in http_parser_spec['selections'].items():
     if http_parser_adapter.count(marker) != 1:
         raise ValueError('Review HTTP parser marker: ' + name)
     http_parser_adapter = http_parser_adapter.replace(marker, section)
+marker = '/* NODE_HTTP_FREE_LIST */'
+if http_parser_adapter.count(marker) != 1:
+    raise ValueError('Review actual HTTP parser free-list owner marker')
+http_parser_adapter = http_parser_adapter.replace(marker,
+    (root / http_parser_spec['sources']['lib/internal/freelist.js']['path']).read_text())
 bundle += http_parser_adapter + '\n'
 marks_spec = manifest['objectMarks']
 for name, item in marks_spec['sources'].items():

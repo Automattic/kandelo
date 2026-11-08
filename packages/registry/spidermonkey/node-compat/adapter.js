@@ -436,6 +436,9 @@
             if (!frame || !frame.source) return undefined;
             return [frame.line, frame.column, frame.source];
         },
+        captureAssertionSource(boundary) {
+            return native.captureAssertionSource(boundary);
+        },
         captureCallSites(frameCount) {
             if (typeof captureSavedStack !== 'function') {
                 const error = new Error('This engine does not expose saved frames');

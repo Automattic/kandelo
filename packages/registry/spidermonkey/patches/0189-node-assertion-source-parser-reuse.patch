@@ -1,0 +1,10 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index 37ab847875eacd1c58bcab392965b8155a71a448..c75f081596db0db615cda4da70b427de131b9bee 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4949,4 +4949,5 @@ static bool DefineKandeloNodeNative(JSContext* cx) {
+       JS_FN("createEnvironmentObject", KandeloNativeCreateEnvironmentObject, 2, 0),
+       JS_FN("moduleSyntax", KandeloNativeModuleSyntax, 3, 0),
++      JS_FN("captureAssertionSource", KandeloCaptureAssertionSource, 1, 0),
+       JS_FN("isPromise", KandeloNativeIsPromise, 1, 0),
+       JS_FN("hasObjectKind", KandeloNativeHasObjectKind, 2, 0),

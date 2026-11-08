@@ -23,14 +23,27 @@ function _createNodeHttpParser(platform) {
         active() { return platform.native.httpParser('connectionsActive', this); }
         expired() { return platform.native.httpParser('connectionsExpired', this, arguments[0], arguments[1]); }
     }
+    const freeListModule = { exports: {} };
+    (function(module, exports, primordials) {
+        /* NODE_HTTP_FREE_LIST */
+    })(freeListModule, freeListModule.exports, _createNodePrimordials());
+    // Reuse actual native response storage only. Request wrappers/list identity
+    // remain unpooled until the complete public provider/initializer exists.
+    const responseOwners = new freeListModule.exports('response parsers', 1000,
+        (method, limit, insecure, relaxed) => platform.native.httpParser('create', method, limit, insecure, relaxed));
     let allMethods;
     function makeParser(options, request) {
         if (request) allMethods ??= platform.native.httpParser('allMethods');
         const insecure = options.httpValidation === 'insecure' ||
             (options.httpValidation === undefined && options.insecureHTTPParser === true);
-        const owner = platform.native.httpParser(request ? 'createRequest' : 'create', options.method || 'GET',
-            options.maxHeaderSize || 0, insecure, options.httpValidation === 'relaxed', request ? options.connections : undefined);
-        let message = null, completed = false, failed = false, remainder = null;
+        const method = options.method || 'GET', limit = options.maxHeaderSize || 0;
+        const relaxed = options.httpValidation === 'relaxed';
+        const owner = request ? platform.native.httpParser('createRequest', method, limit, insecure, relaxed, options.connections)
+            : responseOwners.alloc(method, limit, insecure, relaxed);
+        let published = false;
+        try {
+        if (!request) platform.native.httpParser('initialize', owner, method, limit, insecure, relaxed);
+        let message = null, completed = false, failed = false, remainder = null, closed = false;
         let keepAlive = false, upgraded = false;
         const state = {
             incoming: null, _headers: [], _url: '', socket: options.socket,
@@ -54,6 +67,7 @@ function _createNodeHttpParser(platform) {
                     return 1;
                 }
                 if (options.onHeaders) options.onHeaders(incoming);
+                if (closed) return 0;
                 return options.method === 'HEAD' ? 1 : 0;
             },
         };
@@ -70,12 +84,15 @@ function _createNodeHttpParser(platform) {
         }
         function requestComplete(event) {
             ReflectApply(parserOnHeaders, parser, [event.headers, '']);
+            if (closed) return;
             ReflectApply(parserOnMessageComplete, parser, []);
-            if (options.onComplete) options.onComplete();
+            if (!closed && options.onComplete) options.onComplete();
         }
         function consume(packet, input) {
+            if (closed) return;
             if (packet.remainder.length) remainder = Buffer.from(packet.remainder);
             for (let i = 0; i < packet.events.length; ++i) {
+                if (closed) return;
                 const event = packet.events[i];
                 if (event.type === 0) {
                     ReflectApply(parserOnHeadersComplete, parser, [event.major, event.minor,
@@ -86,10 +103,12 @@ function _createNodeHttpParser(platform) {
                 } else if (event.type === 2) {
                     // Use the same trailing-header cap and lifecycle algorithm.
                     ReflectApply(parserOnHeaders, parser, [event.headers, '']);
+                    if (closed) return;
                     ReflectApply(parserOnMessageComplete, parser, []);
-                    if (!event.informational && options.onComplete) options.onComplete();
+                    if (!closed && !event.informational && options.onComplete) options.onComplete();
                 }
             }
+            if (closed) return;
             completed = packet.complete;
             if (packet.code) {
                 failed = true;
@@ -109,18 +128,44 @@ function _createNodeHttpParser(platform) {
             get completed() { return completed; },
             get shouldKeepAlive() { return keepAlive; },
             getRemainder() { return remainder; },
+            close() {
+                if (closed) return;
+                closed = true;
+                let cleaned = false;
+                try {
+                    options = null;
+                    message = remainder = null;
+                    parser.incoming = parser.socket = null;
+                    parser._headers = [];
+                    parser._url = '';
+                    parser.onIncoming = null;
+                    parser.joinDuplicateHeaders = null;
+                    cleaned = true;
+                } finally {
+                    if (request || !cleaned) {
+                        // Native close is deferred when a real llhttp callback
+                        // still owns the frame/input; it never deletes itself.
+                        platform.native.httpParser('close', owner);
+                    } else {
+                        platform.native.httpParser('free', owner);
+                        let cached = false;
+                        try { cached = responseOwners.free(owner); }
+                        finally { if (!cached) platform.native.httpParser('close', owner); }
+                    }
+                }
+            },
             feed(bytes) {
-                if (failed || completed) return;
+                if (closed || failed || completed) return;
                 consume(request ? platform.native.httpParser('feedRequest', owner, bytes, requestHeaders, requestBody, requestComplete)
                     : platform.native.httpParser('feed', owner, bytes), bytes);
             },
             end() {
-                if (failed || completed) return;
+                if (closed || failed || completed) return;
                 consume(request ? platform.native.httpParser('finishRequest', owner, undefined, requestHeaders, requestBody, requestComplete)
                     : platform.native.httpParser('finish', owner));
             },
         };
-        if (!request) return api;
+        if (!request) { published = true;return api; }
         const descriptors = ObjectGetOwnPropertyDescriptors(api);
         const names = ObjectKeys(descriptors);
         for (let i = 0; i < names.length; ++i)
@@ -129,7 +174,13 @@ function _createNodeHttpParser(platform) {
         ObjectDefineProperty(owner, 'remove', { __proto__: null,
             value: function remove() { return platform.native.httpParser('remove', owner); },
             writable: true, enumerable: true, configurable: true });
+        published = true;
         return owner;
+        } finally {
+            // Getter/descriptor/allocation failure before returning a parser
+            // does not strand an actual pooled/listed owner.
+            if (!published) platform.native.httpParser('close', owner);
+        }
     }
     function makeResponseParser(options) { return makeParser(options, false); }
     makeResponseParser.request = options => makeParser(options, true);

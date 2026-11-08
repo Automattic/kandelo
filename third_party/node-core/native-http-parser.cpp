@@ -11,7 +11,9 @@ namespace {
 struct KandeloHttpOwner {
   kandelo::http::ResponseParser parser;
   size_t accounted = 0;
-  bool executing = false;
+  bool executing = false, released = false;
+  enum class Retirement { None, Free, Close };
+  Retirement retirement = Retirement::None;
   const bool request;
   JS::Heap<JSObject*> identity;
   KandeloHttpOwner(std::string method, uint64_t limit, bool insecure, bool relaxed, bool request)
@@ -25,6 +27,25 @@ static void KandeloHttpAccount(JSObject* object, KandeloHttpOwner* owner) {
   else if (bytes < owner->accounted)
     JS::RemoveAssociatedMemory(object, owner->accounted - bytes, JS::MemoryUse::Embedding3);
   owner->accounted = bytes;
+}
+// Never destroy/reset the native parser from a synchronous llhttp callback.
+// Its real active frame and original input allocation own that lifetime.
+static void KandeloHttpRetire(JSObject* object, KandeloHttpOwner* owner) {
+  MOZ_RELEASE_ASSERT(!owner->executing);
+  if (owner->retirement == KandeloHttpOwner::Retirement::Close) {
+    JS::SetReservedSlot(object, 0, UndefinedValue());
+    JS::SetReservedSlot(object, 1, UndefinedValue());
+    JS::RemoveAssociatedMemory(object, owner->accounted, JS::MemoryUse::Embedding3);
+    delete owner;
+    return;
+  }
+  if (owner->retirement == KandeloHttpOwner::Retirement::Free) {
+    owner->parser.Release();
+    owner->released = true;
+    owner->retirement = KandeloHttpOwner::Retirement::None;
+    JS::SetReservedSlot(object, 1, UndefinedValue());
+  }
+  KandeloHttpAccount(object, owner);
 }
 static void KandeloHttpFinalize(JS::GCContext*, JSObject* object) {
   const auto value = JS::GetReservedSlot(object, 0);
@@ -261,24 +282,81 @@ static bool KandeloNativeHttpParserImpl(JSContext* cx, unsigned argc, Value* vp)
     args.rval().setObject(*object); return true;
   }
   RootedObject object(cx, args.get(1).isObject() ? js::CheckedUnwrapDynamic(&args[1].toObject(), cx) : nullptr);
-  if (!object || JS::GetClass(object) != &KandeloHttpClass || JS::GetReservedSlot(object, 0).isUndefined()) {
+  if (!object || JS::GetClass(object) != &KandeloHttpClass) {
     if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "HTTP parser requires its actual native owner");
     return false;
   }
+  if (JS::GetReservedSlot(object, 0).isUndefined()) {
+    // Actual native close completed. Only real supported methods inherit
+    // absent-backing return semantics; an unknown operation is not support.
+    const char* known[] = { "remove", "free", "close", "initialize", "feed", "finish",
+        "feedRequest", "finishRequest", "feedRequestHeaders" };
+    for (const char* method : known) {
+      if (strcmp(operation.get(), method) == 0) { args.rval().setUndefined();return true; }
+    }
+    JS_ReportErrorASCII(cx, "Unknown HTTP parser operation");return false;
+  }
   auto* owner = static_cast<KandeloHttpOwner*>(JS::GetReservedSlot(object, 0).toPrivate());
+  const bool close = strcmp(operation.get(), "close") == 0;
+  const bool free = strcmp(operation.get(), "free") == 0;
+  if (close || free) {
+    if (close || owner->retirement == KandeloHttpOwner::Retirement::None)
+      owner->retirement = close ? KandeloHttpOwner::Retirement::Close : KandeloHttpOwner::Retirement::Free;
+    owner->parser.RemoveConnections();
+    JS::SetReservedSlot(object, 1, UndefinedValue());
+    if (!owner->executing) KandeloHttpRetire(object, owner);
+    args.rval().setUndefined(); return true;
+  }
+  if (strcmp(operation.get(), "initialize") == 0) {
+    if (owner->executing) { JS_ReportErrorASCII(cx, "HTTP parser is already executing");return false; }
+    if (!args.get(2).isString() || !args.get(3).isNumber() || !args.get(4).isBoolean() || !args.get(5).isBoolean() ||
+        !std::isfinite(args[3].toNumber()) || args[3].toNumber() < 0 ||
+        args[3].toNumber() > 9007199254740991.0 || std::floor(args[3].toNumber()) != args[3].toNumber()) {
+      JS_ReportErrorASCII(cx, "HTTP parser requires checked method/limit/options");return false;
+    }
+    RootedString method(cx, args[2].toString());
+    JS::UniqueChars text = JS_EncodeStringToUTF8(cx, method); if (!text) return false;
+    RootedValue retainedList(cx, args.get(6));
+    std::shared_ptr<kandelo::http::ConnectionsList> list;
+    if (!retainedList.isUndefined()) {
+      RootedObject connections(cx, retainedList.isObject() ? js::CheckedUnwrapDynamic(&retainedList.toObject(), cx) : nullptr);
+      if (retainedList.isObject() && !connections) {
+        if (!JS_IsExceptionPending(cx)) js::ReportAccessDenied(cx);
+        return false;
+      }
+      auto* target = KandeloHttpConnections(connections);
+      if (!target || !owner->request) {
+        if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "Request parser requires its real connection list");
+        return false;
+      }
+      list = target->list;
+    }
+    auto account = mozilla::MakeScopeExit([&] { KandeloHttpAccount(object, owner); });
+    JSAutoRealm realm(cx, object);
+    if (!JS_WrapValue(cx, &retainedList)) return false;
+    owner->parser.Reset(text.get(), uint64_t(args[3].toNumber()), args[4].toBoolean(), args[5].toBoolean(), std::move(list), owner);
+    owner->released = false;
+    owner->retirement = KandeloHttpOwner::Retirement::None;
+    JS::SetReservedSlot(object, 1, retainedList);
+    args.rval().setUndefined();return true;
+  }
   if (strcmp(operation.get(), "remove") == 0) {
     owner->parser.RemoveConnections();
     JS::SetReservedSlot(object, 1, UndefinedValue());
     args.rval().setUndefined(); return true;
   }
-  // Callback/OOM failure can leave additional native capacity allocated.
-  auto account = mozilla::MakeScopeExit([&] { KandeloHttpAccount(object, owner); });
   const bool fullCallbacks = strcmp(operation.get(), "feedRequest") == 0 ||
       strcmp(operation.get(), "finishRequest") == 0;
   const bool synchronous = fullCallbacks || strcmp(operation.get(), "feedRequestHeaders") == 0;
   if (owner->executing) { JS_ReportErrorASCII(cx, "HTTP parser is already executing");return false; }
+  if (owner->released) { JS_ReportErrorASCII(cx, "HTTP parser is not initialized");return false; }
   owner->executing = true;
-  auto endExecution = mozilla::MakeScopeExit([&] { owner->executing = false; });
+  // This one lifetime fence handles both normal/OOM accounting and actual
+  // deferred retirement. No later guard can dereference a deleted owner.
+  auto endExecution = mozilla::MakeScopeExit([&] {
+    owner->executing = false;
+    KandeloHttpRetire(object, owner);
+  });
   kandelo::http::Step step;
   if (synchronous) {
     if (!owner->request) { JS_ReportErrorASCII(cx, "Synchronous request headers require a request parser");return false; }

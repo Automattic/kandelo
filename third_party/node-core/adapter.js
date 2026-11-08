@@ -75,10 +75,8 @@ function _createNodeCore(platform) {
     const types = _createNodeCoreTypes(platform);
     const isError = v => types.isNativeError(v) || v instanceof Error;
     const primordials = _createNodePrimordials();
+    const assertionSources = new primordials.SafeWeakMap();
     const modules = {
-        // Expression extraction is a diagnostic feature; SpiderMonkey does not
-        // supply Node's source-location binding. Assertions still always fail.
-        'internal/errors/error_source': { getErrorSourceExpression: () => undefined },
         'internal/util/types': types,
         'internal/util/inspect': { inspect: platform.inspect, format: platform.format },
         'internal/util': { isError, setOwnProperty: (object, key, value) =>
@@ -97,6 +95,14 @@ function _createNodeCore(platform) {
         ? new Uint8(dataBuffer(value), dataOffset(value), dataLength(value))
         : new Uint8(typedBuffer(value), typedOffset(value), primordials.TypedArrayPrototypeGetByteLength(value));
     const internalBinding = name => {
+        if (name === 'errors') return {
+            captureAssertionSource(target, boundary) {
+                if (typeof platform.captureAssertionSource !== 'function') return;
+                const position = platform.captureAssertionSource(boundary);
+                if (position !== undefined) assertionSources.set(target, position);
+            },
+            getErrorSourcePositions: target => assertionSources.get(target),
+        };
         if (name === 'buffer') return { compare: (a, b) => {
             if (!arrayBufferIsView(a) || !arrayBufferIsView(b)) {
                 throw new (platform.getValues().errors.codes.ERR_INVALID_ARG_TYPE)('buffer', ['Buffer', 'TypedArray', 'DataView'], a);

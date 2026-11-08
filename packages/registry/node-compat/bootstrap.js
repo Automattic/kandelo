@@ -2115,6 +2115,7 @@ util.getSystemErrorMap = _nodeUv.getSystemErrorMap;
 // module. Initialize the shared Web platform before either consumer loads.
 const _nodeWebPlatform = _createNodeWebPlatform();
 const _nodeCore = _createNodeCore({
+    captureAssertionSource: boundary => _nodeNative.captureAssertionSource(boundary),
     process, getValues: () => _nodeValues,
     Buffer, inspect: util.inspect, format: util.format,
     URL: _nodeWebPlatform.URL,
@@ -4937,6 +4938,10 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol, agentOwner }) {
             sock.removeListener('error', lst.onError);
             sock.removeListener('close', lst.onClose);
             sock.removeListener('drain', _nodeHttpOutgoing.onSocketDrain);
+            const parser = this._parser;
+            const left = parser && parser.getRemainder();
+            this._parser = null;
+            if (parser) parser.close();
             this.destroyed = true;
             if (!agentOwner) {
                 if (sock._httpMessage === this) sock._httpMessage = null;
@@ -4955,7 +4960,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol, agentOwner }) {
             if (!agentOwner) { try { sock.pause(); } catch (_) { /* ignore */ } }
             // No next request has been sent: extra bytes cannot be its response.
             // Retire the connection instead of assigning unsolicited bytes to it.
-            const left = this._parser && this._parser.getRemainder();
+
             if (left && left.length > 0) { if (agentOwner) process.nextTick(() => this._closeRequest()); sock.destroy(); return; }
             if (agentOwner) {
                 // Pinned responseKeepAlive resets only a socket actually being
@@ -4983,6 +4988,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol, agentOwner }) {
             this.res = msg; msg.req = this;
             msg[_nodeHttpIncoming.kDetachAbortSignal]();
             this._socket = null;
+            const parser = this._parser;
+            this._parser = null;
+            if (parser) parser.close();
             const name = this.method === 'CONNECT' ? 'connect' : 'upgrade';
             if (this.listenerCount(name) > 0) {
                 this.upgradeOrConnect = true;
@@ -5087,6 +5095,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol, agentOwner }) {
         _closeRequest() {
             if (this._closed) return;
             this._closed = true;
+            const parser = this._parser;
+            this._parser = null;
+            if (parser) parser.close();
             // The pinned client discards output that could not reach its
             // socket on close; completed writes keep real socket callbacks.
             this.emit('close');

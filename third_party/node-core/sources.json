@@ -23,6 +23,11 @@
       "path": "upstream/myers-diff.js",
       "upstreamPath": "lib/internal/assert/myers_diff.js",
       "sha256": "811f14c9c9f0a85b39cc2925dc351f9ce6d0ce0f4e0426802c72e5bf0d905ea6"
+    },
+    "internal/deps/acorn/acorn/dist/acorn": {
+      "path": "upstream/assert-source/deps/acorn/acorn/dist/acorn.js",
+      "upstreamPath": "deps/acorn/acorn/dist/acorn.js",
+      "sha256": "b95392d79457d0357555c5ed3e56302d074b92dff119bcf3b44179500b10e9df"
     }
   },
   "inspection": {
@@ -4909,9 +4914,14 @@
         "path": "upstream/http-parser/src/node_options.h",
         "upstreamPath": "src/node_options.h",
         "sha256": "4241ccbfddad1f227888204f998427fa79e8c8332e9ea3f19b93b7a433ea3046"
+      },
+      "lib/internal/freelist.js": {
+        "path": "upstream/http-parser/lib/internal/freelist.js",
+        "upstreamPath": "lib/internal/freelist.js",
+        "sha256": "86011a0ec68a26f52a139cde807c3de703c240d5f721558b92d647562ee92af2"
       }
     },
-    "scope": "Exact llhttp and Node parser/client policies referenced by actual native HTTP framing; Agent/server/HTTP2/reentry/permissions remain incomplete.",
+    "scope": "Exact llhttp and Node parser/client policies referenced by actual native HTTP framing; Agent/server/HTTP2/reentry/permissions remain incomplete. Private response-owner pool/reset/deferred retirement consume real native storage; public HTTPParser AsyncReset/provider/free/destroy, full server and persistence remain incomplete.",
     "selections": {
       "callbacks": {
         "source": "lib/_http_common.js",
@@ -6337,5 +6347,24 @@
       }
     },
     "scope": "Unchanged real public builtin key capture/own reads/sync loop; native facade binding supplied by actual module record owner"
+  },
+  "assertionSource": {
+    "version": "26.13.0",
+    "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+    "source": {
+      "path": "upstream/assert-source/lib/internal/errors/error_source.js",
+      "upstreamPath": "lib/internal/errors/error_source.js",
+      "sha256": "468ee08b5ade91fbd3714946fb6093751303c779c83896946211a925be1733fa"
+    },
+    "tokenizer": {
+      "start": "const memberAccessTokens =",
+      "length": 3168,
+      "sha256": "4076199096bd3b374770fae10c2f038865691ad59dc63090bad1e809c49abbd6"
+    },
+    "license": {
+      "path": "upstream/assert-source/deps/acorn/acorn/LICENSE",
+      "sha256": "76a876cf886ff9be2a8b5e2e86514fed06223c8c9f0c1e9ee9606e93841e00b7"
+    },
+    "scope": "Actual frame-bound UTF-16 ScriptSource capture and unchanged pinned Acorn first-expression tokenizer. Private assertion scratch-object weak association only; no public stack API, mapped source or complete error-source implementation. UTF8/unavailable/muted/saturated locations decline; native OOM/security errors propagate."
   }
 }

@@ -1,5 +1,8 @@
 # Node 26 core implementation outline
 
+Source 268 combines two bounded owning source contributions. Native reference observations are historical; new C++/GC/realm/lifecycle behavior is uncompiled and all 19 families remain partial.
+See [source scope](core-parser-assertion-batch268-implementation.md).
+
 Source267combines twoengine-metadata ownerpartials. Normal source/package evidence stays distinct from uncompiledCPP/realm/GC/lifecycle and publicAPIconformance; all19remainpartial.
 See [source scope](core-metadata-batch267-implementation.md).
 

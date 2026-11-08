@@ -1,5 +1,8 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0189-node-assertion-source-parser-reuse.patch",
+  "third_party/node-core/native-error-source.cpp",
+  "third_party/node-core/upstream/assert-source",
   "packages/registry/spidermonkey/patches/0188-node-cjs-cache-backing-snapshot.patch",
   "packages/registry/spidermonkey/patches/0187-node-terminal-shutdown-tls-legacy.patch",
   "packages/registry/spidermonkey/patches/0186-node-worker-exec-argv.patch",
@@ -822,4 +825,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 267
+revision = 268
