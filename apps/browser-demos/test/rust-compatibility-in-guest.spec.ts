@@ -13,7 +13,7 @@ if (!available && process.env.KANDELO_REQUIRE_GUEST_CARGO === "1") {
   throw new Error("Build kernel and kandelo-rust-sdk before Rust compatibility acceptance");
 }
 
-test("guest Rust links C/C++ build-script output and runs subprocess and thread tests", async ({ page, baseURL }) => {
+test("guest Rust checks native rebuilds, doctests, process isolation, threads and timeouts", async ({ page, baseURL }) => {
   test.skip(!available, "the standalone Rust SDK bundle is optional");
   test.setTimeout(1_800_000);
   page.on("console", message => console.info(`[Rust compatibility ${message.type()}]`, message.text()));

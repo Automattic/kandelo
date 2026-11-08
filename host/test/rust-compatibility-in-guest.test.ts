@@ -15,7 +15,7 @@ if (!available && process.env.KANDELO_REQUIRE_GUEST_CARGO === "1") {
 }
 
 describe.skipIf(!available)("Rust native compatibility inside Kandelo", () => {
-  it("executes C/C++ build-script output, subprocesses and threaded synchronization", async () => {
+  it("checks native rebuilds, doctests, process isolation, threads and timeouts", async () => {
     const [kernel, bundle] = paths.map(path => readFileSync(path!));
     const { image, assets } = await createRustCargoImage(bundle!, rustCompatibilityFiles);
     const work = mkdtempSync(join(tmpdir(), "kandelo-rust-compatibility-"));
