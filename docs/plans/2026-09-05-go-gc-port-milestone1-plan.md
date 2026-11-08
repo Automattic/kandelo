@@ -43,6 +43,34 @@ are corrected. Firefox's test-owned storage cleanup still reports EACCES;
 this does not turn the successful assertions into a cleanup guarantee.
 The current 33-case rendered WordPress/persistence run must be restarted.
 
+**Private browser storage cleanup:** macOS's deny-delete directory ACLs
+are observed on both Firefox's Downloads and nested Library/Application
+Support in the run-owned home. Cleanup now visits owned directories only,
+removes their ACLs and leaves symbolic links and files untouched. Ten
+source cases pass, including actual deny-delete ACLs and linked external
+folders whose ACL/content must remain unchanged. Six real browser cases
+pass across Chromium, Firefox and WebKit, and their private home is removed
+without a cleanup warning (`browser-storage-acls-v3-1107-194157-f545`,
+13-second job / browser assertions in its owned report). The first real
+attempt was stopped143 because global setup started an unnecessary pinned
+historical baseline rebuild; the exact manifest-verified existing cohort
+was installed without compilation/restamping. The second attempt passes
+six assertions but its explicit cleanup gate fails on the nested ACL;
+that failure remains separate. The final helper covers nested folders.
+
+**Cgo optimization evaluation prepared:** a separate checkout restores
+explicit O2 for the C portions of both FrankenPHP builds and records linked
+and post-instrumentation byte counts. Classic revision 41 and combined
+Caddy revision 22 invalidate the appropriate normal package cache entries.
+Only build flags/logging change; PHP, Caddy, FrankenPHP and Go algorithms
+remain unchanged. Shell syntax and whitespace checks pass; the new recipes
+have not yet built or run. Preserve the existing verified preview and
+current browser run until the replacement is demonstrated. The evaluation
+uses the normal partial WordPress build, with its own SDK and image outputs,
+shared content-addressed dependency cache and one package job. Begin only
+after the current browser run finishes to avoid overlapping the large
+instrumentation and WebKit footprints.
+
 **Image-size investigation:** the current image is 83,524,699 compressed
 bytes and embeds 434,019,464 unique file bytes: combined Caddy 185,037,671,
 standalone classic 70,004,510, PHP-FPM 36,999,507, WordPress 89,895,580 and

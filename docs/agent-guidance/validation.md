@@ -73,6 +73,11 @@ Playwright otherwise derives it from the importing configuration's directory,
 which changes Vite's root and dependency resolution. Diagnostic helpers must
 forward caller timeouts through setup actions too: a bounded tool click must
 not wait indefinitely while opening its menu.
+On macOS, private browser homes can contain nested Cocoa folders with
+deny-delete ACLs. Remove directory ACLs only after proving the run owns
+that storage root, and do not follow links or change file permissions.
+A passing browser assertion does not establish successful storage cleanup;
+retain and investigate teardown warnings separately.
 
 Freeze Vite-watched application and fixture sources during browser lifecycle
 and persistence runs. Editing a fixture imported by another test page can

@@ -41,6 +41,20 @@ export function ownedBrowserStorageRoot(): string | undefined {
 
 export async function removeBrowserStorageRoot(root: string): Promise<void> {
   if (root !== ownedBrowserStorageRoot()) throw new Error("Cannot remove another runner's browser storage");
+  if (process.platform === "darwin") {
+    // Cocoa creates standard home folders with a deny-delete ACL, even in a
+    // private test home. Nested Library folders can carry the same ACL.
+    // Visit only owned directories: links and hard-linked files must never
+    // change permissions on objects outside this run's storage.
+    const pending = [root];
+    while (pending.length > 0) {
+      const folder = pending.pop()!;
+      const stat = lstatSync(folder);
+      if (!stat.isDirectory() || stat.uid !== process.getuid?.()) continue;
+      execFileSync("/bin/chmod", ["-N", folder]);
+      for (const name of readdirSync(folder)) pending.push(join(folder, name));
+    }
+  }
   await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   delete process.env[storageKey];
 }

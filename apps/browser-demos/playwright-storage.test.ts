@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { linkSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -31,6 +32,42 @@ test("browser homes share one owned root and are removed together", async () => 
 
 test("cleanup refuses unowned paths", async () => {
   await assert.rejects(removeBrowserStorageRoot(tmpdir()), /another runner/);
+});
+
+test("macOS cleanup removes private home folder ACLs without following links", { skip: process.platform !== "darwin" }, async () => {
+  const previous = process.env.KANDELO_PLAYWRIGHT_STORAGE_ROOT;
+  delete process.env.KANDELO_PLAYWRIGHT_STORAGE_ROOT;
+  const external = mkdtempSync(join(tmpdir(), "kandelo-home-acl-control-"));
+  const firefox = browserStorageHome("firefox");
+  const root = ownedBrowserStorageRoot()!;
+  const downloads = join(firefox, "Downloads");
+  mkdirSync(downloads);
+  const support = join(firefox, "Library", "Application Support");
+  mkdirSync(support, { recursive: true });
+  const acl = "everyone deny delete";
+  const listing = () => execFileSync("/bin/ls", ["-lde", external], { encoding: "utf8" });
+  try {
+    execFileSync("/bin/chmod", ["+a", acl, downloads]);
+    execFileSync("/bin/chmod", ["+a", acl, support]);
+    execFileSync("/bin/chmod", ["+a", acl, external]);
+    assert.match(listing(), /deny delete/);
+    // Test both a folder link and a redirected browser home.
+    symlinkSync(external, join(firefox, "Documents"));
+    symlinkSync(external, join(root, "webkit"));
+    writeFileSync(join(external, "preserved"), "outside");
+    await removeBrowserStorageRoot(root);
+    assert.equal(ownedBrowserStorageRoot(), undefined);
+    assert.throws(() => readdirSync(root), { code: "ENOENT" });
+    assert.equal(readFileSync(join(external, "preserved"), "utf8"), "outside");
+    assert.match(listing(), /deny delete/);
+  } finally {
+    execFileSync("/bin/chmod", ["-N", external]);
+    rmSync(external, { recursive: true, force: true });
+    const owned = ownedBrowserStorageRoot();
+    if (owned !== undefined) await removeBrowserStorageRoot(owned);
+    if (previous === undefined) delete process.env.KANDELO_PLAYWRIGHT_STORAGE_ROOT;
+    else process.env.KANDELO_PLAYWRIGHT_STORAGE_ROOT = previous;
+  }
 });
 
 test("only the runner that created a root can remove it", async () => {
