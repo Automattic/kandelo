@@ -346,3 +346,49 @@ Raw artifacts, source identities and the phase summary are under the
 candidate checkout's
 `.context/agent-jobs/wordpress-function-catalog-native-pilot-1108-032711-b633/scratch/catalog-native-pilot/`,
 including `paired-observations.json`. No engine defect is claimed.
+
+## Bulk-table snapshot control: unadopted
+
+Isolated host candidate `1946258ab` snapshots the immutable function
+catalog through a small standard-Wasm table-copy helper, deferring the
+JavaScript reverse index until an encode actually needs it. A follow-up
+adds imported-host-callback tests without changing the measured runtime.
+It stays outside PR #1492; the independently demonstrated failed-registration
+atomicity bug is fixed separately in `853fed804`.
+
+Job `wordpress-table-snapshot-native-pair-1108-051429-049a` passes both
+serial cases in 7m50s, using the same retained normal full WordPress45
+image `1993e1bc29ef`, ABI55 kernel `6f5afada9ae3`, Caddy `cfdba6545bd4`
+and two PHP threads. Each side validates 120 requests at a minimum 500 ms
+cadence, crash recovery, held-request drain and destruction. A normal full
+build runs concurrently; this is one instrumented diagnostic pair, not an
+alternating throughput benchmark or a repeatable improvement.
+
+| Observation | Baseline `8902ccfe9` | Table-snapshot candidate |
+|---|---:|---:|
+| OS whole-run peak footprint | 14.3 GiB | 11.7 GiB |
+| Footprint at traffic request 10 | 10.6 GiB | 10.6 GiB |
+| Footprint 60 seconds after destroy | 778.0 MiB | 675.2 MiB |
+| WebKit Malloc dirty at service-ready | 2.7 GiB | 2.7 GiB |
+| WebKit Malloc dirty at traffic request 10 | 10.6 GiB | 9.9 GiB |
+| Active inspector JavaScript category at service-ready | 562.7 MiB | 562.7 MiB |
+| Active inspector JavaScript category at traffic request 10 | 7.6 MiB | 8.0 MiB |
+| Active inspector page category at traffic request 10 | 10890.9 MiB | 10416.7 MiB |
+
+`WebKit Malloc` is an OS allocation-region label, not an allocation owner.
+It includes backing/engine allocations; these observations do not prove
+which buffers, worker or engine subsystem holds the growth. Neither the
+small JavaScript category nor six normal module-cache compilations
+establishes total engine or instance cost. The candidate's helper modules,
+temporary instances and private tables are outside that cache counter.
+Inspector measurements must use the latest navigation session; the
+superseded initial about:blank target reports unrelated small values.
+These counters overlap and must not be added together.
+
+The similar startup footprint and continuing traffic growth give no basis
+for adopting the extra helper as the solution. Next attribution should
+identify backing allocations and worker/instance costs before adding more
+catalog machinery. No engine defect, leak fix, resource-budget pass or
+physical reclamation guarantee is claimed. Raw reports and phase summaries
+remain in the candidate checkout's job directory above and
+`.context/table-snapshot-{native-summary,allocation-region-observation}.json`.
