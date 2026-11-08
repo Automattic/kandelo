@@ -2,6 +2,27 @@
 
 ## Current checkpoint — 2026-11-08
 
+**Firefox investigation separates keepalive delivery from missing frame contexts.**
+Diagnostic `ca3a` finishes one pass / one failure. The failed run closes the
+welcome dialog and publishes despite the observed keepalive REST 503s,
+then loses parent-frame evaluation while reopening the saved post before
+the persistence restart. Its child canvas still exposes the correct visible
+title. A subsequent read-only Playwright protocol observer (`a765`) records
+two failures at that same reopening step: the parent frame's main/utility
+contexts are destroyed and remain absent while its new child canvas obtains
+both contexts and renders. This establishes the observed automation-context
+failure, not its root cause or an engine defect.
+
+Twenty-one plain-browser control cases pass across all three engines:
+cancelled beforeunload, network/synthetic service-worker navigation, revisiting
+the exact saved URL, and early canonical history updates. They do not
+reproduce the WordPress failure. Reports, protocol events and the original
+mixed outcomes are retained. A single failure-only outer-document snapshot
+run `1a68` is now live; it keeps the maintained assertions and production
+code unchanged. No keepalive shim, parent-context repair, longer timeout or
+application adaptation is adopted. Full current Go discovery independently
+lists 300 cases; queued execution remains unproven.
+
 **Current cache, uploads and archive/signal browser gates pass.**
 Corrected cache run `349e` passes nine cases, zero skips/retries/flakes,
 in 18m23s of browser execution (1h30m including its prerequisite queue).
