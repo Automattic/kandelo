@@ -104,6 +104,60 @@ explicitly wants to wait until all changes are integrated into a normally
 built preview that passes its required checks. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Latest-main preview delivery checkpoint, 2026-11-08
+
+The maintainer requested a normal partial build carrying the graphical and game
+demos, based on latest main, for review before merging graphics progress and
+continuing the campaign. Final canonical-image, conformance, complete-B1 and
+native-feel acceptance remain required. The preserved public preview is still
+the older build until a new image boots successfully.
+
+Source checkpoint `94251e9acb` includes main `faf9b31720` and nine reviewed
+fixture/comment changes. The renderer-replacement test now models a distinct
+canvas: main correctly caches one native renderer per canvas. It still proves
+rejection of a genuinely different renderer, exact surface retention, retry and
+one final destruction, with both pointer-width model inputs. No production
+behavior changed. The source also explains captured-kernel cleanup after an
+uncertain start and the declaration-only OPFS dependency.
+
+Partial Library tests require both `KANDELO_TEST_PARTIAL_LIBRARY_MANIFEST` and
+`KANDELO_TEST_MACHINE_URLS`. They select the exact partial row and verify its
+image response's digest, length and no-store headers. Without the explicit
+opt-in, canonical selection remains unchanged. SDL, Freeciv and LÖVE diagnostics
+now use each test's private output directory; all 344 existing assertions,
+write payloads, guest paths and screenshot options were preserved.
+
+Validation used the isolated checkout of that exact commit and the declared
+dev shell. The normal source-only graphics config had only one-worker and
+private-reporter overrides; guest provisioning remained disabled.
+
+| Command and evidence | Result |
+| --- | --- |
+| `node node_modules/vitest/vitest.mjs run --config <r831 private adapter of vitest.graphics.config.ts>` from `host` | 2,353 passed, zero failed/skipped; 93 files loaded. Source/model evidence, not guest CTS. |
+| `npm --prefix host run typecheck` | Host declaration generation passed. |
+| `npm --prefix apps/browser-demos run typecheck` | Complete 142-browser/45-Node-root inventory passed after generating the normal VFS product catalog. The initial isolated-checkout missing-catalog failure is retained. |
+| `node --test test/support/sway-workspace-pixels.test.ts test/support/partial-library-selection.test.ts` from the browser app | 29 passed, zero failed/skipped. Real browser click/IPC and partial Library selection remain unrun. |
+
+The preceding R825 source gate's 2,351 passes/one stale-fixture failure remains
+recorded. R831's actual commands, per-phase logs, JSON report and judgment are
+under `.context/graphics-early-integration-r831/`; the running normal producer's
+source, HEAD and index remained unchanged while these checks ran.
+
+At this checkpoint the 28-package R824 partial producer was still draining
+independent work on frozen `022e18181c`. Its one actual failed node was
+`kandelo-cc`: the pinned Rust libc submodule was uninitialized. The required
+`71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8` source is verified locally for normal
+initialization after the producer terminates and a cached retry. No new image,
+complete preview, merged-runtime acceptance or performance result is claimed.
+
+Storage maintenance used `./run.sh cache-gc --below-abi 56 --apply`: ordinary
+unused old-ABI generations totalled 3.1 GiB removed; SourceOnly correctly skipped
+an active build lock. Separately, 740 old raw diagnostic files were losslessly
+archived and every member hash verified, reducing retained payload from
+1,520,614,730 to 297,841,521 bytes. Source, old servers, trace ZIPs and failed
+verdicts remain preserved. Machine-wide free-space changes are not attributed
+to this maintenance.
+
 ## B1 delivery priority, 2026-11-07
 
 The maintainer wants to ship B1 as graphics progress today, before completing
