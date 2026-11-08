@@ -680,6 +680,41 @@ cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_LINK_TESTS=1 
 The assembly call is a narrow same-signature call, not `runtime/cgo` or the
 standard Go-to-C adapter; it is not a substitute for either cgo probe above.
 
+## WordPress scheduled-task lifecycle
+
+The image owns ordinary Dinit/curl services that invoke stock `wp-cron.php`.
+The maintained Node and browser cases share
+`host/test/support/wordpress-cron-lifecycle.ts`. They require those services
+in the image; they never install replacement service definitions. A
+short-lived test-only WordPress action records delivery and its public URL.
+The cases cross a real sixty-second interval while stopped, resume pending
+work after restart and Caddy SIGKILL, switch through FPM and classic, and
+drain an active PHP request before shutdown. Node keeps port8080 private
+with the ordinary offline egress link; it binds no host listener.
+
+Build a current WordPress image first. A normal partial image is sufficient
+for this focused development check; final canonical acceptance still needs
+the canonical images and the other application/conformance gates.
+
+```sh
+scripts/dev-shell.sh ./run.sh partial wordpress --jobs 1
+scripts/dev-shell.sh bash -c '
+  export KANDELO_WORDPRESS_CRON_IMAGE="$PWD/local-binaries/partial/wordpress-partial.vfs.zst"
+  cd host && npx vitest run test/wordpress-cron-lifecycle-live.test.ts
+'
+scripts/dev-shell.sh bash -c '
+  export KANDELO_WORDPRESS_CRON_VFS="$PWD/local-binaries/partial/wordpress-partial.vfs.zst"
+  cd apps/browser-demos && npx playwright test test/wordpress-cron-lifecycle.spec.ts
+'
+```
+
+Absent opt-in artifact paths skip these cases, which is not acceptance.
+The separate `wordpress-super-cache.spec.ts` checks the actual browser
+machine's public cron URL, privacy, saved-content freshness and expired
+stock-cache cleanup. It schedules the stock GC hook and waits for guest
+Dinit/curl to deliver it; the browser must never request `wp-cron.php`.
+These functional checks are not throughput benchmarks.
+
 ## RoadRunner feasibility probe
 
 RoadRunner is a useful Go process/IPC integration test: its Go server starts

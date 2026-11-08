@@ -558,6 +558,7 @@ host/test/wlterm-smoke.test.ts	prepared-product
 host/test/wlterm-vt100-unit.test.ts	source-only
 host/test/wordpress-admin-rehash.test.ts	prepared-product
 host/test/wordpress-benchmark-state.test.ts	source-only
+host/test/wordpress-cron-lifecycle-live.test.ts	prepared-product
 host/test/wordpress-direct-network-config.test.ts	prepared-product
 host/test/wordpress-first-boot-secrets.test.ts	prepared-product
 host/test/wordpress-frankenphp-service-live.test.ts	prepared-product
