@@ -1,5 +1,10 @@
 # Node 26 core implementation outline
 
+The [current source backlog crosswalk](source249-backlog-reconciliation.md)
+records 43 proposed tasks across all 19 families, shared prerequisites and
+unresolved questions at source249. It corrects stale absence claims without
+turning source presence into compatibility or closing the breadth pass.
+
 Source 250 integrates bounded HTTP request Body/Complete and private byte-publication owners. Six unchanged headers Vitest failures remain visible as harness errors; no HTTP or guest compatibility closure.
 See [source scope](http-request-callback-integration.md).
 
