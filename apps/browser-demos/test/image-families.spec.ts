@@ -143,10 +143,10 @@ for (const backend of ["sqlite", "mariadb"] as const) {
     const frame = page.frameLocator("iframe.kweb-frame");
     const prefix = await machineAppPrefix(page, backend === "sqlite" ? "WordPress SQLite" : "WordPress MariaDB");
     const posts = new Map<string, { title: string; id: number; media: string }>();
-    const switchSite = async (site: string) => {
+    const switchService = async (target: string) => {
       await clickDockTool(page, "Services");
       const panel = page.getByRole("dialog", { name: "Services", exact: true });
-      const service = panel.locator(`[data-service-id="wordpress-${site}"]`);
+      const service = panel.locator(`[data-service-id="${target}"]`);
       await expect(service).toBeVisible({ timeout: 30000 });
       const state = service.getByText(/^State: /);
       await expect(state).toHaveText(/^State: (running|stopped|not-loaded|failed|skipped)$/, { timeout: 120000 });
@@ -158,6 +158,7 @@ for (const backend of ["sqlite", "mariadb"] as const) {
       await panel.getByRole("button", { name: "Close Services", exact: true }).click();
       await page.getByRole("button", { name: "Web", exact: true }).click();
     };
+    const switchSite = (site: string) => switchService(`wordpress-${site}`);
     for (const site of [backend, other]) {
       await switchSite(site);
       await loginToWordPress(frame, prefix);
@@ -198,6 +199,14 @@ for (const backend of ["sqlite", "mariadb"] as const) {
       expect(await page.evaluate(async url => (await fetch(url, { credentials: "same-origin" })).status, posts.get(site === "sqlite" ? "mariadb" : "sqlite")!.media)).toBe(404);
       expect(await currentComputerMetadata(page)).toMatchObject(computer);
     }
+    await switchService("frankenphp-caddy");
+    const sqlite = posts.get("sqlite")!;
+    await gotoInPreview(frame, prefix, `?p=${sqlite.id}`);
+    await expect(frame.locator("body")).toContainText(sqlite.title, { timeout: 120000 });
+    await expect(frame.locator("body")).not.toContainText(posts.get("mariadb")!.title);
+    expect(await page.evaluate(async url => (await fetch(url, { credentials: "same-origin" })).status, sqlite.media)).toBe(200);
+    expect(await page.evaluate(async url => (await fetch(url, { credentials: "same-origin" })).status, posts.get("mariadb")!.media)).toBe(404);
+    expect(await currentComputerMetadata(page)).toMatchObject(computer);
     await page.reload({ waitUntil: "domcontentloaded" });
     await expectPreview(page, new RegExp(posts.get(backend)!.title), 240000);
     await switchSite(other);

@@ -113,6 +113,42 @@ it("web-stack-service-switch: one image switches all five web demos and keeps it
   } finally { await machine.host.destroy(); }
 }, 360000);
 
+it("wordpress-family-service-switch: Caddy and PHP-FPM share the SQLite site and keep uploads private", async () => {
+  const machine = await computer("wordpress-family", "frankenphp-caddy");
+  try {
+    await machine.command("curl --fail --silent --show-error --retry 30 --retry-connrefused --retry-delay 1 --max-time 3 -o /tmp/wordpress-page http://127.0.0.1:8080/ && grep -i wordpress /tmp/wordpress-page >/dev/null");
+    await machine.host.writeFileToVfs("/srv/www/html/server-probe.php", new TextEncoder().encode(`<?php
+require __DIR__ . '/wp-load.php';
+header('Content-Type: application/json');
+if (isset($_GET['value'])) update_option('kandelo_server_probe', $_GET['value']);
+echo json_encode(array('backend' => defined('DB_DIR') ? 'sqlite' : 'mariadb', 'value' => get_option('kandelo_server_probe', 'unset')));
+`), 0o644);
+    const probe = async (query = "") => JSON.parse(await machine.command(
+      `curl --fail --silent --max-time 30 'http://127.0.0.1:8080/server-probe.php${query}'`));
+    expect(await probe("?value=shared-sqlite")).toEqual({ backend: "sqlite", value: "shared-sqlite" });
+    await machine.command("printf 'sqlite-upload' > /var/lib/wordpress-sites/sqlite/wp-content/uploads/shared.txt; printf '<?php echo \"must-not-run\"; ?>' > /var/lib/wordpress-sites/sqlite/wp-content/uploads/probe.php");
+    for (const target of ["wordpress-sqlite", "frankenphp-caddy", "wordpress-mariadb", "frankenphp-caddy"]) {
+      await machine.command(`/usr/bin/kandelo-service start ${target}`, 1000);
+      const sqlite = target !== "wordpress-mariadb";
+      expect(await probe()).toEqual({ backend: sqlite ? "sqlite" : "mariadb", value: sqlite ? "shared-sqlite" : "unset" });
+      if (sqlite) {
+        expect(await machine.command("curl --fail --silent --max-time 10 http://127.0.0.1:8080/wp-content/uploads/shared.txt")).toBe("sqlite-upload");
+      }
+      for (const path of ["/wp-content/uploads", "/wp-content/uploads/", "/wp-content/uploads/probe.php", "/wp-content/db.php", "/wp-content/database/wordpress.db"]) {
+        expect(await machine.command(`curl --silent --output /tmp/denied-body --write-out '%{http_code}' --max-time 10 'http://127.0.0.1:8080${path}'`)).toBe("404");
+      }
+      const state = await machine.command("kandelo-service inspect", 1000);
+      expect(state).toMatch(new RegExp(`${target}\\s+running\\s+`));
+      expect(state.match(/\trunning\t/g)).toHaveLength(1);
+    }
+    const bytes = await machine.host.readFileFromVfs("/var/log/frankenphp-caddy.log");
+    expect(bytes).toBeTruthy();
+    const log = new TextDecoder().decode(bytes!);
+    expect(log).toContain('"total_threads":2');
+    expect(log).not.toMatch(/^(?:panic:|fatal error:)|PHP Fatal error/m);
+  } finally { await machine.host.destroy(); }
+}, 240000);
+
 for (const backend of ["sqlite", "mariadb"] as const) {
   it(`wordpress-family-service-switch: ${backend} switches independent sites without copying core files or losing data`, async () => {
     const machine = await computer("wordpress-family", `wordpress-${backend}`);

@@ -2,6 +2,26 @@
 
 ## Current checkpoint — 2026-11-07
 
+**Canonical WordPress family integration prepared:** the family currently
+starts from LAMP and copies only SQLite-specific files from the WordPress
+image, so it lacks the new Caddy daemon, PHP configuration and service offer.
+An isolated composition change copies the exact normal Caddy package and
+configuration, selects the family's existing SQLite content directory through
+the ordinary process environment, and uses standard Caddy routing for that
+site's uploads. The service control preflight now maps Caddy to SQLite while
+retaining MariaDB as a separate site. No upstream PHP, FrankenPHP, Caddy or
+Go source changes. The canonical WordPress image still offers both standalone
+classic and Caddy; the combined family adds real Caddy as the SQLite server
+alternative. PHP-FPM receives the same timestamp revalidation settings.
+
+Family revision 11 declares the new activity/profile and carries unchanged
+WP Super Cache. A maintained Node case checks Caddy/FPM SQLite data sharing,
+MariaDB isolation, static uploads and denied PHP/database paths. The existing
+two browser family cases now switch to real Caddy and read the SQLite post
+and actual uploaded image without exposing the MariaDB upload. These cases
+and the normal canonical/family build have not run yet. They are the next
+integration phase after the queued revision-45 configuration preview.
+
 **Build admission and owned-resource cleanup:** disk headroom falls to
 about 11 GiB during the browser run. Seven superseded, exact owned Vite
 preview process groups on 5417/5451–5456 are retired with SIGTERM; their
