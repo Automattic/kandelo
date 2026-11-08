@@ -6,8 +6,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Executables may leave undefined only the imports the host supplies
-// (libc/glue/kandelo-host-imports.txt, generated from
-// shared::abi::HOST_ENV_IMPORTS). Anything else must fail the link, so
+// (libc/glue/kandelo-link-imports.txt, generated from base and versioned
+// extension declarations). Anything else must fail the link, so
 // configure checks tell the truth and programs cannot ship calls to
 // functions Kandelo lacks.
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -32,6 +32,21 @@ describe('honest executable links', () => {
     expect(r.status, r.stderr).toBe(0);
   });
 
+  it('requires the versioned namespace for stack capture', () => {
+    const r = link('int __kandelo_stack_capture_v1(void *, unsigned, unsigned);\nint main(void){char b[48];return __kandelo_stack_capture_v1(b,48,1);}\n');
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('unsupported required program extension env.__kandelo_stack_capture_v1');
+  });
+
+  it('links a typed explicit stack interface and rejects a wrong signature', () => {
+    const declaration = '__attribute__((import_module("kandelo.stack.v1"),import_name("__kandelo_stack_capture_v1")))';
+    const good = link(`${declaration} int __kandelo_stack_capture_v1(void *, unsigned, unsigned);\nint main(void){char b[48];return __kandelo_stack_capture_v1(b,48,1);}\n`);
+    expect(good.status, good.stderr).toBe(0);
+    const bad = link(`${declaration} int __kandelo_stack_capture_v1(unsigned);\nint main(void){return __kandelo_stack_capture_v1(0);}\n`);
+    expect(bad.status).not.toBe(0);
+    expect(bad.stderr).toContain('incompatible function signature');
+  });
+
   it('configure-style check reports a missing function as absent', () => {
     // autoconf AC_CHECK_FUNCS shape: an unprototyped declaration and a call.
     const r = link('char closesocket();\nint main(void){return closesocket();}\n');
@@ -41,6 +56,6 @@ describe('honest executable links', () => {
   it('never passes --allow-undefined to wasm-ld for an executable', () => {
     const r = link('int main(void){return 0;}\n', ['-###']);
     expect(r.stderr).not.toMatch(/--allow-undefined(?!-file)/);
-    expect(r.stderr).toMatch(/--allow-undefined-file=\S*kandelo-host-imports\.txt/);
+    expect(r.stderr).toMatch(/--allow-undefined-file=\S*kandelo-link-imports\.txt/);
   });
 });

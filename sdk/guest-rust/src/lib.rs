@@ -193,19 +193,21 @@ fn run_compiler(compiler: &str, args: &[String]) -> Result<i32> {
         if !bytes.starts_with(b"\0asm\x01\0\0\0") {
             continue;
         }
-        if imports_fork(&bytes)? {
-            let status = Command::new("wasm-fork-instrument")
-                .arg(&output)
-                .arg("-o")
-                .arg(&output)
-                .status()
-                .map_err(|error| format!("starting wasm-fork-instrument: {error}"))?;
-            if !status.success() {
-                return Err(format!(
-                    "preparing Rust executable {} failed ({status})",
-                    output.display()
-                ));
-            }
+        // Every linked Wasm output needs the same preparation, including
+        // non-fork executables that capture backtraces. Missing DWARF is
+        // normal for release builds; invalid debug metadata is an error.
+        let status = Command::new("wasm-fork-instrument")
+            .arg(&output)
+            .arg("-o")
+            .arg(&output)
+            .args(["--keep-names", "--debug-map-if-present"])
+            .status()
+            .map_err(|error| format!("starting wasm-fork-instrument: {error}"))?;
+        if !status.success() {
+            return Err(format!(
+                "preparing Rust executable {} failed ({status})",
+                output.display()
+            ));
         }
     }
     Ok(0)
@@ -314,25 +316,6 @@ mod tests {
             Some("a b")
         );
     }
-}
-
-#[cfg(target_os = "kandelo")]
-fn imports_fork(bytes: &[u8]) -> Result<bool> {
-    use wasmparser::{Parser, Payload, TypeRef};
-    for payload in Parser::new(0).parse_all(bytes) {
-        if let Payload::ImportSection(section) = payload.map_err(|error| error.to_string())? {
-            for import in section {
-                let import = import.map_err(|error| error.to_string())?;
-                if import.module == "kernel"
-                    && import.name == "kernel_fork"
-                    && matches!(import.ty, TypeRef::Func(_))
-                {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-    Ok(false)
 }
 
 #[cfg(any(target_os = "kandelo", test))]

@@ -4,19 +4,22 @@ use super::{LineTable, Location};
 use crate::artifact_io::{ArtifactSpool, MappedArtifact};
 use anyhow::{Context, Result, ensure};
 use std::io::Write;
+use std::sync::Arc;
 
 pub(crate) struct Recorder {
     maximum_rows: usize,
     rows: usize,
     body: Vec<[u64; 3]>,
     spool: ArtifactSpool,
+    lines: Arc<LineTable>,
 }
 impl Recorder {
-    pub fn new(maximum_rows: usize) -> Result<Self> {
+    pub fn new(maximum_rows: usize, lines: Arc<LineTable>) -> Result<Self> {
         Ok(Self {
             maximum_rows,
             rows: 0,
             body: Vec::new(),
+            lines,
             spool: ArtifactSpool::new(
                 u64::try_from(maximum_rows)?
                     .checked_mul(24)
@@ -25,13 +28,26 @@ impl Recorder {
         })
     }
     pub fn reset(&mut self) -> Result<()> {
-        *self = Self::new(self.maximum_rows)?;
+        *self = Self::new(self.maximum_rows, self.lines.clone())?;
         Ok(())
     }
     pub fn record(&mut self, source: usize, start: usize, end: usize) -> Result<()> {
         ensure!(start <= end, "reversed source instruction span");
         if start == end {
             return Ok(());
+        }
+        let Some(location) = self.lines.lookup(source as u64) else {
+            return Ok(());
+        };
+        if let Some(previous) = self.body.last_mut() {
+            ensure!(
+                previous[1] <= start as u64,
+                "overlapping emitted source spans"
+            );
+            if previous[1] == start as u64 && self.lines.lookup(previous[2]) == Some(location) {
+                previous[1] = end as u64;
+                return Ok(());
+            }
         }
         ensure!(
             self.rows < self.maximum_rows,
@@ -63,14 +79,14 @@ impl Recorder {
         }
         Ok(())
     }
-    pub fn finish(self, lines: &LineTable, module: &[u8], limit: u64) -> Result<MappedArtifact> {
+    pub fn finish(self, module: &[u8], limit: u64) -> Result<MappedArtifact> {
         ensure!(self.body.is_empty(), "unplaced debug function");
         let records = self.spool.freeze()?;
         let base = super::code_offset(module)?;
-        let mut writer = Writer::new(&lines.files, limit)?;
+        let mut writer = Writer::new(&self.lines.files, limit)?;
         for record in records.bytes().chunks_exact(24) {
             let value = |offset| u64::from_le_bytes(record[offset..offset + 8].try_into().unwrap());
-            if let Some(location) = lines.lookup(value(16)) {
+            if let Some(location) = self.lines.lookup(value(16)) {
                 writer.range(base + value(0), base + value(8), location)?;
             }
         }
@@ -325,6 +341,42 @@ fn read_vlq(reader: &mut &[u8]) -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recorder_budget_counts_useful_ranges_and_preserves_unmapped_gaps() {
+        let lines = Arc::new(LineTable {
+            files: vec!["user.rs".into()],
+            spans: vec![super::super::Span {
+                start: 10,
+                end: 30,
+                location: Some(Location {
+                    file: 0,
+                    line: 1,
+                    column: 2,
+                }),
+            }],
+        });
+        let mut recorder = Recorder::new(1, lines).unwrap();
+        for position in 0..100_000 {
+            recorder.record(0, position, position + 1).unwrap();
+        }
+        assert_eq!(recorder.rows, 0);
+        for position in 0..100 {
+            recorder.record(10, position, position + 1).unwrap();
+        }
+        assert_eq!(recorder.body, vec![[0, 100, 10]]);
+        recorder.record(0, 100, 101).unwrap();
+        assert!(
+            recorder
+                .record(10, 101, 102)
+                .unwrap_err()
+                .to_string()
+                .contains("row budget")
+        );
+        // Resetting for a retried emission keeps the same bounded line table.
+        recorder.reset().unwrap();
+        recorder.record(10, 0, 1).unwrap();
+        assert_eq!(recorder.rows, 1);
+    }
     #[test]
     fn range_ends_leave_gaps_and_helpers_unmapped() {
         let location = Location {

@@ -135,6 +135,14 @@ impl LineTable {
     /// LLVM Wasm line addresses are relative to the Code section payload,
     /// whereas wasmparser instruction positions are absolute module offsets.
     pub fn read(input: &[u8], limits: Limits) -> Result<Self> {
+        Self::read_if_present(input, limits)?.context(
+            "no DWARF line information with usable source locations; compile with debug information enabled",
+        )
+    }
+
+    /// Absent or empty line tables are normal for builds without debug
+    /// information. Malformed or oversized metadata still fails closed.
+    pub fn read_if_present(input: &[u8], limits: Limits) -> Result<Option<Self>> {
         let mut sections = BTreeMap::new();
         let mut code = None;
         let mut bytes = 0usize;
@@ -164,11 +172,10 @@ impl LineTable {
                 _ => {}
             }
         }
+        if !sections.contains_key(".debug_line") {
+            return Ok(None);
+        }
         let code = code.context("debug lines require a Code section")?;
-        ensure!(
-            sections.contains_key(".debug_line"),
-            "no DWARF line information; compile with debug information enabled"
-        );
         let dwarf = Dwarf::load(|id| {
             Ok::<_, gimli::Error>(DwarfReader::new(
                 sections.get(id.name()).copied().unwrap_or_default(),
@@ -237,14 +244,13 @@ impl LineTable {
             }
         }
         normalize(&mut spans);
-        ensure!(
-            spans.iter().any(|span| span.location.is_some()),
-            "no usable DWARF source locations"
-        );
-        Ok(Self {
+        if !spans.iter().any(|span| span.location.is_some()) {
+            return Ok(None);
+        }
+        Ok(Some(Self {
             files: files.paths,
             spans,
-        })
+        }))
     }
 
     pub fn lookup(&self, original_module_offset: u64) -> Option<Location> {

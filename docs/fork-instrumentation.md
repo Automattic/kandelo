@@ -1726,7 +1726,10 @@ describe in `kandelo.wpk_fork.gc_codec`.
 removes it. It records the actual emitted ranges of source operations,
 then passes a standard source map through the final Binaryen optimization.
 The flag fails if the input has no usable DWARF; `--keep-names` separately
-retains function names. Compile the linked input with debug information:
+retains function names. `--debug-map-if-present` uses available line
+information but accepts absent or empty line tables; present malformed or
+oversized metadata still fails. Rust compiler entry points use this mode.
+Compile the linked input with debug information:
 
 ```sh
 scripts/run-wasm-fork-instrument.sh linked-with-debug.wasm \
@@ -1754,8 +1757,11 @@ map rather than copying stale locations.
 Source operations lowered to semantic helper calls retain their call-site
 locations. Generated helper bodies, activation setup/replay and surrounding
 table/segment bookkeeping remain unmapped. Overlapping conflicting DWARF
-locations remain unresolved. Optimization can remove or inline functions;
-this map does not recreate logical inline frames, locals or variable values.
+locations remain unresolved. Optimization can remove functions. When a map is requested, the final
+Binaryen pass disables function inlining: otherwise it can replace a mapped
+source call with an unmapped generated helper body. Other optimizations still
+run, and earlier compiler inlining is unchanged. This map does not recreate
+logical inline frames, locals or variable values.
 DWARF and map bytes, line rows, filenames and paths have explicit budgets;
 exceeding one fails preparation. Filenames are diagnostic metadata, never
 permission to read host files. The source-map reader covers linked DWARF 4
@@ -1763,10 +1769,10 @@ and 5 line tables, including separate compilation units.
 
 `tests/debug_lines.rs` checks actual Node frame offsets from compiled C and
 Rust before/after native instrumentation and optimization, plus failure
-before destination replacement. This is instrumenter validation, not a
-Rust panic-capture backend or interactive debugger. The guest Rust entry
-point does not yet request maps automatically; `std::backtrace` remains
-unsupported until a capture backend and its host contracts are implemented.
+before destination replacement. The shared worker consumes these maps for
+[Rust backtraces](rust-target.md#source-diagnostics-and-backtraces), using the
+[versioned stack capture interface](program-extensions.md). Source maps do
+not implement breakpoints, stepping or local-variable inspection.
 
 ## Dispatch schemes
 

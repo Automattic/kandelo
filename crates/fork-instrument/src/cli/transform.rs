@@ -14,6 +14,7 @@ pub(super) struct Settings<'a> {
     pub optimize: &'a str,
     pub keep_names: bool,
     pub debug_map: bool,
+    pub debug_map_if_present: bool,
     pub output_bytes: u64,
     pub original: Option<&'a OriginalReference>,
 }
@@ -28,6 +29,8 @@ pub(super) fn run(
     };
     let output = if settings.debug_map {
         native::instrument_with_debug(input, options, limits, Default::default())?
+    } else if settings.debug_map_if_present {
+        native::instrument_with_optional_debug(input, options, limits, Default::default())?
     } else {
         native::instrument(input, options, limits)?
     };

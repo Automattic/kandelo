@@ -83,6 +83,9 @@ pub fn describe_facts_policy_failures(
     policy: &ArtifactPolicy<'_>,
 ) -> ArtifactPolicyReport {
     let mut report = ArtifactPolicyReport::default();
+    report.failures.extend(crate::program_extensions::describe_failures(
+        facts, crate::program_extensions::IMPLEMENTED,
+    ));
 
     if facts.contains_legacy_asyncify {
         report.failures.push(String::from("contains asyncify_"));

@@ -230,6 +230,8 @@
 pub const ABI_VERSION: u32 = 56;
 
 
+pub mod program_extensions;
+
 pub mod abi {
     pub const THREAD_SLOT_DECL_EXPORT: &str = "__wasm_posix_thread_slots";
     /// Name of the wasm custom section in which user programs embed their

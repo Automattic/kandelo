@@ -170,7 +170,7 @@ fn linked_dwarf4_and_dwarf5_resolve_executed_frame_locations() {
                 }
                 assert!(defined > 3);
             }
-            for optimize in ["none", "O1"] {
+            for optimize in ["none", "O1", "Os"] {
                 let prepared = directory.path().join("cli-prepared.wasm");
                 output(
                     Command::new(env!("CARGO_BIN_EXE_wasm-fork-instrument"))
@@ -182,7 +182,11 @@ fn linked_dwarf4_and_dwarf5_resolve_executed_frame_locations() {
                             &options.entry_import,
                             "--no-sinks",
                             "--keep-names",
-                            "--debug-map",
+                            if optimize == "Os" {
+                                "--debug-map-if-present"
+                            } else {
+                                "--debug-map"
+                            },
                             "--post-optimize",
                             optimize,
                         ]),
@@ -290,6 +294,59 @@ fn missing_dwarf_fails_before_replacing_the_destination() {
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("no DWARF line information"));
     assert_eq!(fs::read(destination).unwrap(), b"existing destination");
+}
+
+#[test]
+fn optional_debug_maps_admit_stripped_builds_but_reject_invalid_metadata() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("input.wasm");
+    let destination = directory.path().join("prepared.wasm");
+    let plain = wat::parse_str("(module (func (export \"user_entry\")))").unwrap();
+    fs::write(&input, &plain).unwrap();
+    output(
+        Command::new(env!("CARGO_BIN_EXE_wasm-fork-instrument"))
+            .arg(&input)
+            .arg("-o")
+            .arg(&destination)
+            .args(["--debug-map-if-present", "--keep-names"]),
+    );
+    let prepared = fs::read(&destination).unwrap();
+    assert!(
+        fork_instrument::debug_info::embedded_map(&prepared, Default::default())
+            .unwrap()
+            .is_none()
+    );
+    let module = walrus::Module::from_buffer(&prepared).unwrap();
+    assert!(
+        module
+            .exports
+            .iter()
+            .any(|export| export.name == "user_entry")
+    );
+
+    let mut broken = plain;
+    use wasm_encoder::Encode;
+    for name in [".debug_line", ".debug_info"] {
+        let section = wasm_encoder::CustomSection {
+            name: name.into(),
+            data: (&[255u8][..]).into(),
+        };
+        broken.push(0);
+        section.encode(&mut broken);
+    }
+    fs::write(&input, broken).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_wasm-fork-instrument"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&destination)
+        .arg("--debug-map-if-present")
+        .output()
+        .unwrap();
+    assert!(
+        !result.status.success(),
+        "invalid metadata must not silently become an absent map"
+    );
+    assert_eq!(fs::read(destination).unwrap(), prepared);
 }
 
 #[test]
