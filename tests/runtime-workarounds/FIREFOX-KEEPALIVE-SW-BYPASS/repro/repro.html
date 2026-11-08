@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Controlled-document keepalive Fetch interception</title>
+<pre id="result"></pre>
+<script>
+(async () => {
+  let registration;
+  const report = (verdict, details) => {
+    window.__reproVerdict = { verdict, details };
+    document.querySelector('#result').textContent = JSON.stringify(window.__reproVerdict, null, 2);
+  };
+  try {
+    registration = await navigator.serviceWorker.register('./worker.js');
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) await new Promise(resolve => {
+      navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true });
+    });
+    const rows = [];
+    for (const method of ['GET', 'POST', 'PUT']) for (const keepalive of [false, true]) {
+      const response = await fetch('./network.json', {
+        method, keepalive, ...(method === 'GET' ? {} : { body: 'native request bytes' }),
+      });
+      if (!response.ok) throw Error(`Probe returned ${response.status}`);
+      rows.push({ method, keepalive, response: await response.json() });
+    }
+    const ordinary = rows.filter(row => !row.keepalive);
+    const persistent = rows.filter(row => row.keepalive);
+    const controlPassed = ordinary.every(row => row.response.source === 'worker'
+      && row.response.method === row.method && row.response.keepalive === false
+      && row.response.body === (row.method === 'GET' ? '' : 'native request bytes'));
+    const intercepted = persistent.every(row => row.response.source === 'worker'
+      && row.response.method === row.method && row.response.keepalive === true
+      && row.response.body === (row.method === 'GET' ? '' : 'native request bytes'));
+    const bypassed = persistent.every(row => row.response.source === 'network');
+    report(!controlPassed ? 'inconclusive' : intercepted ? 'not-reproduced'
+      : bypassed ? 'reproduced' : 'inconclusive', JSON.stringify({ rows, userAgent: navigator.userAgent }));
+  } catch (error) {
+    report('inconclusive', String(error));
+  } finally {
+    await registration?.unregister();
+  }
+})();
+</script>

@@ -2832,6 +2832,21 @@ and recursively booting another computer. The 503 identifies lost bridge
 control; it does not restart the guest. Other static hosts need the same
 route policy when they use an app-shell fallback.
 
+### Keepalive Fetch delivery in Firefox
+
+Firefox 155.0 (Playwright) and installed Firefox 159.0.1 on macOS send
+controlled-document `fetch` requests with `keepalive: true` directly to
+the network, bypassing the service worker. Kandelo cannot bridge those
+requests into a guest HTTP server; the static host rejects computer routes
+with HTTP 503. This affects WordPress preferences updates with PHP-FPM or
+FrankenPHP. Ordinary requests still use the bridge. Chromium 153 and
+WebKit 26.6 intercept both kinds in the standalone control.
+
+No application patch or keepalive-disabling shim is applied. See the
+[self-judging reproduction and delivery boundary](../tests/runtime-workarounds/FIREFOX-KEEPALIVE-SW-BYPASS/entry.md).
+This boundary does not establish the cause of intermittent editor UI test
+failures; complete persistence runs can pass while preferences updates fail.
+
 ### Blob-URL iframes (service-worker boundary)
 
 The service worker can only bridge requests from documents it **controls**. A
