@@ -1,0 +1,295 @@
+{
+  "auditRequirements": {
+    "document": "tests/nodejs/audit/network.md",
+    "findingIds": [
+      "N-013"
+    ],
+    "prerequisiteFindingIds": [
+      "N-011",
+      "N-018"
+    ],
+    "relatedFamilies": [
+      "async",
+      "streams",
+      "http",
+      "engine"
+    ],
+    "scope": "Partial actual listener lifetime for ordinary Server only; suppliedfd/publicServer initialization/providers/fulltransport remain incomplete.",
+    "qualifiedDefinitions": [
+      {
+        "document": "tests/nodejs/audit/network.md",
+        "findingId": "N-013",
+        "definitionKey": "tests/nodejs/audit/network.md#N-013:L111",
+        "relation": "partial-owning-source",
+        "prerequisiteOnly": false,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/network.md",
+        "findingId": "N-011",
+        "definitionKey": "tests/nodejs/audit/network.md#N-011:L109",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-013",
+        "definitionKey": "tests/nodejs/audit/network-contracts.md#N-013:L68",
+        "relation": "partial-owning-source",
+        "prerequisiteOnly": false,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-011",
+        "definitionKey": "tests/nodejs/audit/network-contracts.md#N-011:L66",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false
+      },
+      {
+        "document": "tests/nodejs/audit/network-contracts.md",
+        "findingId": "N-018",
+        "definitionKey": "tests/nodejs/audit/network-contracts.md#N-018:L70",
+        "relation": "shared-prerequisite",
+        "prerequisiteOnly": true,
+        "closed": false
+      }
+    ]
+  },
+  "sourceImplemented": [
+    "Opaque native foreground-finalized descriptor owner, not a JS fd tag. Ordinary socket/listen commits only after all allocation/validation; native fd no longer crosses JS as Server authority.",
+    "Existing accept watcher roots genuine owner/native state, rechecks after Promise creation and before accept, consumes only captured descriptor. Closed accepts retire/unlink before Promise publication and retain no list-next across reentry.",
+    "Actual listener reference flag, address and close route through same checked native class/context. Closed requests keep dispatch alive until cancellation retirement even after unref.",
+    "Actual context shutdown removes its watches and closes only its own native listeners without callbacks; foreground finalization unlinks raw registry and closes unrooted owner.",
+    "Existing real accepted TCP ownership/adoption/rollback retained; no parallel accept stack or fabricated TCPWRAP/AsyncWrap metadata."
+  ],
+  "sourceChecks": {
+    "report": ".context/node26-listener258-source-r1/report.json",
+    "sha256": "da58a712a0a508e0ea9aef921f42a811390b6d809923f7c0f379e0d7b1c7ec46",
+    "guardedInputs": 910,
+    "scope": "Actual source/header/unity/engine contextual-patch source proof plus retained portable8/Server native10-currentJS11/native-fd3reference groups. Candidate suppliedfdinactive; no nativeClass/AsyncWrap/provider/GC/realm/Worker/legacy/fullServer/fourhost closure. Selected inputs not full global cache key."
+  },
+  "packageChecks": {
+    "report": ".context/node26-listener258-affected-r1.json",
+    "sha256": "a183ffa459d9071feb0f8613a56a94fbaea58efdea09295ba844982e217fd089",
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "reusedEvidence": false
+  },
+  "currentFocusedEvidence": {
+    "report": ".context/node26-listener258-source-r1/report.json",
+    "sha256": "da58a712a0a508e0ea9aef921f42a811390b6d809923f7c0f379e0d7b1c7ec46",
+    "portableOwnerGroups": 8,
+    "nativeServerGroups": 10,
+    "candidateServerGroups": 11,
+    "nativeFdReferenceGroups": 3,
+    "newCompilerAttempts": 0,
+    "fdOptionCandidateActivated": false,
+    "guestJSAPIExecuted": false,
+    "commands": [
+      {
+        "name": "portable-owner",
+        "argv": [
+          "/Users/brandon/conductor/workspaces/kandelo/davao/.context/server-listener-owner-agent/evidence/owner"
+        ],
+        "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+        "passFds": [],
+        "coreSoftLimit": 0,
+        "exit": 0,
+        "timeout": false
+      },
+      {
+        "name": "server-native",
+        "argv": [
+          "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+          "--expose-internals",
+          "/Users/brandon/conductor/workspaces/kandelo/davao/third_party/node-core/tests/listener-owner/server-receiver.cjs",
+          "native"
+        ],
+        "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+        "passFds": [],
+        "coreSoftLimit": 0,
+        "exit": 0,
+        "timeout": false
+      },
+      {
+        "name": "server-candidate",
+        "argv": [
+          "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+          "--expose-internals",
+          "/Users/brandon/conductor/workspaces/kandelo/davao/third_party/node-core/tests/listener-owner/server-receiver.cjs",
+          "candidate"
+        ],
+        "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+        "passFds": [],
+        "coreSoftLimit": 0,
+        "exit": 0,
+        "timeout": false
+      },
+      {
+        "name": "native-fd-False",
+        "argv": [
+          "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+          "/Users/brandon/conductor/workspaces/kandelo/davao/third_party/node-core/tests/listener-owner/native-fd.cjs",
+          "3",
+          "bound"
+        ],
+        "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+        "passFds": [
+          3
+        ],
+        "coreSoftLimit": 0,
+        "exit": 0,
+        "timeout": false
+      },
+      {
+        "name": "native-fd-True",
+        "argv": [
+          "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+          "/Users/brandon/conductor/workspaces/kandelo/davao/third_party/node-core/tests/listener-owner/native-fd.cjs",
+          "3",
+          "already-listening"
+        ],
+        "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+        "passFds": [
+          3
+        ],
+        "coreSoftLimit": 0,
+        "exit": 0,
+        "timeout": false
+      },
+      {
+        "name": "native-file-fd",
+        "argv": [
+          "/Users/brandon/conductor/workspaces/kandelo/davao/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+          "/Users/brandon/conductor/workspaces/kandelo/davao/third_party/node-core/tests/listener-owner/native-fd.cjs",
+          "3",
+          "regular-file"
+        ],
+        "cwd": "/Users/brandon/conductor/workspaces/kandelo/davao",
+        "passFds": [
+          3
+        ],
+        "coreSoftLimit": 0,
+        "exit": 0,
+        "timeout": false
+      }
+    ],
+    "scope": "Portable actual descriptor owner plus current Server source over explicit native TCPWrap/loop/stream/DNS/brand dependencies. Native fd controls are target references only; no candidate suppliedfd/provider/guest/fourhost closure.",
+    "guardedInputs": 910,
+    "sourceChecks": 6,
+    "sourceCommands": 8,
+    "packagePassed": 14,
+    "newRootCompilerAttempts": 0,
+    "historicalHelpers": 1
+  },
+  "sealedEvidence": {
+    "report": ".context/server-listener-owner-agent/report.json",
+    "sha256": "275cec992169935458f40dddfa6683862cdbb668d9884917cd1ff93b1ebfef37",
+    "reusedEvidence": true,
+    "scope": "Historical one portable actual Darwin POSIX listener Owner helper; Server JS depends on native TCPWrap/streams/events/DNS/loop/brands. Native fd3targetreferences do not activate candidate fd option or new native class/GC/realm."
+  },
+  "preservedNonpasses": [
+    {
+      "report": ".context/server-listener-owner-agent/source-evidence/normal-native-source-staging-stderr",
+      "sha256": "dfbaeff6ce118122eeeb43713ad441f7148594c27ef7ead6b175d25d19e96b78",
+      "classification": "initial-minimal-staging-setup-failure",
+      "scope": "Missing immutable KandeloBackingCapabilities.h; source fixture repair copies actual frozen bytes, no compiler."
+    },
+    {
+      "report": ".context/listener258-compose-r1/raw-patch-check.stderr",
+      "sha256": "e1a81823fe054ba6983681768edd7ed77e6e7494f29651395fe10785c85012b5",
+      "classification": "source-context-preparation-failure",
+      "scope": "Raw bootstrap hunk carried old one-line Socket.unref context superseded by TTY254; root unchanged. Actual three-way merge with exact base and reviewed prefix/suffix preservation retains current owners."
+    },
+    {
+      "report": ".context/listener258-compose-r2/source-whitespace.stdout",
+      "sha256": "08f87b4ba49b67013902dc642bdaa1f260cd6a57e3f2adb3704919f9463ec23e",
+      "classification": "embedded-context-patch-format-preparation-failure",
+      "scope": "Five required blank context prefixes are outer trailing whitespace. Remove only blank prefixes, preserve anchors/code, prove Git and production patch exact F/R/F; no ignore flags or assertions weakened."
+    }
+  ],
+  "remaining": [
+    "Public net.Server.listen({fd}) unchanged explicit ERR_NOT_IMPLEMENTED. Exact real TCP/Pipe classification, actual native server-wrap init-before-open/reentry, loop duplicate-fd(EEXIST) registration, open/listen transfer/error rollback and all public overload/getter chronology must precede activation.",
+    "Full public Server AsyncWrap/provider/trigger/callback/fatal/destroy/performance/diagnostic producer model is unimplemented; KandeloListener class does not manufacture these.",
+    "Generic numeric legacy native socket close/ref/accept paths remain outside opaque ordinary Server proof; external close/reuse after POSIX ownership transfer is not a retained kernel-OFD capability proof.",
+    "Existing global Server connection accounting after callable reinitialization, active hidden-listener policy, exact abort/error/listening/close ordering and inherited setter/publication failures remain incomplete.",
+    "Kernel requested backlog/host registration rollback are existing N-012 implementation gaps unchanged here; no accepted boundary.",
+    "Guest C++/JSAPI/context/realm/GC/OOM/fatal/Worker, selected new engine artifact and all fourhost runtime conformance remain uncompiled/unexecuted.",
+    "Legacy numeric listener fixture protocols in host/test/node-network-attempts.test.ts (socketListen returns7 at historical lines124/170) and third_party/node-core/tests/net-server-receiver/control.cjs are unvalidated under this opaque protocol. No current execution outcome; neither passes nor failures credited."
+  ],
+  "actualListenerControlReport": {
+    "report": ".context/listener258-root-controls-r1/report.json",
+    "sha256": "52bfd3475ab6001497e0c7f2eeac5f5cc938da420023697e404e702098cbd12f",
+    "portableOwnerGroups": 8,
+    "nativeServerGroups": 10,
+    "candidateServerGroups": 11,
+    "nativeFdReferenceGroups": 3,
+    "fdOptionCandidateActivated": false,
+    "guestJSAPIExecuted": false,
+    "newCompilerAttempts": 0,
+    "scope": "Portable actual descriptor owner plus current Server source over explicit native TCPWrap/loop/stream/DNS/brand dependencies. Native fd controls are target references only; no candidate suppliedfd/provider/guest/fourhost closure."
+  },
+  "manualCoupledIntegration": {
+    "applicationReceipt": ".context/listener258-compose-r3/manual-apply-receipt.json",
+    "sha256": "64c1fec7c73d1f264846d54e5cfdfdb6d0592994a40c01e00e182d64764ff513",
+    "exactOwnedPostimages": 12,
+    "buildScriptMode": "0755",
+    "actualCheckPids": [
+      48894,
+      48893
+    ],
+    "exit": [
+      0,
+      0
+    ],
+    "v1OperationClaimed": false,
+    "enginePatch": {
+      "path": "packages/registry/spidermonkey/patches/0180-node-server-listener-owner.patch",
+      "sha256": "adb581e70466354c62870a691c1fbf8ba2ad283d86f57b1b96a57cfc7089f2ff",
+      "productionRoundtripProof": ".context/listener258-compose-r3/engine-production-patch-roundtrip.json"
+    },
+    "preparationFailures": [
+      ".context/listener258-integration-prep-r4/repair-provenance.json",
+      ".context/listener258-integration-prep-r4/patch-format-repair.json"
+    ]
+  },
+  "unvalidatedLegacyNumericFixtures": {
+    "report": ".context/listener258-metadata-prep/legacy-protocol-observation.json",
+    "sha256": "ebd3c8fb4ca29f1db57c70262f12d20641142e375f9ecf7cec858014dcdd0932",
+    "classification": "unvalidated-legacy-numeric-protocol-fixtures",
+    "outcome": null,
+    "runtimeExecutedForThisProtocol": false,
+    "passingCasesCredited": 0,
+    "failedCasesCredited": 0,
+    "fixtures": [
+      {
+        "path": "host/test/node-network-attempts.test.ts",
+        "sha256": "2dd4f1cee7a6d649c99b8df68a9800f5efd18a5da0017cca02145f2a1c3e4ff8",
+        "sourceObservation": "socketListen fake returns7 at current lines124/170; actual opaque owner new controls separate."
+      },
+      {
+        "path": "third_party/node-core/tests/net-server-receiver/control.cjs",
+        "sha256": "039b256738b80767e2a87f1fa84e08c961b3faa50fa6141b71f58b68bf37d280",
+        "sourceObservation": "Old numeric native listener boundary; no fresh source-run result."
+      }
+    ]
+  },
+  "mainReconciliationPending": {
+    "observedOriginMain": "b764fbf54856cac6d7be6b56bebfe5315ffc5cc3",
+    "currentSourceParent": "5cf4011552264b6f8a615460d6751bf9dcddd052",
+    "scope": "Only porting man-page docs since previous main; parent will commit source258 then reconcile. No target/pin or source runtime claim."
+  },
+  "at": "2026-11-08T06:18:14.737704+00:00",
+  "recipeRevision": 258,
+  "lastAcceptedEngine": 239,
+  "guestCompiled": false,
+  "guestRuntimeValidated": false,
+  "fourHostConformance": false,
+  "individualApiClosure": false,
+  "implementationComplete": false,
+  "acceptedPlatformLimits": []
+}

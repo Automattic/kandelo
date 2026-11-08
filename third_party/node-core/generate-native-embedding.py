@@ -21,7 +21,7 @@ import io
 # precedes adopted handles, promise requests and pathname jobs. Digests supply
 # the private byte/error helpers consumed by random jobs.
 FRAGMENTS = (
-    'native-work.cpp', 'native-async.cpp', 'native-backing-store.cpp', 'native-retained-memory.cpp', 'native-callback.cpp', 'native-socket-owner.cpp',
+    'native-work.cpp', 'native-async.cpp', 'native-backing-store.cpp', 'native-retained-memory.cpp', 'native-callback.cpp', 'native-socket-owner.cpp', 'native-listener.cpp',
     'codec-handle.cpp', 'native-fs.cpp', 'native-file-handle.cpp',
     'native-fs-promise.cpp', 'native-stat-watcher.cpp', 'native-copy-file.cpp', 'native-copy-directory.cpp', 'native-path-metadata.cpp', 'native-directory.cpp', 'native-readdir.cpp', 'native-dir.cpp', 'native-package.cpp', 'native-removal.cpp',
     'native-file-jobs.cpp', 'native-lazy-data.cpp', 'native-object-marks.cpp', 'native-environment-object.cpp', 'native-buffer.cpp', 'native-digests.cpp', 'native-http-parser.cpp', 'native-keys.cpp', 'native-secret-keygen.cpp', 'native-keypair-gen.cpp', 'native-x509.cpp', 'native-tls-context.cpp', 'native-incremental-hash.cpp', 'native-cipher.cpp', 'native-signature.cpp', 'native-signature-jobs.cpp',

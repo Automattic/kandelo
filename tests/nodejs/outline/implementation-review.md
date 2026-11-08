@@ -1,5 +1,8 @@
 # Broad implementation review
 
+Source258 routes ordinary net.Server through a genuine opaque foreground-finalized captured-descriptor listener owner and existing accepted TCP lifecycle. Actual normal910inputs/6sourcechecks/8commands pass, with portable8/nativeServer10/currentJS11/nativefd3reference observations; package14 independent. Candidate listen({fd}) remains inactive, nativeClass/AsyncWrap/GC/realm/fatal/Worker/fullServer/four-host behavior uncompiled. Contextual0180 source patch has exact Git and production patch forward/reverse/forward proof; mode0755 manual coupling, no V1 operation. One historical helper counts once362 to363, no root compiler.
+See [source scope](server-listener-ownership-integration.md).
+
 Source257 implements pinned getCallSites overload/validator/getter/error order and real raw no-entry fallback through unchanged SavedFrame capture. Normal908inputs/13sourcechecks/8commands pass; native27/candidate27 selected reported projections match27, without numeric position/script-ID or guest SavedFrame equality. Two unchanged files run four top-level subjects; candidate children still execute native util, not candidate mapped/eval/child coverage or complete-file acceptance. Package14 passes independently; zero historical/new compilers. Actual mapping/cache/defaultCLI/native formatter owners remain missing.
 See [source scope](util-callsites-integration.md).
 

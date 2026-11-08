@@ -706,6 +706,7 @@
         },
         socketCancelConnect(promise) { return native.socketCancelConnect(promise); },
         socketListen(...args) { return native.socketListen(...args); },
+        socketListenerFd(owner) { return native.socketListenerFd(owner); },
         socketAccept(fd) { return native.socketAccept(fd); },
         socketAcceptLease(fd) { return native.socketAccept(fd, true); },
         socketAcceptedFd(lease) { return native.socketAcceptedFd(lease); },

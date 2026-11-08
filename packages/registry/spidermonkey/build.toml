@@ -1,5 +1,6 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
 inputs = [
+  "packages/registry/spidermonkey/patches/0180-node-server-listener-owner.patch",
   "third_party/node-core/tests/ec-pkcs8-owner",
   "packages/registry/spidermonkey/patches/0179-node-keypair-gen.patch",
   "packages/registry/spidermonkey/patches/0178-node-tls-encrypted-output.patch",
@@ -145,6 +146,9 @@ inputs = [
   "third_party/node-core/native-socket-owner.cpp",
   "third_party/node-core/socket-owner-sources.json",
   "third_party/node-core/socket-owner.h",
+  "third_party/node-core/listener-owner.h",
+  "third_party/node-core/tests/listener-owner",
+  "third_party/node-core/native-listener.cpp",
   "third_party/node-core/socket-stream-adapter.js",
   "third_party/node-core/server-constructor-adapter.js",
   "third_party/node-core/socket-stream-state.h",
@@ -786,4 +790,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 257
+revision = 258

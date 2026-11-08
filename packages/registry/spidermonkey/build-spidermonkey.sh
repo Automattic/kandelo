@@ -418,6 +418,7 @@ cp "$REPO_ROOT/third_party/node-core/callback-scope.h" "$SRC_DIR/js/src/shell/ka
 cp "$REPO_ROOT/third_party/node-core/callback-execution-stack.h" "$SRC_DIR/js/src/shell/kandelo-node-callback-execution-stack.h"
 cp "$REPO_ROOT/third_party/node-core/file-handle-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-file-handle-owner.h"
 cp "$REPO_ROOT/third_party/node-core/socket-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-socket-owner.h"
+cp "$REPO_ROOT/third_party/node-core/listener-owner.h" "$SRC_DIR/js/src/shell/kandelo-node-listener-owner.h"
 cp "$REPO_ROOT/third_party/node-core/tls-encrypted-output.h" "$SRC_DIR/js/src/shell/kandelo-node-tls-encrypted-output.h"
 sed 's|#include "socket-owner.h"|#include "kandelo-node-socket-owner.h"|' \
     "$REPO_ROOT/third_party/node-core/tls-owner.h" > "$SRC_DIR/js/src/shell/kandelo-node-tls-owner.h"

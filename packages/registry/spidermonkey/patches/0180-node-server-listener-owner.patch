@@ -1,0 +1,193 @@
+diff --git a/js/src/shell/js.cpp b/js/src/shell/js.cpp
+index 163a4d1fa8bbea55ea43887bb030adf2663ada5d..5d8240a35173287dbb3c876b7f95229019b23414 100644
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -629,13 +629,16 @@ struct KandeloSocketWatch {
+   size_t offset = 0;
+   short events = 0;
+   bool leasedAccept = false;
++  // Genuine listener root/identity, never a recyclable caller fd.
++  PersistentRootedObject listenerOwner;
++  KandeloListenerState* listenerState = nullptr;
+   bool referenced = true;
+   kandelo::child_wait::State childWait;
+   KandeloSocketWatch* next = nullptr;
+
+   KandeloSocketWatch(JSContext* cx, int fd, KandeloSocketWatchKind kind,
+                      HandleObject promise)
+-      : fd(fd), kind(kind), cx(cx), promise(cx, promise), terminalOwner(cx), terminalCallback(cx) {
++      : fd(fd), kind(kind), cx(cx), promise(cx, promise), terminalOwner(cx), terminalCallback(cx), listenerOwner(cx) {
+     events = (kind == KandeloSocketWatchKind::Read ||
+               kind == KandeloSocketWatchKind::Accept) ? POLLIN : POLLOUT;
+   }
+@@ -679,8 +682,12 @@ static bool KandeloSocketHasWatches(JSContext* cx) {
+   if (KandeloSocketOwnersHaveReferences(cx) || KandeloTlsHasReferences(cx) || KandeloTerminalHasReferences(cx)) return true;
+   for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
+     if ((watch->kind == KandeloSocketWatchKind::Child) && watch->cx != cx) continue;
++    if (watch->listenerState && watch->cx != cx) continue;
+     if (watch->terminalRead && !watch->terminalLease->reads.Reading()) continue;
+-    if (watch->referenced) return true;
++    // Closed listener requests must reach real cancellation retirement even
++    // when their handle was unreferenced before close.
++    if (watch->listenerState ? watch->listenerState->listener.Closed() ||
++        watch->listenerState->listener.Referenced() : watch->referenced) return true;
+   }
+   return false;
+ }
+@@ -951,6 +958,17 @@ static void KandeloShutdownChildWatches(JSContext* cx) {
+   }
+ }
+
++static void KandeloShutdownListenerWatches(JSContext* cx) {
++  auto** link = &gKandeloSocketWatches;
++  while (*link) {
++    auto* watch = *link;
++    if (watch->listenerState && watch->cx == cx) {
++      *link = watch->next;js_delete(watch);
++    } else link = &watch->next;
++  }
++  KandeloShutdownListeners(cx);
++}
++
+ // A successful accept transfers one nonblocking, close-on-exec fd to JS.
+ // No descriptor survives a failed conversion or Promise resolution.
+ static int KandeloAcceptSocket(int listener) {
+@@ -1010,6 +1028,14 @@ static int KandeloDispatchTerminalReady(JSContext* cx) {
+   return 0;
+ }
+ static int KandeloSocketDispatch(JSContext* cx) {
++  for (auto* watch = gKandeloSocketWatches;watch;watch = watch->next) {
++    if (watch->cx != cx || !watch->listenerState ||
++        !watch->listenerState->listener.Closed()) continue;
++    KandeloSocketWatchUnlink(watch);
++    auto retire = mozilla::MakeScopeExit([&] { js_delete(watch); });
++    RootedObject promise(cx,watch->promise);JSAutoRealm realm(cx,promise);
++    return KandeloRejectSocketOperation(cx,promise,ECANCELED,"accept") ? 1 : -1;
++  }
+   const int terminalClosed = KandeloDispatchTerminalOwners(cx);
+   if (terminalClosed) return terminalClosed;
+   const int terminalDemand = KandeloDispatchTerminalDemand(cx);
+@@ -1054,7 +1080,8 @@ static int KandeloSocketDispatch(JSContext* cx) {
+   for (KandeloSocketWatch* watch = gKandeloSocketWatches; watch;
+        watch = watch->next) {
+     pollfd pfd = {};
+-    pfd.fd = watch->terminalRead && !watch->terminalLease->reads.Reading() ? -1 : watch->fd;
++    pfd.fd = watch->listenerState ? watch->listenerState->listener.Fd() :
++        watch->terminalRead && !watch->terminalLease->reads.Reading() ? -1 : watch->fd;
+     pfd.events = watch->events;
+     pollfds.push_back(pfd);
+   }
+@@ -1086,7 +1113,14 @@ static int KandeloSocketDispatch(JSContext* cx) {
+       done = true;
+     } else if (watch->kind == KandeloSocketWatchKind::Accept) {
+       if (watch->cx != cx) { watch = next; continue; }
+-      int fd = KandeloAcceptSocket(watch->fd);
++      if (watch->listenerState && watch->listenerState->listener.Closed()) {
++        KandeloSocketWatchUnlink(watch);
++        auto retire = mozilla::MakeScopeExit([&] { js_delete(watch); });
++        RootedObject promise(cx,watch->promise);JSAutoRealm realm(cx,promise);
++        return KandeloRejectSocketOperation(cx,promise,ECANCELED,"accept") ? processed + 1 : -1;
++      }
++      int fd = KandeloAcceptSocket(watch->listenerState ?
++          watch->listenerState->listener.Fd() : watch->fd);
+       if (fd >= 0) {
+         // Actual accepted TCP initialization can enter JS and close/rearm this
+         // listener or another watch. Detach this completion before any JS and
+@@ -1302,6 +1336,8 @@ static bool KandeloNativeSocketListen(JSContext* cx, unsigned argc, Value* vp) {
+   auto freeAddress = mozilla::MakeScopeExit([&] { freeaddrinfo(result); });
+   if (family == 6) reinterpret_cast<sockaddr_in6*>(result->ai_addr)->sin6_port = htons(uint16_t(port));
+   else reinterpret_cast<sockaddr_in*>(result->ai_addr)->sin_port = htons(uint16_t(port));
++  RootedObject listenerOwner(cx);KandeloListenerState* listenerState;
++  if (!KandeloCreateListener(cx,&listenerOwner,&listenerState)) return false;
+   const int fd = socket(hints.ai_family, SOCK_STREAM, 0);
+   if (fd < 0) return KandeloThrowSocketError(cx, errno, "listen");
+   bool retained = false;
+@@ -1321,18 +1357,25 @@ static bool KandeloNativeSocketListen(JSContext* cx, unsigned argc, Value* vp) {
+     return KandeloThrowSocketError(cx, errno, "listen");
+   if (bind(fd, result->ai_addr, result->ai_addrlen) < 0 || listen(fd, backlog) < 0)
+     return KandeloThrowSocketError(cx, errno, "listen");
++  MOZ_RELEASE_ASSERT(listenerState->listener.Admit(fd));
+   retained = true;
+-  args.rval().setInt32(fd);
++  args.rval().setObject(*listenerOwner);
+   return true;
+ }
+
+ static bool KandeloNativeSocketAccept(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   int32_t listener;
+-  if (args.length() < 1 || !JS::ToInt32(cx, args[0], &listener)) return false;
++  RootedObject owner(cx);KandeloListenerState* state;
++  if (!KandeloListenerFromValue(cx,args.get(0),&owner,&state)) return false;
++  if (!state && (args.length() < 1 || !JS::ToInt32(cx,args[0],&listener))) return false;
+   RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+   if (!promise) return false;
+   args.rval().setObject(*promise);
++  // Promise creation can reenter. The rooted real owner is rechecked after it,
++  // and its captured descriptor is consumed only inside this no-JS syscall.
++  if (state && state->listener.Closed()) return KandeloRejectSocketOperation(cx,promise,ECANCELED,"accept");
++  if (state) listener = state->listener.Fd();
+   const int fd = KandeloAcceptSocket(listener);
+   if (fd >= 0) {
+     if (args.get(1).isTrue()) return KandeloResolveAcceptedSocket(cx, promise, fd);
+@@ -1345,6 +1388,7 @@ static bool KandeloNativeSocketAccept(JSContext* cx, unsigned argc, Value* vp) {
+   auto* watch = js_new<KandeloSocketWatch>(cx, listener, KandeloSocketWatchKind::Accept, promise);
+   if (!watch) { JS_ReportOutOfMemory(cx); return false; }
+   watch->leasedAccept = args.get(1).isTrue();
++  if (state) { watch->listenerOwner = owner;watch->listenerState = state; }
+   KandeloSocketWatchLink(watch);
+   return true;
+ }
+@@ -1364,6 +1408,9 @@ static bool KandeloNativeSocketRef(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   if (args.length() < 2) return false;
+   const bool referenced = JS::ToBoolean(args[1]);
++  RootedObject owner(cx);KandeloListenerState* state;
++  if (!KandeloListenerFromValue(cx,args[0],&owner,&state)) return false;
++  if (state) { state->listener.Ref(referenced);args.rval().setUndefined();return true; }
+   for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
+     const bool matches = args[0].isInt32() ? watch->fd == args[0].toInt32()
+         : args[0].isObject() && watch->promise.get() == &args[0].toObject();
+@@ -1375,8 +1422,10 @@ static bool KandeloNativeSocketRef(JSContext* cx, unsigned argc, Value* vp) {
+
+ static bool KandeloNativeSocketAddress(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+-  int32_t fd;
+-  if (args.length() < 1 || !JS::ToInt32(cx, args[0], &fd)) return false;
++  int32_t fd;RootedObject owner(cx);KandeloListenerState* state;
++  if (!KandeloListenerFromValue(cx,args.get(0),&owner,&state)) return false;
++  if (state) fd = state->listener.Fd();
++  else if (args.length() < 1 || !JS::ToInt32(cx, args[0], &fd)) return false;
+   sockaddr_storage address = {};
+   socklen_t length = sizeof(address);
+   const bool peer = args.length() >= 2 && JS::ToBoolean(args[1]);
+@@ -1611,6 +1660,13 @@ static bool KandeloNativeSocketWrite(JSContext* cx, unsigned argc, Value* vp) {
+
+ static bool KandeloNativeSocketClose(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
++  RootedObject owner(cx);KandeloListenerState* state;
++  if (!KandeloListenerFromValue(cx,args.get(0),&owner,&state)) return false;
++  if (state) {
++    // No Promise/user callback under close; actual dispatch retires rooted
++    // accepts after the descriptor is closed and cannot accept a later reuse.
++    state->listener.Close();args.rval().setUndefined();return true;
++  }
+   int32_t fd;
+   if (args.length() >= 1 && JS::ToInt32(cx, args[0], &fd) && fd >= 0) {
+     KandeloSocketWatch** current = &gKandeloSocketWatches;
+@@ -4941,6 +4997,7 @@ static bool DefineKandeloNodeNative(JSContext* cx) {
+       JS_FN("socketConnect", KandeloNativeSocketConnect, 5, 0),
+       JS_FN("socketCancelConnect", KandeloNativeSocketCancelConnect, 1, 0),
+       JS_FN("socketListen", KandeloNativeSocketListen, 6, 0),
++      JS_FN("socketListenerFd", KandeloNativeListenerFd, 1, 0),
+       JS_FN("socketAccept", KandeloNativeSocketAccept, 1, 0),
+       JS_FN("socketOwnerCreate", KandeloNativeCreateSocketOwner, 0, 0),
+       JS_FN("socketOwnerAdopt", KandeloNativeAdoptSocket, 1, 0),
+@@ -17869,6 +17926,7 @@ static bool KandeloShutdownNodeEnvironment(ShellContext* sc) {
+   KandeloShutdownNativeWork(sc);
+   KandeloShutdownStatWatchers(sc);
+   KandeloShutdownChildWatches(sc->cx_);
++  KandeloShutdownListenerWatches(sc->cx_);
+   KandeloShutdownPorts(sc->cx_);
+   KandeloShutdownFileHandles(sc->cx_);
+   KandeloELDShutdown(sc->cx_);
