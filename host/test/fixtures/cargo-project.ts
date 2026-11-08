@@ -90,6 +90,13 @@ fn main() {
   "app/src/main.rs": `use std::process::Command;
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--update-source") {
+        let source = std::fs::read_to_string("message/src/lib.rs").unwrap();
+        let changed = source.replacen("archive_message::value()", "archive_message::value() + 1", 1);
+        assert_ne!(source, changed);
+        std::fs::write("message/src/lib.rs", changed).unwrap();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("--child") {
         println!("child={}", message::value());
         return;

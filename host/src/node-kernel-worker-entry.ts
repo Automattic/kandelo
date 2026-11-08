@@ -1073,6 +1073,7 @@ async function handleInit(msg: InitMessage) {
       msg.config.maxProcessMemoryBytes,
     ),
     retirementPressureHook: processMemoryRetirementPressureHook,
+    forkCopy: msg.config.forkCopy,
   });
   workerAdapter = new NodeWorkerAdapter();
   if (!hasRootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
@@ -2255,6 +2256,14 @@ async function handleOrdinaryFork(
   parentMemory: WebAssembly.Memory,
   continuation: ForkContinuationContext,
 ): Promise<number[]> {
+  // WHY: the clone below admits and copies in one synchronous step, so it
+  // cannot wait inside the retirement throttle. Wait before it, while the
+  // calling thread stays parked in fork: healthy fork churn then delays the
+  // fork instead of failing it with EAGAIN, as exec already waits. The
+  // generation check and the clone both run after this last yield.
+  await processMemoryAllocator.waitForRetirementBacklogCapacity(
+    parentMemory.buffer.byteLength,
+  );
   const parentInfo = processes.get(parentPid);
   const parentProgram = parentInfo?.programBytes;
   if (!parentProgram || parentInfo.memory !== parentMemory) {

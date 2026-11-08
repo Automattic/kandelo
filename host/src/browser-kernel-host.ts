@@ -85,6 +85,7 @@ import {
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import { formatHostErrorDiagnostic } from "./host-diagnostic";
 import type { PcmOutputState } from "./audio/pcm-driver";
+import type { ForkAddressSpaceCopy } from "./process-memory";
 
 // Allow the worker to drain exec retirement (5s), blocked guests (1.5s),
 // framebuffer acknowledgements and PCM (2s each) before terminating its realm.
@@ -145,6 +146,14 @@ export interface BrowserKernelOptions {
    * admission-threshold window before new churn proceeds.
    */
   maxProcessMemoryBytes?: number;
+  /**
+   * How fork copies a parent's address space (default `"sparse"`).
+   * `"sparse"` skips pages that are all zero in the parent, so a large,
+   * mostly empty child commits much less memory; fork is somewhat slower.
+   * `"dense"` writes every byte: faster fork, more committed memory. Both
+   * give the child identical bytes. See `ForkAddressSpaceCopy`.
+   */
+  forkCopy?: ForkAddressSpaceCopy;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
   defaultThreadSlots?: number;
   /** Additional VFS mount points */
@@ -893,6 +902,7 @@ export class BrowserKernel {
             maxProcessMemoryBytes:
               this.options.maxProcessMemoryBytes
               ?? this.options.maxWorkers * this.maxPages * WASM_PAGE_SIZE,
+            forkCopy: this.options.forkCopy,
             defaultThreadSlots: this.options.defaultThreadSlots,
             env: this.options.env,
             enableSyscallLog: this.options.enableSyscallLog,

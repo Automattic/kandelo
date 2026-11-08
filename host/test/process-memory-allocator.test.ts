@@ -4,6 +4,8 @@ import { WASM_PAGE_SIZE } from "../src/constants";
 import {
   acquireForkMemoryClone,
   copyArrayBufferInChunks,
+  copyIntoZeroedArrayBuffer,
+  copyProcessAddressSpace,
   createProcessMemoryRetirementPressureHook,
   deriveProcessMemoryRetirementAdmissionThresholds,
   ProcessMemoryAllocator,
@@ -612,18 +614,83 @@ describe("ProcessMemoryAllocator", () => {
     });
   });
 
-  it("copies across bounded view boundaries", () => {
+  it("copies across bounded view boundaries and zero chunks", () => {
     const source = new ArrayBuffer(17);
     const destination = new ArrayBuffer(17);
     new Uint8Array(source).set(
-      Array.from({ length: 17 }, (_, index) => index + 1),
+      Array.from({ length: 17 }, (_, index) => (index >> 2) % 2 ? 0 : index + 1),
     );
-    copyArrayBufferInChunks(destination, source, 4);
+    copyIntoZeroedArrayBuffer(destination, source, 4);
     expect(new Uint8Array(destination)).toEqual(new Uint8Array(source));
     expect(() =>
-      copyArrayBufferInChunks(new ArrayBuffer(16), source, 4)
+      copyIntoZeroedArrayBuffer(new ArrayBuffer(16), source, 4)
     ).toThrow();
+    expect(() => copyIntoZeroedArrayBuffer(destination, source, 0)).toThrow();
+    expect(() => copyIntoZeroedArrayBuffer(destination, source, 6)).toThrow();
+  });
+
+  it("does not write the destination chunks whose source is all zero", () => {
+    const source = new ArrayBuffer(12);
+    const destination = new ArrayBuffer(12);
+    new Uint8Array(source).set([1, 2, 3, 4], 8);
+    new Uint8Array(destination).fill(0xff);
+    copyIntoZeroedArrayBuffer(destination, source, 4);
+    expect([...new Uint8Array(destination)]).toEqual([
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1, 2, 3, 4,
+    ]);
+  });
+
+  it("writes every destination chunk in dense mode", () => {
+    const source = new ArrayBuffer(12);
+    const destination = new ArrayBuffer(12);
+    new Uint8Array(source).set([1, 2, 3, 4], 8);
+    new Uint8Array(destination).fill(0xff);
+    copyArrayBufferInChunks(destination, source, 4);
+    expect(new Uint8Array(destination)).toEqual(new Uint8Array(source));
+    expect(() => copyArrayBufferInChunks(new ArrayBuffer(8), source, 4)).toThrow();
     expect(() => copyArrayBufferInChunks(destination, source, 0)).toThrow();
+  });
+
+  it("selects the fork copy by mode", () => {
+    const source = new ArrayBuffer(2 * WASM_PAGE_SIZE);
+    new Uint8Array(source)[2 * WASM_PAGE_SIZE - 1] = 7;
+    const stale = (): ArrayBuffer => {
+      const buffer = new ArrayBuffer(source.byteLength);
+      new Uint8Array(buffer).fill(0xff);
+      return buffer;
+    };
+    // A non-fresh destination exposes which pages each mode wrote.
+    const sparse = new Uint8Array(stale());
+    copyProcessAddressSpace("sparse", sparse.buffer, source);
+    expect(sparse[0]).toBe(0xff);
+    expect(sparse[2 * WASM_PAGE_SIZE - 1]).toBe(7);
+    const dense = new Uint8Array(stale());
+    copyProcessAddressSpace("dense", dense.buffer, source);
+    expect(dense).toEqual(new Uint8Array(source));
+  });
+
+  it.each(["sparse", "dense"] as const)("clones a fork address space exactly with %s copy", (forkCopy) => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 4,
+      maxTotalBytes: 16 * WASM_PAGE_SIZE,
+      forkCopy,
+    });
+    const parentLease = allocator.acquire(request(3, 8));
+    const parentBytes = new Uint8Array(parentLease.memory.buffer);
+    parentBytes[1] = 0x11;
+    parentBytes[parentBytes.length - 1] = 0xee;
+    const childLease = acquireForkMemoryClone(allocator, parentLease.memory, 4, 8);
+    expect(new Uint8Array(childLease.memory.buffer)).toEqual(parentBytes);
+    childLease.release();
+    parentLease.release();
+  });
+
+  it("rejects an unknown fork copy mode", () => {
+    expect(() => new ProcessMemoryAllocator({
+      maxMemories: 1,
+      maxTotalBytes: WASM_PAGE_SIZE,
+      forkCopy: "lazy" as never,
+    })).toThrow(/fork address-space copy mode/);
   });
 });
 

@@ -37,6 +37,7 @@ pub mod executable_backing;
 pub mod fd;
 pub mod fifo;
 pub mod fork;
+pub mod framebuffer;
 pub mod fs_changes;
 pub mod guest_ptr;
 pub mod gl_query_request;

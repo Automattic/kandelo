@@ -129,6 +129,20 @@ describe("spawn host parity", () => {
     }
   });
 
+  it("both hosts give the process-memory allocator the configured fork copy mode", () => {
+    for (const entry of [nodeEntry, browserEntry]) {
+      expect(readFileSync(entry, "utf8"), entry).toMatch(
+        /new ProcessMemoryAllocator\(\{[\s\S]*?forkCopy: msg\.config\.forkCopy,[\s\S]*?\}\);/,
+      );
+    }
+    for (const host of ["node-kernel-host.ts", "browser-kernel-host.ts"]) {
+      expect(
+        readFileSync(join(repoRoot, "host", "src", host), "utf8"),
+        host,
+      ).toContain("forkCopy: this.options.forkCopy,");
+    }
+  });
+
   it("both exec callbacks carry one opaque prepared-target request", () => {
     const shared = readFileSync(sharedWorker, "utf8");
     expect(shared).toMatch(/onExec\?:\s*ExecLaunchCallback/);
@@ -260,16 +274,26 @@ describe("spawn host parity", () => {
     }
   });
 
-  it("both hosts capture the exact fork snapshot before their first async yield", () => {
+  it("both hosts capture the exact fork snapshot before any yield after the parent check", () => {
     for (const entry of [nodeEntry, browserEntry]) {
       const handler = ordinaryForkHandlerSource(readFileSync(entry, "utf8"));
+      const admission = handler.indexOf(
+        "await processMemoryAllocator.waitForRetirementBacklogCapacity(",
+      );
+      const parentCheck = handler.indexOf("parentInfo.memory !== parentMemory");
       const clone = handler.indexOf("acquireForkMemoryClone(");
       const firstAwait = handler.indexOf("await ");
-      expect(clone, `${entry} must acquire the fork clone`).toBeGreaterThanOrEqual(0);
-      expect(firstAwait, `${entry} must retain an async launch path`).toBeGreaterThanOrEqual(0);
-      // WHY: after the first yield, sibling exec can release and recycle the
-      // parent generation. The helper's owned synchronous copy is the fork
-      // snapshot; doing it later creates an ABA/two-owner race.
+      const nextAwait = handler.indexOf("await ", admission + "await ".length);
+      // WHY: retired-memory admission is the one yield before the snapshot.
+      // It delays healthy fork churn instead of failing it with EAGAIN.
+      expect(admission, `${entry} must wait for retirement capacity`).toBe(firstAwait);
+      expect(parentCheck, `${entry} must check the parent after admission`).toBeGreaterThan(admission);
+      expect(clone, `${entry} must acquire the fork clone`).toBeGreaterThan(parentCheck);
+      expect(nextAwait, `${entry} must retain an async launch path`).toBeGreaterThan(parentCheck);
+      // WHY: after a yield, sibling exec can release and recycle the parent
+      // generation. The parent check and the helper's owned synchronous copy
+      // must share one synchronous step; a yield between them creates an
+      // ABA/two-owner race.
       if (entry === browserEntry) {
         // The await operand runs before suspension. The asynchronous factory
         // captures and charges a plain snapshot synchronously, then constructs
@@ -279,12 +303,12 @@ describe("spawn host parity", () => {
         const asynchronousClone = handler.indexOf(
           "await processMemoryAllocator.acquireForkClone(",
         );
-        expect(asynchronousClone).toBe(firstAwait);
+        expect(asynchronousClone).toBe(nextAwait);
         expect(handler).toMatch(
           /const childMemoryLease = processMemoryAllocator\.hasAsyncMemoryFactory\s*\? await processMemoryAllocator\.acquireForkClone\([\s\S]*?\)\s*: acquireForkMemoryClone\(/,
         );
       } else {
-        expect(clone, `${entry} must clone before yielding`).toBeLessThan(firstAwait);
+        expect(clone, `${entry} must clone before yielding`).toBeLessThan(nextAwait);
       }
     }
   });

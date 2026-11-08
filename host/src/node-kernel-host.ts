@@ -77,6 +77,7 @@ import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 import type { InputEvent, InputSource } from "./input/input-source";
 import { batchBySynReport } from "./input/input-batch";
 import { selectKernelMaxPages, selectRootfsMetadataBytes, selectVfsFileReadBytes } from "./runtime-memory-profile";
+import type { ForkAddressSpaceCopy } from "./process-memory";
 
 export type { HttpRequest, HttpResponse };
 
@@ -122,6 +123,14 @@ export interface NodeKernelHostOptions {
    * admission-threshold window before new churn proceeds.
    */
   maxProcessMemoryBytes?: number;
+  /**
+   * How fork copies a parent's address space (default `"sparse"`).
+   * `"sparse"` skips pages that are all zero in the parent, so a large,
+   * mostly empty child commits much less memory; fork is somewhat slower.
+   * `"dense"` writes every byte: faster fork, more committed memory. Both
+   * give the child identical bytes. See `ForkAddressSpaceCopy`.
+   */
+  forkCopy?: ForkAddressSpaceCopy;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
   defaultThreadSlots?: number;
   /** Size of the data buffer for syscall data transfer (default: 65536).
@@ -537,6 +546,7 @@ export class NodeKernelHost {
               kernelMaxPages: selectKernelMaxPages(this.options.kernelMaxPages),
             }),
             maxProcessMemoryBytes,
+            forkCopy: this.options.forkCopy,
             defaultThreadSlots: this.options.defaultThreadSlots,
             dataBufferSize: this.options.dataBufferSize ?? 65536,
             useSharedMemory: true,

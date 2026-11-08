@@ -1582,6 +1582,27 @@ program memory. Kandelo's
 non-forking `posix_spawn()` path avoids that copy when the caller can describe
 the requested child entirely with spawn actions and attributes.
 
+The copy has two modes, selected with the `forkCopy` option of
+`NodeKernelHost` and `BrowserKernel` and passed to the kernel worker's
+`ProcessMemoryAllocator`. Both modes give the child the same bytes; they
+trade memory for fork latency:
+
+- `"sparse"` (the default) skips each 64 KiB page that is all zero in the
+  parent. The child's Memory is new, so those pages are already zero, and
+  the operating system does not commit them until the child writes them.
+  A large, mostly empty address space, such as each php-fpm child of a
+  WordPress machine, therefore holds much less memory. Checking every page
+  makes fork slower: one Node benchmark measured `fork_ms` and `clone_ms`
+  about 5-7% slower than dense.
+- `"dense"` writes every byte, which is faster but commits every page of the
+  child at once. Choose it when fork latency matters more than memory, for
+  example fork-heavy builds (`configure`, `make`) on Node.
+
+Sparse copying is correct only because the destination is new. Any future
+reuse or pooling of process memory must zero the destination first or use
+the dense copy; otherwise a child would keep the previous owner's bytes
+wherever its parent's page is zero.
+
 Kandelo releases its references to an exited or replaced process generation
 only after the exact Worker, channel, thread, and framebuffer ownership fences
 complete. JavaScript engines still decide when the unreachable shared backing
@@ -2133,14 +2154,16 @@ Reaping on init's behalf uses the same Rust removal and host-cleanup path as a
 `waitpid()` reap, including the resource-free `Limbo` record kept for a
 group leader that still has group members. That `Limbo` record is not a
 process, so `kernel_get_parent_pid` reports `ESRCH` for it, as
-`kernel_get_process_state` and both process-exit queries do. Otherwise a
-host could mistake a reaped leader for a live process and miss its exit
-notification while another group member remains alive.
-Only the first acknowledgement of an exit
-has effects; a repeat, such as the second arrival for a spawn child that
-exited before its spawn result was published, changes nothing. Removing a
-process record for any other reason (for example forced teardown) also
-reparents that process's remaining children to init.
+`kernel_get_process_state`, both process-exit queries and
+`kernel_take_process_timer_cleanup` do. Otherwise a host could mistake a
+reaped leader for a live process and miss its exit notification while
+another group member remains alive. The leader's timers ended with the
+reaped process; the host retires its own timer handles for that pid when
+the take reports `ESRCH`. Only the first acknowledgement of an exit has
+effects; a repeat, such as the second arrival for a spawn child that exited
+before its spawn result was published, changes nothing. Removing a process
+record for any other reason (for example forced teardown) also reparents
+that process's remaining children to init.
 
 Host launches follow the same rule. A process launched directly by the host
 has the `ppid=0` sentinel as its parent, but its own children are ordinary
@@ -5220,8 +5243,11 @@ The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, m
    ─────────────────                  ───────────────                   ────────────
    open("/dev/fb0")     ─────────►   match_virtual_device              (no host call)
                                      CAS FB0_OWNER (single-open)
+   ioctl(FBIOPUT_VSCREENINFO)  ──►   check xres × yres, set the        (no host call)
+     (optional)                      device mode; EBUSY while bound
    ioctl(FBIOGET_*)     ─────────►   fill fb_var_screeninfo /          (no host call)
-                                     fb_fix_screeninfo, 640×400 BGRA32
+                                     fb_fix_screeninfo, BGRA32 at
+                                     the device mode
    mmap(fd, len)        ─────────►   memory.mmap_anonymous(len)
                                      record FbBinding(addr,len,w,h)
                                      host.bind_framebuffer(...)  ───►  registry.bind(pid,...)
@@ -5229,6 +5255,10 @@ The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, m
                          host sees them through the same SAB)
    ioctl(FBIOPAN_DISPLAY) ───────►   no-op success                     (no-op)
 ```
+
+The display mode is device state in `crates/runtime-core/src/framebuffer.rs`. It boots at 640×400, the mode fbDOOM was written against. A program selects another mode with `FBIOPUT_VSCREENINFO` before it maps or writes the device: any `xres` × `yres` from 1×1 to 3840×2160 at 32 bits per pixel. A mode out of range or another pixel depth is `EINVAL`, and `FB_ACTIVATE_TEST` in `activate` checks a mode without setting it. The virtual size always equals the visible size, because the device does not pan. Everything the device reports follows the mode: `xres`/`yres`, `line_length`, `smem_len`, the length an `mmap` must request, and the `bind_framebuffer` call that sizes the host canvas. The mode lasts as long as one process owns the device. When ownership is released (the owner's last fd and any mapping are gone, or the owner exits), the device returns to 640×400 before another process can claim it. Each program therefore starts from the boot mode rather than whatever the previous owner chose, and a program that needs another mode selects it. This differs from Linux, where the mode stays after its setter exits, so an `fbset`-style tool that sets a mode and exits does not carry it to the next program.
+
+A mode change is `EBUSY` while the caller has the device mapped or write-bound, or while another process owns the device. The bound buffer has the old size, and resizing it under a program that draws into it needs a buffer replacement the device does not do. The same mode is always accepted, so a program that sets the mode it already has still works after `mmap`. To keep "only the owner holds a binding" true, `mmap` and the first `write` claim device ownership, so a fork child that keeps the parent's fd gets `EBUSY` while the parent owns the device. The ioctl contract declares `FBIOPUT_VSCREENINFO` as `In`, so unlike Linux the kernel does not copy the accepted mode back into the caller's struct; the caller reads it with `FBIOGET_VSCREENINFO`.
 
 The guest's mmap pixel buffer lives inside its process's Wasm memory. The
 `bind_framebuffer` callback reports `(pid, addr, len, w, h, stride, fmt)` to

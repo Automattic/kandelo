@@ -60,6 +60,25 @@ candidate checkpoints. They remain required for acceptance and broad claims;
 they are not prerequisites for profiling or an isolated diagnostic.
 See [the incremental investigation loop](../profiling.md#incremental-performance-investigations).
 
+## Fork address-space copy mode
+
+Fork copies the parent's whole address space into a new memory. The
+`forkCopy` host option (`NodeKernelHost`, `BrowserKernel`) selects how:
+
+- `"sparse"` (default) skips all-zero pages, so the child commits far less
+  memory. Keep it for memory-bound sessions: browser machines (especially
+  WebKit), PHP-FPM and other prefork services, and anything near its process
+  memory budget.
+- `"dense"` writes every byte. Choose it when fork latency matters more than
+  memory, such as fork-heavy Node workloads (`configure`, `make`, shell
+  loops). In one Node benchmark it was about 5-7% faster on `fork_ms` and
+  `clone_ms`.
+
+Both modes produce identical child bytes, so switching is a resource
+choice, not a behavior change. State which mode a fork benchmark used, and
+compare modes on the workload that matters rather than assuming either is
+faster or smaller. See `docs/architecture.md` (fork step 6).
+
 ## Comparing the finished change with its destination
 
 For a claim about performance after merge, compare the latest runtime with
