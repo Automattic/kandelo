@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "phase": "breadth-first implementation",
-  "updatedAt": "2026-11-08T12:49:33.745624+00:00",
+  "updatedAt": "2026-11-08T13:14:50.111371+00:00",
   "goalComplete": false,
   "breadthPassComplete": false,
   "target": {
@@ -46,7 +46,7 @@
   "deployAuthorized": false,
   "overallSuitesRun": 0,
   "productRebuildsRun": 0,
-  "packageOrEngineCompilationsRun": 378,
+  "packageOrEngineCompilationsRun": 379,
   "families": {
     "values": {
       "breadthState": "started",
@@ -1357,7 +1357,7 @@
     "host/test/node-loop-utilization.test.ts": "17607e7546fd7a40f0f16d52eca0a83f2745ebab203b444bfacc206e34c03097",
     "tests/nodejs/outline/loop-metrics-implementation-dependencies.md": "493122abd39ef5d51cdcb4c6dde8a2af3c3aaea27c54aa1d11d3edc4609b164e",
     "packages/registry/spidermonkey/patches/0104-kandelo-loop-metrics.patch": "53ab030f938bf2a8d3efeaca8be9a020e3e465761c195cfa21bc3854645f9e2e",
-    "tests/nodejs/outline/status-by-family.md": "83f12f12fce0670b50a15de8f429ab2a9af898d285d937de79d69bc32d056df8",
+    "tests/nodejs/outline/status-by-family.md": "52e1103a869fd056c39333631100c7c5b8a3a3657a2e63ee874969ed841699ac",
     "third_party/node-core/upstream/async/lib/async_hooks.js": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550",
     "host/test/fixtures/node-async-platform.cjs": "20a631ccfc33ad16ecb4866ba21065fa3979cf815f8fd4d13997e76466d0a538",
     "third_party/node-core/upstream/async/lib/internal/async_hooks.js": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
@@ -2800,7 +2800,9 @@
     "packages/registry/spidermonkey/patches/0192-node-promise-parent-memory-fetch-tcp.patch": "0565da3543b1129387409d482c1205438502bb9b2a47f7b0ce53c3aba138ffed",
     "third_party/node-core/fetch-front-owner.md": "35dce9106e45b38e20596ae1bdf4577ce3df3cb09398bbf7439d3abc2e2cf68e",
     "third_party/node-core/tcp-registration-owner.md": "8d4088fc6aa79090f953bcee072e0be938947ce962bca6fb0d5a53eb0e8392fc",
-    "tests/nodejs/outline/core-promise-memory-fetch-tcp-batch271-implementation.md": "d02d63326f883a9195bbfe8e8ab911f9e8854976d50130a44e1c773be778b6bb"
+    "tests/nodejs/outline/core-promise-memory-fetch-tcp-batch271-implementation.md": "d02d63326f883a9195bbfe8e8ab911f9e8854976d50130a44e1c773be778b6bb",
+    "tests/nodejs/outline/engine271-build-result.json": "8a7d66e48c3da5f4333e1663b3410dafc093530578bff91948edfe4f9ee93f16",
+    "tests/nodejs/outline/engine271-build-acceptance.md": "228243409a29563808e81f988f776fbe3984f9497160f30fd6806ef67465815f"
   },
   "changes": [
     {
@@ -11475,14 +11477,13 @@
     }
   ],
   "nextSourceWork": [
-    "Public v8.promiseHooks shared chronological registry/multiplex/raw-only mode and real error owner; actual creation/order/GC/realm/Worker/four-host validation.",
-    "Actual guest compilation/runtime/GC proof, unmaterialized/shared/mapped/Wasm/external classes, process RSS/CPU/heap providers and public memoryUsage.",
-    "SRI, prior cancellation nonpasses, error/controller/Promise/stack/lazy import, HTTP getter/transport/redirect/cache/filter/CORS and four-host conformance.",
-    "Guest JSAPI/GC/OOM/realm/stopping/Worker execution; supplied-fd/Pipe/TLS/legacy interest/metadata/full Server and four-host conformance."
+    "Current source271 is compiled/cache accepted; actual guest startup, JSAPI/GC/realm/Worker/fatal and four-host behavior remain unvalidated.",
+    "Continue reviewed breadth work; private environment descriptor, legacy-interest and codec error sources are not in this artifact.",
+    "Preserve audit, source271 source/check history, failed270 and239 runtime evidence. Keep overall/full product and successor ABI artifact builds deferred."
   ],
   "previousGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Three genuine consumed source foundations with actual source guards; no completed API, family, guest or four-host claim."
+    "reason": "Four actual source contributions and precise historical build attribution; no API, family, runtime or four-host completion."
   },
   "historicalImplementationCheckpoints": [
     {
@@ -55242,11 +55243,11 @@
     }
   },
   "sourceSnapshot": {
-    "path": ".context/node26-implementation-snapshots/source271-promise-memory-fetch-tcp-20261108T124934Z.tar.gz",
-    "sha256": "6d92211fb65d6abcdb2badc28fde3407f334788c8673f64d63cc132110a00d2a",
-    "bytes": 14650450,
-    "scope": "Actual source271 prep/check/import and nine canonical identities plus actual engine270 terminal/log/plan/manager evidence. Historical TCP helper2 and failed engine1 credited distinctly; all19 partial, four unknowns, ledger182/unlinked207 and accepted263 history preserved. Explicit regular files only.",
-    "stateFileNote": "Archived state precedes snapshot reference injection"
+    "path": ".context/node26-implementation-snapshots/engine271-accepted-20261108T131450111371Z.tar.gz",
+    "sha256": "cf374897d02ae3ae2574e721812de1319de84d2978621ba61fd74f64db070dbc",
+    "bytes": 13152221,
+    "scope": "Same-recipe 271 metadata acceptance for actual normal engine compile/link/optimizer/fork/stamp/cache artifact. Producing runtime source remains 3c52; a later metadata-only commit does not become new compiled runtime source. One retention harness error, zero engine failures; no guest startup, API or four-host execution.",
+    "stateFileNote": "Archived state precedes snapshot reference injection; no engine binary duplicated."
   },
   "currentScopedStaticChecks": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -57739,15 +57740,16 @@
     "state": "OS lookup source and raw c-ares channel plus owned record decoder; public Resolver/channel/request/loop/JSAPI/guest linking/transport/error/malformed and four-host obligations remain open"
   },
   "nativeCompilationAccountingThisTurn": {
-    "acceptedEngineBuilds": 0,
-    "guestEngineBuildFailures": 1,
+    "acceptedEngineBuilds": 1,
+    "guestEngineBuildFailures": 0,
     "guestPackageAttempts": 1,
     "guestDependencyCompilations": 0,
-    "kernelWasmCompilations": 0,
-    "nativeHelperCompileAttempts": 2,
+    "nativeHelperCompileAttempts": 0,
     "nativeHelperCompileFailures": 0,
+    "kernelWasmCompilations": 0,
     "productRebuilds": 0,
-    "scope": "Credit actual engine270 one attempt/one failure separately from two historical successful TCP helper attempts. Known lower bound375 becomes378 only after all four source contributions compose and actual receipts pass. Same four old unknown attributions remain; no compiler executes during source271 checks.",
+    "retentionHarnessErrors": 1,
+    "newRootCompilerAttempts": 1,
     "knownCompilationCountIsLowerBound": true,
     "previousBuildUnattributedDependencySubjects": [
       "node26-engine239-global-1107-172655-2057:node-llhttp",
@@ -57755,13 +57757,7 @@
       "node26-engine239-global-1107-172655-2057:node-ncrypto",
       "node26-engine239-global-1107-172655-2057:node-simdjson"
     ],
-    "historicalTinyHelperAttempts": 2,
-    "historicalTinyHelperFailures": 0,
-    "previousGuestEngine270AttemptsCredited": 1,
-    "previousGuestEngine270FailuresCredited": 1,
-    "source271FreshCompilerAttempts": 0,
-    "newRootCompilerAttempts": 1,
-    "rootAttemptAttributionScope": "The single actual source270 root engine attempt is credited once in this source271 batch. This is not another attempt; source271 fresh compiler attempts remain zero and the total remains378."
+    "scope": "One actual source271 engine package attempt accepted: lower bound378 to379. Wrapper retention error is not engine failure; verifier runs no compiler. Prior270 failure and TCP helper credit unchanged; no plan node count inferred."
   },
   "nativeSystemErrorTableEvidence": {
     "report": ".context/node26-uv-native-control-r2/report.json",
@@ -58553,7 +58549,7 @@
   },
   "thisGoalTurnClassification": {
     "classification": "progress",
-    "reason": "Four actual source contributions and precise historical build attribution; no API, family, runtime or four-host completion."
+    "reason": "Actual current source 271 artifact compiled/link/cache accepted, with a separate retention harness error. No guest runtime, API, family or four-host closure."
   },
   "directoryUpstreamControls": {
     "report": ".context/node26-directory-upstream-r3/report.json",
@@ -59687,12 +59683,12 @@
     "guestEngineCompiled": false
   },
   "targetedEngineBuild": {
-    "report": "tests/nodejs/outline/engine263-build-result.json",
-    "sha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
-    "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263.",
-    "recipeRevision": 263,
+    "report": "tests/nodejs/outline/engine271-build-result.json",
+    "sha256": "8a7d66e48c3da5f4333e1663b3410dafc093530578bff91948edfe4f9ee93f16",
+    "scope": "Same-recipe 271 metadata acceptance for actual normal engine compile/link/optimizer/fork/stamp/cache artifact. Producing runtime source remains 3c52; a later metadata-only commit does not become new compiled runtime source. One retention harness error, zero engine failures; no guest startup, API or four-host execution.",
+    "recipeRevision": 271,
     "currentSourceRevision": 271,
-    "jobId": "node26-engine263-r2-1108-033441-5bc3",
+    "jobId": "node26-engine271-1108-075334-c888",
     "result": "normal-production-build-and-cache-acceptance-success",
     "productionCompilationSucceeded": true,
     "productionLinkSucceeded": true,
@@ -59701,9 +59697,9 @@
     "guestRuntimeValidated": false,
     "guestBootstrapValidated": false,
     "artifact": {
-      "path": ".context/node26-engine263-terminal/artifacts/js.wasm",
-      "sha256": "90b2b4bce54995bad048e0ff9dd5dbe7f62fbd315826d7ade8772d889175463c",
-      "bytes": 52358963,
+      "path": ".context/engine271-retained-artifact-r1/artifacts/js.wasm",
+      "sha256": "20821b997e81871c330e4c154a3700f2d7452f6412c2e6312ef4c164b70fd718",
+      "bytes": 52865511,
       "mode": "0o755"
     }
   },
@@ -61885,16 +61881,39 @@
         "scope": "Three actual Node-host guest subjects and three paired pinned-native subjects only; no API/family/four-host closure"
       },
       "guestBootstrapValidated": true
+    },
+    {
+      "report": "tests/nodejs/outline/engine263-build-result.json",
+      "sha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
+      "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263.",
+      "recipeRevision": 263,
+      "currentSourceRevision": 271,
+      "jobId": "node26-engine263-r2-1108-033441-5bc3",
+      "result": "normal-production-build-and-cache-acceptance-success",
+      "productionCompilationSucceeded": true,
+      "productionLinkSucceeded": true,
+      "normalChecksSucceeded": true,
+      "acceptedArtifact": true,
+      "guestRuntimeValidated": false,
+      "guestBootstrapValidated": false,
+      "artifact": {
+        "path": ".context/node26-engine263-terminal/artifacts/js.wasm",
+        "sha256": "90b2b4bce54995bad048e0ff9dd5dbe7f62fbd315826d7ade8772d889175463c",
+        "bytes": 52358963,
+        "mode": "0o755"
+      }
     }
   ],
   "nativeEmbeddingIntegration": {
-    "at": "2026-11-08T12:49:33.745624+00:00",
+    "at": "2026-11-08T13:14:50.111371+00:00",
     "recipeRevision": 271,
-    "lastAcceptedEngine": 263,
-    "sourceOnly": true,
-    "guestCompiled": false,
+    "lastAcceptedEngine": 271,
+    "sourceOnly": false,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
-    "scope": "Consumed actual-parent engine channel and existing AsyncHook native ID consumer. No synthetic ID map or persistent child-parent edge. Public v8.promiseHooks shared chronological registry/multiplex/raw-only mode and real error owner; actual creation/order/GC/realm/Worker/four-host validation."
+    "report": "tests/nodejs/outline/engine271-build-result.json",
+    "sha256": "8a7d66e48c3da5f4333e1663b3410dafc093530578bff91948edfe4f9ee93f16",
+    "scope": "Same-recipe 271 metadata acceptance for actual normal engine compile/link/optimizer/fork/stamp/cache artifact. Producing runtime source remains 3c52; a later metadata-only commit does not become new compiled runtime source. One retention harness error, zero engine failures; no guest startup, API or four-host execution."
   },
   "asyncAuditedFindingProgress": {
     "at": "2026-11-04T18:51:41.050124+00:00",
@@ -63939,6 +63958,15 @@
       "guestCompiled": false,
       "guestRuntimeValidated": false,
       "scope": "Actual native accept callback consumer, required export and successful listen registration/liveness owner; source-addressed only after actual combined guards. Guest compilation/execution, exact retained accepted_fd/EMFILE/OOM/fatal/GC/realm/Worker, full public Server and modern TCP/TLS/legacy interest ownership."
+    },
+    {
+      "at": "2026-11-08T12:49:33.745624+00:00",
+      "recipeRevision": 271,
+      "lastAcceptedEngine": 263,
+      "sourceOnly": true,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "scope": "Consumed actual-parent engine channel and existing AsyncHook native ID consumer. No synthetic ID map or persistent child-parent edge. Public v8.promiseHooks shared chronological registry/multiplex/raw-only mode and real error owner; actual creation/order/GC/realm/Worker/four-host validation."
     }
   ],
   "bufferPoolImplementation": {
@@ -64247,13 +64275,13 @@
   },
   "sourceCandidateIntegration": {
     "recipeRevision": 271,
-    "sourceOnly": true,
-    "lastAcceptedEngine": 263,
-    "acceptedArtifactCurrentForCandidate": false,
-    "guestCompiled": false,
+    "sourceOnly": false,
+    "lastAcceptedEngine": 271,
+    "acceptedArtifactCurrentForCandidate": true,
+    "guestCompiled": true,
     "guestRuntimeValidated": false,
     "fourHostConformance": false,
-    "scope": "Current271combined guest source has no accepted build; accepted263and prior nonpasses retain their scopes. Pending private agent work excluded."
+    "scope": "Same-recipe 271 metadata acceptance for actual normal engine compile/link/optimizer/fork/stamp/cache artifact. Producing runtime source remains 3c52; a later metadata-only commit does not become new compiled runtime source. One retention harness error, zero engine failures; no guest startup, API or four-host execution."
   },
   "vmPlainContextImplementation": {
     "at": "2026-11-05T00:10:14.839714+00:00",
@@ -66382,6 +66410,13 @@
       "sha256": "5bf3d0f9198a26598d6cb0980143b18a54f8a9e7947badbfeb84b452dad58385",
       "bytes": 14545143,
       "scope": "Actual source270 preparation, nine canonical identities, source/package and completed V1 receipts plus immutable gap/provenance evidence. No runtime, API or compiler credit; accepted263 historical, 375 lower bound/four unknowns, ledger182/unlinked207 and all19 partial preserved. Explicit regular files only.",
+      "stateFileNote": "Archived state precedes snapshot reference injection"
+    },
+    {
+      "path": ".context/node26-implementation-snapshots/source271-promise-memory-fetch-tcp-20261108T124934Z.tar.gz",
+      "sha256": "6d92211fb65d6abcdb2badc28fde3407f334788c8673f64d63cc132110a00d2a",
+      "bytes": 14650450,
+      "scope": "Actual source271 prep/check/import and nine canonical identities plus actual engine270 terminal/log/plan/manager evidence. Historical TCP helper2 and failed engine1 credited distinctly; all19 partial, four unknowns, ledger182/unlinked207 and accepted263 history preserved. Explicit regular files only.",
       "stateFileNote": "Archived state precedes snapshot reference injection"
     }
   ],
@@ -68744,6 +68779,16 @@
       "guestRuntimeValidated": false,
       "fourHostConformance": false,
       "scope": "Current270combined guest source has no accepted build; accepted263and prior nonpasses retain their scopes. Pending private agent work excluded."
+    },
+    {
+      "recipeRevision": 271,
+      "sourceOnly": true,
+      "lastAcceptedEngine": 263,
+      "acceptedArtifactCurrentForCandidate": false,
+      "guestCompiled": false,
+      "guestRuntimeValidated": false,
+      "fourHostConformance": false,
+      "scope": "Current271combined guest source has no accepted build; accepted263and prior nonpasses retain their scopes. Pending private agent work excluded."
     }
   ],
   "nativeCompilationAccountingHistory": [
@@ -71980,6 +72025,31 @@
       "historicalTinyHelperAttempts": 0,
       "historicalTinyHelperFailures": 0,
       "newRootCompilerAttempts": 0
+    },
+    {
+      "acceptedEngineBuilds": 0,
+      "guestEngineBuildFailures": 1,
+      "guestPackageAttempts": 1,
+      "guestDependencyCompilations": 0,
+      "kernelWasmCompilations": 0,
+      "nativeHelperCompileAttempts": 2,
+      "nativeHelperCompileFailures": 0,
+      "productRebuilds": 0,
+      "scope": "Credit actual engine270 one attempt/one failure separately from two historical successful TCP helper attempts. Known lower bound375 becomes378 only after all four source contributions compose and actual receipts pass. Same four old unknown attributions remain; no compiler executes during source271 checks.",
+      "knownCompilationCountIsLowerBound": true,
+      "previousBuildUnattributedDependencySubjects": [
+        "node26-engine239-global-1107-172655-2057:node-llhttp",
+        "node26-engine239-global-1107-172655-2057:node-sqlite",
+        "node26-engine239-global-1107-172655-2057:node-ncrypto",
+        "node26-engine239-global-1107-172655-2057:node-simdjson"
+      ],
+      "historicalTinyHelperAttempts": 2,
+      "historicalTinyHelperFailures": 0,
+      "previousGuestEngine270AttemptsCredited": 1,
+      "previousGuestEngine270FailuresCredited": 1,
+      "source271FreshCompilerAttempts": 0,
+      "newRootCompilerAttempts": 1,
+      "rootAttemptAttributionScope": "The single actual source270 root engine attempt is credited once in this source271 batch. This is not another attempt; source271 fresh compiler attempts remain zero and the total remains378."
     }
   ],
   "cryptoKdfImplementation": {
@@ -144439,11 +144509,11 @@
     "acceptedPlatformLimits": []
   },
   "latestProductionCompilation": {
-    "report": "tests/nodejs/outline/engine263-build-result.json",
-    "sha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
-    "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263.",
-    "recipeRevision": 263,
-    "sourceCommit": "011076e8a9319cca646029ccfbf5a4c187f678d8",
+    "report": "tests/nodejs/outline/engine271-build-result.json",
+    "sha256": "8a7d66e48c3da5f4333e1663b3410dafc093530578bff91948edfe4f9ee93f16",
+    "scope": "Same-recipe 271 metadata acceptance for actual normal engine compile/link/optimizer/fork/stamp/cache artifact. Producing runtime source remains 3c52; a later metadata-only commit does not become new compiled runtime source. One retention harness error, zero engine failures; no guest startup, API or four-host execution.",
+    "recipeRevision": 271,
+    "sourceCommit": "3c52b3233e96d0b6bdefcdec07e1c74b9b0e8f89",
     "compiledAndLinked": true,
     "normalBuildAccepted": true,
     "guestExecuted": false,
@@ -147484,15 +147554,15 @@
   },
   "nextSelectedEngineBuild": {
     "status": "completed-build-runtime-unvalidated",
-    "sourceAtPreparation": 263,
-    "jobId": "node26-engine263-r2-1108-033441-5bc3",
-    "resultReport": "tests/nodejs/outline/engine263-build-result.json",
-    "resultSha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
-    "acceptedArtifactSha256": "90b2b4bce54995bad048e0ff9dd5dbe7f62fbd315826d7ade8772d889175463c",
+    "sourceAtPreparation": 271,
+    "jobId": "node26-engine271-1108-075334-c888",
+    "resultReport": "tests/nodejs/outline/engine271-build-result.json",
+    "resultSha256": "8a7d66e48c3da5f4333e1663b3410dafc093530578bff91948edfe4f9ee93f16",
+    "acceptedArtifactSha256": "20821b997e81871c330e4c154a3700f2d7452f6412c2e6312ef4c164b70fd718",
     "fullProductRebuild": false,
     "overallSuite": false,
     "runtimeAcceptance": false,
-    "selectedClosure": "Actual normal nine-node selected dependency closure; no dependency compiler count inferred from planning"
+    "selectedClosure": "Actual normal nine-node closure; resolver0, wrapper retention error1 and corrected verifier0 separate. No dependency count inferred."
   },
   "messagePortTransferImplementation": {
     "auditRequirements": {
@@ -148298,6 +148368,17 @@
       "guestExecuted": false,
       "fourHostConformance": false,
       "scope": "Identified compiled/cache-accepted engine only; product projection and runtime validation separate"
+    },
+    {
+      "report": "tests/nodejs/outline/engine263-build-result.json",
+      "sha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
+      "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263.",
+      "recipeRevision": 263,
+      "sourceCommit": "011076e8a9319cca646029ccfbf5a4c187f678d8",
+      "compiledAndLinked": true,
+      "normalBuildAccepted": true,
+      "guestExecuted": false,
+      "fourHostConformance": false
     }
   ],
   "terminalCallbackResourceImplementation": {
@@ -152034,6 +152115,19 @@
       "report": "tests/nodejs/outline/engine263-build-result.json",
       "sha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
       "scope": "Current source263 normal engine compilation/link/optimizer/fork/stamp/cache acceptance only. Historical source239 Node-host runtime evidence retains its own artifact/source scope and does not validate source263."
+    },
+    {
+      "jobId": "node26-engine271-1108-075334-c888",
+      "recipeRevision": 271,
+      "producingSourceCommit": "3c52b3233e96d0b6bdefcdec07e1c74b9b0e8f89",
+      "result": "normal-production-build-and-cache-acceptance-success",
+      "resolverExit": 0,
+      "wrapperExit": 1,
+      "retentionHarnessErrors": 1,
+      "engineAttempts": 1,
+      "report": "tests/nodejs/outline/engine271-build-result.json",
+      "sha256": "8a7d66e48c3da5f4333e1663b3410dafc093530578bff91948edfe4f9ee93f16",
+      "scope": "Same-recipe 271 metadata acceptance for actual normal engine compile/link/optimizer/fork/stamp/cache artifact. Producing runtime source remains 3c52; a later metadata-only commit does not become new compiled runtime source. One retention harness error, zero engine failures; no guest startup, API or four-host execution."
     }
   ],
   "engine228PreflightR1": {
@@ -157936,6 +158030,18 @@
       "resultReport": "tests/nodejs/outline/engine200-build-result.json",
       "resultSha256": "d20af83de3b6380258ce59699808fb569f4d56ba32641388865210d733a37ae5",
       "acceptedArtifactSha256": "331c7af54f1c036b955f5e747a1ddfa9c5ce6ce3c41d5171800341bb081bcb45"
+    },
+    {
+      "status": "completed-build-runtime-unvalidated",
+      "sourceAtPreparation": 263,
+      "jobId": "node26-engine263-r2-1108-033441-5bc3",
+      "resultReport": "tests/nodejs/outline/engine263-build-result.json",
+      "resultSha256": "eb8d687fce89d5cd9a95ce9bf665af8c1e177f17f173670f6366a65c440bc568",
+      "acceptedArtifactSha256": "90b2b4bce54995bad048e0ff9dd5dbe7f62fbd315826d7ade8772d889175463c",
+      "fullProductRebuild": false,
+      "overallSuite": false,
+      "runtimeAcceptance": false,
+      "selectedClosure": "Actual normal nine-node selected dependency closure; no dependency compiler count inferred from planning"
     }
   ],
   "engine263TerminalResult": {
@@ -160690,5 +160796,17 @@
       "guestRuntimeValidated": false,
       "findingClosed": false
     }
+  },
+  "engine271TerminalResult": {
+    "report": "tests/nodejs/outline/engine271-build-result.json",
+    "sha256": "8a7d66e48c3da5f4333e1663b3410dafc093530578bff91948edfe4f9ee93f16",
+    "scope": "Same-recipe 271 metadata acceptance for actual normal engine compile/link/optimizer/fork/stamp/cache artifact. Producing runtime source remains 3c52; a later metadata-only commit does not become new compiled runtime source. One retention harness error, zero engine failures; no guest startup, API or four-host execution.",
+    "jobId": "node26-engine271-1108-075334-c888",
+    "acceptedArtifact": true,
+    "guestEngineAttempted": true,
+    "normalResolverExit": 0,
+    "wrapperExit": 1,
+    "retentionHarnessErrors": 1,
+    "guestExecuted": false
   }
 }
