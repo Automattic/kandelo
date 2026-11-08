@@ -42,6 +42,7 @@ pub struct NativePipeline<'a> {
     scan: Scan<'a>,
     components: Components<'a>,
     limits: PipelineLimits,
+    debug: Option<crate::debug_info::Recorder>,
 }
 
 struct Components<'a> {
@@ -77,6 +78,7 @@ impl<'a> NativePipeline<'a> {
             scan,
             components,
             limits,
+            debug: None,
         })
     }
 
@@ -88,6 +90,14 @@ impl<'a> NativePipeline<'a> {
     }
     pub fn activations(&self) -> &NativeActivations<'a> {
         &self.components.activations
+    }
+
+    pub(crate) fn enable_debug(&mut self, rows: usize) -> Result<()> {
+        self.debug = Some(crate::debug_info::Recorder::new(rows)?);
+        Ok(())
+    }
+    pub(crate) fn take_debug(&mut self) -> Option<crate::debug_info::Recorder> {
+        self.debug.take()
     }
 
     /// Add an explicitly requested export without changing frozen indices.
@@ -108,6 +118,9 @@ impl<'a> NativePipeline<'a> {
     /// failure may leave partial bytes; publication belongs to an atomic file
     /// wrapper. Repeated emission from this frozen plan is deterministic.
     pub fn emit<W: Write>(&mut self, output: &mut W) -> Result<EmitReport> {
+        if let Some(debug) = &mut self.debug {
+            debug.reset()?;
+        }
         let descriptors = self.components.descriptors()?;
         let bytes = descriptors.iter().try_fold(0usize, |total, (name, data)| {
             total.checked_add(name.len())?.checked_add(data.len())
@@ -132,6 +145,7 @@ impl<'a> NativePipeline<'a> {
                 scan: &self.scan,
                 components: &mut self.components,
                 ir: self.limits.activations.ir,
+                debug: &mut self.debug,
             },
             output,
             self.limits.emission,

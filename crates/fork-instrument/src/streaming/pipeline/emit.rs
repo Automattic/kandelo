@@ -10,6 +10,7 @@ pub(super) struct Emitter<'s, 'a> {
     pub scan: &'s Scan<'a>,
     pub components: &'s mut Components<'a>,
     pub ir: IrLimits,
+    pub debug: &'s mut Option<crate::debug_info::Recorder>,
 }
 macro_rules! remap {
     ($name:ident, $($field:ident).+) => {
@@ -27,6 +28,12 @@ impl Reencode for Emitter<'_, '_> {
     remap!(tag_index, components.runtime);
 }
 impl FunctionTransform for Emitter<'_, '_> {
+    fn place_function(&mut self, code_relative_body_start: u64) -> Result<()> {
+        if let Some(debug) = self.debug {
+            debug.place_function(code_relative_body_start)?;
+        }
+        Ok(())
+    }
     fn defer_module_initializers(&self) -> bool {
         true
     }
@@ -52,6 +59,7 @@ impl FunctionTransform for Emitter<'_, '_> {
                 plan: &components.gc_plan,
                 constructors: &components.constructors,
                 state: &components.state.rewrites,
+                debug: self.debug.as_mut(),
             },
             limit,
         )
@@ -140,6 +148,7 @@ struct Sources<'a> {
     plan: &'a NativeGcPlan,
     constructors: &'a FrozenGcConstructors,
     state: &'a FrozenStateRewrites,
+    debug: Option<&'a mut crate::debug_info::Recorder>,
 }
 impl Reencode for Sources<'_> {
     type Error = ImportIndexError;
@@ -153,6 +162,17 @@ impl Reencode for Sources<'_> {
     remap!(element_index, runtime);
 }
 impl NativeSourceHooks for Sources<'_> {
+    fn record_source_range(
+        &mut self,
+        source: &SourceInstruction<'_>,
+        start: usize,
+        end: usize,
+    ) -> Result<()> {
+        if let Some(debug) = &mut self.debug {
+            debug.record(source.point.offset, start, end)?;
+        }
+        Ok(())
+    }
     fn emit_native_source(
         &mut self,
         source: &SourceInstruction<'_>,
@@ -167,6 +187,9 @@ impl NativeSourceHooks for Sources<'_> {
             Some(helper) => Instruction::Call(helper),
             None => instruction,
         };
-        self.state.emit_source(source, instruction, output, limit)
+        let range = self
+            .state
+            .emit_source_range(source, instruction, output, limit)?;
+        self.record_source_range(source, range.start, range.end)
     }
 }

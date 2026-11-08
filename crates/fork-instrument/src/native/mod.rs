@@ -13,7 +13,7 @@ mod instrument;
 mod metadata;
 pub(crate) mod reports;
 pub use analysis::analyze;
-pub use instrument::{Artifact, Limits, instrument, validate};
+pub use instrument::{Artifact, Limits, instrument, instrument_with_debug, validate};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AnalysisLimits {
