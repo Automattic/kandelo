@@ -1,0 +1,236 @@
+{
+  "schema": 1,
+  "phase": "design-only; successor implementation/rebuilds not authorized by this packet",
+  "authorization": {
+    "record": ".context/node26-new-program-baseline-user-decision.json",
+    "sha256": "037ab4b9d6a53f9ec4d313f9e2291d08ace3dcbf1065f221363dbda1d3c3e5c1",
+    "decision": "User selected a new program baseline, artifact rebuilds deferred; do not ask the same baseline choice again",
+    "fullProductRebuildDeferred": true
+  },
+  "observation": {
+    "sourceCommit": "9bfbdb2249f65e5da3227b5215a24bec7ae15ee2",
+    "originMain": "c3703ba28d6efaff3a4cd1e3e6f53573cb58b064",
+    "networkFetchPerformed": false,
+    "currentProgramAbi": 55,
+    "protectedProgramDigest": "1358eca04a8d33fa5bcc27d1c672af2f6e7aaf466a398ad598d991347b1a4415",
+    "supportedBaselineFormat": 1,
+    "currentHostAdapterVersion": 4,
+    "tentativeSuccessor": 56,
+    "reservation": "not reserved; reconfirm actual main/parallel transition at implementation, then allocate exactly currentN+1; do not merge unrelated semantic changes silently",
+    "successorProgramDigest": null,
+    "digestNotComputedReason": "Requires actual authorized source change and source-derived snapshot from built kernel. Do not hand-author or derive an alleged final contract from this design."
+  },
+  "semanticDelta": {
+    "owner": "existing syscall307 SYS_FADVISE64 -> runtime-core::sys_fadvise",
+    "old": "unconditional0 including invalid/closed/O_PATH fd, pipe/FIFO, invalid advice and negative offset/length",
+    "newAdmissionOrder": [
+      "actual fd-table entry/OFD, including closed/invalid/O_PATH -> EBADF",
+      "actual pipe/FIFO -> ESPIPE, before negative range/invalid advice",
+      "offset<0 or len<0 or advice outside0..5 -> EINVAL",
+      "otherwise0; advisory hints deliberately ignored without data/cursor/status/cache mutation"
+    ],
+    "arguments": "fd/advice signed32; full signed64 offset/length retained from channel args[1]/args[2], no narrowing to a2/a3",
+    "libc": "existing posix_fadvise returns -raw_syscall: positive error number, errno unchanged; both wasm32/wasm64 source call paths must later be executed",
+    "ranges": "len0 denotes through maximum offset; beyondEOF/full positive range valid; no offset+len overflow arithmetic or file extension",
+    "unchanged": "syscall number/signature/channel/FORK_VERSION20/types/host imports/exports remain unchanged in this bounded patch; readahead and other hints remain separate",
+    "abiAssessment": "Program-visible errno semantic change requires new program epoch even without structural delta; not waived as invalid-input bugfix or HOST_ADAPTER_VERSION-only change"
+  },
+  "baselinePolicy": {
+    "activeGate": "retain strict format1 validator; deliberately publish successor epoch+actual generated digest in abi/supported-program-baseline.json only in coherent authorized source change",
+    "historical55": "append immutable archival copy of current gate e.g. abi/baseline-history/v55.json with transition decision and exact source/snapshot/producer identities; retain original v55 manifest/artifact bytes/history. Archive is NOT an accepted-digest allowlist.",
+    "admission": "new successor runtime accepts only actual successor program marker+contract with correct features/role; marked55 and malformed/missing markers must refuse before execution/constructor side effects; current missing-marker warn/continue branches require owning enforcement design/implementation",
+    "multiVersionAdapter": "not proposed; no Rust old307 semantics dispatcher/old digest allowlist/JS version branch claimed",
+    "fixturePolicy": "keep scripts/build-program-baseline.py historical55 reproduction semantics and all v55 hashes. Add explicit successor frozen cohort after final producer/artifact generation; select it for successor-positive tests. Preserve original55 positive semantics only against its identified matching historical55 runtime; separately prove55 rejection on successor. No assertion edits to manufacture55-on-successor success.",
+    "savedComputers": "no journal rebinding/truncation/deletion/base fallback. No automatic transactional package upgrade currently established. Refuse incompatible execution/image admission while preserving storage and explain rebuild/export requirement; successor fresh computers/images may import data through actual supported mechanism, not relabel old executable bytes.",
+    "rollback": "restore an identified complete55 host+kernel+program+image/binding cohort without restamping successor or old modules; do not automatically run55 runtime against successor-mutated data/journal or discard failed generations."
+  },
+  "requiredSourceOwners": [
+    {
+      "paths": [
+        "crates/runtime-core/src/syscalls.rs",
+        "crates/runtime-core/src/fadvise_tests.rs",
+        "crates/kernel/src/wasm_api.rs"
+      ],
+      "change": "compose reviewed kernel source narrowly; preserve current unrelated source; activate307 only with new epoch coherent source batch"
+    },
+    {
+      "paths": [
+        "crates/program-abi/src/lib.rs",
+        "abi/supported-program-baseline.json",
+        "abi/baseline-history/v55.json",
+        "abi/snapshot.json",
+        "tools/xtask/src/supported_program_baseline.rs"
+      ],
+      "change": "add semantic epoch history/currentN+1, archive55 gate, new exact active baseline only from real generated digest. Current validator accepts any matching declared epoch/digest; do not loosen it. History archive path is proposed new metadata, not existing machinery."
+    },
+    {
+      "paths": [
+        "tools/xtask/src/dump_abi.rs",
+        "scripts/check-abi-version.sh",
+        "libc/glue/abi_constants.h",
+        "host/src/generated/abi.ts",
+        "libc/musl-overlay/include/bits/kandelo_limits.h",
+        "libc/musl-overlay/include/bits/kandelo_process_layouts.h",
+        "libc/musl-overlay/include/bits/kandelo_channel_scalars.h",
+        "libc/musl-overlay/include/bits/kandelo_syscall_marshal.h",
+        "libc/musl-overlay/include/bits/kandelo_thread_syscalls.h",
+        "libc/musl-overlay/src/process/wasm32posix/spawn_contract.h",
+        "libc/musl-overlay/include/sys/soundcard.h",
+        "libc/musl-overlay/include/kandelo/clipboard.h",
+        "libc/glue/kandelo-host-imports.txt"
+      ],
+      "change": "normal generator owns all generated outputs; many may remain byte-identical. Inspect actual diff, never invent snapshot/header/digest."
+    },
+    {
+      "paths": [
+        "host/src/constants.ts",
+        "host/src/worker-main.ts",
+        "host/src/program-policy.ts",
+        "host/src/dylink.ts",
+        "crates/wasm-artifact",
+        "host/src/binary-resolver.ts"
+      ],
+      "change": "trace/admit every launch/exec/fork/side-module/worker route; successor must not inherit missing-marker/missing-expected-metadata bypass. No role/name/env fallback or arbitrary old-contract acceptance. New strict policy must preserve correct access/fork/feature validation/error ordering."
+    },
+    {
+      "paths": [
+        "scripts/build-program-baseline.py",
+        "abi/program-fixtures/v55",
+        "host/test/supported-program-baseline.test.ts",
+        "host/test/fixtures/program-compatibility.ts",
+        "apps/browser-demos/test/program-policy.spec.ts",
+        "host/test/program-policy-worker.test.ts",
+        "scripts/test-spidermonkey-package-ownership.sh"
+      ],
+      "change": "make active-successor vs historical55 fixture roles explicit without rewriting55bytes/source/hash/output assertions. Preserve old success-harness as historical contract; add current positive and cross-epoch negative coverage with genuine fixtures."
+    },
+    {
+      "paths": [
+        "scripts/resolve-binary.bundle.mjs",
+        "scripts/build-resolve-binary-bundle.sh",
+        "scripts/test-resolve-binary-bundle.sh",
+        "tools/xtask/src/local_abi_identity.rs",
+        "tools/xtask/src/build_deps.rs"
+      ],
+      "change": "regenerate bundled ABI constants normally, preserve build-key->reserved-env->ShellBuildID invariant; use actual complete successor keys/stamps/receipts. No forced stale cache reuse/relabel."
+    },
+    {
+      "paths": [
+        "third_party/node-core/wasi-context.h",
+        "third_party/node-core/native-wasi.cpp",
+        "third_party/node-core/wasi-sources.json",
+        "third_party/node-core/wasi-owner.md"
+      ],
+      "change": "optional dependent fd_advise source remains separate review/validation gate; kernel transition does not establish WASI pass or nested guest backend."
+    }
+  ],
+  "futureSequence": [
+    {
+      "step": 0,
+      "name": "Review design and preserve old cohort",
+      "gate": "No builds now. Archive exact55gate/snapshot/fixtures/source/evidence. Reconcile/reserve currentN+1 with actual main before source activation; preserve original kernel/WASI seals and withdrawn no-bump prose with superseding assessment."
+    },
+    {
+      "step": 1,
+      "name": "Coherent successor source/admission preparation",
+      "gate": "Only after explicit implementation phase. Compose syscall+epoch/history+strict launch policy+fixture-role design together. No mixed under55 dispatch activation. Resolve cargo->openssl version mismatch before claiming full product closure. Do not blanket-edit recorded/un-enforced package kernel_abi fields."
+    },
+    {
+      "step": 2,
+      "name": "Generate actual contract",
+      "gate": "Requires separately authorized targeted native/kernel builds; current artifact deferral blocks running scripts/check-abi-version.sh update because it builds kernel Wasm first. Run it only later, inspect all generated diffs, obtain actual program digest and write exact successor active gate. Run ordinary ABI and focused baseline checks. No manual generated bytes."
+    },
+    {
+      "step": 3,
+      "name": "Rebuild tools/SDK and targeted guest closure",
+      "gate": "Rebuild current xtask/fork instrumenter, normal musl/glue/sysroots both widths, resolver bundle+bundle verification, then kernel and minimal real fadvise programs from final source. SourceOnly newkeys may reuse verified source inputs, never55compiledprograms. Track each actual compiler/cache hit/unknown separately."
+    },
+    {
+      "step": 4,
+      "name": "Admission and syscall checks",
+      "gate": "On identified matching successor artifacts, execute native differential and guest syscall/libc/channel controls both widths and all four hosts. Prove no-effect valid advice, precedence/full64bit/positive return/errno preservation and actual fd/OFD lifetimes; prove wrong/missing/duplicate markers and55/refused/mixedcohort launch/exec/worker/dlopen, no constructors/sideeffects and byte preservation."
+    },
+    {
+      "step": 5,
+      "name": "Expand to selected product closures",
+      "gate": "Only after explicit broader rebuild authorization. Normal Node10 declaredclosure (engine9 plus wrapper), rootfs21, shell163 source-reachable set and every selected VFS product need real resolver plans. Rebuild linked/side modules, originals, lazy references/receipts and image bindings. Current overall/full-product deferral remains until user allows required scope."
+    },
+    {
+      "step": 6,
+      "name": "Successor frozen cohort/release qualification",
+      "gate": "Pin final actual producer/source/toolchain/flags and new artifact/output hashes in new successor fixture directory; run active-baseline positives, unchanged historical55 hash preservation and cross-epoch negatives. Four-host targeted conformance, cancellation/ownership/retry/rollback tests and VFS eager/lazy admission remain mandatory evidence, not design passes."
+    },
+    {
+      "step": 7,
+      "name": "Distribution or release migration",
+      "gate": "No publish/deploy/merge authorized. Local SourceOnly transition has no required remote binary channel. If hosted distribution is later selected, first reconcile absent abi/staging authority/classifier and real workflow state, protect complete prior55public history, anonymously verify exacthead/sources/receipts then stage/promote immutable new cohort. Never overwrite55release/assets or use legacy ABI6catalog as current authority. Partial products must not replace last complete site."
+    }
+  ],
+  "validationGates": {
+    "currentlyExecutedByDesign": {
+      "tests": 0,
+      "runtimeProbes": 0,
+      "compilers": 0,
+      "builds": 0,
+      "rootWrites": 0,
+      "artifactWrites": 0,
+      "snapshotChanges": 0
+    },
+    "existingEvidenceOnly": {
+      "kernelNativeOwnerTests": 5,
+      "kernelGuestDispatchCompiled": false,
+      "wasiNative": {
+        "passed": 7,
+        "total": 7
+      },
+      "wasiCandidate": {
+        "passed": 6,
+        "total": 7,
+        "nonpass": "externally revoked borrowed fd returns8 vs native0"
+      },
+      "wasiPosixGuestBranchExecuted": false,
+      "originalCompilerAttempts": 29,
+      "originalCompilerFailures": 2,
+      "historicalR2RustBinary": "unavailable; retain source/commands/raw4of5, no regenerated alleged original artifact"
+    },
+    "laterCommandsNamedNotRun": [
+      "scripts/dev-shell.sh bash scripts/check-abi-version.sh update",
+      "scripts/dev-shell.sh bash scripts/check-abi-version.sh",
+      "scripts/dev-shell.sh cargo xtask check-program-baseline",
+      "scripts/dev-shell.sh bash scripts/build-resolve-binary-bundle.sh",
+      "scripts/dev-shell.sh bash scripts/test-resolve-binary-bundle.sh"
+    ],
+    "laterControls": [
+      "actual runtime-core fadvise_admission owner tests (five existing source tests, compose current source first)",
+      "fresh guest libc/channel C controls using true syscalls307 on wasm32/wasm64, no copied returncode simulator",
+      "real selected key/stamp/admission negatives including missing marker, missingexpectedmetadata, wrong digest/version, duplicate/malformed contracts, mixed main/side-module, kernel/image/lazyreference mismatch",
+      "all seven original55fixture hashes/sizes untouched; historical success only on matching55runtime, explicit oldonnew/newonold refusal",
+      "all selected successor boot/eager/lazy/reference products and supported host/platform paths; no overall-suite claim until permitted",
+      "optional WASI7group unchanged assertions; revokedborrowedfd nonpass must be resolved by actual error/configuredbranch owner before acceptingfd_advise, not renamedunsupported"
+    ]
+  },
+  "discrepanciesAndUnresolved": [
+    "origin/main at observation is local fetched refc370, no network fetch; exact next epoch must be reconfirmed/reserved at implementation",
+    "successor digest, source commit/recipe versions, actual rebuild/cache-key set and artifact hashes are deliberately unset until authorized normal generation/resolution",
+    "current docs describe abi/staging and classify-exact-abi-staging.sh, both absent from current and main Git trees; no operational exactNtoN+1 staging foundation assumed",
+    "current package-management uses local source-only/no remote binary channel, whereas older ABI/guide/release text and workflows retain release language; reconcile actual selected distribution path before claiming package release transition",
+    "cargo manifest dependsopenssl3.3.2, registry3.5.9; source-reachable shell163 is not a validated resolver plan",
+    "kernel55 unconditional0 still active; sealed fadvise algorithm and optional WASI remain private/pending; this design activates nothing",
+    "WASI revokedfd actual8/native0 and unexecuted guestPOSIXbranch remain strict failures/gaps, not platform boundaries; nested guest Wasm backend remains required/deferredlast",
+    "actual complete installed/remote artifact generation inventory and transactional package upgrades are not established by static source inventory; no saved-computer upgrade or rollback-to-modified-store guarantee"
+  ],
+  "readOnlyInspection": {
+    "focusedProducerSeal": ".context/fadvise-owner-agent/handoff-final/SEAL.json",
+    "sha256": "cd428131b989b9fafd620dee6a0e4147992129373248d2477b96dcf9a1caf60e",
+    "membersRehashed": 7,
+    "scope": "metadata/source evidence integrity inspection only; no command under test or runtime artifact executed",
+    "frozen55ArtifactHashesRead": 7,
+    "newRuntimeTestsProbesCompilersBuilds": 0,
+    "campaignCheckpointHelperNotRun": "Parent requested no root checkout checkpoints during mutations; private CHECKPOINT.md retained instead."
+  },
+  "hostAdapterAssessment": {
+    "currentVersion": 4,
+    "fileAdviceAlone": "No new kernel-host import/export/wire field is present in reviewed patch; program56 is required for errno regardless. No automatic4to5 edit is proposed.",
+    "admissionFollowon": "If implementing strict expected-metadata admission actually changes a kernel-host required export/import/manifest/wire contract, classify/bump HOST_ADAPTER_VERSION separately in the same coherent change and regenerate. Inspect real owning protocol; do not guess a5baseline or claim program56 alone waives kernel-host policy."
+  }
+}

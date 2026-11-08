@@ -1,0 +1,70 @@
+{
+  "scope": "Independent design/source inspection only; no ABI transition or rebuild executed",
+  "producerSealSha256": "b96d8d734e5188cfaeb544d4e614a9cbf83126332b792cccde7eda9343dd0789",
+  "producerMembersVerified": 5,
+  "designCapturedHead": "9bfbdb2249f65e5da3227b5215a24bec7ae15ee2",
+  "designCapturedMain": "c3703ba28d6efaff3a4cd1e3e6f53573cb58b064",
+  "currentReviewedMain": "5f484a853eec0b81e31a82ab6da6d5cfb30852a6",
+  "programAbiStill55": true,
+  "protectedDigest": "1358eca04a8d33fa5bcc27d1c672af2f6e7aaf466a398ad598d991347b1a4415",
+  "frozen55ArtifactsVerified": 7,
+  "tentativeSuccessor": 56,
+  "successorReserved": false,
+  "successorDigest": null,
+  "sourceDesignConclusions": [
+    "Program-visible file-advice errno change requires deliberate successor program baseline; host adapter bump alone does not cover it.",
+    "Retain exact baseline validator and immutable55history; ordinary version/snapshot bump does not bypass the freeze.",
+    "Existing missing-marker warn/continue paths require real successor admission enforcement before mixed-cohort safety can be claimed.",
+    "Staging machinery described in current docs is absent; do not claim an operational hosted transition. Plan real local owners first.",
+    "Retain all fadvise/WASI nonpasses, old compilation uncertainty and unavailable old artifact limits."
+  ],
+  "currentInventoryAddendum": {
+    "producerRegistryManifests": 218,
+    "currentRegistryManifests": 219,
+    "currentKinds": {
+      "library": 79,
+      "program": 124,
+      "source": 16
+    },
+    "currentNonSourceKindAbiKeyedRecipes": 203,
+    "addedByLaterMain": {
+      "rust-native-fixtures": {
+        "path": "packages/registry/rust-native-fixtures/package.toml",
+        "sha256": "2bceffa2f13b7f3323f0000e1c3d20f69e5b25b34ab74d39dab17580080fb761",
+        "kind": "library",
+        "outputs": {
+          "files": [
+            "share/kandelo/rust-native-fixtures.zip"
+          ]
+        }
+      }
+    },
+    "addedArchiveScope": "rust-native-fixtures ZIP contains source/vendor material; its resolver generation is ABI keyed but it is not a Wasm module to stamp. No compilation occurs in its build script.",
+    "closureCountsRemainHistoricalSourceReachability": "Recompute actual normal resolver plans at implementation/rebuild; old Node10/rootfs21/shell163 were source traversal, not accepted build plans."
+  },
+  "openPrerequisites": [
+    "Reconfirm actual successor against latest main and concurrent ABI work before any implementation.",
+    "Future dependency reconciliation: Cargo requested OpenSSL3.3.2 versus registry3.5.9 at captured source; no validated shell build closure.",
+    "Full strict admission across launch/exec/worker/fork/dlopen and correct side-module roles.",
+    "Actual generated successor digest, rebuilt/stamped successor artifacts, four-host ABI/refusal/runtime evidence."
+  ],
+  "newTests": 0,
+  "newCompilers": 0,
+  "abiConstantsSnapshotsArtifactsModified": false,
+  "rebuildsDeferred": true,
+  "frozen55CohortClarification": {
+    "manifestListedWasmFixtures": 6,
+    "additionalPinnedRawForkArtifact": 1,
+    "totalExistingPinnedWasmFilesVerified": 7,
+    "manifestProducerScope": "Manifest producer e4bca8639e4b6853080ca7f3a09b0e95488c9d50 binds its six listed fixtures. Additional raw-fork.wasm is preserved by its separate pinned metadata; do not silently assign the manifest producer to it.",
+    "successorCohort": "No guessed producer or hash; generate only after authorized actual rebuilds."
+  },
+  "trackedCuration": {
+    "originalProducerSeal": {
+      "path": ".context/file-advice-baseline-design-agent/SEAL.json",
+      "sha256": "b96d8d734e5188cfaeb544d4e614a9cbf83126332b792cccde7eda9343dd0789"
+    },
+    "changes": "Markdown clarifies exact six manifest fixtures plus separately pinned raw-fork and links current-main inventory addendum. Original machine plan/inventory bytes remain unchanged. No runtime/config/ABI/build/test changes.",
+    "unexecutedDesignOnly": true
+  }
+}
