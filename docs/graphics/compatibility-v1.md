@@ -28202,13 +28202,17 @@ is 1,076,101 bytes, SHA-256
 `1024edcac14dac7620070ee90a45d6bd2a62fbc36f56f1bd008ff31568f8075b`.
 The normal graphical selection passes 30/30 (10 per engine), host checks
 15/15, and actual terminal UI checks 12/12 across the three engines.
-Browser-memory is not accepted: after the approved 18.1 GiB logical cache
-cleanup, the complete rerun passed 17 browser cases and failed WebKit's
-mixed switch. Its prior Doom worklet missed the detach acknowledgement;
-replacement Quake audio correctly remained unprepared. A subsequent
-instrumented four-cycle WebKit diagnostic passed all 20 audio detachments,
-so it does not explain or repair that failure. The earlier native ENOSPC
-and stale-ID failures remain retained. The normal Cage rendering and exit
+The latest complete browser-memory command passed 18/18 browser cases
+(six per engine, zero skips/flaky/retries), plus source 7, ownership 253,
+Node 3 and Bun 7, with every kernel-realm containment warning now rejected.
+The earlier after-cleanup run passed 17 cases and failed WebKit's mixed
+switch because a Doom worklet missed its retirement acknowledgement and
+replacement Quake audio stayed unprepared.
+That intermittent failure remains unexplained, with its trace retained;
+a successful rerun is not an owner repair, and the PR remains a draft.
+The approved collection removed 18.1 GiB logical while preserving all six
+preview projections, 50 frozen identities and ABI 56/4/17/21. Earlier native
+ENOSPC and stale-ID failures are also retained. The normal Cage rendering and exit
 screenshots were inspected. Exact commands, versions, identities and
 retained failed/interrupted runs are in the report.
 

@@ -1,11 +1,10 @@
 # Cage reliability follow-up — 2026-11-09
 
-Status: draft follow-up; full memory acceptance is incomplete. The focused
-normal graphics and host checks pass. After approved space recovery, the
-complete memory rerun passed 17 of 18 browser cases. WebKit's mixed-switch
-case failed because a prior audio transport's retirement was unconfirmed;
-the replacement machine correctly refused to attach shared audio. That
-failure remains under investigation.
+Status: draft follow-up. The latest complete memory-gate execution passed
+18/18 browser cases after approved cache recovery and stricter containment
+warning detection. The earlier unacknowledged WebKit audio retirement
+remains unexplained and retained as an open finding; this passing rerun is
+not an owner repair. The focused normal graphics and host checks also pass.
 
 This delivery investigates work package R1 after #1594. It does not activate
 B2–B6/C1–C3 or claim full graphics/native-feel acceptance.
@@ -220,7 +219,7 @@ realm with no memory-boundary or runtime-error reports.
 | Selected normal graphical matrix | 30/30 pass; Chromium 10, Firefox 10, WebKit 10; no skips/retries | `cage-r1-selected-desktops-1109-092408-4ecb`, `selected-browser-results.json` |
 | Host Cage/wlterm/Sway/PTY selection | 15/15 pass in eight files; no skips/load failures | `cage-r1-normal-host-1109-091736-2d84`, `candidate-host.log` |
 | Normal visible Cage review | 1/1 pass; both screenshots inspected | `cage-r1-normal-manual-1109-091735-cb73`, `manual-review-results.json` |
-| Browser-memory gate after approved cleanup | Failed: browser 17 passed / 1 failed; source 7, ownership 253, Node 3 and Bun 7 passed | `cage-r1-memory-after-gc-1109-111719-d689`, `candidate-memory-after-gc.log` |
+| Latest browser-memory gate execution | Pass: browser 18/18, zero skips/flaky/retries; source 7, ownership 253, Node 3 and Bun 7 passed; earlier audio failure remains open | `cage-r1-memory-containment-1109-120622-4ef4`, `candidate-memory-containment.log` |
 
 All claimed browser runs use the shared silent fixture, private run UUIDs,
 one worker and zero retries. Browser identities are Chromium
@@ -491,8 +490,9 @@ detach; context=running; sink=running". The shared-transport safety latch
 then refuses the replacement Quake attachment, leaving audio unprepared.
 The retained active screenshot shows the rendered Quake menu and that
 specific error. This is not the earlier stale-computer-ID or disk-write
-failure, and no OOM or browser defect is inferred. Focused timing diagnostics
-are in progress; the failed gate remains an acceptance blocker.
+failure, and no OOM or browser defect is inferred. Focused timing diagnostics were started at that checkpoint; their results
+and the later gate execution appear below. The unacknowledged audio
+retirement remains an open finding.
 
 
 ## Audio-retirement investigation after the failed gate
@@ -523,11 +523,60 @@ The test now records both forced kernel-realm termination and failed realm
 termination warnings, including the PCM shutdown diagnostic. It preserves
 the four cycles, activation requirements, frame assertions, memory budgets
 and zero-retry policy. The browser TypeScript check passes (144 browser and
-46 Node unit roots). The complete gate is running again at commit
-`c5f6486d34`; this reporting correction does not repair or explain the
-unacknowledged audio transport.
+46 Node unit roots). Replaying the actual recorded console events through
+the actual listener catches the PCM warning with this filter; the previous
+listener captured none. The replay and receipts are retained in
+`containment-warning-replay.*`. This reporting correction does not repair
+or explain the unacknowledged audio transport.
 
 Main advanced independently to `c7338521e0008bca446da140f9fd43af76dad960`
 (package-build SDK opt-out, #1679) during validation. The frozen runtime and
 all results above remain based on `a3490ca0f48d7c249592925cb7b4ac1ab74b9c2a`;
 no results from another workspace or the new build recipe are imported.
+
+
+## Latest complete memory-gate result
+
+The actual `./run.sh test browser-memory` command at test commit
+`c5f6486d340c` returned exit 0 after 28m52s, job
+`cage-r1-memory-containment-1109-120622-4ef4`, run
+`5d071445-7d22-4743-8e39-7696541ae2bb`. The two documentation files were
+being updated at job start; all runtime inputs remained frozen and are
+verified independently below. No guest, audio-driver, transport-fence,
+ceiling or ABI behavior changed for this rerun.
+
+Source contracts (7), host ownership (253), Node teardown (3) and Bun
+teardown (7) all passed. The browser phase passed all 18 cases: six each
+on Chromium, Firefox and WebKit, zero skipped, flaky or automatically
+retried cases. Each engine completed all four mixed-switch cycles in the
+same page realm, with the stricter warning filter active. Mixed-case times
+were 6.4m, 9.5m and 5.9m respectively; these are test durations, not
+performance or before/after measurements. The canonical script validated
+its JSON statistics and printed its final gate-passed marker before its
+normal trap removed that temporary report. The full console, guarded exit
+and reviewed per-case outcomes remain retained as
+`candidate-memory-containment.log` and
+`memory-containment-reviewed-outcomes.json`; raw canonical JSON is not
+claimed as retained. The private summary helper first expected TAP output
+where Node emitted its spec reporter, then was corrected against the actual
+log; both attempts remain retained. This did not rerun or alter any test.
+
+The harness separately warned that its Firefox Documents-directory cleanup
+received EACCES. The command still passed its 18 browser assertions and
+final statistics guard; this is not claimed as a clean filesystem cleanup.
+The earlier failed 17/18 gate remains adverse evidence and is not reclassified
+by this successful execution. No runtime owner repair for that intermittent
+audio failure has been established, so the PR remains a draft with that
+investigation open. The next discriminating experiment is the real browser
+PCM driver/worklet with its independent worker-owned transport and producer
+retirement, without a guest or persistent image, recording native page/audio
+clocks and the exact detach fence without changing its timeout.
+
+All 50 frozen candidate/source/original-fixture identities and all eight
+final implementation/test/budget hashes still match after the gate.
+`products-after-containment-gate.json` and
+`containment-implementation-file-identities.json` retain the exact receipts.
+The normal preview, program 56 / host 4 / GL 17 / fork 21 and the six
+preserved external previews remain unchanged. Available disk later rose to
+about 221 GiB during other activity; that later change is not attributed to
+the bounded 18.1 GiB logical collection.
