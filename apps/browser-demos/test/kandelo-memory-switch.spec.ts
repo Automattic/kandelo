@@ -1,4 +1,5 @@
 import { footFrame } from "./support/labwc-frame";
+import { cageShellTextColumns } from "./support/cage-shell-frame";
 import { typePhysicalText } from "./support/physical-typing";
 import { expect, type Page } from "../playwright-test";
 import { test } from "./support/persistent-page";
@@ -111,8 +112,18 @@ test("@slow games, Freeciv, LÖVE, cage, sway, labwc, DOS, tmux and WordPress su
       .then(text => text.join(" ")), { timeout: 180_000 }).toMatch(/webgl2-gl/);
     await expect.poll(async () => (await cageCanvas.screenshot()).byteLength,
       { timeout: 120_000 }).toBeGreaterThan(8_000);
+    const cageMode = (await page.locator(".kdemo-surface-controls").allTextContents())
+      .join(" ").match(/(\d+)×(\d+)/)!;
+    await expect.poll(async () => cageShellTextColumns(page, await cageCanvas.screenshot(),
+      { width: Number(cageMode[1]), height: Number(cageMode[2]) }),
+    { timeout: 120_000 }).toBeGreaterThan(24);
+    await expect(page.getByRole("complementary", { name: "Download status" }))
+      .toBeHidden({ timeout: 60_000 });
+    // Why: this step only types. Clicking captures the pointer and routes the
+    // following Library click back to Cage's canvas instead of the dock.
+    await cageCanvas.focus();
+    await expect(cageCanvas).toBeFocused();
     const beforeInput = await cageCanvas.screenshot();
-    await page.locator("body").click({ position: { x: 5, y: 5 } });
     await typePhysicalText(page, `printf 'CAGE_MEMORY_${cycle}\\n'\n`, { delay: 20 });
     await expect.poll(async () => (await cageCanvas.screenshot()).equals(beforeInput),
       { timeout: 60_000 }).toBe(false);

@@ -1,9 +1,15 @@
-import { expect, test, type Page } from "../playwright-test";
+import { expect, type Page } from "../playwright-test";
+// Why: machine setup opens the OPFS computer library before starting Cage;
+// WebKit's ephemeral context cannot exercise that storage-backed boot path.
+import { test } from "./support/persistent-page";
 
 import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
 import { cageShellTextColumns } from "./support/cage-shell-frame";
 import { screenshotPixelDelta } from "./support/screenshot-pixels";
 import { setInternalsOpen } from "./support/dock";
+import { bootStoredComputer } from "./support/computer-library";
+import { typePhysicalText } from "./support/physical-typing";
+import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures, memoryBoundaryRealmId } from "./support/browser-memory-boundary";
 
 /** Show the Internals syslog, Graphics, or the machine's terminal.
  *  Internals opens through More in the dock; showing another view means
@@ -28,18 +34,45 @@ async function syslogText(page: Page): Promise<string> {
 
 /** The machine's terminal: cage and wlterm write their stdout there. */
 async function terminalText(page: Page): Promise<string> {
-  if ((await page.locator(".xterm-rows").count()) === 0) return "";
-  const rows = await page.locator(".xterm-rows").first().locator(":scope > div").allInnerTexts();
+  const terminal = page.locator(".kshell-terminal-slot:not([hidden])");
+  if ((await terminal.locator(".xterm-screen:visible").count()) === 0) return "";
+  // Why: old terminals survive a machine switch; only the selected terminal's
+  // actual repaint proves that this session produced its readiness/exit log.
+  await terminal.locator(".xterm-screen").screenshot({ timeout: 2_000 });
+  const rows = await terminal.locator(".xterm-rows").locator(":scope > div").allInnerTexts();
   return rows.join("\n");
 }
 
 async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
-  await openSurface(page, "Terminal");
-  await expect.poll(() => terminalText(page), { timeout }).toMatch(pattern);
+  // Why: the first graphics frame may select Graphics after an early click.
+  // Select the terminal again on observation instead of reading a hidden pane.
+  await expect(async () => {
+    await openSurface(page, "Terminal");
+    expect(await terminalText(page)).toMatch(pattern);
+  }).toPass({ timeout });
 }
 
 const canvasLocator = (page: Page) =>
   page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas").first();
+
+test("Cage reports computer storage bootstrap failure before launching a guest", async ({ page }) => {
+  const workers: string[] = [];
+  page.on("worker", worker => workers.push(worker.url()));
+  await page.addInitScript(() => {
+    (window as unknown as { storageFailureCalls: number }).storageFailureCalls = 0;
+    StorageManager.prototype.getDirectory = async () => {
+      (window as unknown as { storageFailureCalls: number }).storageFailureCalls++;
+      throw new DOMException("original storage failure", "UnknownError");
+    };
+  });
+  await gotoMachine(page, "cage");
+  await expect(page.getByRole("alert")).toHaveText(
+    "Opening browser computer storage (navigator.storage.getDirectory) failed: UnknownError: original storage failure",
+    { timeout: 30_000 },
+  );
+  expect(await page.evaluate(() => (window as unknown as { storageFailureCalls: number }).storageFailureCalls)).toBe(1);
+  expect(workers).toEqual([]);
+});
 
 /** Full text of the Modeset status chip in the dock ("" while mounting). */
 async function chipText(page: Page): Promise<string> {
@@ -141,4 +174,74 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
   // Gate 5.
   await page.keyboard.type("exit\n", { delay: 40 });
   await expectTerminal(page, /WLTERM_EXIT code=0/, 60_000);
+});
+
+test("Cage resizes, releases its display on exit and survives repeated live restarts", async ({ page }) => {
+  test.setTimeout(600_000);
+  await installBrowserMemoryBoundaryProbe(page);
+  const failures: string[] = [];
+  page.on("pageerror", error => failures.push(error.message));
+  page.on("console", message => {
+    if (message.type() === "error" || /force-terminating|retirement.*timed out|graceful.*timed out/.test(message.text())) {
+      failures.push(message.text());
+    }
+  });
+  await gotoMachine(page, "cage", { search: { memoryProfile: "constrained" } });
+  await waitForMachineBootInput(page);
+  const id = new URL(page.url()).searchParams.get("computer");
+  expect(id).not.toBeNull();
+  const realm = await memoryBoundaryRealmId(page);
+  const display = page.locator(".kmachine-primary .kmodeset-surface");
+  const owner = async () => Number(await display.getAttribute("data-kms-owner-pid"));
+  for (let cycle = 0; cycle < 6; cycle++) {
+    if (cycle > 0) {
+      await page.getByRole("button", { name: "Library", exact: true }).click();
+      await bootStoredComputer(page, id!);
+      // Why: the old machine can still say Running until asynchronous unload
+      // starts. Observe this restart before accepting the next Running state.
+      await expect(page.locator(".kmprogress-overlay")).toBeVisible({ timeout: 30_000 });
+      await waitForMachineBootInput(page);
+    }
+    await expectTerminal(page, /WLTERM_READY/, 120_000);
+    await openSurface(page, "Graphics");
+    const canvas = canvasLocator(page);
+    await expect.poll(() => chipText(page), { timeout: 120_000 }).toMatch(/webgl2-gl/i);
+    await expect.poll(owner, { timeout: 60_000 }).toBeGreaterThan(0);
+    await expect.poll(async () => (await canvas.screenshot()).byteLength,
+      { timeout: 60_000 }).toBeGreaterThan(8_000);
+    // Why: WLTERM_READY marks the first committed grid, before its shell has
+    // necessarily loaded. Early keys can precede the PTY's initial setup.
+    const mode = (await chipText(page)).match(/(\d+)×(\d+)/)!;
+    await expect.poll(async () => cageShellTextColumns(page, await canvas.screenshot(),
+      { width: Number(mode[1]), height: Number(mode[2]) }), { timeout: 60_000 }).toBeGreaterThan(24);
+    const beforeWidth = (await canvas.boundingBox())!.width;
+    const compositor = await owner();
+    await page.setViewportSize(cycle % 2 === 0 ? { width: 1000, height: 720 } : { width: 1280, height: 800 });
+    // Why: resizing changes the host viewport and preferred connector mode;
+    // it does not force wlroots to modeset an already active CRTC.
+    await expect.poll(async () => (await canvas.boundingBox())!.width,
+      { timeout: 60_000 }).not.toBe(beforeWidth);
+    expect(await owner()).toBe(compositor);
+    await expect(page.getByRole("complementary", { name: "Download status" })).toBeHidden({ timeout: 60_000 });
+    await canvas.focus();
+    await expect(canvas).toBeFocused();
+    const before = await canvas.screenshot();
+    await typePhysicalText(page, `echo cage-cycle-${cycle}\n`, { delay: 40 });
+    await expect.poll(async () => (await screenshotPixelDelta(page, before, await canvas.screenshot())).same,
+      { timeout: 60_000 }).toBe(false);
+    if (cycle % 2 === 1 && cycle < 5) continue;
+    // Why: alternate restarts keep Cage and wlterm alive, exercising machine
+    // teardown as well as client-driven release. The final cycle exits cleanly.
+    await typePhysicalText(page, "exit\n", { delay: 40 });
+    await expect.poll(owner, { timeout: 60_000 }).toBe(0);
+    await expect(page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }))
+      .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
+    await expect.poll(() => terminalText(page), { timeout: 60_000 }).toMatch(/WLTERM_EXIT code=0/);
+    await page.locator(".kshell-host:visible .xterm").first().click();
+    await typePhysicalText(page, `echo CAGE_STATUS_${cycle}=$?\n`, { delay: 40 });
+    await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(new RegExp(`CAGE_STATUS_${cycle}=0(?:\\s|$)`));
+  }
+  expect(await memoryBoundaryRealmId(page)).toBe(realm);
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+  expect(failures).toEqual([]);
 });
