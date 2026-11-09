@@ -182,51 +182,69 @@ Keep the same semantic prefix when a PR is squash-merged so the resulting
 commit remains identifiable in history; purpose-prefix substantive intermediate
 commits as well.
 
-The prefix does not replace a purpose-led title. PR titles, PR descriptions,
-and commit messages should lead with the platform contract, user-visible
-behavior, system invariant, or project capability being changed or protected.
-Every PR description must begin its substance with a plain-language `## Why`
-section. Put `## What changed`, implementation details, validation, and rollout
-information after it. The Why section must explain:
+### PR Titles And Descriptions
 
-- what currently fails, is risky, or is unnecessarily difficult;
-- who or what is affected; and
-- why the change matters to Kandelo's users, platform contracts, or maintainers.
+Write PR titles and descriptions for a junior developer who has not followed
+the work. Keep them short, plain, and specific: a reviewer should understand
+the change in under a minute. A long description is not more rigorous; it is
+harder to review.
 
-Prefer concise PR titles that remain suitable as merge subjects.
-The title should name the purpose of the change without trying to
-carry its implementation, validation record, or full rationale.
+**Title.** Use `Area: Purpose`, naming what changes for users or maintainers
+in ordinary words. Keep it short enough to read at a glance and to serve as
+the merge commit subject. Leave the mechanism, validation, and rationale to
+the description.
 
-Describe the finished change against the PR's target branch. Explain its
-current behavior, validation and remaining limits without making the reader
-reconstruct intermediate implementations or timing problems. Put durable
-lessons in the relevant agent guide and architecture reflections; keep
-dated investigation reports as evidence. Historical results must not be
-presented as current readiness. See [architecture reflections](../architecture-reflections.md).
+- Good: `Docs: Add credits`, `POSIX: Return EINTR from interrupted poll()`.
+- Too long: `Kernel: Rework restart handling so SA_RESTART resubmits
+  zero-progress outer ppoll waits across host retries`.
 
-Manually wrap ordinary prose in PR descriptions and commit-message
-bodies at 72 columns before publishing it. Editor or renderer soft
-wrapping does not satisfy this rule: the stored text itself should be
-wrapped. Preserve intentional paragraph boundaries and the
-indentation of Markdown lists. Markdown tables, code blocks, and
-generated text are exempt. An indivisible URL or identifier may also
-exceed 72 columns when breaking or reflowing it would damage its
-semantics. These exceptions do not justify leaving surrounding
-ordinary prose unwrapped.
+**Description.** Use these three sections, in this order:
 
-Write for a junior developer who has not followed the incident or earlier PRs.
-Keep descriptions as concise and focused as reasonable. Include the problem,
-resulting behavior, and validation needed to assess the change; omit unrelated
-details, conversational history, and repeated explanations. Scale the length
-to the change: a small fix can use a sentence or two under each required
-section, while a complex change may need more context. Concision must not
-depend on unexplained shorthand or omitted information a reviewer needs.
-Define necessary terms, expand acronyms on first use, and use a concrete example
-when it makes the failure easier to understand. Links may supply evidence or
-history, but the reader must not need to open them to learn why the PR exists.
-Avoid unexplained repository shorthand, internal task names, and descriptions
-that start with file edits or implementation mechanics. Preserve technical
-precision while explaining specialized concepts in ordinary language.
+- `## Why`: one to three sentences. What is wrong or missing, and who it
+  affects.
+- `## What changed`: a few bullets, one line each, describing the resulting
+  behavior. Name a file only when a reviewer needs it to find something.
+- `## Validation`: what you ran and what you did not run, one line each.
+
+Most PRs need 10 to 20 lines. Add a short extra section only when a reviewer
+cannot judge the change without it, such as an ABI bump, a known gap, or a
+before/after table for a performance claim.
+
+**Plain language.**
+
+- Use words a junior developer knows. Define a necessary term or acronym the
+  first time it appears, and use a concrete example when it makes a failure
+  easier to understand.
+- Leave out internal task names, lane names, and repository shorthand.
+- Describe the finished change against the target branch. Leave out the
+  investigation story, dead ends, and intermediate versions.
+- Say each thing once; do not repeat a point across sections.
+- Links may support a claim, but the description must make sense without
+  opening them.
+
+**Detail belongs elsewhere.** Put the implementation notes a future reader
+needs in commit message bodies, longer evidence such as logs and measurements
+in a linked doc or PR comment, and durable lessons in the relevant agent guide
+and architecture reflections; keep dated investigation reports as evidence.
+Historical results must not be presented as current readiness. See
+[architecture reflections](../architecture-reflections.md).
+
+### Commit Messages
+
+Commit messages follow the same rules: simple, clear, and plain. The subject
+is a short `Area: Purpose` line. The body says what changed and why, in a few
+short paragraphs or bullets that a junior developer can follow. Keep the
+details a future reader needs, such as the reason for a non-obvious choice,
+an important limit, or the evidence for a claim. Leave out the investigation
+story, repeated points, and filler. Most bodies need 3 to 10 lines; a small,
+obvious change may need only the subject.
+
+**Wrapping.** Do not hard-wrap prose in PR descriptions: write one line per
+paragraph or list item. GitHub's squash merge builds the commit message from
+the PR body and re-wraps it, so pre-wrapped text comes out broken. Commit
+message bodies are different: wrap their prose at 72 columns, leaving
+Markdown tables, code blocks, generated text, and indivisible URLs or
+identifiers intact.
 
 ### Comment Decisions, Not Syntax
 
@@ -266,9 +284,10 @@ rewriting another contributor's branch, inspect the original commits with
   and validation. Rerun the required gates.
 
 For nontrivial runtime, ABI-adjacent, generated-code, package-artifact, or
-measurement-sensitive work, the commit body and PR description or maintainer
-comment should explain the problem, implementation, measured or observed
-effect, validation, skipped suites, and remaining risk. When reporting
+measurement-sensitive work, the commit body (or a maintainer comment) should
+briefly cover the problem, implementation, measured or observed effect,
+validation, skipped suites, and remaining risk, in a line or two each. The PR
+description summarizes the result in its three short sections. When reporting
 before/after numeric results, use a compact table instead of prose-only
 bullets, and include the run context needed to compare the numbers honestly
 (for example host, engine version, benchmark source, and whether rows came from
@@ -312,8 +331,9 @@ when useful, link to the historical plan for rationale.
 Do not duplicate long policy text across many files. Keep one authoritative
 reference and point agent guidance to it.
 
-PR descriptions and agent final reports should make the contract scope and
-evidence explicit:
+Agent final reports should make the contract scope and evidence explicit. A
+PR description answers only the questions that apply, briefly, inside its
+three sections:
 
 - What platform contract changed?
 - What claim is being made?
