@@ -63,3 +63,18 @@ body {
     padding: 8px 16px;
   }
 }
+
+.credits-list dt {
+  margin-top: 16px;
+  font-weight: 600;
+}
+
+.credits-list dd {
+  margin: 4px 0 0;
+  color: var(--vp-c-text-2);
+}
+
+.credits-list .credits-by {
+  font-weight: 400;
+  color: var(--vp-c-text-2);
+}
