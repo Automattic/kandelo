@@ -1,0 +1,32 @@
+{
+  "context": {
+    "command": [
+      "npx",
+      "playwright",
+      "test",
+      "test/kandelo-doom-exchange.spec.ts",
+      "test/retro-rom-drop.spec.ts",
+      "test/game-content-drop.spec.ts",
+      "test/kandelo-quake.spec.ts",
+      "test/dos-games-activity.spec.ts",
+      "test/persistent-activities.spec.ts",
+      "--project=chromium",
+      "--repeat-each=3",
+      "--workers=6",
+      "--reporter=list,json"
+    ],
+    "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+    "console_log": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/.context/agent-jobs/baseline-browser-clean-cache-1109-113247-1f93/scratch/reports/playwright.HKtKEk/console.log",
+    "cwd": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/apps/browser-demos",
+    "exit_code": 1,
+    "repo_root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree",
+    "runtime": "node",
+    "started_at": "2026-11-09T16:32:49Z",
+    "suite": "playwright"
+  },
+  "source_sha256": "5713e1d03c0329adceb8757f793c95e013f1954fe68b437224951a1a3463b385",
+  "cases": {
+    "[chromium] kandelo-doom-exchange.spec.ts > kandelo-doom-exchange.spec.ts > a file the doom rule does not take is saved and leaves the running WAD alone": {"observed":["failed"],"outcome":"fail","reason":"Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m Expected: \u001b[32m\"saved to ~/Downloads/huge.wad\"\u001b[39m Received: \u001b[31m\"failed: no space left on device\"\u001b[39m Call Log: - Timeout 90000ms exceeded while waiting on the predicate"},
+    "[runner exit]": {"outcome":"error","reason":"runner exited 1; inspect the console log for errors omitted by the reporter"}
+  }
+}

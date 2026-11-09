@@ -1,0 +1,38 @@
+{
+  "context": {
+    "browser_selection": {
+      "change": "Only runtime-source discovery narrowed to four failed source units; compiler, runtime, expectations and result accounting unchanged.",
+      "original_wrapper_sha256": "f34b301706f202e09520d5e6d682e7c943a257ba7aef8ddbe192ff303d932b97",
+      "private_wrapper_sha256": "531f53f1c7d3ee33899c3f88d1eeaf86c5d3d70e0ce73ba4652ffd32b4de7904",
+      "source_commit": "7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d",
+      "source_root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/.context/sortix-volume/main-os-test"
+    },
+    "command": [
+      "bash",
+      ".context/run-browser-sortix-four.sh",
+      "basic"
+    ],
+    "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+    "date": "2026-11-09T17:32:57.358756+00:00",
+    "excerpt_source_lines": [
+      421,
+      422,
+      436
+    ],
+    "exit_code": 1,
+    "fixture_control": "Normal Node wrapper compiled all three shared fixtures before browser rerun; exact upstream assertions unchanged",
+    "host": "browser",
+    "phase": "browser",
+    "repo_root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree",
+    "source_root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/.context/sortix-volume/main-os-test",
+    "suite": "sortix-basic-four-fixture-corrected"
+  },
+  "counts": {
+    "FAIL": 1
+  },
+  "source_sha256": "41d8d6aff021e05a7febd46478a1cbb9ea776c09e0b7c98d7d9ff6fc0b050242",
+  "cases": {
+    "[runner exit]": {"outcome":"error","reason":"runner exited 1; inspect the console log for errors omitted by the reporter"},
+    "basic/termios/tcgetwinsize": {"outcome":"fail","reason":"FAIL basic/termios/tcgetwinsize (exit 1)"}
+  }
+}
