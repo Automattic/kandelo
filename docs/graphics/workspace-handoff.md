@@ -147,7 +147,7 @@ preview copies above remain controls. The runnable normal preview is port
 56501, with its exact shell hash and self-contained Cage URL in the runtime
 report. Availability is separate from full acceptance.
 
-Read the PR’s [reliability report](https://github.com/Automattic/kandelo/blob/ab3324bcbe9bf3f3029334169414d0d70756a80b/docs/graphics/cage-reliability-2026-11.md)
+Read the PR’s [reliability report](https://github.com/Automattic/kandelo/blob/4bde403bd0573ce8b036197e9e6150098a88eb24/docs/graphics/cage-reliability-2026-11.md)
 and Sydney `.context/cage-r1-evidence/ACTIVE-SYDNEY.md` before continuing.
 Focused normal graphics passed 30/30, host checks 15/15 and terminal UI
 12/12. The approved bounded cleanup collected 18.1 GiB logical after
@@ -167,3 +167,15 @@ cleanup approval is pending.
 Other Cage reports remain unclassified, and profiles justify no performance
 correction or native-feel claim. B2–B6/C1–C3 remain paused. The campaign
 register retains the full Q/D/L/V/P requirements.
+
+
+The maintainer's subsequent cursor-slowness report is now reproduced on the
+same frozen normal preview. A light cursor observer sees 40 updates at
+1280×612 but one at 3840×2052 during Chromium's 60-move sweep plus drain.
+Full diagnostics locate major synchronous cost in imported-BO readiness
+coherence: 8.32 GB of mapped spans and 8.32 GB copied in the 4K case, with
+1.16s inside import synchronization. WebKit also degrades. No runtime
+performance correction has been applied; acceptable interactive Cage use is
+an open R1 blocker. Read the report's cursor section and Sydney retained
+`.context/cage-performance-20261109/` evidence before choosing a correction.
+The normal server and all product identities remain unchanged.

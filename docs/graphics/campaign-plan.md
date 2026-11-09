@@ -157,7 +157,7 @@ scrollback or modifying Cage/wlroots.
 The normal Sydney candidate, exact commands/products, validation results,
 unsuccessful controls and profiling limitations are recorded in the follow-up
 PR and its `docs/graphics/cage-reliability-2026-11.md` report. See [draft PR #1678](https://github.com/Automattic/kandelo/pull/1678) and
-its [frozen reliability report](https://github.com/Automattic/kandelo/blob/ab3324bcbe9bf3f3029334169414d0d70756a80b/docs/graphics/cage-reliability-2026-11.md).
+its [frozen reliability report](https://github.com/Automattic/kandelo/blob/4bde403bd0573ce8b036197e9e6150098a88eb24/docs/graphics/cage-reliability-2026-11.md).
 Normal graphics pass 30/30 (10 per engine), terminal UI 12/12 and host
 sessions/PTYs 15/15; normal products, original fixtures and ABI 56/4/17/21
 are verified. The maintainer approved the reviewed shared-cache collection;
@@ -174,6 +174,16 @@ the PR stays a draft with that retirement investigation open. The passing
 rerun is not an owner repair or permission to waive that finding. There is no performance correction or
 native-feel claim, and the original shipment failures remain historical
 failures. Other Cage reports are not assigned to either diagnosed cause.
+A new normal-runtime pointer workload reproduces the reported severe cursor
+slowness: Chromium paints 40 changed cursor states at 1280×612 but only one
+at 3840×2052 during 60 mouse moves plus a drain, with the light observer.
+Full diagnostics record 8.32 GB of mapped spans, 8.32 GB of copies and 1.16s
+inside import synchronization in the 4K case. Readiness/receive handling
+couples pointer input to full-image BO scans/imports in the worker that also
+services cursor/vblank presentation. WebKit also degrades with output size.
+This is an open R1 performance blocker; no correction or speedup is claimed.
+The runtime stayed frozen, and the report retains failed diagnostic attempts
+and observer-cost limits. First-load time still needs separation.
 The broad B2–B6/C1–C3 campaign remains paused; the full Q/D/L/V/P gates stay
 open. The accidentally expanded Freeciv run also retains three direct-display
 failures for D1/V1/P1 investigation, rather than silently treating its
@@ -458,7 +468,7 @@ assertion or overrule maintainer decisions.
 
 | Field | Current value |
 | --- | --- |
-| Selected next work | Review draft #1678 and trace intermittent PCM retirement before R1 acceptance |
+| Selected next work | Repair reproduced Cage pointer-performance blocker; retain PCM retirement investigation |
 | Implementation/release scope | Browser storage bootstrap diagnostics, persistent Cage test fixture, terminal visibility/fit ordering and regressions; preserve ABI 56/4/17/21 |
 | Research inputs | Preserved shipment controls, current-main-based normal reproduction, standalone OPFS/xterm controls and frozen Cage copy/native-call profiles |
 | Main risk | Startup failure and reported runtime crashes/slowness may have different causes |
