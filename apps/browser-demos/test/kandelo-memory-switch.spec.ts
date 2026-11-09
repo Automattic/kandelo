@@ -84,7 +84,9 @@ test("@slow games, Freeciv, LÖVE, cage, sway, labwc, DOS, tmux and WordPress su
   const runtimeFailures: string[] = [];
   page.on("pageerror", error => runtimeFailures.push(error.message));
   page.on("console", message => {
-    const failedRelease = /release acknowledgement timed out|retirement wake failed|incomplete graceful generation detach|graceful kernel-worker detach timed out|destroy drain timed out with woken process|force-terminating/;
+    // Why: containment can finish teardown while leaving shared audio unsafe.
+    // A later non-audio machine must not hide that missing retirement fence.
+    const failedRelease = /release acknowledgement timed out|retirement wake failed|incomplete graceful generation detach|graceful kernel-worker detach timed out|destroy drain timed out with woken process|force-terminating|terminated the kernel worker realm|kernel-worker realm termination failed/;
     if (message.type() === "error" || failedRelease.test(message.text())) {
       runtimeFailures.push(message.text());
     }
