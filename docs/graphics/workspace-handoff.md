@@ -147,20 +147,22 @@ preview copies above remain controls. The runnable normal preview is port
 56501, with its exact shell hash and self-contained Cage URL in the runtime
 report. Availability is separate from full acceptance.
 
-Read the PR’s [reliability report](https://github.com/Automattic/kandelo/blob/276452a958/docs/graphics/cage-reliability-2026-11.md)
+Read the PR’s [reliability report](https://github.com/Automattic/kandelo/blob/ab3324bcbe9bf3f3029334169414d0d70756a80b/docs/graphics/cage-reliability-2026-11.md)
 and Sydney `.context/cage-r1-evidence/ACTIVE-SYDNEY.md` before continuing.
 Focused normal graphics passed 30/30, host checks 15/15 and terminal UI
 12/12. The approved bounded cleanup collected 18.1 GiB logical after
 preserving unique diagnostics and verifying all six preview projections;
 50 frozen source/product identities and the previews remain unchanged.
-The full memory rerun passed 17/18 browser cases and all 7/253/3/7 earlier
-phases. WebKit's prior Doom worklet missed its detach acknowledgement;
-replacement Quake audio correctly stayed unprepared. A four-cycle
-instrumented WebKit check passed all 20 detachments, and a native reduction
-passed 512 retirements per engine, without explaining the original failure.
-The gate's warning filter now rejects all containment failures and a full
-rerun is in progress. Retain the failed gate as adverse evidence; acceptance
-remains incomplete. No further cleanup approval is pending.
+The latest full gate, with every containment warning rejected, passed
+source 7, ownership 253, Node 3, Bun 7 and all 18 browser cases (six per
+engine, four mixed-switch cycles, zero skips/flaky/retries), exit 0 after
+28m52s. The earlier 17/18 run remains adverse: a Doom worklet missed its
+detach acknowledgement and replacement Quake audio stayed unprepared.
+Instrumented WebKit and native worklet reductions did not reproduce it.
+That intermittent finding remains unexplained, with no runtime owner
+repair, so PR #1678 stays a draft and R1 acceptance remains open. The report
+records the next discriminating PCM driver/transport experiment. No further
+cleanup approval is pending.
 
 Other Cage reports remain unclassified, and profiles justify no performance
 correction or native-feel claim. B2–B6/C1–C3 remain paused. The campaign
