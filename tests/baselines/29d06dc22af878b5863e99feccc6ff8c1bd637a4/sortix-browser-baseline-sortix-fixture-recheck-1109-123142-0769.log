@@ -1,0 +1,3 @@
+FAIL  basic/termios/tcgetwinsize (exit 1)
+  SIGWINCH was not received
+  FAIL  basic/termios/tcgetwinsize

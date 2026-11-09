@@ -1,0 +1,22 @@
+{
+  "suite": "parallel-browser-startup",
+  "host": "chromium",
+  "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+  "repo_root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree",
+  "date": "2026-11-09T16:30:52.335632+00:00",
+  "job": "baseline-browser-comparison-1109-112109-92e3",
+  "exit_code": 143,
+  "note": "Run intentionally stopped before a usable journal result. A private silent diagnostic against its existing Vite server observed the served module export mismatch below; the same diagnostic on a new isolated server booted cleanly. Own generated Vite cache was archived, then regenerated with all owned servers stopped. The independent clean-cache full run is recorded separately.",
+  "diagnostic_source_sha256": "e04a71be882e1d60c293353cc97d8c7ddee8dd18f0ce64a72a37067493ef6fca",
+  "diagnostic": {
+    "events": [
+      {
+        "type": "pageerror",
+        "message": "The requested module '/node_modules/.vite/deps/react-dom.js?v=c9e8cea3' does not provide an export named 't'",
+        "stack": ""
+      }
+    ],
+    "url": "http://127.0.0.1:52071/?vfs=http%3A%2F%2F127.0.0.1%3A52071%2F%40fs%2FUsers%2Fbrandon%2Fconductor%2Fworkspaces%2Fkandelo%2Fguangzhou-v1%2F.context%2Fenospc-worktree%2Flocal-binaries%2Fsource-only-v1%2Fprograms%2Fwasm32%2Fshell.vfs.zst&profile=shell",
+    "body": ""
+  }
+}
