@@ -59,7 +59,7 @@ use sha2::{Digest, Sha256};
 use crate::host_tool_probe::{self, ProbeFailure};
 use crate::pkg_manifest::{
     BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, GitBuildInput,
-    HostTool, MAX_CACHE_PROVENANCE_BYTES, ManifestKind, SourceProvider, TargetArch,
+    HostTool, MAX_CACHE_PROVENANCE_BYTES, ManifestKind, PackageToolchain, SourceProvider, TargetArch,
     cache_provenance_path, expected_cache_provenance_bytes, file_paths_conflict,
     remove_cache_provenance, validate_cache_provenance, write_cache_provenance,
 };
@@ -7225,8 +7225,11 @@ fn compute_sha_with_identity_context_for_platform(
     };
     let global_toolchain_inputs = match target.kind {
         ManifestKind::Library | ManifestKind::Program => match global_toolchain_inputs_override {
-            Some(inputs) => inputs.to_vec(),
-            None => global_package_toolchain_digests()?,
+            Some(inputs) => inputs.iter().filter(|input| {
+                target.build.toolchain == PackageToolchain::Sdk
+                    || PACKAGE_PACKAGING_INPUTS.contains(&input.label.as_str())
+            }).cloned().collect(),
+            None => package_global_build_input_digests(target)?,
         },
         ManifestKind::Source => Vec::new(),
     };
@@ -7240,6 +7243,11 @@ fn compute_sha_with_identity_context_for_platform(
     };
 
     let mut h = Sha256::new();
+    // Keep historical SDK keys byte-for-byte. The opt-out changes the recipe
+    // environment as well as its input closure, so give it a versioned identity.
+    if target.build.toolchain == PackageToolchain::None {
+        h.update(b"kandelo-package-toolchain-v1\0none\0");
+    }
     if let Some(domain_separator) = policy.domain_separator() {
         h.update(domain_separator);
     }
@@ -7528,6 +7536,35 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "scripts/calltypes-plugin.sh",
 ];
 
+// Toolchain-free recipes still consume the pinned host environment, source
+// staging, installation and admission helpers. Do not drop those inputs with
+// the compiler/sysroot inputs. Keep this subset in the legacy list's order.
+const PACKAGE_PACKAGING_INPUTS: &[&str] = &[
+    "flake.nix",
+    "flake.lock",
+    "rust-toolchain.toml",
+    "scripts/dev-shell.sh",
+    "scripts/setup.sh",
+    "scripts/install-local-binary.sh",
+    "scripts/wasm-artifact-guards.sh",
+    "scripts/package-build-roots.sh",
+    "scripts/package-source-metadata.py",
+    "scripts/check-package-imports.sh",
+    "tools/xtask/src/package_imports.rs",
+    "tools/xtask/src/program_env_imports.rs",
+    ".github/actions/package-archive-build",
+    ".github/actions/package-toolchain",
+    ".github/actions/fetch-submodules",
+    ".github/actions/download-run-artifacts",
+];
+
+fn package_global_build_input_paths(target: &DepsManifest) -> &'static [&'static str] {
+    match target.build.toolchain {
+        PackageToolchain::Sdk => GLOBAL_PACKAGE_TOOLCHAIN_INPUTS,
+        PackageToolchain::None => PACKAGE_PACKAGING_INPUTS,
+    }
+}
+
 /// The full input closure of the wasm-fork-instrument tool: the crate's
 /// cargo-derived workspace source closure (crates/fork-instrument, its
 /// workspace path-deps, and .cargo/config.toml) plus the explicit non-crate
@@ -7556,6 +7593,7 @@ fn fork_instrument_tool_input_paths(root: &Path) -> Result<Vec<String>, String> 
 type RootDigestCache = OnceLock<Mutex<BTreeMap<PathBuf, Result<Vec<BuildInputDigest>, String>>>>;
 
 static GLOBAL_PACKAGE_TOOLCHAIN_DIGESTS: RootDigestCache = OnceLock::new();
+static PACKAGE_PACKAGING_DIGESTS: RootDigestCache = OnceLock::new();
 static FORK_INSTRUMENT_TOOL_DIGESTS: RootDigestCache = OnceLock::new();
 
 fn root_scoped_build_input_digests(
@@ -7590,6 +7628,16 @@ fn global_package_toolchain_digests() -> Result<Vec<BuildInputDigest>, String> {
     let root = repo_root();
     root_scoped_build_input_digests(&GLOBAL_PACKAGE_TOOLCHAIN_DIGESTS, &root, |root| {
         global_package_build_input_digests_for(root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
+    })
+}
+
+fn package_global_build_input_digests(target: &DepsManifest) -> Result<Vec<BuildInputDigest>, String> {
+    if target.build.toolchain == PackageToolchain::Sdk {
+        return global_package_toolchain_digests();
+    }
+    let root = repo_root();
+    root_scoped_build_input_digests(&PACKAGE_PACKAGING_DIGESTS, &root, |root| {
+        global_package_build_input_digests_for(root, PACKAGE_PACKAGING_INPUTS)
     })
 }
 
@@ -14138,7 +14186,7 @@ fn capture_cache_key_inputs(
     CacheKeyInputSnapshot {
         declared: build_input_digests_from_repo(target, registry, repo_root, policy)
             .unwrap_or_default(),
-        global_toolchain_memoized: global_package_toolchain_digests().unwrap_or_default(),
+        global_toolchain_memoized: package_global_build_input_digests(target).unwrap_or_default(),
     }
 }
 
@@ -14203,7 +14251,7 @@ fn describe_cache_key_input_drift(
     // to the key comparison itself; without this re-read the report would say
     // "nothing changed" while a shared input had in fact moved underneath.
     let after_global =
-        global_package_build_input_digests_for(repo_root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
+        global_package_build_input_digests_for(repo_root, package_global_build_input_paths(target))
             .unwrap_or_default();
     describe_cache_key_input_drift_lines(
         &before.declared,
@@ -14264,6 +14312,47 @@ fn describe_cache_key_input_drift_lines(
     );
     report
 }
+
+/// PATH filtering catches ordinary accidental SDK use; it is not a sandbox.
+/// Recipes remain responsible for declaring every input they read, including
+/// any SDK source they access directly. See docs/package-management.md.
+fn configure_package_toolchain_environment(
+    command: &mut Command,
+    repo: &Path,
+    toolchain: PackageToolchain,
+) -> Result<(), String> {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    command.env("PATH", package_build_path(repo, toolchain, &inherited)?);
+    if toolchain == PackageToolchain::None {
+        for variable in [
+            "CC", "CXX", "CPP", "AR", "AS", "LD", "NM", "RANLIB", "STRIP",
+            "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "CONFIG_SITE", "WASM_POSIX_SYSROOT",
+        ] {
+            command.env_remove(variable);
+        }
+    }
+    Ok(())
+}
+
+fn package_build_path(repo: &Path, toolchain: PackageToolchain, inherited: &OsStr) -> Result<OsString, String> {
+    let sdk_bin = repo.join("sdk/bin");
+    if toolchain == PackageToolchain::Sdk {
+        // WHY: ordinary builds must resolve this worktree's wrappers first,
+        // never a sibling checkout's globally linked SDK.
+        let mut path = sdk_bin.into_os_string();
+        path.push(":");
+        path.push(inherited);
+        return Ok(path);
+    }
+    let paths = std::env::split_paths(inherited).filter(|path| {
+        // Also remove sibling SDKs and aliases, so a second SDK later in PATH
+        // cannot silently satisfy a recipe that opted out of the toolchain.
+        !path.ends_with("sdk/bin")
+            && !std::fs::canonicalize(path).is_ok_and(|real| real.ends_with("sdk/bin"))
+    });
+    std::env::join_paths(paths).map_err(|error| format!("package build PATH: {error}"))
+}
+
 fn build_into_cache(
     target: &DepsManifest,
     registry: &Registry,
@@ -14455,25 +14544,7 @@ fn build_into_cache(
         }
         cmd.arg(&script);
         configure_primary_source_environment(&mut cmd, target, policy, primary_source.as_ref())?;
-        // Worktree-local SDK invocation. Prepend `<repo>/sdk/bin` to PATH
-        // so build scripts that call `wasm32posix-cc` (and friends)
-        // resolve to THIS worktree's SDK source — not whatever a global
-        // `npm link` last pointed at. Without this, a sibling worktree's
-        // SDK + sysroot can leak into the build, producing binaries with
-        // a foreign ABI. `<repo>/sdk/bin/` holds committed wrapper
-        // scripts that run this worktree's SDK driver; see
-        // `docs/package-management.md` "Toolchain on PATH".
-        let sdk_bin = crate::repo_root().join("sdk").join("bin");
-        let path_var = match std::env::var_os("PATH") {
-            Some(existing) => {
-                let mut p = std::ffi::OsString::from(&sdk_bin);
-                p.push(":");
-                p.push(existing);
-                p
-            }
-            None => std::ffi::OsString::from(&sdk_bin),
-        };
-        cmd.env("PATH", path_var);
+        configure_package_toolchain_environment(&mut cmd, repo_root, target.build.toolchain)?;
         cmd.env("WASM_POSIX_DEP_OUT_DIR", &tmp);
         cmd.env("WASM_POSIX_DEP_WORK_DIR", &work.recipe_work);
         cmd.env("WASM_POSIX_DEP_NAME", &target.name);
@@ -17836,7 +17907,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                         return Err("build-deps resolve: unexpected extra arg".into());
                     }
                     if matches!(manifest.kind, ManifestKind::Library | ManifestKind::Program) {
-                        crate::local_build::ensure_package_sysroot(&repo, arch)?;
+                        for sdk_arch in resolve_sysroot_arches(&manifest, &registry, arch)? {
+                            crate::local_build::ensure_package_sysroot(&repo, sdk_arch)?;
+                        }
                     }
                     cmd_resolve(
                         &manifest,
@@ -17969,6 +18042,7 @@ fn cmd_parse(m: &DepsManifest) -> Result<(), String> {
         "build     = {}",
         m.build_script_path(&crate::repo_root()).display()
     );
+    println!("toolchain = {}", m.build.toolchain.as_str());
     println!("outputs.libs     = {:?}", m.outputs.libs);
     println!("outputs.headers  = {:?}", m.outputs.headers);
     if !m.outputs.pkgconfig.is_empty() {
@@ -18167,6 +18241,30 @@ fn output_fork_instrumentation_for_rel(
         }
     }
     Ok(ForkInstrumentationPolicy::Auto)
+}
+
+fn resolve_sysroot_arches(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+) -> Result<BTreeSet<TargetArch>, String> {
+    if target.build.toolchain == PackageToolchain::Sdk {
+        // Preserve the existing standalone preparation for ordinary SDK roots.
+        return Ok(BTreeSet::from([arch]));
+    }
+    // Opting out applies only to this recipe. A compiled dependency still
+    // needs its SDK, including architecture fallback in a mixed-width graph.
+    let graph = resolved_dependency_graph_with_loader(target, arch, &mut |name| registry.load(name))?;
+    let mut required = BTreeSet::new();
+    for (node, kind) in graph.nodes {
+        if node.package_name != target.name
+            && matches!(kind, ManifestKind::Library | ManifestKind::Program)
+            && registry.load(&node.package_name)?.build.toolchain == PackageToolchain::Sdk
+        {
+            required.insert(node.target_arch);
+        }
+    }
+    Ok(required)
 }
 
 fn cmd_resolve(
@@ -25008,6 +25106,113 @@ allow_uninitialized_gitlinks = true
             before, after,
             "the cache identities serialized into program-packages.json must change with global toolchain inputs",
         );
+    }
+
+    #[test]
+    fn toolchain_none_keys_keep_packaging_inputs_and_transitive_sdk_dependencies() {
+        let root = tempdir("toolchain-none-keys");
+        write_program(&root, "pages", "1.0.0", &[], ":", &[("pages", "pages.zip")]);
+        write_lib(&root, "compiled", "1.0.0", &[], ":", "[outputs]\nlibs = [\"lib/out.a\"]\n");
+        for name in ["pages", "compiled"] {
+            let path = root.join(name).join("package.toml");
+            let text = fs::read_to_string(&path).unwrap().replace(&"0".repeat(64), &"1".repeat(64));
+            fs::write(path, text).unwrap();
+        }
+        let registry = Registry { roots: vec![root.clone()] };
+        let mut pages = registry.load("pages").unwrap();
+        pages.program_outputs[0].fork_instrumentation = ForkInstrumentationPolicy::Disabled;
+        let inputs = vec![
+            BuildInputDigest { label: "sdk/src".into(), digest: [1; 32] },
+            BuildInputDigest { label: "libc/glue".into(), digest: [2; 32] },
+            BuildInputDigest { label: "scripts/install-local-binary.sh".into(), digest: [3; 32] },
+        ];
+        let hash = |manifest: &DepsManifest, inputs: &[BuildInputDigest], policy| {
+            compute_sha_with_global_toolchain_inputs_for_policy(
+                manifest, &registry, TEST_ARCH, current_abi_version(), policy,
+                &mut BTreeMap::new(), &mut Vec::new(), Some(inputs),
+            ).unwrap()
+        };
+        for policy in [ResolvePolicy::Default, ResolvePolicy::SourceOnlyV1] {
+            let sdk = hash(&pages, &inputs, policy);
+            let mut sdk_edit = inputs.clone();
+            sdk_edit[0].digest = [4; 32];
+            assert_ne!(sdk, hash(&pages, &sdk_edit, policy));
+            pages.build.toolchain = PackageToolchain::None;
+            assert!(resolve_sysroot_arches(&pages, &registry, TEST_ARCH).unwrap().is_empty());
+            let none = hash(&pages, &inputs, policy);
+            assert_ne!(sdk, none, "toolchain declaration is key material");
+            assert_eq!(none, hash(&pages, &sdk_edit, policy));
+            let mut libc_edit = inputs.clone();
+            libc_edit[1].digest = [5; 32];
+            assert_eq!(none, hash(&pages, &libc_edit, policy));
+            let mut packaging_edit = inputs.clone();
+            packaging_edit[2].digest = [6; 32];
+            assert_ne!(none, hash(&pages, &packaging_edit, policy));
+            let mut source_edit = pages.clone();
+            source_edit.source.sha256 = "a".repeat(64);
+            assert_ne!(none, hash(&source_edit, &inputs, policy));
+            let mut dependent = pages.clone();
+            dependent.depends_on.push(DepRef { name: "compiled".into(), version: "1.0.0".into() });
+            assert_eq!(resolve_sysroot_arches(&dependent, &registry, TEST_ARCH).unwrap(), BTreeSet::from([TEST_ARCH]));
+            assert_ne!(hash(&dependent, &inputs, policy), hash(&dependent, &sdk_edit, policy),
+                "opting out must retain a compiled dependency's full SDK identity");
+            pages.build.toolchain = PackageToolchain::Sdk;
+        }
+        assert!(PACKAGE_PACKAGING_INPUTS.iter().all(|path| GLOBAL_PACKAGE_TOOLCHAIN_INPUTS.contains(path)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn toolchain_none_path_removes_sdk_entries_and_aliases_but_keeps_packaging_tools() {
+        let root = tempdir("toolchain-none-path");
+        let sdk = root.join("sdk/bin");
+        fs::create_dir_all(&sdk).unwrap();
+        let mut entries = vec![sdk.clone(), root.join("sibling/sdk/bin/"), PathBuf::from("/usr/bin"), sdk.clone()];
+        #[cfg(unix)]
+        {
+            let alias = root.join("linked-tools");
+            std::os::unix::fs::symlink(&sdk, &alias).unwrap();
+            entries.push(alias);
+        }
+        let inherited = std::env::join_paths(&entries).unwrap();
+        let filtered = package_build_path(&root, PackageToolchain::None, &inherited).unwrap();
+        assert_eq!(std::env::split_paths(&filtered).collect::<Vec<_>>(), vec![PathBuf::from("/usr/bin")]);
+        let ordinary = package_build_path(&root, PackageToolchain::Sdk, &inherited).unwrap();
+        assert_eq!(std::env::split_paths(&ordinary).next().unwrap(), sdk);
+        let mut command = Command::new("bash");
+        configure_package_toolchain_environment(&mut command, &root, PackageToolchain::None).unwrap();
+        for variable in ["CC", "CONFIG_SITE", "WASM_POSIX_SYSROOT"] {
+            assert!(command.get_envs().any(|(name, value)| name == variable && value.is_none()));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn toolchain_none_recipe_catches_accidental_sdk_use_before_publication() {
+        let root = tempdir("toolchain-none-recipe");
+        let cache = root.join("cache");
+        let fake_sdk = root.join("sdk/bin");
+        fs::create_dir_all(&fake_sdk).unwrap();
+        let compiler = fake_sdk.join("wasm32posix-cc");
+        fs::write(&compiler, "#!/bin/bash\nprintf 'SDK was called\\n'\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&compiler, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        write_lib(&root, "bad-pages", "1.0.0", &[],
+            "wasm32posix-cc\nmkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\nprintf 'data' > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"",
+            "[outputs]\nlibs = [\"lib/out.a\"]\n");
+        let registry = Registry { roots: vec![root.clone()] };
+        let mut manifest = registry.load("bad-pages").unwrap();
+        manifest.build.toolchain = PackageToolchain::None;
+        let error = ensure_built(&manifest, &registry, TEST_ARCH, TEST_ABI,
+            &resolve_opts_with_repo(&cache, None, &root)).unwrap_err();
+        assert!(error.contains("127"), "compiler should be absent: {error}");
+        let sha = compute_sha(&manifest, &registry, TEST_ARCH, TEST_ABI,
+            &mut BTreeMap::new(), &mut Vec::new()).unwrap();
+        assert!(!canonical_path(&cache, &manifest, TEST_ARCH, TEST_ABI, &sha).exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

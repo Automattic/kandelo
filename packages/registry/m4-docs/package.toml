@@ -18,6 +18,7 @@ spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/m4.git/tree/COPYING"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/m4-docs/build-m4-docs.sh"
 
 [[outputs]]

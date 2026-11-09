@@ -846,6 +846,33 @@ whitespace are rejected. Historical archived manifests remain parseable for
 artifact compatibility; the source-build resolver never executes their legacy
 script field.
 
+A recipe that does not use the Kandelo compiler, SDK, or sysroot can declare:
+
+```toml
+[build]
+script_path = "packages/registry/bash-docs/build-bash-docs.sh"
+toolchain = "none"
+```
+
+`toolchain` accepts `"sdk"` (the default) or `"none"`. This is an author
+assertion about the build, not a package category. Copying, template
+substitution, and archiving upstream man pages qualify. A documentation
+recipe that compiles code or uses the SDK/sysroot must keep `"sdk"`.
+Coreutils-docs retains the default and its real guest-program dependencies.
+
+For `"none"`, the resolver removes SDK directories from the recipe's PATH
+(including sibling checkouts and directory aliases), clears inherited C
+compiler/linker selections and flags, and skips standalone sysroot
+preparation for the target. Packaging tools remain available. Aggregate
+builds still prepare the SDK for the compiled packages in their graph.
+
+This catches ordinary accidental SDK commands; it is not filesystem or
+process isolation. A script can still source sdk/activate.sh, use absolute
+compiler paths, read the sysroot, or invoke a native compiler. Those uses
+violate the declaration. Review the script and its sourced helpers before
+opting out; retain every real build input and dependency. Readonly mounts
+would prevent mutations but would not detect these undeclared reads.
+
 Program packages use `[[outputs]]` for executable/side-module artifacts. A
 non-Wasm file required at runtime is declared separately so it remains part of
 the same reproducible archive and cache key:
@@ -1399,6 +1426,15 @@ separate from the guest ABI number: a guest ABI bump invalidates
 ABI-bound archives through `abi_version`, while a toolchain or sysroot
 change invalidates them through this fingerprint.
 
+Recipes with `build.toolchain = "none"` use a versioned cache-key marker
+and retain the common packaging fingerprint: pinned host environment,
+source-staging, installation, validation, and package-build action inputs.
+They exclude automatic musl, libc glue/overlay, SDK, and compiler-driver
+inputs. Declared inputs, source identity, architecture, ABI, instrumentation
+when enabled, and every dependency key still participate. An explicitly
+declared SDK input therefore still changes the key. Existing default-SDK
+recipes keep their historical cache-key encoding.
+
 That means:
 
 - Same inputs → same sha → same cache path → shared artifact.
@@ -1671,7 +1707,9 @@ directories and resolver identity remain intact. A package's cross-build
 environment must not compile the native tool's C dependencies for Wasm.
 
 Repository package build entry points ensure musl core freshness before
-cache identities are calculated. Both sysroots record input fingerprints
+cache identities are calculated for SDK recipes. Standalone resolution of
+`toolchain = "none"` targets skips that preparation; any SDK dependencies
+still retain their ordinary cache identities and build requirements. Both sysroots record input fingerprints
 and installed core-output receipts. A current source stamp with missing or
 altered installed bytes is not a cache hit. Builds compile from private
 musl copies under architecture-specific locks and publish only a validated
@@ -1791,6 +1829,10 @@ partial file and extracts to a per-process directory before renaming it into
 place.
 
 ### Toolchain on PATH
+
+The SDK PATH rules below apply to the default `build.toolchain = "sdk"`.
+Toolchain-free recipes remove SDK paths as described in the
+[recipe contract](#schema-packagetoml-recipe--buildtoml-project-view).
 
 The SDK CLI tools (`wasm{32,64}posix-{cc,c++,ar,ranlib,nm,strip,
 pkg-config,configure}`) are small wrapper scripts under `sdk/bin/`.

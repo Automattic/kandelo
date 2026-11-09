@@ -18,6 +18,7 @@ spdx = "Vim"
 url = "https://github.com/vim/vim/blob/v9.1.0900/LICENSE"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/vim-docs/build-vim-docs.sh"
 
 [[outputs]]

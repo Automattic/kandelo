@@ -18,6 +18,7 @@ spdx = "GPL-3.0-only"
 url = "https://github.com/LBCrion/sfwbar/blob/v1.0_beta17/LICENSE"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/sfwbar-docs/build-sfwbar-docs.sh"
 
 [[outputs]]

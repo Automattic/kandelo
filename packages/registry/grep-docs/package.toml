@@ -18,6 +18,7 @@ spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/grep.git/tree/COPYING?h=v3.11"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/grep-docs/build-grep-docs.sh"
 
 [[outputs]]

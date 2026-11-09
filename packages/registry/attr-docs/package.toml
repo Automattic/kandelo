@@ -18,6 +18,7 @@ spdx = "GPL-2.0-or-later"
 url = "https://git.savannah.nongnu.org/cgit/attr.git/tree/doc/COPYING"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/attr-docs/build-attr-docs.sh"
 
 [[outputs]]
