@@ -6,8 +6,11 @@
     # Node only. nixos-25.11 stops at Node 24.18, which aborts the process
     # when a Worker is terminated while it parses a CommonJS module
     # (`FATAL ERROR: v8::ToLocalChecked Empty MaybeLocal` in
-    # node::cjs_lexer::Parse); Node 24.21 does not.
-    nixpkgs-node.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # node::cjs_lexer::Parse; nodejs/node#63323, fixed in 24.19.0). The
+    # next stable release channel carries a fixed Node 24. Bump this input
+    # deliberately: flake.lock is a package cache-key input, so every move
+    # rebuilds every package.
+    nixpkgs-node.url = "github:NixOS/nixpkgs/nixos-26.05";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
