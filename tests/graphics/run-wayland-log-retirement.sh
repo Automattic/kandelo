@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-out="$(mktemp -d "$root/.context/wayland-logs.XXXXXX")"
+mkdir -p "$root/.scratch"
+out="$(mktemp -d "$root/.scratch/wayland-logs.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 archive="${1:?provide resolver-owned pinned source archive}"
 shift

@@ -43,7 +43,7 @@ for (const compositor of ["cage", "sway"] as const) {
     await installBrowserMemoryBoundaryProbe(page);
     await page.goto(new URL("/trap-signal-test.html", baseURL).href);
     const modulePath = fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts", import.meta.url));
-    const evidenceRoot = fileURLToPath(new URL("../../../.context/wlroots-rendered-sessions/", import.meta.url));
+    const evidenceRoot = fileURLToPath(new URL("../../../.scratch/wlroots-rendered-sessions/", import.meta.url));
     mkdirSync(evidenceRoot, { recursive: true });
     const evidenceName = `${Date.now()}-${test.info().project.name}-${compositor}`;
     try {

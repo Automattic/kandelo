@@ -55,7 +55,7 @@ test(`normal ${arch} GBM guest retains rendered fronts across swaps and retireme
     expect(result.stdout.trim()).toBe("OK GBM rendered fronts survive swaps, exhaustion and retirement");
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);
-    const evidence = fileURLToPath(new URL("../../../.context/gbm-rendered-ring-guests/", import.meta.url));
+    const evidence = fileURLToPath(new URL("../../../.scratch/gbm-rendered-ring-guests/", import.meta.url));
     mkdirSync(evidence, { recursive: true });
     const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
     writeFileSync(`${evidence}/${Date.now()}-${test.info().project.name}-${arch}.json`, JSON.stringify({

@@ -80,7 +80,7 @@ test("keeps download bytes above a separate decompression bar", async ({ page })
   const downloadBounds = await download.boundingBox();
   const decompressionBounds = await decompression.boundingBox();
   expect(decompressionBounds!.y).toBeGreaterThan(downloadBounds!.y);
-  await page.screenshot({ path: "../../.context/persistent-download-decompression.png" });
+  await page.screenshot({ path: "../../.scratch/persistent-download-decompression.png" });
 });
 
 test("falls back to an indeterminate bar when no total is known", async ({ page }) => {

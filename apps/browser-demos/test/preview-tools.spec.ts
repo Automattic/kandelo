@@ -56,7 +56,7 @@ test("the dock Temporary tag confirms retention and the same computer stays save
   expect(Number(highlight.weight)).toBeGreaterThanOrEqual(600);
   expect(highlight.alignment).toBe("center");
   expect(highlight.verticalOffset).toBeLessThanOrEqual(3);
-  await page.locator(".kdock-status").screenshot({ path: resolve(import.meta.dirname, `../../../.context/temporary-badge-centered-${testInfo.project.name}.png`) });
+  await page.locator(".kdock-status").screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/temporary-badge-centered-${testInfo.project.name}.png`) });
   expect((await currentComputerMetadata(page)).retention).toBe("temporary");
   await keep.click();
   await confirmKeepComputer(page);
@@ -127,7 +127,7 @@ test("boot has its own syslog and running WordPress services own their shortcuts
   expect(warningBounds).not.toBeNull();
   expect(dockBounds).not.toBeNull();
   expect(Math.abs(warningBounds!.y + warningBounds!.height - dockBounds!.y)).toBeLessThanOrEqual(1);
-  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.context/stopped-service-preview.png"), animations: "disabled" });
+  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.scratch/stopped-service-preview.png"), animations: "disabled" });
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await expect(page.locator(".kweb-service-notice")).toHaveCount(0);
   await expect(preview).toHaveAttribute("data-stop-retention", "same-frame");
@@ -143,7 +143,7 @@ test("boot has its own syslog and running WordPress services own their shortcuts
   await expect(shortcuts).toBeVisible();
   await wordpress.getByRole("checkbox", { name: "Start on boot", exact: true }).click();
   await expect(wordpress.getByRole("checkbox", { name: "Start on boot", exact: true })).toBeChecked({ timeout: 30_000 });
-  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.context/services-and-shortcuts.png"), animations: "disabled" });
+  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.scratch/services-and-shortcuts.png"), animations: "disabled" });
   await services.getByRole("button", { name: "Close Services", exact: true }).click();
   await clickDockTool(page, "Internals");
   await internals.getByRole("tab", { name: "Syslog", exact: true }).click();
@@ -182,7 +182,7 @@ test("Config shows the mounted filesystem and refreshes kernel memory counters a
   await expect(memory.getByRole("rowheader", { name: "journal_writeback", exact: true })).toBeVisible();
   const namespace = memory.getByRole("rowheader", { name: "namespace", exact: true }).locator("..").getByRole("cell").first();
   const before = Number((await namespace.innerText()).replaceAll(",", ""));
-  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.context/internals-filesystem-config.png"), animations: "disabled" });
+  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.scratch/internals-filesystem-config.png"), animations: "disabled" });
   await setInternalsOpen(page, false);
   await runTerminalCommand(page, "mkdir /home/projects/config-memory-test; for index in {1..96}; do : > /home/projects/config-memory-test/entry-$index; done; printf 'CONFIG_MEMORY_CHANGED\\n'", "CONFIG_MEMORY_CHANGED");
   await clickDockTool(page, "Internals");
@@ -219,7 +219,7 @@ test("Kandelo Dark defaults consistently and saved theme choices survive reload"
   await clickDockTool(page, "About Kandelo");
   const about = page.getByRole("dialog", { name: "About Kandelo", exact: true });
   await expect(about.locator("p").first()).toHaveText(/^Kandelo runs real programs in your browser\. It is based on POSIX and aims to be POSIX-compatible\./);
-  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.context/about-real-programs-dark.png"), animations: "disabled" });
+  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.scratch/about-real-programs-dark.png"), animations: "disabled" });
   await about.getByRole("button", { name: "Close", exact: true }).click();
   await clickDockTool(page, "Appearance");
   const appearance = page.getByRole("dialog", { name: "Theme", exact: true });
@@ -271,7 +271,7 @@ test("More exposes secondary tools and community links with keyboard dismissal",
   await expect(more).not.toBeVisible(); await expect(moreButton).toBeFocused();
   await page.keyboard.press("Space");
   await expect(more).toBeVisible();
-  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.context/more-menu-positioned.png"), animations: "disabled" });
+  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.scratch/more-menu-positioned.png"), animations: "disabled" });
   await page.keyboard.press("Escape");
   await clickDockTool(page, "Internals");
   await expect(page.getByRole("checkbox", { name: "Show raw log", exact: true })).toBeVisible();
@@ -308,7 +308,7 @@ test("popin dialogs use icon close controls and dismiss only on outside clicks",
   await page.mouse.move(1, 1);
   await page.mouse.up();
   await expect(about).toBeVisible();
-  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.context/about-posix-dialog.png"), animations: "disabled" });
+  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.scratch/about-posix-dialog.png"), animations: "disabled" });
   await page.mouse.click(1, 1);
   await expect(about).not.toBeVisible();
   await expect(page.getByRole("button", { name: "More", exact: true })).toBeFocused();
@@ -394,7 +394,7 @@ test("the full-width dock centers tools independently of the computer label", as
   await expect(page.getByRole("button", { name: "Library", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Show dock tools", exact: true }).click();
   await expect(page.getByRole("button", { name: "Library", exact: true })).toBeVisible();
-  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.context/dock-centered-mobile.png"), animations: "disabled" });
+  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.scratch/dock-centered-mobile.png"), animations: "disabled" });
 });
 
 test("the website picker opens an undeclared port and preserves the preview on failure", async ({ page }, testInfo) => {
@@ -411,7 +411,7 @@ test("the website picker opens an undeclared port and preserves the preview on f
   await dialog.getByRole("button", { name: "Open website", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("No in-kernel listener for port 3000");
   await expect(dialog.getByRole("alert")).toHaveClass("kopen-website-warning");
-  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.context/preview-origin-warning.png"), animations: "disabled" });
+  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.scratch/preview-origin-warning.png"), animations: "disabled" });
   await dialog.getByLabel("Port", { exact: true }).fill("38467");
   await dialog.getByLabel("Path", { exact: true }).fill("//example.com/");
   await dialog.getByRole("button", { name: "Open website", exact: true }).click();
@@ -451,7 +451,7 @@ test("the website picker opens an undeclared port and preserves the preview on f
   await expect.poll(() => page.locator(".kweb-urlbar input").evaluate(input => input.getBoundingClientRect().width)).toBeGreaterThan(100);
   await expect.poll(() => origin.evaluate(button => button.getBoundingClientRect().width)).toBeGreaterThan(140);
   await expect(origin).toBeVisible();
-  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.context/preview-origin-mobile.png"), animations: "disabled" });
+  if (testInfo.project.name === "chromium") await page.screenshot({ path: resolve(import.meta.dirname, "../../../.scratch/preview-origin-mobile.png"), animations: "disabled" });
   await page.getByRole("button", { name: "Hide dock tools", exact: true }).click();
   await expect(origin).toBeVisible();
   await page.getByRole("button", { name: "Show dock tools", exact: true }).click();

@@ -24,6 +24,6 @@ for (const profile of ["nginx", "wordpress-sqlite"]) {
       "SUDO_ROOT_UID=0");
     await runParentShellProbe(page, "cd /var/tmp");
     await expect(terminal).toContainText(/maker@[^:\s]+:tmp\$ /);
-    await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/core-identity-${profile}-${testInfo.project.name}.png`) });
+    await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/core-identity-${profile}-${testInfo.project.name}.png`) });
   });
 }

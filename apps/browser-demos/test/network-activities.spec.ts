@@ -92,7 +92,7 @@ for (const source of ["freedoom1", "freedoom2", "freedm"]) {
       await expect(notice.getByRole("progressbar")).toHaveAttribute("value", String(512 * 1024));
       await expect(notice).toBeInViewport();
       expect(await notice.locator(".knetwork-notice-message").evaluate(el => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(18);
-      await recipient.screenshot({ path: "../../.context/session-transfer-progress.png" });
+      await recipient.screenshot({ path: "../../.scratch/session-transfer-progress.png" });
       await page.evaluate(() => (window as any).releaseActivityTransfer());
     });
     try {
@@ -109,7 +109,7 @@ for (const source of ["freedoom1", "freedoom2", "freedm"]) {
       const prepared = await runTerminalCommand(other.page, "test -s /tmp/kandelo-doom-data.bin && head -c 4 /tmp/kandelo-doom.wad && head -1 /tmp/kandelo-doom-notices/COPYING.txt");
       expect(prepared.output).toContain("IWAD");
       expect(prepared.output).toContain("Copyright");
-      await page.screenshot({ path: `../../.context/activity-${source}-host.png` });
+      await page.screenshot({ path: `../../.scratch/activity-${source}-host.png` });
     } finally { await other.context.close(); }
   });
 }
@@ -131,7 +131,7 @@ test("a Doom host starts its waiting room's game before every player has joined"
   const other = await guest(browser, link, "Join and play Doom");
   try {
     await expect.poll(() => terminal(page), { timeout: 120_000 }).toContain("2 of 4 players have joined");
-    await page.screenshot({ path: "../../.context/doom-waiting-room.png" });
+    await page.screenshot({ path: "../../.scratch/doom-waiting-room.png" });
     // Esc leaves the waiting room; the host's room sees the player go.
     await press(other.page, ["Escape"]);
     await expect.poll(() => terminal(other.page), { timeout: 30_000 }).toContain("NET_WaitForLaunch: cancelled.");
@@ -177,7 +177,7 @@ for (const source of ["shareware", "librequake", "openquartz"]) {
         await expect(active.locator(".knetwork-metadata")).toContainText("Quake game");
         await expect(active.getByRole("button", { name: "New session", exact: true })).toBeVisible();
         await expect(active.getByRole("button", { name: "Change activity", exact: true })).toHaveCount(0);
-        await other.page.screenshot({ path: "../../.context/session-quake-guest-actions.png", animations: "disabled" });
+        await other.page.screenshot({ path: "../../.scratch/session-quake-guest-actions.png", animations: "disabled" });
         await close(other.page);
       }
       await expect.poll(async () => {
@@ -197,8 +197,8 @@ for (const source of ["shareware", "librequake", "openquartz"]) {
         await p.getByRole("button", { name: "Graphics", exact: true }).click();
         await expect(p.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 30_000 });
       }
-      await page.screenshot({ path: `../../.context/activity-quake-${source}-host.png` });
-      await other.page.screenshot({ path: `../../.context/activity-quake-${source}-guest.png` });
+      await page.screenshot({ path: `../../.scratch/activity-quake-${source}-host.png` });
+      await other.page.screenshot({ path: `../../.scratch/activity-quake-${source}-guest.png` });
     } finally { await other.context.close(); }
   });
 }
@@ -272,8 +272,8 @@ test("Freeciv activity prepares the shell's KMS display and connects two named p
       const changed = await Promise.all(headers.map(async ({ p, clip, before }) => Buffer.compare(before, await p.screenshot({ clip })) !== 0));
       return changed.every(Boolean);
     }, { timeout: 60_000, intervals: [1000, 2000] }).toBe(true);
-    await page.screenshot({ path: "../../.context/activity-freeciv-host.png" });
-    await other.page.screenshot({ path: "../../.context/activity-freeciv-guest.png" });
+    await page.screenshot({ path: "../../.scratch/activity-freeciv-host.png" });
+    await other.page.screenshot({ path: "../../.scratch/activity-freeciv-guest.png" });
   } finally { await other.context.close(); }
 });
 
@@ -286,7 +286,7 @@ for (const density of [1, 2]) test.describe(`Freeciv activity density ${density}
     await expect(page.locator(".kmodeset-surface")).toHaveAttribute("data-kms-owner-pid", /^[1-9]\d*$/, { timeout: 90_000 });
     await readableKms(page);
     const firstOwner = await page.locator(".kmodeset-surface").getAttribute("data-kms-owner-pid");
-    await page.screenshot({ path: `../../.context/freeciv-activity-readable-${browserName}-${density}.png`, scale: "css" });
+    await page.screenshot({ path: `../../.scratch/freeciv-activity-readable-${browserName}-${density}.png`, scale: "css" });
     await page.getByRole("button", { name: "Network session: connected", exact: true }).click();
     await page.getByRole("button", { name: "Change activity", exact: true }).click();
     const form = page.getByRole("form", { name: "Host activity" });
@@ -405,7 +405,7 @@ test("a Freeciv activity opens a measured, owned KMS display after a terminal-on
   await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await expect(page.locator(".kmodeset-canvas")).toBeVisible();
   await expect(page.locator(".kmodeset-surface")).toHaveAttribute("data-kms-owner-pid", /^[1-9]\d*$/, { timeout: 60_000 });
-  await page.screenshot({ path: `../../.context/activity-freeciv-shell-${test.info().project.name}.png` });
+  await page.screenshot({ path: `../../.scratch/activity-freeciv-shell-${test.info().project.name}.png` });
   // Sharing an already-hosted game must leave its real server and client alive.
   await page.getByRole("button", { name: "Network session: connected", exact: true }).click();
   await page.getByRole("button", { name: "Change activity", exact: true }).click();

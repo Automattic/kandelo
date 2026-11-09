@@ -17,7 +17,7 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 SKILLS = REPO / ".claude" / "skills"
 AGENT_SKILLS = REPO / ".agents" / "skills"
 # Paths that only exist after a build, so a fresh checkout cannot contain them.
-GENERATED = ("sysroot/", "sysroot64/", "local-binaries/", "binaries/", ".context/")
+GENERATED = ("sysroot/", "sysroot64/", "local-binaries/", "binaries/", ".context/", ".scratch/")
 # Names defined outside this repo (Claude Code tool parameters, autoconf macros).
 EXTERNAL = {"run_in_background", "AC_CHECK_FUNCS", "AC_SEARCH_LIBS"}
 

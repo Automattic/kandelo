@@ -11,7 +11,7 @@ import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./sup
 
 test.use({ serviceWorkers: "block", viewport: { width: 800, height: 600 } });
 let fixture: ReturnType<typeof compileSdkFixture>;
-const evidenceBase = fileURLToPath(new URL("../../../.context/graphics-abi56-format-evidence/", import.meta.url));
+const evidenceBase = fileURLToPath(new URL("../../../.scratch/graphics-abi56-format-evidence/", import.meta.url));
 let evidenceRoot = evidenceBase;
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 test.beforeAll(() => {

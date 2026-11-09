@@ -87,7 +87,7 @@ for (const { sourceEncoding, withHeadroom } of sourceCases) {
     if (!withHeadroom) {
       expect(image.byteLength).toBeGreaterThan(KandeloImageFs.readImageCapacity(image).maxByteLength);
     }
-    const fixtureDirectory = resolve(repoRoot, ".context");
+    const fixtureDirectory = resolve(repoRoot, ".scratch");
     mkdirSync(fixtureDirectory, { recursive: true });
     const imagePath = resolve(fixtureDirectory, `persistence-page-probe-${crypto.randomUUID()}.vfs${sourceEncoding === "zstd" ? ".zst" : ""}`);
     writeFileSync(imagePath, sourceEncoding === "zstd" ? zstdCompressSync(Buffer.from(image)) : image);
@@ -204,7 +204,7 @@ test("Kandelo page installs and restores a physical >4 GiB v2 computer", async (
         await expectBootCount(page, 2, pageErrors, 240_000);
         expect(sourceRequests).toBe(installedRequests);
       });
-      await page.screenshot({ path: resolve(repoRoot, ".context", `persistent-large-page-${browserName}.png`) });
+      await page.screenshot({ path: resolve(repoRoot, ".scratch", `persistent-large-page-${browserName}.png`) });
       await testInfo.attach("physical-image-install", {
         body: JSON.stringify({ fixtureLength, sourceRequests, recoveredBootCount: 2 }),
         contentType: "application/json",

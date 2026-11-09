@@ -9,7 +9,7 @@ export default defineConfig(async environment => {
   const base = typeof normal === "function" ? await normal(environment) : await normal;
   return {
     ...base,
-    cacheDir: fileURLToPath(new URL("../../.context/graphics-cts/vite-cache/", import.meta.url)),
+    cacheDir: fileURLToPath(new URL("../../.scratch/graphics-cts/vite-cache/", import.meta.url)),
     optimizeDeps: {
       ...base.optimizeDeps,
       entries: [fileURLToPath(new URL("./public/trap-signal-test.html", import.meta.url))],

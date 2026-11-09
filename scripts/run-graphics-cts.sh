@@ -8,7 +8,7 @@
 # family (functional.fbo or dEQP-GLES2.functional.fbo), a legacy GLES2
 # name (negative-state, negative-api, color-clear), an exact case name, or a
 # comma-separated union. Environment:
-#   KANDELO_CTS_OUT          result directory (default .context/graphics-cts-runs/<suite>-<host>-<time>)
+#   KANDELO_CTS_OUT          result directory (default .scratch/graphics-cts-runs/<suite>-<host>-<time>)
 #   KANDELO_CTS_CHUNK_SIZE   cases per chunk (default 100 GLES2, 50 EGL)
 #   KANDELO_CTS_CHUNKS       comma-separated chunk IDs to rerun only those
 #   KANDELO_CTS_ATTEMPT_BASE_MS  time for the guest to reach its first case (default 60000)
@@ -41,7 +41,7 @@ if [[ -n "${PWDEBUG:-}" && "${PWDEBUG}" != 0 ]]; then
     echo "Graphics CTS requires PWDEBUG unset or 0 to keep browser checks headless." >&2
     exit 2
 fi
-out="${KANDELO_CTS_OUT:-$repo_root/.context/graphics-cts-runs/$suite-$host-$(date +%Y%m%d-%H%M%S)}"
+out="${KANDELO_CTS_OUT:-$repo_root/.scratch/graphics-cts-runs/$suite-$host-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 

@@ -11,8 +11,8 @@ an installed Apple SDK and existing Screen Recording authorization:
 ```bash
 scripts/dev-shell.sh npx --no-install tsx benchmarks/desktop-latency/clock-bounds-control.ts
 scripts/dev-shell.sh npx --no-install tsx --unhandled-rejections=strict benchmarks/desktop-latency/observer-promises-control.ts
-scripts/dev-shell.sh benchmarks/desktop-latency/run-control.sh .context/native-control-dom dom
-scripts/dev-shell.sh benchmarks/desktop-latency/run-control.sh .context/native-control-worker offscreen
+scripts/dev-shell.sh benchmarks/desktop-latency/run-control.sh .scratch/native-control-dom dom
+scripts/dev-shell.sh benchmarks/desktop-latency/run-control.sh .scratch/native-control-worker offscreen
 ```
 
 Each output directory must be new. Both commands run Chromium, Firefox and
@@ -69,7 +69,7 @@ visible response.
 ## Pixel matching controls without desktop access
 
 ```bash
-scripts/dev-shell.sh benchmarks/desktop-latency/run-pixel-control.sh .context/native-pixel-controls
+scripts/dev-shell.sh benchmarks/desktop-latency/run-pixel-control.sh .scratch/native-pixel-controls
 ```
 
 This command never opens a visible browser or starts ScreenCaptureKit. It
@@ -130,7 +130,7 @@ must not be used as exact first-display latency or evidence of a ship-bar miss.
 ## Moving-pixel controller and viewport coordinates
 
 ```bash
-scripts/dev-shell.sh benchmarks/desktop-latency/run-cursor-control.sh .context/cursor-replay headless
+scripts/dev-shell.sh benchmarks/desktop-latency/run-cursor-control.sh .scratch/cursor-replay headless
 scripts/dev-shell.sh npx --no-install tsx --unhandled-rejections=strict benchmarks/desktop-latency/observation-rows-control.ts
 ```
 
@@ -171,7 +171,7 @@ After coordinating a short unlocked, visible session, a diagnostic operator
 can run the native control with the same driver:
 
 ```bash
-scripts/dev-shell.sh env KPERF_NATIVE_ENGINES=chromium KPERF_CURSOR_SAMPLES=8 benchmarks/desktop-latency/run-cursor-control.sh .context/cursor-native native
+scripts/dev-shell.sh env KPERF_NATIVE_ENGINES=chromium KPERF_CURSOR_SAMPLES=8 benchmarks/desktop-latency/run-cursor-control.sh .scratch/cursor-native native
 ```
 
 Omit those two environment settings for all three engines and sixty ordinary

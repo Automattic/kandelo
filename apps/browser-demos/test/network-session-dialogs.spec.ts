@@ -34,7 +34,7 @@ test("friendly names, alphabetical activities and inset arrows lead to a separat
   const titles = (await host.getByLabel("Activity", { exact: true }).locator("option").allTextContents()).slice(1);
   expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" })));
   expect(await host.getByLabel("Activity", { exact: true }).evaluate(el => getComputedStyle(el).backgroundPosition)).toContain("12px");
-  await page.screenshot({ path: `../../.context/session-setup-${browserName}.png`, animations: "disabled" });
+  await page.screenshot({ path: `../../.scratch/session-setup-${browserName}.png`, animations: "disabled" });
   await host.getByRole("button", { name: "Start network session", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Active session", exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(host).toHaveCount(0);
@@ -50,7 +50,7 @@ test("friendly names, alphabetical activities and inset arrows lead to a separat
     await page.getByRole("button", { name: "Copy link", exact: true }).click();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(first);
   }
-  await page.screenshot({ path: `../../.context/session-active-${browserName}.png`, animations: "disabled" });
+  await page.screenshot({ path: `../../.scratch/session-active-${browserName}.png`, animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.locator(".knetwork .kshare-actions").evaluate(footer => {
     const dialog = footer.closest(".knetwork")!.getBoundingClientRect();
@@ -59,7 +59,7 @@ test("friendly names, alphabetical activities and inset arrows lead to a separat
       return box.left >= dialog.left && box.right <= dialog.right;
     });
   })).toBe(true);
-  await page.screenshot({ path: `../../.context/session-active-phone-${browserName}.png`, animations: "disabled" });
+  await page.screenshot({ path: `../../.scratch/session-active-phone-${browserName}.png`, animations: "disabled" });
   await page.setViewportSize({ width: 1280, height: 720 });
   const activeFrame = await page.locator(".knetwork").boundingBox();
   await page.getByRole("button", { name: "Change activity", exact: true }).click();
@@ -143,7 +143,7 @@ test("Doom and Quake levels follow the data source and uploaded WAD contents", a
   await expect(host.locator("[data-activity-warning]")).toHaveText("Choose the data and level your server is already running.");
   await host.getByLabel("Already running", { exact: true }).uncheck();
   await expect(host.locator("[data-activity-warning]")).toHaveCount(0);
-  await page.screenshot({ path: `../../.context/session-levels-${test.info().project.name}.png`, animations: "disabled" });
+  await page.screenshot({ path: `../../.scratch/session-levels-${test.info().project.name}.png`, animations: "disabled" });
 });
 
 test("invitation metadata is visible while the recipient's real computer is still booting", async ({ page, browser, browserName }) => {
@@ -191,7 +191,7 @@ test("invitation metadata is visible while the recipient's real computer is stil
     await expect(guest.locator(".kdock-status-text")).toHaveAttribute("data-status", "booting");
     await expect(guest.getByLabel("Your name", { exact: true })).toBeDisabled();
     expect(await guest.locator(".knetwork").boundingBox()).toEqual(waitingFrame);
-    await guest.screenshot({ path: "../../.context/session-invitation-waiting.png", animations: "disabled" });
+    await guest.screenshot({ path: "../../.scratch/session-invitation-waiting.png", animations: "disabled" });
     release(); await running(guest);
     await expect(guest.locator("[data-join-readiness]")).toContainText("Ready to join");
     expect(await guest.locator(".knetwork").boundingBox()).toEqual(waitingFrame);
@@ -237,7 +237,7 @@ test("managed computer startup retains activity invitations and failed joins nev
   await expect(invitation.locator("[data-join-readiness]")).not.toContainText("Ready to join");
   await expect(invitation.locator(".knetwork-metadata")).toContainText("Terminal chat");
   await expect(join).toBeEnabled();
-  await page.screenshot({ path: `../../.context/activity-invitation-after-failed-join-${browserName}.png`, animations: "disabled" });
+  await page.screenshot({ path: `../../.scratch/activity-invitation-after-failed-join-${browserName}.png`, animations: "disabled" });
 });
 
 test("game invitations show host choices and acquisition details before host initialization, then reject mismatched display details", async ({ page }) => {
@@ -278,7 +278,7 @@ test("game invitations show host choices and acquisition details before host ini
     release();
     await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "booting");
     expect(await dialog.boundingBox()).toEqual(frame);
-    await page.screenshot({ path: `../../.context/session-game-invitation-preboot-${test.info().project.name}.png`, animations: "disabled" });
+    await page.screenshot({ path: `../../.scratch/session-game-invitation-preboot-${test.info().project.name}.png`, animations: "disabled" });
     releaseImage(); await running(page);
     expect(await dialog.evaluate(el => getComputedStyle(el).backgroundColor)).toBe(surface);
     await expect(join.getByRole("link", { name: `Get ${source.title}`, exact: true })).toHaveAttribute("href", source.url);
@@ -330,7 +330,7 @@ test("changing activity stops Kandelo's previous foreground program and launches
   await expect.poll(() => terminalText(page), { timeout: 120_000 }).toContain("Using protocol");
   await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await expect(page.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 60_000 });
-  await page.screenshot({ path: `../../.context/session-quake-level-${browserName}.png`, animations: "disabled" });
+  await page.screenshot({ path: `../../.scratch/session-quake-level-${browserName}.png`, animations: "disabled" });
   await page.getByRole("button", { name: "Network session: connected", exact: true }).click();
   await page.getByRole("button", { name: "Change activity", exact: true }).click();
   await form(page).getByLabel("Activity", { exact: true }).selectOption("tyrquake/game");
@@ -342,7 +342,7 @@ test("changing activity stops Kandelo's previous foreground program and launches
   await expect.poll(() => terminalText(page), { timeout: 120_000 }).toContain("Using protocol");
   await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await expect(page.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 60_000 });
-  await page.screenshot({ path: `../../.context/session-quake-replacement-${browserName}.png`, animations: "disabled" });
+  await page.screenshot({ path: `../../.scratch/session-quake-replacement-${browserName}.png`, animations: "disabled" });
   await page.getByRole("button", { name: "Network session: connected", exact: true }).click();
   await page.getByRole("button", { name: "Change activity", exact: true }).click();
   await form(page).getByLabel("Activity", { exact: true }).selectOption("php/server");
@@ -381,7 +381,7 @@ test("replacing a Freeciv activity retires its server, client and KMS owner befo
   await expect.poll(() => terminalText(page), { timeout: 120_000 }).toContain("Using protocol");
   await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await expect(page.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 60_000 });
-  await page.screenshot({ path: `../../.context/session-kms-replacement-${browserName}.png`, animations: "disabled" });
+  await page.screenshot({ path: `../../.scratch/session-kms-replacement-${browserName}.png`, animations: "disabled" });
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
   await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);

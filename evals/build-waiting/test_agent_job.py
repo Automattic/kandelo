@@ -340,6 +340,32 @@ class PeerJobTest(JobsDirCase):
         files = list(pathlib.Path(self.jobs_dir, "jobs", jid).iterdir())
         self.assertEqual({p.name for p in files}, {"meta.json", "result.json"})
 
+    def test_archiving_context_does_not_retain_job_payload(self):
+        _, payload = self.finish(self.peer, "disposable-bulk")
+        context = pathlib.Path(self.peer, ".context")
+        (context / "notes.md").write_text("retain this decision")
+        archived = pathlib.Path(self.tmp.name, "archived-context")
+        # Model Conductor preserving .context before removing the worktree.
+        context.rename(archived)
+        self.git(self.main, "worktree", "remove", "--force", self.peer)
+        self.assertFalse(payload.exists())
+        self.assertEqual((archived / "notes.md").read_text(), "retain this decision")
+        self.assertFalse(list(archived.rglob("output.log")))
+
+    def test_release_still_cleans_legacy_context_payload(self):
+        jid, payload = self.finish(self.main, "legacy-context")
+        meta = self.meta(jid)
+        record_path = pathlib.Path(self.jobs_dir, "artifacts", meta["artifact_id"] + ".json")
+        record = json.loads(record_path.read_text())
+        legacy = pathlib.Path(self.main, ".context", "agent-jobs", jid)
+        legacy.parent.mkdir(parents=True)
+        payload.rename(legacy)
+        record["roots"] = [str(legacy.relative_to(self.main))]
+        record_path.write_text(json.dumps(record))
+        self.agent_job("release", jid)
+        self.assertFalse(legacy.exists())
+        self.assertTrue(pathlib.Path(self.main, ".context", "validation-owner.json").exists())
+
     def test_recreated_worktree_path_cannot_own_or_read_old_payload(self):
         old, payload = self.finish(self.peer, "old-owner")
         old_id = self.meta(old)["workspace_id"]

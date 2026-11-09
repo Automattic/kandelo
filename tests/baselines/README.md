@@ -42,7 +42,7 @@ not generally passed through):
 
 ```bash
 scripts/dev-shell.sh bash -c '
-  export KANDELO_TEST_REPORT_DIR="$PWD/.context/reports"
+  export KANDELO_TEST_REPORT_DIR="$PWD/.scratch/reports"
   bash scripts/ci-run-test-suite.sh vitest 1/2
 '
 ```
@@ -100,7 +100,7 @@ silently merged; retain the raw report or rerun distinct selections.
 Review new anomalies before committing them. Keep each main observation
 under `tests/baselines/<recorded-commit>/<suite>-<host>-<run-id>.json`, using
 the unique run directory name as the run ID. Keep branch reports separate
-in `.context/`; use main-run evidence to establish pre-existing failures.
+in `.scratch/`; use main-run evidence to establish pre-existing failures.
 Never overwrite an earlier record with a targeted rerun or another shard:
 absence from a partial report does not establish that a test passed. A
 rerun adds an observation and does not refresh the rest of the inventory.

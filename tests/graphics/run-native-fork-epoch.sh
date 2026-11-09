@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-out="$(mktemp -d "$root/.context/graphics-native-fork-epoch.XXXXXX")"
+mkdir -p "$root/.scratch"
+out="$(mktemp -d "$root/.scratch/graphics-native-fork-epoch.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 mkdir -p "$out/include"
 # Only the explicit musl-state boundary is doubled. Execute the actual child

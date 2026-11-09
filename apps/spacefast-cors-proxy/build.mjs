@@ -6,9 +6,9 @@ import { buildOptions, proxyEntry, buildSessionRoute } from "./build-options.mjs
 
 const { approved } = buildOptions(process.argv.slice(2));
 const app = fileURLToPath(new URL("./", import.meta.url));
-const context = fileURLToPath(new URL("../../.context/", import.meta.url));
-await mkdir(context, { recursive: true });
-const output = await mkdtemp(join(context, "spacefast-cors-proxy-build-"));
+const scratch = fileURLToPath(new URL("../../.scratch/", import.meta.url));
+await mkdir(scratch, { recursive: true });
+const output = await mkdtemp(join(scratch, "spacefast-cors-proxy-build-"));
 await buildSessionRoute(output, approved);
 await build({
   stdin: { contents: proxyEntry(approved), resolveDir: app, sourcefile: "proxy-entry.ts" },

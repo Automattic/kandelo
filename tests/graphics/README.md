@@ -113,7 +113,7 @@ and its Fail rows already carry the verdict. Any other nonzero exit,
 including exit 1 without that evidence, stays abnormal.
 
 Each run writes, under `KANDELO_CTS_OUT` (default
-`.context/graphics-cts-runs/<suite>-<host>-<time>/`):
+`.scratch/graphics-cts-runs/<suite>-<host>-<time>/`):
 
 - `plan.json`: the selected cases and chunks;
 - `<host>/<chunk>.json`: per-case rows, attempts, outcomes, crashed case,

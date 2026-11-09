@@ -52,7 +52,7 @@ test("normal GBM guest retains shared GEM handles until the final import retires
     expect(result.stdout.trim()).toBe("OK GBM reimport retains shared GEM handles");
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);
-    const evidence = fileURLToPath(new URL("../../../.context/gbm-import-lifetime-guests/", import.meta.url));
+    const evidence = fileURLToPath(new URL("../../../.scratch/gbm-import-lifetime-guests/", import.meta.url));
     mkdirSync(evidence, { recursive: true });
     const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
     writeFileSync(`${evidence}/${Date.now()}-${test.info().project.name}.json`, JSON.stringify({

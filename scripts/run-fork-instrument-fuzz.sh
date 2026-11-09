@@ -16,7 +16,7 @@ MAX_LEN="${FUZZ_MAX_LEN:-128}"
 HOST_TARGET="${HOST_TARGET:-$(rustc -vV | awk '/^host/ {print $2}')}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUTPUT_DIR="${FUZZ_OUTPUT_DIR:-$REPO_ROOT/.context/fork-instrument-fuzz}"
+OUTPUT_DIR="${FUZZ_OUTPUT_DIR:-$REPO_ROOT/.scratch/fork-instrument-fuzz}"
 mkdir -p "$OUTPUT_DIR/corpus" "$OUTPUT_DIR/artifacts"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 

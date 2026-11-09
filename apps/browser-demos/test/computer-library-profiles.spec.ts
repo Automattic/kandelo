@@ -48,7 +48,7 @@ test("new computer names can be regenerated before creation without changing the
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(regenerate).toBeVisible();
   expect(await form.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/computer-name-regenerate-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/computer-name-regenerate-${testInfo.project.name}.png`) });
   await form.getByRole("button", { name: "Create and boot", exact: true }).click();
   await expect.poll(() => new URL(page.url()).searchParams.get("computer"), { timeout: 60_000 }).not.toBe(original.id);
   await ready(page);
@@ -90,7 +90,7 @@ test("Library groups images, creates named computers and changes a computer's bo
   await expect(page.locator('[data-image-id="browser-web-stack"]')).toHaveCount(1);
   await expect(page.locator('[data-image-id="browser-wordpress-family"]')).toHaveCount(1);
   await expect(page.locator('[data-image-id="browser-main-shell"]')).toHaveCount(1);
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/library-flow-images-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/library-flow-images-${testInfo.project.name}.png`) });
   await page.getByRole("button", { name: "List", exact: true }).click();
   await expect(page.locator(".kcomputer-layout-list")).toBeVisible();
   await page.getByRole("button", { name: "Gallery", exact: true }).click();
@@ -105,7 +105,7 @@ test("Library groups images, creates named computers and changes a computer's bo
   await expect(page.getByRole("radio", { name: "Temporary", exact: true })).toBeChecked();
   await expect(page.locator(".kcomputer-temporary-warning")).toContainText("not kept permanently");
   await page.getByRole("radio", { name: "Saved on this device", exact: true }).check();
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/library-flow-create-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/library-flow-create-${testInfo.project.name}.png`) });
   await page.getByRole("button", { name: "Create and boot", exact: true }).click();
   await expect.poll(() => new URL(page.url()).searchParams.get("computer"), { timeout: 60_000 }).not.toBe(firstId);
   await ready(page);
@@ -136,7 +136,7 @@ test("Library groups images, creates named computers and changes a computer's bo
   await expect(page.getByRole("combobox", { name: "Activity", exact: true })).toBeEnabled({ timeout: 30_000 });
   await expect(page.getByRole("combobox", { name: "Activity", exact: true }).locator("option")).not.toHaveCount(1);
   await page.getByRole("combobox", { name: "Activity", exact: true }).selectOption("termchat/chat");
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/library-flow-activities-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/library-flow-activities-${testInfo.project.name}.png`) });
   await page.getByRole("button", { name: "Start activity", exact: true }).click();
   const activeSession = page.getByRole("dialog", { name: "Active session", exact: true });
   await expect(activeSession).toBeVisible({ timeout: 90_000 });
@@ -201,12 +201,12 @@ test("Library creates a working WordPress MariaDB computer from its image card",
     const bounds = button.getBoundingClientRect();
     return button.contains(document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2));
   })).toBe(true);
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/library-flow-wordpress-${testInfo.project.name}.png`), animations: "disabled" });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/library-flow-wordpress-${testInfo.project.name}.png`), animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   const dialog = page.getByRole("dialog", { name: "Computer Library", exact: true });
   await expect(dialog).toBeVisible();
   expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/library-flow-mobile-${testInfo.project.name}.png`), animations: "disabled" });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/library-flow-mobile-${testInfo.project.name}.png`), animations: "disabled" });
   await page.getByRole("button", { name: "+ New computer", exact: true }).click();
   await expect(page.getByRole("button", { name: "Choose Base Shell", exact: true })).toBeVisible();
 });
