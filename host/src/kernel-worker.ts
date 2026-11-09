@@ -2888,38 +2888,42 @@ export class CentralizedKernelWorker {
   }
 
   #waitForRootfsCompaction(channel: ChannelInfo, syscallNr: number, origArgs: number[], entry: KernelWorkerEntryContext): void {
-    let wait = this.#rootfsCompactionWait;
-    if (wait === null) {
-      let resolve!: (errno: number) => void;
-      wait = new Promise<number>(done => { resolve = done; });
-      this.#rootfsCompactionWait = wait;
-      const finish = (errno: number) => { this.#rootfsCompactionWait = null; resolve(errno); };
-      // Compaction re-enters Rust. Start only after this syscall's entry and
-      // scratch leases have ended; no guest/kernel memory crosses the wait.
-      entry.deferProtocolEffect(() => {
-        void Promise.resolve().then(() => {
-          if (this.#rootfsCompactionHandler === null) throw new Error("persistent overlay has no compactor");
-          return this.#rootfsCompactionHandler();
-        }).then(() => finish(0), error => {
-          const errno = typeof error === "object" && error !== null
-            ? "code" in error && error.code === "ENOSPC" ? ERRNO.ENOSPC
-              : "errno" in error && typeof error.errno === "number" && error.errno > 0 && error.errno !== EAGAIN
-                ? error.errno : ERRNO.EIO
-            : ERRNO.EIO;
-          finish(errno);
-        });
-      });
-    }
     const pending = { ...this.#cancellationPointIdentity(channel), timer: null, channel, pipeIndices: [] };
     this.pendingPollRetries.set(channel, pending);
-    void wait.then(errno => {
-      // A signal, cancellation or teardown may have retired this exact wait.
-      if (this.pendingPollRetries.get(channel) !== pending) return;
-      this.pendingPollRetries.delete(channel);
-      if (!this.isRegisteredChannel(channel) || this.#kernelFatalError !== null) return;
-      if (errno === 0) this.retrySyscall(channel);
-      else this.#runOrDeferChannelKernelEntry(channel, "persistent compaction failure", failureEntry => {
-        this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, errno, [], undefined, failureEntry);
+    // The detached effect only schedules a fresh host microtask. Promise
+    // construction and I/O begin after entry/scratch revocation, before an
+    // ordinary readiness wake can retire this maintenance wait.
+    entry.deferProtocolEffect(() => {
+      this.#scheduleMicrotaskListenerRoot("persistent compaction", () => {
+        if (this.pendingPollRetries.get(channel) !== pending || this.#kernelFatalError !== null) return;
+        let wait = this.#rootfsCompactionWait;
+        if (wait === null) {
+          let resolve!: (errno: number) => void;
+          wait = new Promise<number>(done => { resolve = done; });
+          this.#rootfsCompactionWait = wait;
+          const finish = (errno: number) => { this.#rootfsCompactionWait = null; resolve(errno); };
+          void Promise.resolve().then(() => {
+            if (this.#rootfsCompactionHandler === null) throw new Error("persistent overlay has no compactor");
+            return this.#rootfsCompactionHandler();
+          }).then(() => finish(0), error => {
+            const errno = typeof error === "object" && error !== null
+              ? "code" in error && error.code === "ENOSPC" ? ERRNO.ENOSPC
+                : "errno" in error && typeof error.errno === "number" && error.errno > 0 && error.errno !== EAGAIN
+                  ? error.errno : ERRNO.EIO
+              : ERRNO.EIO;
+            finish(errno);
+          });
+        }
+        void wait.then(errno => {
+          // A signal, cancellation or teardown may have retired this exact wait.
+          if (this.pendingPollRetries.get(channel) !== pending) return;
+          this.pendingPollRetries.delete(channel);
+          if (!this.isRegisteredChannel(channel) || this.#kernelFatalError !== null) return;
+          if (errno === 0) this.retrySyscall(channel);
+          else this.#runOrDeferChannelKernelEntry(channel, "persistent compaction failure", failureEntry => {
+            this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, errno, [], undefined, failureEntry);
+          });
+        });
       });
     });
   }

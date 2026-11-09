@@ -594,6 +594,12 @@ const reviewedScalarKernelExportCall = (
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#takeRootfsCompactionRequest::kernel-export-direct-use::take?.()",
+    disposition: "kernel-control",
+    count: 1,
+    why: "This exact export takes no arguments and consumes only a boolean maintenance request within the current entry. Its i32 result contains no pointer, borrowed range or allocator authority.",
+  },
+  {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#finishOwnedResourceMapping::kernel-export-direct-use::finish( channel.pid, this.guestTidForChannel(channel), token, transaction, errno, )",
     disposition: "kernel-control",
     count: 1,

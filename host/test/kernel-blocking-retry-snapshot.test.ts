@@ -859,6 +859,11 @@ describe("blocking retry request snapshots", () => {
     const reached = new Promise<void>(done => { started = done; });
     const compacted = new Promise<void>(done => { release = done; });
     const compact = vi.fn(async () => { started(); await compacted; });
+    // Maintenance must start before an already queued readiness worker turn;
+    // that turn could otherwise replace the pending retry before startup.
+    const beforeReadinessWake = new Promise<boolean>(done => {
+      setImmediate(() => done(compact.mock.calls.length === 1));
+    });
     harness.worker.setRootfsCompactionHandler(compact);
     const attempts: number[][] = [];
     harness.kernelExports.kernel_rootfs_take_compaction_request = () => 1;
@@ -873,6 +878,7 @@ describe("blocking retry request snapshots", () => {
     });
     harness.worker.handleSyscall(harness.channel);
     await reached;
+    expect(await beforeReadinessWake).toBe(true);
     expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
     expect(harness.worker.pendingPollRetries.get(harness.channel).timer).toBeNull();
     expect(attempts).toHaveLength(1);
