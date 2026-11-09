@@ -9,9 +9,12 @@ and validation. This document remains the reference for implemented behavior.
 The B1 graphics shipment follows the maintainer's D-63 incremental
 release scope: selected graphical demos generally work, while known
 defects and full validation remain explicit follow-ups. The combined
-normal-built checkpoint passes 23 of 24 graphical cases; WebKit Cage
-startup fails before the rendering checks and its isolated control
-reproduces the failure. The implemented ownership and publication
+normal-built shipment checkpoint passed 23 of 24 graphical cases; WebKit
+Cage startup failed before rendering and its isolated control reproduced
+the failure. The [Cage reliability investigation](graphics/cage-reliability-2026-11.md)
+attributes that startup failure to the test's ephemeral storage context and
+records a separate terminal visibility/resize ordering repair. The original
+failures remain release evidence. The implemented ownership and publication
 contracts below still apply. This release makes no native-feel or
 full-conformance claim.
 
@@ -21,7 +24,7 @@ intermediate branch versions of host 4 had different interfaces and are
 not separate release contracts. Both original frozen fixture cohorts
 remain unchanged. See the [combined landing
 decision](graphics/compatibility-v1.md#combined-landing-decision-d-64-2026-11-08)
-for exact evidence, the unresolved startup defect and contributor
+for exact shipment evidence, the original startup failure and contributor
 credit.
 
 ## Overview
@@ -7009,7 +7012,18 @@ and a button), and foot, GTK3, libkwl and wlterm as session clients
 (`host/test/{foot,gtk3,libkwl,wlterm}-smoke.test.ts`), all on the pixman
 renderer. The tests share the session root in `host/test/wlroots-session.ts`.
 `apps/browser-demos/test/kandelo-cage.spec.ts` gates the GLES2 renderer in
-the browser.
+the browser. It uses the shared persistent-page fixture to exercise the
+storage-backed computer bootstrap. A failure to open the browser's OPFS
+root reports the native operation, error name/message and retained cause
+before any guest worker starts; it is not evidence of a compositor crash
+or of memory exhaustion. Repeated Cage checks cover keyboard repaint,
+host viewport resizing, clean client/display release and live machine
+restarts. The retained terminal fits after observed visibility and the
+following animation frame, allowing xterm's hidden renderer to resume
+before it measures the new scroll range. Each terminal cancels its own
+visibility observer and scheduled fit when disposed. See the
+[reliability report](graphics/cage-reliability-2026-11.md) for scope and
+current validation.
 
 ## Wayland tiling compositor (`sway`)
 

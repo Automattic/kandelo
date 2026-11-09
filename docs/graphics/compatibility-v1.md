@@ -28175,3 +28175,51 @@ Node/browser regression checks and original large-viewport reproduction
 remain pending. The advertised port-59239 checkpoint still has the prior
 kernel. This native result establishes the bounded publication behavior,
 not browser repair, complete B1, a performance improvement or native feel.
+
+
+## Cage reliability follow-up (R1, 2026-11-09)
+
+The [bounded reliability report](cage-reliability-2026-11.md) preserves the
+original 23/24 shipment and failed WebKit control while attributing that
+startup rejection to OPFS root access in the test's ephemeral context,
+before any guest starts. Cage now uses the existing persistent-page
+fixture; production storage errors retain their native cause and identify
+the operation without inferring OOM or retrying.
+
+A distinct terminal return failure occurred after Cage/wlterm exited zero
+and released DRM ownership: fitting before xterm resumed its hidden renderer
+left a stale scroll range. The Shell now fits after observed visibility
+and the next animation frame, preserves deliberate scrollback, and cancels
+only its own retired layout work. Regressions cover actual GLES2 output,
+keyboard repaint, host resize, clean display/client exit, six-cycle live
+restarts and replacement PTY ownership. The mixed-memory keyboard step
+focuses the canvas without acquiring pointer capture through a click.
+
+Normal products, 259 test programs and the ABI check passed at main base
+`a3490ca0f48d7c249592925cb7b4ac1ab74b9c2a`. Program 56 / host 4 / GL 17 /
+fork 21 and both original fixture cohorts are unchanged. The normal shell
+is 1,076,101 bytes, SHA-256
+`1024edcac14dac7620070ee90a45d6bd2a62fbc36f56f1bd008ff31568f8075b`.
+The normal graphical selection passes 30/30 (10 per engine), host checks
+15/15, and actual terminal UI checks 12/12 across the three engines.
+Browser-memory is not accepted: 15 browser cases passed and three mixed
+switches failed. The latest fixture guard and disk-space recovery need a
+complete rerun; the report records the native ENOSPC/write failures. The normal Cage rendering and exit
+screenshots were inspected. Exact commands, versions, identities and
+retained failed/interrupted runs are in the report.
+
+The normal build also exposed a stale shell eager-file guard. This delivery
+accounts for the existing 156 files / 2,414,611 bytes and allows four files
+of slack; both byte ceilings remain unchanged. It adds no eager payload and
+introduces no new compatibility exception. The seven existing budget tests
+pass.
+
+The accidentally expanded desktop run retains three Freeciv direct-display
+failures (cursor alignment, expected default-mode text and captured cursor
+state). All three reproduce in a main-Shell substitution control on the
+same products. This is not pristine whole-main acceptance or a Freeciv fix;
+D1/V1/P1 retain those findings. Other reported Cage crashes remain
+unclassified. Frozen Cage profiles identify copying and synchronous-query
+traffic as leads, with no performance correction or native-feel claim.
+M1/M2, Q1–Q5, D1/D2, L1 and V1/P1 remain open; B2–B6/C1–C3 remain paused.
+The maintainer authorized Sydney as this follow-up's commit/push location.

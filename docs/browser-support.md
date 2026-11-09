@@ -625,10 +625,15 @@ pipe pair.
   `PtyTerminal` for pages that drive a `BrowserKernel` directly.
 - Each visited terminal tab retains its xterm renderer and keeps parsing PTY
   output while hidden, including when the primary view shows syslog or another
-  demo surface. Revealing a tab fits and refreshes the retained screen;
-  it does not reconstruct a full-screen application from the bounded session
-  byte-history tail. Only the active tab receives focus or updates its PTY
-  dimensions. Removing a tab disposes its renderer and listeners.
+  demo surface. Revealing a tab refreshes its retained screen without
+  reconstructing a full-screen application from the bounded session byte-history
+  tail. It fits after visibility is observed and the following animation frame
+  lets xterm's suspended renderer resume. Fitting while hidden can leave its
+  scroll range sized for the old row count and conceal new output after a resize.
+  Only the active tab receives focus or updates its PTY
+  dimensions. User-selected scrollback remains selected. Removing a tab
+  disposes its renderer/listeners and cancels its visibility observer and
+  scheduled fit without touching another terminal's PTY.
 - Guest-created PTYs notify the shared Node/browser runtime when input,
   output, a terminal mode transition, or final endpoint closure changes
   readiness. Poll/select/epoll and blocked reads are rescheduled through the
