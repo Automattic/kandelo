@@ -6,12 +6,23 @@ This document describes the internal architecture of Kandelo. It is written for 
 lessons behind ownership boundaries, host bookkeeping, filesystem migrations
 and validation. This document remains the reference for implemented behavior.
 
-The B1 graphics shipment follows the maintainer's D-63 incremental release
-scope: the normal-built graphical demos pass their selected smoke checks;
-unresolved defects and full performance/conformance validation remain
-explicit follow-ups. The implemented ownership and publication contracts
-below still apply. See the [release decision and evidence](graphics/compatibility-v1.md#b1-release-decision-d-63-2026-11-08);
-this release makes no native-feel or full-conformance claim.
+The B1 graphics shipment follows the maintainer's D-63 incremental
+release scope: selected graphical demos generally work, while known
+defects and full validation remain explicit follow-ups. The combined
+normal-built checkpoint passes 23 of 24 graphical cases; WebKit Cage
+startup fails before the rendering checks and its isolated control
+reproduces the failure. The implemented ownership and publication
+contracts below still apply. This release makes no native-feel or
+full-conformance claim.
+
+D-64 combines the Cage/Sway foundation and B1 in one release. Kernel and
+host ship against one program 56 / host 4 / GL 17 / fork 21 family;
+intermediate branch versions of host 4 had different interfaces and are
+not separate release contracts. Both original frozen fixture cohorts
+remain unchanged. See the [combined landing
+decision](graphics/compatibility-v1.md#combined-landing-decision-d-64-2026-11-08)
+for exact evidence, the unresolved startup defect and contributor
+credit.
 
 ## Overview
 

@@ -851,14 +851,25 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 
 ## Graphics
 
+D-64 approves one combined foundation/B1 shipment through #1594 and closes
+#1574 as superseded after the merge. After that shipment, pause to scope
+one bounded next deliverable deliberately; the list below is retained
+work, not authorization to start every remaining stage immediately.
+Preserve mho22's original Cage/Sway and platform contribution in the
+release attribution. Current combined-source evidence is recorded in
+[the landing decision](graphics/compatibility-v1.md#combined-landing-decision-d-64-2026-11-08).
+
 The maintainer's release decision D-63 ships the current normally built B1
-graphics increment on the basis of generally working graphical demos. The
-selected 21-case graphical smoke across three engines and larger-viewport
-Firefox reproduction pass. This release does not claim full validation,
+graphics increment on the basis of generally working graphical demos. Earlier R971
+passes 21 selected graphical cases across three engines; its larger-viewport
+Firefox control also passes. Those are historical results. The combined
+source passes 23/24, with a reproduced WebKit Cage machine-startup
+UnknownError that remains to diagnose and fix. This release does not claim full validation,
 conformance or native feel. See the current decision and exact evidence in
 [the compatibility ledger](graphics/compatibility-v1.md#b1-release-decision-d-63-2026-11-08).
 
-Follow-up steps are: repair the obsolete mapping fixtures; investigate the
+Follow-up steps are: fix the reproduced WebKit Cage startup UnknownError
+at its owning layer; repair the obsolete mapping fixtures; investigate the
 intermittent extra Foot launch; finish desktop/lifecycle/browser-memory and
 manual checks; qualify the display recorder and measure real frozen
 ScummVM/Freeciv workloads and Node/browser benchmarks. Then land B2 bindings

@@ -8,6 +8,164 @@ tests retain both guest address widths. It is not a conformance
 claim. An ordinary defect remains open until implementation and executable
 validation cover it; a passing demo does not close an API family.
 
+## Combined landing decision D-64, 2026-11-08
+
+The maintainer approves landing the Cage/Sway foundation and B1 together
+through #1594 directly to main, then closing #1574 as superseded only
+after the combined change merges. Both development branches used host
+ABI 4 for different kernel/host interfaces; landing them separately
+would publish incompatible contracts under one version. The combined
+shipment preserves program 56 / host 4 / GL 17 / fork 21, the approved
+program-56 baseline and both original frozen fixture cohorts. It does
+not add a compatibility shim or restamp frozen executables.
+
+mho22 (Yannick Decat) contributed the original Cage/Sway, wlroots and
+associated device/input platform foundation in #1539. Preserve that
+credit in the PR and landed squash commit, together with Brandon
+Payton's integration/graphics work and Emmanuele Bassi's GTK signature
+correction. Credit reflects human contributions to the combined work.
+
+The combined runtime source is
+`567dd52debd150f6ad0037b42c2b137be1f980e1`, including main
+`ab64c2411c97d008dd65f1536f289b5f688e3a67`. R1009's final normal partial
+build resume completes successfully in 13m15s, followed by the canonical
+host build and ABI check. It reuses the prior normal work: fresh kernel
+and both musl sysroots from R999, then 80 successful package nodes from
+R1006. R1009 provisions the current native fork-instrumenter before
+guest recipes and completes ScummVM and the same thirteen-root image.
+This is not a clean cold-build timing or an all-packages build.
+
+The selected roots are Cage, SDL2 demos, Wayland demos, Sway, swaybg,
+Foot, Bibata cursors, Freeciv's browser bundle, modeset, ScummVM, curl,
+unzip and the Python browser bundle. The normal source diff remains
+empty. Canonical ABI verification reports that the snapshot matches the
+source, the supported program baseline is unchanged, and the version and
+snapshot are consistent. Program 56 / host 4 / GL 17 / fork 21 remain
+the one family; the original frozen program-55 and program-56 fixtures
+are unchanged.
+
+The normal image is 822,871 bytes, SHA-256
+`7707782608bbcf19d1ce04111f6df96339577168cbe483dddda8bd6598fb9449`. The
+kernel is 2,919,292 bytes, SHA-256
+`0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc`. An
+HTTP download from port 59247 matches the image's recorded bytes and
+SHA-256. The new preview uses this normal image and the canonical host
+build. Earlier port 59241 remains available as historical evidence.
+
+The focused host run passes all 117 tests across six files, with zero
+failures, skips or load errors. These source-level and harness checks
+cover process launch, memory allocation and graphics context ownership;
+they are not the full host suite. The source is unchanged before and
+after that run. The browser phase verifies and reuses that exact result.
+
+R1013 completes with 23 passes and one failure across 24 cases: Chromium
+8/8, Firefox 8/8 and WebKit 7/8, with zero skips, zero runner retries
+and zero flaky outcomes. The passed cases cover Cage on Chromium and
+Firefox, and fluid/modeset, shader/audio, primary-scanout opacity,
+ScummVM, Freeciv and both Sway/Foot cases on all three engines.
+
+WebKit's Cage case fails before the test reaches its rendering checks:
+the page displays `LiveKernelHost setup failed` with an unclassified
+`UnknownError`, and the test times out waiting for the machine to report
+Running. R1014's single isolated WebKit Cage control reproduces that
+startup failure on the same frozen build. It is a separate failed
+control, not a replacement result. Neither out-of-memory nor a browser
+defect has been established as the cause. Cage's WebKit startup remains
+an explicit desktop/lifecycle defect to diagnose and fix at its owning
+layer; this is not an unsupported-platform boundary or a passing check.
+
+Both runs preserve the source, 32 frozen normal products, host bundles
+and original fixture cohorts before and after execution. R1013 exits 1
+after 11m56s; the isolated R1014 control exits 1 after 3m09s. The
+maintainer's D-63 generally-working-demos release scope permits shipment
+with this recorded defect and unfinished broad validation. No claim of
+complete B1 validation or regression-free cross-engine behavior is made.
+
+Earlier failed attempts remain evidence: R999 and R1001 stop at their
+chosen disk admission thresholds, and R1004 later stops at its 4 GiB
+threshold. R1006 completes 80 package nodes but fails ScummVM because a
+stale copied native helper rebuilds under the guest cross-compiler. The
+normal native helper is then provisioned before guest recipes in R1009;
+no macOS-specific repository patch or frozen-fixture restamping is used.
+These provisioning failures are not reported as passing runs.
+
+Commands run from the isolated normal source, under the declared dev
+shell (the native host target was `aarch64-apple-darwin`):
+
+```sh
+bash scripts/run-wasm-fork-instrument.sh --help
+target/aarch64-apple-darwin/release/xtask partial-image shell \
+  cage sdl2-demo wayland-demo sway swaybg foot bibata-cursor-theme \
+  freeciv-browser-bundle modeset scummvm curl unzip \
+  python-browser-bundle --jobs 1
+bash scripts/build-host.sh
+ABI_CHECK_BASE_REF=ab64c2411c97d008dd65f1536f289b5f688e3a67 \
+  bash scripts/check-abi-version.sh
+```
+
+The launcher is `scripts/dev-shell.sh bash
+.context/graphics-combined-landing-r997/resume-remaining-r1009.sh` from
+the integration checkout. It retains source and product identity
+receipts. The focused host invocation is `node
+node_modules/vitest/vitest.mjs run -c
+<integration>/.context/graphics-combined-landing-r997/checks/node.config.ts`
+from the normal `host/` directory. That private configuration imports
+the normal host configuration with one worker and selects these six
+files without unrelated global fixture provisioning:
+
+- `spawn-host-parity.test.ts`
+- `process-memory-allocator.test.ts`
+- `prepared-exec-target.test.ts`
+- `webgl-canvas-context.test.ts`
+- `webgl-context-creation.test.ts`
+- `webgl-context-execution.test.ts`
+
+The graphical command runs from normal `apps/browser-demos/` with a
+fresh run UUID, unique port 59247, private outputs and an explicitly
+owned persistent server:
+
+```sh
+node node_modules/playwright/cli.js test \
+  --config <integration>/.context/graphics-combined-landing-r997/owned-server.config.ts \
+  test/kandelo-cage.spec.ts test/kandelo-sway.spec.ts \
+  test/kandelo-modeset.spec.ts test/kandelo-sdl2.spec.ts \
+  test/kandelo-freeciv.spec.ts test/kandelo-scummvm.spec.ts \
+  --grep "Kandelo cage renders|Kandelo sway tiles foot terminals above its native workspace bar|Sway Activity from shell opens another tiled Foot|Kandelo modeset demo|Kandelo sdl2 demo|KMS primary scanout stays opaque|Freeciv.s SDL2 client renders its main menu|the packaged GUI data reaches the guest" \
+  --project=chromium --project=firefox --project=webkit \
+  --workers=1 --retries=0 --reporter=line,json
+```
+
+The wrapper is `scripts/dev-shell.sh bash
+.context/graphics-combined-landing-r997/checks/run.sh`. It freezes and
+compares source, normal products, host bundles and both frozen fixture
+cohorts before and after the browser run. Exact logs, JSON results, HTTP
+proof and identities are retained under
+`.context/graphics-combined-landing-r997/`. The availability
+announcement is separate from validation; neither this partial build nor
+its selected smoke cases establish native feel, full conformance or
+final campaign acceptance.
+
+The separate diagnostic control uses the same configuration and owned
+preview, with a fresh UUID and private output directory:
+
+```sh
+node node_modules/playwright/cli.js test \
+  --config <integration>/.context/graphics-combined-landing-r997/owned-server.config.ts \
+  test/kandelo-cage.spec.ts --grep "Kandelo cage renders" \
+  --project=webkit --workers=1 --retries=0 --reporter=line,json
+```
+
+Its launcher and evidence are under
+`.context/graphics-combined-landing-r997/checks-webkit-cage-control/`.
+No further diagnostic reruns are used to replace the failed outcomes.
+
+D-63's generally-working-graphics release criterion remains in force.
+The earlier R966/R971 evidence below describes the previous runtime;
+it must not be mistaken for validation of subsequent main integration.
+Existing defects, full conformance, measurements and B2–B6/C1–C3 remain
+explicit follow-ups. After landing this increment, pause and intentionally
+scope the next bounded deliverable before resuming the campaign.
+
 ## B1 release decision D-63, 2026-11-08
 
 The maintainer explicitly authorizes shipping the current B1 graphics
