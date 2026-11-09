@@ -1,5 +1,10 @@
 # Graphics compatibility inventory, version 1
 
+Use the [graphics campaign plan](campaign-plan.md) to select and track
+bounded follow-up deliveries. This ledger remains authoritative for
+maintainer decisions and implementation/validation evidence; neither
+document implies that the paused campaign has resumed.
+
 This is the implementation and evidence ledger for the GLES 2.0, EGL 1.5,
 GBM and single-display legacy DRM/KMS baseline. Userspace graphics uses
 the normal wasm32 and wasm64 SDKs; compositor packages currently build for

@@ -851,6 +851,11 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 
 ## Graphics
 
+The [graphics campaign plan](graphics/campaign-plan.md) is the durable
+work index for independently scoped follow-ups, architectural stages,
+acceptance criteria and separate expansions after the B1 shipment.
+The compatibility ledger retains decisions and executable evidence.
+
 D-64 approves one combined foundation/B1 shipment through #1594 and closes
 #1574 as superseded after the merge. After that shipment, pause to scope
 one bounded next deliverable deliberately; the list below is retained
