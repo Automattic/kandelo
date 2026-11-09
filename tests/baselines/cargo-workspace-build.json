@@ -39,6 +39,6 @@
     306,
     307
   ],
-  "excerpt": "cargo-workspace-baseline-rust-workspace-1109-095648-5bc4.log",
+  "excerpt": "cargo-workspace-build.log",
   "note": "Separate main observation; build-only shell budget edit and case-insensitive Sortix checkout do not alter runtime behavior."
 }

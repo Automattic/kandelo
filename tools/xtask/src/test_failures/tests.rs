@@ -2,10 +2,12 @@ use super::*;
 
 #[test]
 fn real_conformance_excerpts_preserve_mismatches_and_incident_counts() {
-    // TOTAL lines are from the same archived logs; excerpts omit success counters.
+    // Frozen copies of 2026-10-30 main excerpts, since tests/baselines/ replaces
+    // its records as main changes. Excerpts omit success counters; TOTAL lines
+    // are from the same archived logs.
     let node = conformance(&format!(
         "{}\nTOTAL: 5121\n",
-        include_str!("../../../../tests/baselines/sortix-node.log")
+        include_str!("../../tests/fixtures/test-failures/sortix-node-e4bca86.log")
     ))
     .unwrap();
     assert_eq!(node["counts"]["TIMEOUT"], 1357);
@@ -19,7 +21,7 @@ fn real_conformance_excerpts_preserve_mismatches_and_incident_counts() {
     );
     let browser = conformance(&format!(
         "{}\nTOTAL: 5121\n",
-        include_str!("../../../../tests/baselines/sortix-chromium.log")
+        include_str!("../../tests/fixtures/test-failures/sortix-chromium-e4bca86.log")
     ))
     .unwrap();
     assert_eq!(browser["counts"]["FAIL"], 21);
