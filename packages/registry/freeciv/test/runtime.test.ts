@@ -79,6 +79,7 @@ describe.skipIf(!bundle)("Freeciv package runtime", () => {
       await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
       const port = (reservation.address() as { port: number }).port;
       await new Promise<void>((resolve) => reservation.close(() => resolve()));
+      const before = output().length;
       const { exit } = await host.spawnFromVfs(
         "/usr/libexec/freeciv/server.wasm",
         ["freeciv-server", "--Announce", "none", "--bind", "127.0.0.1", "--port", String(port),
@@ -87,11 +88,16 @@ describe.skipIf(!bundle)("Freeciv package runtime", () => {
           stdin: encoder.encode(stdin) },
       );
       expect(await exit, output()).toBe(0);
+      // The server can exit successfully after rejecting a console setting.
+      // A save/reload alone would therefore pass with a misspelled workload.
+      expect(output().slice(before)).not.toMatch(
+        /^(?:Option ['"][^'"]+['"] not recognized\.|Unknown command\b)/im,
+      );
     };
     try {
       await run([], [
         "set minplayers 0", "set aifill 2", "set endturn 2", "set saveturns 1",
-        "set timeout 1", "set firsttimeout 1",
+        "set timeout 1", "set first_timeout 1",
         "set mapsize PLAYER", "set tilesperplayer 50", "start", "",
       ].join("\n"));
       const saves = (await host.readDirFromVfs("/home/maker")) ?? [];

@@ -1,0 +1,50 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# The wlroots protocol XML (wlr-layer-shell, wlr-data-control, ...) that
+# compositors and shell clients generate their marshalling glue from with
+# the host wayland-scanner. Installed with upstream's Makefile, which also
+# writes wlr-protocols.pc (pkgdatadir).
+#
+# Upstream publishes no releases or tags, so the source is a pinned commit
+# archive; the version names the commit date.
+name = "wlr-protocols"
+version = "0-unstable-2026-03-09"
+kernel_abi = 48
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+# The install rule runs `install -Dm644`, which BSD install lacks.
+[[host_tools]]
+name = "install"
+version_constraint = ">=8.0"
+probe = { args = ["--version"], version_regex = "install \\(GNU coreutils\\) (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[source]
+url = "https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/archive/bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a/wlr-protocols-bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a.tar.gz"
+sha256 = "9e0fd2be5ba7c84b81acdd086f84c2da2c2b5e4946a17bda3e9850c62e14057f"
+provider = "archive"
+
+[license]
+# Each protocol file carries its own MIT-style permission notice.
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/blob/bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a/unstable/wlr-layer-shell-unstable-v1.xml"
+
+[build]
+script_path = "packages/registry/wlr-protocols/build-wlr-protocols.sh"
+
+[outputs]
+# Upstream installs every unstable protocol; these are the files registry
+# consumers read by path.
+pkgconfig = ["share/pkgconfig/wlr-protocols.pc"]
+files = [
+  "share/wlr-protocols/unstable/wlr-data-control-unstable-v1.xml",
+  "share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml",
+]

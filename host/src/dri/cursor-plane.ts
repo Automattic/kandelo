@@ -10,11 +10,14 @@ export interface KmsCursor {
   height: number;
   /** Owned, straight-alpha RGBA bytes; never a view into guest memory. */
   pixels: Uint8ClampedArray<ArrayBuffer> | null;
+  /** The same image as premultiplied RGBA, as the plane blends it. */
+  premultiplied?: Uint8ClampedArray<ArrayBuffer> | null;
 }
 
 export class KmsCursorPlane {
   private context: OffscreenCanvasRenderingContext2D;
   private version = -1;
+  private composited = false;
   private painted: { x: number; y: number; width: number; height: number } | null = null;
   constructor(private canvas: OffscreenCanvas) {
     const context = canvas.getContext("2d");
@@ -28,9 +31,13 @@ export class KmsCursorPlane {
     });
   }
 
-  present(cursor: KmsCursor, width: number, height: number): void {
+  /** `composited`: the CRTC has a color stage, so its presenter blends the
+   *  cursor into the primary before the LUT (see kms-gamma.ts) and this
+   *  overlay must show nothing, or the cursor would appear twice. */
+  present(cursor: KmsCursor, width: number, height: number, composited = false): void {
     const resized = this.canvas.width !== width || this.canvas.height !== height;
-    if (!resized && cursor.version === this.version) return;
+    if (!resized && cursor.version === this.version && composited === this.composited) return;
+    this.composited = composited;
     if (resized) {
       this.canvas.width = width;
       this.canvas.height = height;
@@ -42,7 +49,7 @@ export class KmsCursorPlane {
       this.context.clearRect(x, y, width, height);
       this.painted = null;
     }
-    if (cursor.pixels) {
+    if (cursor.pixels && !composited) {
       this.context.putImageData(new ImageData(cursor.pixels, cursor.width, cursor.height),
         cursor.x, cursor.y);
       this.painted = { x: cursor.x, y: cursor.y,

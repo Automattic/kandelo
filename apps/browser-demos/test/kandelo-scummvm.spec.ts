@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { gotoMachineOrSkip } from "./support/kandelo-machine";
+import { gotoApp, gotoMachineOrSkip, waitForMachineBootInput } from "./support/kandelo-machine";
 
 /** The [[runtime_files]] packages/registry/scummvm/package.toml declares. */
 const RUNTIME_FILE_NAMES = [
@@ -53,6 +53,7 @@ test.afterAll(() => {
  * or the terminal means closing it and selecting that view.
  */
 async function openSurface(page: Page, label: "Internals" | "Graphics" | "Terminal") {
+  if (label === "Internals") await waitForMachineBootInput(page);
   await setInternalsOpen(page, label === "Internals");
   if (label !== "Internals") {
     const view = page

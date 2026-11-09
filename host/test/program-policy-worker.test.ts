@@ -9,7 +9,7 @@ import { MockWorkerHandle } from "../src/worker-adapter";
 import type { PolicyWorkerFactory } from "../src/program-policy";
 import type { PolicyWorkerRequest } from "../src/program-policy-worker";
 
-const raw = readFileSync(resolve(import.meta.dirname, "../../abi/program-fixtures/v55/raw-fork.wasm"));
+const raw = readFileSync(resolve(import.meta.dirname, "../../abi/program-fixtures/v56/raw-fork.wasm"));
 const module = new WebAssembly.Module(readFileSync(resolve(import.meta.dirname, "../../local-binaries/kandelo_program_policy32.wasm")));
 const source = Uint8Array.from(raw).buffer;
 const request: PolicyWorkerRequest = { module, source, metadataBytes: 1024 * 1024, workItems: 1_000_000, memoryPages: 64, heapBytes: 2 * 1024 * 1024 };
@@ -22,7 +22,7 @@ describe("isolated Rust program metadata", () => {
     expect(record.byteLength).toBe(160);
     expect(new TextDecoder().decode(record.subarray(0, 6))).toBe("KDPOL1");
     expect(Buffer.from(record.subarray(24, 56)).toString("hex")).toBe(createHash("sha256").update(raw).digest("hex"));
-    expect(new DataView(record.buffer).getInt32(60, true)).toBe(55);
+    expect(new DataView(record.buffer).getInt32(60, true)).toBe(56);
     expect(inspector.active).toEqual({ jobs: 0, workspace: 0 });
     expect(new Uint8Array(source)).toEqual(Uint8Array.from(raw));
   });

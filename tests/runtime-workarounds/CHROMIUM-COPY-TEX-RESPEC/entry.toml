@@ -1,0 +1,22 @@
+id = "CHROMIUM-COPY-TEX-RESPEC"
+kind = "bug"
+status = "confirmed"
+runtimes = ["chromium"]
+summary = "Copied pixels survive a later texture image respecification"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["chromium"]
+self_judging = true
+timeout_seconds = 30
+
+[[observed]]
+runtime = "chromium"
+version = "153.0.8010.12"
+os = "macos"
+reproduced = true
+date = 2026-10-24
+source = "suite"
+released = false

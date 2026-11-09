@@ -1,3 +1,5 @@
+import { ProcessGenerationObservations } from "./process-generation-observation";
+import type { ProcessGenerationLeaseDisposition } from "./process-generation-detach";
 import { BrowserPcmMirror } from "./audio/browser-pcm-mirror";
 import { BrowserFramebufferMirrors } from "./framebuffer/browser-mirror";
 import { AudioActivityLatch } from "./audio/audio-activity-latch";
@@ -35,7 +37,11 @@ import type {
   ThreadChannelAttachment,
 } from "./kernel-worker";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
-import { DeferredWorkerHandle } from "./deferred-worker-handle";
+import {
+  createWorkerAbsence,
+  DeferredWorkerHandle,
+  type WorkerAbsence,
+} from "./deferred-worker-handle";
 import {
   PreparedExecTargetError,
   spawnFailureMessage,
@@ -91,6 +97,11 @@ import {
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import {
   createWorkerQuiescence,
+  prepareProcessWorkerAbsence,
+  sealProcessWorkerAbsence,
+  processWorkerRetirementProven,
+  waitForProcessWorkerRetirement,
+  retireWorkerBatch,
   type WorkerQuiescence,
   waitForExecRetirement as waitForExecRetirementFence,
   waitForWorkerQuiescence as waitForWorkerQuiescenceFence,
@@ -159,6 +170,7 @@ import {
 import { closeKernelRealmStorage, kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import { StorageCloseLedger } from "./storage-close-ledger";
 import { createDestroyProgressReporter } from "./destroy-progress-reporter";
+import { parseGlAuditMode } from "./webgl/native-audit";
 import {
   configureRootfsOverlayFromImage,
   createProcessLifecycle,
@@ -217,6 +229,7 @@ interface ForkReplayContext {
 }
 
 interface ProcessInfo extends ProcessGenerationOwnership {
+  workerAbsence?: WorkerAbsence;
   /** Host-only identity for one execution image. A PID persists across exec. */
   generation: number;
   memory: WebAssembly.Memory;
@@ -251,6 +264,24 @@ interface ProcessInfo extends ProcessGenerationOwnership {
   vforkWorkspace?: VforkWorkspaceOwnership;
 }
 const processes = new Map<number, ProcessInfo>();
+let observeProcessGenerations = false;
+const generationObservations = new ProcessGenerationObservations(event =>
+  post({ type: "process_generation_event", event }));
+
+function registerObservedProcess(pid: number, info: ProcessInfo): void {
+  // Prepare before publication/start. Only this exact handle may later prove
+  // no main realm ever existed; observers record absence separately from ACK.
+  prepareProcessWorkerAbsence(info, () => generationObservations.mainAbsent(info));
+  processes.set(pid, info);
+  if (!observeProcessGenerations) return;
+  // Correlation is never lifecycle authority. An unauthenticated/uncertain
+  // observation stays absent; it must not change the existing admission.
+  try {
+    const executionId = externrefProcessOwner.generationId(info.externrefGeneration);
+    generationObservations.admit(pid, info, executionId);
+  } catch { /* no authenticated observation */ }
+}
+
 const vforkLifetimes = new VforkLifetimeCoordinator<ProcessInfo>();
 const externrefProcessOwner = new ForkExternrefProcessOwner();
 const forkHostImportOwnerRuntime =
@@ -347,6 +378,7 @@ interface ThreadWorkerInfo {
   tid: number;
   basePage: number;
   quiescent: boolean;
+  workerAbsence: WorkerAbsence;
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
   termination?: Promise<void>;
@@ -470,7 +502,9 @@ async function terminateTrackedWorker(
   intentionallyTerminated.add(worker as object);
   forkHostImportsByWorker.get(worker as object)?.close();
   const teardown = (async () => {
-    await worker.terminate().catch(() => {});
+    await worker.terminate().catch((error) => {
+      console.warn(`[kernel-worker] Worker termination failed: ${String(error)}`);
+    });
     if (settleMs > 0) await delay(settleMs);
   })();
   workerTeardowns.add(teardown);
@@ -488,26 +522,38 @@ async function terminateThreadWorkers(
     return true;
   }
   threadWorkers.delete(pid);
-  const quiescence = await Promise.all(
+  await Promise.all(
     threads.map((thread) =>
-      requireExecRetirement
+      thread.workerAbsence.seal()
+        ? Promise.resolve(true)
+        : requireExecRetirement
         ? waitForExecRetirement(
             thread.execRetirement,
             thread.workerQuiescence,
           )
         : waitForWorkerQuiescence(thread.workerQuiescence)),
   );
-  const allQuiescent = quiescence.every(Boolean);
   for (const thread of threads) {
     intentionallyTerminated.add(thread.worker as object);
   }
-  for (const t of threads) {
-    await (
-      t.termination ??
-      terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
-    );
-    threadExits.release(pid, t.channelOffset);
-  }
+  const allQuiescent = await retireWorkerBatch({
+    workers: threads,
+    // The main guest can also grow this memory. Its terminal fence must be
+    // present before overlapping sibling-instance destruction.
+    // WHY: exec joins this exact batch before publishing its successor;
+    // destroy drains creators and joins an in-flight exact exit teardown.
+    // This current-main lookup depends on that ordering: admitting a
+    // replacement before this await finishes would authorize the wrong image.
+    mayRetireTogether: processes.get(pid) !== undefined
+      && processWorkerRetirementProven(processes.get(pid)!),
+    retirementProven: (thread) => thread.workerAbsence.proven
+      || (thread.workerQuiescence.settled
+        && (!requireExecRetirement || thread.execRetirement.settled)),
+    terminate: (thread) => thread.termination ?? terminateTrackedWorker(
+        thread.worker, THREADED_WORKER_TERMINATION_SETTLE_MS,
+      ),
+    release: (thread) => threadExits.release(pid, thread.channelOffset),
+  });
   // After the live threads, so none of them can grow the memory meanwhile.
   await terminateExitedThreadWorkers(pid);
   return allQuiescent;
@@ -526,13 +572,14 @@ const processGenerationDetaches =
       threadedProcessPids.delete(pid);
       ptyByPid.delete(pid);
     },
+    (generation, result) => generationObservations.retired(generation, result),
   );
 
 async function detachExactProcessGeneration(options: {
   pid: number;
   generation: ProcessGenerationOwnership;
   operation: "deactivate" | "unregister" | "none";
-  retire: (commit: () => void) => void | Promise<void>;
+  retire: (commit: (disposition?: ProcessGenerationLeaseDisposition) => void) => void | Promise<void>;
 }): Promise<ExactProcessGenerationDetachResult> {
   const { pid, generation, operation, retire } = options;
   const result = await processGenerationDetaches.detach({
@@ -880,6 +927,8 @@ async function createFreshProcessMemory(
 const remoteSegmentRuntime = new RemoteSegmentRuntime();
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
+  observeProcessGenerations = msg.observeProcessGenerations === true;
+  if (observeProcessGenerations) generationObservations.enable();
   processMemoryCreators.assertOpen("kernel initialization");
   initReady = false;
   initFailure = null;
@@ -1021,6 +1070,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       maxVfsFileReadBytes: msg.config.maxVfsFileReadBytes,
       enableSyscallLog: msg.config.enableSyscallLog,
       syscallLogPtrWidth: msg.config.syscallLogPtrWidth,
+      glAudit: parseGlAuditMode(msg.config.glAudit),
     },
     io,
     {
@@ -1028,6 +1078,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         processMemoryAllocator.observeTarget(memory, target);
       },
       onKernelFatal: terminatePoisonedKernelWorker,
+      onHostDiagnostic: (diagnostic) => {
+        console.error(diagnostic.message);
+        post({ type: "host_diagnostic", ...diagnostic });
+      },
       onFork: ({
         parentPid,
         childPid,
@@ -1036,8 +1090,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         continuation,
         borrowedReplay,
       }) => {
-        ownedJobs.inherit(parentPid, childPid);
         const launch = (releaseCreatorAdmission?: () => void) => {
+          // Publish job-family custody only after creator admission succeeds;
+          // a terminal refusal has no host child to publish or report exited.
+          ownedJobs.inherit(parentPid, childPid);
           // Tell the main thread a kernel-side fork happened so Inspector
           // panes can refresh their process table without polling.
           post({
@@ -1610,7 +1666,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
         threadAllocator,
         externrefGeneration,
       };
-      processes.set(pid, createdGeneration);
+      registerObservedProcess(pid, createdGeneration);
 
       installProcessWorkerListeners(worker, pid);
       createdMemoryLease = undefined;
@@ -1662,7 +1718,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
             } else {
               lease.release();
             }
-            commit();
+            commit(workerCreationAttempted || !framebufferReleased ? "forced" : "quiescent");
           },
         });
         if (detachResult.status !== "released") {
@@ -1798,20 +1854,28 @@ function installProcessWorkerListeners(
     const process = processes.get(pid);
     if (!process || process.worker !== worker) return;
     const m = msg as WorkerToHostMessage;
-    if (m.type === "memory_quiescent" && m.tid === undefined) {
+    // Worker equality above binds the exact realm; its PID and main-thread
+    // discriminator complete the fence proof. A foreign or malformed ACK
+    // cannot authorize retiring this image's memory or exec resources.
+    if (m.type === "memory_quiescent" && m.pid === pid && m.tid === undefined) {
       // The browser entry emits this only after worker-main returns. Unlike
       // Browser Worker.terminate(), this is an exact-generation ownership
       // fence and can authorize dropping the allocator's strong reference.
       if (vforkLifetimes.phaseForChild(process) !== undefined) {
         traceVforkMechanism("memory_quiescent", `child=${pid}`);
       }
+      generationObservations.mainQuiescent(process);
       process.workerQuiescence.settle();
     }
-    if (m.type === "exec_retired" && m.tid === undefined) {
+    if (m.type === "exec_retired" && m.pid === pid && m.tid === undefined) {
       process.execRetirement.settle();
     }
     if (intentionallyTerminated.has(worker as object)) return;
-    if (m.type === "error") {
+    // Payload lifecycle events must name this process, as on Node. Worker
+    // identity alone cannot authenticate a foreign/missing payload PID.
+    // Native Worker error/exit events above have no payload PID and keep
+    // their independent exact-realm checks.
+    if (m.type === "error" && m.pid === pid) {
       const signum = classifiedSignalOrFallback(m.message);
       const status = classifiedTrapExitStatus(m.message) ?? -1;
       finalize(
@@ -1822,9 +1886,9 @@ function installProcessWorkerListeners(
           message: `[process-worker] ${m.message ?? "unknown error"}`,
         },
       );
-    } else if (m.type === "exit") {
+    } else if (m.type === "exit" && m.pid === pid) {
       finalize(m.status ?? 0);
-    } else if (m.type === "vm_interrupt_timer") {
+    } else if (m.type === "vm_interrupt_timer" && m.pid === pid) {
       handleVmInterruptTimer(m, pid, process);
     } else if (m.type === "fork_host_import") {
       dispatchForkHostImport(worker, m);
@@ -2169,7 +2233,7 @@ async function handleVfork(
       childGeneration,
     );
     lifetimeStarted = true;
-    processes.set(childPid, childGeneration);
+    registerObservedProcess(childPid, childGeneration);
     // Host destroy can now sweep every alias even though onFork deliberately
     // remains pending to park the calling guest thread until exec/_exit.
     releaseCreatorAdmission?.();
@@ -2226,8 +2290,8 @@ async function handleVfork(
         new Error(`Vfork child ${childPid} exited before Worker launch`),
       );
       forkHostImports.close();
+      sealProcessWorkerAbsence(childGeneration);
       await terminateTrackedWorker(childWorker);
-      childGeneration.workerQuiescence.settle();
       const signal = await retryKernelEntryResult(
         () => kernelWorker.finalizePendingChildTermination(childPid),
       );
@@ -2250,7 +2314,7 @@ async function handleVfork(
     } catch (error) {
       const phase = vforkLifetimes.phaseForChild(childGeneration);
       if (phase === "starting") {
-        childGeneration.workerQuiescence.settle();
+        sealProcessWorkerAbsence(childGeneration);
         const signal = await retryKernelEntryResult(
           () => kernelWorker.finalizePendingChildTermination(childPid),
         );
@@ -2307,6 +2371,7 @@ async function handleVfork(
 
     forkReplay.cancel(error);
     childForkHostImports?.close();
+    if (childGeneration) sealProcessWorkerAbsence(childGeneration);
     if (childWorker) await terminateTrackedWorker(childWorker);
     if (childExternrefGeneration) {
       externrefProcessOwner.releaseGeneration(childExternrefGeneration);
@@ -2319,7 +2384,7 @@ async function handleVfork(
         retire: (commit) => {
           childMemoryLease.release();
           childMemoryLeaseConsumed = true;
-          commit();
+          commit("quiescent");
         },
       });
       if (detachResult.status !== "released") {
@@ -2530,7 +2595,7 @@ async function handleOrdinaryFork(
       forkReplayContext,
       externrefGeneration: externrefGrant.generation,
     };
-    processes.set(childPid, childGeneration);
+    registerObservedProcess(childPid, childGeneration);
 
     observeForkReplayWorker(
       forkReplay,
@@ -2566,8 +2631,8 @@ async function handleOrdinaryFork(
         new Error(`Fork child ${childPid} exited before Worker launch`),
       );
       forkHostImports.close();
+      sealProcessWorkerAbsence(childGeneration!);
       await terminateTrackedWorker(worker);
-      processes.get(childPid)?.workerQuiescence.settle();
       const signal = await retryKernelEntryResult(
         () => kernelWorker.finalizePendingChildTermination(childPid),
       );
@@ -2597,6 +2662,9 @@ async function handleOrdinaryFork(
     forkReplay.commit();
   } catch (error) {
     if (lifecycleTeardownStarted) throw error;
+    const mainNeverCreated = childGeneration
+      ? sealProcessWorkerAbsence(childGeneration)
+      : !workerStartAttempted;
     forkReplay.cancel(error);
     childForkHostImports?.close();
     if (childWorker) await terminateTrackedWorker(childWorker);
@@ -2615,12 +2683,12 @@ async function handleOrdinaryFork(
         const framebufferReleased = childGeneration
           ? await releaseMainFramebufferGeneration(childPid, childGeneration)
           : true;
-        if (workerStartAttempted || !framebufferReleased) {
+        if (!mainNeverCreated || !framebufferReleased) {
           childMemoryLease.releaseAfterForcedTermination();
         } else {
           childMemoryLease.release();
         }
-        commit();
+        commit(!mainNeverCreated || !framebufferReleased ? "forced" : "quiescent");
       },
     });
     if (detachResult.status !== "released") {
@@ -2777,11 +2845,8 @@ async function handleExec(
       }
 
       const [mainQuiescent, threadsQuiescent] = await Promise.all([
-        mainRetirementStarted
-          ? waitForExecRetirement(
-              initiatingInfo.execRetirement,
-              initiatingInfo.workerQuiescence,
-            )
+        mainRetirementStarted || sealProcessWorkerAbsence(initiatingInfo)
+          ? waitForProcessWorkerRetirement(initiatingInfo, EXEC_WORKER_RETIREMENT_WAIT_MS, true)
           : Promise.resolve(false),
         terminateThreadWorkers(pid, true),
       ]);
@@ -2921,7 +2986,7 @@ async function handleExec(
       // Clear cached thread module — the new program binary is different
       threadModuleCache.delete(pid);
 
-      processes.set(pid, {
+      const replacementGeneration: ProcessInfo = {
         generation: allocateProcessGeneration(),
         memory: newMemory,
         memoryLease: newMemoryLease,
@@ -2939,7 +3004,8 @@ async function handleExec(
         layout: newLayout,
         threadAllocator: newThreadAllocator,
         externrefGeneration: replacementExternrefGeneration,
-      });
+      };
+      registerObservedProcess(pid, replacementGeneration);
       preparedTransferred = true;
 
       await retireSupersededExecGeneration(
@@ -3013,10 +3079,9 @@ async function handleExec(
       }
       if (startDisposition === "dead") {
         replacementForkHostImports.close();
-        // startProcessWorkerWhenRunnable proved that the replacement Worker was
-        // never started. Publish the equivalent ownership fence so the ordinary
-        // exit teardown can retire listeners and release its lease safely.
-        processes.get(pid)?.workerQuiescence.settle();
+        // Seal the exact local handle before accepting absence. The numeric
+        // PID may already name a replacement after the preflight await.
+        sealProcessWorkerAbsence(replacementGeneration);
         kernelWorker.finishProcessExecHandoff(pid);
         const signal = await retryKernelEntryResult(
           () => kernelWorker.finalizeExecHandoffTermination(pid),
@@ -3079,7 +3144,7 @@ async function handleExec(
             } else {
               prepared.memoryLease.release();
             }
-            commit();
+            commit(replacementStartAttempted ? "forced" : "quiescent");
           },
         });
         if (detachResult.status === "released") {
@@ -3269,7 +3334,7 @@ async function handlePosixSpawn(
       threadAllocator,
       externrefGeneration: processExternrefGeneration,
     };
-    processes.set(childPid, childGeneration);
+    registerObservedProcess(childPid, childGeneration);
 
     installProcessWorkerListeners(worker, childPid);
     const startDisposition = await retryKernelEntryResult(() =>
@@ -3291,8 +3356,8 @@ async function handlePosixSpawn(
     }
     if (startDisposition === "dead") {
       processForkHostImports.close();
+      sealProcessWorkerAbsence(childGeneration!);
       await terminateTrackedWorker(worker);
-      processes.get(childPid)?.workerQuiescence.settle();
       const signal = await retryKernelEntryResult(
         () => kernelWorker.finalizePendingChildTermination(childPid),
       );
@@ -3307,6 +3372,9 @@ async function handlePosixSpawn(
     }
   } catch (error) {
     if (lifecycleTeardownStarted) throw error;
+    const mainNeverCreated = childGeneration
+      ? sealProcessWorkerAbsence(childGeneration)
+      : !workerStartAttempted;
     if (newWorker) await terminateTrackedWorker(newWorker);
     forkHostImports?.close();
     if (externrefGeneration) {
@@ -3321,12 +3389,12 @@ async function handlePosixSpawn(
         const framebufferReleased = childGeneration
           ? await releaseMainFramebufferGeneration(childPid, childGeneration)
           : true;
-        if (workerStartAttempted || !framebufferReleased) {
+        if (!mainNeverCreated || !framebufferReleased) {
           memoryLease.releaseAfterForcedTermination();
         } else {
           memoryLease.release();
         }
-        commit();
+        commit(!mainNeverCreated || !framebufferReleased ? "forced" : "quiescent");
       },
     });
     if (detachResult.status !== "released") {
@@ -3478,10 +3546,13 @@ async function handleClone(
     tid,
     basePage: alloc.slotStartPage,
     quiescent: false,
+    workerAbsence: createWorkerAbsence(threadWorker, () =>
+      generationObservations.threadAbsent(processInfo, threadEntry)),
     workerQuiescence: createWorkerQuiescence(),
     execRetirement: createWorkerQuiescence(),
   };
   threadWorkers.get(pid)!.push(threadEntry);
+  generationObservations.threadAdmitted(processInfo, threadEntry);
 
   const belongsToCurrentProcessImage = () =>
     isCurrentProcessGeneration(
@@ -3495,9 +3566,10 @@ async function handleClone(
   const reclaimThread = async () => {
     if (reclaimed) return;
     reclaimed = true;
-    if (threadEntry.quiescent) {
-      // The browser entry returned from worker-main before publishing this
-      // fence, so neither guest code nor its Worker can race slot reuse.
+    if (threadEntry.quiescent || threadEntry.workerAbsence.proven) {
+      // An exact terminal ACK, or sealed proof that construction was never
+      // attempted, excludes a guest racing slot reuse. Neither timeout nor
+      // browser terminate() supplies either ownership proof.
       await kernelWorker.settleRetiredChannelListeners(
         pid,
         memory,
@@ -3516,6 +3588,9 @@ async function handleClone(
   };
   const terminateThreadEntry = (): Promise<void> => {
     if (!threadEntry.termination) {
+      // Seal before any await: a delayed SIGCONT must never start this slot
+      // after absence allowed its channel and allocator page to be reused.
+      threadEntry.workerAbsence.seal();
       threadEntry.termination = terminateTrackedWorker(
         threadWorker,
         THREADED_WORKER_TERMINATION_SETTLE_MS,
@@ -3561,6 +3636,7 @@ async function handleClone(
       // The browser wrapper publishes memory_quiescent after worker-main
       // returns. Do not turn this earlier semantic exit into a retirement fence.
     } else if (m.type === "memory_quiescent" && m.tid === tid) {
+      if (m.pid === pid) generationObservations.threadQuiescent(processInfo, threadEntry);
       threadEntry.quiescent = true;
       threadEntry.workerQuiescence.settle();
       if (exitedThreadWorkersOutliveThreads && isCurrentThreadGeneration()) {
@@ -3602,7 +3678,7 @@ async function handleClone(
         () => { threadWorker.start(); },
         () => {
           forkHostImports.close();
-          void threadWorker.terminate();
+          void terminateThreadEntry();
         },
         () => {
           kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
@@ -3652,6 +3728,7 @@ async function finishProcessExit(
   if (!expectedWorker) return;
   const info = processes.get(pid);
   if (!info || info.worker !== expectedWorker) return;
+  generationObservations.exited(info, exitStatus);
   if (processTeardowns.has(expectedWorker)) return;
   vmInterruptTimers.clear(pid, info);
 
@@ -3688,9 +3765,7 @@ async function finishProcessExit(
     } catch (error) {
       console.warn(`[kernel-worker] pid=${pid} retirement wake failed: ${String(error)}`);
     }
-    const workerQuiescent = await waitForWorkerQuiescence(
-      info.workerQuiescence,
-    );
+    await waitForProcessWorkerRetirement(info, PROCESS_WORKER_QUIESCENCE_WAIT_MS);
     const threadsQuiescent = await terminateThreadWorkers(pid);
     await terminateTrackedWorker(expectedWorker, settleMs);
 
@@ -3707,7 +3782,7 @@ async function finishProcessExit(
         const mainFramebufferReleased =
           await releaseMainFramebufferGeneration(pid, info);
         exactMemoryTeardown =
-          workerQuiescent
+          processWorkerRetirementProven(info)
           && threadsQuiescent
           && info.memoryRetirementSafe
           && mainFramebufferReleased;
@@ -3719,7 +3794,7 @@ async function finishProcessExit(
           // retirement; the backing is never handed to another process.
           info.memoryLease.releaseAfterForcedTermination();
         }
-        commit();
+        commit(exactMemoryTeardown ? "quiescent" : "forced");
       },
     });
     if (detachResult.status !== "released") {
@@ -4192,7 +4267,7 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
         // terminate_process has no terminal worker message, so its backing
         // uses forced retirement and is never reused.
         info.memoryLease.releaseAfterForcedTermination();
-        commit();
+        commit("forced");
       },
     });
     if (detachResult.status !== "released") {
@@ -4387,19 +4462,31 @@ async function performDestroy() {
     const stragglers = [...processes.entries()];
     destroyProgress.startTerminating(stragglers.length);
     for (const [pid, info] of stragglers) {
-      if (info.worker) {
-        await terminateThreadWorkers(pid);
-        await terminateTrackedWorker(info.worker);
+      // WHY: exit already owns this exact generation's retirement. Stealing
+      // its ledger entry while worker settling is pending mislabels a proven
+      // cooperative exit as forced and can release its lease twice.
+      const exiting = processTeardowns.get(info.worker);
+      if (exiting) await exiting;
+      if (processes.get(pid) !== info) {
+        destroyProgress.terminatedOne();
+        continue;
       }
+      const [, threadsRetired] = await Promise.all([
+        waitForProcessWorkerRetirement(info, PROCESS_WORKER_QUIESCENCE_WAIT_MS),
+        terminateThreadWorkers(pid),
+      ]);
+      if (info.worker) await terminateTrackedWorker(info.worker);
       externrefProcessOwner.releaseGeneration(info.externrefGeneration);
       const detachResult = await detachExactProcessGeneration({
         pid,
         generation: info,
         operation: "unregister",
         retire: async (commit) => {
-          await releaseMainFramebufferGeneration(pid, info);
-          info.memoryLease.releaseAfterForcedTermination();
-          commit();
+          const framebufferReleased = await releaseMainFramebufferGeneration(pid, info);
+          const exact = processWorkerRetirementProven(info) && threadsRetired
+            && info.memoryRetirementSafe && framebufferReleased;
+          if (exact) info.memoryLease.release(); else info.memoryLease.releaseAfterForcedTermination();
+          commit(exact ? "quiescent" : "forced");
         },
       });
       if (detachResult.status !== "released") {

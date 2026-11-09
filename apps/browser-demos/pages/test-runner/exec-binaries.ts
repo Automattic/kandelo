@@ -1,6 +1,7 @@
 import type { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import { writeVfsBinary } from "@host/vfs/image-helpers";
-import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
+import { fetchRequiredExecutable } from "./required-executable";
+import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
 import sedWasmUrl from "@binaries/programs/wasm32/sed.wasm?url";
@@ -24,11 +25,11 @@ const COREUTILS_NAMES = [
 ];
 
 interface ExecBinaries {
-  dash: ArrayBuffer | null;
-  coreutils: ArrayBuffer | null;
-  grep: ArrayBuffer | null;
-  sed: ArrayBuffer | null;
-  genCat: ArrayBuffer | null;
+  bash: ArrayBuffer;
+  coreutils: ArrayBuffer;
+  grep: ArrayBuffer;
+  sed: ArrayBuffer;
+  genCat: ArrayBuffer;
 }
 
 export interface ExecBinarySupport {
@@ -53,12 +54,11 @@ function populateExecBinaries(
     try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
   }
 
-  if (binaries.dash) {
-    writeFileToFs(fs, "/bin/dash", binaries.dash);
-    try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-    try { fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
-    try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-  }
+  // WHY: /bin/sh must be the same Bash implementation as the normal Node
+  // rootfs, not a test-only shell with different exec and script behavior.
+  writeFileToFs(fs, "/bin/bash", binaries.bash);
+  fs.symlink("/bin/bash", "/bin/sh");
+  fs.symlink("/bin/bash", "/usr/bin/bash");
 
   if (binaries.coreutils) {
     writeFileToFs(fs, "/bin/coreutils", binaries.coreutils);
@@ -91,20 +91,14 @@ function populateExecBinaries(
 }
 
 export async function loadExecBinarySupport(): Promise<ExecBinarySupport> {
-  const fetches = await Promise.allSettled([
-    fetch(dashWasmUrl).then((response) => response.arrayBuffer()),
-    fetch(coreutilsWasmUrl).then((response) => response.arrayBuffer()),
-    fetch(grepWasmUrl).then((response) => response.arrayBuffer()),
-    fetch(sedWasmUrl).then((response) => response.arrayBuffer()),
-    fetch(genCatWasmUrl).then((response) => response.arrayBuffer()),
+  const [bash, coreutils, grep, sed, genCat] = await Promise.all([
+    fetchRequiredExecutable(bashWasmUrl),
+    fetchRequiredExecutable(coreutilsWasmUrl),
+    fetchRequiredExecutable(grepWasmUrl),
+    fetchRequiredExecutable(sedWasmUrl),
+    fetchRequiredExecutable(genCatWasmUrl),
   ]);
-  const binaries: ExecBinaries = {
-    dash: fetches[0].status === "fulfilled" ? fetches[0].value : null,
-    coreutils: fetches[1].status === "fulfilled" ? fetches[1].value : null,
-    grep: fetches[2].status === "fulfilled" ? fetches[2].value : null,
-    sed: fetches[3].status === "fulfilled" ? fetches[3].value : null,
-    genCat: fetches[4].status === "fulfilled" ? fetches[4].value : null,
-  };
+  const binaries: ExecBinaries = { bash, coreutils, grep, sed, genCat };
   return {
     populate(fs) {
       populateExecBinaries(fs, binaries);

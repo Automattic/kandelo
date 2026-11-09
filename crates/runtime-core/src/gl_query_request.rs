@@ -1,0 +1,152 @@
+//! GL query admission and copyout. Production GL runs synchronously in the
+//! kernel worker, so a query executes and publishes within its ioctl.
+
+extern crate alloc;
+
+use alloc::vec::Vec;
+use wasm_posix_shared::{Errno, gl};
+
+use crate::blocked_retry::StableOfdTarget;
+use crate::process::HostIO;
+
+/// Scalar authority captured after the ioctl's session/current validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GlQueryOwner {
+    pub target: StableOfdTarget,
+    pub pid: i32,
+    pub exec_generation: u64,
+    pub tid: u32,
+    pub session_id: u32,
+    pub display_id: u32,
+    pub context_id: Option<u32>,
+    pub draw_surface_id: Option<u32>,
+    pub read_surface_id: Option<u32>,
+    pub pointer_width: u8,
+}
+
+#[derive(Debug)]
+enum Completion {
+    Captured,
+    /// The kernel decided the reply itself (no host state was needed).
+    Answered(usize),
+    Executed(usize),
+    Published,
+    Failed,
+}
+
+/// One immutable first-attempt request. All byte storage belongs to the kernel;
+/// addresses are integers, never a borrowed guest-memory or scratch view.
+pub struct GlQueryRequest {
+    owner: GlQueryOwner,
+    op: u32,
+    input: Vec<u8>,
+    output_address: u64,
+    output: Vec<u8>,
+    completion: Completion,
+}
+
+impl GlQueryRequest {
+    pub fn new(
+        owner: GlQueryOwner,
+        op: u32,
+        input: Vec<u8>,
+        output_address: u64,
+        output_capacity: usize,
+    ) -> Result<Self, Errno> {
+        if !matches!(owner.pointer_width, 4 | 8)
+            || input.len() > gl::MAX_QUERY_IN_LEN as usize
+            || output_capacity > gl::MAX_QUERY_OUT_LEN as usize
+        {
+            return Err(Errno::EINVAL);
+        }
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(output_capacity)
+            .map_err(|_| Errno::ENOMEM)?;
+        output.resize(output_capacity, 0);
+        Ok(Self {
+            owner,
+            op,
+            input,
+            output_address,
+            output,
+            completion: Completion::Captured,
+        })
+    }
+
+    /// A request whose reply the kernel already knows: execution publishes
+    /// `reply` without consulting the host.
+    pub fn answered(
+        owner: GlQueryOwner,
+        op: u32,
+        output_address: u64,
+        reply: Vec<u8>,
+    ) -> Self {
+        let len = reply.len();
+        Self { owner, op, input: Vec::new(), output_address, output: reply,
+            completion: Completion::Answered(len) }
+    }
+
+    pub(crate) fn is_captured(&self) -> bool {
+        matches!(self.completion, Completion::Captured)
+    }
+
+    /// The existing immediate host contract finishes before returning. A
+    /// recognized renderer reset keeps ENODEV so libc can record its scope.
+    /// Other negative results, including EAGAIN, remain EIO; none authorizes
+    /// retaining a host destination or replaying a potentially mutating query.
+    pub fn execute_immediate(&mut self, host: &mut dyn HostIO) -> Result<(), Errno> {
+        if let Completion::Answered(len) = self.completion {
+            self.completion = Completion::Executed(len);
+            return Ok(());
+        }
+        if !self.is_captured() {
+            return Err(Errno::EBUSY);
+        }
+        self.completion = Completion::Failed;
+        let written = host.gl_query(
+            self.owner.pid,
+            self.op,
+            &self.input,
+            &mut self.output,
+            self.owner.session_id,
+        );
+        if written < 0 || written as usize > self.output.len() {
+            // Classify only failure: A3's known reset must reach libc like
+            // submit/present's ENODEV, without accepting data or replaying.
+            return Err(if written == -(Errno::ENODEV as i32) {
+                Errno::ENODEV
+            } else {
+                Errno::EIO
+            });
+        }
+        self.completion = Completion::Executed(written as usize);
+        Ok(())
+    }
+
+    /// Reacquire destination authority at publication, rather than treating a
+    /// first-attempt probe as a lease across a future parked turn. Failure is
+    /// terminal for this result: an error-consuming query must not run again.
+    pub fn publish_immediate(&mut self, host: &mut dyn HostIO) -> Result<(), Errno> {
+        let Completion::Executed(written) = self.completion else {
+            return Err(Errno::EINVAL);
+        };
+        self.completion = Completion::Failed;
+        if !self.output.is_empty() {
+            crate::syscalls::probe_dri_process_pointer(
+                host,
+                self.owner.pid,
+                self.output_address,
+                self.output.len(),
+            )?;
+        }
+        crate::syscalls::write_dri_bytes(
+            host,
+            self.owner.pid,
+            self.output_address,
+            &self.output[..written],
+        )?;
+        self.completion = Completion::Published;
+        Ok(())
+    }
+}

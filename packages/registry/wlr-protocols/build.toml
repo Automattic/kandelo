@@ -1,0 +1,11 @@
+script_path = "packages/registry/wlr-protocols/build-wlr-protocols.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
+
+# The fetched `wlr-protocols-src/` tree lives under the build's work root;
+# the resolver hashes these tracked inputs on a clean checkout.
+inputs = [
+  "packages/registry/wlr-protocols/build-wlr-protocols.sh",
+  "scripts/package-build-roots.sh",
+]

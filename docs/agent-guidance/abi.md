@@ -25,7 +25,10 @@ Persistent-program baseline enforcement is stricter than the ordinary
 additive snapshot classifier. Preserve the declared supported baseline even
 when bumping a program version; see
 `docs/persistent-program-compatibility.md`. Do not replace or restamp its
-frozen executable fixtures to make a new runtime pass.
+frozen executable fixtures to make a new runtime pass. The maintainer has
+explicitly retired ABI 55 before deployment; the minimum supported baseline is
+56. Preserve the historical v55 cohort unchanged and establish v56 only from
+fresh normal SDK builds, as the compatibility document describes.
 
 Treat these as ABI surface:
 

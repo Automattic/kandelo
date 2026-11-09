@@ -1,0 +1,26 @@
+{
+  "upstreamRevision": "a119e62de3bb38dae67f05abee8acd011e0c729c",
+  "inventorySha256": "d39ae3e3c1ab3595f747edc071d227ae2797498d99fbf77a25576314a46f876a",
+  "caseFilter": "dEQP-GLES2.functional.color_clear.*",
+  "cases": [
+    "dEQP-GLES2.functional.color_clear.complex_rgb",
+    "dEQP-GLES2.functional.color_clear.complex_rgba",
+    "dEQP-GLES2.functional.color_clear.long_masked_rgb",
+    "dEQP-GLES2.functional.color_clear.long_masked_rgba",
+    "dEQP-GLES2.functional.color_clear.long_rgb",
+    "dEQP-GLES2.functional.color_clear.long_rgba",
+    "dEQP-GLES2.functional.color_clear.masked_rgb",
+    "dEQP-GLES2.functional.color_clear.masked_rgba",
+    "dEQP-GLES2.functional.color_clear.masked_scissored_rgb",
+    "dEQP-GLES2.functional.color_clear.masked_scissored_rgba",
+    "dEQP-GLES2.functional.color_clear.multiple_rgb",
+    "dEQP-GLES2.functional.color_clear.multiple_rgba",
+    "dEQP-GLES2.functional.color_clear.scissored_rgb",
+    "dEQP-GLES2.functional.color_clear.scissored_rgba",
+    "dEQP-GLES2.functional.color_clear.short_scissored_rgb",
+    "dEQP-GLES2.functional.color_clear.single_rgb",
+    "dEQP-GLES2.functional.color_clear.single_rgba",
+    "dEQP-GLES2.functional.color_clear.subclears_rgb",
+    "dEQP-GLES2.functional.color_clear.subclears_rgba"
+  ]
+}

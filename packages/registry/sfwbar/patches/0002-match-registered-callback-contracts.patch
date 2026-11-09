@@ -1,0 +1,105 @@
+Subject: [PATCH] Match registered GTK and GLib callback contracts
+
+Signal callbacks include closure data even when it is unused. Preserve
+boolean event propagation and source removal results, and adapt helpers
+whose direct-call signatures differ from the registration contract.
+This corrects upstream C callback types for WebAssembly indirect calls;
+it does not change the platform dispatcher or relax type checks.
+
+--- a/src/gui/monitor.c
++++ b/src/gui/monitor.c
+@@ -233,7 +233,8 @@
+   return gdk_display_get_monitor_at_window(disp, win);
+ }
+ 
+-static void monitor_added_cb ( GdkDisplay *gdisp, GdkMonitor *gmon )
++static void monitor_added_cb ( GdkDisplay *gdisp, GdkMonitor *gmon,
++    gpointer data )
+ {
+   GHashTable *bar_list;
+   GHashTableIter iter;
+@@ -252,7 +253,8 @@
+   trigger_emit(trigger);
+ }
+ 
+-static void monitor_removed_cb ( GdkDisplay *gdisp, GdkMonitor *gmon )
++static void monitor_removed_cb ( GdkDisplay *gdisp, GdkMonitor *gmon,
++    gpointer data )
+ {
+   static char trigger[256];
+ 
+--- a/src/gui/flowgrid.c
++++ b/src/gui/flowgrid.c
+@@ -479,10 +479,11 @@
+   gtk_drag_finish(ctx, TRUE, FALSE, time);
+ }
+ 
+-static void flow_grid_dnd_enter_cb ( GtkWidget *widget, GdkEventCrossing *ev,
++static gboolean flow_grid_dnd_enter_cb ( GtkWidget *widget, GdkEventCrossing *ev,
+     gpointer data )
+ {
+   bar_sensor_cancel_hide(gtk_widget_get_ancestor(widget, GTK_TYPE_WINDOW));
++  return FALSE;
+ }
+ 
+ static void flow_grid_dnd_begin_cb ( GtkWidget *widget, GdkDragContext *ctx,
+--- a/src/gui/scaleimage.c
++++ b/src/gui/scaleimage.c
+@@ -540,6 +540,12 @@
+   return scale_image_set(self);
+ }
+ 
++/* GtkIconTheme::changed is void and includes the swapped instance last. */
++static void scale_image_theme_changed ( GtkWidget *self, GtkIconTheme *theme )
++{
++  scale_image_set(self);
++}
++
+ static void scale_image_init ( ScaleImage *self )
+ {
+   ScaleImagePrivate *priv;
+@@ -557,5 +563,5 @@
+ 
+   priv->theme = gtk_icon_theme_get_default();
+   g_signal_connect_swapped(G_OBJECT(priv->theme), "changed",
+-      G_CALLBACK(scale_image_set), self);
+-}
++      G_CALLBACK(scale_image_theme_changed), self);
++}
+--- a/src/gui/bar.c
++++ b/src/gui/bar.c
+@@ -209,6 +209,13 @@
+   bar_reveal(self);
+ }
+ 
++/* Timeout dispatch consumes a gboolean; the direct helper remains void. */
++static gboolean bar_sensor_show_timeout ( gpointer self )
++{
++  bar_sensor_show_bar(self);
++  return G_SOURCE_REMOVE;
++}
++
+ static gboolean bar_enter_notify_event ( GtkWidget *self,
+     GdkEventCrossing *event )
+ {
+@@ -229,7 +236,7 @@
+   bar_sensor_cancel_hide(self);
+   if(!priv->show_handle)
+     priv->show_handle = g_timeout_add(priv->show_timeout,
+-        (GSourceFunc)bar_sensor_show_bar, self);
++        bar_sensor_show_timeout, self);
+   return TRUE;
+ }
+ 
+--- a/src/ipc/wayfire.c
++++ b/src/ipc/wayfire.c
+@@ -674,7 +674,8 @@
+   return TRUE;
+ }
+ 
+-static void wayfire_ipc_monitor_removed ( GdkDisplay *disp, GdkMonitor *mon )
++static void wayfire_ipc_monitor_removed ( GdkDisplay *disp, GdkMonitor *mon,
++    gpointer data )
+ {
+   wayfire_ipc_output_t *output;
+   const gchar *output_name;

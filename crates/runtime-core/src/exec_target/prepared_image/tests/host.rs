@@ -7,7 +7,7 @@ const IMAGE: i64 = 82_002;
 fn private_program_host() -> MutableHost {
     MutableHost {
         closed: Vec::new(), program_metadata: Some((0o555, 0)),
-        source: include_bytes!("../../../../../../abi/program-fixtures/v55/echo.wasm").to_vec(),
+        source: include_bytes!("../../../../../../abi/program-fixtures/v56/echo.wasm").to_vec(),
         image: Vec::new(), corrupt_source_on_image_read: false, source_bytes_read: 0,
         corrupt_image_after_source_bytes: None, image_revision: 0,
     }
@@ -206,7 +206,7 @@ fn trusted_host_program_uses_normal_observation_and_spawn_commit_with_exact_rele
     assert_eq!(proc.exec_generation, 0);
     assert!(host.closed.is_empty());
     assert_eq!(observe(&mut proc, &mut host, token), host.source);
-    assert!(matches!(admit(&proc, 100, token, 55), Ok(Admission::Program)));
+    assert!(matches!(admit(&proc, 100, token, wasm_posix_shared::ABI_VERSION), Ok(Admission::Program)));
     commit_spawn(&mut proc, &mut locks, &mut host, 1, 100, token).unwrap();
     assert_eq!(proc.exec_generation, 1);
     assert!(!proc.secure_exec);

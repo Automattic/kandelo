@@ -34,6 +34,9 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 4096; i++) pixels[i] = (importer_writes || allocator_writes_late) ? 0 : 0xffff0000;
     struct prime shared = {.handle = bo.handle, .flags = 2 /* DRM_RDWR */};
     CHECK(ioctl(fd, 0xc00c642d, &shared) == 0);
+    /* This producer keeps its storage, while an independent DRM file in
+     * the consumer must acquire its own master grant. */
+    CHECK(ioctl(fd, 0x641f, 0) == 0);
     pid_t child = fork();
     CHECK(child >= 0);
     if (child == 0) {

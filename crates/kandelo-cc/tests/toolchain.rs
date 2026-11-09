@@ -123,3 +123,31 @@ fn resolves_glue_dir_relative_to_the_sdk_root() {
     env.set("WASM_POSIX_GLUE_DIR", None);
     assert!(find_glue_dir().unwrap().contains("libc/glue"));
 }
+
+// ar, ranlib and nm
+
+#[test]
+fn archive_tools_do_not_require_any_sysroot() {
+    // wasm{32,64}posix-ar/-ranlib/-nm only run the LLVM binutils. Neither
+    // architecture's libc is an input, so a tree with only sysroot64 (or no
+    // sysroot at all) must still archive objects.
+    let bin = TempDir::new("kandelo-cc-llvm-").unwrap();
+    for tool in [
+        "clang",
+        "clang++",
+        "llvm-ar",
+        "llvm-ranlib",
+        "llvm-nm",
+        "wasm-ld",
+    ] {
+        fake_tool(bin.path(), tool);
+    }
+    let missing_sysroot = bin.path().join("no-such-sysroot");
+
+    let mut env = EnvGuard::new();
+    env.set("WASM_POSIX_LLVM_DIR", Some(bin.path().to_str().unwrap()));
+    env.set("WASM_POSIX_SYSROOT", Some(missing_sysroot.to_str().unwrap()));
+    for tool in ["llvm-ar", "llvm-ranlib", "llvm-nm"] {
+        assert_eq!(kandelo_cc::tools::llvm_passthrough(tool, &[]), Ok(0), "{tool}");
+    }
+}

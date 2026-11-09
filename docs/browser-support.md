@@ -236,6 +236,14 @@ Injected TCP pipes live in the kernel's global pipe table (`pid == 0` for
 connection in any nginx worker. The standalone nginx image runs with
 `master_process on` and `worker_processes 2`.
 
+The machine activation also owns its HTTP readiness probe. Retiring or
+halting that activation aborts its pending fetch and retry timer before its
+HTTP bridge is taken offline. A replacement activation has an independent
+signal, so late old results cannot change its preview state. Current HTTP
+failures still retry under the same 90-second readiness and five-second
+request budgets, then surface the real failure; cancellation does not turn
+an unavailable current application into a successful preview.
+
 AF_UNIX stream listeners use the same shared-queue ownership model. This is the
 path used by pre-fork PHP-FPM workers: a connection is queued once and whichever
 worker wins `accept()` materializes its own connected socket around the global
@@ -832,6 +840,41 @@ pacing even when no physical Node audio device is attached.
 
 Located in `apps/browser-demos/pages/`:
 
+Run `npm run typecheck` in `apps/browser-demos` to check the application and
+its Node unit tests. The production compiler retains every `lib/` and
+`pages/` source root; `tsconfig.node-tests.json` checks every `*.test.ts`
+file selected by the Node unit runner, including tests outside those two
+roots. The aggregate checker rejects missing roots, overlapping contexts,
+and production files assigned to the test context. `npm run build` uses
+this same preflight before Vite.
+
+These contexts grant different runtime capabilities. Shared host imports
+contain genuine Node branches, so the compiler needs the declared Node
+library types as well as browser types. That does not authorize Node APIs
+in browser application code: the checker audits all transitive app-authored
+modules and rejects Node runtime imports and values, including Node-only
+methods on otherwise shared APIs. Local names and real DOM APIs remain
+valid. Node test declarations never replace the production source check.
+The TypeScript JavaScript API parses that inventory and resolves capability
+symbols; the declared `tsc` command performs both complete strict compiler
+checks without filtering diagnostics.
+
+The app imports the generated VFS product catalog. In a fresh worktree,
+initialize the pinned submodules, then use its normal metadata producer:
+
+```bash
+host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+cargo run --locked -p xtask --target "$host_target" -- vfs products generate \
+  --source images/vfs/products --out images/vfs/products/generated/catalog.json
+cargo run --locked -p xtask --target "$host_target" -- vfs products check \
+  --source images/vfs/products --generated images/vfs/products/generated/catalog.json
+```
+
+Run these commands through `scripts/dev-shell.sh` from the repository root.
+Catalog generation reads the declared product and license sources; it does
+not build the SDK or packages. Normal browser builds still prepare their
+kernel, image writer, images, and package artifacts through `run.sh`.
+
 | Demo | Software | Boot pattern | Features |
 |------|----------|--------------|----------|
 | simple | C programs | legacy spawn | Basic file I/O, printf |
@@ -888,22 +931,32 @@ The Wayland desktop machine (launched from the gallery, or directly with
 The Modeset pane bridges card0 to an OffscreenCanvas.
 
 **GPU compositing (default in the browser).** At boot wlcompositor
-probes the `/dev/dri/renderD128` GLES bridge (shader compile via sync
-queries, which fail cleanly on headless hosts) and, when available,
-composites with GLES3: each client `wl_shm` buffer — a gbm dumb bo
-whose prime-fd arrived over `SCM_RIGHTS` — is imported on the EGL fd
-and bound as a `WebGLTexture` through the
-`DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` ioctl (the host uploads pixels
-straight from the bo's shared storage; nothing marshals through the
-cmdbuf). Frames render as textured quads (wallpaper texture + z-ordered
-windows + focus border) in a single cmdbuf flush, so the canvas
-transitions atomically between complete frames. The compositor's GL
-context claims the CRTC canvas (`markKmsCanvasGlOwned`), the vblank
-pump's presenter stands down, and stats slot 7 reports `3`
-(`webgl2-gl` in the chip). KMS PAGE_FLIPs still pace frame callbacks
-and the flip counters — only pixel production moves to the GPU. The
-compositor prints a one-shot `WLC_RENDERER gpu|cpu` marker;
-`WLC_NO_GPU=1` forces the CPU path.
+takes the ordinary KMS compositor path that SDL's KMSDRM driver also
+uses: an EGL display on its own GBM device (`EGL_PLATFORM_GBM_KHR`;
+`eglInitialize` fails cleanly on a host with no GLES renderer), an
+OpenGL ES 2.0 context, and an EGL window on an ARGB8888 GBM surface.
+When that succeeds it composites with GLES 2. The compositor maps every
+`wl_shm` pool fd that arrives over `SCM_RIGHTS`, as `wl_shm` specifies,
+and uploads each committed buffer from that mapping with
+`glTexImage2D`/`glTexSubImage2D`, as any GLES compositor uploads shm
+buffers. A pool whose fd is a gbm dumb bo's PRIME fd, with the buffer
+at offset 0, is instead imported on the EGL fd and bound as a
+`WebGLTexture` through the `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` ioctl:
+the host uploads its pixels straight from the bo's shared storage, and
+nothing marshals through the cmdbuf. Frames render as textured quads (wallpaper texture + z-ordered
+windows + focus border); `eglSwapBuffers` finishes each one and the GBM
+bo it produced is added as a framebuffer and page-flipped, so the
+output moves atomically between complete frames. The compositor's GL
+context is created on the DRM master's file, so it claims the CRTC
+canvas (`markKmsCanvasGlOwned`), the vblank pump's presenter stands
+down, and stats slot 7 reports `3` (`webgl2-gl` in the chip). PAGE_FLIP
+completions pace frame callbacks and the flip counters. The compositor
+prints a one-shot `WLC_RENDERER gpu|cpu` marker; `WLC_NO_GPU=1` forces
+the CPU path. Until the 2026-11 GLES 2 baseline the compositor asked
+for an ES 3 context on the default display; that request now fails with
+`EGL_BAD_MATCH` (ES 3.0 is deferred, see
+[future improvements](future-improvements.md#implement-opengl-es-30-contexts)),
+which is why the compositor moved to GLES 2.
 
 **CPU compositing (Node smokes, headless degrade, or `WLC_NO_GPU`).**
 The compositor blits committed buffers into the dumb-bo scanout as
@@ -918,8 +971,11 @@ session down, which hands the canvas back to the pump presenter
 (`markKmsCanvasGlReleased`) so the desktop keeps painting. A browser
 GPU-process crash is detected on the same chain: when the canvas
 context is lost, `host_gl_present` fails the guest's `eglSwapBuffers`
-with `EIO`, the compositor degrades to CPU compositing, and EGL
-teardown returns the canvas to the pump. The kernel worker installs
+with `ENODEV` (`EGL_CONTEXT_LOST`), the compositor degrades to CPU
+compositing, and EGL teardown returns the canvas to the pump. The same
+loss is a GLES graphics reset: contexts created with
+`EGL_LOSE_CONTEXT_ON_RESET` see it through `glGetGraphicsResetStatus`
+(`GL_EXT_robustness`/`GL_KHR_robustness`), as wlroots polls it. The kernel worker installs
 `webglcontextlost`/`webglcontextrestored` listeners when the canvas is
 attached (`hookKmsContextLoss`) — not lazily at presenter build — so
 the loss event is cancelled and the browser restores the context even
@@ -1092,6 +1148,41 @@ PAGE_FLIP counter, and flicker stability via canvas PNG-size
 distribution) and the node-side twins under `host/test/wl*-smoke.test.ts`
 (including `wldesktop-liveness-smoke.test.ts`).
 
+### Browser desktop keys
+
+The browser presets use **Alt (Option on Mac)** for window/workspace actions.
+Cmd/Win and Ctrl have host/browser and application meanings; replacing one
+with the other does not make a usable cross-platform desktop. These presets
+avoid direct Alt+Space/Tab/F4, Alt+arrows and browser menu/address-bar chords.
+They leave ordinary Ctrl application input and the desktop's explicit
+clipboard routes intact. They do not remap evdev modifier identities.
+
+Plain **Sway** runs its own Swaybar, including native clickable workspace
+buttons. **Sway with SFWBar** is a separate `sway-sfwbar` profile. Both use
+Alt+Return, Alt+1–0 and Alt+Shift+1–0 for terminals, workspaces and moving
+windows, and Alt+H/J/K/L for directional focus. Alt+M enters Sway's native
+Desktop command mode: release Alt, then Return opens a terminal, W/S/E
+changes layout, F toggles fullscreen, V toggles floating, Space changes
+focus mode, C reloads and Q asks to exit. R enters resize mode with H/J/K/L;
+Return or Escape leaves it. Programs can be launched from the terminal.
+The browser config declares its modifier before any bindings; setting it
+only after including upstream would leave earlier Mod4 bindings unchanged.
+
+**Labwc** uses Alt+Return for a terminal, Alt+J/K for next/previous window,
+Alt+Shift+Q to close and Alt+Shift+E to exit. Its root menu remains available
+by right-click. Hyprland-style and Omarchy shortcuts are described below.
+Advanced users can select their own ordinary guest compositor config.
+
+No modifier is guaranteed free under every OS, keyboard layout or user
+shortcut setting. Real Windows shortcut delivery still needs qualification;
+macOS headless browser checks do not establish it. Fullscreen alone does
+not guarantee capture: Chrome's optional Keyboard Lock API requires API
+fullscreen and permission, and captures only keys the OS allows. These
+presets do not implement or claim a fullscreen/keyboard-lock control.
+See [Chrome shortcuts](https://support.google.com/chrome/answer/157179?hl=en),
+[Windows shortcuts](https://support.microsoft.com/en-us/accessibility/windows/keyboard-shortcuts-in-windows)
+and [Keyboard Lock](https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock).
+
 ### Hyprland tiling demo
 
 **Not in the shell image by default.** The Omarchy desktop below is the
@@ -1123,27 +1214,18 @@ two `wlterm` terminals. The foreground terminal's exit ends the desktop.
 - **Server-side decorations.** Under `dwindle` the compositor negotiates
   `SERVER_SIDE` decorations, so tiled windows have no titlebar (a floating
   layout keeps client-side CSD).
-- **Keybinds.** `Return` launches a terminal, `W` kills the focused window,
-  and `1..9` switch workspaces — bound on both `SUPER` (real Hyprland) and
-  `CTRL` in the image's `wlcompositor.conf`. Use **`CTRL`** in the browser:
-  the OS/browser reserve `SUPER` (Cmd/Win) — `Cmd+W` closes the tab,
-  `Cmd+1..9` switch browser tabs — so those never reach the page, while
-  `Ctrl+…` does. The compositor also supports move-to-workspace, focus
-  cycling, and a `kwlctl` control socket (the `hyprctl` analog), which this
-  demo doesn't bind — see architecture.md.
-- **New-pane launch keybinds.** Opening a new pane is done Hyprland-style —
-  each app has its own `exec` bind rather than a launcher/`rofi` UI:
-  `Return`→`wlterm`, `K`→`wlclock` (K as in clo**K** — see the caveat),
-  `P`→`wlpaint` (again on both `SUPER` and `CTRL`). Pressing the combo makes
-  the compositor `posix_spawnp` the binary from `/usr/bin`, and the new
-  client tiles into the layout. Unlike on the Wayland desktop, `wlpaint`
-  is not started in the initial layout, so `Ctrl+P` is how you summon it.
-  **Caveat:** the compositor grabs a bound combo before the focused client,
-  so a `CTRL`+letter launch bind shadows the terminal's like-named control key.
-  The clock is bound to `K` (not `C`) precisely to leave `Ctrl+C` (SIGINT) to
-  the terminal; `Ctrl+W` (killactive) does still shadow `wlterm`'s werase.
-  That is the cost of using `CTRL` as the WM modifier in-browser; a real
-  Hyprland session on `SUPER` has no such clash.
+- **Keybinds.** Alt (Option on Mac) is the desktop modifier in the image's
+  `wlcompositor.conf`. `Alt+Return` launches a terminal, `Alt+C` a clock,
+  `Alt+P` a paint canvas and `Alt+Shift+Q` closes the focused window.
+  `Alt+1..9` switches workspace; adding Shift moves the focused window.
+  `Alt+J/K` cycles focus and `Alt+Shift+H/J/K/L` swaps neighbours left,
+  down, up and right. Applications retain their ordinary Ctrl keys.
+  These are real compositor bindings, not a host-side modifier translation.
+- **New panes.** Each application has an ordinary `exec` binding. The
+  compositor uses `posix_spawnp` to launch the actual executable, and its
+  new client tiles into the layout. Paint is not started in the initial
+  layout; `Alt+P` opens it. The compositor also exposes its `kwlctl` control
+  socket for ordinary guest commands; see architecture.md.
 
 See
 [architecture.md](architecture.md#tiling-window-manager-wlc_layout-workspaces-kwlctl-keybinds).
@@ -1185,7 +1267,7 @@ below or the launcher. The demo stays alive on the compositor's own
 process rather than on a foreground terminal.
 
 The shell reaches the compositor three ways, each a protocol real Hyprland
-serves: **hyprland-global-shortcuts-v1**, so a `bind = SUPER, space,
+serves: **hyprland-global-shortcuts-v1**, so a `bind = ALT, G,
 global, quickshell:launcher` line in the compositor's config fires the
 shortcut the shell registered under that name (the shell never sees the
 key, only the press and release); the **Hyprland IPC** socket pair at
@@ -1219,7 +1301,7 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   that expires after five seconds or on click. The bus address
   (`DBUS_SESSION_BUS_ADDRESS`) is in every desktop process's
   environment, so `notify-send` also works from any terminal.
-- **The launcher.** `Ctrl+Space` opens the launcher (`Launcher.qml`), an
+- **The launcher.** `Alt+G` opens the launcher (`Launcher.qml`), an
   overlay-layer surface that takes the keyboard exclusively — so what you
   type filters its list instead of reaching the terminal underneath. Type
   to narrow, `Up`/`Down` to move, `Enter` to launch (`dispatch exec` over
@@ -1229,7 +1311,7 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   from `XDG_DATA_DIRS`. The registry offers real software from the shell
   image alongside the demo clients: Vim, NetHack and Nano run unmodified
   inside foot (their binaries lazy-fetch from the image's archives on
-  first launch), as does the terminal `Ctrl+Return` opens. foot rather
+  first launch), as does the terminal `Alt+Return` opens. foot rather
   than `wlterm`: `wlterm` advertises `TERM=vt100` but does not implement
   the VT100 line-drawing character set, so curses borders come out as
   letters. foot is stock upstream foot 1.17.2, a Wayland client of its own
@@ -1247,7 +1329,7 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   `/usr/share/kandelo/fonts/fonts.conf`, which aliases `sans-serif`
   alongside `monospace` to the image's Inconsolata for it. `Esc` or `Q`
   closes it.
-- **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same
+- **The menu.** `Alt+M` opens the Omarchy menu — the same
   launcher at its root level (Apps, Theme). `Enter` descends; the Theme
   submenu lists the installed themes and `Enter` switches live. `Esc` in a
   submenu goes back to the root; `Esc` at the root dismisses.
@@ -1256,7 +1338,7 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   volume, brightness and caps-lock triggers have no source on this
   machine: the kernel exposes no mixer or backlight, and the compositor
   reports no lock-key state.
-- **The lock screen.** `Ctrl+Escape` locks the session (`LockScreen.qml`)
+- **The lock screen.** `Alt+X` locks the session (`LockScreen.qml`)
   through ext-session-lock: the compositor blanks the output, renders only
   the lock surface (the clock, the user, a password field), gives it the
   keyboard, and sends `locked` once a blanked frame has flipped. The
@@ -1269,7 +1351,7 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   locks the session after ten minutes without input — hypridle's job.
   hyprlock authenticates through PAM; there is no PAM here, and `login -c`
   is the same `crypt(3)` check the image's login program runs.
-- **Themes.** `Ctrl+Shift+Space` cycles Tokyo Night, Catppuccin, Gruvbox,
+- **Themes.** `Alt+Shift+Y` cycles Tokyo Night, Catppuccin, Gruvbox,
   Nord, Everforest and Rosé Pine. One palette file drives the whole
   desktop at once: the compositor's window borders, gaps and wallpaper,
   and everything the shell draws. The compositor emits `theme>><name>` on
@@ -1279,18 +1361,13 @@ desktop), and every window of the shell is a wlr-layer-shell surface.
   switch also shows as a notification. The themes paint gradient
   wallpapers; their real Omarchy backgrounds are a short-term follow-up
   (see the wallpaper note in the Wayland section above).
-- **The rest of the keybinds:** `Ctrl+Return` a terminal, `Ctrl+K` a
-  clock, `Ctrl+P` a paint canvas; `Ctrl+W` or `Ctrl+Shift+W` closes the
-  focused window (the second form leaves a terminal's `Ctrl+W` word-erase
-  alone, since the compositor takes a bound key before the client sees
-  it); `Ctrl+1..9` switches workspace and `Ctrl+Shift+1..9` moves the
-  focused window there; `Ctrl+J` / `Ctrl+Shift+J` cycle focus; and
-  `Ctrl+Shift+arrows` swaps the focused window with its neighbour in that
-  direction (Hyprland's `swapwindow`, Omarchy's `Super+Shift+arrows`).
-  Every bind is mirrored on `SUPER`, as Omarchy binds them; use `CTRL` in
-  the browser, which reserves `SUPER` (see the caveat above). Tiled
-  windows receive xdg-shell's `tiled_*` states, so a client that keeps
-  its own size when floating — SDL, and so ScummVM — takes the tile's.
+- **The rest of the keybinds:** `Alt+Return` opens a terminal, `Alt+C` a
+  clock and `Alt+P` a paint canvas; `Alt+Shift+Q` closes the focused window.
+  `Alt+1..9` switches workspace and `Alt+Shift+1..9` moves the focused window
+  there. `Alt+J/K` cycles focus; `Alt+Shift+H/J/K/L` swaps neighbours left,
+  down, up and right. Ctrl remains application input. Tiled windows receive
+  xdg-shell's `tiled_*` states, so clients such as SDL and ScummVM use their
+  actual tile size rather than retaining a floating window size.
 - **Copy and paste inside the desktop.** The compositor keeps a real
   Wayland clipboard, so text copied in one window pastes in another.
   Omarchy's universal-clipboard binds are in the image: `Super+C` copies,
@@ -1361,15 +1438,18 @@ follow-ups, not as the end state.
   is behaviour real Hyprland has (popups and tooltips, window swapping
   beyond `swapwindow`, animations, the full dispatcher set). **Deferred:
   port real Hyprland.** It needs platform work first: Hyprland renders
-  only with OpenGL ES 3 through its `aquamarine` backend, so Kandelo's EGL
-  must import dmabufs as EGLImages and provide fence/explicit sync over
-  the WebGL2 bridge; aquamarine expects KMS properties, planes and an
-  EDID blob from the kernel's connector; and it opens devices through
-  libseat and enumerates them through libudev, which here is a stand-in
-  with no `/sys` device tree behind it. A wlroots-based compositor with
-  its pixman software renderer is the fallback if the EGL work proves
-  too large. The dependency graph, each platform gap and a build order
-  are in `docs/plans/2026-09-30-real-hyprland-port-inventory.md`.
+  only with OpenGL ES 3 through its `aquamarine` backend, and Kandelo's
+  GLES bridge is ES 2.0 with no fence or explicit sync. (aquamarine also
+  expects an EDID blob from the kernel's connector, which the connector
+  now reports.) The device side is in
+  place: the kernel reports KMS properties and the primary plane, `/sys`
+  describes the card and the input devices, and upstream libseat and
+  libudev-zero use them. Kandelo's EGL imports dmabufs as EGLImages, and
+  upstream wlroots renders with its GLES2 renderer under cage in the
+  browser's `cage` machine (see "Wayland kiosk compositor" in
+  `docs/architecture.md`). cage hosts one application, not a desktop.
+  The dependency graph, each platform gap and a build order are in
+  `docs/plans/2026-09-30-real-hyprland-port-inventory.md`.
 - **The shell is this repository's QML, not Omarchy's.** Omarchy v4's
   Quickshell configuration is written against real Hyprland and against
   services this machine does not run (PipeWire, UPower, NetworkManager,
@@ -1403,9 +1483,11 @@ Smaller gaps, each a follow-up:
 - **`wlterm` advertises `TERM=vt100` without the VT100 line-drawing
   set**, so curses borders print as letters in it (the desktop's
   terminal entries use foot, which has it).
-- **No xkb data in the image** (`/usr/share/X11/xkb`): GTK clients log
-  that they cannot compile a keymap from names. They receive the
-  compositor's keymap, so input works.
+- **xkb data is fetched on first use**: the shell image registers the
+  `xkeyboard-config` package's rules at `/usr/share/X11/xkb` as a verified
+  lazy archive, so the first keymap compiled from names (a compositor's,
+  or GTK's default before the compositor's keymap arrives) downloads it.
+  A shell that never starts a desktop never fetches it.
 - **NetHack's curses interface does not redraw at its intro prompt after
   a resize** (upstream behaviour; the resize itself reaches it — `Ctrl+R`
   redraws).
@@ -1610,10 +1692,9 @@ resolves every function it imports against it; the package build fails if
 any plugin import has no export to bind to. The machine's command is
 `/usr/bin/scummvm`, a small wrapper in the image that:
 
-- names SDL's backends in the environment. Kandelo has no libudev, so
-  SDL's evdev layer only finds the kernel's keyboard and pointer when
-  `SDL_EVDEV_DEVICES` lists them (the libudev gap is in the register in
-  [package-management.md](package-management.md#packages-that-are-not-real-upstream-builds-yet)).
+- names SDL's backends in the environment. The `sdl2` package is built
+  with `--disable-libudev`, so SDL's evdev layer only finds the kernel's
+  keyboard and pointer when `SDL_EVDEV_DEVICES` lists them.
 - seeds `~/scummvm.ini` on first launch. ScummVM rewrites its config
   whenever the user adds a game, so it lives in the writable home rather
   than in image content. `gui_scale` stays at ScummVM's default of 100%;
@@ -1861,7 +1942,7 @@ each file whose name could be a ROM (a console extension, `.rom`, `.bin`,
 or none). A drop with no ROM in it goes to `exchange-save`, so it is saved
 to `~/Downloads` as before. Otherwise the handler copies the drop into
 `~/roms` as it arrived (a folder keeps its contents) and runs
-`kandelo-terminal --display "retro-run ~/roms/NAME"` for the first ROM in
+`kandelo-page-terminal --display "retro-run ~/roms/NAME"` for the first ROM in
 path order (see "Terminal requests" below). The page opens a new terminal
 with that command typed at its prompt, stops whatever holds the display,
 and shows the display, so the user sees what the drop ran; once the game
@@ -1870,7 +1951,7 @@ exits, Up and Enter in that terminal run it again. The drop's status reads
 the catch-all.
 
 Where nothing outside the machine opens terminals (the Node host, or no
-listener for exchange outputs), `kandelo-terminal` fails and the handler
+listener for exchange outputs), `kandelo-page-terminal` fails and the handler
 starts the game in the background instead: it stops the emulator if one is
 playing, starts `retro-run`, and reports "playing NAME" once the emulator
 holds the display, or the emulator's own error. A display already held by
@@ -1907,8 +1988,8 @@ are covered by `web-libs/kandelo-session/test/terminal-request.test.ts` and
 #### Terminal requests
 
 A program in the machine can ask the page for a terminal running a
-command: `kandelo-terminal [--display] [--title TITLE] COMMAND-LINE`
-(`/usr/bin/kandelo-terminal` in the shell image). It publishes a Kandelo
+command: `kandelo-page-terminal [--display] [--title TITLE] COMMAND-LINE`
+(`/usr/bin/kandelo-page-terminal` in the shell image). It publishes a Kandelo
 exchange output of type `application/x-kandelo-terminal-command`, a small
 JSON object `{"version": 1, "command": …, "title": …, "display":
 "framebuffer"}` (`web-libs/kandelo-session/src/terminal-request.ts`).
@@ -1927,7 +2008,7 @@ requests over 4 KiB are refused, and a refusal or a failed launch is shown
 as a failed entry with its reason. Activities' limits apply (32 per
 computer, one starting at a time). A page without a handler keeps the
 request as an ordinary output in the tray, and with no output listener at
-all the publish fails with `ENXIO`, so `kandelo-terminal` exits 1 and its
+all the publish fails with `ENXIO`, so `kandelo-page-terminal` exits 1 and its
 caller can fall back.
 
 ### Kandelo session UI
@@ -2449,6 +2530,11 @@ browser canvas and exposes related tools through a bottom dock. Dock controls
 switch between Demo, Terminal, and Internals views, while dock panes open for
 new-machine setup, gallery browsing, system config, and sharing. These controls
 consume `KernelHost` state and actions rather than replacing the runtime path.
+
+Opening Internals during boot keeps diagnostics visible while image composition
+enriches the boot descriptor and the machine becomes ready. Descriptor updates
+preserve the user's open or closed choice; the dock's explicit controls still
+close the panel or switch views.
 
 The dock may be collapsed or moved horizontally within the browser viewport;
 that placement is UI-only presentation state and does not alter the running
@@ -3019,7 +3105,11 @@ resolves it under the lazy-asset directory the page passes
   (`apps/browser-demos/vite/dev-lazy-assets.ts`). The route passes the
   member path to the same binary resolver the Node host uses for lazy
   assets (the pinned SourceOnly store under `./run.sh browser`), and only
-  that exact answer is served.
+  that exact answer is served. Outside SourceOnly the route streams the
+  resolver's file itself, byte for byte. It does not hand the file to
+  Vite's `/@fs/` route, which runs a path with no extension (a shell
+  script such as sfwbar's `kandelo-sfwbar`) or a JavaScript or CSS
+  extension through Vite's module transform and changes its bytes.
 - An image that is not a product activation, such as a `?vfs=` URL image,
   resolves its lazy bodies under the deployment's own asset group, when
   there is one; the image's digests still decide whether bytes are
@@ -3102,8 +3192,8 @@ alone is therefore enough to boot a first-party machine or a stranger's image,
 and both travel one code path.
 
 An image may declare several profiles — the shell image carries `shell`,
-`node`, `doom`, `quake`, `modeset`, `sdl2`, `scummvm`, `wayland`, and
-`omarchy` — so one channel selects one:
+`node`, `doom`, `quake`, `freeciv`, `modeset`, `sdl2`, `scummvm`, `love`,
+`cage`, `sway`, `sway-sfwbar`, `labwc`, `wayland`, and `omarchy` — so one channel selects one:
 
 1. `&profile=<id>` on the page URL.
 2. else the image's own `defaultProfile`.
@@ -3121,6 +3211,13 @@ An id no profile in the image declares is a **loud boot error** naming the
 profiles the image does declare — never a silent fall back to its default. An
 image with no `/etc/kandelo/demo.json`, or a malformed one, fails the boot
 with that reason; nothing synthesizes a fallback machine.
+
+The gallery roster includes the cage kiosk and sway desktop profiles from
+the shell image. Their browser tests resolve that image through the current
+`?vfs=...&profile=...` launch path and require built products. The repeated
+browser-memory sequence includes cage with a live terminal, then switches
+away through ordinary machine teardown. The graphics inventory records which
+combined-tree integration checks have actually run.
 
 The older `?demo=<id>` parameter is **removed**. It named one of a dozen ids
 the app held, which is exactly what image-owned machine definitions delete. It
@@ -3959,6 +4056,21 @@ own lazy cache, and restarting/updating `/a/` left `/candidate-b/` usable and
 unchanged. This is evidence for that scenario, not a claim that every browser,
 host configuration, or arbitrary prefix pair was exercised.
 
+A lazy body rejected by native size or SHA-256 validation is an explicit
+`EIO`, a failed download entry and a `vfs-integrity` host diagnostic. A later
+explicit read reloads that body through the service worker, evicting only
+its exact entry in the current scope's lazy cache. It does not require
+clearing the browser profile or deleting another deployment's caches.
+
+An unresolved failed download remains visible ahead of active transfers until
+it is dismissed or a new attempt updates its state. Switching/remounting the
+UI restores failures from the authoritative summary; it does not acknowledge
+them. Dismissing one failure does not suppress a later rejection of the same
+asset. Replacing the machine clears the previous machine's failure state.
+Transport failures retain their actual HTTP or native byte-bound
+cause. Size-bound failures remain terminal for that machine's transport slot;
+no oversized bytes reach the kernel and no automatic retry is introduced.
+
 If one prefix retains a stale worker, unregister only that exact registration
 from a page on the same origin, then reload that prefix:
 
@@ -4031,6 +4143,34 @@ point-in-time result; callers that retain a path across producer runs must
 resolve it again.
 
 ## Known Limitations
+
+### Historical GL query reply storage
+
+GL query replies remain heap-owned before copying to caller destinations on
+all hosts. The historical claim of V8 stack-reply visibility failure is
+[suspected and unreduced](../tests/runtime-workarounds/V8-GL-HEAP-QUERY-REPLY/entry.md),
+not a confirmed engine defect. The ordered submit/query transport preserves
+this behavior; it does not establish the cause or a performance benefit.
+
+
+### Hosts without a GLES renderer
+
+Kandelo's EGL/GLES 2 renderer is the host's WebGL 2, and GL always executes in
+the kernel worker, on Node and in the browser: the kernel worker owns the WebGL
+2 context (an `OffscreenCanvas`, a transferred KMS canvas, or an
+embedder-supplied canvas) and runs command submission and queries against it.
+The page's main thread never executes guest GL; there is no main-thread
+forwarding path. A host that has none,
+which includes Node without an embedder-supplied WebGL 2 or
+`OffscreenCanvas` and a browser where WebGL 2 context creation fails, has no
+EGL display to initialize. `eglInitialize` then fails with
+`EGL_NOT_INITIALIZED`, the EGL 1.5 section 3.2 error for a display that
+cannot be initialized (Mesa reports the same when no driver loads). Node and
+browser report it identically, because both answer the renderer probe (the
+surface capability query `eglInitialize` issues) the same way when no WebGL 2
+context can be obtained. No software renderer, placeholder surface or zero
+config list is substituted. DRM/KMS dumb buffers and CPU-tier GBM buffers do
+not need a renderer and remain available.
 
 ### SharedArrayBuffer restrictions
 Chrome rejects SharedArrayBuffer-backed views in `TextDecoder.decode()` and `crypto.getRandomValues()`. Always copy to a temporary non-shared buffer first.
@@ -4542,6 +4682,111 @@ Other host code still constructs decoders per call. A recurrence elsewhere
 would be evidence for the hypothesis and a reason to build the standalone
 reduction, not a reason to avoid `TextDecoder` as a rule.
 
+### Chromium texture respecification after a copy
+
+On Playwright Chromium 153.0.8010.12 on macOS, using the `chromium` channel,
+a WebGL2 texture populated by CopyTexSubImage2D can retain those pixels
+after TexImage2D replaces that image. A standalone, self-judging reproduction
+is recorded as [the runtime workaround entry](../tests/runtime-workarounds/CHROMIUM-COPY-TEX-RESPEC/entry.md).
+The image-view path avoids copying a base image that the next command
+replaces. Stable Chrome and other backends have not been established as
+affected; the default Playwright headless shell did not reproduce it.
+
+### Chromium and WebKit WebGL finish() returns early
+
+WebGL defines `finish()` by OpenGL ES 2.0 section 5.1, which does not let
+it return until every earlier command has taken effect. On Playwright
+Chromium 153.0.8010.12 and WebKit 26.6 on macOS, `finish()` returns in
+under 0.1 ms while 150-340 ms of earlier draws are still executing, on a
+page canvas and on an `OffscreenCanvas` in a worker. Chromium's `finish()`
+is deliberately a flush (`WebGLRenderingContextBase::finish`), and WebKit
+sends its `Finish` message to the GPU process without waiting for the
+reply. Firefox 155.0 waits. Standalone, self-judging reproductions are
+recorded as
+[`CHROMIUM-WEBGL-FINISH-RETURNS-EARLY`](../tests/runtime-workarounds/CHROMIUM-WEBGL-FINISH-RETURNS-EARLY/entry.md)
+and
+[`WEBKIT-WEBGL-FINISH-RETURNS-EARLY`](../tests/runtime-workarounds/WEBKIT-WEBGL-FINISH-RETURNS-EARLY/entry.md).
+
+A guest `glFinish`, `eglWaitClient` or `eglWaitGL` therefore also waits on
+a 4-byte copy between two private buffers, read back with
+`getBufferSubData` (`host/src/webgl/finish.ts`), on engines whose user agent
+contains `AppleWebKit/` (Blink and WebKit). That read blocks until the copy,
+issued after all of the guest's commands, has completed; both engines
+complete one context's commands in order, so the guest's work is complete
+too. This ordering was measured on macOS, not guaranteed by WebGL. With
+no work outstanding, a host completion measured 0.9-1.0 ms on Chromium and
+0.35 ms on WebKit, against 0.1 ms and 0.02 ms for `finish()` alone; most of
+it is the host's checked restoration of the two copy bindings. WebGL fences
+cannot be used: a sync object becomes signaled only between tasks, and the
+kernel worker answers `glFinish` inside one task. A released Chrome or
+Safari, Linux and Windows have not been checked.
+
+### GLSL ES100 preprocessing and function-body scopes
+
+WebGL deliberately rejects `defined` generated by macro replacement in a
+conditional expression. Kandelo evaluates that GLES preprocessing choice
+against the macro table at the conditional, and rewrites only affected
+expressions before native ES100 validation. Other directives, including
+active `#error` and malformed operands, remain native compile errors.
+This is a guest-language adaptation to WebGL's specified restriction,
+not an upstream defect.
+
+The native ES100 validators in Playwright Chromium153.0.8010.12,
+Firefox155.0 and WebKit26.6 on macOS also reject a function-body local
+that shadows a function parameter. GLSL ES1.00 §4.2.2 gives that body a
+nested scope; its ES300 successor combines the scopes. The standalone
+[`WEBGL-ESSL100-PARAMETER-SCOPE`](../tests/runtime-workarounds/WEBGL-ESSL100-PARAMETER-SCOPE/entry.md)
+reproduction confirms rejection in both stages with positive and negative
+controls. On a failed native compile, Kandelo inserts a child compound
+statement and asks the same ES100 validator again. ES300 translations
+preserve that child scope too. Duplicate locals and duplicate parameters
+stay invalid; no draw-time or per-frame feature work is added. Released
+browsers and other operating systems have not been checked.
+
+### Firefox vertex-stage gl_DepthRange
+
+On Playwright Firefox 155.0 and 153.0 on macOS, when both shaders of a WebGL 2
+program read `gl_DepthRange` and the program has another active uniform, the
+vertex stage reads that uniform's value as `gl_DepthRange.near` and 0 for
+`far` and `diff`. A standalone, self-judging reproduction is recorded as
+[`FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM`](../tests/runtime-workarounds/FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM/entry.md);
+Chromium and WebKit are correct. On Firefox only, and only for guest programs
+meeting that condition, draws run a private variant whose vertex stage reads
+the depth range from a private uniform, so guest OpenGL ES programs see the
+same `gl_DepthRange` on every engine. A released Firefox has not been checked.
+
+### Firefox WebGL query and compiler defects seen by guest OpenGL ES
+
+On Playwright Firefox 155.0 on macOS, standalone pages with no Kandelo code
+show four more WebGL 2 defects that guest OpenGL ES 2.0 programs would
+otherwise observe. Chromium and WebKit are correct in each. A released
+Firefox, Linux and Windows have not been checked.
+
+- After `renderbufferStorage` with one zero dimension (0x29), both
+  `RENDERBUFFER_WIDTH` and `RENDERBUFFER_HEIGHT` read 0
+  ([`FIREFOX-RENDERBUFFER-EMPTY-SIZE`](../tests/runtime-workarounds/FIREFOX-RENDERBUFFER-EMPTY-SIZE/entry.md)).
+  Kandelo answers both from the size it records for every accepted storage
+  call, on every engine.
+- `validateProgram` on a program with no linked executable sets
+  `VALIDATE_STATUS` to true
+  ([`FIREFOX-VALIDATE-UNLINKED-PROGRAM`](../tests/runtime-workarounds/FIREFOX-VALIDATE-UNLINKED-PROGRAM/entry.md)).
+  Kandelo records whether the program was linked when it was validated and
+  answers false when it was not, on every engine.
+- The GLSL ES 1.00 compiler rejects a local variable that hides a struct
+  type of the same name (`int S = S(u).val;`), which section 4.2 allows
+  ([`FIREFOX-ESSL100-STRUCT-HIDING`](../tests/runtime-workarounds/FIREFOX-ESSL100-STRUCT-HIDING/entry.md)).
+  After a failed native compile, Kandelo renames that local and its lexical
+  uses, retaining the outer constructor binding in its initializer. Public
+  types and member names remain intact, and duplicate locals stay invalid.
+- A fragment alone in its 2x2 pixel quad at the shared edge of two
+  triangles in one draw can get the mipmap level of the other triangle.
+
+The shared-edge mipmap defect still has no workaround; guest programs see
+it on Firefox and the corresponding dEQP-GLES2 cases fail there. This is an
+open correctness failure, not an allowed conformance difference. Historical
+reproductions and results for both defects are in
+[`docs/measurements/2026-11-02-firefox-gles2-shader-scope-and-edge-lod.md`](measurements/2026-11-02-firefox-gles2-shader-scope-and-edge-lod.md).
+
 ### WebKit page-process crash when thread workers end
 
 This is a confirmed WebKit defect, recorded in the runtime workaround
@@ -4643,14 +4888,18 @@ content decoding. `elinks -version` lists what is compiled in.
 
 SDL2 on Kandelo presents video through its KMSDRM backend with the OpenGL ES 2
 renderer, which the browser host bridges to WebGL on the `/dev/dri/card0`
-scanout. The Node host has no GL context (`host_gl_query` returns -1), and SDL2's
-KMSDRM backend implements no window framebuffer, so SDL's software renderer
-cannot present there either. A program that creates an SDL renderer therefore
-shows video only in the browser. On Node, `ffplay` reports
-`Failed to create window or renderer: Couldn't find matching render driver` and
-exits as upstream does (status 0); `ffplay -nodisp` still plays audio through
-SDL's OSS backend to `/dev/dsp`, and FFmpeg's own `fbdev` and `oss` outputs work
-on both hosts.
+scanout. The Node host has no GLES renderer: `eglInitialize` fails with
+`eglInitialize: no GLES renderer is available on this host`. SDL2's KMSDRM
+backend implements no window framebuffer, so SDL's software renderer cannot
+present there either. A program that creates an SDL renderer therefore shows
+video only in the browser. On Node, `ffplay` also reports
+`Failed to create window: Can't load EGL/GL library on window creation.` and
+exits as upstream does (status 0). LÖVE reports the same SDL window failure
+and exits with status 1 before executing the game's `main.lua`.
+`ffplay -nodisp` still plays audio through SDL's OSS backend to `/dev/dsp`,
+and FFmpeg's own `fbdev` and `oss` outputs work on both hosts. The SDL playground
+also exits 1 at window creation before starting its editor. Its native editor
+logic is tested separately; visual and shader behavior require a browser.
 
 Why not a Node software path: it would need either a GL implementation on the
 Node host or a KMSDRM window framebuffer in SDL, and SDL's KMSDRM backend has no
@@ -4664,3 +4913,22 @@ The Node demo uses npm's canonical `https://registry.npmjs.org/` registry.
 Registry metadata and tarballs traverse the ordinary browser TLS and configured
 proxy boundary. Kandelo does not rewrite registry URLs, package metadata, or
 tarball locations and has no npm- or package-specific proxy routing.
+
+### Firefox worker-canvas extraction investigation
+
+A standalone pixel-judging [reproduction](../tests/runtime-workarounds/FIREFOX-OFFSCREEN-EXTRACTION/entry.md)
+tracks transparent `drawImage`/`getImageData` results from an opaque
+worker-painted canvas during native readback. No product workaround is
+implemented. The separate Cage whole-frame screenshot failure and Firefox
+cursor rendering failure remain open; this extraction evidence does not
+establish their cause or waive their acceptance assertions.
+
+### Firefox sampler-array linking
+
+The standalone reproduction in
+[`FIREFOX-SAMPLER-ARRAY-DISPATCH-LINK-CRASH`](../tests/runtime-workarounds/FIREFOX-SAMPLER-ARRAY-DISPATCH-LINK-CRASH/entry.md)
+closes Firefox 153.0 and 155.0 on macOS during WebGL 2 program linking.
+Translated indexed sampler lookups and guest array parameters use scalar
+sampler parameters to avoid that shape. Chromium and WebKit link both
+standalone forms. The reproduction is retained for checking released
+Firefox versions before removing the workaround.

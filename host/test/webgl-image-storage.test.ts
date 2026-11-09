@@ -1,0 +1,437 @@
+import { withNativeBatch } from "../src/webgl/native-batch.js";
+import { foreignTextureGl } from "./support/foreign-texture-gl.js";
+import { afterEach, expect, it } from "vitest";
+import { GlContextRegistry } from "../src/webgl/registry.js";
+import { registerImageSource, textureNative, canonicalTexture, WPK_IMAGE_SOURCE_TARGET, imageTextureOperation, imageRenderbufferStorage, destroyTextureView, destroyRenderbufferView, refreshTextureView } from "../src/webgl/image-storage.js";
+import { runGlQuery } from "../src/webgl/query.js";
+import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
+import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
+import * as O from "../src/webgl/ops.js";
+import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
+import { noteStorageWrite, storageWrites } from "../src/webgl/image-writes.js";
+afterEach(() => setNativeGlFaultReporter(null));
+/** Decision D-29: the reporter latches a refused native deletion or
+ * restoration as fatal, and query replies (checkedQueryReply) rethrow the
+ * NativeGlFault instead of converting it into an error status. */
+function expectNativeGlFault(run: () => unknown, message: RegExp): void {
+  const faults: Error[] = [];
+  let thrown: unknown;
+  setNativeGlFaultReporter(fault => { faults.push(fault); });
+  try { run(); } catch (error) { thrown = error; }
+  finally { setNativeGlFaultReporter(null); }
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toMatch(message);
+  expect(faults).toEqual([thrown]);
+}
+function setup() {
+  const reg = new GlContextRegistry();
+  reg.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
+  const b = reg.get(7, 11)!;
+  const gl = new Proxy({ getError: () => 0, getParameter: () => null, isTexture: () => true, isRenderbuffer: () => true }, { get: (target, name) => Reflect.get(target, name) ?? (() => null) }) as unknown as WebGL2RenderingContext;
+  b.gl = gl;
+  b.contextId = 21;
+  return { reg, b, gl };
+}
+function checked(b: ReturnType<typeof setup>["b"], op: number, words: number[], size = 12) {
+  const out = new Uint8Array(size), input = new Uint8Array(new Uint32Array(words).buffer);
+  expect(runGlQuery(b, op, input, out)).toBe(size);
+  return new Uint32Array(out.buffer);
+}
+it("keeps source tokens separate from every legal public texture name and reuses one live BO source", () => {
+  const { b } = setup(), publicTexture = {} as WebGLTexture, source = {} as WebGLTexture;
+  b.textures.set(1, publicTexture);
+  b.textures.set(0x60000000, publicTexture);
+  expect(registerImageSource(b, 41, source, 2, 3)).toBe(1);
+  expect(registerImageSource(b, 41, source, 2, 3)).toBe(1);
+  expect(b.imageSources.size).toBe(1);
+  expect(b.textures.get(1)).toBe(publicTexture);
+  expect(b.textures.get(0x60000000)).toBe(publicTexture);
+  b.imageSources.delete(1);
+  expect(registerImageSource(b, 42, source, 4, 4)).toBe(2);
+  b.nextImageSource = 0x80000000;
+  expect(registerImageSource(b, 43, source, 4, 4)).toBe(-12);
+  expect(b.imageSources.size).toBe(1);
+});
+it("preserves the source allocator and public names on metadata allocation failure", () => {
+  const { b } = setup(), set = b.imageSources.set;
+  b.imageSources.set = () => { throw new RangeError("allocation failed"); };
+  try {
+    expect(registerImageSource(b, 41, {} as WebGLTexture, 1, 1)).toBe(-12);
+  }
+  finally {
+    b.imageSources.set = set;
+  }
+  expect(b.nextImageSource).toBe(1);
+  expect(b.imageSources.size).toBe(0);
+  expect(b.textures.size).toBe(0);
+});
+it("rejects incomplete image requests and reply spans before invoking the renderer", () => {
+  const { b } = setup();
+  for (const op of [O.QOP_IMAGE_TARGET, O.QOP_IMAGE_SOURCE_STATE])
+    for (const length of [0, 4, 16]) {
+      const out = new Uint8Array(12).fill(0xa5);
+      expect(runGlQuery(b, op, new Uint8Array(length), out)).toBe(-22);
+      expect([...out]).toEqual(Array(12).fill(0xa5));
+    }
+  for (const length of [0, 8, 16])
+    expect(runGlQuery(b, O.QOP_IMAGE_TARGET, new Uint8Array(12), new Uint8Array(length))).toBe(-22);
+  expect(b.textureViews.size).toBe(0);
+  expect(b.errors).toEqual([]);
+});
+it("rejects unknown sources and unrealized names without publishing image state", () => {
+  const { b } = setup();
+  b.textures.set(17, {} as WebGLTexture);
+  expect([...checked(b, O.QOP_IMAGE_TARGET, [1, 17, 8])]).toEqual([1, 0, 0x47514c33]);
+  expect([...checked(b, O.QOP_IMAGE_TARGET, [1, 18, 8])]).toEqual([1, 0, 0x47514c33]);
+  expect([...checked(b, O.QOP_IMAGE_SOURCE_STATE, [1, 18])]).toEqual([1, 0, 0x47514c33]);
+  expect(b.textureViews.size).toBe(0);
+  expect(b.textures.size).toBe(1);
+});
+it("queries logical names and realization through a native view after the old native anchor is gone", () => {
+  const { b, gl } = setup(), anchor = {} as WebGLTexture, view = {} as WebGLTexture;
+  b.textures.set(17, anchor);
+  b.textureViews.set(anchor, { native: view, source: null, read: null });
+  b.textureViewOwners.set(view, anchor);
+  Object.assign(gl, { getParameter: () => view, isTexture: (value: WebGLTexture) => value === view });
+  expect(textureNative(b, anchor)).toBe(view);
+  expect(canonicalTexture(b, view)).toBe(anchor);
+  const out = new Uint8Array(4);
+  expect(runGlQuery(b, O.QOP_GET_INTEGERV, new Uint8Array(new Uint32Array([0x8069]).buffer), out)).toBe(4);
+  expect(new Uint32Array(out.buffer)[0]).toBe(17);
+  expect(checked(b, O.QOP_IS_OBJECT, [1, 17])[1]).toBe(1);
+  expect(checked(b, O.QOP_IMAGE_SOURCE_STATE, [1, 17])[1]).toBe(0);
+});
+it("reports logical renderbuffer dimensions and attachment type for imported texture backing", () => {
+  const { b } = setup(), object = {} as WebGLRenderbuffer, fbo = {} as WebGLFramebuffer;
+  b.rbos.set(19, object);
+  b.shadow.renderbuffer = object;
+  b.shadow.fbo = b.shadow.readFbo = fbo;
+  b.renderbufferViews.set(object, { native: object, source: { token: 1, bo: 41, texture: {} as WebGLTexture, width: 7, height: 9 } });
+  b.framebufferAttachments.set(fbo, new Map([[0x8ce0, { kind: "renderbuffer", object }]]));
+  expect(checked(b, O.QOP_GET_RENDERBUFFER_PARAMETER, [0x8d41, 0x8d42])[1]).toBe(7);
+  expect(checked(b, O.QOP_GET_RENDERBUFFER_PARAMETER, [0x8d41, 0x8d43])[1]).toBe(9);
+  expect(checked(b, O.QOP_GET_RENDERBUFFER_PARAMETER, [0x8d41, 0x8d44])[1]).toBe(0x8058);
+  expect([...checked(b, O.QOP_GET_FB_ATTACHMENT, [0x8d40, 0x8ce0], 24)].slice(0, 3)).toEqual([0, 0x8d41, 19]);
+});
+it("registers a GPU source through the actual kernel host import without overwriting a public texture", () => {
+  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const kernel = createWasmPosixKernelTestHarness({ io: {} as any, callbacks: { getProcessMemory: () => memory }, memory, pointerWidth: 4,
+    instance: createKernelScratchTestInstance(4, memory, () => ({}), () => 4096) });
+  const api = (kernel.testAuthority.buildImportObject(memory) as {
+    env: Record<string, (...args: any[]) => number>;
+  }).env;
+  const gl = new Proxy({ getError: () => 0, getParameter: (p: number) => p === 0x84e0 ? 0x84c0 : null, createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}),
+    FRAMEBUFFER_COMPLETE: 0x8cd5, checkFramebufferStatus: () => 0x8cd5 }, { get: (target, name) => Reflect.get(target, name) ?? (() => { }) }) as unknown as WebGL2RenderingContext;
+  kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
+  const b = kernel.gl.get(7, 11)!;
+  b.gl = gl;
+  b.contextId = 21;
+  const ordinary = {} as WebGLTexture;
+  b.textures.set(0x60000000, ordinary);
+  expect(kernel.gl.createGpuBo(41, gl, 2, 2)).toBe(0x60000000);
+  expect(api.host_gl_bind_foreign_texture(7, 21, 41, WPK_IMAGE_SOURCE_TARGET)).toBe(1);
+  expect(b.textures.get(0x60000000)).toBe(ordinary);
+  expect(b.textures.size).toBe(1);
+  expect(b.imageSources.size).toBe(1);
+  expect(api.host_gl_bind_foreign_texture(7, 21, 999, WPK_IMAGE_SOURCE_TARGET)).toBe(-22);
+});
+it("reads the retained bound image and revision after public name deletion and reuse", () => {
+  const { b } = setup(), old = {} as WebGLTexture, fresh = {} as WebGLTexture, view = {} as WebGLTexture;
+  b.textures.set(17, fresh);
+  b.retiredTextures.set(old, 17);
+  b.shadow.textureUnits[0] = old;
+  b.textureViews.set(old, { native: view, source: { token: 3, bo: 41, texture: {} as WebGLTexture, width: 2, height: 2 }, read: null });
+  b.imageRevisions.set(old, 9);
+  expect([...checked(b, O.QOP_BOUND_IMAGE_STATE, [1, 0x0de1], 16)]).toEqual([0, 3, 9, 0x47514c33]);
+  expect([...checked(b, O.QOP_IMAGE_SOURCE_STATE, [1, 17])]).toEqual([0, 0, 0x47514c33]);
+  b.shadow.renderbuffer = {} as WebGLRenderbuffer;
+  b.imageRevisions.set(b.shadow.renderbuffer, 4);
+  expect([...checked(b, O.QOP_BOUND_IMAGE_STATE, [2, 0x8d41], 16)]).toEqual([0, 0, 4, 0x47514c33]);
+});
+it("validates bound-image selectors and complete V11 spans before touching renderer state", () => {
+  const { b } = setup();
+  for (const op of [O.QOP_BOUND_IMAGE_TARGET, O.QOP_BOUND_IMAGE_STATE]) {
+    const expected = op === O.QOP_BOUND_IMAGE_TARGET ? 12 : 8;
+    for (const [inputLength, replyLength] of [[expected - 4, 16], [expected + 4, 16], [expected, 12], [expected, 20]]) {
+      const output = new Uint8Array(replyLength).fill(0xa5);
+      expect(runGlQuery(b, op, new Uint8Array(inputLength), output)).toBe(-22);
+      expect([...output]).toEqual(Array(replyLength).fill(0xa5));
+    }
+  }
+  expect([...checked(b, O.QOP_BOUND_IMAGE_STATE, [1, 0x8513], 16)]).toEqual([1, 0, 0, 0x47514c33]);
+  expect([...checked(b, O.QOP_BOUND_IMAGE_STATE, [1, 0x0de1], 16)]).toEqual([1, 0, 0, 0x47514c33]);
+  expect(b.imageRevisions.size).toBe(0);
+});
+for (const kind of [1, 2]) {
+  it(`advances accepted image revisions and removes them only at final collection (kind ${kind})`, () => {
+    const { b, gl } = setup(), object = {} as WebGLTexture & WebGLRenderbuffer;
+    Object.assign(gl, { createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}), checkFramebufferStatus: () => 0x8cd5 });
+    if (kind === 1)
+      b.shadow.textureUnits[0] = object;
+    else
+      b.shadow.renderbuffer = object;
+    registerImageSource(b, 41, {} as WebGLTexture, 2, 2);
+    const target = kind === 1 ? 0x0de1 : 0x8d41;
+    expect([...checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)]).toEqual([0, 1, 1, 0x47514c33]);
+    expect([...checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)]).toEqual([0, 1, 2, 0x47514c33]);
+    expect(kind === 1 ? imageTextureOperation(b, target, true, () => { }, false) : imageRenderbufferStorage(b, () => { })).toBe(true);
+    expect([...checked(b, O.QOP_BOUND_IMAGE_STATE, [kind, target], 16)]).toEqual([0, 0, 3, 0x47514c33]);
+    expect(kind === 1 ? destroyTextureView(b, object) : destroyRenderbufferView(b, object)).toBe(true);
+    expect(b.imageRevisions.has(object)).toBe(false);
+  });
+  it(`preserves image revisions after metadata, native retarget and exhaustion rejection (kind ${kind})`, () => {
+    const { b, gl } = setup(), object = {} as WebGLTexture & WebGLRenderbuffer, fbo = {} as WebGLFramebuffer;
+    Object.assign(gl, { createTexture: () => ({}), createFramebuffer: () => ({}), checkFramebufferStatus: () => 0x8cd5 });
+    if (kind === 1)
+      b.shadow.textureUnits[0] = object;
+    else
+      b.shadow.renderbuffer = object;
+    registerImageSource(b, 41, {} as WebGLTexture, 2, 2);
+    // A second image: retargeting a texture at the image it already samples
+    // allocates and retargets nothing (see the same-image test below).
+    registerImageSource(b, 42, {} as WebGLTexture, 2, 2);
+    const target = kind === 1 ? 0x0de1 : 0x8d41;
+    expect(checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)[0]).toBe(0);
+    const oldView = kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object);
+    const set = b.imageRevisions.set;
+    b.imageRevisions.set = (key, value) => { if (value === 2)
+      throw new RangeError("metadata exhausted"); return set.call(b.imageRevisions, key, value); };
+    try {
+      expect(checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)[0]).toBe(1);
+    }
+    finally {
+      b.imageRevisions.set = set;
+    }
+    expect(b.imageRevisions.get(object)).toBe(1);
+    b.framebufferAttachments.set(fbo, new Map([[0x8ce0, kind === 1 ? { kind: "texture", object, target, level: 0 } : { kind: "renderbuffer", object }]]));
+    let reject = true;
+    Object.assign(gl, { framebufferTexture2D: (fbTarget: number) => { if (reject && fbTarget === 0x8ca9) {
+        reject = false;
+        throw new Error("retarget rejected");
+      } } });
+    expect(checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 2], 16)[0]).toBe(1);
+    expect(b.imageRevisions.get(object)).toBe(1);
+    expect(kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object)).toBe(oldView);
+    b.imageRevisions.set(object, 0xffffffff);
+    expect(checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)[0]).toBe(1);
+    expect(b.imageRevisions.get(object)).toBe(0xffffffff);
+    expect(kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object)).toBe(oldView);
+  });
+}
+
+function storageRepairSetup(kind = 1) {
+  const registry = new GlContextRegistry(), native = foreignTextureGl(), {gl} = native;
+  registry.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+  const b = registry.get(7,11)!; b.gl = gl; b.contextId = 21;
+  const object = (kind === 1 ? gl.createTexture()! : gl.createRenderbuffer()!) as WebGLTexture & WebGLRenderbuffer;
+  if (kind === 1) { b.textures.set(17,object); b.shadow.textureUnits[0] = object; gl.bindTexture(0x0de1,object); }
+  else { b.rbos.set(17,object); b.shadow.renderbuffer = object; gl.bindRenderbuffer(0x8d41,object); }
+  const first = gl.createTexture()!, second = gl.createTexture()!;
+  registerImageSource(b,41,first,2,2); registerImageSource(b,42,second,2,2);
+  const target = kind === 1 ? 0x0de1 : 0x8d41;
+  return {registry,b,object,first,second,target,...native};
+}
+for (const kind of [1,2]) it(`faults when the live renderer refuses peer storage rollback (kind ${kind})`, () => {
+  const {registry,b,object,first,second,target,gl,control} = storageRepairSetup(kind);
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[kind,target,1],16)[0]).toBe(0);
+  const oldView = kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object);
+  registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0}); const peer = registry.get(7,12)!;
+  peer.gl = gl; peer.contextId = 22; expect(registry.shareObjects(7,12,11)).toBe(true);
+  const sourceFrame = gl.createFramebuffer()!, peerFrame = gl.createFramebuffer()!;
+  for (const [owner,frame] of [[b,sourceFrame],[peer,peerFrame]] as const) {
+    owner.fbos.set(71,frame); owner.shadow.fbo = owner.shadow.readFbo = frame;
+    owner.framebufferAttachments.set(frame,new Map([[0x8ce0,kind === 1 ? {kind:"texture",object,target,level:0} : {kind:"renderbuffer",object}]]));
+    gl.bindFramebuffer(0x8d40,frame); gl.framebufferTexture2D(0x8d40,0x8ce0,0x0de1,first,0);
+  }
+  gl.bindFramebuffer(0x8d40,sourceFrame);
+  const attach = gl.framebufferTexture2D.bind(gl);
+  let rejected = false;
+  // The peer's retarget is rejected, then its restoration to `first` is refused.
+  gl.framebufferTexture2D = (fbTarget,point,texTarget,texture,level) => {
+    if (!rejected && fbTarget === 0x8ca9 && texture === second && gl.getParameter(0x8ca6) === peerFrame) {
+      rejected = true; control.fault = "framebufferTexture2D";
+    } else if (rejected && texture === first) control.fault = "framebufferTexture2D";
+    attach(fbTarget,point,texTarget,texture,level);
+  };
+  expectNativeGlFault(() => checked(b,O.QOP_BOUND_IMAGE_TARGET,[kind,target,2],16), /live renderer refused to restore native state/);
+  expect(rejected).toBe(true);
+  expect(b.imageRevisions.get(object)).toBe(1);
+  expect(kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object)).toBe(oldView);
+});
+
+it("retargets a texture at the image it already samples without a new view", () => {
+  const {b,object,first,gl,alive} = storageRepairSetup();
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+  const view = b.textureViews.get(object)!, count = alive.size;
+  let creates = 0, copies = 0;
+  const create = gl.createTexture.bind(gl), createFrame = gl.createFramebuffer.bind(gl);
+  gl.createTexture = () => { creates++; return create(); };
+  gl.createFramebuffer = () => { creates++; return createFrame(); };
+  gl.copyTexSubImage2D = () => { copies++; };
+  // Unchanged image: nothing to copy.
+  expect([...checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)]).toEqual([0,1,2,0x47514c33]);
+  expect(copies).toBe(0);
+  // The image was written since the view's copy: the view is refreshed.
+  noteStorageWrite(first);
+  expect([...checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)]).toEqual([0,1,3,0x47514c33]);
+  expect(copies).toBe(1);
+  expect(creates).toBe(0); expect(alive.size).toBe(count);
+  expect(b.textureViews.get(object)).toBe(view);
+  expect(textureNative(b,object)).toBe(view.native);
+  // A respecified texture is no longer a sibling: targeting it allocates again.
+  expect(imageTextureOperation(b,0x0de1,true,()=>{},false)).toBe(true);
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+  expect(creates).toBeGreaterThan(0);
+  expect(b.textureViews.get(object)!.source?.token).toBe(1);
+});
+
+it("faults when the live renderer refuses image utility selector restoration", () => {
+  const {b,object,gl,control} = storageRepairSetup();
+  const read = gl.createFramebuffer()!, draw = gl.createFramebuffer()!;
+  gl.bindFramebuffer(0x8ca8,read); gl.bindFramebuffer(0x8ca9,draw);
+  const create = gl.createTexture.bind(gl), bind = gl.bindFramebuffer.bind(gl);
+  let allocated = false;
+  gl.createTexture = () => { allocated = true; return create(); };
+  gl.bindFramebuffer = (target,frame) => { if (allocated && target === 0x8ca8 && frame === read) control.fault = "bindFramebuffer"; bind(target,frame); };
+  expectNativeGlFault(() => checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16), /live renderer refused to restore native state/);
+  expect(b.textureViews.has(object)).toBe(false);
+});
+
+it("faults when the live renderer refuses deletion of a replaced image view", () => {
+  const {b,object,alive,control} = storageRepairSetup();
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+  const old = b.textureViews.get(object)!;
+  control.failDelete = true;
+  expectNativeGlFault(() => checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,2],16), /live renderer refused deleteTexture/);
+  expect(alive.has(old.native)).toBe(true);
+});
+
+it("reserves candidate native ownership before allocating a texture view", () => {
+  const {b,object,gl,alive} = storageRepairSetup();
+  const create = gl.createTexture.bind(gl), count = alive.size; let allocations = 0;
+  gl.createTexture = () => { allocations++; return create(); };
+  const OriginalSet = globalThis.Set;
+  globalThis.Set = class extends OriginalSet { constructor() { super(); throw new RangeError("native ownership allocation failed"); } } as SetConstructor;
+  try { expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(1); }
+  finally { globalThis.Set = OriginalSet; }
+  expect(allocations).toBe(0); expect(alive.size).toBe(count);
+  expect(b.textureViews.has(object)).toBe(false); expect(b.imageRevisions.has(object)).toBe(false);
+  expect(b.errors).toContain(0x505);
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+});
+
+it("reserves final image cleanup ownership before deleting any native resource", () => {
+  const {b,object,gl,alive} = storageRepairSetup();
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+  const view = b.textureViews.get(object)!, set = b.imageRetirements.set;
+  b.imageRetirements.set = () => { throw new RangeError("retirement receipt allocation failed"); };
+  try { expect(destroyTextureView(b,object)).toBe(false); }
+  finally { b.imageRetirements.set = set; }
+  expect(alive.has(view.native)).toBe(true); expect(alive.has(view.read!)).toBe(true);
+  expect(b.textureViews.get(object)).toBe(view); expect(b.imageRetirements.size).toBe(0);
+  expect(destroyTextureView(b,object)).toBe(true);
+  expect(alive.has(view.native)).toBe(false); expect(alive.has(view.read!)).toBe(false);
+});
+
+it("faults when the live renderer refuses a retired context's image view deletion", () => {
+  const {registry,b,control} = storageRepairSetup();
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+  control.failDelete = true;
+  let fault: unknown; try { registry.destroyContext(7,11); } catch (error) { fault = error; }
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect((fault as Error).message).toMatch(/live renderer refused deleteTexture/);
+});
+
+it.each([0x505,0x502])("does not publish a failed private image allocation after native flag %s", nativeError => {
+  const {registry,b,gl,object,first,second,alive} = storageRepairSetup();
+  Object.assign(gl,{isContextLost:() => false});
+  registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+  const peer = registry.get(7,12)!; peer.gl = gl; peer.contextId = 22;
+  expect(registry.shareObjects(7,12,11)).toBe(true);
+  const before = alive.size, getError = gl.getError.bind(gl), allocate = gl.texImage2D.bind(gl);
+  let pending = 0;
+  gl.getError = () => { const error = pending; pending = 0; return error || getError(); };
+  gl.texImage2D = () => { pending = nativeError; };
+  b.errors.push(0x500);
+  const request = new Uint8Array(new Uint32Array([1,17,1]).buffer), output = new Uint8Array(12);
+  expect(withNativeBatch(b,"private image allocation",() => runGlQuery(b,O.QOP_IMAGE_TARGET,request,output))).toBe(-19);
+  expect(b.textureViews.has(object)).toBe(false); expect(b.imageRevisions.has(object)).toBe(false);
+  expect(alive.size).toBe(before); expect(b.errors).toEqual([0x500]); expect(peer.errors).toEqual([]);
+  expect(gl.getParameter(0x8069)).toBe(object);
+  expect(gl.getParameter(0x8ca6)).toBeNull(); expect(gl.getParameter(0x8caa)).toBeNull();
+  gl.texImage2D = allocate;
+  expect(withNativeBatch(peer,"healthy image allocation",() => runGlQuery(peer,O.QOP_IMAGE_TARGET,request,output))).toBe(12);
+  expect(peer.textureViews.get(object)!.source!.token).toBe(1);
+  expect(peer.errors).toEqual([]);
+  registry.unbind(7); gl.deleteTexture(first); gl.deleteTexture(second); expect(alive.size).toBe(0);
+});
+
+it("keeps failed private image refreshes stale and counts possible writes through reset unwinding", () => {
+  const {registry,b,gl,object,first,second,alive} = storageRepairSetup();
+  Object.assign(gl,{isContextLost:() => false});
+  expect(checked(b,O.QOP_IMAGE_TARGET,[1,17,1])[0]).toBe(0);
+  const view = b.textureViews.get(object)!, synced = view.synced, writes = storageWrites(view.native).count;
+  registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+  const peer = registry.get(7,12)!; peer.gl = gl; peer.contextId = 22;
+  expect(registry.shareObjects(7,12,11)).toBe(true);
+  const getError = gl.getError.bind(gl), copy = gl.copyTexSubImage2D.bind(gl);
+  let pending = 0;
+  gl.getError = () => { const error = pending; pending = 0; return error || getError(); };
+  gl.copyTexSubImage2D = () => { pending = 0x502; };
+  noteStorageWrite(first);
+  expect(withNativeBatch(b,"private image refresh",() => refreshTextureView(b,object) ? 0 : -5)).toBe(-19);
+  expect(view.synced).toBe(synced); expect(storageWrites(view.native).count).toBe(writes+1);
+  gl.copyTexSubImage2D = copy;
+  expect(withNativeBatch(peer,"healthy image refresh",() => refreshTextureView(peer,object) ? 0 : -5)).toBe(0);
+  expect(view.synced).toBe(storageWrites(first).count); expect(peer.errors).toEqual([]);
+  registry.unbind(7); gl.deleteTexture(first); gl.deleteTexture(second); expect(alive.size).toBe(0);
+});
+
+// Accepted private draws own native storage, independently of public texture
+// names and the optional EGLImage BO owner.
+it("retains an ordinary texture generation across respecification without deleting its live replacement",async()=>{
+  const {GlImageGenerationPin}=await import("../src/webgl/image-generations.js");
+  const {recordTextureLevel}=await import("../src/webgl/texture-levels.js");
+  const f=foreignTextureGl(),reg=new GlContextRegistry();reg.bind({pid:91,cmdbufAddr:0,cmdbufLen:64});
+  const b=reg.get(91)!;b.gl=f.gl;b.contextId=1;
+  const object=f.gl.createTexture()!;b.textures.set(1,object);b.shadow.textureUnits[0]=object;f.gl.bindTexture(0xde1,object);
+  recordTextureLevel(object,0xde1,0,{width:4,height:4,internalFormat:0x8058,format:0x1908,type:0x1401,compressed:false});
+  const pin=GlImageGenerationPin.acquire(b,object)!;expect(pin).not.toBeNull();
+  expect(imageTextureOperation(b,0xde1,true,()=>f.gl.texImage2D(0xde1,0,0x8058,2,2,0,0x1908,0x1401,null),false,0)).toBe(true);
+  const replacement=textureNative(b,object);expect(replacement).not.toBe(object);expect(f.alive.has(object)).toBe(true);
+  expect(pin.release()).toBe(true);expect(f.alive.has(object)).toBe(false);expect(f.alive.has(replacement)).toBe(true);
+  expect(destroyTextureView(b,object)).toBe(true);b.textures.clear();reg.unbind(91);
+});
+it("dropping an image-generation cache pin does not delete a texture still owned by its ordinary name",async()=>{
+  const {GlImageGenerationPin}=await import("../src/webgl/image-generations.js");
+  const f=foreignTextureGl(),reg=new GlContextRegistry();reg.bind({pid:92,cmdbufAddr:0,cmdbufLen:64});const b=reg.get(92)!;b.gl=f.gl;b.contextId=1;
+  const object=f.gl.createTexture()!;b.textures.set(1,object);
+  expect(GlImageGenerationPin.acquire(b,object)!.release()).toBe(true);expect(f.alive.has(object)).toBe(true);
+  expect(destroyTextureView(b,object)).toBe(true);expect(f.alive.has(object)).toBe(false);b.textures.clear();reg.unbind(92);
+});
+it("keeps one native deletion owner when a pinned source is subsequently exported as an EGLImage",async()=>{
+  const {GlImageGenerationPin}=await import("../src/webgl/image-generations.js");
+  const {recordTextureLevel}=await import("../src/webgl/texture-levels.js");
+  const {exportImageStorage,retireExportedImage}=await import("../src/webgl/image-storage.js");
+  const f=foreignTextureGl(),reg=new GlContextRegistry();reg.bind({pid:93,cmdbufAddr:0,cmdbufLen:64});const b=reg.get(93)!;b.gl=f.gl;b.contextId=1;
+  const object=f.gl.createTexture()!;b.textures.set(1,object);b.shadow.textureUnits[0]=object;f.gl.bindTexture(0xde1,object);
+  recordTextureLevel(object,0xde1,0,{width:4,height:4,internalFormat:0x8058,format:0x1908,type:0x1401,compressed:false});
+  const pin=GlImageGenerationPin.acquire(b,object)!;const exported=exportImageStorage(b,7,0xde1,1,0);
+  expect(typeof exported).toBe("object");if(typeof exported==="number")throw new Error("export unavailable");
+  expect(imageTextureOperation(b,0xde1,true,()=>f.gl.texImage2D(0xde1,0,0x8058,2,2,0,0x1908,0x1401,null),false,0)).toBe(true);
+  expect(f.alive.has(object)).toBe(true);expect(retireExportedImage(exported.record)).toBe(true);expect(f.alive.has(object)).toBe(true);
+  expect(pin.release()).toBe(true);expect(f.alive.has(object)).toBe(false);
+  expect(destroyTextureView(b,object)).toBe(true);b.textures.clear();reg.unbind(93);
+});
+
+it("sampling-handle custody does not force a nonrenderable ALPHA source into a storage-orphan copy",async()=>{
+  const {GlImageGenerationPin}=await import("../src/webgl/image-generations.js");
+  const {recordTextureLevel}=await import("../src/webgl/texture-levels.js");
+  const f=foreignTextureGl(),reg=new GlContextRegistry();reg.bind({pid:94,cmdbufAddr:0,cmdbufLen:64});const b=reg.get(94)!;b.gl=f.gl;b.contextId=1;
+  const object=f.gl.createTexture()!;b.textures.set(1,object);b.shadow.textureUnits[0]=object;f.gl.bindTexture(0xde1,object);
+  recordTextureLevel(object,0xde1,0,{width:4,height:4,internalFormat:0x1906,format:0x1906,type:0x1401,compressed:false});
+  const pin=GlImageGenerationPin.acquire(b,object,false,false,object)!;
+  expect(imageTextureOperation(b,0xde1,true,()=>f.gl.texImage2D(0xde1,1,0x1906,2,2,0,0x1906,0x1401,null),true,1)).toBe(true);
+  expect(textureNative(b,object)).toBe(object);expect(pin.release()).toBe(true);expect(f.alive.has(object)).toBe(true);
+  expect(destroyTextureView(b,object)).toBe(true);b.textures.clear();reg.unbind(94);
+});

@@ -168,7 +168,7 @@ export async function retireSupersededExecGeneration<T extends ProcessGeneration
     retire: commit => {
       if (quiescent) generation.memoryLease.release();
       else generation.memoryLease.releaseAfterForcedTermination();
-      commit();
+      commit(quiescent ? "quiescent" : "forced");
     },
   });
   if (result.status !== "released") throw result.error;
@@ -413,6 +413,7 @@ export function configureRootfsOverlayFromImage(
   },
 ): () => Map<string, number> {
   let resourceLimits: Map<string, number> | undefined;
+  const rejectedResources = new Set<string>();
   const metadataBudget = options.deferredByteSpool?.metadataBudget ?? kernel.rootfsTransportMetadataBudget();
   const installedLazyFetcher = options.lazyFetcher;
   const installedLazyPrepare = options.lazyPrepare;
@@ -443,9 +444,10 @@ export function configureRootfsOverlayFromImage(
           ? undefined
           : (_address, signal) => installedLazyPrepare(resolved, signal);
         return options.deferredByteSpool === undefined
-          ? fetchLazyResourceBytes(installedLazyFetcher, resolved, limit, onProgress, { prepare })
+          ? fetchLazyResourceBytes(installedLazyFetcher, resolved, limit, onProgress, { prepare, ...(rejectedResources.has(url) ? { cache: "reload" as const } : {}) })
           : options.deferredByteSpool.fetch(
-            (_address, init) => installedLazyFetcher(resolved, init), url, limit, onProgress, prepare,
+            (_address, init) => installedLazyFetcher(resolved,
+              rejectedResources.has(url) ? { ...init, cache: "reload" } : init), url, limit, onProgress, prepare,
           );
       }
       : async () => {
@@ -471,6 +473,7 @@ export function configureRootfsOverlayFromImage(
     if (resourceLimits instanceof StorageMetadataMap) resourceLimits.dispose();
     else resourceLimits?.clear();
     resourceLimits = undefined;
+    rejectedResources.clear();
   };
   kernel.configureRootfsOverlay(
     deferredProvider,
@@ -479,7 +482,7 @@ export function configureRootfsOverlayFromImage(
     options.imageLength,
     options.imageRead,
     whenFetchSettles,
-    discardDeferred,
+    uri => { rejectedResources.add(uri); discardDeferred(uri); },
     close,
     options.persistentImageBinding,
   );

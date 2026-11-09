@@ -9,16 +9,20 @@
  *     renderbuffer and separate read/draw framebuffer bindings (it runs
  *     outside the muxer, mid-frame for another session),
  *   - a second create for a live bo is idempotent (no realloc, no extra
- *     texImage2D upload) — the zero-copy bind degenerates to the same id,
+ *     texImage2D upload),
  *   - `destroyGpuBo` frees the FBO, texture and renderbuffer,
  *   - `dropForeignTexturesForBo` leaves GPU bos alone (owned by the bo,
  *     not by any binding).
  */
 import { describe, expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
+import { registerImageSource } from "../src/webgl/image-storage.js";
+import { prepareBorrowedSurfaceTarget, retainSurfaceStorage } from "../src/webgl/surface-resources.js";
+import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 
 const GL = {
   TEXTURE_2D: 0x0de1,
+  ACTIVE_TEXTURE: 0x84e0,
   RGBA: 0x1908,
   UNSIGNED_BYTE: 0x1401,
   LINEAR: 0x2601,
@@ -66,6 +70,9 @@ function makeFakeGl() {
   let fboN = 0;
   const gl = {
     ...GL,
+    getError: () => 0,
+    isContextLost: () => false,
+    activeTexture: () => {},
     createTexture: () => ({ kind: "tex", id: ++texN }),
     createFramebuffer: () => ({ kind: "fbo", id: ++fboN }),
     createRenderbuffer: () => ({ kind: "rbo" }),
@@ -73,7 +80,7 @@ function makeFakeGl() {
     deleteTexture: (t: unknown) => calls.deletedTextures.push(t),
     deleteFramebuffer: (f: unknown) => calls.deletedFramebuffers.push(f),
     getParameter: (p: number) =>
-      p === GL.TEXTURE_BINDING_2D
+      p === GL.ACTIVE_TEXTURE ? 0x84c0 : p === GL.TEXTURE_BINDING_2D
         ? state.binding2d
         : p === GL.FRAMEBUFFER_BINDING
           ? state.fboBinding
@@ -123,6 +130,34 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     ]);
   });
 
+  it.each([
+    ["R8", 0x20203852, 0x8229, 0x1903, 0x1401],
+    ["GR88", 0x38385247, 0x822b, 0x8227, 0x1401],
+    ["RGB565", 0x36314752, 0x8d62, 0x1907, 0x8363],
+    ["ARGB8888", 0x34325241, 0x8058, 0x1908, 0x1401],
+    ["ABGR2101010", 0x30334241, 0x8059, 0x1908, 0x8368],
+    ["ARGB2101010", 0x30335241, 0x8059, 0x1908, 0x8368],
+    ["ABGR16161616F", 0x48344241, 0x881a, 0x1908, 0x140b],
+  ])("stores a %s GPU bo in its exact WebGL 2 internal format", (_name, fourcc, internal, format, type) => {
+    const { gl, calls } = makeFakeGl();
+    const reg = new GlContextRegistry();
+    expect(reg.createGpuBo(42, gl, 5, 3, fourcc)).not.toBeNull();
+    expect(calls.texImage2D[0]).toEqual([GL.TEXTURE_2D, 0, internal, 5, 3, 0, format, type, null]);
+  });
+
+  it("does not publish storage the renderer cannot render into (RGBA16F without EXT_color_buffer_float)", () => {
+    const { gl } = makeFakeGl();
+    (gl as unknown as { checkFramebufferStatus: () => number }).checkFramebufferStatus = () => 0x8cd6;
+    const reg = new GlContextRegistry();
+    expect(reg.createGpuBo(42, gl, 5, 3, 0x48344241)).toBeNull();
+    expect(reg.gpuBo(42)).toBeUndefined();
+  });
+
+  it("refuses a format the kernel never admits loudly, as a host fault", () => {
+    const { gl } = makeFakeGl();
+    expect(() => new GlContextRegistry().createGpuBo(42, gl, 5, 3, 0x3231564e)).toThrow("no texture storage");
+  });
+
   it("distinct bos get distinct ids from the GPU band", () => {
     const { gl } = makeFakeGl();
     const reg = new GlContextRegistry();
@@ -135,18 +170,17 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     const reg = new GlContextRegistry();
     const id = reg.createGpuBo(7, gl, 64, 64);
     expect(reg.createGpuBo(7, gl, 64, 64)).toBe(id);
-    // The zero-copy bind reuses the same texture: still one allocation.
+    // Repeated allocation leaves canonical storage intact.
     expect(calls.texImage2D.length).toBe(1);
   });
 
-  it("bind semantics: gpuBo returns the same tex with no upload (zero-copy)", () => {
+  it("canonical GPU storage lookup does not upload pixels", () => {
     const { gl, calls } = makeFakeGl();
     const reg = new GlContextRegistry();
     const id = reg.createGpuBo(9, gl, 16, 16);
     const uploadsAfterCreate = calls.texImage2D.length;
 
-    // What host_gl_bind_foreign_texture does on the GPU path: look the bo
-    // up and return its stable texId — no texImage2D, no copy.
+    // A lookup returns private canonical storage, not a public raw view.
     const gpu = reg.gpuBo(9)!;
     expect(gpu.texId).toBe(id);
     expect(calls.texImage2D.length).toBe(uploadsAfterCreate);
@@ -179,7 +213,7 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     expect(calls.deletedTextures).toEqual([]);
   });
 
-  it("context destruction leaves an imported GPU texture owned by its BO", () => {
+  it("context destruction leaves registered canonical GPU storage owned by its BO", () => {
     const { gl, calls } = makeFakeGl();
     const reg = new GlContextRegistry();
     reg.createGpuBo(3, gl, 8, 8);
@@ -187,13 +221,29 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     reg.bind({ pid: 7, cmdbufAddr: 0, cmdbufLen: 4 });
     const b = reg.get(7)!;
     b.gl = gl;
-    b.textures.set(bo.texId, bo.tex);
-    b.foreignTextures.set(3, { tex: bo.tex, texId: bo.texId, w: 8, h: 8, scratch: null });
+    expect(registerImageSource(b, 3, bo.tex, 8, 8)).toBeGreaterThan(0);
     reg.destroyContext(7);
+    expect(b.imageSources.size).toBe(0);
     expect(reg.gpuBo(3)).toBe(bo);
     expect(calls.deletedTextures).toEqual([]);
     reg.destroyGpuBo(3);
     expect(calls.deletedTextures).toEqual([bo.tex]);
+  });
+
+  it("preserves current context state when a new drawable targets a GPU buffer", () => {
+    const { gl } = makeFakeGl();
+    const reg = new GlContextRegistry();
+    reg.createGpuBo(3, gl, 8, 8);
+    reg.bind({ pid: 7, cmdbufAddr: 0, cmdbufLen: 4 });
+    const b = reg.get(7)!;
+    b.gl = gl; b.hasBeenCurrent = true; b.pendingRenderTargetBoId = 3;
+    b.shadow.viewport = [1, 2, 5, 6];
+    const framebuffer = gl.createFramebuffer();
+    b.shadow.fbo = framebuffer;
+    expect(reg.applyRenderTarget(b)).toBe(true);
+    expect(b.renderTargetFbo).toBe(reg.gpuBo(3)!.fbo);
+    expect(b.shadow.viewport).toEqual([1, 2, 5, 6]);
+    expect(b.shadow.fbo).toBe(framebuffer);
   });
 
   it("createGpuBo returns null when the context cannot allocate", () => {
@@ -218,4 +268,78 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     expect(calls.bindFramebuffer.slice(-2)).toEqual([state.fboBinding, state.readBinding]);
     expect(calls.bindRenderbuffer.at(-1)).toBe(state.rboBinding);
   });
+});
+
+it("rejects a native GPU allocation error before publishing canonical storage",()=>{
+  const {gl,calls}=makeFakeGl(),reg=new GlContextRegistry();let error=0;
+  gl.getError=()=>{const value=error;error=0;return value;};
+  gl.texImage2D=()=>{error=0x505;};
+  expect(reg.createGpuBo(41,gl,2,2)).toBeNull();expect(reg.gpuBo(41)).toBeUndefined();
+  expect(calls.deletedFramebuffers).toHaveLength(1);expect(calls.deletedTextures).toHaveLength(1);
+  expect(calls.deletedRenderbuffers).toHaveLength(1);expect(gl.getError()).toBe(0);
+});
+it("faults when the live renderer refuses a GPU BO texture deletion",()=>{
+  const {gl,calls}=makeFakeGl(),reg=new GlContextRegistry();reg.createGpuBo(41,gl,2,2);
+  gl.deleteTexture=()=>{throw new Error("texture delete rejected");};
+  let fault: unknown;try{reg.destroyGpuBo(41);}catch(error){fault=error;}
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect((fault as Error).message).toMatch(/live renderer refused deleteTexture/);
+  expect(calls.deletedTextures).toEqual([]);
+});
+it("keeps a borrowed GPU allocation while a copied surface lease outlives public BO retirement",()=>{
+  const {gl,calls}=makeFakeGl(),reg=new GlContextRegistry();reg.createGpuBo(41,gl,2,2);
+  const old=reg.gpuBo(41)!;
+  reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});const b=reg.get(7,11)!;
+  b.gl=gl;b.contextId=1;b.surfaceId=31;
+  prepareBorrowedSurfaceTarget(b,old,41)();
+  const lease=retainSurfaceStorage(b.surface);
+  expect(reg.destroyGpuBo(41)).toBe(true);
+  expect(calls.deletedFramebuffers).not.toContain(old.fbo);expect(lease).not.toBeNull();
+  expect(reg.gpuBo(41)).toBeUndefined();reg.destroySurface(7,11);
+  expect(lease!.framebuffer).toBe(old.fbo);expect([lease!.width,lease!.height,lease!.surfaceId]).toEqual([2,2,31]);
+  expect(lease!.release(null)).toBe(true);expect(calls.deletedFramebuffers).toEqual([old.fbo]);
+  reg.unbind(7);
+});
+it.each([[0,2,2],[-1,2,2],[0x100000000,2,2],[41,0,2],[41,2,-1],[41,NaN,2],[41,2,1.5],[41,0x80000000,2]])(
+  "rejects malformed BO/dimension metadata %s/%s/%s before native allocation",(id,w,h)=>{
+    const {gl,calls}=makeFakeGl(),reg=new GlContextRegistry();
+    expect(reg.createGpuBo(id,gl,w,h)).toBeNull();expect(calls.texImage2D).toEqual([]);
+  });
+it("refuses conflicting renderer or dimensions for an existing public BO",()=>{
+  const {gl,calls}=makeFakeGl(),reg=new GlContextRegistry();
+  const id=reg.createGpuBo(41,gl,2,2);
+  expect(reg.createGpuBo(41,gl,2,2)).toBe(id);
+  expect(reg.createGpuBo(41,gl,3,2)).toBeNull();expect(reg.createGpuBo(41,makeFakeGl().gl,2,2)).toBeNull();
+  expect(calls.texImage2D).toHaveLength(1);expect(reg.destroyGpuBo(41)).toBe(true);
+});
+it("keeps retired BO generations and cloned surface leases disjoint from ID reuse",()=>{
+  const {gl,calls}=makeFakeGl(),reg=new GlContextRegistry();reg.createGpuBo(41,gl,2,2);const old=reg.gpuBo(41)!;
+  reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});const b=reg.get(7,11)!;b.gl=gl;b.surfaceId=31;
+  prepareBorrowedSurfaceTarget(b,old,41)();const first=retainSurfaceStorage(b.surface)!;
+  expect(reg.destroyGpuBo(41)).toBe(true);expect(retainSurfaceStorage(b.surface)).toBeNull();
+  const second=first.clone()!;expect(second).not.toBeNull();
+  reg.createGpuBo(41,gl,4,3);const fresh=reg.gpuBo(41)!;expect(fresh.texId).toBeGreaterThan(old.texId);
+  prepareBorrowedSurfaceTarget(b,fresh,41)();expect(first.framebuffer).toBe(old.fbo);
+  expect(first.release(null)).toBe(true);expect(calls.deletedFramebuffers).toEqual([]);
+  expect(second.release(null)).toBe(true);expect(calls.deletedFramebuffers).toEqual([old.fbo]);
+  expect(reg.gpuBo(41)).toBe(fresh);expect(reg.destroyGpuBo(41)).toBe(true);
+  expect(calls.deletedFramebuffers).toEqual([old.fbo,fresh.fbo]);reg.unbind(7);
+});
+it("faults when the live renderer refuses the selector restoration of a rejected GPU allocation",()=>{
+  const {gl,state}=makeFakeGl(),reg=new GlContextRegistry();const bind=gl.bindFramebuffer.bind(gl);
+  gl.bindFramebuffer=(target,framebuffer)=>{if(framebuffer===state.readBinding)throw new Error("read selector rejected");bind(target,framebuffer);};
+  // The reporter latches the fault and allocation rethrows it.
+  const faults: Error[]=[];setNativeGlFaultReporter(fault=>faults.push(fault));
+  let thrown: unknown;
+  try{reg.createGpuBo(41,gl,2,2);}catch(error){thrown=error;}finally{setNativeGlFaultReporter(null);}
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toMatch(/live renderer refused to restore native state/);
+  expect(faults).toEqual([thrown]);
+  expect(reg.gpuBo(41)).toBeUndefined();
+});
+it("faults when the live renderer refuses an unheld GPU BO framebuffer retirement",()=>{
+  const {gl}=makeFakeGl(),reg=new GlContextRegistry();reg.createGpuBo(41,gl,2,2);
+  gl.deleteFramebuffer=()=>{throw new Error("FBO retirement rejected");};
+  expect(()=>reg.destroyGpuBo(41)).toThrow(/live renderer refused deleteFramebuffer/);
+  expect(reg.gpuBo(41)).toBeUndefined();
 });

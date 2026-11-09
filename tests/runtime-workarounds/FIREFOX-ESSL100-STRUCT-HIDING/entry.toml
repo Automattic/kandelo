@@ -1,0 +1,22 @@
+id = "FIREFOX-ESSL100-STRUCT-HIDING"
+kind = "bug"
+status = "confirmed"
+runtimes = ["firefox"]
+summary = "ESSL100 local variables cannot hide a structure type with a nonconstant constructor"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["firefox"]
+self_judging = true
+timeout_seconds = 60
+
+[[observed]]
+runtime = "firefox"
+version = "155.0"
+os = "macos"
+reproduced = true
+date = 2026-11-05
+source = "suite"
+released = false

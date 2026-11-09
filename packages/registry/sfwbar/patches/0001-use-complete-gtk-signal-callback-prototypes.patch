@@ -1,0 +1,79 @@
+Subject: [PATCH] Use complete GTK signal callback prototypes
+
+GTK signal marshallers call each handler with all signal parameters and
+closure data. Match the void GtkMenu::popped-up, gboolean
+GtkWidget::delete-event and swapped void GObject::notify signatures.
+The swapped notify closure passes the user data first and the emitting
+GtkRevealer last; retain the same callback identity for disconnection.
+
+Discarded parameters need not affect the existing handler behavior, but
+must be present in the function type for typed indirect calls such as
+WebAssembly call_indirect. This is a portable callback API correction,
+not a browser-specific workaround.
+
+Signature sources: GTK 3.24.34 gtk/gtkmenu.c (POPPED_UP),
+gtk/gtkwidget.h (delete_event), gtk/gtkwidget.c (DELETE_EVENT), and
+GLib 2.84.4 gobject/gmarshal.c (g_cclosure_marshal_VOID__PARAM).
+
+--- a/src/gui/menu.c
++++ b/src/gui/menu.c
+@@ -38,7 +38,9 @@
+   g_hash_table_remove(menus, name);
+ }
+ 
+-void menu_clamp_size ( GtkMenu *menu )
++void menu_clamp_size ( GtkMenu *menu, GdkRectangle *flipped_rect,
++    GdkRectangle *final_rect, gboolean flipped_x, gboolean flipped_y,
++    gpointer data )
+ {
+   GdkDisplay *display;
+   GdkMonitor *monitor;
+@@ -46,6 +48,12 @@
+   GtkWindow *toplevel;
+   GdkRectangle workarea;
+   gint w,h;
++
++  (void)flipped_rect;
++  (void)final_rect;
++  (void)flipped_x;
++  (void)flipped_y;
++  (void)data;
+ 
+   toplevel = GTK_WINDOW(gtk_widget_get_ancestor(GTK_WIDGET(menu),
+         GTK_TYPE_WINDOW));
+--- a/src/gui/bar.c
++++ b/src/gui/bar.c
+@@ -102,9 +102,13 @@
+   return FALSE;
+ }
+ 
+-static void bar_sensor_hide_complete ( GtkWidget *self )
+-{
+-  BarPrivate *priv;
++static void bar_sensor_hide_complete ( GtkWidget *self, GParamSpec *pspec,
++    GtkRevealer *revealer )
++{
++  BarPrivate *priv;
++
++  (void)pspec;
++  (void)revealer;
+ 
+   g_return_if_fail(IS_BAR(self));
+   priv = bar_get_instance_private(BAR(self));
+@@ -1010,9 +1014,13 @@
+     bar_set_transition(iter->data, duration);
+ }
+ 
+-static gboolean bar_on_delete ( GtkWidget *self )
+-{
+-  BarPrivate *priv;
++static gboolean bar_on_delete ( GtkWidget *self, GdkEventAny *event,
++    gpointer data )
++{
++  BarPrivate *priv;
++
++  (void)event;
++  (void)data;
+ 
+   priv = bar_get_instance_private(BAR(self));
+   if(priv->mirror_parent)

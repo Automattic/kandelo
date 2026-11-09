@@ -449,63 +449,110 @@ pub trait HostIO {
 
     /// Free host-side backing for a bo whose refcount has reached zero
     /// (SAB for CPU-tier, `WebGLTexture`+FBO for GPU-tier). Idempotent:
-    /// calling on an unknown `bo_id` is a no-op.
+    /// an unknown `bo_id` has nothing left to free and is complete.
+    ///
+    /// Returns `shared::dri_cleanup_status::COMPLETE` once every host copy
+    /// and native view of the bo is gone. Anything else stops the kernel
+    /// (see `syscalls::apply_dri_release_effect`). The default answers
+    /// -ENOSYS because a host without `gbm_bo_create` never holds a bo, so
+    /// reaching it is itself a contract violation.
     #[allow(unused_variables)]
-    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {}
+    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
-    /// Bind a bo's SAB slice into a process's wasm `Memory` at `addr`
-    /// for `len` bytes. Called from the mmap path once
-    /// `mmap_anonymous` has reserved the wasm pages. After this
-    /// returns, writes to `[addr, addr+len)` go directly to the SAB.
+    /// Register a process mapping of `len` bytes starting at `bo_offset` in
+    /// canonical BO storage. The host primes it after reserving/growing the
+    /// process Memory, then synchronizes changed bytes at device/readiness
+    /// boundaries. Wasm memories do not directly alias the device backing.
     /// Returns 0 on success, negative errno on failure.
     #[allow(unused_variables)]
-    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
+    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 
     /// Unbind a prior `gbm_bo_bind` — called from munmap /
     /// process-exit before the wasm pages are returned to the
     /// anonymous pool.
+    ///
+    /// The kernel has already unmapped the range, so the host must detach
+    /// the binding in this call: the address range is reused afterwards and
+    /// a live binding would copy unrelated bytes into the bo. Returns
+    /// `shared::dri_cleanup_status::COMPLETE` once the binding is detached
+    /// and its final writeback published. A host that cannot do both has
+    /// lost data or would corrupt the bo, so anything else stops the kernel.
     #[allow(unused_variables)]
-    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {}
+    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
     /// Notify the host that process `pid` has mapped its GL cmdbuf at the
     /// given offset within its wasm `Memory`. Length is always
     /// `shared::gl::CMDBUF_LEN` in v1.
     #[allow(unused_variables)]
-    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize) {}
+    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize, session_id: u32, display_file_id: u64) {}
 
-    /// Notify the host that the GL cmdbuf for `pid` is gone (`munmap`,
-    /// process exit, or exec). Idempotent.
+    /// Notify the host that one session's command memory is gone (`munmap`,
+    /// process exit, or exec). Never retire another session of `pid`.
+    /// The process argument names the renderer's actual owner. Idempotent.
+    ///
+    /// Returns `shared::dri_cleanup_status::COMPLETE` once the session's
+    /// renderer state is released; anything else stops the kernel. A host
+    /// without GL never bound a session (`gl_bind` is a no-op by default),
+    /// so it has nothing to release.
     #[allow(unused_variables)]
-    fn gl_unbind(&mut self, pid: i32) {}
+    fn gl_unbind(&mut self, pid: i32, session_id: u32) -> i32 {
+        wasm_posix_shared::dri_cleanup_status::COMPLETE
+    }
 
-    /// Allocate a host-side WebGL context. `ctx_id` is the per-fd id chosen
-    /// by the kernel; `attrs` is a marshalled `shared::gl::GlContextAttrs`.
+    /// Allocate a host-side WebGL context. `ctx_id` is a fresh kernel-issued
+    /// identity; `attrs` is a marshalled `shared::gl::GlContextAttrs`.
+    /// Return zero only after a live renderer accepts creation, or negative
+    /// errno. Failure must leave no published context or device ownership.
     #[allow(unused_variables)]
-    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) {}
+    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8], session_id: u32) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
     #[allow(unused_variables)]
     fn gl_destroy_context(&mut self, pid: i32, ctx_id: u32) {}
 
     /// Allocate a host-side surface (default canvas or pbuffer). `attrs`
-    /// is a marshalled `shared::gl::GlSurfaceAttrs`.
+    /// is a marshalled `shared::gl::GlSurfaceCreateInfo`. Return zero only after
+    /// accepting the candidate, with actual dimensions in attrs. Failure
+    /// publishes no surface; the caller's previous state remains intact.
     #[allow(unused_variables)]
-    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8]) {}
+    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &mut [u8], session_id: u32) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// Atomically replace a window surface's GPU target while preserving
+    /// its identity and any current-context reference. Failure preserves it.
+    #[allow(unused_variables)]
+    fn gl_update_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8], session_id: u32) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
     #[allow(unused_variables)]
-    fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32) {}
+    fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32, session_id: u32) {}
 
-    /// Bind ctx + surface as the current rendering target for `pid`.
+    /// Acknowledge a drawable binding before the kernel publishes it. The
+    /// kernel owns thread authority. Zero surfaces bind surfaceless; ctx zero
+    /// releases cached metadata and must succeed without a renderer operation.
     #[allow(unused_variables)]
-    fn gl_make_current(&mut self, pid: i32, ctx_id: u32, surface_id: u32) {}
+    fn gl_make_current(
+        &mut self, pid: i32, ctx_id: u32, draw_surface_id: u32,
+        read_surface_id: u32, session_id: u32,
+    ) -> i32 {
+        if ctx_id == 0 { 0 } else { -(Errno::ENOSYS as i32) }
+    }
 
     /// Decode and dispatch one cmdbuf submit. `offset` / `length` are
     /// within the bound cmdbuf region (validated by the kernel against
     /// `shared::gl::CMDBUF_LEN`). Returns 0 on success, or a negative
     /// errno when the host rejects the command stream or cannot dispatch it.
     #[allow(unused_variables)]
-    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize) -> i32 {
+    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize, session_id: u32) -> i32 {
         0
     }
 
@@ -514,14 +561,14 @@ pub trait HostIO {
     /// WebGL context must fail `eglSwapBuffers` so a GPU compositor
     /// degrades to its CPU path instead of presenting frozen pixels.
     #[allow(unused_variables)]
-    fn gl_present(&mut self, pid: i32) -> i32 {
+    fn gl_present(&mut self, pid: i32, session_id: u32) -> i32 {
         0
     }
 
     /// Synchronous GL query (`glGetError`, `glReadPixels`, etc.).
     /// Returns bytes written into `out`, or negative errno on failure.
     #[allow(unused_variables)]
-    fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8]) -> i32 {
+    fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8], session_id: u32) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 
@@ -542,11 +589,46 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
+    /// Import a CPU BO image view without copying guest memory into the host.
     #[allow(unused_variables)]
-    fn kms_set_master(&mut self, pid: i32) {}
+    fn gl_import_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32,
+        width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// `DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE`: register the YUV image `record`
+    /// (a `WpkDrmImportPlanarImage` whose `bo_handles` hold the planes' bo
+    /// ids) as an image source of `pid`'s context `ctx_id`, converted to
+    /// RGBA whenever the planes' bytes change. Returns the source token
+    /// (> 0) or a negative errno.
+    #[allow(unused_variables)]
+    fn gl_import_planar_image(&mut self, pid: i32, ctx_id: u32, record: &[u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// `DRM_IOCTL_WPK_EXPORT_IMAGE`: make the selected GLES object's image
+    /// the storage of GPU-tier bo `bo_id`. `attrs` is the kernel's copy of
+    /// `WpkDrmExportImage`; the host writes `width`, `height`,
+    /// `internal_format`, `source` and `revision`. Returns zero or a negative
+    /// errno: ENOENT/EINVAL (no such object of that target), ERANGE (level
+    /// is not a valid mipmap level), EBUSY (already an EGLImage sibling),
+    /// ENOMEM, or EIO (renderer unavailable).
+    #[allow(unused_variables)]
+    fn gl_export_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32, attrs: &mut [u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
     #[allow(unused_variables)]
-    fn kms_drop_master(&mut self, pid: i32) {}
+    fn kms_set_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {}
+
+    /// Retire the host's copy of a DRM master grant. A grant the host has
+    /// already replaced with a newer lease is retired too, so that answer is
+    /// `shared::dri_cleanup_status::COMPLETE`; anything else stops the
+    /// kernel. The default matches `kms_set_master`, which records nothing.
+    #[allow(unused_variables)]
+    fn kms_drop_master(&mut self, pid: i32, file_id: u64, lease_id: u64) -> i32 {
+        wasm_posix_shared::dri_cleanup_status::COMPLETE
+    }
 
     /// Copy `src` from kernel-owned memory into the wasm process at `pid`'s
     /// linear memory at guest address `addr`. Returns 0 on success, negative
@@ -624,15 +706,30 @@ pub trait HostIO {
         height: u32,
         pixel_format: u32,
         pitch: u32,
+        offset: u32,
     ) -> i32 {
         0
     }
 
+    /// Forget the host's framebuffer record for `fb_id`. Returns
+    /// `shared::dri_cleanup_status::COMPLETE`; anything else stops the
+    /// kernel. The default matches `kms_addfb`, which records nothing.
     #[allow(unused_variables)]
-    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) {}
+    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) -> i32 {
+        wasm_posix_shared::dri_cleanup_status::COMPLETE
+    }
 
     #[allow(unused_variables)]
-    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {}
+    /// Latch `fb_id` on `crtc_id` with the scanned viewport
+    /// `[x, y, width, height]` in framebuffer pixels (all 0 when disabling).
+    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32, viewport: [u32; 4]) {}
+
+    #[allow(unused_variables)]
+    /// Set the LUT `crtc_id`'s output passes through: `kms::GAMMA_SIZE`
+    /// red entries, then green, then blue (16-bit, as `struct
+    /// drm_color_lut`), or `None` for none (colors unchanged). The host
+    /// applies it to everything the CRTC presents, cursor included.
+    fn kms_set_gamma(&mut self, crtc_id: u32, lut: Option<&[u16]>) {}
 
     /// True only after the host has negotiated a cursor presentation transport.
     fn kms_cursor_supported(&mut self) -> bool {
@@ -652,6 +749,7 @@ pub trait HostIO {
         y: i32,
         hot_x: i32,
         hot_y: i32,
+        fb_id: u32,
     ) {
     }
 }
@@ -720,8 +818,10 @@ pub struct FbBinding {
 pub struct DriBoBinding {
     /// Start address in the process's wasm `Memory`.
     pub addr: usize,
-    /// Length in bytes (aligned to wasm page).
+    /// Caller-visible BO span; the address allocator rounds it to a Wasm page.
     pub len: usize,
+    /// Byte offset in canonical BO storage for the first mapped byte.
+    pub bo_offset: u64,
     /// Bo currently bound at `[addr, addr+len)`.
     pub bo_id: crate::dri::BoId,
 }
@@ -862,6 +962,9 @@ impl ThreadInfo {
 pub struct EventFdState {
     pub counter: u64,
     pub semaphore: bool,
+    /// A write was refused (`EAGAIN`) because it would overflow the counter
+    /// since the last read. The next read then has a writer to wake.
+    pub write_refused: bool,
 }
 
 /// An entry in an epoll interest list.
@@ -1215,6 +1318,12 @@ pub struct Process {
     /// memory region with the bo currently bound there so `sys_munmap`
     /// can issue the matching [`HostIO::gbm_bo_unbind`].
     pub dri_bindings: crate::IoBuffer<DriBoBinding>,
+    /// Driver-owned exact resources belong to this image, not inherited fd
+    /// numbers. Exec/exit explicitly consume these real OFD/BO references.
+    pub(crate) owned_resources: crate::owned_resource::State,
+    /// Renderer leases created by this image, including descriptions now held
+    /// only by another process. Weak references do not keep resources alive.
+    pub(crate) gl_resource_owners: Vec<crate::ofd::WeakGlResources>,
     /// SysV shared-memory attachments keyed by the process virtual address
     /// returned from `shmat`.
     pub shm_mappings: crate::IoBuffer<ShmMapping>,
@@ -1600,6 +1709,8 @@ impl Process {
             has_exec: false,
             fb_binding: None,
             dri_bindings: crate::IoBuffer::new(),
+            owned_resources: crate::owned_resource::State::default(),
+            gl_resource_owners: Vec::new(),
             shm_mappings: crate::IoBuffer::new(),
             fork_count: 0,
         }
@@ -1942,6 +2053,7 @@ impl Process {
     pub fn remove_thread(&mut self, tid: u32) -> Option<ThreadState> {
         crate::epoll::finish_wait(self, tid);
         if let Some(idx) = self.identity.threads.iter().position(|t| t.tid == tid) {
+            crate::owned_resource::cancel_thread_polls(self,tid);
             // The thread may have been the target of a pending
             // process-directed signal, which now falls to another, possibly
             // parked, thread: treat the removal as a generation.
@@ -2903,6 +3015,12 @@ pub mod test_host {
     pub struct NoopHost;
 
     impl HostIO for NoopHost {
+        // NoopHost holds no device state, so releasing one completes.
+        fn gbm_bo_destroy(&mut self, _pid: i32, _bo_id: u32) -> i32 { 0 }
+        fn gbm_bo_unbind(&mut self, _pid: i32, _bo_id: u32, _addr: usize, _len: usize) -> i32 { 0 }
+        fn gl_unbind(&mut self, _pid: i32, _session_id: u32) -> i32 { 0 }
+        fn kms_rmfb(&mut self, _pid: i32, _fb_id: u32) -> i32 { 0 }
+        fn kms_drop_master(&mut self, _pid: i32, _file_id: u64, _lease_id: u64) -> i32 { 0 }
         fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
             Ok(())
         }
@@ -4058,24 +4176,23 @@ mod tests {
     }
 
     #[test]
-    fn spawn_child_increfs_inherited_dri_bos() {
-        // Regression (hyprland tiling desktop freeze): a posix_spawn'd client
-        // inherits the compositor's O_CLOEXEC card0 OFD, which carries the
-        // scanout bo's GEM handle + KMS framebuffer. spawn must incref those
-        // bos exactly as fork does (read_dri_fd_state / read_kms_fd_state),
-        // otherwise the child's exec-time close (dri_release_ofd_state) decrefs
-        // the compositor's still-live scanout bo to zero, tombstoning it in the
-        // global BoRegistry and freezing the desktop under a gbm_bo_map EINVAL
-        // flood.
+    fn spawn_child_shares_inherited_gem_and_framebuffer_references() {
+        // A spawn child aliases the compositor's DRM file. Its close must not
+        // retire the shared GEM or framebuffer references while the parent lives.
         use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
         use crate::process_table::ProcessTable;
         use crate::spawn::SpawnAttrs;
 
+        let _g_master = crate::dri::master::lock_for_test();
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::dri::bo::reset_registry();
-        let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
+        let bo = crate::dri::with_registry(|r| {
+            let bo = r.alloc(64, 64, 32).id;
+            r.incref(bo); // one GEM handle and one framebuffer table entry
+            bo
+        });
 
         let mut table = ProcessTable::new();
         let parent_pid = table.create_process().unwrap();
@@ -4088,23 +4205,23 @@ mod tests {
         );
         // Mirror the compositor's card0 fd: one GEM handle + one framebuffer,
         // both referencing the scanout bo.
-        let mut dri = DriFdState::default();
-        dri.handles.insert(5, bo);
-        dri.next_handle = 6;
-        let mut kms = KmsFdState::default();
-        kms.fbs.insert(
+        let dri = DriFdState::default();
+        dri.gem.borrow_mut().handles.insert(5, bo);
+        dri.gem.borrow_mut().next_handle = 6;
+        let kms = KmsFdState::default();
+        kms.fbs.borrow_mut().insert(
             42,
             KmsFb {
                 bo_id: bo,
-                width: 64,
-                height: 64,
+                width: 60,
+                height: 63,
                 pixel_format: 0x34325241, // AR24
                 stride: 64 * 4,
+                offset: 16, flags: 0,
             },
         );
-        kms.next_fb_id = 43;
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
-            Some(crate::IoBox::new(DriOfdState::Card { dri, kms }));
+            Some(crate::IoBox::new(DriOfdState::Card { dri, kms: kms.into() }));
         parent
             .fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
@@ -4112,12 +4229,12 @@ mod tests {
 
         assert_eq!(
             crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
-            Some(1),
-            "synthetic parent setup leaves the registry at the alloc refcount"
+            Some(2),
+            "one reference per shared GEM and framebuffer entry"
         );
 
         let mut host = test_host::NoopHost;
-        table
+        let child_pid = table
             .spawn_child_for_caller(
                 parent_pid,
                 parent_pid,
@@ -4129,55 +4246,50 @@ mod tests {
             )
             .expect("spawn_child_for_caller");
 
-        // Child inherited the card0 OFD's one GEM handle + one framebuffer;
-        // each must have taken its own registry ref so the child's eventual
-        // close-path decref is balanced.
-        assert_eq!(
-            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
-            Some(3),
-            "spawn child must incref the inherited scanout bo once per handle + fb"
-        );
-
-        crate::dri::with_registry(|r| {
-            r.decref(bo);
-            r.decref(bo);
-            r.decref(bo);
-        });
+        let fbs = |pid: u32| table.get(pid).unwrap().ofd_table.get(ofd_idx).unwrap().kms().unwrap().fbs.clone();
+        assert_eq!(fbs(parent_pid).borrow().len(), 1);
+        assert_eq!(fbs(child_pid).borrow().len(), 1);
+        assert_eq!(fbs(parent_pid).borrow().get(&42).unwrap().offset, 16);
+        assert_eq!(fbs(child_pid).borrow().get(&42).unwrap().offset, 16);
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
+        assert!(table.remove_process(child_pid).unwrap().dri_effects.is_empty());
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
+        let removed = table.remove_process(parent_pid).unwrap();
+        assert!(removed.dri_effects.contains(&crate::syscalls::DriReleaseEffect::DestroyBo(bo)));
+        assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
     }
 
     #[test]
-    fn spawn_cursor_references_survive_child_close_and_retire_on_final_removal() {
+    fn spawn_card_references_survive_child_close_and_retire_on_final_removal() {
         use crate::ofd::{DriFdState, DriOfdState, KmsFdState};
         use crate::process_table::ProcessTable;
         use crate::spawn::{FileAction, SpawnAttrs};
         use crate::syscalls::DriReleaseEffect;
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::dri::bo::reset_registry();
-        let bo = crate::dri::with_registry(|r| {
-            let bo = r.alloc(64, 64, 32).id;
-            r.incref(bo); // one handle and one cursor reference
-            bo
-        });
+        let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id); // one handle reference
         let mut table = ProcessTable::new();
         let pid = table.create_process().unwrap();
         let proc = table.get_mut(pid).unwrap();
         let idx = proc.ofd_table.create(crate::ofd::FileType::CharDevice, 0, -9, b"/dev/dri/card0".to_vec());
-        let mut dri = DriFdState::default();
-        dri.handles.insert(5, bo);
-        let mut kms = KmsFdState::default();
-        kms.cursor_bo = Some(bo);
-        proc.ofd_table.get_mut(idx).unwrap().dri_state = Some(crate::io_owner::IoBox::new(DriOfdState::Card { dri, kms }));
+        let dri = DriFdState::default();
+        dri.gem.borrow_mut().handles.insert(5, bo);
+        let kms = KmsFdState::default();
+        proc.ofd_table.get_mut(idx).unwrap().dri_state = Some(crate::IoBox::new(DriOfdState::Card { dri, kms: kms.into() }));
         proc.fd_table.alloc(crate::fd::OpenFileDescRef(idx), 0).unwrap();
         let mut host = test_host::NoopHost;
         let child = table.spawn_child_for_caller(pid, pid, &[b"child"], &[], &[], &SpawnAttrs::empty(), &mut host).unwrap();
-        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 4);
+        // The GEM reference belongs to the shared DRM file,
+        // not to each process alias. Child close and failed inheritance must
+        // leave the original hold intact until final file retirement.
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
         let removed = table.remove_process(child).unwrap();
         assert!(removed.dri_effects.is_empty());
-        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
         // Failure after inheritance must retire the partial child's refs too.
         assert!(table.spawn_child_for_caller(pid, pid, &[b"child"], &[],
             &[FileAction::Dup2 { srcfd: -1, fd: 0 }], &SpawnAttrs::empty(), &mut host).is_err());
-        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
         let removed = table.remove_process(pid).unwrap();
         assert_eq!(removed.dri_effects, alloc::vec![DriReleaseEffect::DestroyBo(bo)]);
         assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
@@ -4185,21 +4297,87 @@ mod tests {
     }
 
     #[test]
-    fn fork_process_increfs_inherited_dri_bos_exactly_once() {
-        // Guard the spawn-vs-fork incref split. DRI bos are increfed on the
-        // fork path inside deserialize (read_dri_fd_state / read_kms_fd_state),
-        // NOT in the shared bump helper — spawn uses `bump_inherited_dri_bos`
-        // instead. If a future change moved the DRI incref into
-        // `bump_inherited_resource_refcounts`, fork_process (deserialize + bump)
-        // would double-incref and leak the bo. This asserts exactly one child
-        // ref per inherited GEM handle + framebuffer.
+    fn fork_process_settles_gem_snapshot_references_before_publication() {
+        // Deserialization owns temporary references until relinking. The live
+        // namespace must retain exactly its original references after fork.
         use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
         use crate::process_table::ProcessTable;
 
+        let _g_master = crate::dri::master::lock_for_test();
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|r| {
+            let bo = r.alloc(64, 64, 32).id;
+            r.incref(bo); // one GEM handle and one framebuffer table entry
+            bo
+        });
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let parent = table.get_mut(parent_pid).unwrap();
+        let ofd_idx = parent.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        let dri = DriFdState::default();
+        dri.gem.borrow_mut().handles.insert(5, bo);
+        dri.gem.borrow_mut().next_handle = 6;
+        let kms = KmsFdState::default();
+        kms.fbs.borrow_mut().insert(
+            42,
+            KmsFb {
+                bo_id: bo,
+                width: 60,
+                height: 63,
+                pixel_format: 0x34325241, // AR24
+                stride: 64 * 4,
+                offset: 16, flags: 0,
+            },
+        );
+        parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(crate::IoBox::new(DriOfdState::Card { dri, kms: kms.into() }));
+        parent
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(2),
+            "one reference per shared GEM and framebuffer entry"
+        );
+
+        let child = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .expect("fork_process_for_caller");
+
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
+        assert!(table.remove_process(child).unwrap().dri_effects.is_empty());
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
+        let removed = table.remove_process(parent_pid).unwrap();
+        assert!(removed.dri_effects.contains(&crate::syscalls::DriReleaseEffect::DestroyBo(bo)));
+        assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
+    }
+
+    #[test]
+    fn fork_child_closing_card0_keeps_the_parents_scanout_framebuffer() {
+        // sway forks and the child execs, closing its inherited O_CLOEXEC
+        // card0 fd. Linux shares one drm_file between them, so the
+        // framebuffers stay until the last close.
+        use crate::dri::kms;
+        use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
+        use crate::process_table::ProcessTable;
+
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
         let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
 
         let mut table = ProcessTable::new();
@@ -4211,51 +4389,49 @@ mod tests {
             -9,
             b"/dev/dri/card0".to_vec(),
         );
-        let mut dri = DriFdState::default();
-        dri.handles.insert(5, bo);
-        dri.next_handle = 6;
-        let mut kms = KmsFdState::default();
-        kms.fbs.insert(
+        let kms_state = KmsFdState::default();
+        kms_state.fbs.borrow_mut().insert(
             42,
             KmsFb {
                 bo_id: bo,
-                width: 64,
-                height: 64,
+                width: 60,
+                height: 63,
                 pixel_format: 0x34325241, // AR24
                 stride: 64 * 4,
+                offset: 16, flags: 0,
             },
         );
-        kms.next_fb_id = 43;
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
-            Some(crate::IoBox::new(DriOfdState::Card { dri, kms }));
-        parent
+            Some(crate::IoBox::new(DriOfdState::Card {
+                dri: DriFdState::default(),
+                kms: kms_state.into(),
+            }));
+        let fd = parent
             .fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
             .unwrap();
+        kms::set_crtc_fb(42);
 
-        assert_eq!(
-            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
-            Some(1),
-            "synthetic parent setup leaves the registry at the alloc refcount"
-        );
-
-        table
+        let child_pid = table
             .fork_process_for_caller(parent_pid, parent_pid)
             .expect("fork_process_for_caller");
+        let mut host = test_host::NoopHost;
+        crate::syscalls::sys_close(table.get_mut(child_pid).unwrap(), &mut host, fd).unwrap();
 
-        // Parent's ref (1, synthetic) + child's one incref per handle + fb (2).
-        // A deserialize+bump double-count would show 5.
+        let parent_fbs = |table: &ProcessTable| {
+            table.get(parent_pid).unwrap().ofd_table.get(ofd_idx).unwrap().kms().unwrap().fbs.borrow().len()
+        };
+        assert_eq!(parent_fbs(&table), 1);
+        assert_eq!(kms::crtc_fb(), 42, "the child's close must not disable the CRTC");
         assert_eq!(
             crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
-            Some(3),
-            "fork must incref each inherited DRI bo exactly once (no deserialize + bump double-count)"
+            Some(1)
         );
 
-        crate::dri::with_registry(|r| {
-            r.decref(bo);
-            r.decref(bo);
-            r.decref(bo);
-        });
+        crate::syscalls::sys_close(table.get_mut(parent_pid).unwrap(), &mut host, fd).unwrap();
+        assert_eq!(kms::crtc_fb(), 0, "the last close releases the scanout framebuffer");
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)), None);
+        kms::reset_for_test();
     }
 
     #[test]

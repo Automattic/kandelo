@@ -1,0 +1,143 @@
+--- a/framework/delibs/debase/deMath.c
++++ b/framework/delibs/debase/deMath.c
+@@ -58,12 +58,18 @@
+     int mode = fegetround();
+     switch (mode)
+     {
++#ifdef FE_TOWARDZERO
+     case FE_TOWARDZERO:
+         return DE_ROUNDINGMODE_TO_ZERO;
++#endif
++#ifdef FE_UPWARD
+     case FE_UPWARD:
+         return DE_ROUNDINGMODE_TO_POSITIVE_INF;
++#endif
++#ifdef FE_DOWNWARD
+     case FE_DOWNWARD:
+         return DE_ROUNDINGMODE_TO_NEGATIVE_INF;
++#endif
+     case FE_TONEAREST:
+         return DE_ROUNDINGMODE_TO_NEAREST_EVEN;
+     default:
+@@ -108,14 +114,26 @@
+     switch (mode)
+     {
+     case DE_ROUNDINGMODE_TO_ZERO:
++#ifdef FE_TOWARDZERO
+         flag = FE_TOWARDZERO;
+         break;
++#else
++        return false;
++#endif
+     case DE_ROUNDINGMODE_TO_POSITIVE_INF:
++#ifdef FE_UPWARD
+         flag = FE_UPWARD;
+         break;
++#else
++        return false;
++#endif
+     case DE_ROUNDINGMODE_TO_NEGATIVE_INF:
++#ifdef FE_DOWNWARD
+         flag = FE_DOWNWARD;
+         break;
++#else
++        return false;
++#endif
+     case DE_ROUNDINGMODE_TO_NEAREST_EVEN:
+         flag = FE_TONEAREST;
+         break;
+--- a/framework/common/tcuInterval.hpp
++++ b/framework/common/tcuInterval.hpp
+@@ -30,6 +30,7 @@
+ #include <iostream>
+ #include <limits>
+ #include <cmath>
++#include <exception>
+ 
+ #define TCU_INFINITY (::std::numeric_limits<float>::infinity())
+ #define TCU_NAN (::std::numeric_limits<float>::quiet_NaN())
+@@ -41,21 +42,55 @@
+ class ScopedRoundingMode
+ {
+ public:
+-    ScopedRoundingMode(deRoundingMode mode) : m_oldMode(deGetRoundingMode())
+-    {
+-        deSetRoundingMode(mode);
+-    }
+-
+-    ScopedRoundingMode(void) : m_oldMode(deGetRoundingMode())
++    ScopedRoundingMode(deRoundingMode mode) : m_oldMode(getSavedMode())
++    {
++        set(mode);
++    }
++
++    ScopedRoundingMode(void) : m_oldMode(getSavedMode())
+     {
+     }
+ 
+     ~ScopedRoundingMode(void)
+     {
+-        deSetRoundingMode(m_oldMode);
++        restore();
++    }
++
++    // Check both capabilities before evaluating either interval bound.
++    void requireDirectedRounding(void)
++    {
++        set(DE_ROUNDINGMODE_TO_NEGATIVE_INF);
++        set(DE_ROUNDINGMODE_TO_POSITIVE_INF);
++        restore();
++    }
++
++    void set(deRoundingMode mode)
++    {
++        if (!deSetRoundingMode(mode))
++        {
++            // Also covers a failed constructor: no destructor exists yet.
++            restore();
++            throw InternalError("Reference oracle requires an unavailable rounding mode");
++        }
+     }
+ 
+ private:
++    static deRoundingMode getSavedMode(void)
++    {
++        const deRoundingMode mode = deGetRoundingMode();
++        if (mode == DE_ROUNDINGMODE_LAST)
++            throw InternalError("Reference oracle cannot identify the saved rounding mode");
++        return mode;
++    }
++
++    void restore(void) const
++    {
++        // Never throw a second exception while unwinding a failed bound.
++        // Failed restoration cannot leave subsequent reference math running.
++        if (!deSetRoundingMode(m_oldMode))
++            std::terminate();
++    }
++
+     ScopedRoundingMode(const ScopedRoundingMode &);
+     ScopedRoundingMode &operator=(const ScopedRoundingMode &);
+ 
+@@ -293,18 +328,19 @@
+     {                                                             \
+         DE_FENV_ACCESS_ON                                         \
+         ::tcu::ScopedRoundingMode VAR##_ctx_;                     \
++        VAR##_ctx_.requireDirectedRounding();                     \
+         ::tcu::Interval &VAR##_dst_ = (DST);                      \
+         ::tcu::Interval VAR##_lo_;                                \
+         ::tcu::Interval VAR##_hi_;                                \
+                                                                   \
+         {                                                         \
+             ::tcu::Interval &VAR = VAR##_lo_;                     \
+-            ::deSetRoundingMode(DE_ROUNDINGMODE_TO_NEGATIVE_INF); \
++            VAR##_ctx_.set(DE_ROUNDINGMODE_TO_NEGATIVE_INF); \
+             SETLOW;                                               \
+         }                                                         \
+         {                                                         \
+             ::tcu::Interval &VAR = VAR##_hi_;                     \
+-            ::deSetRoundingMode(DE_ROUNDINGMODE_TO_POSITIVE_INF); \
++            VAR##_ctx_.set(DE_ROUNDINGMODE_TO_POSITIVE_INF); \
+             SETHIGH;                                              \
+         }                                                         \
+                                                                   \

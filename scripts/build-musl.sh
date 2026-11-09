@@ -86,9 +86,9 @@ INPUT_HASH="$(kandelo_musl_input_hash "$REPO_ROOT" "$ARCH" "$CC" "$CALLTYPES_PLU
 if [ "$ENSURE" = 1 ] && [ "${KANDELO_BOOTSTRAP_FORCE_REBUILD:-0}" != 1 ] && \
     kandelo_musl_is_current "$SYSROOT" "$INPUT_HASH"; then
     echo "==> $ARCH musl sysroot is current ($INPUT_HASH)"
-    if [ "$CORE_ONLY" = 0 ] && [ "$ARCH" = wasm32posix ]; then
-        bash "$REPO_ROOT/scripts/build-dri-stubs.sh"
-        bash "$REPO_ROOT/scripts/build-gles-stubs.sh"
+    if [ "$CORE_ONLY" = 0 ]; then
+        bash "$REPO_ROOT/scripts/build-dri-stubs.sh" --arch "$ARCH"
+        bash "$REPO_ROOT/scripts/build-gles-stubs.sh" --arch "$ARCH"
     fi
     exit 0
 fi
@@ -425,6 +425,25 @@ rm -f "$SYSROOT/lib/libkandelo-ucontext-unsupported.a"
 rm -f "$SYSROOT/lib/ucontext_unsupported.o"
 
 # ---------------------------------------------------------------
+# 8c. Private kernel-owned device runtime (pulled only when referenced)
+# ---------------------------------------------------------------
+# Keep one nonce/receipt implementation across EGL and GBM. Separate archive
+# membership avoids a graphics hook or initialization cost in other programs.
+echo "==> Building kernel-owned device resource runtime..."
+# Like musl's overlay objects, this member must name a stable relative source
+# in calltypes metadata. Compile a private staged copy: an absolute checkout
+# path would give one shared cache key different bytes in different worktrees.
+mkdir -p src/kandelo
+cp "$REPO_ROOT/libc/glue/drm_owned.c" "$REPO_ROOT/libc/glue/drm_owned.h" src/kandelo/
+"$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS \
+    -matomics -mbulk-memory \
+    -I"$SYSROOT/include" \
+    -c "src/kandelo/drm_owned.c" \
+    -o "$SYSROOT/lib/drm_owned.o"
+"$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/drm_owned.o"
+rm -f "$SYSROOT/lib/drm_owned.o"
+
+# ---------------------------------------------------------------
 # 9. Install override headers
 # ---------------------------------------------------------------
 echo "==> Installing override headers..."
@@ -460,10 +479,10 @@ SYSROOT="$FINAL_SYSROOT"
 # ---------------------------------------------------------------
 # 10. Build platform graphics/DRI stub libraries
 # ---------------------------------------------------------------
-if [ "$ARCH" = "wasm32posix" ] && [ "$CORE_ONLY" = 0 ]; then
+if [ "$CORE_ONLY" = 0 ]; then
     echo "==> Building platform graphics stubs..."
-    bash "$REPO_ROOT/scripts/build-dri-stubs.sh"
-    bash "$REPO_ROOT/scripts/build-gles-stubs.sh"
+    bash "$REPO_ROOT/scripts/build-dri-stubs.sh" --arch "$ARCH"
+    bash "$REPO_ROOT/scripts/build-gles-stubs.sh" --arch "$ARCH"
 fi
 
 # ---------------------------------------------------------------
@@ -533,8 +552,9 @@ fi
 # otherwise need; coupling to them would make this gate fail spuriously on a
 # perfectly good sysroot, which is worse than not gating at all. Truncation is
 # covered by the member check above, which reads the archive itself.
-probe_dir="$(mktemp -d)"
-trap 'rm -rf "$probe_dir"' EXIT
+# WHY: the existing EXIT trap owns private-tree removal and sysroot rollback.
+# Keep the probe inside that tree instead of replacing its cleanup trap.
+probe_dir="$(mktemp -d "$BUILD_ROOT/probe.XXXXXX")"
 cat >"$probe_dir/probe.c" <<'PROBE'
 #include <dirent.h>
 /* WHY <stddef.h>: POSIX requires <dirent.h> to declare DIR, opendir, readdir,

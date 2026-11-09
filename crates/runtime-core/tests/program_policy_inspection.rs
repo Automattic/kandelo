@@ -38,7 +38,7 @@ fn leb(output: &mut Vec<u8>, mut value: usize) {
 
 #[test]
 fn trusted_inspections_validate_plans_originals_and_outputs_without_parser_allocations() {
-    let source = include_bytes!("../../../abi/program-fixtures/v55/raw-fork.wasm");
+    let source = include_bytes!("../../../abi/program-fixtures/v56/raw-fork.wasm");
     let read_limits = PolicyReadLimits {
         metadata_bytes: 1024 * 1024,
         work_items: 1_000_000,
@@ -50,7 +50,7 @@ fn trusted_inspections_validate_plans_originals_and_outputs_without_parser_alloc
         options_sha256: [2; 32],
         dependency_closure_sha256: [3; 32],
         program_contract_sha256: inspected.contract().unwrap(),
-        program_abi: 55,
+        program_abi: wasm_posix_shared::ABI_VERSION,
     };
     let limits = PreparationLimits {
         source_bytes: 1024 * 1024,
@@ -74,10 +74,10 @@ fn trusted_inspections_validate_plans_originals_and_outputs_without_parser_alloc
     let encoded = expected_receipt.encode();
     let source_record = inspected.encode();
     let output_record = output_inspected.encode();
-    let ready = include_bytes!("../../../abi/program-fixtures/v55/echo.wasm");
+    let ready = include_bytes!("../../../abi/program-fixtures/v56/echo.wasm");
     let ready_inspected = Inspection::read(ready, read_limits).unwrap();
     let prepared_program =
-        include_bytes!("../../../abi/program-fixtures/v55/environment-lifecycle.wasm");
+        include_bytes!("../../../abi/program-fixtures/v56/environment-lifecycle.wasm");
     let prepared_inspected = Inspection::read(prepared_program, read_limits).unwrap();
 
     DENY.store(true, Ordering::Relaxed);

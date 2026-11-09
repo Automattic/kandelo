@@ -10,10 +10,18 @@
 // whatever the built images reference is served, and nothing in the browser
 // app has to list it.
 //
-// Only the resolver chooses the file, and only its exact answer is approved
-// for Vite's `/@fs/` transport, which keeps the existing exact-file guard on
-// the package cache. The image records each body's size and SHA-256, and the
-// kernel checks both on fetch.
+// Only the resolver chooses the file, and only its exact answer, approved by
+// the existing exact-file guard on the package cache, is served. The route
+// streams those bytes itself rather than handing them to Vite's `/@fs/`
+// route: `/@fs/` runs a request with no file extension, or a JavaScript or
+// CSS extension, through Vite's module transform, so an extensionless shell
+// script member (sfwbar's `kandelo-sfwbar` wrapper, for instance) arrived as
+// `text/javascript` with an inline source map appended. Lazy members are
+// opaque file bodies; their bytes must reach the guest exactly as built. The
+// image records each body's size and SHA-256, and the kernel checks both on
+// fetch, so a transformed body fails as an I/O error in the guest.
+import { createReadStream, statSync } from "node:fs";
+import type { ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import { validateVfsAssetGroupRelativePath } from "../../../host/src/vfs/vfs-asset-group-reference";
 
@@ -48,14 +56,67 @@ export function devLazyAssetRequest(
   return { kind: "member", relPath: decodeURIComponent(relPath) };
 }
 
+/** Where the bytes of one package member come from. */
+export type DevLazyAssetSource =
+  /** A dev-server path a later middleware answers: the SourceOnly store's
+   *  pinned, content-addressed path. */
+  | { kind: "path"; path: string }
+  /** An approved file on disk this route streams byte-for-byte. */
+  | { kind: "file"; file: string };
+
 export interface DevLazyAssetOptions {
   /**
-   * The dev-server path that serves the package-mirror path `relPath`, or
-   * `null` when nothing published it. Under SourceOnly this is the pinned
-   * snapshot store's path; otherwise the resolver's exact file, approved for
-   * Vite's `/@fs/` transport.
+   * The source of the package-mirror path `relPath`, or `null` when nothing
+   * published it. Under SourceOnly this is the pinned snapshot store's path;
+   * otherwise the resolver's exact, approved file.
    */
-  servePath(relPath: string, base: string): string | null;
+  serve(relPath: string, base: string): DevLazyAssetSource | null;
+}
+
+function lazyAssetContentType(file: string): string {
+  if (file.endsWith(".wasm")) return "application/wasm";
+  if (file.endsWith(".json")) return "application/json";
+  if (file.endsWith(".zip")) return "application/zip";
+  return "application/octet-stream";
+}
+
+/** Send one approved file exactly as it is on disk. */
+export function sendLazyAssetFile(
+  method: string | undefined,
+  file: string,
+  response: ServerResponse,
+): void {
+  if (method !== "GET" && method !== "HEAD") {
+    response.statusCode = 405;
+    response.end("Method not allowed");
+    return;
+  }
+  let size: number;
+  try {
+    const metadata = statSync(file);
+    if (!metadata.isFile()) throw new Error(`${file} is not a regular file`);
+    size = metadata.size;
+  } catch (error) {
+    response.statusCode = 500;
+    response.end(
+      `Lazy asset ${file} cannot be read: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+    return;
+  }
+  response.statusCode = 200;
+  response.setHeader("Content-Type", lazyAssetContentType(file));
+  response.setHeader("Content-Length", size);
+  // A local rebuild replaces the file in place; never let the page reuse a
+  // body the image no longer describes.
+  response.setHeader("Cache-Control", "no-store");
+  if (method === "HEAD") {
+    response.end();
+    return;
+  }
+  const stream = createReadStream(file);
+  stream.on("error", (error) => response.destroy(error));
+  stream.pipe(response);
 }
 
 export function devLazyAssets(options: DevLazyAssetOptions): Plugin {
@@ -81,9 +142,9 @@ export function devLazyAssets(options: DevLazyAssetOptions): Plugin {
           response.end("Invalid lazy asset path");
           return;
         }
-        let served: string | null;
+        let served: DevLazyAssetSource | null;
         try {
-          served = options.servePath(classified.relPath, base);
+          served = options.serve(classified.relPath, base);
         } catch (error) {
           response.statusCode = 500;
           response.end(
@@ -99,16 +160,19 @@ export function devLazyAssets(options: DevLazyAssetOptions): Plugin {
           );
           return;
         }
-        // Later middleware (Vite's `/@fs/` serving, or the SourceOnly store)
-        // answers the rewritten path.
-        request.url = served;
+        if (served.kind === "file") {
+          sendLazyAssetFile(request.method, served.file, response);
+          return;
+        }
+        // The SourceOnly store, a later middleware, answers its pinned path.
+        request.url = served.path;
         next();
       });
     },
   };
 }
 
-export interface BatchedFsServePathOptions {
+export interface BatchedResolverFilesOptions {
   /** The published SourceOnly projection authority; its identity (size and
    *  modification time) keys the batch. */
   projectionPath: string;
@@ -118,14 +182,15 @@ export interface BatchedFsServePathOptions {
   resolveBatch(relPaths: readonly string[]): Array<string | null | Error>;
   /** Resolve one path the projection does not list (a fetched mirror). */
   resolveOne(relPath: string): string | null;
-  /** Approve one exact file for `/@fs/`; returns its canonical path. */
+  /** Check one exact file against the package-cache guard; returns its
+   *  canonical path. */
   approve(file: string): string;
   /** The projection's identity, or null when it is absent. */
   identity(projectionPath: string): string | null;
 }
 
 /**
- * `servePath` for the ordinary resolver: its exact file through `/@fs/`.
+ * `serve` for the ordinary resolver: its exact, approved file.
  *
  * Each resolver call checks the program index first, which takes seconds and
  * runs synchronously; resolving per request would block the dev server and
@@ -135,12 +200,12 @@ export interface BatchedFsServePathOptions {
  * does not list falls back to a single resolution, remembered like the rest
  * (a miss included) until the projection changes.
  */
-export function batchedFsServePath(
-  options: BatchedFsServePathOptions,
-): DevLazyAssetOptions["servePath"] {
+export function batchedResolverFiles(
+  options: BatchedResolverFilesOptions,
+): DevLazyAssetOptions["serve"] {
   let batchIdentity: string | null = null;
   let resolved = new Map<string, string | null | Error>();
-  return (relPath, base) => {
+  return (relPath) => {
     const identity = options.identity(options.projectionPath);
     if (identity !== batchIdentity) {
       resolved = new Map();
@@ -155,9 +220,6 @@ export function batchedFsServePath(
     const file = resolved.get(relPath)!;
     if (file instanceof Error) throw file;
     if (file === null) return null;
-    const canonical = options.approve(file);
-    // Vite decodes the `/@fs/` path with decodeURI, so encode it the same
-    // way: a space or `%` in the checkout path must round-trip.
-    return `${base}@fs${encodeURI(canonical.startsWith("/") ? canonical : `/${canonical}`)}`;
+    return { kind: "file", file: options.approve(file) };
   };
 }

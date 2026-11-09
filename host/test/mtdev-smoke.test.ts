@@ -1,10 +1,10 @@
 /**
- * PR5b gate for the mtdev stub. Spawns `mtdev_smoke` in the centralized
- * kernel. The fixture proves both halves of the mtdev contract without
- * libinput present: libmtdev.a links (the five symbols libinput
- * references resolve), and the kernel's virtual pointer is not a
- * protocol-A multitouch device, so `evdev_need_mtdev()` is false and the
- * stub is never actually entered.
+ * mtdev links and is not needed for the virtual devices. Spawns
+ * `mtdev_smoke` in the centralized kernel. The fixture proves both halves
+ * without libinput present: the upstream libmtdev.a links (the five
+ * symbols libinput references resolve), and the kernel's virtual pointer
+ * is not a protocol-A multitouch device, so `evdev_need_mtdev()` is false
+ * and libinput never routes it through mtdev.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -13,7 +13,7 @@ import { tryResolveBinary } from "../src/binary-resolver";
 
 const fixtureBinary = tryResolveBinary("programs/mtdev_smoke.wasm");
 
-describe("mtdev stub — links and is not needed for our devices", () => {
+describe("mtdev — links and is not needed for our devices", () => {
   it.skipIf(!fixtureBinary)(
     "resolves the mtdev symbols and confirms the pointer is not protocol-A",
     async () => {

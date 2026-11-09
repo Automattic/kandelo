@@ -142,7 +142,7 @@ while [ "$#" -gt 0 ]; do
         --rootfs|--ca-bundle|--bash|--fbdoom|--modeset|--demo-config|\
         --demo-profile-overlay|--dependency-contract|--wldesktop|\
         --omarchydesktop|--omarchy-theme-hook|--desktop-data|\
-        --libinput-quirks|--espeak-ng-data)
+        --libinput-quirks|--xkeyboard-config|--espeak-ng-data)
             [ -f "${2:-}" ] || { echo "missing input for $1" >&2; exit 85; }
             shift 2
             ;;
@@ -177,7 +177,7 @@ make_fixture() {
     done
     local runtime_file
     for runtime_file in wldesktop omarchydesktop omarchy-theme-changed \
-        kandelo-desktop-data.zip libinput-quirks.zip; do
+        kandelo-desktop-data.zip libinput-quirks.zip xkeyboard-config.zip; do
         printf 'desktop runtime\n' >"$root/dependencies/wayland-demo/$runtime_file"
     done
     printf 'speech data\n' >"$root/dependencies/espeak-ng/espeak-ng-data.zip"
@@ -241,6 +241,14 @@ fi
 grep -Fq -- \
     "--demo-profile-overlay $SCRIPT_DIR/source-rootfs-shell-demo-profiles.json" \
     "$FAKE_LOG" || fail "wrapper omitted canonical demo profile overlay"
+
+grep -Fq -- \
+    "--xkeyboard-config $TMP_ROOT/parallel-one/dependencies/wayland-demo/xkeyboard-config.zip" \
+    "$FAKE_LOG" || fail "wrapper omitted xkeyboard-config dependency output"
+
+make_fixture missing-xkeyboard-config
+rm "$TMP_ROOT/missing-xkeyboard-config/dependencies/wayland-demo/xkeyboard-config.zip"
+expect_failure "xkeyboard-config dependency output" run_fixture missing-xkeyboard-config
 
 make_fixture failed
 expect_failure "simulated source shell build failure" run_fixture failed 1

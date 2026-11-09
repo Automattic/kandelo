@@ -12,13 +12,15 @@ version = "0.1.0"
 kernel_abi = 45
 depends_on = [
   "libwayland@1.24.0",
-  "libxkbcommon@1.7.0",
-  "libinput@1.25.0",
+  "libxkbcommon@1.13.2",
+  "libinput@1.28.1",
   "libevdev@1.13.3",
-  "libudev@0.1.0",
-  "mtdev@0.1.0",
+  "libudev-zero@1.0.5",
+  "mtdev@1.1.7",
+  "xkeyboard-config@2.48",
   "libffi@0.1.0",
-  "wayland-protocols@1.45",
+  "wayland-protocols@1.47",
+  "wlr-protocols@0-unstable-2026-03-09",
   "hyprland-protocols@0.6.4",
   "glib@2.84.4",
   "pcre2@10.44",
@@ -119,3 +121,10 @@ guest_path = "/usr/share/wayland-demo/kandelo-desktop-data.zip"
 [[runtime_files]]
 artifact = "libinput-quirks.zip"
 guest_path = "/usr/share/wayland-demo/libinput-quirks.zip"
+
+# The xkeyboard-config rules. GTK3 compiles a default evdev/pc105/us keymap
+# from them before the compositor's keymap arrives, and libxkbcommon reads
+# them from /usr/share/X11/xkb; image builders unpack this zip there.
+[[runtime_files]]
+artifact = "xkeyboard-config.zip"
+guest_path = "/usr/share/wayland-demo/xkeyboard-config.zip"

@@ -87,6 +87,8 @@ const ROOT_INGRESS_METHODS = new Map([
   ["#runImmediateKernelEntry", 1],
   ["#runOrDeferKernelEntry", 1],
   ["#runOrDeferChannelKernelEntry", 2],
+  ["#runOrDeferAllocatedCloneCompletionKernelEntry", 2],
+  ["#runOrDeferAllocatedForkCompletionKernelEntry", 2],
   ["#runOrDeferPendingChildCompletionKernelEntry", 2],
   // This private constructor supplies the facade to an operation while the
   // canonical gate callback still owns its scope. Its call sites are checked
@@ -95,6 +97,12 @@ const ROOT_INGRESS_METHODS = new Map([
 ]);
 const TRANSACTION_COMPLETION_INGRESS_METHODS = new Set([
   "#runOrDeferChannelKernelEntry",
+  // Clone owns an allocated exact Rust TID even after its caller retires.
+  // The canonical ingress still supplies fresh lexical entry authority; its
+  // completion body must separately prove the original request and image.
+  "#runOrDeferAllocatedCloneCompletionKernelEntry",
+  // Fork likewise owns an allocated child after its parent mailbox retires.
+  "#runOrDeferAllocatedForkCompletionKernelEntry",
   // Fork and spawn own a second kernel Process after child reservation.
   // Detached completion must retain cleanup authority when the parent channel
   // has retired; the completion body separately gates parent-memory writes.
@@ -544,6 +552,8 @@ export function auditKernelEntryContext(
   const canonicalConstructionOwners = new Map([
     ["CentralizedKernelWorker.#runOrDeferKernelEntry", "runOrDeferVoidIngress"],
     ["CentralizedKernelWorker.#runImmediateKernelEntry", "runImmediateVoidIngress"],
+    ["CentralizedKernelWorker.#runOrDeferAllocatedCloneCompletionKernelEntry", "runOrDeferVoidIngress"],
+    ["CentralizedKernelWorker.#runOrDeferAllocatedForkCompletionKernelEntry", "runOrDeferVoidIngress"],
     ["CentralizedKernelWorker.#runOrDeferPendingChildCompletionKernelEntry", "runOrDeferVoidIngress"],
   ]);
   const isCanonicalEntryConstruction = (
@@ -2566,7 +2576,7 @@ export function auditKernelEntryContext(
               call.node,
               "protocol transaction completion must use a reviewed ingress "
                 + "that either validates the exact pending channel or owns "
-                + "pending-spawn cleanup after parent retirement",
+                + "allocated-child cleanup after caller retirement",
             );
           }
           continue;

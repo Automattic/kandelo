@@ -1,0 +1,93 @@
+# Browser-window Sway: Alt (Option on Mac) is the real guest modifier.
+# Why: including upstream first parses its Mod4 bindings before a later
+# variable override. Own this complete preset so no hidden Super/Ctrl aliases
+# steal browser or terminal shortcuts. Advanced users can supply their own
+# ordinary Sway config; fullscreen/keyboard-lock controls are not implied.
+set $mod Mod1
+set $left h
+set $down j
+set $up k
+set $right l
+set $term foot --config=/usr/share/kandelo/sway/foot.ini
+
+font pango:monospace 12
+output * bg /usr/share/backgrounds/sway/Sway_Wallpaper_Blue_1920x1080.png fill
+floating_modifier $mod normal
+
+bindsym --no-warn $mod+Return exec $term
+bindsym $mod+Shift+q kill
+bindsym $mod+$left focus left
+bindsym $mod+$down focus down
+bindsym $mod+$up focus up
+bindsym $mod+$right focus right
+bindsym $mod+Shift+$left move left
+bindsym $mod+Shift+$down move down
+bindsym $mod+Shift+$up move up
+bindsym $mod+Shift+$right move right
+
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+4 workspace number 4
+bindsym $mod+5 workspace number 5
+bindsym $mod+6 workspace number 6
+bindsym $mod+7 workspace number 7
+bindsym $mod+8 workspace number 8
+bindsym $mod+9 workspace number 9
+bindsym $mod+0 workspace number 10
+bindsym $mod+Shift+1 move container to workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3
+bindsym $mod+Shift+4 move container to workspace number 4
+bindsym $mod+Shift+5 move container to workspace number 5
+bindsym $mod+Shift+6 move container to workspace number 6
+bindsym $mod+Shift+7 move container to workspace number 7
+bindsym $mod+Shift+8 move container to workspace number 8
+bindsym $mod+Shift+9 move container to workspace number 9
+bindsym $mod+Shift+0 move container to workspace number 10
+
+# Alt+d/e/f, Space and arrows have browser/OS meanings. Enter an ordinary
+# Sway mode, release Alt, then use unmodified action keys instead.
+set $desktop Desktop: Return-terminal W/S/E-layout F-fullscreen V-floating Space-focus R-resize C-reload Q-exit
+bindsym $mod+m mode "$desktop"
+mode "$desktop" {
+    bindsym Return exec $term, mode "default"
+    bindsym w layout tabbed, mode "default"
+    bindsym s layout stacking, mode "default"
+    bindsym e layout toggle split, mode "default"
+    bindsym f fullscreen toggle, mode "default"
+    bindsym v floating toggle, mode "default"
+    bindsym space focus mode_toggle, mode "default"
+    bindsym c reload, mode "default"
+    bindsym q exec swaynag -t warning -m 'Exit sway? This ends the Wayland session.' -B 'Yes, exit sway' 'swaymsg exit', mode "default"
+    bindsym r mode "resize"
+    bindsym Escape mode "default"
+}
+# No wmenu binding: this image does not ship wmenu-run. Launch applications
+# from the real terminal; klauncher belongs to another compositor's IPC.
+mode "resize" {
+    bindsym h resize shrink width 10px
+    bindsym j resize grow height 10px
+    bindsym k resize shrink height 10px
+    bindsym l resize grow width 10px
+    bindsym Return mode "default"
+    bindsym Escape mode "default"
+}
+
+# Native Swaybar retains its real workspace buttons and IPC, not a host UI
+# projection. Logical height/font stay readable at both output densities.
+bar {
+    position bottom
+    height 32
+    workspace_buttons yes
+    font pango:monospace 14
+    status_command while date +'%Y-%m-%d %X'; do sleep 1; done
+    colors {
+        statusline #ffffff
+        background #323232
+        focused_workspace #4c7899 #285577 #ffffff
+        inactive_workspace #323232 #323232 #5c5c5c
+    }
+}
+
+exec $term

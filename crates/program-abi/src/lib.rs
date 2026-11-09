@@ -224,7 +224,10 @@
 ///     metadata or kernel-host wire formats. Those bump the kernel-host
 ///     version, `abi::HOST_ADAPTER_VERSION` (now 2, checked exactly), instead
 ///     of this. docs/abi-versioning.md ("ABI 55").
-pub const ABI_VERSION: u32 = 55;
+/// 56: combine main's program-surface digest with kernel-owned graphics
+///     sessions, shared contexts, acknowledged surfaces and retained storage.
+///     One epoch covers the unpublished graphics compatibility effort.
+pub const ABI_VERSION: u32 = 56;
 
 
 pub mod abi {

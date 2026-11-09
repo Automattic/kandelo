@@ -25,6 +25,7 @@ pub enum KernelFileKind {
     MemFd,
     SyntheticRegular,
     ProcFsRegular,
+    SysFsRegular,
 }
 
 /// Portable identity of the file object to which a lock applies.

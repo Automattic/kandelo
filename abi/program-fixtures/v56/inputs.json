@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "programAbi": 56,
+  "fixtures": [
+    {
+      "name": "echo",
+      "file": "echo.wasm",
+      "sourcePath": "examples/echo.c"
+    },
+    {
+      "name": "spawn-smoke",
+      "file": "spawn-smoke.wasm",
+      "sourcePath": "examples/spawn-smoke.c"
+    },
+    {
+      "name": "fstatat-empty-path",
+      "file": "fstatat-empty-path.wasm",
+      "sourcePath": "examples/fstatat_empty_path_test.c"
+    },
+    {
+      "name": "mmap-file",
+      "file": "mmap-file.wasm",
+      "sourcePath": "examples/mmap_file_test.c"
+    },
+    {
+      "name": "pthread",
+      "file": "pthread.wasm",
+      "sourcePath": "examples/test-pthread.c"
+    },
+    {
+      "name": "environment-lifecycle",
+      "file": "environment-lifecycle.wasm",
+      "sourcePath": "examples/environment_lifecycle_test.c"
+    }
+  ],
+  "preparationSource": {
+    "file": "raw-fork.wasm",
+    "sourcePath": "examples/mmap_shared_anonymous_fork.c"
+  },
+  "compileFlags": [
+    "-O2",
+    "-Isysroot/include/libdrm",
+    "-Isysroot/include/drm"
+  ]
+}

@@ -97,3 +97,5 @@ export type {
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./node-kernel-protocol";
+
+export type { ProcessGenerationEvent } from "./process-generation-observation";

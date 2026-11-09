@@ -1,0 +1,26 @@
+<labwc_config>
+  <theme>
+    <font name="sans" size="10" />
+    <titlebar>
+      <layout>menu:iconify,max,close</layout>
+      <showTitle>yes</showTitle>
+    </titlebar>
+  </theme>
+  <keyboard>
+    <!-- Why: use real Alt/Option bindings without stealing terminal Control
+         chords or the host's Alt+Tab/F4 window management. -->
+    <keybind key="A-Return"><action name="Execute" command="foot --config=/etc/xdg/labwc/foot.ini" /></keybind>
+    <keybind key="A-j"><action name="NextWindow" /></keybind>
+    <keybind key="A-k"><action name="PreviousWindow" /></keybind>
+    <keybind key="A-S-q"><action name="Close" /></keybind>
+    <keybind key="A-S-e"><action name="Exit" /></keybind>
+  </keyboard>
+  <mouse>
+    <default />
+    <context name="Root">
+      <mousebind button="Right" action="Press">
+        <action name="ShowMenu" menu="root-menu" />
+      </mousebind>
+    </context>
+  </mouse>
+</labwc_config>

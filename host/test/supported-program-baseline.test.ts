@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describeWasmArtifactPolicyFailures } from "../src/constants";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { resolveBinary } from "../src/binary-resolver";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { addIncompatibleForkFixture, addInitialLaunchFixtures } from "./fixtures/program-compatibility";
 
-const directory = new URL("../../abi/program-fixtures/v55/", import.meta.url);
+const directory = new URL("../../abi/program-fixtures/v56/", import.meta.url);
 const manifest = JSON.parse(readFileSync(new URL("manifest.json", directory), "utf8")) as {
   version: number;
   programAbi: number;
@@ -25,14 +26,22 @@ const markers: Record<string, string> = {
 describe("supported program baseline: unchanged previously compiled programs", () => {
   let host: NodeKernelHost;
   let incompatibleFork: Uint8Array;
+  const retiredDirectory = new URL("../../abi/program-fixtures/v55/", import.meta.url);
+  const retired = readFileSync(new URL("echo.wasm", retiredDirectory));
   beforeAll(async () => {
     expect(manifest.version).toBe(1);
-    expect(manifest.programAbi).toBe(55);
-    expect(manifest.programContractDigest).toBe("1358eca04a8d33fa5bcc27d1c672af2f6e7aaf466a398ad598d991347b1a4415");
+    expect(manifest.programAbi).toBe(56);
+    const baseline = JSON.parse(readFileSync(new URL("../../abi/supported-program-baseline.json", import.meta.url), "utf8"));
+    expect(baseline.abi_version).toBe(56);
+    expect(manifest.programContractDigest).toBe(baseline.program_contract_digest);
     expect(manifest.fixtures.map(fixture => fixture.name).sort()).toEqual(Object.keys(markers).sort());
     const image = KandeloImageFs.create();
     image.mkdir("/bin", 0o755);
     image.mkdir("/tmp", 0o777);
+    const retiredManifest = JSON.parse(readFileSync(new URL("manifest.json", retiredDirectory), "utf8"));
+    const retiredEcho = retiredManifest.fixtures.find((fixture: { name: string }) => fixture.name === "echo");
+    expect(createHash("sha256").update(retired).digest("hex")).toBe(retiredEcho.sha256);
+    image.writeFile("/bin/retired-abi55", retired, 0o755);
     for (const fixture of manifest.fixtures) {
       const bytes = readFileSync(new URL(fixture.file, directory));
       expect(bytes.byteLength).toBe(fixture.size);
@@ -45,6 +54,15 @@ describe("supported program baseline: unchanged previously compiled programs", (
     await host.init(Uint8Array.from(readFileSync(resolveBinary("kernel.wasm"))).buffer);
   }, 60_000);
   afterAll(async () => { await host?.destroy(); });
+
+  it("refuses unchanged retired ABI-55 bytes without deleting or restamping them", async () => {
+    expect(describeWasmArtifactPolicyFailures(Uint8Array.from(retired).buffer, { expectedAbi: 56 }))
+      .toContain("ABI 55, expected 56");
+    await expect(host.spawnFromVfs("/bin/retired-abi55", ["retired-abi55"], {
+      ownedJob: { id: "retired-abi55", timeoutMs: 30_000 },
+    })).rejects.toThrow(/errno 8/);
+    expect(await host.readFileFromVfs("/bin/retired-abi55")).toEqual(Uint8Array.from(retired));
+  });
 
   it("preserves incompatible user-built fork programs and explains the rebuild requirement", async () => {
     await expect(host.spawnFromVfs("/launch/incompatible-fork", ["incompatible-fork"], {

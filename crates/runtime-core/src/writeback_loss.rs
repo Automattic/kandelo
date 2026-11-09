@@ -23,6 +23,20 @@
 //! does not grow to pay for the import that went away), and carries the pid,
 //! mapping address, and reason as separate fields rather than one sentence.
 //!
+//! THE LOSS IS ALSO REPORTED TO THE PROGRAM, AS LINUX DOES. A writeback
+//! error on a file is reported once to every open file description and every
+//! mapping of that file that existed when it happened (Linux's errseq
+//! semantics): the next `fsync`, `fdatasync` or `close` through such a
+//! description, and the next `msync` over such a mapping, fails with `EIO`.
+//! See [`note_file_writeback_error`] and [`take_ofd_writeback_error`].
+//!
+//! ONLY A GENUINE FILE WRITE FAILURE IS RECORDED. The mapping layer's other
+//! two inconsistencies -- releasing a host handle no backing held, and a
+//! publication pass reaching a live process without its memory length -- can
+//! only come from Kandelo's own bookkeeping, never from the file or the
+//! program, so they are fatal kernel faults ([`shared_mapping_fault`]), not
+//! records.
+//!
 //! BOUNDEDNESS IS EXPLICIT. The kernel keeps the FIRST
 //! [`WRITEBACK_LOSS_RECORD_CAPACITY`] records — the earliest losses are the
 //! ones that explain the cause, later ones are usually cascade — and counts
@@ -30,6 +44,7 @@
 //! never silently discarded: `dropped = total - recorded` is published in the
 //! same report, so the reader always learns that more happened than is listed.
 
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 
@@ -45,60 +60,12 @@ pub const WRITEBACK_LOSS_RECORD_CAPACITY: usize = 64;
 /// record size is bounded by construction rather than by the caller's goodwill.
 pub const WRITEBACK_LOSS_REASON_MAX: usize = 64;
 
-/// What kind of shared-mapping state was lost.
-///
-/// Three things can go missing in the mapping layer and none may go quietly:
-/// a writeback that could not be published, a host handle released by a
-/// backing that never took it, and a live process whose mappings a
-/// publication pass skipped. They are different losses with different
-/// operands, so the record names which one it is rather than forcing a handle
-/// into a field labelled `addr` -- a field label that lied would be exactly the
-/// "appearance of correctness" the platform-values contract forbids.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MappingLossKind {
-    /// A mapping's dirty bytes could not be written back. Operand: the mapping
-    /// base address in the owning process.
-    Writeback,
-    /// A backing released a host handle it never retained, so the handle is now
-    /// unreachable for its deferred close. Operand: the handle.
-    UnheldHandle,
-    /// A publication pass reached a live process whose committed linear-memory
-    /// length the entry point never supplied, so every mapping that process
-    /// holds was skipped. The pid in the record is the whole operand; this
-    /// kind has no second one.
-    UnseededProcess,
-}
-
-impl MappingLossKind {
-    /// The stable token used in the procfs report.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Writeback => "writeback",
-            Self::UnheldHandle => "unheld-handle",
-            Self::UnseededProcess => "unseeded-process",
-        }
-    }
-
-    /// The name this kind's operand is reported under.
-    fn operand_label(self) -> &'static str {
-        match self {
-            Self::Writeback => "addr",
-            Self::UnheldHandle => "handle",
-            // No operand: the pid is the loss.
-            Self::UnseededProcess => "",
-        }
-    }
-}
-
-/// One recorded shared-mapping loss.
+/// One recorded writeback loss: a mapping's dirty bytes the file refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WritebackLossRecord {
-    /// Which kind of loss this is; decides what `operand` means.
-    pub kind: MappingLossKind,
-    /// The process whose mapping lost the writeback, or 0 when the loss is not
-    /// attributable to one process.
+    /// The process whose mapping lost the writeback.
     pub pid: u32,
-    /// The kind-specific numeric operand. See [`MappingLossKind`].
+    /// The mapping base address in that process.
     pub operand: u64,
     /// Why the state could not be published. Kernel-authored, ASCII,
     /// truncated to [`WRITEBACK_LOSS_REASON_MAX`] bytes.
@@ -120,20 +87,9 @@ impl WritebackLossLog {
         }
     }
 
-    /// Record one loss. Always counted; stored while capacity remains.
+    /// Record one loss. Always counted; stored while capacity remains, so
+    /// `total` stays exact even once storage is full.
     pub fn record(&mut self, pid: u32, map_addr: u64, reason: &str) {
-        self.record_kind(MappingLossKind::Writeback, pid, map_addr, reason)
-    }
-
-    /// Record one loss of any kind. Always counted; stored while capacity
-    /// remains, so `total` stays exact even once storage is full.
-    pub fn record_kind(
-        &mut self,
-        kind: MappingLossKind,
-        pid: u32,
-        operand: u64,
-        reason: &str,
-    ) {
         self.total = self.total.saturating_add(1);
         if self.records.len() >= WRITEBACK_LOSS_RECORD_CAPACITY {
             return;
@@ -143,9 +99,8 @@ impl WritebackLossLog {
         // a split multi-byte sequence would only ever reach a reader as bytes.
         let len = bytes.len().min(WRITEBACK_LOSS_REASON_MAX);
         self.records.push(WritebackLossRecord {
-            kind,
             pid,
-            operand,
+            operand: map_addr,
             reason: bytes[..len].to_vec(),
         });
     }
@@ -174,11 +129,7 @@ impl WritebackLossLog {
     /// recorded 64
     /// dropped 73
     /// loss kind=writeback pid=12 addr=0x10000 reason=descriptor closed
-    /// loss kind=unheld-handle handle=0x29 reason=released without a retain
     /// ```
-    ///
-    /// The operand's FIELD NAME follows the kind, so a reader is never told a
-    /// host handle is an address.
     ///
     /// `reason` is last on the line precisely because it is the only field that
     /// may contain spaces.
@@ -187,32 +138,12 @@ impl WritebackLossLog {
         out.try_write_fmt(format_args!("total {}\nrecorded {}\ndropped {}\n",
             self.total, self.records.len(), self.dropped()))?;
         for record in &self.records {
-            match record.kind {
-                MappingLossKind::Writeback => out.try_write_fmt(
-                    format_args!(
-                        "loss kind={} pid={} {}={:#x} reason=",
-                        record.kind.label(),
-                        record.pid,
-                        record.kind.operand_label(),
-                        record.operand,
-                    )
-                ),
-                MappingLossKind::UnheldHandle => out.try_write_fmt(
-                    format_args!(
-                        "loss kind={} {}={:#x} reason=",
-                        record.kind.label(),
-                        record.kind.operand_label(),
-                        record.operand,
-                    )
-                ),
-                MappingLossKind::UnseededProcess => out.try_write_fmt(
-                    format_args!(
-                        "loss kind={} pid={} reason=",
-                        record.kind.label(),
-                        record.pid,
-                    )
-                ),
-            }?;
+            // Why: only genuine writeback failures reach this log; mapping
+            // bookkeeping faults remain fatal rather than fabricated records.
+            out.try_write_fmt(format_args!(
+                "loss kind=writeback pid={} addr={:#x} reason=",
+                record.pid, record.operand,
+            ))?;
             out.try_reserve(record.reason.len() + 1)?;
             out.extend_from_slice(&record.reason);
             out.push(b'\n');
@@ -241,43 +172,36 @@ pub fn record_writeback_loss(pid: u32, map_addr: u64, reason: &str) {
     unsafe { (*GLOBAL_WRITEBACK_LOSS_LOG.0.get()).record(pid, map_addr, reason) }
 }
 
-/// Record a host handle released by a backing that never retained it.
+/// Stop the kernel on a shared-mapping bookkeeping fault.
 ///
-/// The trait method that discovers this cannot return an error, which is
-/// precisely why the loss has to be recorded: the handle is now unreachable for
-/// its deferred close, and the alternative is leaking it in silence.
-pub fn record_unheld_handle_loss(handle: i64) {
-    unsafe {
-        (*GLOBAL_WRITEBACK_LOSS_LOG.0.get()).record_kind(
-            MappingLossKind::UnheldHandle,
-            0,
-            handle as u64,
-            "released without a retain",
-        )
-    }
+/// These inconsistencies cannot come from a file or a program: the mapping
+/// layer released an object it never pinned, or a publication pass reached a
+/// live process the kernel can always answer for. Continuing would free an
+/// object under a live mapping, leak it, or silently skip a process's
+/// `MAP_SHARED` coherence, so the kernel traps (its fatal fault on every host)
+/// instead of recording and continuing.
+pub fn shared_mapping_fault(what: core::fmt::Arguments<'_>) -> ! {
+    panic!("fatal shared-mapping fault: {what}")
 }
 
-/// Decide what `SharedMappingIo::process_memory_len` answers, recording the
-/// loss when the answer is a skip that should not have happened.
+/// Decide what `SharedMappingIo::process_memory_len` answers.
 ///
-/// `seeded` is the length the entry point supplied, if any. `process_is_live`
-/// is whether the kernel's process table still holds the pid.
-///
-/// The three cases are deliberately separated because two of them produce the
-/// same answer for opposite reasons:
+/// `seeded` is the length the entry point supplied (or the kernel derived
+/// from the live process), if any. `process_is_live` is whether the kernel's
+/// process table still holds the pid.
 ///
 /// - seeded: answer the length;
 /// - not seeded, process gone: answer `None`, which correctly means "skip a
 ///   process that no longer exists";
-/// - not seeded, process live: answer `None` because there is nothing else to
-///   answer, and record the loss, because this skip is a silent `MAP_SHARED`
-///   coherence failure rather than a correct elision.
+/// - not seeded, process live: a bookkeeping fault (see
+///   [`shared_mapping_fault`]); skipping would be a silent `MAP_SHARED`
+///   coherence failure.
 ///
-/// This is a free function taking the log rather than a method on the kernel's
-/// `SharedMappingIo` so the decision can be tested at all: the kernel's impl
-/// lives in `crates/kernel/src/wasm_api.rs`, which has no unit-test seam.
+/// A free function so the decision can be tested at all: the kernel's
+/// `SharedMappingIo` lives in `crates/kernel/src/wasm_api.rs`, which has no
+/// unit-test seam.
 pub fn resolve_process_memory_len(
-    log: &mut WritebackLossLog,
+    pid: u32,
     seeded: Option<u64>,
     process_is_live: bool,
 ) -> Option<u64> {
@@ -285,14 +209,77 @@ pub fn resolve_process_memory_len(
         return Some(len);
     }
     if process_is_live {
-        log.record_kind(
-            MappingLossKind::UnseededProcess,
-            0,
-            0,
-            "live process not seeded with its memory length",
-        );
+        shared_mapping_fault(format_args!(
+            "a publication pass reached live process {pid} without its memory length"
+        ));
     }
     None
+}
+
+/// Open file descriptions (by `OfdId`) that have not yet been told about a
+/// writeback error on their file.
+pub struct GlobalPendingWritebackErrors(pub UnsafeCell<BTreeSet<u64>>);
+
+/// SAFETY: serialized exactly as [`GLOBAL_WRITEBACK_LOSS_LOG`].
+unsafe impl Sync for GlobalPendingWritebackErrors {}
+
+pub static GLOBAL_PENDING_WRITEBACK_ERRORS: GlobalPendingWritebackErrors =
+    GlobalPendingWritebackErrors(UnsafeCell::new(BTreeSet::new()));
+
+/// A writeback to the kernel-owned file whose mapping identity is `file_key`
+/// failed. Every open file description of that file that exists now will
+/// report `EIO` once, from its next `fsync`, `fdatasync` or `close`. A
+/// description opened later never sees this error, as with Linux errseq.
+pub fn note_file_writeback_error(table: &crate::process_table::ProcessTable, file_key: &str) {
+    mark_open_descriptions(table, None, |ofd| {
+        crate::kernel_file_mapping::mapping_handle_for(ofd.file_type, ofd.host_handle)
+            .and_then(crate::kernel_file_mapping::identity_key)
+            .as_deref()
+            == Some(file_key)
+    });
+}
+
+/// A writeback of a host-mounted file (identified as its descriptions are,
+/// by `host_fstat` device and inode) failed in the host's shared-mapping
+/// layer. Every open description of it that exists now reports `EIO` once,
+/// except `told` -- the `(pid, fd)` whose current syscall is already failing
+/// with `EIO` because of this failure, so it is not told twice.
+pub fn note_host_file_writeback_error(
+    table: &crate::process_table::ProcessTable,
+    dev: u64,
+    ino: u64,
+    told: Option<(u32, i32)>,
+) {
+    let told = told.and_then(|(pid, fd)| {
+        let proc = table.get(pid)?;
+        let entry = proc.fd_table.get(fd).ok()?;
+        Some(proc.ofd_table.get(entry.ofd_ref.0)?.ofd_id.0)
+    });
+    let file = crate::lock::FileId::Host { dev, ino };
+    mark_open_descriptions(table, told, |ofd| ofd.file_id == Some(file));
+}
+
+fn mark_open_descriptions(
+    table: &crate::process_table::ProcessTable,
+    skip: Option<u64>,
+    matches: impl Fn(&crate::ofd::OpenFileDesc) -> bool,
+) {
+    let pending = unsafe { &mut *GLOBAL_PENDING_WRITEBACK_ERRORS.0.get() };
+    // Why: visit every retained process without allocating a PID snapshot.
+    // Shared descriptions still deduplicate by their exact machine-wide OfdId.
+    for proc in table.iter() {
+        for (_, ofd) in proc.ofd_table.iter() {
+            if Some(ofd.ofd_id.0) != skip && matches(ofd) {
+                pending.insert(ofd.ofd_id.0);
+            }
+        }
+    }
+}
+
+/// Consume the writeback error pending for this open file description, if
+/// any. True means the caller must report `EIO`.
+pub fn take_ofd_writeback_error(ofd_id: u64) -> bool {
+    unsafe { (*GLOBAL_PENDING_WRITEBACK_ERRORS.0.get()).remove(&ofd_id) }
 }
 
 /// Render the kernel-wide log as the `/proc/kandelo/writeback_losses` content.
@@ -309,57 +296,23 @@ mod tests {
     /// overwhelmingly common case and must stay free of diagnostics.
     #[test]
     fn a_seeded_process_answers_its_length_and_records_nothing() {
-        let mut log = WritebackLossLog::new();
-        assert_eq!(resolve_process_memory_len(&mut log, Some(4096), true), Some(4096));
-        assert_eq!(log.total(), 0);
+        assert_eq!(resolve_process_memory_len(7, Some(4096), true), Some(4096));
     }
 
-    /// A process that is genuinely gone must be skipped silently. Recording it
-    /// would make every ordinary exit look like a loss, which would bury the
-    /// real ones.
+    /// A process that is genuinely gone is skipped: that is not a fault.
     #[test]
-    fn a_dead_process_is_skipped_without_a_loss() {
-        let mut log = WritebackLossLog::new();
-        assert_eq!(resolve_process_memory_len(&mut log, None, false), None);
-        assert_eq!(log.total(), 0);
+    fn a_dead_process_is_skipped() {
+        assert_eq!(resolve_process_memory_len(7, None, false), None);
     }
 
-    /// The case the whole mechanism exists for: an entry point reached a live
-    /// process without supplying its length, so every mapping that process
-    /// holds is about to be skipped. The answer is still `None` — nothing else
-    /// can be answered — but it must not be silent.
+    /// A live process reached without its memory length would have every
+    /// mapping it holds skipped. The kernel answers a live process's length
+    /// itself, so this can only be a bookkeeping error, and skipping would
+    /// silently break MAP_SHARED coherence: the kernel stops instead.
     #[test]
-    fn a_live_unseeded_process_answers_none_and_records_the_loss() {
-        let mut log = WritebackLossLog::new();
-        assert_eq!(resolve_process_memory_len(&mut log, None, true), None);
-        assert_eq!(log.total(), 1);
-        assert_eq!(log.records().len(), 1);
-        assert_eq!(log.records()[0].kind, MappingLossKind::UnseededProcess);
-    }
-
-    /// The new kind has no second operand — the pid is the whole loss — so it
-    /// must not render an `addr=` or `handle=` field carrying a placeholder.
-    #[test]
-    fn the_unseeded_process_report_names_the_pid_and_no_operand() {
-        let mut log = WritebackLossLog::new();
-        log.record_kind(
-            MappingLossKind::UnseededProcess,
-            41,
-            0,
-            "live process not seeded with its memory length",
-        );
-        let text = String::from_utf8(log.render()).expect("ASCII report");
-        assert!(
-            text.contains(
-                concat!(
-                    "loss kind=unseeded-process pid=41 ",
-                    "reason=live process not seeded with its memory length\n",
-                )
-            ),
-            "{text}"
-        );
-        assert!(!text.contains("addr="), "{text}");
-        assert!(!text.contains("handle="), "{text}");
+    #[should_panic(expected = "fatal shared-mapping fault: a publication pass reached live process")]
+    fn a_live_unseeded_process_is_a_fatal_fault() {
+        let _ = resolve_process_memory_len(7, None, true);
     }
 
     #[test]
@@ -391,17 +344,6 @@ mod tests {
             text.contains("loss kind=writeback pid=13 addr=0x20000 reason=write failed\n"),
             "{text}"
         );
-        // A handle loss must not be reported as an address. The operand's field
-        // name follows the kind precisely so a reader is never told a host
-        // handle is a mapping address.
-        log.record_kind(MappingLossKind::UnheldHandle, 0, 0x29, "released without a retain");
-        let text = String::from_utf8(log.render()).expect("ASCII report");
-        assert!(
-            text.contains("loss kind=unheld-handle handle=0x29 reason=released without a retain\n"),
-            "{text}"
-        );
-        assert!(!text.contains("handle=0x29 reason=released without a retain\n addr"), "{text}");
-        assert!(text.contains("total 3\n"), "{text}");
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import { waitForHttpPreview } from "../../../lib/init/http-preview-readiness";
 import { WebPreviewConnection } from "./web-preview-connection";
 import { BrowserComputerStore } from "../../../../../web-libs/kandelo-session/src/browser-computer-store";
 import type { ComputerLibrarySnapshot, ComputerRetention, StoredComputer } from "../../../../../web-libs/kandelo-session/src/computer-library";
@@ -569,6 +570,7 @@ interface InitLaunch {
 }
 
 interface WebReadinessState {
+  controller: AbortController;
   ready: boolean;
   probing: boolean;
   failed: boolean;
@@ -1685,6 +1687,7 @@ async function bootProfile(
     });
   }
   const webReadiness: WebReadinessState = {
+    controller: new AbortController(),
     ready: false,
     probing: false,
     failed: false,
@@ -2126,7 +2129,14 @@ async function bootProfile(
     let disposeLocalWebBridge = () => {};
     const previewConnection = new WebPreviewConnection(host, kernel, SW_URL, SW_SCOPE, isCurrent);
     host.setWebPreviewHandler({ open: target => previewConnection.open(target), closeNetwork: () => previewConnection.closeNetwork(),
-      dispose: () => { previewConnection.dispose(); disposeLocalWebBridge(); } });
+      dispose: () => {
+        // WHY: cancel this exact activation before taking its HTTP bridge
+        // offline. An isCurrent check after polling finishes cannot revoke an
+        // in-flight fetch or prevent retries against the retired machine.
+        webReadiness.controller.abort(new BootSuperseded());
+        previewConnection.dispose();
+        disposeLocalWebBridge();
+      } });
     setWebMcpSession(host, agentIdentity());
     host.setTerminalSessionPolicy(
       experimentalTerminalSessionPolicy(terminalSession),
@@ -2399,6 +2409,7 @@ async function bootProfile(
       persistenceJournalName: opfsImage?.journalName ?? null,
     };
   } catch (err) {
+    webReadiness.controller.abort(new BootSuperseded());
     if (kernel) {
       if (isCurrent()) setWebMcpSession(host, null);
       await kernel.destroy().catch(() => {});
@@ -2773,7 +2784,7 @@ function maybeMarkWebReady(
   tick: (msg: string) => void,
   isCurrent: () => boolean,
 ): void {
-  if (web === null) return;
+  if (web === null || !isCurrent() || readiness.controller.signal.aborted) return;
   if (readiness.failed) return;
   const portsReady = web.requiredPorts.every((p) => seenPorts.has(p));
   const servicesReady = [...requiredServices].every((serviceName) =>
@@ -2820,10 +2831,11 @@ function maybeMarkWebReady(
   });
   void waitForHttpPreview(probeUrl, 90_000, {
     requireOk: Boolean(web.probePath),
+    signal: readiness.controller.signal,
   })
     .then(
       () => {
-        if (!isCurrent() || readiness.failed) return;
+        if (!isCurrent() || readiness.failed || readiness.controller.signal.aborted) return;
         readiness.ready = true;
         tick("HTTP preview ready");
         host.setWebPreview({
@@ -2835,7 +2847,7 @@ function maybeMarkWebReady(
         });
       },
       (err) => {
-        if (!isCurrent()) return;
+        if (!isCurrent() || readiness.controller.signal.aborted) return;
         const message = err instanceof Error ? err.message : String(err);
         host.setWebPreview({
           label,
@@ -2853,55 +2865,10 @@ function maybeMarkWebReady(
     });
 }
 
-async function waitForHttpPreview(
-  url: string,
-  timeoutMs = 90_000,
-  options: { requireOk?: boolean } = {},
-): Promise<void> {
-  const started = performance.now();
-  let delayMs = 250;
-  let lastError = "";
-
-  while (performance.now() - started < timeoutMs) {
-    try {
-      const response = await fetchWithTimeout(url, 5_000);
-      if (options.requireOk ? response.ok : response.status < 500) return;
-      lastError = `HTTP ${response.status}`;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
-    }
-    await sleep(delayMs);
-    delayMs = Math.min(1_500, Math.floor(delayMs * 1.4));
-  }
-
-  throw new Error(lastError || "timed out");
-}
-
 function previewUrlForPath(appPrefix: string, path: string): string {
   const root = new URL(appPrefix, window.location.href);
   const normalized = path.startsWith("/") ? path.slice(1) : path;
   return new URL(normalized || ".", root).href;
-}
-
-async function fetchWithTimeout(
-  url: string,
-  timeoutMs: number,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, {
-      cache: "no-store",
-      redirect: "follow",
-      signal: controller.signal,
-    });
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function envRecord(env: string[]): Record<string, string> {

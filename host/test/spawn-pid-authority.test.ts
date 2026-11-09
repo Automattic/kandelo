@@ -28,7 +28,7 @@ import {
   PROCESS_STATE_RUNNING,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
-import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import { initialProcessExecGeneration, installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WASM32_CONTINUATION_HEADER_SIZE =
@@ -808,6 +808,7 @@ function createTaskAuthorityHarness(
   const implementations: Record<string, unknown> = {
     kernel_drain_wakeup_events: vi.fn(() => 0),
     kernel_get_parent_pid: vi.fn(() => -1),
+    kernel_get_process_exec_generation: initialProcessExecGeneration(kernelMemory),
     kernel_get_process_exit_signal: vi.fn(() => -1),
     kernel_mark_process_signaled: vi.fn(() => 0),
     kernel_set_current_tid: vi.fn(() => 0),

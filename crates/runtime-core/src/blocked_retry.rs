@@ -365,6 +365,10 @@ impl BlockingRetryState {
         self.token_for(tid, operation)
     }
 
+    pub fn binding_for_token(&self, token: i64) -> Option<&BlockingRetryBinding> {
+        self.bindings.iter().find(|binding| binding.token == token)
+    }
+
     pub fn binding_for_token_mut(&mut self, token: i64) -> Option<&mut BlockingRetryBinding> {
         self.bindings
             .iter_mut()

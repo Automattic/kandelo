@@ -1,6 +1,6 @@
 /** Compose the canonical browser shell from resolver-owned package outputs. */
-import { lstatSync, readFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { ABI_VERSION, ERRNO } from "../../../host/src/generated/abi";
@@ -25,7 +25,7 @@ import {
 } from "../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import {
   ensureDirRecursive,
-  saveImage,
+  serializeImage,
   sourceDateEpochMilliseconds,
   writeVfsBinary,
   writeVfsFile,
@@ -42,6 +42,13 @@ import {
   registerDeclaredShellLazyArchive,
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
+import {
+  describeBudgetUse,
+  measureEagerContent,
+  readImageEagerBudget,
+  requireCompressedImageWithinBudget,
+  requireEagerContentWithinBudget,
+} from "./image-eager-budget";
 import {
   populateSourceRootfsShellOverlay,
   PACKAGE_ROOTFS_SHELL_COMPOSITION,
@@ -88,15 +95,18 @@ export interface SourceRootfsShellInputs {
   rootfsPath: string;
   caBundlePath: string;
   bashPath: string;
-  /** The four wayland-demo outputs; required when wayland-demo is selected. */
+  /** The five wayland-demo outputs; required when wayland-demo is selected. */
   wldesktopPath?: string;
   omarchydesktopPath?: string;
   desktopDataPath?: string;
   libinputQuirksPath?: string;
+  xkeyboardConfigPath?: string;
   /** Required when espeak-ng is selected. */
   espeakNgDataPath?: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
+  /** The checked-in eager-content budget (packages/registry/shell/eager-budget.json). */
+  eagerBudgetPath: string;
   outFile: string;
   resolveArtifact: ShellLazyArchiveResolver;
   resolveOriginal?: ProgramOriginalResolver;
@@ -527,13 +537,13 @@ exec "$CORE" "$LINK" "\${@:2}"
 `;
 
 /**
- * kandelo-terminal, written eagerly to /usr/bin/kandelo-terminal: asks the
+ * kandelo-page-terminal, written eagerly to /usr/bin/kandelo-page-terminal: asks the
  * page showing the machine to open a terminal with a command typed at its
  * prompt (web-libs/kandelo-session/src/terminal-request.ts). The ROM exchange
  * handler uses it so a dropped game is a visible, repeatable command.
  */
-const KANDELO_TERMINAL_SCRIPT = `#!/bin/sh
-# kandelo-terminal [--display] [--title TITLE] COMMAND-LINE
+const KANDELO_PAGE_TERMINAL_SCRIPT = `#!/bin/sh
+# kandelo-page-terminal [--display] [--title TITLE] COMMAND-LINE
 #
 # Ask the page showing this machine to open a terminal and type COMMAND-LINE
 # at its prompt, as the user would, so the command is visible and can be run
@@ -546,7 +556,7 @@ const KANDELO_TERMINAL_SCRIPT = `#!/bin/sh
 # this command (exit 1), when nothing outside the machine takes outputs; a
 # page that does not open terminals keeps it as an ordinary output.
 usage() {
-    echo "usage: kandelo-terminal [--display] [--title TITLE] COMMAND-LINE" >&2
+    echo "usage: kandelo-page-terminal [--display] [--title TITLE] COMMAND-LINE" >&2
     exit 2
 }
 display=""
@@ -644,11 +654,11 @@ name=\${rom##*/}
 
 # The game runs as a command in a terminal of its own, typed at the prompt:
 # the user sees what the drop ran, and once the game exits, Up and Enter run
-# it again. kandelo-terminal asks the page for that terminal. Where nothing
+# it again. kandelo-page-terminal asks the page for that terminal. Where nothing
 # outside the machine opens one (the Node host, or no page taking outputs),
 # the game starts in the background instead, as below.
 quoted=$(printf '%s' "$path" | sed "s/'/'\\\\\\\\''/g")
-if /usr/bin/kandelo-terminal --display --title "$name" "retro-run ~/roms/'$quoted'" 2>/dev/null; then
+if /usr/bin/kandelo-page-terminal --display --title "$name" "retro-run ~/roms/'$quoted'" 2>/dev/null; then
     status "opened a terminal: retro-run ~/roms/$path"
     exit 0
 fi
@@ -2007,6 +2017,8 @@ export async function buildSourceRootfsShellImage(
   const demo = demoSelection.bytes;
   const includedProfiles = new Set(demoSelection.included);
   const scummvmCatalog = loadScummvmFreewareCatalog();
+  // Read first so a malformed budget fails before any composition work.
+  const eagerBudget = readImageEagerBudget(inputs.eagerBudgetPath);
 
   // WHY: the terminal document is image-owned policy. Validate its programs
   // against the unmodified source rootfs before overlays can accidentally make
@@ -2044,13 +2056,17 @@ export async function buildSourceRootfsShellImage(
         "omarchydesktop launcher dependency",
       ),
       dataPath: requiredInput(inputs.desktopDataPath, "the desktop data archive"),
+      xkeyboardConfigPath: requiredInput(inputs.xkeyboardConfigPath, "the xkeyboard-config archive"),
       libinputQuirks: readRegularInput(
         requiredInput(inputs.libinputQuirksPath, "the libinput quirks archive"),
         "libinput quirks dependency",
       ),
     }
     : null;
-  if (desktop !== null) requireRegularInput(desktop.dataPath, "desktop data dependency");
+  if (desktop !== null) {
+    requireRegularInput(desktop.dataPath, "desktop data dependency");
+    requireRegularInput(desktop.xkeyboardConfigPath, "xkeyboard-config dependency");
+  }
   const espeakNgDataPath = includes("espeak-ng")
     ? requiredInput(inputs.espeakNgDataPath, "the espeak-ng data archive")
     : null;
@@ -2088,14 +2104,21 @@ export async function buildSourceRootfsShellImage(
     writeVfsBinary(fs, "/usr/bin/wldesktop", desktop.wldesktop, 0o755);
     writeVfsBinary(fs, "/usr/bin/omarchydesktop", desktop.omarchydesktop, 0o755);
   }
-  // WHY: CA, speech and desktop data need not be fetched to boot a shell.
+  // WHY: CA, speech, cursor, keymap and desktop data need not be fetched to boot a shell.
   // Register the exact package ZIPs at their compiled-in guest paths: normal
   // open/read triggers a verified first-use fetch on both Node and browser.
   removeEagerShellCaBundle(fs, caBundle);
   const dataArchivePaths: Record<string, string | null> = {
+    // A partial shell must not resolve an omitted package merely to build
+    // the archive table; cursor and keymap bytes remain first-use lazy.
+    "cursor-theme": includes("bibata-cursor-theme")
+      ? inputs.resolveArtifact("programs/wasm32/bibata-cursor-theme.zip", "bibata-cursor-theme")
+      : null,
     "ca-certificates": inputs.caBundlePath,
     "desktop-data": desktop?.dataPath ?? null,
     "espeak-ng-data": espeakNgDataPath,
+    // libxkbcommon and GTK use the compiled-in /usr/share/X11/xkb root.
+    "xkeyboard-config": desktop?.xkeyboardConfigPath ?? null,
   };
   for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
     if (!includes(spec.dependency)) continue;
@@ -2174,7 +2197,10 @@ export async function buildSourceRootfsShellImage(
     ensureDirRecursive(fs, "/usr/libexec/kandelo");
     writeVfsBinary(fs, "/usr/libexec/kandelo/game-import.py", readFileSync(GAME_IMPORT_SOURCE), 0o644);
   }
-  writeVfsBinary(fs, "/usr/bin/kandelo-terminal", new TextEncoder().encode(KANDELO_TERMINAL_SCRIPT), 0o755);
+  // The page publisher belongs to the base shell, while kandelo-terminal is
+  // SFWBar's native Foot launcher. Sharing a path overwrites that lazy file
+  // canonically and makes independent partial images claim an unselected app.
+  writeVfsBinary(fs, "/usr/bin/kandelo-page-terminal", new TextEncoder().encode(KANDELO_PAGE_TERMINAL_SCRIPT), 0o755);
   // The image's Kandelo exchange handlers and their rules. The rules
   // go in the image's rule directory, which the base rootfs declares
   // (images/rootfs/MANIFEST) with the ownership kxchgd checks; creating it
@@ -2224,12 +2250,20 @@ export async function buildSourceRootfsShellImage(
   // Checked before saving so a rejected composition writes no output.
   requireLazyShellPrograms(sourceEagerPrograms, fs);
   requireLazyShellData(fs, selection);
+  // WHY: every visitor downloads and decompresses the eager content before
+  // the first prompt, and nothing else notices when it grows (an eager
+  // xkeyboard-config tree once added 3.3 MB). Growth must be a reviewed
+  // change to the checked-in budget; see image-eager-budget.ts.
+  const eagerContent = measureEagerContent(fs);
+  requireEagerContentWithinBudget(eagerBudget, inputs.eagerBudgetPath, eagerContent);
 
   // WHY: Bash is the one intentional eager identity. Every other source-rootfs
   // first-use download must retain the same path, URL, size, and tree metadata.
   const composedLazyState = serializedLazyState(fs);
 
-  const image = await saveImage(fs, inputs.outFile, {
+  // Serialized here rather than through saveImage so the compressed-size
+  // budget is checked before anything is written.
+  const serialized = await serializeImage(fs, inputs.outFile, {
     expectedMaxByteLength: sourceCapacity.maxByteLength,
     metadata: {
       ...sourceMetadata,
@@ -2251,6 +2285,17 @@ export async function buildSourceRootfsShellImage(
       inputs.sourceDateEpoch ?? process.env.SOURCE_DATE_EPOCH,
     ),
   });
+  const image = serialized.bytes;
+  requireCompressedImageWithinBudget(
+    eagerBudget,
+    inputs.eagerBudgetPath,
+    image.byteLength,
+    eagerContent,
+  );
+  console.log(describeBudgetUse(eagerBudget, eagerContent, image.byteLength));
+  mkdirSync(dirname(inputs.outFile), { recursive: true });
+  writeFileSync(inputs.outFile, image);
+  console.log(`Written to: ${inputs.outFile}`);
 
   const outputMetadata = KandeloImageFs.readImageMetadata(image);
   if (outputMetadata?.kernelAbi !== ABI_VERSION) {
@@ -2285,6 +2330,7 @@ const REQUIRED_FLAGS = [
   "--bash",
   "--demo-config",
   "--demo-profile-overlay",
+  "--eager-budget",
   "--dependency-contract",
   "--out",
 ] as const;
@@ -2295,6 +2341,7 @@ const SELECTED_INPUT_FLAGS: ReadonlyArray<{ flag: string; pkg: string }> = [
   { flag: "--omarchydesktop", pkg: "wayland-demo" },
   { flag: "--desktop-data", pkg: "wayland-demo" },
   { flag: "--libinput-quirks", pkg: "wayland-demo" },
+  { flag: "--xkeyboard-config", pkg: "wayland-demo" },
   { flag: "--espeak-ng-data", pkg: "espeak-ng" },
 ];
 
@@ -2340,8 +2387,10 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
           "--omarchydesktop <omarchydesktop> " +
           "--desktop-data <kandelo-desktop-data.zip> " +
           "--libinput-quirks <libinput-quirks.zip> " +
+          "--xkeyboard-config <xkeyboard-config.zip> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
+          "--eager-budget <eager-budget.json> " +
           "--dependency-contract <dependencies.json> " +
           "[--selection <selection.json>] " +
           "--out <shell.vfs.zst>",
@@ -2381,9 +2430,11 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     omarchydesktopPath: values.get("--omarchydesktop"),
     desktopDataPath: values.get("--desktop-data"),
     libinputQuirksPath: values.get("--libinput-quirks"),
+    xkeyboardConfigPath: values.get("--xkeyboard-config"),
     espeakNgDataPath: values.get("--espeak-ng-data"),
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
+    eagerBudgetPath: values.get("--eager-budget")!,
     outFile: values.get("--out")!,
     selection,
     // A partial shell may resolve only the packages it selected, so a step

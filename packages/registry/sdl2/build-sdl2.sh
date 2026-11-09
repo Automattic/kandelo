@@ -84,6 +84,9 @@ patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0006-kmsdrm-cursor-hotspots.patch
 # Device maxima must land on the last pixel, preserving mouse focus.
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0007-scale-inclusive-absolute-axes.patch"
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0008-prepare-kms-drawable-before-rendering.patch"
+# The selected preferred mode is not the saved state of a disabled display.
+# Keep genuine restore errors loud; this generic correction is D-60.
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0009-kmsdrm-restore-disabled-crtc.patch"
 
 # --- Wayland pkg-config wiring (step 12b) ------------------------------
 # SDL2's configure gates the Wayland backend on a hard pkg-config probe

@@ -50,7 +50,9 @@ export function auditBrowserMessageTypes(candidate = "KernelToMainMessage"): str
       return;
     }
     if (checker.isTypeAssignableTo(type, shared)) {
-      if (path !== "fb_bind.pixels") failures.push(`${path}: unreviewed SharedArrayBuffer payload`);
+      if (path !== "fb_bind.pixels") {
+        failures.push(`${path}: unreviewed SharedArrayBuffer payload`);
+      }
       return;
     }
     const symbol = type.getSymbol();

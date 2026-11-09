@@ -6,8 +6,8 @@
  *
  * This exercises the full PR5a+PR5b+PR5c chain through real libinput:
  * libinput_path_add_device("/dev/input/event0") runs stat() → st_rdev
- * recovery → udev_device_new_from_devnum → input_id classification (libudev
- * shim) → evdev_device_new → libevdev capability probe → device accepted,
+ * recovery → udev_device_new_from_devnum → input_id classification (libudev-zero)
+ * → evdev_device_new → libevdev capability probe → device accepted,
  * and libinput_dispatch()'s epoll loop reads a host-injected EV_KEY off the
  * kernel evdev ring and decodes it into a LIBINPUT_EVENT_KEYBOARD_KEY.
  *

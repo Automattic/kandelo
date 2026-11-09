@@ -2,8 +2,9 @@
 # Sortix os-test expectations shared by the Node.js runner
 # (scripts/run-sortix-tests.sh) and the browser runner
 # (scripts/run-browser-sortix-tests.sh): which tests are expected to fail and
-# how, where a test's expected output lives, and how a run's output is
-# composed before it is compared.
+# how, where a test's expected output lives, how a run's output is composed
+# before it is compared, and which capability claims each suite is compiled
+# with.
 #
 # Why one file: each runner used to keep its own copy, and the copies drifted.
 # The browser runner never read tests/sortix/os-test-overrides/, so 15 tests
@@ -175,4 +176,40 @@ sortix_output_matches() {
         done
     done
     return 1
+}
+
+# ── Capability claims ──────────────────────────────────────
+# `-D__sortix__` is a CAPABILITY SUPPRESSION, and upstream spends one macro on
+# two unrelated capabilities. Exactly three files in the suite consult it:
+#
+#   udp/udp.h                             skips getifaddrs()
+#   signal/ppoll-block-sleep-write-raise  skips SIGSTOP/SIGCONT
+#   signal/ppoll-block-sleep-raise-write  skips SIGSTOP/SIGCONT
+#
+# Only ONE of those claims is true of Kandelo, so the macro is scoped to the
+# suite whose claim is true rather than asserted platform-wide. Both runners
+# take it from here: a capability is a property of Kandelo, not of the host,
+# and a browser runner that still asserted the false half would keep racing.
+#
+#   getifaddrs -- TRUE. musl implements it over netlink
+#   (libc/musl/src/network/getifaddrs.c includes netlink.h) and this kernel
+#   implements no AF_NETLINK. The symbol links; the call cannot succeed.
+#
+#   SIGSTOP/SIGCONT -- FALSE. crates/runtime-core/src/signal.rs maps SIGSTOP
+#   to DefaultAction::Stop and SIGCONT to Continue, the process table records
+#   stops, and the host defers a stopped process's channel. Built without the
+#   macro, signal/ppoll-block-sleep-write-raise passed 20/20.
+#
+# Asserting the false half told a conformance suite we lack a feature we have,
+# and the two signal tests then took a deliberately racy fallback -- their own
+# comment is "Sortix does not implement SIGSTOP yet, so just race instead" --
+# instead of the SIGSTOP/SIGCONT sequencing that makes them deterministic.
+# A timing constant was then tuned to survive the degraded path. That is the
+# platform-values contract's "do not shape behavior to hide a platform gap",
+# inverted: a gap was invented that did not exist.
+suite_capability_cflags() {
+    case "$1" in
+        udp) echo "-D__sortix__" ;;
+        *)   echo "" ;;
+    esac
 }

@@ -1,0 +1,33 @@
+kind = "library"
+
+# json-c (libjson-c.a), a JSON parser and builder in C. sway uses it for
+# its i3-compatible IPC messages. Built unmodified through upstream's
+# cmake build with the SDK toolchain file: static library only, no apps,
+# tests or docs. pkg-config name `json-c`.
+name = "json-c"
+version = "0.19"
+kernel_abi = 48
+depends_on = []
+
+[source]
+url = "https://s3.amazonaws.com/json-c_releases/releases/json-c-0.19.tar.gz"
+sha256 = "37ad0249902e301bd9052bf712e511fcc6acff4ecaad4b5900aad9ce564e26de"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/json-c/json-c/blob/json-c-0.19-20260627/COPYING"
+
+[build]
+script_path = "packages/registry/json-c/build-json-c.sh"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[outputs]
+libs = ["lib/libjson-c.a"]
+headers = ["include/json-c"]
+pkgconfig = ["lib/pkgconfig/json-c.pc"]

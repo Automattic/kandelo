@@ -42,7 +42,7 @@ fi
 # ("build stage changed identity and was preserved").
 mkdir -p "$INSTALL_DIR"
 find "$INSTALL_DIR" -mindepth 1 -delete
-mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
+mkdir -p "$INSTALL_DIR/lib/pkgconfig" "$INSTALL_DIR/include"
 
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
@@ -67,6 +67,20 @@ wasm32posix-ar rcs "$INSTALL_DIR/lib/libffi.a" \
     "$BUILD_DIR/ffi_closure_pool.o"
 
 cp "$SCRIPT_DIR/include/ffi.h" "$INSTALL_DIR/include/ffi.h"
+
+# The pkg-config name upstream libffi installs, so a consumer's
+# `Requires.private: libffi` (libwayland's) resolves the archive.
+cat > "$INSTALL_DIR/lib/pkgconfig/libffi.pc" <<PCEOF
+prefix=$INSTALL_DIR
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: libffi
+Description: Library supporting Foreign Function Interfaces
+Version: $WASM_POSIX_DEP_VERSION
+Libs: -L\${libdir} -lffi
+Cflags: -I\${includedir}
+PCEOF
 
 echo "==> libffi installed at $INSTALL_DIR"
 echo "    lib/libffi.a ($(wc -c < "$INSTALL_DIR/lib/libffi.a") bytes)"

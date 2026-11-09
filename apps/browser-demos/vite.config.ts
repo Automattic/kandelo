@@ -1,3 +1,4 @@
+import { assertTerminalWorkerEntries } from "./vite/worker-entry-exports";
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
@@ -45,7 +46,7 @@ import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { createProxySessionTransport } from "../../host/src/networking/cors-proxy-session";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
-import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
+import { batchedResolverFiles, devLazyAssets } from "./vite/dev-lazy-assets";
 import { devPartialImage } from "./vite/dev-partial-image";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
@@ -487,51 +488,7 @@ function dropWorkerEntryExports(): Plugin {
       return { code: stripped, map: null };
     },
     generateBundle(_options, bundle) {
-      const strippedEntries = new Set<string>();
-      const emittedEntryByFacade = new Map<string, string>();
-      for (const output of Object.values(bundle)) {
-        if (
-          output.type !== "chunk" || !output.isEntry ||
-          output.facadeModuleId === null ||
-          !strippedEntryFacades.has(output.facadeModuleId)
-        ) continue;
-        const prior = emittedEntryByFacade.get(output.facadeModuleId);
-        if (prior !== undefined && prior !== output.fileName) {
-          this.error(
-            `stripped worker entry ${output.facadeModuleId} resolves to multiple emitted chunks: ${prior}, ${output.fileName}`,
-          );
-        }
-        emittedEntryByFacade.set(output.facadeModuleId, output.fileName);
-        strippedEntries.add(output.fileName);
-      }
-      for (const facade of strippedEntryFacades) {
-        if (!emittedEntryByFacade.has(facade)) {
-          this.error(
-            `stripped worker entry ${facade} has no emitted entry chunk`,
-          );
-        }
-      }
-      for (const output of Object.values(bundle)) {
-        if (output.type !== "chunk") continue;
-        for (const imported of output.dynamicImports) {
-          if (strippedEntries.has(imported)) {
-            this.error(
-              `worker chunk ${output.fileName} imports worker entry ${imported} whose exports are stripped`,
-            );
-          }
-        }
-        for (const imported of output.imports) {
-          if (!strippedEntries.has(imported)) continue;
-          if (output.importedBindings === undefined) {
-            this.error(
-              `worker chunk ${output.fileName} does not report imported bindings for stripped worker entry ${imported}`,
-            );
-          }
-          this.error(
-            `worker chunk ${output.fileName} imports worker entry ${imported} whose exports are stripped`,
-          );
-        }
-      }
+      assertTerminalWorkerEntries(strippedEntryFacades, bundle, message => this.error(message));
     },
   };
 }
@@ -764,6 +721,63 @@ function injectGitRevision(): Plugin {
         ? `<a class="sidebar-revision" href="${commitUrl}" target="_blank" rel="noopener">rev: ${shortRev}</a>`
         : `<span class="sidebar-revision">rev: ${shortRev}</span>`;
       return html.replace("</nav>", `  ${tag}\n  </nav>`);
+    },
+  };
+}
+
+/**
+ * Test-only: boot every page's machine with the GL native-divergence audit
+ * (host/src/webgl/native-audit.ts) and collect its records, without changing
+ * the specs. Set KANDELO_BROWSER_TEST_GL_AUDIT=record|fatal and
+ * KANDELO_BROWSER_TEST_GL_AUDIT_LOG=<file> for the dev server Playwright
+ * starts. The page script defines the hook BrowserKernel reads
+ * (`__KANDELO_TEST_GL_AUDIT__`); records are POSTed back to this server,
+ * which appends one JSON line per record with the page and arrival time.
+ * `apply: "serve"` keeps it out of every build; production pages never have
+ * the hook, so the audit cannot be enabled there by accident.
+ */
+function browserTestGlAudit(): Plugin {
+  const mode = process.env.KANDELO_BROWSER_TEST_GL_AUDIT;
+  const log = process.env.KANDELO_BROWSER_TEST_GL_AUDIT_LOG;
+  const enabled = mode === "record" || mode === "fatal";
+  if (mode && !enabled) throw new Error(`KANDELO_BROWSER_TEST_GL_AUDIT must be "record" or "fatal", not ${JSON.stringify(mode)}`);
+  if (enabled && !log) throw new Error("KANDELO_BROWSER_TEST_GL_AUDIT_LOG must name the audit record file");
+  const endpoint = "/__kandelo_test_gl_audit";
+  const script = `(() => {
+  const queue = [];
+  let timer = null;
+  const flush = () => {
+    timer = null;
+    if (!queue.length) return;
+    const body = queue.splice(0).join("\\n");
+    fetch(${JSON.stringify(endpoint)}, { method: "POST", body, headers: { "content-type": "text/plain" } }).catch(() => {});
+  };
+  globalThis.__KANDELO_TEST_GL_AUDIT__ = { mode: ${JSON.stringify(mode)}, report(record) {
+    queue.push(JSON.stringify({ page: location.pathname + location.search, time: Date.now(), record: JSON.parse(record) }));
+    if (queue.length >= 200) flush(); else timer ??= setTimeout(flush, 250);
+  } };
+  addEventListener("pagehide", flush);
+})();`;
+  return {
+    name: "browser-test-gl-audit",
+    apply: "serve",
+    transformIndexHtml() {
+      if (!enabled) return [];
+      return [{ tag: "script", children: script, injectTo: "head-prepend" }];
+    },
+    configureServer(server) {
+      if (!enabled) return;
+      server.middlewares.use(endpoint, (request, response) => {
+        if (request.method !== "POST") { response.statusCode = 405; response.end(); return; }
+        const chunks: Buffer[] = [];
+        request.on("data", (chunk: Buffer) => chunks.push(chunk));
+        request.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          fs.appendFileSync(log!, text.endsWith("\n") ? text : `${text}\n`);
+          response.statusCode = 204;
+          response.end();
+        });
+      });
     },
   };
 }
@@ -1013,12 +1027,13 @@ export default defineConfig(() => {
       vfsProductsPlugin(base),
       devPartialImage({ partialDir: path.resolve(repoRoot, "local-binaries/partial") }),
       react(),
+      browserTestGlAudit(),
       // Before the SourceOnly store, and like it `enforce: "pre"`: the
       // store's middleware answers the pinned path this route rewrites a
       // lazy-asset request to, so this one must run first.
       devLazyAssets({
-        servePath: sourceOnlyViteAssets === null
-          ? batchedFsServePath({
+        serve: sourceOnlyViteAssets === null
+          ? batchedResolverFiles({
             projectionPath: path.resolve(
               repoRoot,
               "local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json",
@@ -1040,7 +1055,10 @@ export default defineConfig(() => {
             resolveOne: tryResolveBinary,
             approve: (file) => binaryDevAccess.approve(file),
           })
-          : (relPath) => sourceOnlyViteAssets.servePath(relPath),
+          : (relPath) => {
+            const pinned = sourceOnlyViteAssets.servePath(relPath);
+            return pinned === null ? null : { kind: "path", path: pinned };
+          },
       }),
       ...(sourceOnlyViteAssets === null
         ? []

@@ -285,13 +285,13 @@ impl PreparationReceipt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const ORIGINAL: &[u8] = include_bytes!("../../../abi/program-fixtures/v55/raw-fork.wasm");
+    const ORIGINAL: &[u8] = include_bytes!("../../../abi/program-fixtures/v56/raw-fork.wasm");
 
     fn profile() -> PreparationProfile {
         PreparationProfile { preparer_sha256: [1; 32], optimizer_sha256: None, options_sha256: [2; 32],
             dependency_closure_sha256: [3; 32], program_contract_sha256: wasm_artifact::facts::read_custom_section(
                 ORIGINAL, wasm_artifact::ABI_CONTRACT_SECTION).unwrap().try_into().unwrap(),
-            program_abi: 55 }
+            program_abi: wasm_posix_shared::ABI_VERSION }
     }
 
     fn limits() -> PreparationLimits {
@@ -334,7 +334,7 @@ mod tests {
             (3, alloc::vec![1, 0]),
             (5, alloc::vec![1, if memory64 { 4 } else { 0 }, 1]),
             (7, exports),
-            (10, alloc::vec![1, 4, 0, 0x41, 55, 0x0b]),
+            (10, alloc::vec![1, 4, 0, 0x41, 56, 0x0b]),
         ] {
             module.push(section_id);
             length(&mut module, contents.len());

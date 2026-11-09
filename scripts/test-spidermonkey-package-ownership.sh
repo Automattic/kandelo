@@ -5,7 +5,7 @@ cd "$root"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/dependency" "$work/tools"
-cp abi/program-fixtures/v55/echo.wasm "$work/dependency/js.wasm"
+cp abi/program-fixtures/v56/echo.wasm "$work/dependency/js.wasm"
 printf '#!/usr/bin/env bash\nexit 99\n' > "$work/tools/cargo"
 chmod +x "$work/tools/cargo"
 export PATH="$work/tools:$PATH"
@@ -42,5 +42,5 @@ for refusal in missing-dependency missing-output unknown-package unsupported-arc
     fi
     test ! -e "$WASM_POSIX_DEP_OUT_DIR/node.wasm"
 done
-cmp abi/program-fixtures/v55/echo.wasm "$work/dependency/js.wasm"
+cmp abi/program-fixtures/v56/echo.wasm "$work/dependency/js.wasm"
 echo 'SpiderMonkey package-owned staging: PASS'

@@ -1,0 +1,32 @@
+id = "FIREFOX-SAMPLER-ARRAY-DISPATCH-LINK-CRASH"
+kind = "bug"
+status = "confirmed"
+runtimes = ["firefox"]
+summary = "Linking a switch that forwards sampler-array elements to another function crashes the browser"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["firefox"]
+self_judging = true
+crash_is_reproduced = true
+timeout_seconds = 60
+
+[[observed]]
+runtime = "firefox"
+version = "153.0"
+os = "macos"
+reproduced = true
+date = 2026-11-03
+source = "manual"
+released = false
+
+[[observed]]
+runtime = "firefox"
+version = "155.0"
+os = "macos"
+reproduced = true
+date = 2026-11-03
+source = "suite"
+released = false

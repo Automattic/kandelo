@@ -385,4 +385,3 @@ export const DemoSurfaceDockControls: React.FC<{
     </span>
   </div>
 );
-

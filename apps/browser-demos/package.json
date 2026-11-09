@@ -5,15 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run typecheck && vite build",
     "preview": "vite preview",
     "test:unit": "node --import tsx/esm --test \"**/*.test.ts\"",
     "test": "playwright test",
-    "test:fast": "playwright test --grep-invert @slow"
+    "test:fast": "playwright test --grep-invert @slow",
+    "typecheck": "node scripts/typecheck.mjs"
   },
   "devDependencies": {
     "@babel/parser": "^8.0.6",
     "@playwright/test": "^1.63.0",
+    "@types/node": "^26.4.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@typescript/native": "npm:typescript@^7.0.2",

@@ -290,6 +290,13 @@ for category in "${CATEGORIES[@]}"; do
     done
 done
 
+# WHY: an absent upstream checkout discovers nothing. A successful empty
+# browser session would conceal that provisioning failure as conformance.
+if [ "$TOTAL" -eq 0 ]; then
+    echo "Error: no libc-test tests were discovered or selected (categories: ${CATEGORIES[*]}); is tests/libc/libc-test checked out?" >&2
+    exit 1
+fi
+
 echo ""
 echo "===== Running ${#WASM_FILES[@]} tests in browser ====="
 echo ""

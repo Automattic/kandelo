@@ -8,6 +8,14 @@
  * leaves ownership unknown and keeps the transaction retryable.
  */
 
+export type ProcessGenerationLeaseDisposition = "quiescent" | "forced" | "unobserved";
+
+export interface ProcessGenerationDetachObservation {
+  readonly leaseDisposition: ProcessGenerationLeaseDisposition;
+  readonly postCommitFailed: boolean;
+  readonly detachDisposition: "removed-or-absent" | "superseded";
+}
+
 export interface ExactProcessGenerationDetach<T extends object> {
   readonly pid: number;
   readonly generation: T;
@@ -34,7 +42,9 @@ export interface ExactProcessGenerationDetach<T extends object> {
    * marker lets the ledger distinguish a pre-commit failure (retry required)
    * from an exception after ownership was already consumed (never retry).
    */
-  readonly retire: (commit: () => void) => void | Promise<void>;
+  readonly retire: (
+    commit: (disposition?: ProcessGenerationLeaseDisposition) => void,
+  ) => void | Promise<void>;
 }
 
 export type ExactProcessGenerationDetachResult =
@@ -63,6 +73,7 @@ interface PendingDetach<T extends object> {
   detachDisposition?: "removed-or-absent" | "superseded";
   settled: boolean;
   retired: boolean;
+  leaseDisposition: ProcessGenerationLeaseDisposition;
   postCommitFailed: boolean;
   postCommitError?: unknown;
   active?: Promise<ExactProcessGenerationDetachResult>;
@@ -86,6 +97,9 @@ export class ExactProcessGenerationDetachLedger<T extends object> {
   constructor(
     private readonly current: (pid: number) => T | undefined,
     private readonly removeCurrent: (pid: number, generation: T) => void,
+    private readonly onReleased?: (
+      generation: T, observation: ProcessGenerationDetachObservation,
+    ) => void,
   ) {}
 
   get pendingCount(): number {
@@ -126,6 +140,7 @@ export class ExactProcessGenerationDetachLedger<T extends object> {
         detached: false,
         settled: false,
         retired: false,
+        leaseDisposition: "unobserved",
         postCommitFailed: false,
       };
       this.pending.set(transaction.generation, pending);
@@ -188,13 +203,14 @@ export class ExactProcessGenerationDetachLedger<T extends object> {
 
       if (!pending.retired) {
         try {
-          await transaction.retire(() => {
+          await transaction.retire((disposition = "unobserved") => {
             if (pending.retired) {
               throw new Error(
                 "process generation retirement committed more than once",
               );
             }
             pending.retired = true;
+            pending.leaseDisposition = disposition;
           });
           if (!pending.retired) {
             throw new Error(
@@ -242,6 +258,15 @@ export class ExactProcessGenerationDetachLedger<T extends object> {
       // later path cannot consume the single-owner memory lease twice.
       this.completed.set(transaction.generation, result);
       this.pending.delete(transaction.generation);
+      // The durable completion tombstone precedes observation, so reentry or
+      // observer failure cannot replay the lease release or this edge.
+      try {
+        this.onReleased?.(transaction.generation, {
+          leaseDisposition: pending.leaseDisposition,
+          postCommitFailed: pending.postCommitFailed,
+          detachDisposition: result.detachDisposition,
+        });
+      } catch { /* observation cannot roll back committed ownership */ }
       return result;
     } catch (error) {
       // Keep the transaction and its completed phase markers. A later retry

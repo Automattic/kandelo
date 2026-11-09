@@ -43,4 +43,5 @@ const fixture: ProgramPolicyFixture = {
   },
 };
 
-(window as Window & { __programPolicy: ProgramPolicyFixture }).__programPolicy = fixture;
+// This property exists only on the fixture page, not on every app Window.
+Object.assign(window, { __programPolicy: fixture });

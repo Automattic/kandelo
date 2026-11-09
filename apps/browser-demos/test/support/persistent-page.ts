@@ -4,15 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export const test = base.extend({
-  context: async ({ playwright, browserName, baseURL }, use, testInfo) => {
+  context: async ({ playwright, browserName, launchOptions, channel, headless,
+    contextOptions, baseURL, viewport, deviceScaleFactor, permissions,
+    serviceWorkers, extraHTTPHeaders, proxy }, use) => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-computer-library-"));
     try {
       const context = await playwright[browserName].launchPersistentContext(directory, {
-        ...testInfo.project.use.launchOptions,
-        channel: testInfo.project.use.channel,
-        proxy: testInfo.project.use.proxy,
-        extraHTTPHeaders: testInfo.project.use.extraHTTPHeaders,
-        baseURL,
+        // Why: real machine boot opens its storage-backed computer library;
+        // WebKit's ephemeral context rejects native OPFS getDirectory(). Keep
+        // the resolved test.use emulation/options when using that real profile.
+        ...launchOptions, channel, headless,
+        ...contextOptions, baseURL, viewport, deviceScaleFactor, permissions,
+        serviceWorkers, extraHTTPHeaders, proxy,
       });
       try { await use(context); }
       finally { await context.close(); }

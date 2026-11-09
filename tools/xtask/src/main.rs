@@ -88,6 +88,7 @@ mod dump_abi;
 mod host_tool_probe;
 mod local_abi_identity;
 mod local_build;
+mod local_build_disk_guard;
 mod local_build_executor;
 mod local_build_timing;
 mod package_archive_limits;

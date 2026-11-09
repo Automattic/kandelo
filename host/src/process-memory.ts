@@ -1,3 +1,4 @@
+import { recordComparisonMemoryShape } from "./process-snapshot-comparator";
 import {
   CH_TOTAL_SIZE,
   DEFAULT_MAX_PAGES,
@@ -303,19 +304,20 @@ export function createProcessMemory(
   ptrWidth: 4 | 8,
   layout: ProcessMemoryLayout,
 ): WebAssembly.Memory {
-  if (ptrWidth === 8) {
-    return new WebAssembly.Memory({
-      initial: BigInt(layout.initialPages) as any,
-      maximum: BigInt(layout.maximumPages) as any,
-      shared: true,
-      address: "i64",
-    } as any);
-  }
-  return new WebAssembly.Memory({
-    initial: layout.initialPages,
-    maximum: layout.maximumPages,
-    shared: true,
-  });
+  const memory = ptrWidth === 8
+    ? new WebAssembly.Memory({
+        initial: BigInt(layout.initialPages),
+        maximum: BigInt(layout.maximumPages),
+        shared: true,
+        address: "i64",
+      } as unknown as WebAssembly.MemoryDescriptor)
+    : new WebAssembly.Memory({
+        initial: layout.initialPages,
+        maximum: layout.maximumPages,
+        shared: true,
+      });
+  recordComparisonMemoryShape(memory, ptrWidth, true, layout.maximumPages);
+  return memory;
 }
 
 export interface ProcessMemoryAllocationRequest {
@@ -393,10 +395,92 @@ export interface ProcessMemoryAllocatorOptions {
   forkCopy?: ForkAddressSpaceCopy;
 }
 
+const executionOwnerBrand: unique symbol = Symbol("process memory execution owner");
+
+/** Admission metadata only. This is not an execution hold or a clean ticket. */
+export interface ProcessMemoryExecutionOwnerSnapshot {
+  readonly admissionEpoch: number;
+  readonly pendingReservations: number;
+  readonly exposures: number;
+  readonly unknown: boolean;
+  readonly forced: boolean;
+  readonly retired: boolean;
+}
+
+/** One opaque identity per allocator record, shared by all of its aliases. */
+export interface ProcessMemoryExecutionOwner {
+  readonly [executionOwnerBrand]: true;
+  snapshot(): Readonly<ProcessMemoryExecutionOwnerSnapshot>;
+}
+
+export interface ProcessMemoryWriterReservation {
+  readonly id: number;
+  readonly owner: ProcessMemoryExecutionOwner;
+  /** Consume this exact reservation before its Memory can escape. Keep the lease live. */
+  exposeMemory(): WebAssembly.Memory;
+  /** Only an unexposed reservation may be cancelled. */
+  cancelBeforeExposure(): void;
+}
+
+// Deliberately contains no Memory, lease, allocator record, or worker reference.
+// A retained public owner handle can retain only this independent metadata.
+type ExecutionOwnerState = ProcessMemoryExecutionOwnerSnapshot & {
+  admissionEpoch: number;
+  pendingReservations: number;
+  exposures: number;
+  unknown: boolean;
+  forced: boolean;
+  retired: boolean;
+  nextReservationId: number;
+  handle: ProcessMemoryExecutionOwner;
+};
+
+function advanceExecutionAdmission(state: ExecutionOwnerState): void {
+  if (state.admissionEpoch === Number.MAX_SAFE_INTEGER) {
+    // Saturation never wraps into a reusable old generation. No caller may
+    // interpret these metadata as eligibility, including before saturation.
+    state.unknown = true;
+  } else {
+    state.admissionEpoch += 1;
+  }
+}
+
+function createExecutionOwner(unknownCreator: boolean): ExecutionOwnerState {
+  const state = {
+    admissionEpoch: 0,
+    pendingReservations: 0,
+    exposures: 0,
+    unknown: unknownCreator,
+    forced: false,
+    retired: false,
+    nextReservationId: 1,
+  } as ExecutionOwnerState;
+  state.handle = Object.freeze({
+    [executionOwnerBrand]: true as const,
+    snapshot: () => Object.freeze({
+      admissionEpoch: state.admissionEpoch,
+      pendingReservations: state.pendingReservations,
+      exposures: state.exposures,
+      unknown: state.unknown,
+      forced: state.forced,
+      retired: state.retired,
+    }),
+  });
+  return state;
+}
+
+type WriterReservationState = {
+  readonly id: number;
+  phase: "reserved" | "exposed" | "cancelled" | "consumed-lease";
+};
+
 export interface ProcessMemoryLease {
   readonly memory: WebAssembly.Memory;
   readonly ptrWidth: 4 | 8;
   readonly maximumPages: number;
+  readonly executionOwner: ProcessMemoryExecutionOwner;
+  /** Reserve admission before handing this lease's Memory to another writer. */
+  reserveWriter(): ProcessMemoryWriterReservation;
   /**
    * Retain one additional explicit host ownership token for this exact
    * backing. This does not create a new POSIX address space and must never be
@@ -580,6 +664,7 @@ export class ProcessMemoryRetirementBacklogError extends Error {
 
 type ProcessMemoryRecord = {
   allocationId: number;
+  executionOwner: ExecutionOwnerState;
   memory: WebAssembly.Memory | undefined;
   ptrWidth: 4 | 8;
   maximumPages: number;
@@ -601,14 +686,18 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
   private consumeOwnedRecord:
     | ((retirementMode: "quiescent" | "forced") => void)
     | undefined;
+  private writerReservation: WriterReservationState | undefined;
+  readonly executionOwner: ProcessMemoryExecutionOwner;
 
   constructor(
     memory: WebAssembly.Memory,
     readonly ptrWidth: 4 | 8,
     readonly maximumPages: number,
+    private readonly executionState: ExecutionOwnerState,
     retainOwnedRecord: () => ProcessMemoryLease,
     consumeOwnedRecord: (retirementMode: "quiescent" | "forced") => void,
   ) {
+    this.executionOwner = executionState.handle;
     this.ownedMemory = memory;
     this.retainOwnedRecord = retainOwnedRecord;
     this.consumeOwnedRecord = consumeOwnedRecord;
@@ -618,7 +707,97 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
     if (!this.ownedMemory) {
       throw new Error("Process memory lease was already consumed");
     }
+    // Existing callers retain their behavior, but a bare exposure cannot
+    // supply writer coverage for a later optimization. Mark before escape.
+    if (!this.executionState.unknown) {
+      this.executionState.unknown = true;
+      advanceExecutionAdmission(this.executionState);
+    }
     return this.ownedMemory;
+  }
+
+  reserveWriter(): ProcessMemoryWriterReservation {
+    this.requireWriterAdmission();
+    if (this.writerReservation) {
+      throw new Error("Process memory lease already has a writer reservation");
+    }
+    const state = this.executionState;
+    if (state.nextReservationId >= Number.MAX_SAFE_INTEGER) {
+      state.unknown = true;
+      advanceExecutionAdmission(state);
+      throw new Error("Process memory writer reservation IDs exhausted");
+    }
+    const reservation: WriterReservationState = {
+      id: state.nextReservationId,
+      phase: "reserved",
+    };
+    const result = OwnedProcessMemoryLease.createWriterReservation(
+      reservation,
+      this.executionOwner,
+      new WeakRef(this),
+    );
+    // Reserve only after all result-object allocations, before any exposure.
+    state.nextReservationId += 1;
+    advanceExecutionAdmission(state);
+    state.pendingReservations += 1;
+    this.writerReservation = reservation;
+    return result;
+  }
+
+  private static createWriterReservation(
+    reservation: WriterReservationState,
+    owner: ProcessMemoryExecutionOwner,
+    lease: WeakRef<OwnedProcessMemoryLease>,
+  ): ProcessMemoryWriterReservation {
+    // This static activation never captures a live lease, allocator record,
+    // or Memory. A retained token is not another Memory ownership lease,
+    // even before it is consumed, cancelled, or made stale by lease release.
+    const exactLease = (): OwnedProcessMemoryLease => {
+      const current = lease.deref();
+      if (!current) throw new Error("Process memory lease was already consumed");
+      return current;
+    };
+    return Object.freeze({
+      id: reservation.id,
+      owner,
+      exposeMemory: () => exactLease().exposeReservedWriter(reservation),
+      cancelBeforeExposure: () => exactLease().cancelReservedWriter(reservation),
+    });
+  }
+
+  private requireWriterAdmission(): void {
+    if (!this.ownedMemory || this.executionState.retired) {
+      throw new Error("Process memory lease was already consumed");
+    }
+    if (this.executionState.forced) {
+      throw new Error("Cannot admit a writer after forced termination");
+    }
+  }
+
+  private requireReservation(reservation: WriterReservationState): void {
+    this.requireWriterAdmission();
+    if (reservation.phase !== "reserved" || this.writerReservation !== reservation) {
+      throw new Error(`Process memory writer reservation already ${reservation.phase}`);
+    }
+  }
+
+  private exposeReservedWriter(reservation: WriterReservationState): WebAssembly.Memory {
+    this.requireReservation(reservation);
+    const state = this.executionState;
+    advanceExecutionAdmission(state);
+    reservation.phase = "exposed";
+    state.pendingReservations -= 1;
+    state.exposures += 1;
+    this.writerReservation = undefined;
+    return this.ownedMemory!;
+  }
+
+  private cancelReservedWriter(reservation: WriterReservationState): void {
+    this.requireReservation(reservation);
+    advanceExecutionAdmission(this.executionState);
+    reservation.phase = "cancelled";
+    this.executionState.pendingReservations -= 1;
+    this.writerReservation = undefined;
   }
 
   retainAlias(): ProcessMemoryLease {
@@ -642,6 +821,11 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
       throw new Error("Process memory lease was already consumed");
     }
     consumeOwnedRecord(retirementMode);
+    if (this.writerReservation) {
+      this.writerReservation.phase = "consumed-lease";
+      this.writerReservation = undefined;
+      this.executionState.pendingReservations -= 1;
+    }
     // WHY: a consumed lease may itself outlive the process record. Sever both
     // strong paths so merely retaining the lease cannot retain the Memory.
     this.ownedMemory = undefined;
@@ -920,7 +1104,7 @@ export class ProcessMemoryAllocator {
     request: ProcessMemoryAllocationRequest,
   ): ProcessMemoryLease {
     this.admitAllocation(request);
-    return this.registerFreshMemory(request, this.createMemory(request));
+    return this.registerFreshMemory(request, this.createMemory(request), "allocator");
   }
 
   private acquireAsynchronously(
@@ -976,7 +1160,7 @@ export class ProcessMemoryAllocator {
           reservedBytes, this.liveBytes, this.options.maxTotalBytes,
         );
       }
-      const lease = this.registerFreshMemory(request, memory);
+      const lease = this.registerFreshMemory(request, memory, "callback");
       try {
         if (snapshot !== undefined) {
           this.copyForkAddressSpace(memory.buffer, snapshot);
@@ -999,10 +1183,15 @@ export class ProcessMemoryAllocator {
   private registerFreshMemory(
     request: ProcessMemoryAllocationRequest,
     memory: WebAssembly.Memory,
+    creator: "allocator" | "callback",
   ): ProcessMemoryLease {
     this.allocatedMemories.add(memory);
     const record: ProcessMemoryRecord = {
       allocationId: this.nextAllocationId++,
+      // Callback-created Memory may already have escaped in its creator.
+      // Even the current browser factory stays unknown until a source-bound
+      // construction receipt is part of its allocator contract.
+      executionOwner: createExecutionOwner(creator === "callback"),
       memory,
       ptrWidth: request.ptrWidth,
       maximumPages: request.maximumPages,
@@ -1033,6 +1222,7 @@ export class ProcessMemoryAllocator {
       memory,
       record.ptrWidth,
       record.maximumPages,
+      record.executionOwner,
       () => this.retainRecord(record),
       (retirementMode) => this.releaseRecord(record, retirementMode),
     );
@@ -1054,6 +1244,7 @@ export class ProcessMemoryAllocator {
       throw new Error("Process memory alias count exceeds JavaScript precision");
     }
     record.activeAliases += 1;
+    advanceExecutionAdmission(record.executionOwner);
     return this.createLease(record);
   }
 
@@ -1144,7 +1335,10 @@ export class ProcessMemoryAllocator {
 
     if (retirementMode === "forced") {
       record.forcedTerminationObserved = true;
+      record.executionOwner.forced = true;
+      record.executionOwner.unknown = true;
     }
+    advanceExecutionAdmission(record.executionOwner);
     if (record.activeAliases > 1) {
       record.activeAliases -= 1;
       return;
@@ -1172,6 +1366,7 @@ export class ProcessMemoryAllocator {
     this.liveMemories = Math.max(0, this.liveMemories - 1);
     this.recordsByMemory.delete(memory);
     record.state = "retiring";
+    record.executionOwner.retired = true;
     record.retirementMode = record.forcedTerminationObserved
       ? "forced"
       : "quiescent";
@@ -1287,19 +1482,20 @@ export class ProcessMemoryAllocator {
     request: ProcessMemoryAllocationRequest,
   ): WebAssembly.Memory {
     try {
-      if (request.ptrWidth === 8) {
-        return new WebAssembly.Memory({
-          initial: BigInt(request.initialPages) as any,
-          maximum: BigInt(request.maximumPages) as any,
-          shared: true,
-          address: "i64",
-        } as any);
-      }
-      return new WebAssembly.Memory({
-        initial: request.initialPages,
-        maximum: request.maximumPages,
-        shared: true,
-      });
+      const memory = request.ptrWidth === 8
+        ? new WebAssembly.Memory({
+            initial: BigInt(request.initialPages),
+            maximum: BigInt(request.maximumPages),
+            shared: true,
+            address: "i64",
+          } as unknown as WebAssembly.MemoryDescriptor)
+        : new WebAssembly.Memory({
+            initial: request.initialPages,
+            maximum: request.maximumPages,
+            shared: true,
+          });
+      recordComparisonMemoryShape(memory, request.ptrWidth, true, request.maximumPages);
+      return memory;
     } catch (error) {
       this.rethrowNativeConstructionFailure(error, request.initialPages * WASM_PAGE_SIZE);
     }

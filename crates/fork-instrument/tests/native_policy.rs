@@ -143,3 +143,42 @@ fn entry_selection_and_sink_work_fail_at_explicit_limits() {
     limits.sinks.work = 0;
     assert!(native::analyze(&input, &Options::default(), limits).is_err());
 }
+
+#[test]
+fn sink_refinement_preserves_tail_paths_after_pruning_ordinary_calls() {
+    for tail in [
+        "return_call $fork",
+        "i32.const 0 return_call_indirect (type $result)",
+        "ref.func $fork return_call_ref $result",
+    ] {
+        let input = wat::parse_str(format!(
+            r#"(module
+            (type $result (func (result i32)))
+            (import "kernel" "kernel_fork" (func $seed (param i32) (result i32)))
+            (memory 2 16)
+            (global (export "__stack_pointer") (mut i32) (i32.const 65536))
+            (table 1 funcref) (elem (i32.const 0) $fork)
+            (func $dead (result i32)
+                i32.const 0 if i32.const 0 call $seed drop end i32.const 0)
+            (func $fork (type $result) i32.const 0 call $seed)
+            (func $root (export "root") (result i32) call $dead drop {tail}))"#
+        ))
+        .unwrap();
+        let output = fork_instrument::instrument(&input, &Options::default()).unwrap();
+        wasmparser::Validator::new_with_features(features())
+            .validate_all(&output)
+            .unwrap();
+        let analysis = native::analyze(&input, &Options::default(), Default::default()).unwrap();
+        assert_eq!(analysis.decision.source, PlanSource::Builtin);
+        assert!(!analysis.reaching.control_reachable.contains(&1));
+        assert!(analysis.reaching.control_reachable.contains(&3));
+        assert!(!analysis.reaching.activations.contains(&3));
+        assert!(
+            analysis
+                .reaching
+                .tail_sites
+                .iter()
+                .any(|point| point.function == 3)
+        );
+    }
+}

@@ -1,0 +1,119 @@
+--- a/gtk/gtkapplicationimpl.c
++++ b/gtk/gtkapplicationimpl.c
+@@ -40,27 +40,99 @@
+ {
+ }
+
+-static guint do_nothing (void) { return 0; }
+-static gboolean return_false (void) { return FALSE; }
++/* Each default must have its virtual method's full C signature. Casting a
++ * zero-argument integer function is undefined behaviour and traps on Wasm. */
++
++static void
++gtk_application_impl_real_startup (GtkApplicationImpl *impl, gboolean register_session)
++{
++}
++
++static void
++gtk_application_impl_real_shutdown (GtkApplicationImpl *impl)
++{
++}
++
++static void
++gtk_application_impl_real_before_emit (GtkApplicationImpl *impl, GVariant *platform_data)
++{
++}
++
++static void
++gtk_application_impl_real_window_added (GtkApplicationImpl *impl, GtkWindow *window)
++{
++}
++
++static void
++gtk_application_impl_real_window_removed (GtkApplicationImpl *impl, GtkWindow *window)
++{
++}
++
++static void
++gtk_application_impl_real_active_window_changed (GtkApplicationImpl *impl, GtkWindow *window)
++{
++}
++
++static void
++gtk_application_impl_real_handle_window_realize (GtkApplicationImpl *impl, GtkWindow *window)
++{
++}
++
++static void
++gtk_application_impl_real_handle_window_map (GtkApplicationImpl *impl, GtkWindow *window)
++{
++}
++
++static void
++gtk_application_impl_real_set_app_menu (GtkApplicationImpl *impl, GMenuModel *app_menu)
++{
++}
++
++static void
++gtk_application_impl_real_set_menubar (GtkApplicationImpl *impl, GMenuModel *menubar)
++{
++}
++
++static guint
++gtk_application_impl_real_inhibit (GtkApplicationImpl *impl, GtkWindow *window, GtkApplicationInhibitFlags flags, const gchar *reason)
++{
++  return 0;
++}
++
++static void
++gtk_application_impl_real_uninhibit (GtkApplicationImpl *impl, guint cookie)
++{
++}
++
++static gboolean
++gtk_application_impl_real_is_inhibited (GtkApplicationImpl *impl, GtkApplicationInhibitFlags flags)
++{
++  return FALSE;
++}
++
++static gboolean
++gtk_application_impl_real_prefers_app_menu (GtkApplicationImpl *impl)
++{
++  return FALSE;
++}
+
+ static void
+ gtk_application_impl_class_init (GtkApplicationImplClass *class)
+ {
+-  /* NB: can only 'do_nothing' for functions with integer or void return */
+-  class->startup = (gpointer) do_nothing;
+-  class->shutdown = (gpointer) do_nothing;
+-  class->before_emit = (gpointer) do_nothing;
+-  class->window_added = (gpointer) do_nothing;
+-  class->window_removed = (gpointer) do_nothing;
+-  class->active_window_changed = (gpointer) do_nothing;
+-  class->handle_window_realize = (gpointer) do_nothing;
+-  class->handle_window_map = (gpointer) do_nothing;
+-  class->set_app_menu = (gpointer) do_nothing;
+-  class->set_menubar = (gpointer) do_nothing;
+-  class->inhibit = (gpointer) do_nothing;
+-  class->uninhibit = (gpointer) do_nothing;
+-  class->is_inhibited = (gpointer) do_nothing;
+-  class->prefers_app_menu = (gpointer) return_false;
++  class->startup = gtk_application_impl_real_startup;
++  class->shutdown = gtk_application_impl_real_shutdown;
++  class->before_emit = gtk_application_impl_real_before_emit;
++  class->window_added = gtk_application_impl_real_window_added;
++  class->window_removed = gtk_application_impl_real_window_removed;
++  class->active_window_changed = gtk_application_impl_real_active_window_changed;
++  class->handle_window_realize = gtk_application_impl_real_handle_window_realize;
++  class->handle_window_map = gtk_application_impl_real_handle_window_map;
++  class->set_app_menu = gtk_application_impl_real_set_app_menu;
++  class->set_menubar = gtk_application_impl_real_set_menubar;
++  class->inhibit = gtk_application_impl_real_inhibit;
++  class->uninhibit = gtk_application_impl_real_uninhibit;
++  class->is_inhibited = gtk_application_impl_real_is_inhibited;
++  class->prefers_app_menu = gtk_application_impl_real_prefers_app_menu;
+ }
+
+ void

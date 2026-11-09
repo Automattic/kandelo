@@ -1,0 +1,738 @@
+import { createWasmPosixKernelTestHarness } from "../../../../host/src/kernel";
+import { createKernelScratchTestInstance } from "../../../../host/test/support/kernel-scratch-instance";
+import { WPK_IMAGE_SOURCE_TARGET } from "../../../../host/src/webgl/image-storage";
+import { NativeGlFault } from "../../../../host/src/webgl/native-recovery";
+import * as O from "../../../../host/src/webgl/ops";
+// Real native import/query/submit paths; synthetic kernel scratch supplies
+// authority/identity plumbing. Public C and Rust marshalling are separate gates.
+self.onmessage = ({ data }) => {
+  const completedForwardCase = {};
+  try {
+    const canvas = data.canvas as OffscreenCanvas;
+    const gl = canvas.getContext("webgl2", { antialias: false, premultipliedAlpha: false, depth: true, stencil: true, preserveDrawingBuffer: true });
+    if (!gl)
+      throw new Error("WebGL2 unavailable");
+    const made: object[] = [], deleted: object[] = [], live: Array<() => boolean> = [];
+    for (const [createName, deleteName, isName] of [["createTexture", "deleteTexture", "isTexture"], ["createFramebuffer", "deleteFramebuffer", "isFramebuffer"],
+      ["createRenderbuffer", "deleteRenderbuffer", "isRenderbuffer"], ["createBuffer", "deleteBuffer", "isBuffer"], ["createProgram", "deleteProgram", "isProgram"], ["createShader", "deleteShader", "isShader"]]) {
+      const api = gl as any, create = api[createName].bind(gl), destroy = api[deleteName].bind(gl), isLive = api[isName].bind(gl);
+      api[createName] = (...args: unknown[]) => {
+        const value = create(...args);
+        if (value) {
+          made.push(value);
+          live.push(() => isLive(value));
+        }
+        return value;
+      };
+      api[deleteName] = (value: object | null) => {
+        if (value)
+          deleted.push(value);
+        destroy(value);
+      };
+    }
+    const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+    // The kernel forwards a NativeGlFault to onHostFault (its fatal shutdown
+    // in the kernel worker) before the fault is thrown.
+    const hostFaults: Error[] = [], diagnostics: string[] = [];
+    const kernel = createWasmPosixKernelTestHarness({ io: {} as any, callbacks: { getProcessMemory: () => memory, onHostDiagnostic: value => diagnostics.push(JSON.stringify(value)), onHostFault: fault => { hostFaults.push(fault); } }, memory, pointerWidth: 4,
+      instance: createKernelScratchTestInstance(4, memory, () => ({}), () => 4096) });
+    const api = (kernel.testAuthority.buildImportObject(memory) as {
+      env: Record<string, (...args: any[]) => number>;
+    }).env;
+    const require = (test: unknown, label: string) => {
+      if (!test)
+        throw new Error(label);
+    };
+    // Decision D-29: a native restoration or deletion of host-owned state
+    // that the live renderer refuses is a fatal host fault, never a repair
+    // retried before later GL work. An unpredicted forward error resets its
+    // context (D-49), so unrelated setup cannot inject one before the named
+    // refusal. Each selected fatal scenario ends the run: nothing after a
+    // fatal fault is defined. Forward-error checks need independent contexts.
+    const scenario: string = data.fault ?? "healthy";
+    const refusal = (run: () => unknown) => {
+      const first = hostFaults.length;
+      let thrown: unknown = undefined, returned: unknown = undefined;
+      try { returned = run(); } catch (error) { thrown = error; }
+      return { fault: thrown instanceof NativeGlFault ? thrown.name : thrown === undefined ? `returned ${String(returned)}` : String(thrown),
+        message: thrown instanceof Error ? thrown.message : null,
+        reported: hostFaults.length - first === 1 && hostFaults[first] === thrown };
+    };
+    const finish = (outcome: ReturnType<typeof refusal>, detail: Record<string, unknown> = {}) =>
+      postMessage({ type: "image_storage_fault", scenario, ...outcome, ...detail });
+    for (const session of [11, 12])
+      // Distinct context sessions retain this fixture's one native file.
+      api.host_gl_bind(7, 4096, 65536, session, 1n);
+    kernel.gl.attachCanvas(7, canvas);
+    require(api.host_gl_create_context(7, 21, 0, 0, 11) === 0, "context");
+    new Uint32Array(memory.buffer, 64, 4).set([2, 21, 0, 0]);
+    require(api.host_gl_create_context(7, 22, 64, 16, 12) === 0, "peer");
+    const current = (session: number) => require(api.host_gl_make_current(7, session + 10, 0, 0, session) === 0, "current");
+    const send = (op: number, words: number[], tail = new Uint8Array(), session = 11) => {
+      const bytes = new Uint8Array(4 + 4 * words.length + tail.length), v = new DataView(bytes.buffer);
+      v.setUint16(0, op, true);
+      v.setUint16(2, 4 * words.length + tail.length, true);
+      words.forEach((x, i) => v.setUint32(4 + 4 * i, x, true));
+      bytes.set(tail, 4 + 4 * words.length);
+      new Uint8Array(memory.buffer, 4096, bytes.length).set(bytes);
+      require(api.host_gl_submit(7, 0, bytes.length, session) === 0, `submit ${op}`);
+    };
+    let querySequence = 0, lastQueryRc = 0;
+    const query = (op: number, words: number[], length: number, session = 11) => {
+      new Uint32Array(memory.buffer, 64, words.length).set(words);
+      querySequence++;
+      const rc = lastQueryRc = api.host_gl_query(7, op, 64, words.length * 4, 512, length, session);
+      require(rc === length, `query ${querySequence} op=${op}: rc=${rc}, expected=${length}, words=${words.join(",")}, diagnostics=${diagnostics.join(";")}`);
+      return new Uint8Array(memory.buffer, 512, length).slice();
+    };
+    const checked = (op: number, words: number[], expected = 0, session = 11) => {
+      const reply = new DataView(query(op, words, 12, session).buffer);
+      require(reply.getUint32(0, true) === expected && reply.getUint32(8, true) === 0x47514c33, `checked ${op}: status=${reply.getUint32(0,true)}, expected=${expected}, words=${words.join(",")}, diagnostics=${diagnostics.join(";")}`);
+      return reply.getUint32(4, true);
+    };
+    const error = (session = 11) => new DataView(query(O.QOP_GET_ERROR, [], 4, session).buffer).getUint32(0, true);
+    const bind = (name: number, session = 11) => checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, name], 0, session);
+    const fbo = (id: number, name: number, session = 11) => { send(O.OP_BIND_FRAMEBUFFER, [0x8d40, id], new Uint8Array(), session); send(O.OP_FRAMEBUFFER_TEXTURE_2D, [0x8d40, 0x8ce0, 0x0de1, name, 0], new Uint8Array(), session); };
+    const pixels = (id: number, session = 11) => { send(O.OP_BIND_FRAMEBUFFER, [0x8d40, id], new Uint8Array(), session); return [...query(O.QOP_READ_PIXELS, [0, 0, 1, 1, 0x1908, 0x1401], 4, session)]; };
+    const image = (name: number, source: number) => checked(O.QOP_IMAGE_TARGET, [1, name, source]);
+    const param = (pname: number) => checked(O.QOP_GET_TEX_PARAMETER, [0x0de1, pname]);
+    const rgba = (color: number[]) => new Uint8Array(color);
+    const allocate = (name: number, color: number[]) => { bind(name); send(O.OP_TEX_IMAGE_2D, [0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 4], rgba(color)); };
+    current(11);
+    allocate(0x60000000, [0, 0, 255, 255]);
+    fbo(70, 0x60000000);
+    allocate(17, [0, 0, 0, 255]);
+    send(O.OP_TEX_PARAMETERI, [0x0de1, 0x2801, 0x2600]);
+    send(O.OP_TEX_PARAMETERI, [0x0de1, 0x2800, 0x2600]);
+    fbo(71, 17);
+    allocate(18, [0, 0, 0, 255]);
+    send(O.OP_TEX_PARAMETERI, [0x0de1, 0x2801, 0x2601]);
+    fbo(72, 18);
+    require(kernel.gl.createGpuBo(41, gl, 2, 2) !== null, "source BO");
+    // Private source creation cannot overwrite legal public GLuint 0x60000000.
+    const source = api.host_gl_bind_foreign_texture(7, 21, 41, WPK_IMAGE_SOURCE_TARGET);
+    require(source > 0 && source !== 0x60000000, "private source handle");
+    const namespace = pixels(70);
+    bind(17);
+    require(image(17, source) === source, "texture import");
+    const firstParam = param(0x2801);
+    bind(18);
+    require(image(18, source) === source, "sibling import");
+    const secondParam = param(0x2801);
+    send(O.OP_TEX_SUB_IMAGE_2D, [0x0de1, 0, 0, 0, 2, 2, 0x1908, 0x1401, 16], rgba([255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255]));
+    const red = [pixels(71), pixels(72)];
+    checked(O.QOP_BIND_IMAGE_OBJECT, [2, 0x8d41, 19]);
+    checked(O.QOP_IMAGE_TARGET, [2, 19, source]);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 73]);
+    send(O.OP_FRAMEBUFFER_RENDERBUFFER, [0x8d40, 0x8ce0, 0x8d41, 19]);
+    const rboName = checked(O.QOP_GET_RENDERBUFFER_PARAMETER, [0x8d41, 0x8d42]);
+    send(O.OP_CLEAR_COLOR, [0, 0x3f800000, 0, 0x3f800000]);
+    send(O.OP_CLEAR, [0x4000]);
+    const green = [pixels(71), pixels(72)];
+    // Sampling uses each object's independent native view and current pixels.
+    allocate(50, [0, 0, 0, 255]);
+    fbo(74, 50);
+    for (const [name, type, text] of [[101, 0x8b31, "void main(){gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=1.;}"],
+      [102, 0x8b30, "precision mediump float;uniform sampler2D image;void main(){gl_FragColor=texture2D(image,vec2(.25));}"]] as [
+      number,
+      number,
+      string
+    ][]) {
+      const bytes = new TextEncoder().encode(text);
+      send(O.OP_CREATE_SHADER, [type, name]);
+      send(O.OP_SHADER_SOURCE, [name, bytes.length], bytes);
+      send(O.OP_COMPILE_SHADER, [name]);
+    }
+    send(O.OP_CREATE_PROGRAM, [103]);
+    send(O.OP_ATTACH_SHADER, [103, 101]);
+    send(O.OP_ATTACH_SHADER, [103, 102]);
+    send(O.OP_LINK_PROGRAM, [103]);
+    send(O.OP_USE_PROGRAM, [103]);
+    const name = new TextEncoder().encode("image"), input = new Uint8Array(8 + name.length);
+    new DataView(input.buffer).setUint32(0, 103, true);
+    new DataView(input.buffer).setUint32(4, name.length, true);
+    input.set(name, 8);
+    new Uint8Array(memory.buffer, 64, input.length).set(input);
+    require(api.host_gl_query(7, O.QOP_GET_UNIFORM_LOC, 64, input.length, 512, 4, 11) === 4, "sampler lookup");
+    const location = new DataView(memory.buffer).getInt32(512, true);
+    // D-41 assigns dense per-program locations beginning at zero. Only -1
+    // means inactive; retaining zero is necessary to exercise image cleanup.
+    require(location >= 0, "sampler location");
+    send(O.OP_UNIFORM1I, [location, 0]);
+    send(O.OP_VIEWPORT, [0, 0, 1, 1]);
+    bind(17);
+    send(O.OP_DRAW_ARRAYS, [0, 0, 1]);
+    const sampledGreen = pixels(74);
+    send(O.OP_TEX_IMAGE_2D, [0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 4], rgba([0, 0, 255, 255]));
+    const orphan = [pixels(71), pixels(72)], aSource = checked(O.QOP_IMAGE_SOURCE_STATE, [1, 17]);
+    bind(18);
+    send(O.OP_GENERATE_MIPMAP, [0x0de1]);
+    const bSource = checked(O.QOP_IMAGE_SOURCE_STATE, [1, 18]);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 73]);
+    send(O.OP_CLEAR_COLOR, [0x3f800000, 0, 0, 0x3f800000]);
+    send(O.OP_CLEAR, [0x4000]);
+    const mipOrphan = pixels(72);
+    image(18, source);
+    const reimport = pixels(72);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [2, 0x8d41, 19]);
+    send(O.OP_RENDERBUFFER_STORAGE, [0x8d41, 0x8056, 1, 1]);
+    const rboSource = checked(O.QOP_IMAGE_SOURCE_STATE, [2, 19]);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 73]);
+    send(O.OP_CLEAR_COLOR, [0, 0, 0x3f800000, 0x3f800000]);
+    send(O.OP_CLEAR, [0x4000]);
+    const rboOrphan = [pixels(73), pixels(72)];
+    // A failed candidate allocation preserves the old native view and FBO.
+    bind(17);
+    const create = gl.createTexture;
+    gl.createTexture = () => null;
+    try {
+      checked(O.QOP_IMAGE_TARGET, [1, 17, source], 1);
+    }
+    finally {
+      gl.createTexture = create;
+    }
+    require(error() === 0x505, "candidate allocation error");
+    const rejected = pixels(71);
+    if ((scenario === "retargetReset" || scenario === "peerRetargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
+      current(12); bind(17,12); fbo(81,17,12); current(11); bind(17); pixels(71);
+      if (scenario === "refreshReset") {
+        checked(O.QOP_IMAGE_TARGET,[1,17,source]);
+        send(O.OP_BIND_FRAMEBUFFER,[0x8d40,72]); send(O.OP_CLEAR_COLOR,[0,0x3f800000,0,0x3f800000]); send(O.OP_CLEAR,[0x4000]);
+      }
+    }
+    const attach = gl.framebufferTexture2D.bind(gl), ownedFbo = scenario === "peerRetargetReset"
+      ? kernel.gl.get(7,12)!.fbos.get(81)! : kernel.gl.get(7,11)!.fbos.get(71)!;
+    let injected = false, allocationFlag = 0;
+    const nativeTexImage = gl.texImage2D.bind(gl), nativeCopy = gl.copyTexSubImage2D.bind(gl), nativeGetError = gl.getError.bind(gl);
+    if (scenario === "allocationReset") {
+      gl.texImage2D = ((...args: Parameters<typeof gl.texImage2D>) => {
+        if (!injected) { injected = true; allocationFlag = 0x505; return; }
+        Reflect.apply(nativeTexImage,gl,args);
+      }) as typeof gl.texImage2D;
+      gl.getError = () => { if (allocationFlag) { const value = allocationFlag; allocationFlag = 0; return value; } return nativeGetError(); };
+    }
+    if (scenario === "refreshReset") {
+      gl.copyTexSubImage2D = (...args: Parameters<typeof gl.copyTexSubImage2D>) => {
+        if (!injected) { injected = true; allocationFlag = 0x502; return; }
+        Reflect.apply(nativeCopy,gl,args);
+      };
+      gl.getError = () => { if (allocationFlag) { const value = allocationFlag; allocationFlag = 0; return value; } return nativeGetError(); };
+    }
+    gl.framebufferTexture2D = (target, point, textarget, texture, level) => {
+      if ((scenario === "retargetReset" || scenario === "peerRetargetReset") && !injected && target === 0x8ca9 && gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === ownedFbo) {
+        injected = true;
+        attach(target, point, 0xdead, texture, level);
+      }
+      else
+        attach(target, point, textarget, texture, level);
+    };
+    let resetRc = 0;
+    try {
+      if ((scenario === "retargetReset" || scenario === "peerRetargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
+        new Uint32Array(memory.buffer,64,3).set([1,17,source]);
+        resetRc = api.host_gl_query(7,O.QOP_IMAGE_TARGET,64,12,512,12,11);
+      }
+    }
+    finally {
+      gl.framebufferTexture2D = attach;
+      if (scenario === "allocationReset" || scenario === "refreshReset") { gl.texImage2D = nativeTexImage as typeof gl.texImage2D; gl.copyTexSubImage2D = nativeCopy; gl.getError = nativeGetError; }
+    }
+    if ((scenario === "retargetReset" || scenario === "peerRetargetReset" || scenario === "allocationReset" || scenario === "refreshReset")) {
+      require(injected && resetRc === -19,"retarget logical reset");
+      const refused = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,11);
+      current(12); const healthyPixels = pixels(81,12);
+      const healthySource = checked(O.QOP_IMAGE_SOURCE_STATE,[1,17],0,12);
+      bind(60,12); send(O.OP_TEX_IMAGE_2D,[0x0de1,0,0x1908,1,1,0,0x1908,0x1401,4],rgba([0,0,0,255]),12); fbo(82,60,12);
+      send(O.OP_USE_PROGRAM,[103],new Uint8Array(),12); bind(17,12);
+      send(O.OP_VIEWPORT,[0,0,1,1],new Uint8Array(),12); send(O.OP_DRAW_ARRAYS,[0,0,1],new Uint8Array(),12);
+      const sampledPixels = pixels(82,12);
+      api.host_gl_destroy_context(7,21); const afterRetirement = pixels(81,12);
+      api.host_gl_destroy_context(7,22); api.host_gl_unbind(7,11); api.host_gl_unbind(7,12); api.host_gbm_bo_destroy(7,41);
+      postMessage({type:"image_storage_reset",resetRc,refused,healthyPixels,healthySource,sampledPixels,afterRetirement,
+        clean:made.length===deleted.length&&made.every(value=>deleted.includes(value))&&live.every(check=>!check()),
+        nativeError:gl.getError(),diagnostics});
+      return;
+    }
+    const retargetRejected = pixels(71);
+    require(checked(O.QOP_IMAGE_SOURCE_STATE, [1, 17]) === 0, "retarget source rollback");
+    // A bound peer and an inactive container retain the old identity at reuse.
+    current(12);
+    bind(17, 12);
+    fbo(81, 17, 12);
+    current(11);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 0]);
+    send(O.OP_DELETE_TEXTURES, [1, 17]);
+    allocate(17, [255, 255, 0, 255]);
+    fbo(75, 17);
+    const reused = pixels(75);
+    current(12);
+    const retained = pixels(81, 12);
+    const revisionQuery = (op: number, words: number[]) => {
+      const reply = new DataView(query(op, words, 16, 12).buffer);
+      require(reply.getUint32(0, true) === 0 && reply.getUint32(12, true) === 0x47514c33, "bound image revision query");
+      return [reply.getUint32(4, true), reply.getUint32(8, true)];
+    };
+    const retainedState = revisionQuery(O.QOP_BOUND_IMAGE_STATE, [1, 0x0de1]);
+    const retainedImport = revisionQuery(O.QOP_BOUND_IMAGE_TARGET, [1, 0x0de1, source]);
+    const retainedImported = pixels(81, 12);
+    current(11);
+    const reusedAfterPeerImport = pixels(75);
+    current(12);
+    // Checked mutations preserve native pixels and bindings on definite
+    // driver rejection. The fault calls a real invalid native enum once.
+    const mutationRollback: number[][] = [];
+    const mutate = (op: number, words: number[], expected = 0) => checked(op, words, expected, 12);
+    let forwardIndex = 0;
+    const inject = (method: string, fault: (original: (...args: any[]) => any, args: any[]) => void,
+        run: () => void, matches: (args: any[]) => boolean = () => true) => {
+      const index = ++forwardIndex, selected = scenario === `forward:${index}`;
+      // Each injected forward fault owns an independent context lifetime.
+      if (!selected) return;
+      let healthyBefore: number[] = [];
+      if (selected) {
+        current(11); healthyBefore = pixels(75,11); current(12);
+        require(error(12)===0,`forward ${index} clean setup`);
+      }
+      const renderer = gl as any, original = renderer[method].bind(gl);
+      let fired = false;
+      renderer[method] = (...args: any[]) => {
+        if (!fired && matches(args)) { fired = true; fault(original,args); }
+        else original(...args);
+      };
+      let outcome: ReturnType<typeof refusal>;
+      try { outcome = refusal(run); }
+      finally { renderer[method] = original; }
+      require(fired,`forward ${index} injection reached`);
+      if (outcome!.fault === "NativeGlFault") {
+        finish(outcome!,{index,method,fired});
+        throw completedForwardCase;
+      }
+      const nativeRc=lastQueryRc;
+      require(nativeRc===-19 && hostFaults.length===0,`forward ${index} resets its context: ${JSON.stringify({nativeRc,outcome,faults:hostFaults.map(f=>String(f)),diagnostics})}`);
+      const refused=api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,12);
+      current(11); const healthyAfter=pixels(75,11);
+      api.host_gl_destroy_context(7,21);api.host_gl_destroy_context(7,22);
+      api.host_gl_unbind(7,11);api.host_gl_unbind(7,12);api.host_gbm_bo_destroy(7,41);
+      const clean=made.length===deleted.length&&made.every(value=>deleted.includes(value))&&live.every(check=>!check());
+      postMessage({type:"image_storage_forward",scenario,index,method,fired,nativeRc,refused,
+        healthyBefore,healthyAfter,clean,nativeError:gl.getError(),diagnostics});
+      throw completedForwardCase;
+    };
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 83], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 17, 0]);
+    inject("framebufferTexture2D", (original, args) => original(0xdead, ...args.slice(1)), () => mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 18, 0], 1));
+    mutationRollback.push(pixels(83, 12));
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 18, 0]);
+    send(O.OP_ACTIVE_TEXTURE, [0x84c1], new Uint8Array(), 12);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 18], 0, 12);
+    send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12);
+    inject("bindTexture", (original, args) => original(0xdead, args[1]), () => mutate(O.QOP_IMAGE_OBJECT_DELETE, [1, 18], 1));
+    mutationRollback.push(pixels(83, 12));
+    mutate(O.QOP_IMAGE_OBJECT_DELETE, [1, 18]);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [2, 0x8d41, 19], 0, 12);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 84], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [2, 0x8d40, 0x8ce0, 0x8d41, 19, 0]);
+    inject("framebufferRenderbuffer", (original, args) => original(0xdead, ...args.slice(1)), () => mutate(O.QOP_IMAGE_ATTACHMENT, [2, 0x8d40, 0x8ce0, 0x8d41, 0, 0], 1));
+    mutationRollback.push(pixels(84, 12));
+    inject("bindRenderbuffer", (original, args) => original(0xdead, args[1]), () => mutate(O.QOP_IMAGE_OBJECT_DELETE, [2, 19], 1));
+    mutationRollback.push(pixels(84, 12));
+    mutate(O.QOP_IMAGE_OBJECT_DELETE, [2, 19]);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 83], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 17, 0]);
+    inject("deleteFramebuffer", () => gl.bindFramebuffer(0xdead, null), () => mutate(O.QOP_IMAGE_OBJECT_DELETE, [3, 83], 1));
+    mutationRollback.push(pixels(83, 12));
+    mutate(O.QOP_IMAGE_OBJECT_DELETE, [3, 83]);
+    mutationRollback.push(pixels(81, 12));
+    // Failed owned allocation must leave old pixels; accepted allocation
+    // permits the later upload. C row suppression is checked separately.
+    send(O.OP_ACTIVE_TEXTURE, [0x84c1], new Uint8Array(), 12);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 17], 0, 12);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 85], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 17, 0]);
+    mutate(O.QOP_IMAGE_STORAGE, [O.OP_TEX_IMAGE_2D, 0x0de1, 0, 0x1908, -1, 1, 0, 0x1908, 0x1401, 0], 1);
+    require(error(12) === 0x501, "owned allocation rejection");
+    const storageReject = [pixels(85, 12)];
+    mutate(O.QOP_IMAGE_STORAGE, [O.OP_TEX_IMAGE_2D, 0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0]);
+    send(O.OP_TEX_SUB_IMAGE_2D, [0x0de1, 0, 0, 0, 1, 1, 0x1908, 0x1401, 4], rgba([0, 0, 255, 255]), 12);
+    const ownedStorageRetry = pixels(85, 12);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [2, 0x8d41, 20], 0, 12);
+    mutate(O.QOP_IMAGE_STORAGE, [O.OP_RENDERBUFFER_STORAGE, 0x8d41, 0x8056, 1, 1]);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 86], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [2, 0x8d40, 0x8ce0, 0x8d41, 20, 0]);
+    send(O.OP_CLEAR_COLOR, [0, 0, 0x3f800000, 0x3f800000], new Uint8Array(), 12);
+    send(O.OP_CLEAR, [0x4000], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_STORAGE, [O.OP_RENDERBUFFER_STORAGE, 0x8d41, 0x8056, -1, 1], 1);
+    require(error(12) === 0x501, "owned RBO allocation rejection");
+    storageReject.push(pixels(86, 12));
+    send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12);
+    const framebufferBindReject: number[][] = [];
+    const createFramebuffer = gl.createFramebuffer;
+    gl.createFramebuffer = () => null;
+    try {
+      mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 87], 1);
+    }
+    finally {
+      gl.createFramebuffer = createFramebuffer;
+    }
+    require(error(12) === 0x505, "framebuffer allocation rejection");
+    framebufferBindReject.push(pixels(86, 12));
+    inject("bindFramebuffer", (original, args) => original(0xdead, args[1]), () => mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 87], 1));
+    framebufferBindReject.push(pixels(86, 12));
+    mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 87]);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 17, 0]);
+    const framebufferBindRetry = pixels(87, 12);
+    const bufferBindReject: number[][] = [], bufferBindRetry: number[] = [];
+    for (const [target, pname, name] of [[0x8892, 0x8894, 100], [0x8893, 0x8895, 102]]) {
+      mutate(O.QOP_BIND_BUFFER, [target, name]);
+      send(O.OP_BUFFER_DATA, [target, 4, 0x88e4], new Uint8Array(), 12);
+      send(O.OP_BUFFER_SUB_DATA, [target, 0, 4], new Uint8Array([11, 22, 33, 44]), 12);
+      const inspect = () => {
+        const binding = new DataView(query(O.QOP_GET_INTEGERV, [pname], 4, 12).buffer).getUint32(0, true);
+        const bytes = new Uint8Array(4); gl.getBufferSubData(target, 0, bytes);
+        return [binding, ...bytes];
+      };
+      const createBuffer = gl.createBuffer;
+      gl.createBuffer = () => null;
+      try { mutate(O.QOP_BIND_BUFFER, [target, name + 1], 1); }
+      finally { gl.createBuffer = createBuffer; }
+      require(error(12) === 0x505, "buffer allocation rejection");
+      bufferBindReject.push(inspect());
+      inject("bindBuffer", (original, args) => original(0xdead, args[1]), () => mutate(O.QOP_BIND_BUFFER, [target, name + 1], 1));
+      bufferBindReject.push(inspect());
+      mutate(O.QOP_BIND_BUFFER, [target, name + 1]);
+      bufferBindRetry.push(new DataView(query(O.QOP_GET_INTEGERV, [pname], 4, 12).buffer).getUint32(0, true));
+    }
+    // One object supplies two vertex attributes and a separately classified
+    // native index view. A later selector failure must restore all of them.
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 30], 0, 12);
+    mutate(O.QOP_IMAGE_STORAGE, [O.OP_TEX_IMAGE_2D, 0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0]);
+    mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 88]);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 30, 0]);
+    for (const [name, type, text] of [
+      [201, 0x8b31, "attribute vec2 position;attribute vec4 color;varying vec4 c;void main(){c=color;gl_Position=vec4(position,0.,1.);gl_PointSize=1.;}"],
+      [202, 0x8b30, "precision mediump float;varying vec4 c;void main(){gl_FragColor=c;}"]
+    ] as [number, number, string][]) {
+      const bytes = new TextEncoder().encode(text);
+      send(O.OP_CREATE_SHADER, [type, name], new Uint8Array(), 12);
+      send(O.OP_SHADER_SOURCE, [name, bytes.length], bytes, 12);
+      send(O.OP_COMPILE_SHADER, [name], new Uint8Array(), 12);
+    }
+    send(O.OP_CREATE_PROGRAM, [203], new Uint8Array(), 12);
+    send(O.OP_ATTACH_SHADER, [203, 201], new Uint8Array(), 12); send(O.OP_ATTACH_SHADER, [203, 202], new Uint8Array(), 12);
+    send(O.OP_BIND_ATTRIB_LOCATION, [203, 0, 8], new TextEncoder().encode("position"), 12);
+    send(O.OP_BIND_ATTRIB_LOCATION, [203, 1, 5], new TextEncoder().encode("color"), 12);
+    send(O.OP_LINK_PROGRAM, [203], new Uint8Array(), 12); send(O.OP_USE_PROGRAM, [203], new Uint8Array(), 12);
+    send(O.OP_VIEWPORT, [0, 0, 1, 1], new Uint8Array(), 12);
+    const geometry = (color: number[]) => {
+      mutate(O.QOP_BIND_BUFFER, [0x8892, 200]);
+      send(O.OP_BUFFER_DATA, [0x8892, 26, 0x88e4], new Uint8Array(), 12);
+      const bytes = new Uint8Array(26); bytes.set(new Uint8Array(new Float32Array([0, 0, ...color]).buffer));
+      send(O.OP_BUFFER_SUB_DATA, [0x8892, 0, 26], bytes, 12);
+      for (const [index, size, offset] of [[0, 2, 0], [1, 4, 8]]) {
+        send(O.OP_VERTEX_ATTRIB_POINTER, [index, size, 0x1406, 0, 24, offset], new Uint8Array(), 12);
+        send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY, [index], new Uint8Array(), 12);
+      }
+      mutate(O.QOP_BIND_BUFFER, [0x8893, 200]);
+    };
+    const renderBuffer = () => {
+      send(O.OP_DRAW_ELEMENTS, [0, 1, 0x1403, 24], new Uint8Array(), 12);
+      return pixels(88, 12);
+    };
+    geometry([0, 1, 0, 1]); require(error(12) === 0, "buffer deletion render setup");
+    const bufferDeleteRollback: number[][] = [];
+    // Deletion now clears native attributes directly. Its fallible reserve
+    // is the logical map clone, not a synthetic replacement WebGL buffer.
+    const deletionNames = kernel.gl.get(7,12)!.buffers, iterateNames = deletionNames[Symbol.iterator];
+    let refusedDeletionReserve = false;
+    deletionNames[Symbol.iterator] = () => { refusedDeletionReserve = true; throw new RangeError("buffer deletion metadata reserve"); };
+    try { mutate(O.QOP_DELETE_BUFFER, [200], 1); } finally { deletionNames[Symbol.iterator] = iterateNames; }
+    require(refusedDeletionReserve && error(12) === 0x505, "buffer delete allocation rejection"); bufferDeleteRollback.push(renderBuffer());
+    inject("vertexAttribPointer", (original, args) => {
+      // Prove the mutation happened, then inject an unambiguous native flag.
+      // A pointer with no ARRAY buffer is not a reliable invalid-type probe.
+      original(...args); gl.bindBuffer(0xdead,null);
+    }, () => mutate(O.QOP_DELETE_BUFFER, [200], 1));
+    bufferDeleteRollback.push(renderBuffer());
+    if (scenario.startsWith("forward:")) {
+      inject("bindBuffer", original => original(0xdead,null),
+        () => mutate(O.QOP_DELETE_BUFFER,[200],1),args => args[0]===0x8893&&args[1]===null);
+      bufferDeleteRollback.push(renderBuffer());
+    }
+    if (scenario === "deleteBuffer") {
+      // The logical deletion commits; deleting its native buffers is cleanup
+      // of host-owned objects, so a refusal is fatal rather than rolled back.
+      const destroyBuffer = gl.deleteBuffer; let refused = false;
+      gl.deleteBuffer = buffer => { if (!refused) { refused = true; gl.bindBuffer(0xdead, null); } else destroyBuffer(buffer); };
+      let outcome: ReturnType<typeof refusal>;
+      try { outcome = refusal(() => mutate(O.QOP_DELETE_BUFFER, [200])); } finally { gl.deleteBuffer = destroyBuffer; }
+      return finish(outcome, { refused, logicalDeleted: !kernel.gl.get(7, 12)!.buffers.has(200) });
+    }
+    mutate(O.QOP_DELETE_BUFFER, [200]);
+    const bufferDeleteCleared = [gl.getParameter(gl.ARRAY_BUFFER_BINDING), gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING),
+      gl.getVertexAttrib(0, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING), gl.getVertexAttrib(1, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING)].map(value => value === null ? 0 : 1);
+    geometry([0, 0, 1, 1]); const bufferDeleteRetry = renderBuffer();
+    const submitWords = (op: number, words: number[]) => {
+      const v = new DataView(memory.buffer,4096,4+words.length*4);
+      v.setUint16(0,op,true); v.setUint16(2,words.length*4,true);
+      words.forEach((word,i)=>v.setUint32(4+i*4,word,true));
+      return api.host_gl_submit(7,0,4+words.length*4,12);
+    };
+    if (scenario === "capture") {
+      // END restores the ARRAY binding saved at BEGIN: a native inverse.
+      const captureArray = gl.getParameter(gl.ARRAY_BUFFER_BINDING);
+      send(O.OP_BEGIN_CLIENT_ARRAY,[],new Uint8Array(),12);
+      mutate(O.QOP_BIND_BUFFER,[0x8892,210]);
+      const captureBind = gl.bindBuffer.bind(gl);
+      gl.bindBuffer = (target,buffer) => { if(target===0x8892 && buffer===captureArray) captureBind(0xdead,buffer); else captureBind(target,buffer); };
+      let outcome: ReturnType<typeof refusal>;
+      try { outcome = refusal(() => submitWords(O.OP_END_CLIENT_ARRAY,[])); } finally { gl.bindBuffer = captureBind; }
+      return finish(outcome);
+    }
+    if (scenario === "promotion") {
+      // Restoring ELEMENT after an accepted promoted draw is a native
+      // inverse. The refusal is fatal, and the draw is never repeated.
+      // 255 is an ordinary GLES byte index but WebGL's restart index.
+      // Supply its actual vertex, so promotion is required by a valid draw.
+      // The old zero-index fixture took the direct path and never attempted
+      // the restoration it claimed to refuse.
+      mutate(O.QOP_BIND_BUFFER,[0x8892,200]);
+      send(O.OP_BUFFER_DATA,[0x8892,256*24,0x88e4],new Uint8Array(),12);
+      const vertex = new Uint8Array(new Float32Array([0,0,0,0,1,1]).buffer);
+      send(O.OP_BUFFER_SUB_DATA,[0x8892,255*24,vertex.length],vertex,12);
+      mutate(O.QOP_BIND_BUFFER,[0x8893,212]);
+      send(O.OP_BUFFER_DATA,[0x8893,1,0x88e4],new Uint8Array(),12);
+      send(O.OP_BUFFER_SUB_DATA,[0x8893,0,1],new Uint8Array([255]),12);
+      require(error(12)===0,"maximum-index promotion setup");
+      const promotionElement = gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING);
+      const promotionBind = gl.bindBuffer.bind(gl), promotionDraw = gl.drawElements.bind(gl);
+      let promotionDraws = 0, promotionRefused = false;
+      const promotionTypes: number[] = [];
+      gl.drawElements = (...args) => { promotionDraws++; promotionTypes.push(args[2]); promotionDraw(...args); };
+      gl.bindBuffer = (target,buffer) => {
+        if(promotionDraws && target===0x8893 && buffer===promotionElement) {
+          promotionRefused = true; promotionBind(0xdead,buffer);
+        } else promotionBind(target,buffer);
+      };
+      let outcome: ReturnType<typeof refusal>;
+      try { outcome = refusal(() => submitWords(O.OP_DRAW_ELEMENTS,[0,1,0x1401,0])); }
+      finally { gl.bindBuffer = promotionBind; gl.drawElements = promotionDraw; }
+      return finish(outcome, { draws: promotionDraws, types: promotionTypes, refused: promotionRefused });
+    }
+    if (scenario === "pointer" || scenario === "pointerReset") {
+      // A valid converted pointer is partially installed before a native
+      // rejection; the refused restoration of the old pointer is fatal.
+      const nativePointer = () => [gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING),
+        gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_SIZE),gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_TYPE),
+        gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_NORMALIZED),gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_STRIDE),
+        gl.getVertexAttribOffset(1,gl.VERTEX_ATTRIB_ARRAY_POINTER)];
+      const originalPointer = nativePointer(), pointerBuffer = originalPointer[0];
+      const pointerCall = gl.vertexAttribPointer.bind(gl); let pointerRejected = false, pointerRestores = 0;
+      const precondition = {error:-1,selected:false,installed:false};
+      gl.vertexAttribPointer = (...args) => {
+        if(!pointerRejected && args[0]===1 && args[4]===0 && args[5]===0) {
+          pointerCall(...args);
+          precondition.error = gl.getError();
+          precondition.selected = gl.getParameter(gl.ARRAY_BUFFER_BINDING)!==pointerBuffer;
+          precondition.installed = gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING)!==pointerBuffer;
+          pointerRejected = true;
+          if (scenario === "pointerReset") gl.bindBuffer(0xdead,null);
+          else throw new Error("injected early pointer failure after native installation");
+        } else if(pointerRejected && args[0]===1 && args[4]===24 && args[5]===8) {
+          pointerRestores++; gl.bindBuffer(0xdead,null);
+        }
+        else pointerCall(...args);
+      };
+      let outcome: ReturnType<typeof refusal>;
+      try { outcome = refusal(() => submitWords(O.OP_VERTEX_ATTRIB_POINTER,[1,4,0x140c,0,0,0])); }
+      finally { gl.vertexAttribPointer = pointerCall; }
+      const dirty = pointerRejected && nativePointer().some((value,i)=>value!==originalPointer[i]);
+      if (scenario === "pointerReset") {
+        const refused = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,12);
+        current(11); const healthy = pixels(75,11);
+        return finish(outcome, { precondition, dirty, restores: pointerRestores, refused, healthy, nativeError:gl.getError(), diagnostics });
+      }
+      return finish(outcome, { precondition, dirty, restored: pointerRestores>0 });
+    }
+    mutate(O.QOP_BIND_BUFFER,[0x8892,211]);
+    send(O.OP_BUFFER_DATA,[0x8892,16,0x88e4],new Uint8Array(),12);
+    send(O.OP_BUFFER_SUB_DATA,[0x8892,0,16],new Uint8Array(new Int32Array([0,65536,0,65536]).buffer),12);
+    send(O.OP_VERTEX_ATTRIB_POINTER,[1,4,0x140c,0,0,0],new Uint8Array(),12);
+    const convertedRetryPixels = renderBuffer();
+    // A rejected unbind is rolled back by reattaching the old container;
+    // a live renderer that refuses that reattachment is a fatal fault.
+    send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 33], 0, 12);
+    send(O.OP_TEX_IMAGE_2D, [0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 4], rgba([255, 0, 0, 255]), 12);
+    mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 94]);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 33, 0]);
+    const repairTexture = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture;
+    if (scenario === "repair" || scenario === "repairReset") {
+      const repairBind = gl.bindTexture.bind(gl), repairAttach = gl.framebufferTexture2D.bind(gl);
+      let repairRejected = false, repairAttempts = 0;
+      gl.bindTexture = (target, texture) => {
+        if (!repairRejected && target === 0x0de1 && texture !== repairTexture) {
+          repairRejected = true;
+          if (scenario === "repairReset") repairBind(0xdead, texture);
+          else throw new Error("injected early selector failure after framebuffer detachment");
+        } else repairBind(target, texture);
+      };
+      gl.framebufferTexture2D = (target, point, textureTarget, texture, level) => {
+        if (repairRejected && texture === repairTexture) {
+          repairAttempts++; repairAttach(0xdead, point, textureTarget, texture, level);
+        } else repairAttach(target, point, textureTarget, texture, level);
+      };
+      let outcome: ReturnType<typeof refusal>;
+      try { outcome = refusal(() => {
+        new Uint32Array(memory.buffer,64,2).set([1,33]);
+        return api.host_gl_query(7,O.QOP_IMAGE_OBJECT_DELETE,64,8,512,12,12);
+      }); }
+      finally { gl.bindTexture = repairBind; gl.framebufferTexture2D = repairAttach; }
+      const dirty = gl.getFramebufferAttachmentParameter(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME) === null;
+      if (scenario === "repairReset") {
+        const refused = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,12);
+        current(11); const healthy = pixels(75,11);
+        return finish(outcome, { rejected: repairRejected, dirty, restores:repairAttempts, refused, healthy, nativeError:gl.getError(), diagnostics });
+      }
+      return finish(outcome, { rejected: repairRejected && repairAttempts > 0, dirty });
+    }
+    mutate(O.QOP_IMAGE_OBJECT_DELETE, [1, 33]);
+    // Storage respecification retargets containers of both contexts. A
+    // rejected retarget is rolled back by reattaching the shared BO storage;
+    // a live renderer that refuses that reattachment is a fatal fault.
+    require(kernel.gl.createGpuBo(43, gl, 1, 1) !== null, "storage repair BO");
+    const storageBo = kernel.gl.gpuBo(43)!;
+    const storageSource = api.host_gl_bind_foreign_texture(7, 22, 43, WPK_IMAGE_SOURCE_TARGET);
+    require(storageSource > 0, "storage repair source");
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 34], 0, 12);
+    send(O.OP_TEX_IMAGE_2D, [0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0], new Uint8Array(), 12);
+    require(new DataView(query(O.QOP_BOUND_IMAGE_TARGET, [1, 0x0de1, storageSource], 16, 12).buffer).getUint32(0,true) === 0, "storage initial import");
+    mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 95]); mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 34, 0]);
+    send(O.OP_CLEAR_COLOR, [0x3f800000, 0, 0, 0x3f800000], new Uint8Array(), 12); send(O.OP_CLEAR, [0x4000], new Uint8Array(), 12);
+    checked(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 96], 0, 11);
+    checked(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 34, 0], 0, 11);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 34], 0, 12); mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 95]);
+    const storageOwner = kernel.gl.get(7,12)!, storageObject = storageOwner.textures.get(34)!;
+    if (scenario === "storage") {
+      const storageAttach = gl.framebufferTexture2D.bind(gl); let storageRejected = false, storageRetargets = 0;
+      let storageChangedFrame: WebGLFramebuffer|null = null;
+      gl.framebufferTexture2D = (target, point, textureTarget, texture, level) => {
+        if (!storageRejected && target === gl.DRAW_FRAMEBUFFER && texture !== storageBo.tex && ++storageRetargets === 2) {
+          storageRejected = true; storageAttach(0xdead,point,textureTarget,texture,level);
+        } else if (storageRejected && texture === storageBo.tex) storageAttach(0xdead,point,textureTarget,texture,level);
+        else {
+          if (!storageRejected && target === gl.DRAW_FRAMEBUFFER && texture !== storageBo.tex) storageChangedFrame = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
+          storageAttach(target,point,textureTarget,texture,level);
+        }
+      };
+      let outcome: ReturnType<typeof refusal>;
+      try { outcome = refusal(() => mutate(O.QOP_IMAGE_STORAGE, [O.OP_TEX_IMAGE_2D, 0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0], 1)); }
+      finally { gl.framebufferTexture2D = storageAttach; }
+      let dirty = false;
+      if (storageChangedFrame) {
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER,storageChangedFrame);
+        const attached = gl.getFramebufferAttachmentParameter(gl.DRAW_FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
+        dirty = attached !== null && attached !== storageBo.tex;
+      }
+      return finish(outcome, { rejected: storageRejected && storageChangedFrame !== null, dirty });
+    }
+    // An accepted respecification retires the old view's native texture at
+    // commit. A live renderer that refuses that deletion is a fatal fault.
+    const oldStorage = storageOwner.textureViews.get(storageObject)!;
+    const commitStorage = () => mutate(O.QOP_IMAGE_STORAGE,[O.OP_TEX_IMAGE_2D,0x0de1,0,0x1908,1,1,0,0x1908,0x1401,0]);
+    if (scenario === "storageCleanup") {
+      const storageDelete = gl.deleteTexture;
+      gl.deleteTexture = texture => { if (texture === oldStorage.native) gl.bindTexture(0xdead,null); else storageDelete(texture); };
+      let outcome: ReturnType<typeof refusal>;
+      try { outcome = refusal(commitStorage); } finally { gl.deleteTexture = storageDelete; }
+      return finish(outcome, { retained: gl.isTexture(oldStorage.native) });
+    }
+    const accepted = commitStorage();
+    const storageCommit = [accepted,storageOwner.textureViews.get(storageObject)!.source === null ? 0 : 1,storageOwner.imageRevisions.get(storageObject)!];
+    require(!gl.isTexture(oldStorage.native), "retired view deleted at commit");
+    require(kernel.gl.retireForeignBo(43) && !gl.isTexture(storageBo.tex), "canonical BO retirement after its last view");
+    send(O.OP_TEX_SUB_IMAGE_2D,[0x0de1,0,0,0,1,1,0x1908,0x1401,4],rgba([0,0,255,255]),12);
+    const storageOwned = [pixels(95,12),pixels(96,11)];
+    // Raw WPK publication must preserve every legal public number and give
+    // each reimport a retained identity distinct from the BO's native anchor.
+    send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12);
+    const canonicalName = kernel.gl.createGpuBo(42, gl, 1, 1)!;
+    const rawBo = kernel.gl.gpuBo(42)!;
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, canonicalName], 0, 12);
+    send(O.OP_TEX_IMAGE_2D, [0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 4], rgba([0, 0, 255, 255]), 12);
+    mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 89]);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, canonicalName, 0]);
+    const rawName = api.host_gl_bind_foreign_texture(7, 22, 42, 0x0de1);
+    require(rawName > canonicalName && rawName > 0, "raw allocator collision");
+    const rawNamespace = pixels(89, 12);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, rawName], 0, 12);
+    send(O.OP_TEX_PARAMETERI, [0x0de1, 0x2801, 0x2600], new Uint8Array(), 12);
+    const rawParams = [gl.getTexParameter(0x0de1, 0x2801) as number];
+    const rawPrevious = gl.getParameter(gl.TEXTURE_BINDING_2D);
+    gl.bindTexture(0x0de1, rawBo.tex); rawParams.push(gl.getTexParameter(0x0de1, 0x2801)); gl.bindTexture(0x0de1, rawPrevious);
+    mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 90]);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, rawName, 0]);
+    send(O.OP_CLEAR_COLOR, [0, 0x3f800000, 0, 0x3f800000], new Uint8Array(), 12); send(O.OP_CLEAR, [0x4000], new Uint8Array(), 12);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 32], 0, 12);
+    mutate(O.QOP_IMAGE_STORAGE, [O.OP_TEX_IMAGE_2D, 0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0]);
+    mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 91]); mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 32, 0]);
+    send(O.OP_USE_PROGRAM, [103], new Uint8Array(), 12);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, rawName], 0, 12);
+    const sampleRaw = () => { send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 91], new Uint8Array(), 12); send(O.OP_DRAW_ARRAYS, [0, 0, 1], new Uint8Array(), 12); return pixels(91, 12); };
+    const rawGreen = sampleRaw();
+    send(O.OP_TEX_IMAGE_2D, [0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 4], rgba([255, 0, 0, 255]), 12);
+    const rawOrphan = [sampleRaw()];
+    const oldRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING); gl.bindFramebuffer(gl.READ_FRAMEBUFFER, rawBo.fbo);
+    const canonicalPixels = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, canonicalPixels); gl.bindFramebuffer(gl.READ_FRAMEBUFFER, oldRead);
+    rawOrphan.push([...canonicalPixels]);
+    require(api.host_gl_bind_foreign_texture(7, 22, 42, 0x0de1) === rawName, "raw explicit refresh");
+    const rawRefresh = sampleRaw();
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, rawName], 0, 11);
+    checked(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 92], 0, 11);
+    checked(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, rawName, 0], 0, 11);
+    mutate(O.QOP_IMAGE_OBJECT_DELETE, [1, rawName]);
+    const rawNext = api.host_gl_bind_foreign_texture(7, 22, 42, 0x0de1); require(rawNext > rawName, "raw retained reimport identity");
+    send(O.OP_ACTIVE_TEXTURE, [0x84c1], new Uint8Array(), 12); checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, rawNext], 0, 12);
+    send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12); checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, rawName], 0, 12);
+    send(O.OP_TEX_IMAGE_2D, [0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 4], rgba([0, 0, 255, 255]), 12);
+    mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 93]); mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, rawName, 0]);
+    // A rejected detach is a rejected forward change: revocation rolls it
+    // back, keeps the backing and reports the GL error. Nothing stays
+    // pending, so later queries are admitted and a later retirement succeeds.
+    const retireAttach = gl.framebufferTexture2D.bind(gl); let retireRejects = 1;
+    gl.framebufferTexture2D = (target, point, textureTarget, texture, level) => {
+      if (texture === null && retireRejects) { retireRejects--; retireAttach(0xdead, point, textureTarget, texture, level); }
+      else retireAttach(target, point, textureTarget, texture, level);
+    };
+    let rawAdmitted: number[], rawInvalid: number;
+    try {
+      require(!kernel.gl.retireForeignBo(42) && gl.isTexture(rawBo.tex) && retireRejects === 0, "raw backing kept after a rejected detach");
+      new Uint32Array(memory.buffer, 64, 1).set([0x8069]); new Uint8Array(memory.buffer, 512, 4).fill(0xa5);
+      rawInvalid = api.host_gl_query(7, O.QOP_GET_INTEGERV, 64, 4, memory.buffer.byteLength + 8, 4, 12);
+      require(rawInvalid === -14, "raw output preflight");
+      const admitted = api.host_gl_query(7, O.QOP_GET_INTEGERV, 64, 4, 512, 4, 12);
+      rawAdmitted = [admitted, new DataView(memory.buffer).getUint32(512, true) === rawName ? 1 : 0];
+    } finally { gl.framebufferTexture2D = retireAttach; }
+    require(error(11) === 0x500 && kernel.gl.retireForeignBo(42) && !gl.isTexture(rawBo.tex), "raw retirement after the rejected detach");
+    const rawRevoked = [new DataView(query(O.QOP_GET_INTEGERV, [0x8069], 4, 11).buffer).getUint32(0, true)];
+    send(O.OP_ACTIVE_TEXTURE, [0x84c1], new Uint8Array(), 12); rawRevoked.push(new DataView(query(O.QOP_GET_INTEGERV, [0x8069], 4, 12).buffer).getUint32(0, true));
+    send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12); rawRevoked.push(new DataView(query(O.QOP_GET_INTEGERV, [0x8069], 4, 12).buffer).getUint32(0, true) === rawName ? 1 : -1);
+    const rawReplacement = pixels(93, 12);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 90], new Uint8Array(), 12);
+    const rawMissing = new DataView(query(O.QOP_CHECK_FB_STATUS, [0x8d40], 4, 12).buffer).getUint32(0, true);
+    const errors = [error(12)];
+    api.host_gl_destroy_context(7, 21);
+    const afterSourceRetirement = pixels(81, 12);
+    errors.push(error(12));
+    api.host_gl_destroy_context(7, 22);
+    api.host_gl_unbind(7, 11);
+    api.host_gl_unbind(7, 12);
+    api.host_gbm_bo_destroy(7, 41);
+    require(scenario === "healthy", `refusal scenario ${scenario} was never reached`);
+    const clean = made.length === deleted.length && made.every(value => deleted.includes(value)) && live.every(check => !check());
+    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, bufferBindReject, bufferBindRetry, bufferDeleteRollback, bufferDeleteCleared, bufferDeleteRetry, convertedRetryPixels, storageCommit, storageOwned, rawNamespace, rawParams, rawGreen, rawOrphan, rawRefresh, rawInvalid, rawAdmitted, rawRevoked, rawReplacement, rawMissing, errors, clean, error: gl.getError() });
+  }
+  catch (error) {
+    if (error === completedForwardCase) return;
+    postMessage({ type: "image_storage_failed", error: String(error) });
+  }
+};

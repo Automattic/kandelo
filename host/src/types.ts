@@ -12,6 +12,15 @@ export interface KernelConfig {
    *  syscalls. */
   syscallLogPtrWidth?: 4 | 8;
   /**
+   * Test-only GL native-divergence audit (host/src/webgl/native-audit.ts):
+   * every native WebGL call is checked against the host's prediction.
+   * "fatal" latches a host fault at the first divergence; "record" reports
+   * each divergence as an `onHostDiagnostic` with source "gl-audit" and
+   * continues. Never set by default: it adds a GPU-process round trip after
+   * every native GL call.
+   */
+  glAudit?: "record" | "fatal";
+  /**
    * Ceiling for the kernel's own wasm address space, in 64 KiB pages.
    *
    * Defaults to {@link DEFAULT_KERNEL_MAX_PAGES}. Hosts whose engine charges a

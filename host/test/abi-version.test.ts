@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../src/binary-resolver";
 import { detectPtrWidth } from "../src/constants";
+import { KMS_CURSOR_PROTOCOL_VERSION } from "../src/dri/kms-cursor-protocol";
 import {
   FORK_ANYREF_TRANSIT_IMPORT,
   ForkAnyrefTransitTable,
@@ -176,7 +177,9 @@ describe("ABI version marker", () => {
     const read = instance.exports.kernel_kms_cursor_read as (pointer: number, length: number) => number;
     expect(typeof read).toBe("function");
     expect(configure(2)).toBe(-95);
-    expect(configure(1)).toBe(1);
+    expect(configure(1)).toBe(-95);
+    expect(configure(3)).toBe(-95);
+    expect(configure(KMS_CURSOR_PROTOCOL_VERSION)).toBe(KMS_CURSOR_PROTOCOL_VERSION);
   });
 
   it("freshly-built user programs export a matching __abi_version", async () => {

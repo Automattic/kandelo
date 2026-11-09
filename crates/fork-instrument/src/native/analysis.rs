@@ -190,11 +190,28 @@ fn facts_plan(
 }
 
 fn apply(analysis: &mut Analysis<'_>, plan: sink::NativeSinkPlan) {
-    analysis.reaching.activations.retain(|function| {
-        *function < analysis.scan.imported_functions || plan.activations.contains(function)
-    });
     analysis.reaching.control_reachable.retain(|function| {
         *function < analysis.scan.imported_functions || plan.control_reachable.contains(function)
+    });
+    // Refinement can remove every ordinary edge while retaining a live tail
+    // path through the same function. Such a function still needs tail
+    // transport, but has no ordinary activation to capture. Match the source
+    // continuation planner: direct calls need a retained control target;
+    // indirect/reference sites remain conservative landing points.
+    analysis.reaching.activations.retain(|function| {
+        *function < analysis.scan.imported_functions
+            || (plan.activations.contains(function)
+                && analysis.scan.functions[*function as usize]
+                    .body
+                    .as_ref()
+                    .is_some_and(|body| {
+                        body.calls.iter().any(|target| match target {
+                            crate::streaming::CallTarget::Direct(target) => {
+                                analysis.reaching.control_reachable.contains(target)
+                            }
+                            crate::streaming::CallTarget::Dispatch(_) => true,
+                        })
+                    }))
     });
     analysis.reaching.tail_sites.retain(|point| {
         analysis

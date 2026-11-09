@@ -20,3 +20,8 @@ sha2 = { version = "0.10", default-features = false, features = ["compress"] }
 # reader rather than a second hand-rolled one.
 wasm-artifact = { path = "../wasm-artifact" }
 kandelo-program-policy = { path = "../program-policy" }
+
+[features]
+# Diagnostic build: count the shared-mapping quiescence proofs a comparison
+# confirmed (memory.rs `CleanStamp`). Never enabled for a shipped kernel.
+shared-mapping-proof-verify = []

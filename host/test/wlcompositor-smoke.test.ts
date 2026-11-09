@@ -10,10 +10,11 @@
  *
  *   - cross-process AF_UNIX pathname socket (bind/listen/accept ↔ connect)
  *   - the client's renderD128 dumb-bo pixels crossing the process boundary
- *     via prime-fd + SCM_RIGHTS, imported by the compositor with gbm and
- *     CPU-blitted onto the card0 scanout bo (plan §8.1 gbm_bo_import path);
- *     the compositor samples the composited pixel and we assert it is the
- *     client's red.
+ *     via its prime-fd + SCM_RIGHTS as the wl_shm pool fd, which the
+ *     compositor maps like any wl_shm pool and CPU-blits onto the card0
+ *     scanout bo; the compositor samples the composited pixel and we assert
+ *     it is the client's red. (wlcompositor-shm-memfd-smoke.test.ts covers
+ *     the ordinary memfd pool.)
  *   - xdg_shell toplevel configure/ack + wl_surface.frame pacing (the
  *     client's frame callback only fires after a real KMS flip).
  *   - the wl_keyboard keymap fd built by the compositor's libxkbcommon.
@@ -105,8 +106,8 @@ describe("wlcompositor — server composites + routes input to a client", () => 
         // flipped it (frame callback fired) before printing CLIENT_READY.
         await waitFor(out, "CLIENT_READY\n", 20_000, dump);
 
-        // The compositor imported the client's prime-fd, mapped the shared
-        // bytes, and composited them — the sampled pixel is the client's red.
+        // The compositor mapped the client's prime-fd pool and composited
+        // the shared bytes — the sampled pixel is the client's red.
         await waitFor(out, "COMPOSITE_SAMPLE", 5_000, dump);
         const sample = out.value.match(/COMPOSITE_SAMPLE x=\d+ y=\d+ px=0x([0-9a-f]{8})/);
         expect(sample, `no composite sample.\n${dump()}`).not.toBeNull();

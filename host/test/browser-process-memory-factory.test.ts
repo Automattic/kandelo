@@ -1,3 +1,4 @@
+import { lookupComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserProcessMemoryFactory } from "../src/browser-process-memory-factory";
 
@@ -38,11 +39,27 @@ describe("browser process memory allocation realm", () => {
     const memory = new WebAssembly.Memory({ initial: 1, maximum: 4, shared: true });
     worker.onmessage!({ data: { memory } } as MessageEvent);
     expect(await allocated).toBe(memory);
+    expect(lookupComparisonMemoryShape(memory)).toEqual({ addressWidth: 4, shared: true, maximumPages: 4 });
     expect(worker.terminate).toHaveBeenCalledOnce();
     expect(worker.onmessage).toBeNull();
     factory.dispose();
     factory.dispose();
     expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:allocation-worker");
+  });
+
+  it("records the admitted descriptor even if the caller changes its request while waiting", async () => {
+    setup();
+    const factory = new BrowserProcessMemoryFactory();
+    const mutable = { ...request };
+    const allocated = factory.allocate(mutable);
+    mutable.maximumPages = 8;
+    const worker = AllocationWorker.instances[0];
+    expect(worker.posted).toEqual(request);
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 4, shared: true });
+    worker.onmessage!({ data: { memory } } as MessageEvent);
+    expect(await allocated).toBe(memory);
+    expect(lookupComparisonMemoryShape(memory)?.maximumPages).toBe(4);
+    factory.dispose();
   });
 
   it("cancels every pending realm when its machine is destroyed", async () => {

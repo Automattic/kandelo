@@ -16,6 +16,9 @@ import { resolve, relative } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 
+import { ViteStartupOutput } from "./vite-startup-output";
+import type { HostDiagnostic } from "../host/src/host-diagnostic";
+
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const BROWSER_DIR = resolve(REPO_ROOT, "apps/browser-demos");
 // Several worktrees on one machine run these suites at once. A fixed default
@@ -54,6 +57,7 @@ interface TestResult {
   stdout: string;
   stderr: string;
   combined?: string;
+  hostDiagnostics?: HostDiagnostic[];
   error?: string;
   durationMs: number;
 }
@@ -100,6 +104,7 @@ function startViteOnPort(port: number): Promise<ChildProcess> {
     );
 
     let started = false;
+    const startupOutput = new ViteStartupOutput();
     const timeout = setTimeout(() => {
       if (!started) {
         proc.kill();
@@ -109,7 +114,7 @@ function startViteOnPort(port: number): Promise<ChildProcess> {
 
     proc.stdout!.on("data", (data: Buffer) => {
       const text = data.toString();
-      if (!started && text.includes("Local:")) {
+      if (!started && startupOutput.push(text)) {
         started = true;
         viteAlive = true;
         clearTimeout(timeout);
@@ -266,6 +271,9 @@ async function runSingleTest(
       stdout: result.stdout,
       stderr: result.stderr,
       combined: result.combined,
+      // WHY: host faults are distinct from guest fd 2. Keep their actual
+      // records so an expected guest failure cannot conceal a worker fault.
+      hostDiagnostics: result.hostDiagnostics,
       durationMs: Math.round(performance.now() - start),
     };
   } catch (err: any) {

@@ -4,7 +4,7 @@ import type { KernelToMainMessage } from "../src/node-kernel-protocol";
 import type { LazyDownloadEvent } from "../src/vfs/lazy-download-event";
 
 interface TestableNodeKernelHost {
-  handleWorkerMessage(message: KernelToMainMessage): void;
+  handleWorkerMessage(message: KernelToMainMessage, observationRealm?: number): void;
 }
 
 describe("NodeKernelHost diagnostics", () => {
@@ -162,5 +162,19 @@ describe("NodeKernelHost VFS change events", () => {
       testable.handleWorkerMessage({ type: "vfs_change", event: inside });
     }).not.toThrow();
     expect(survivingSubscriber).toHaveBeenCalledWith(inside);
+  });
+});
+
+
+describe("NodeKernelHost exact generation observations", () => {
+  it("forwards copied scalar events and contains callback errors", () => {
+    const callback = vi.fn((_event: import("../src/process-generation-observation").ProcessGenerationEvent) => { throw Error("observer"); });
+    const host = new NodeKernelHost({ onProcessGenerationEvent: callback });
+    const testable = host as unknown as TestableNodeKernelHost;
+    const event = { kind: "admitted" as const, pid: 41, executionId: 9 };
+    expect(() => testable.handleWorkerMessage({ type: "process_generation_event", event }, 7)).not.toThrow();
+    expect(callback).toHaveBeenCalledWith({ ...event, realmId: 7 });
+    expect(Object.isFrozen(callback.mock.calls[0][0])).toBe(true);
+    expect(callback.mock.calls[0][0]).not.toBe(event);
   });
 });

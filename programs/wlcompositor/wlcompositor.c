@@ -9,7 +9,7 @@
  *
  * v2 interface set:
  *   wl_compositor + wl_surface + wl_region
- *   wl_shm + wl_shm_pool + wl_buffer   (via a gbm prime-fd pool path)
+ *   wl_shm + wl_shm_pool + wl_buffer   (the pool fd mapped MAP_SHARED)
  *   xdg_wm_base + xdg_surface + xdg_toplevel  (incl. interactive move)
  *   wl_seat + wl_keyboard (keymap + modifiers) + wl_pointer
  *   wl_output
@@ -39,26 +39,33 @@
  *     move themselves — exactly the Wayland CSD contract.
  *
  * Clients are the CPU (wl_shm) tier: a client renders ARGB/XRGB pixels
- * into a gbm dumb-bo and the bo's prime-fd rides SCM_RIGHTS to us as the
- * wl_shm pool fd. COMPOSITING is GPU-first with a CPU fallback:
+ * into a pool of shared memory — a memfd, a /dev/shm file, or any other
+ * mappable fd, including a DRM PRIME fd — whose fd rides SCM_RIGHTS to us.
+ * We map the pool fd MAP_SHARED, as wl_shm specifies and as libwayland's
+ * own wl_shm does; the kernel keeps that mapping coherent with the
+ * client's stores at our syscall boundaries. COMPOSITING is GPU-first
+ * with a CPU fallback:
  *
- *   - GPU path (browser hosts with WebGL2): a GLES3 context on
- *     /dev/dri/renderD128 renders the frame — client bos are imported as
- *     textures via the WPK dmabuf extension (wpkEglImportDmabufHandle +
- *     wpkEglBindBoTexture; the host uploads pixels straight from the
- *     bo's shared storage, no cmdbuf marshalling) and composited as
- *     textured quads. The frame is encoded in one cmdbuf flush, so the
- *     display canvas transitions atomically between complete frames.
- *     KMS PAGE_FLIPs still pace the frame clock (frame callbacks, flip
- *     counters); only pixel production moves to the GPU. WLC_NO_GPU=1
- *     forces the CPU path (a manual debug escape hatch, documented in
- *     docs/browser-support.md).
+ *   - GPU path (browser hosts with WebGL2): an OpenGL ES 2.0 context on
+ *     an EGL display for the compositor's own GBM device renders each
+ *     frame into an EGL window on a GBM surface — client bos are imported
+ *     as textures via the WPK dmabuf extension (wpkEglImportDmabufHandle
+ *     + wpkEglBindBoTexture; the host uploads pixels straight from the
+ *     bo's shared storage, no cmdbuf marshalling); a wl_shm buffer whose
+ *     pool is not a dma-buf is uploaded from our mapping of the pool with
+ *     glTexImage2D/glTexSubImage2D, as any GLES compositor uploads shm
+ *     buffers. Both are composited as textured quads. eglSwapBuffers finishes the frame; the bo it
+ *     produced is added as a framebuffer and page-flipped like any
+ *     scanout bo, so the output moves atomically between complete frames
+ *     and PAGE_FLIP completions pace the frame clock (frame callbacks,
+ *     flip counters). WLC_NO_GPU=1 forces the CPU path (a manual debug
+ *     escape hatch, documented in docs/browser-support.md).
  *
  *   - CPU path (Node smokes, hosts without WebGL2, or GPU init/runtime
  *     failure): the committed buffers are CPU-blitted into a scanout
- *     gbm_bo exactly as before. GPU availability is probed at startup by
- *     compiling the compositor shader — sync GL queries fail cleanly on
- *     headless hosts. One-shot WLC_RENDERER marker reports the outcome.
+ *     gbm_bo exactly as before. GPU availability is probed at startup:
+ *     eglInitialize fails on a host with no GLES renderer. One-shot
+ *     WLC_RENDERER marker reports the outcome.
  *
  * Clients are paced with wl_surface.frame callbacks fired on flip
  * completion. ESC is forwarded, never special-cased.
@@ -80,6 +87,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -113,7 +121,9 @@
 #include <drm/drm_fourcc.h>
 
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 
 #include <wpkdraw/wpkdraw.h>
 #include <wpkdraw/wpkfont.h>
@@ -122,7 +132,7 @@
  * prime-fd on the EGL session's render fd and bind the bo as a texture
  * in the current context. Re-binding refreshes the texture pixels from
  * the producer's latest commit. */
-extern unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd);
+extern unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd, uint32_t fourcc);
 extern unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle,
                                     unsigned gl_target);
 extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
@@ -134,6 +144,8 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 /* The hyprctl analog: a control + event socket alongside the wayland one.
  * kwlctl (programs/wlcompositor/kwlctl.c) and the Tier-1 bar speak to it. */
 #define KWLCTL_SOCKET_PATH "/tmp/kwlctl-0"
+/* CPU path: one bo on screen, one in flight, one being painted. */
+#define CPU_SCANOUT_BOS 3
 #define MAX_KWLCTL_CONNS 16
 /* The Hyprland IPC socket pair, where Waybar's hyprland modules expect it:
  * $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock (request/
@@ -296,39 +308,58 @@ struct surface {
 
 /* ---- wl_shm pool / buffer (custom, gbm-backed) ------------------------- */
 
-/* libwayland's built-in wl_shm mmaps the client's pool fd directly, but on
- * this kernel a plain file/memfd mmap is NOT shared across processes — only
- * the DRI bo registry is (host SharedArrayBuffer). So the client backs its
- * pool with a renderD128 dumb-bo and passes its prime-fd; we import that
- * prime-fd via gbm and map it, aliasing the same shared bytes. This is the
- * "gbm_bo_import path for wl_shm" the plan names (§8.1). Buffers may sit
- * at any offset in the pool; the formats are XRGB/ARGB8888. */
+/* A wl_shm pool is shared memory the client passed by fd. As in
+ * libwayland's own wl_shm, the pool fd is mapped MAP_SHARED when the pool
+ * is created (and remapped when it grows), and every buffer reads its
+ * pixels at its offset in that mapping. The fd may be anything mappable:
+ * a memfd, a /dev/shm file, or a DRM PRIME fd. Buffers may sit at any
+ * offset in the pool; the formats are XRGB/ARGB8888.
+ *
+ * linux-dmabuf buffers reuse this struct with map == NULL: they are read
+ * through gbm_bo_import, which also covers GPU-tier bos that have no CPU
+ * storage to map. */
 struct shm_pool {
     int fd;
     int32_t size;
     int refcount;   /* pool resource (1) + one per live buffer */
+    void *map;      /* wl_shm: PROT_READ MAP_SHARED mapping of size bytes */
+    /* GPU path: the pool fd is not a dma-buf the EGL session can import,
+     * so its buffers are uploaded from the mapping instead. A property of
+     * the fd, so it is learned once rather than retried every frame. */
+    int gl_import_failed;
 };
 struct shm_buffer {
     struct shm_pool *pool;
     int32_t offset, width, height, stride;
     uint32_t format;
-    struct gbm_bo *bo;      /* lazily imported on first composite (CPU path) */
+    /* linux-dmabuf only: the bo lazily imported on first composite (CPU
+     * path). wl_shm buffers read the pool's mapping instead. */
+    struct gbm_bo *bo;
     int import_failed;      /* the import is a property of the pool fd, so a
                              * failure is final — retrying it once per frame
                              * would flood the log and stall the desktop. */
     void *map_data;
     uint32_t *pixels;       /* shared mapping of the client's bytes */
     uint32_t map_stride_px;
-    /* linux-dmabuf Y_INVERT: row 0 is the bottom of the image. A GL
-     * producer (libwayland-egl) renders into a framebuffer, whose rows are
-     * stored bottom-up; CPU-drawn buffers are top-down. */
+    /* The buffer arrived through zwp_linux_dmabuf_v1 rather than wl_shm.
+     * That is how EGL's Wayland platform (libwayland-egl) publishes each
+     * GL-rendered frame; wl_shm buffers are drawn by the CPU. */
+    int dmabuf;
+    /* linux-dmabuf Y_INVERT: row 0 is the bottom of the image. A producer
+     * that publishes a GL framebuffer's rows unconverted sets it.
+     * libwayland-egl normalizes its fronts to top-down rows and sends no
+     * flags (wlroots rejects nonzero ones), so it is not a GL marker. */
     int y_invert;
     /* GPU path: the bo imported on the EGL fd + its texture. gl_dirty is
      * set on every commit of this buffer so the next GL repaint rebinds
-     * (= re-uploads) only surfaces whose content actually changed. */
+     * (= re-uploads) only surfaces whose content actually changed. A wl_shm
+     * buffer uploaded from the pool mapping instead owns gl_tex outright
+     * (egl_bo_handle stays 0); gl_specified says its storage exists, so
+     * later commits update it with glTexSubImage2D. */
     unsigned egl_bo_handle;
     unsigned gl_tex;
     int gl_dirty;
+    int gl_specified;
 };
 
 /* ---- compositor singleton ---------------------------------------------- */
@@ -386,9 +417,19 @@ struct compositor {
      * (SDL's Wayland backend, and so ScummVM) sees the real display. */
     int32_t mm_width, mm_height;
     struct gbm_device *gbm;
-    struct gbm_surface *gbm_surface;
+    /* CPU-composited scanout bos: plain LINEAR|SCANOUT dumb buffers the
+     * compositor paints and flips itself. Not a gbm_surface: a gbm_surface
+     * is an EGL window, whose front buffer exists only once eglSwapBuffers
+     * has rendered one (gbm_surface_lock_front_buffer fails before that,
+     * as in Mesa), and the CPU path never swaps. */
+    struct gbm_bo *cpu_bos[CPU_SCANOUT_BOS];
+    int cpu_bo_busy[CPU_SCANOUT_BOS];   /* on screen or flip in flight */
     struct gbm_bo *displayed_bo;   /* on-screen right now */
     struct gbm_bo *pending_bo;     /* flip queued, not yet complete */
+    /* The gbm_surface each of those bos came from (the GPU path's EGL
+     * window), or NULL for a CPU scanout bo, so it is released back to its
+     * owner. */
+    struct gbm_surface *displayed_surface, *pending_surface;
     int crtc_configured;           /* SetCrtc done once */
 
     /* Pre-rendered desktop background (pw × ph, tightly packed). */
@@ -522,14 +563,18 @@ static struct {
     struct surface *surface;       /* that surface once it mapped */
 } lk;
 
-/* ---- GPU compositing state (GLES via renderD128) ----------------------- */
+/* ---- GPU compositing state (GLES 2 on the GBM platform) --------------- */
 
 static struct {
     int active;                 /* GL probed OK; repaints render on the GPU */
     EGLDisplay dpy;
     EGLContext ctx;
     EGLSurface srf;
+    /* The EGL window's scanout bos: GL renders into them and the frame
+     * the swap produced is locked, added as a framebuffer and flipped. */
+    struct gbm_surface *gbm_surface;
     GLuint prog;
+    GLuint corners;             /* VBO: the quad's four (0|1, 0|1) corners */
     GLint loc_rect;             /* vec4 NDC x0,y0(top),x1,y1(bottom) */
     GLint loc_uv;               /* vec4 texture uv0.xy,uv1.xy */
     GLint loc_use_tex;          /* 0 = flat u_color; see glc_tex_mode */
@@ -1125,11 +1170,14 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         /* A GL client's buffer size, reported when it changes: it is how a
          * gate sees that the client really reallocated for the size it was
          * configured to (a tiled GL client that keeps its first buffer draws
-         * cropped, and no other marker changes). Only buffers rendered by GL
-         * -- the ones libwayland-egl marks Y_INVERT -- are reported: shm
-         * clients resize on every retile, and one line per window per theme
-         * switch would scroll the markers other gates read off the screen. */
-        if (s->xdg_toplevel && b->y_invert &&
+         * cropped, and no other marker changes). Only GL-rendered buffers --
+         * the linux-dmabuf buffers libwayland-egl publishes -- are reported:
+         * shm clients resize on every retile, and one line per window per
+         * theme switch would scroll the markers other gates read off the
+         * screen. (This once keyed on Y_INVERT, which libwayland-egl stopped
+         * sending when its fronts became top-down, and the marker went
+         * silent for every GL client.) */
+        if (s->xdg_toplevel && b->dmabuf &&
             (b->width != s->reported_bw || b->height != s->reported_bh)) {
             s->reported_bw = b->width;
             s->reported_bh = b->height;
@@ -1346,28 +1394,49 @@ static void surface_resource_destroy(struct wl_resource *r) {
 /* ====================================================================== */
 
 static void shm_pool_free(struct shm_pool *p) {
+    if (p->map) munmap(p->map, (size_t)p->size);
     if (p->fd >= 0) close(p->fd);
     free(p);
 }
 
-/* Import + map the client's dumb-bo on first use; the mapping aliases the
- * shared host buffer, so later reads see the client's latest pixels. A
- * buffer may sit at any offset in the pool (GTK packs several there), so
- * the import covers every row up to the buffer's end and the base pointer
- * walks to the buffer's own first row. */
+/* The DRM fourcc of a buffer's pixels. wl_shm's ARGB8888 (0) and XRGB8888
+ * (1) are the DRM fourccs of the same byte layout; linux-dmabuf buffers
+ * already carry a fourcc. */
+static uint32_t shm_buffer_fourcc(const struct shm_buffer *b) {
+    return b->format == WL_SHM_FORMAT_ARGB8888 ? DRM_FORMAT_ARGB8888
+         : b->format == WL_SHM_FORMAT_XRGB8888 ? DRM_FORMAT_XRGB8888
+         : b->format;
+}
+
+/* The CPU view of a buffer's pixels. A wl_shm buffer is its rows in the
+ * pool mapping, at its own offset (GTK packs several buffers into one
+ * pool); the mapping is MAP_SHARED, so each read sees the client's latest
+ * stores. Computed on every call because a pool resize remaps the pool.
+ *
+ * A linux-dmabuf buffer is imported + mapped through gbm on first use; the
+ * mapping aliases the bo's shared storage. It is imported as a
+ * single-plane FD_MODIFIER dma-buf at its own offset, stride and size: the
+ * mapping then starts at the buffer's first row. */
 static uint32_t *shm_buffer_pixels(struct shm_buffer *b, uint32_t *stride_px) {
+    if (!b->dmabuf) {
+        if (!b->pool->map) return NULL;
+        *stride_px = (uint32_t)b->stride / 4;
+        return (uint32_t *)((uint8_t *)b->pool->map + b->offset);
+    }
     if (b->import_failed) return NULL;
     if (!b->bo) {
-        uint32_t rows = (uint32_t)((b->offset + b->stride * b->height
-                                    + b->stride - 1) / b->stride);
-        struct gbm_import_fd_data d = {
-            .fd = b->pool->fd,
-            .width = (uint32_t)(b->stride / 4),
-            .height = rows,
-            .stride = (uint32_t)b->stride,
-            .format = DRM_FORMAT_XRGB8888,
+        uint32_t format = shm_buffer_fourcc(b);
+        struct gbm_import_fd_modifier_data d = {
+            .width = (uint32_t)b->width,
+            .height = (uint32_t)b->height,
+            .format = format,
+            .num_fds = 1,
+            .fds = {b->pool->fd},
+            .strides = {b->stride},
+            .offsets = {b->offset},
+            .modifier = DRM_FORMAT_MOD_LINEAR,
         };
-        b->bo = gbm_bo_import(g.gbm, GBM_BO_IMPORT_FD, &d,
+        b->bo = gbm_bo_import(g.gbm, GBM_BO_IMPORT_FD_MODIFIER, &d,
                               GBM_BO_USE_SCANOUT | GBM_BO_USE_LINEAR);
         if (!b->bo) {
             perror("gbm_bo_import");
@@ -1375,7 +1444,7 @@ static uint32_t *shm_buffer_pixels(struct shm_buffer *b, uint32_t *stride_px) {
             return NULL;
         }
         uint32_t ms = 0;
-        unsigned char *base = gbm_bo_map(b->bo, 0, 0, d.width, rows, 0, &ms,
+        unsigned char *base = gbm_bo_map(b->bo, 0, 0, d.width, d.height, 0, &ms,
                                          &b->map_data);
         if (!base) {
             perror("gbm_bo_map");
@@ -1384,10 +1453,7 @@ static uint32_t *shm_buffer_pixels(struct shm_buffer *b, uint32_t *stride_px) {
             b->import_failed = 1;
             return NULL;
         }
-        /* The mapping's own stride is what separates its rows, so the
-         * client's offset is walked as whole rows plus the remainder. */
-        b->pixels = (uint32_t *)(base + (size_t)(b->offset / b->stride) * ms
-                                 + (size_t)(b->offset % b->stride));
+        b->pixels = (uint32_t *)base;
         b->map_stride_px = ms / 4;
     }
     *stride_px = b->map_stride_px;
@@ -1419,6 +1485,9 @@ static void buffer_resource_destroy(struct wl_resource *r) {
     /* GEM_CLOSE on the EGL fd; the host deletes the bound WebGLTexture
      * when the bo's refcount hits zero (the bo owns the texture). */
     if (b->egl_bo_handle) wpkEglCloseBoHandle(glc.dpy, b->egl_bo_handle);
+    /* An uploaded texture belongs to this buffer alone. Once the GPU path
+     * has fallen back, the EGL session (and every name in it) is gone. */
+    else if (b->gl_tex && glc.active) glDeleteTextures(1, &b->gl_tex);
     if (--b->pool->refcount == 0) shm_pool_free(b->pool);
     free(b);
 }
@@ -1441,12 +1510,12 @@ static void pool_create_buffer(struct wl_client *client, struct wl_resource *r,
                                "unsupported wl_shm format");
         return;
     }
-    /* Geometry is untrusted client input, and the import maps exactly
-     * stride * height bytes (libgbm_stub sets bo->size from the same two
-     * numbers). blit_surface clips columns against the OUTPUT width, never
-     * against the source stride, so a stride under width * 4 makes it memcpy
-     * past the end of the mapping and composite the overrun onto the screen.
-     * These are upstream wl_shm's own checks (wl_shm_pool_create_buffer). */
+    /* Geometry is untrusted client input: the buffer's rows are read from
+     * the pool mapping, which is exactly the pool's size. blit_surface clips
+     * columns against the OUTPUT width, never against the source stride, so
+     * a stride under width * 4 makes it memcpy past the end of the buffer
+     * and composite the overrun onto the screen. These are upstream wl_shm's
+     * own checks (wl_shm_pool_create_buffer). */
     if (width <= 0 || height <= 0) {
         wl_resource_post_error(r, WL_SHM_ERROR_INVALID_STRIDE,
                                "buffer size %dx%d is not positive",
@@ -1483,29 +1552,37 @@ static void pool_create_buffer(struct wl_client *client, struct wl_resource *r,
 static void pool_destroy_req(struct wl_client *c, struct wl_resource *r) {
     wl_resource_destroy(r);
 }
-/* Size of the object behind a pool fd, or -1. Clients back pools with
- * dumb-bo prime fds, which report their size through lseek(SEEK_END) as a
- * Linux dma-buf does. The claimed pool size is client input; buffer
- * geometry is validated against it, so it must never exceed this. */
-static off_t pool_backing_size(int fd) {
-    off_t end = lseek(fd, 0, SEEK_END);
-    if (end < 0) return -1;
-    lseek(fd, 0, SEEK_SET);
-    return end;
+/* Map `size` bytes of a pool fd read-only and shared, as libwayland's
+ * wl_shm does. MAP_SHARED is what lets the client's later stores reach us:
+ * the kernel publishes them into this mapping at our syscall boundaries.
+ * Bytes the claimed size reaches past the end of the fd's object read as
+ * zeros on this kernel (Linux raises SIGBUS there, which libwayland traps);
+ * either way they never fault the compositor. */
+static void *pool_map(int fd, int32_t size) {
+    void *map = mmap(NULL, (size_t)size, PROT_READ, MAP_SHARED, fd, 0);
+    return map == MAP_FAILED ? NULL : map;
 }
 
 static void pool_resize(struct wl_client *c, struct wl_resource *r,
                         int32_t size) {
     struct shm_pool *p = wl_resource_get_user_data(r);
-    if (size <= p->size) return;   /* pools only grow */
-    /* A resize claims the fd's object grew; a dumb bo cannot, so a claim
-     * past its real size would let create_buffer accept geometry the
-     * import then reads beyond. */
-    if ((off_t)size > pool_backing_size(p->fd)) {
+    if (size < p->size) {
         wl_resource_post_error(r, WL_SHM_ERROR_INVALID_FD,
-                               "pool size %d exceeds the fd's object", size);
+                               "shrinking pool invalid");
         return;
     }
+    if (size == p->size) return;
+    /* Buffers locate their rows through p->map on every read, so the old
+     * mapping can go as soon as the new one exists. */
+    void *map = pool_map(p->fd, size);
+    if (!map) {
+        wl_resource_post_error(r, WL_SHM_ERROR_INVALID_FD,
+                               "failed to map the resized pool: %s",
+                               strerror(errno));
+        return;
+    }
+    munmap(p->map, (size_t)p->size);
+    p->map = map;
     p->size = size;
 }
 static const struct wl_shm_pool_interface pool_impl = {
@@ -1520,21 +1597,33 @@ static void pool_resource_destroy(struct wl_resource *r) {
 
 static void shm_create_pool(struct wl_client *client, struct wl_resource *r,
                             uint32_t id, int32_t fd, int32_t size) {
-    off_t backing = pool_backing_size(fd);
-    if (size <= 0 || backing < 0 || (off_t)size > backing) {
+    if (size <= 0) {
+        wl_resource_post_error(r, WL_SHM_ERROR_INVALID_STRIDE,
+                               "invalid size (%d)", size);
+        close(fd);
+        return;
+    }
+    void *map = pool_map(fd, size);
+    if (!map) {
         wl_resource_post_error(r, WL_SHM_ERROR_INVALID_FD,
-                               "pool size %d does not fit the fd's object", size);
+                               "failed mmap fd %d: %s", fd, strerror(errno));
         close(fd);
         return;
     }
     struct shm_pool *p = calloc(1, sizeof(*p));
-    if (!p) { close(fd); wl_client_post_no_memory(client); return; }
+    if (!p) {
+        munmap(map, (size_t)size);
+        close(fd);
+        wl_client_post_no_memory(client);
+        return;
+    }
     p->fd = fd;
     p->size = size;
     p->refcount = 1;
+    p->map = map;
     struct wl_resource *pr = wl_resource_create(
         client, &wl_shm_pool_interface, wl_resource_get_version(r), id);
-    if (!pr) { close(fd); free(p); wl_client_post_no_memory(client); return; }
+    if (!pr) { shm_pool_free(p); wl_client_post_no_memory(client); return; }
     wl_resource_set_implementation(pr, &pool_impl, p, pool_resource_destroy);
 }
 static void shm_release(struct wl_client *c, struct wl_resource *r) {
@@ -1597,6 +1686,31 @@ static struct shm_buffer *dmabuf_make_buffer(struct wl_client *c,
         *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT;
         return NULL;
     }
+    /* Refuse at creation a buffer no import path can sample, as a client
+     * expects (linux-dmabuf: `failed`, or invalid_wl_buffer for
+     * create_immed), rather than accepting it and never showing it: a plane
+     * outside its dma-buf, or a GPU-tier buffer made in storage the claimed
+     * format does not name. gbm_bo_import applies both checks (the second
+     * through the kernel's DRM_IOCTL_WPK_CHECK_BO_FORMAT), as the GL and
+     * CPU imports of the buffer later do. */
+    if (g.gbm) {
+        struct gbm_import_fd_modifier_data probe_data = {
+            .width = (uint32_t)width,
+            .height = (uint32_t)height,
+            .format = format,
+            .num_fds = 1,
+            .fds = {p->fd},
+            .strides = {p->stride},
+            .offsets = {p->offset},
+            .modifier = DRM_FORMAT_MOD_LINEAR,
+        };
+        struct gbm_bo *probe = gbm_bo_import(g.gbm, GBM_BO_IMPORT_FD_MODIFIER, &probe_data, 0);
+        if (!probe) {
+            *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_WL_BUFFER;
+            return NULL;
+        }
+        gbm_bo_destroy(probe);
+    }
     struct shm_pool *pool = calloc(1, sizeof(*pool));
     struct shm_buffer *b = calloc(1, sizeof(*b));
     if (!pool || !b) {
@@ -1614,6 +1728,7 @@ static struct shm_buffer *dmabuf_make_buffer(struct wl_client *c,
     b->height = height;
     b->stride = p->stride;
     b->format = format;
+    b->dmabuf = 1;
     p->fd = -1;   /* the pool owns the fd now */
     return b;
 }
@@ -3769,38 +3884,36 @@ static void ext_control_mgr_bind(struct wl_client *c, void *data, uint32_t ver,
 /* GPU compositing: GLES quads over imported client textures              */
 /* ====================================================================== */
 
-/* One quad per draw: the vertex shader expands gl_VertexID (triangle
- * strip, no VBO) across a uniform NDC rect; the fragment shader samples
- * the surface texture or fills a flat color for the focus border. An
- * XRGB/ARGB texture holds [B,G,R,X] bytes uploaded verbatim as RGBA, so it
- * is read with the .bgr swizzle exactly like the host's webgl2-scanout
- * presenter; an XBGR/ABGR one already holds RGBA order and is read as is
- * (see glc_tex_mode). */
+/* One quad per draw: the vertex shader maps the quad's corner (a_t, from a
+ * four-vertex triangle-strip VBO) across a uniform NDC rect; the fragment
+ * shader samples the surface texture or fills a flat color for the focus
+ * border. ESSL 1.00, as GLES 2.0 requires. An XRGB/ARGB texture holds
+ * [B,G,R,X] bytes uploaded verbatim as RGBA, so it is read with the .bgr
+ * swizzle exactly like the host's webgl2-scanout presenter; an XBGR/ABGR
+ * one already holds RGBA order and is read as is (see glc_tex_mode). */
 static const char GLC_VS[] =
-    "#version 300 es\n"
+    "attribute vec2 a_t;\n"
     "uniform vec4 u_rect;\n"
     "uniform vec4 u_uv;\n"
-    "out vec2 v_uv;\n"
+    "varying vec2 v_uv;\n"
     "void main() {\n"
-    "  vec2 t = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));\n"
-    "  v_uv = mix(u_uv.xy, u_uv.zw, t);\n"
-    "  vec2 p = mix(u_rect.xy, u_rect.zw, t);\n"
+    "  v_uv = mix(u_uv.xy, u_uv.zw, a_t);\n"
+    "  vec2 p = mix(u_rect.xy, u_rect.zw, a_t);\n"
     "  gl_Position = vec4(p, 0.0, 1.0);\n"
     "}\n";
 static const char GLC_FS[] =
-    "#version 300 es\n"
     "precision mediump float;\n"
     "uniform sampler2D u_tex;\n"
     "uniform vec4 u_color;\n"
     "uniform int u_use_tex;\n"
-    "in vec2 v_uv;\n"
-    "out vec4 o_color;\n"
+    "varying vec2 v_uv;\n"
     "void main() {\n"
-    "  if (u_use_tex == 0) { o_color = u_color; return; }\n"
-    "  vec4 t = texture(u_tex, v_uv);\n"
+    "  if (u_use_tex == 0) { gl_FragColor = u_color; return; }\n"
+    "  vec4 t = texture2D(u_tex, v_uv);\n"
     "  vec3 c = u_use_tex >= 3 ? t.rgb : t.bgr;\n"
-    "  o_color = vec4(c, (u_use_tex == 2 || u_use_tex == 4) ? t.a : 1.0);\n"
+    "  gl_FragColor = vec4(c, (u_use_tex == 2 || u_use_tex == 4) ? t.a : 1.0);\n"
     "}\n";
+#define GLC_ATTRIB_T 0
 
 /* Compile one shader; returns 0 on failure. On a headless host the sync
  * GL queries fail (EIO) and COMPILE_STATUS reads back 0, so this doubles
@@ -3890,24 +4003,87 @@ static void glc_draw_solid(uint32_t argb, int32_t x, int32_t y,
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
-/* Import-once + rebind-on-commit texture for a client buffer. Returns 0
- * when the buffer has no GL representation; the caller draws the rest of
- * the frame without it. NOTE: rebinding flushes the cmdbuf, so this must
- * run BEFORE the frame's draw sequence starts — a flush mid-frame would
- * present a half-composited desktop. */
-static unsigned shm_buffer_gl_texture(struct shm_buffer *b) {
-    /* The texture is the whole imported bo, so a buffer that starts partway
-     * into the pool has no GL representation — the CPU path reads it. */
-    if (b->offset != 0) return 0;
-    if (!b->egl_bo_handle) {
-        b->egl_bo_handle = wpkEglImportDmabufHandle(glc.dpy, b->pool->fd);
-        if (!b->egl_bo_handle) return 0;
+/* GLES 2.0 section 3.8.2: a non-power-of-two texture is complete only
+ * with CLAMP_TO_EDGE wrapping and a non-mipmap minification filter, and
+ * client buffers and the wallpaper are any size. Set both on every bind
+ * of a texture the compositor samples. */
+static void glc_texture_params(unsigned tex) {
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
+/* Upload-on-commit texture for a wl_shm buffer, read from the pool
+ * mapping. The texels are the buffer's bytes as they lie in memory
+ * ([B,G,R,A] for ARGB/XRGB8888), uploaded as GL_RGBA unconverted: the same
+ * texel layout an imported XRGB/ARGB bo has, so glc_tex_mode's swizzle
+ * applies unchanged. GL_UNPACK_ROW_LENGTH_EXT carries a stride wider than
+ * the row. Returns 0 when there is nothing to upload. */
+static unsigned shm_buffer_gl_upload(struct shm_buffer *b) {
+    if (!b->pool->map) return 0;
+    if (!b->gl_tex) {
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        if (!tex) return 0;
+        b->gl_tex = tex;
+        b->gl_specified = 0;
         b->gl_dirty = 1;
     }
+    if (b->gl_dirty) {
+        const void *rows = (const uint8_t *)b->pool->map + b->offset;
+        glBindTexture(GL_TEXTURE_2D, b->gl_tex);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, b->stride / 4);
+        if (!b->gl_specified) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, b->width, b->height, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, rows);
+            b->gl_specified = 1;
+        } else {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, b->width, b->height,
+                            GL_RGBA, GL_UNSIGNED_BYTE, rows);
+        }
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 0);
+        glc_texture_params(b->gl_tex);
+        b->gl_dirty = 0;
+    }
+    return b->gl_tex;
+}
+
+/* The texture for a client buffer, imported once and rebound on commit
+ * when its pool fd is a dma-buf at offset 0 (a linux-dmabuf buffer, or a
+ * wl_shm pool a client allocated as a DRM buffer), else uploaded from the
+ * wl_shm pool mapping. Returns 0 when the buffer has no GL representation;
+ * the caller draws the rest of the frame without it. NOTE: rebinding
+ * flushes the cmdbuf, so this must run BEFORE the frame's draw sequence
+ * starts — a flush mid-frame would present a half-composited desktop. */
+static unsigned shm_buffer_gl_texture(struct shm_buffer *b) {
+    /* An imported texture is the whole bo, so a wl_shm buffer that starts
+     * partway into its pool, or whose pool is no dma-buf, is uploaded from
+     * the mapping instead. A linux-dmabuf buffer has no mapping to fall
+     * back to. */
+    if (!b->dmabuf && (b->offset != 0 || b->pool->gl_import_failed))
+        return shm_buffer_gl_upload(b);
+    if (b->dmabuf && b->offset != 0) return 0;
+    if (!b->egl_bo_handle && !b->gl_tex) {
+        /* Import as the client's real format: a GPU-tier buffer must have
+         * been made in storage that format names (libEGL refuses otherwise,
+         * and so does the CPU path's gbm_bo_import). */
+        b->egl_bo_handle = wpkEglImportDmabufHandle(glc.dpy, b->pool->fd, shm_buffer_fourcc(b));
+        if (!b->egl_bo_handle) {
+            if (b->dmabuf) return 0;
+            b->pool->gl_import_failed = 1;
+            return shm_buffer_gl_upload(b);
+        }
+        b->gl_dirty = 1;
+    }
+    if (!b->egl_bo_handle) return shm_buffer_gl_upload(b);
     if (b->gl_dirty || !b->gl_tex) {
         unsigned tex = wpkEglBindBoTexture(glc.dpy, b->egl_bo_handle,
                                            GL_TEXTURE_2D);
         if (!tex) return 0;
+        glc_texture_params(tex);
         b->gl_tex = tex;
         b->gl_dirty = 0;
     }
@@ -3935,6 +4111,7 @@ static int gl_wallpaper_upload(void) {
     unsigned tex = wpkEglBindBoTexture(glc.dpy, wallpaper_bo_handle,
                                        GL_TEXTURE_2D);
     if (!tex) return -1;
+    glc_texture_params(tex);
     glc.wallpaper_tex = tex;
     return 0;
 }
@@ -3948,7 +4125,7 @@ static int setup_gl_wallpaper(void) {
     if (!wallpaper_bo) return -1;
     int prime = gbm_bo_get_fd(wallpaper_bo);
     if (prime < 0) { gbm_bo_destroy(wallpaper_bo); return -1; }
-    wallpaper_bo_handle = wpkEglImportDmabufHandle(glc.dpy, prime);
+    wallpaper_bo_handle = wpkEglImportDmabufHandle(glc.dpy, prime, GBM_FORMAT_XRGB8888);
     close(prime);
     if (!wallpaper_bo_handle) { gbm_bo_destroy(wallpaper_bo); return -1; }
     if (gl_wallpaper_upload() != 0) {
@@ -3959,45 +4136,82 @@ static int setup_gl_wallpaper(void) {
     return 0;
 }
 
+/* Undo a partial setup_gl: no bo of the GPU surface was locked yet. */
+static void setup_gl_fail(void) {
+    eglTerminate(glc.dpy);
+    if (glc.gbm_surface) gbm_surface_destroy(glc.gbm_surface);
+    glc.gbm_surface = NULL;
+}
+
 /* Probe + bring up the GPU compositing path. Any failure leaves
  * glc.active = 0 and the compositor on the CPU path — expected on Node
- * (no WebGL2) and forced by WLC_NO_GPU=1. */
+ * (no WebGL2) and forced by WLC_NO_GPU=1.
+ *
+ * This is the ordinary KMS compositor path (kmscube, SDL's KMSDRM video
+ * driver): an EGL display on the compositor's own GBM device, an
+ * OpenGL ES 2.0 context, and an EGL window on a GBM surface whose bos
+ * this process, the DRM master, scans out. EGL offers 8-bit ARGB and ABGR
+ * visuals; ARGB8888 has the scanout's [B,G,R,A] byte order. */
 static void setup_gl(void) {
     if (getenv("WLC_NO_GPU")) return;
 
-    glc.dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    glc.dpy = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, g.gbm, NULL);
+    if (glc.dpy == EGL_NO_DISPLAY) return;
     EGLint maj = 0, min = 0;
     if (!eglInitialize(glc.dpy, &maj, &min)) return;
 
-    static const EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 3,
+    static const EGLint cfg_attrs[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
+        EGL_NONE };
+    EGLConfig configs[64], config = NULL;
+    EGLint n = 0;
+    if (!eglChooseConfig(glc.dpy, cfg_attrs, configs, 64, &n)) n = 0;
+    for (EGLint i = 0; i < n && !config; i++) {
+        EGLint visual = 0;
+        if (eglGetConfigAttrib(glc.dpy, configs[i], EGL_NATIVE_VISUAL_ID, &visual)
+            && (uint32_t)visual == GBM_FORMAT_ARGB8888)
+            config = configs[i];
+    }
+    if (!config) {
+        fprintf(stderr, "wlcompositor: no ARGB8888 GLES 2 window config\n");
+        setup_gl_fail();
+        return;
+    }
+
+    static const EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2,
                                         EGL_NONE };
-    glc.ctx = eglCreateContext(glc.dpy, NULL, EGL_NO_CONTEXT, ctx_attrs);
-    if (glc.ctx == EGL_NO_CONTEXT) { eglTerminate(glc.dpy); return; }
-    /* The drawing buffer must be mode-sized; we create the surface
-     * before the first ADDFB, so the host cannot infer the size — pass
-     * it explicitly (wpk libEGL honors EGL_WIDTH/EGL_HEIGHT). */
-    const EGLint srf_attrs[] = { EGL_WIDTH, (EGLint)g.pw,
-                                 EGL_HEIGHT, (EGLint)g.ph, EGL_NONE };
-    glc.srf = eglCreateWindowSurface(glc.dpy, NULL, 0, srf_attrs);
-    if (glc.srf == EGL_NO_SURFACE) { eglTerminate(glc.dpy); return; }
+    glc.ctx = eglCreateContext(glc.dpy, config, EGL_NO_CONTEXT, ctx_attrs);
+    if (glc.ctx == EGL_NO_CONTEXT) { setup_gl_fail(); return; }
+    glc.gbm_surface = gbm_surface_create(g.gbm, g.pw, g.ph, GBM_FORMAT_ARGB8888,
+                                         GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    if (!glc.gbm_surface) { setup_gl_fail(); return; }
+    glc.srf = eglCreatePlatformWindowSurface(glc.dpy, config, glc.gbm_surface, NULL);
+    if (glc.srf == EGL_NO_SURFACE) {
+        fprintf(stderr, "wlcompositor: EGL window surface failed: 0x%x\n", eglGetError());
+        setup_gl_fail();
+        return;
+    }
     if (!eglMakeCurrent(glc.dpy, glc.srf, glc.srf, glc.ctx)) {
-        eglTerminate(glc.dpy);
+        setup_gl_fail();
         return;
     }
 
     GLuint vs = glc_compile(GL_VERTEX_SHADER, GLC_VS);
-    if (!vs) { eglTerminate(glc.dpy); return; }   /* headless probe exit */
+    if (!vs) { setup_gl_fail(); return; }   /* headless probe exit */
     GLuint fs = glc_compile(GL_FRAGMENT_SHADER, GLC_FS);
-    if (!fs) { eglTerminate(glc.dpy); return; }
+    if (!fs) { setup_gl_fail(); return; }
     glc.prog = glCreateProgram();
     glAttachShader(glc.prog, vs);
     glAttachShader(glc.prog, fs);
+    glBindAttribLocation(glc.prog, GLC_ATTRIB_T, "a_t");
     glLinkProgram(glc.prog);
     GLint linked = 0;
     glGetProgramiv(glc.prog, GL_LINK_STATUS, &linked);
     if (!linked) {
         fprintf(stderr, "wlcompositor: GL program link failed\n");
-        eglTerminate(glc.dpy);
+        setup_gl_fail();
         return;
     }
     glUseProgram(glc.prog);
@@ -4006,6 +4220,13 @@ static void setup_gl(void) {
     glc.loc_use_tex = glGetUniformLocation(glc.prog, "u_use_tex");
     glc.loc_color = glGetUniformLocation(glc.prog, "u_color");
     glUniform1i(glGetUniformLocation(glc.prog, "u_tex"), 0);
+    /* Corner order (0,0) (1,0) (0,1) (1,1) draws the rect as a strip. */
+    static const GLfloat corners[] = { 0, 0, 1, 0, 0, 1, 1, 1 };
+    glGenBuffers(1, &glc.corners);
+    glBindBuffer(GL_ARRAY_BUFFER, glc.corners);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(corners), corners, GL_STATIC_DRAW);
+    glVertexAttribPointer(GLC_ATTRIB_T, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+    glEnableVertexAttribArray(GLC_ATTRIB_T);
     glViewport(0, 0, (GLsizei)g.pw, (GLsizei)g.ph);
     /* Source-over with a premultiplied source, matching wl_shm ARGB8888.
      * Opaque draws emit alpha 1 and so still overwrite. */
@@ -4014,7 +4235,7 @@ static void setup_gl(void) {
 
     if (setup_gl_wallpaper() != 0) {
         fprintf(stderr, "wlcompositor: GL wallpaper staging failed\n");
-        eglTerminate(glc.dpy);
+        setup_gl_fail();
         return;
     }
     glc.active = 1;
@@ -4115,15 +4336,11 @@ static int repaint_gl(void) {
                          glc_px(g.layers[i]->x),
                          glc_px(g.layers[i]->y),
                          glc_px(g.layers[i]->w), glc_px(g.layers[i]->h));
-    /* A failed present (context loss) must degrade like a failed texture
-     * bind — returning 1 here would keep glc.active set and freeze the
-     * canvas on the last GL frame, the exact failure the CPU fallback
-     * exists to prevent. */
-    if (eglSwapBuffers(glc.dpy, glc.srf) != EGL_TRUE) return 0;
-
     /* One-shot proof that client pixels crossed the process boundary,
      * same contract as the CPU path's sample — but read back from the
-     * composited GL framebuffer (glReadPixels via the sync query path). */
+     * composited GL framebuffer (glReadPixels via the sync query path).
+     * Read before the swap: afterwards the window's back buffer contents
+     * are undefined (EGL_BUFFER_DESTROYED). */
     if (top && !g.sampled) {
         /* The sample point is logical (the gates read these coordinates);
          * the framebuffer it is read from is device pixels. */
@@ -4141,7 +4358,11 @@ static int repaint_gl(void) {
             g.sampled = 1;
         }
     }
-    return 1;
+    /* A failed present (context loss) must degrade like a failed texture
+     * bind — returning 1 here would keep glc.active set and freeze the
+     * output on the last GL frame, the exact failure the CPU fallback
+     * exists to prevent. */
+    return eglSwapBuffers(glc.dpy, glc.srf) == EGL_TRUE;
 }
 
 /* Render one frame: lock a free scanout bo, paint wallpaper + every mapped
@@ -4150,31 +4371,55 @@ static int repaint_gl(void) {
  * Modeset pane, a remote desktop) already shows the host pointer, and the
  * input bridge maps it absolutely so the two would sit on top of each
  * other. */
+/* Hand a scanout bo back to whoever owns it: the GPU path's EGL window,
+ * or (owner NULL) the CPU ring. */
+static void scanout_release(struct gbm_surface *owner, struct gbm_bo *bo) {
+    if (owner) {
+        gbm_surface_release_buffer(owner, bo);
+        return;
+    }
+    for (int i = 0; i < CPU_SCANOUT_BOS; i++)
+        if (g.cpu_bos[i] == bo) g.cpu_bo_busy[i] = 0;
+}
+
+/* A CPU scanout bo that is neither on screen nor queued, or NULL. */
+static struct gbm_bo *cpu_scanout_acquire(void) {
+    for (int i = 0; i < CPU_SCANOUT_BOS; i++)
+        if (!g.cpu_bo_busy[i]) {
+            g.cpu_bo_busy[i] = 1;
+            return g.cpu_bos[i];
+        }
+    return NULL;
+}
+
 static void repaint(void) {
-    if (!gbm_surface_has_free_buffers(g.gbm_surface)) return; /* retry on flip */
+    struct gbm_bo *bo = NULL;
+    struct gbm_surface *scanout = NULL;
 
-    struct gbm_bo *bo = gbm_surface_lock_front_buffer(g.gbm_surface);
-    if (!bo) return;
-
-    /* GPU path first. The scanout bo's CONTENT is stale under it (the
-     * GL frame goes straight to the display canvas; the pump presenter
-     * stood down when our context claimed it), but the bo still cycles
-     * through ADDFB + PAGE_FLIP below — that is the frame clock for
-     * wl_surface.frame callbacks and the kernel's flip counters. A
-     * runtime GL failure degrades to the CPU path permanently. */
-    if (glc.active && !repaint_gl()) {
-        fprintf(stderr,
-                "wlcompositor: GPU compositing failed; falling back to CPU\n");
-        glc.active = 0;
-        /* Tear the EGL session down so the host hands the display canvas
-         * back to its vblank-pump presenter — otherwise the canvas would
-         * freeze on the last GL frame while we CPU-composite into the
-         * scanout bo. Also invalidates every egl_bo_handle; the CPU path
-         * never touches them and wpkEglCloseBoHandle no-ops once the
-         * session fd is gone. */
-        eglTerminate(glc.dpy);
+    /* GPU path first: render into the EGL window's back buffer, swap, and
+     * scan out the bo the swap produced. A runtime GL failure degrades to
+     * the CPU path permanently, in this same repaint. */
+    if (glc.active) {
+        if (!gbm_surface_has_free_buffers(glc.gbm_surface)) return; /* retry on flip */
+        if (repaint_gl()) {
+            bo = gbm_surface_lock_front_buffer(glc.gbm_surface);
+            scanout = glc.gbm_surface;
+        }
+        if (!bo) {
+            fprintf(stderr,
+                    "wlcompositor: GPU compositing failed; falling back to CPU\n");
+            glc.active = 0;
+            /* Tear the EGL session down. This also invalidates every
+             * egl_bo_handle; the CPU path never touches them and
+             * wpkEglCloseBoHandle no-ops once the session fd is gone. A
+             * GPU bo still on screen or in flight is released to its
+             * surface when the next CPU frame replaces it. */
+            eglTerminate(glc.dpy);
+        }
     }
     if (!glc.active) {
+        bo = cpu_scanout_acquire();
+        if (!bo) return;   /* retry on flip */
         uint32_t stride = 0;
         void *map_data = NULL;
         uint32_t *dst =
@@ -4184,7 +4429,7 @@ static void repaint(void) {
              * visible error — say so loudly. */
             fprintf(stderr, "wlcompositor: gbm_bo_map failed: %s\n",
                     strerror(errno));
-            gbm_surface_release_buffer(g.gbm_surface, bo);
+            scanout_release(NULL, bo);
             return;
         }
         uint32_t stride_px = stride / 4;
@@ -4237,7 +4482,7 @@ static void repaint(void) {
     if (!fb_id) {
         fprintf(stderr, "wlcompositor: drmModeAddFB failed: %s\n",
                 strerror(errno));
-        gbm_surface_release_buffer(g.gbm_surface, bo);
+        scanout_release(scanout, bo);
         return;
     }
 
@@ -4245,11 +4490,12 @@ static void repaint(void) {
         if (drmModeSetCrtc(g.card_fd, g.crtc_id, fb_id, 0, 0,
                            &g.connector_id, 1, &g.mode) < 0) {
             perror("drmModeSetCrtc");
-            gbm_surface_release_buffer(g.gbm_surface, bo);
+            scanout_release(scanout, bo);
             return;
         }
         g.crtc_configured = 1;
         g.displayed_bo = bo;
+        g.displayed_surface = scanout;
         printf("FLIP fb=%u first=1\n", fb_id);
         fflush(stdout);
         send_all_frame_callbacks();
@@ -4262,10 +4508,11 @@ static void repaint(void) {
         if (drmModePageFlip(g.card_fd, g.crtc_id, fb_id,
                             DRM_MODE_PAGE_FLIP_EVENT, NULL) < 0) {
             perror("drmModePageFlip");
-            gbm_surface_release_buffer(g.gbm_surface, bo);
+            scanout_release(scanout, bo);
             return;
         }
         g.pending_bo = bo;
+        g.pending_surface = scanout;
     }
 }
 
@@ -4286,9 +4533,11 @@ static void on_flip(int fd, unsigned int seq, unsigned int sec,
                     unsigned int usec, void *user_data) {
     if (g.pending_bo) {
         if (g.displayed_bo)
-            gbm_surface_release_buffer(g.gbm_surface, g.displayed_bo);
+            scanout_release(g.displayed_surface, g.displayed_bo);
         g.displayed_bo = g.pending_bo;
+        g.displayed_surface = g.pending_surface;
         g.pending_bo = NULL;
+        g.pending_surface = NULL;
         send_all_frame_callbacks();
         send_all_presentation_feedback(sec, usec * 1000u, seq);
         /* The frame that just flipped was drawn locked, so nothing unlocked
@@ -5716,10 +5965,11 @@ static int setup_drm(void) {
      * are valid for ADDFB2 on card0, so no PRIME round-trip is needed. */
     g.gbm = gbm_create_device(g.card_fd);
     if (!g.gbm) { fprintf(stderr, "gbm_create_device\n"); return -1; }
-    g.gbm_surface = gbm_surface_create(
-        g.gbm, g.pw, g.ph, GBM_FORMAT_XRGB8888,
-        GBM_BO_USE_SCANOUT | GBM_BO_USE_LINEAR);
-    if (!g.gbm_surface) { fprintf(stderr, "gbm_surface_create\n"); return -1; }
+    for (int i = 0; i < CPU_SCANOUT_BOS; i++) {
+        g.cpu_bos[i] = gbm_bo_create(g.gbm, g.pw, g.ph, GBM_FORMAT_XRGB8888,
+                                     GBM_BO_USE_SCANOUT | GBM_BO_USE_LINEAR);
+        if (!g.cpu_bos[i]) { perror("gbm_bo_create (scanout)"); return -1; }
+    }
     return 0;
 }
 

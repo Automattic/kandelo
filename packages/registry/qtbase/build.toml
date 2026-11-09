@@ -9,7 +9,6 @@ revision    = 10
 inputs = [
   "packages/registry/qtbase/build-qtbase.sh",
   "packages/registry/qtbase/src/qmutex-honour-qt-linuxbase.patch",
-  "packages/registry/qtbase/src/wayland-shm-gbm-pool.patch",
   "packages/registry/qtbase/src/forkfd-generic-on-wasm.patch",
   "packages/registry/qtbase/src/wayland-fd-notifier-on-wasm.patch",
   "packages/registry/qtbase/src/dbus-manager-on-thread-on-wasm.patch",

@@ -1,5 +1,39 @@
-import { expect, test } from "../playwright-test";
+import { test } from "./support/persistent-page";
+import { expect, type Locator, type Page } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
+
+/** Sample the actually presented canvas, including OffscreenCanvas scanout. */
+async function fluidPixels(page: Page, canvas: Locator): Promise<number[]> {
+  const png = await canvas.screenshot();
+  return page.evaluate(async (base64) => {
+    const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    const context = new OffscreenCanvas(64, 64).getContext("2d")!;
+    context.drawImage(bitmap, 0, 0, 64, 64);
+    bitmap.close();
+    return Array.from(context.getImageData(0, 0, 64, 64).data);
+  }, png.toString("base64"));
+}
+
+function coloredPixels(pixels: number[]): number {
+  let count = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    const high = Math.max(pixels[i], pixels[i + 1], pixels[i + 2]);
+    const low = Math.min(pixels[i], pixels[i + 1], pixels[i + 2]);
+    if (high > 64 && high - low > 40) count++;
+  }
+  return count;
+}
+
+function changedPixels(before: number[], after: number[]): number {
+  let count = 0;
+  for (let i = 0; i < before.length; i += 4) {
+    if (Math.max(Math.abs(before[i] - after[i]), Math.abs(before[i + 1] - after[i + 1]),
+      Math.abs(before[i + 2] - after[i + 2])) > 8)
+      count++;
+  }
+  return count;
+}
 
 test("Kandelo modeset demo commits PAGE_FLIPs through /dev/dri/card0", async ({ page }) => {
   test.setTimeout(300_000);
@@ -17,16 +51,42 @@ test("Kandelo modeset demo commits PAGE_FLIPs through /dev/dri/card0", async ({ 
     .poll(() => modesetControls.innerText(), { timeout: 180_000 })
     .toMatch(/[1-9]\d*\s+flips/i);
 
-  // Flip-counter ticks prove PAGE_FLIP reached the kernel; the canvas
-  // screenshot proves WebGL2 actually compiled+rendered. Without the
-  // second gate, a silent shader compile failure would leave the canvas
-  // pane-background-colored forever and the test would still pass.
-  const canvas = page.locator("canvas").first();
+  const canvas = page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas").first();
   await expect(canvas).toBeVisible({ timeout: 60_000 });
+  // Locator screenshots include overlays. A download card is not fluid dye.
+  await expect(page.getByRole("complementary", { name: "Download status" }))
+    .toBeHidden({ timeout: 60_000 });
+
+  // Let the seeded startup dye fall below the SAME strict color criterion;
+  // fresh color after this boundary must be replenished by ordinary input.
+  await expect.poll(async () => coloredPixels(await fluidPixels(page, canvas)),
+    { timeout: 60_000, intervals: [1_000, 2_000, 5_000] }).toBe(0);
+  const flips = async () => Number(/(\d+)\s+flips/i.exec(await modesetControls.innerText())?.[1] ?? 0);
+  const box = (await canvas.boundingBox())!;
+  await canvas.focus();
+  await page.mouse.move(box.x + box.width * 0.45, box.y + box.height * 0.55);
+  let first: number[] = [];
+  let right = true;
+  try {
+    await page.mouse.down();
+    // A fast DOWN/move/UP can fit between guest frames: drain_mouse then
+    // sees the final released state and emits no splat. Keep moving while
+    // held and observe real PAGE_FLIPs before releasing, without a sleep.
+    await expect.poll(async () => {
+      const beforeMotion = await flips();
+      await page.mouse.move(box.x + box.width * (right ? 0.51 : 0.45),
+        box.y + box.height * (right ? 0.51 : 0.55), { steps: 8 });
+      right = !right;
+      await expect.poll(flips, { timeout: 10_000, intervals: [50, 100, 250] })
+        .toBeGreaterThan(beforeMotion + 1);
+      first = await fluidPixels(page, canvas);
+      return coloredPixels(first);
+    }, { timeout: 60_000, intervals: [1_000, 2_000, 5_000] }).toBeGreaterThan(16);
+  } finally {
+    await page.mouse.up();
+  }
   await expect
-    .poll(
-      async () => (await canvas.screenshot()).byteLength,
-      { timeout: 60_000, intervals: [1_000, 2_000, 5_000] },
-    )
-    .toBeGreaterThan(5_000);
+    .poll(async () => changedPixels(first, await fluidPixels(page, canvas)),
+      { timeout: 60_000, intervals: [1_000, 2_000, 5_000] })
+    .toBeGreaterThan(16);
 });

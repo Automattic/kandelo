@@ -51,6 +51,7 @@ import {
 } from "../src/generated/abi";
 import {
   emptyProcessTimerCleanup,
+  initialProcessExecGeneration,
   installKernelWorkerTestScratch,
 } from "./kernel-worker-test-scratch";
 
@@ -149,6 +150,7 @@ function createGatedLifecycleHarness(options: {
     kernel_clear_fork_child: vi.fn(() => 0),
     kernel_drain_wakeup_events: vi.fn(() => 0),
     kernel_get_parent_pid: vi.fn(() => -1),
+    kernel_get_process_exec_generation: initialProcessExecGeneration(kernelMemory),
     kernel_get_process_exit_signal: vi.fn(() => -1),
     kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
     kernel_mark_process_signaled: vi.fn(() => 0),
@@ -1611,6 +1613,7 @@ describe("CentralizedKernelWorker Process Management", () => {
         },
         kernelExportNames: [
           "kernel_drain_wakeup_events",
+          "kernel_get_process_exec_generation",
           "kernel_get_process_exit_signal",
           "kernel_get_process_state",
           "kernel_handle_channel",

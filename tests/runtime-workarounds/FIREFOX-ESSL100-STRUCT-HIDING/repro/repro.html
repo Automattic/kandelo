@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>ES100 local variable hides structure type</title><pre id="result">Running</pre>
+<script>
+// Standalone WebGL2; no Kandelo code. GLSL ES100 §4.2 permits the local
+// to hide a structure type AFTER its initializer. Uniform u prevents the
+// compiler from folding the constructor before the problematic name lookup.
+try{
+ const gl=document.createElement('canvas').getContext('webgl2');if(!gl)throw Error('WebGL2 unavailable');
+ const rows=[];
+ for(const [stage,kind] of [['vertex',gl.VERTEX_SHADER],['fragment',gl.FRAGMENT_SHADER]])for(const structure of [false,true]){
+  const compile=(name,duplicate=false)=>{const declaration=duplicate?'int k=1;int k=2;':structure?`S ${name}=S(u);`:`int ${name}=S(u).val;`;const result=duplicate?'k':structure?name+'.val':name;const s=gl.createShader(kind);gl.shaderSource(s,'#version 100\nprecision mediump float;uniform int u;struct S{int val;};void main(){'+declaration+(stage==='vertex'?'gl_Position':'gl_FragColor')+'=vec4(float('+result+'));}');gl.compileShader(s);const r={ok:!!gl.getShaderParameter(s,gl.COMPILE_STATUS),log:gl.getShaderInfoLog(s)};gl.deleteShader(s);return r;};
+  rows.push({stage,structure,test:compile('S'),control:compile('localS'),invalid:compile('unused',true)});
+ }
+ const controls=rows.every(r=>r.control.ok&&!r.invalid.ok)&&gl.getError()===gl.NO_ERROR;
+ const verdict=!controls?'inconclusive':rows.every(r=>!r.test.ok)?'reproduced':rows.every(r=>r.test.ok)?'not-reproduced':'inconclusive';
+ window.__reproVerdict={verdict,details:JSON.stringify({rows,renderer:gl.getParameter(gl.RENDERER)})};document.querySelector('#result').textContent=JSON.stringify(window.__reproVerdict,null,2);
+}catch(error){window.__reproVerdict={verdict:'inconclusive',details:String(error)};}
+</script>

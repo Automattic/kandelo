@@ -17,7 +17,6 @@ interface PendingPollRetry {
   timer: ReturnType<typeof setTimeout> | null;
   channel: TestChannel;
   pipeIndices: number[];
-  needsSignalSafeWake?: boolean;
   deadline?: number;
 }
 
@@ -185,23 +184,26 @@ describe("readiness wakeup targeting", () => {
     ["pendingPollRetries", "pendingSelectRetries"],
     ["pendingSelectRetries", "pendingPollRetries"],
     ["pendingSelectRetries", "pendingSelectRetries"],
-  ] as const)("wakes ordinary PTY %s before masked %s's grace period", (terminalQueue, maskedQueue) => {
+  ] as const)("wakes every parked %s and %s waiter on PTY readiness at once", (firstQueue, secondQueue) => {
     vi.useFakeTimers();
     const harness = createWakeHarness(0, 0, [11, 12], true);
-    const [terminal, masked] = harness.channels;
-    harness.state[terminalQueue].set(terminal!, {
-      timer: null, channel: terminal!, pipeIndices: [],
+    const [first, second] = harness.channels;
+    harness.state[firstQueue].set(first!, {
+      timer: null, channel: first!, pipeIndices: [],
     });
-    const maskedEntry: PendingPollRetry = {
-      timer: null, channel: masked!, pipeIndices: [], needsSignalSafeWake: true,
-    };
-    harness.state[maskedQueue].set(masked!, maskedEntry);
+    harness.state[secondQueue].set(second!, {
+      timer: null, channel: second!, pipeIndices: [],
+    });
 
     harness.worker.testAuthority.drainWakeupEventsForTest();
 
-    expect(harness.retrySyscall).toHaveBeenCalledOnce();
-    expect(harness.retrySyscall).toHaveBeenCalledWith(terminal);
-    expect(harness.state[maskedQueue].get(masked!)).toBe(maskedEntry);
+    // No timer has advanced: a shell's masked pselect6 at a prompt must see
+    // keyboard input without waiting behind a grace period.
+    expect(harness.retrySyscall).toHaveBeenCalledTimes(2);
+    expect(harness.retrySyscall).toHaveBeenCalledWith(first);
+    expect(harness.retrySyscall).toHaveBeenCalledWith(second);
+    expect(harness.state[firstQueue].has(first!)).toBe(false);
+    expect(harness.state[secondQueue].has(second!)).toBe(false);
     expect(harness.scheduleWakeBlockedRetries).not.toHaveBeenCalled();
   });
   it("retries only poll waiters that watch the kernel-woken pipe", () => {
@@ -229,38 +231,6 @@ describe("readiness wakeup targeting", () => {
     expect(harness.state.pendingPollRetries.has(matching!)).toBe(false);
     expect(harness.state.pendingPollRetries.has(unrelated!)).toBe(true);
     expect(harness.scheduleWakeBlockedRetries).toHaveBeenCalledOnce();
-  });
-
-  it("keeps matching signal-safe ppoll deferred while retrying poll", () => {
-    vi.useFakeTimers();
-    const harness = createWakeHarness(
-      7,
-      WAKEUP_EVENT_TYPES.writable,
-      [11, 12],
-    );
-    const [signalSafe, normal] = harness.channels;
-    const signalSafeEntry: PendingPollRetry = {
-      timer: null,
-      channel: signalSafe!,
-      pipeIndices: [7],
-      needsSignalSafeWake: true,
-    };
-    harness.state.pendingPollRetries.set(signalSafe!, signalSafeEntry);
-    harness.state.pendingPollRetries.set(normal!, {
-      timer: null,
-      channel: normal!,
-      pipeIndices: [7],
-    });
-
-    harness.worker.testAuthority.drainWakeupEventsForTest();
-
-    expect(harness.retrySyscall).toHaveBeenCalledOnce();
-    expect(harness.retrySyscall).toHaveBeenCalledWith(normal);
-    expect(harness.state.pendingPollRetries.get(signalSafe!))
-      .toBe(signalSafeEntry);
-    expect(harness.state.pendingPollRetries.has(normal!)).toBe(false);
-    expect(signalSafeEntry.timer).not.toBeNull();
-    expect(harness.scheduleWakeBlockedRetries).not.toHaveBeenCalled();
   });
 
   it("targets writable pollers before a host bridge broad wake", () => {

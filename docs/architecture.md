@@ -6,6 +6,24 @@ This document describes the internal architecture of Kandelo. It is written for 
 lessons behind ownership boundaries, host bookkeeping, filesystem migrations
 and validation. This document remains the reference for implemented behavior.
 
+The B1 graphics shipment follows the maintainer's D-63 incremental
+release scope: selected graphical demos generally work, while known
+defects and full validation remain explicit follow-ups. The combined
+normal-built checkpoint passes 23 of 24 graphical cases; WebKit Cage
+startup fails before the rendering checks and its isolated control
+reproduces the failure. The implemented ownership and publication
+contracts below still apply. This release makes no native-feel or
+full-conformance claim.
+
+D-64 combines the Cage/Sway foundation and B1 in one release. Kernel and
+host ship against one program 56 / host 4 / GL 17 / fork 21 family;
+intermediate branch versions of host 4 had different interfaces and are
+not separate release contracts. Both original frozen fixture cohorts
+remain unchanged. See the [combined landing
+decision](graphics/compatibility-v1.md#combined-landing-decision-d-64-2026-11-08)
+for exact evidence, the unresolved startup defect and contributor
+credit.
+
 ## Overview
 
 Kandelo is a shared, multi-process POSIX kernel that runs as WebAssembly. A single kernel Wasm instance manages all processes. The kernel **must** run in a dedicated worker thread (Web Worker in browsers, `worker_thread` in Node.js) — never on the main thread. Each process also runs in its own worker and communicates with the kernel via a SharedArrayBuffer-based channel.
@@ -96,7 +114,7 @@ kernel_thread_exit(pid, tid, ran) → 0 | -errno
 kernel_commit_process_exit(status) → committed_low_8_bits
 kernel_dequeue_signal(pid, tid, out_ptr, out_capacity) → 0 | signum | -errno
 kernel_drain_wait_completions(out_ptr, out_len, max_records) → record_count | -errno
-kernel_wait_next_timeout_ns() → relative_ns | -1
+kernel_wait_next_timeout_ns() → relative_ns | -1   (earliest park deadline or armed timerfd expiry)
 kernel_pick_tcp_listener_target(port, exclude_pid, out_ptr, out_capacity) → 1 | 0 | -errno
 kernel_take_process_timer_cleanup(pid, out_ptr, out_capacity) → posix_count | -errno
 kernel_ipc_shmat_for_task(pid, tid, shmid, addr, flags) → segment_size | -errno
@@ -128,6 +146,7 @@ kernel_set_mmap_base(pid, addr) → 0
 kernel_set_process_pointer_width(pid, width) → 0 | -errno
 kernel_is_fd_nonblock(pid, fd) → 1 | 0 | -1
 kernel_epoll_wake_indices(pid, epfd, kind, out_ptr, out_capacity) → count | -errno
+kernel_epoll_wait_retry_state(pid, tid, token, deadline_handle) → 1 still blocked | 0 replay | -errno (optional)
 kernel_set_wait_queue_enabled(enabled) → previous | -errno
 kernel_wait_deadline_open(pid, tid, kind, timeout_ms) → wait_handle | -errno
 kernel_wait_deadline_remaining_ns(wait_handle) → nanoseconds | NO_DEADLINE | -errno
@@ -511,6 +530,11 @@ detached callbacks, and discards queued ingress after a fatal latch. This is a
 lifetime guarantee: later work cannot overwrite the reservation or publish a
 channel completion against an uncertain Rust transition.
 
+Shared-mapping publication preserves that same fatal signal before its
+ordinary host rollback. A branded export failure must reach generation
+containment without restoring guest bytes or adjusting published mapping
+references; an ordinary host publication error still unwinds those changes.
+
 Process-launch continuations are different from one synchronous kernel entry.
 Compiling a child module, allocating process memory, or constructing a Worker
 can yield to the host event loop. When a fork, `vfork`, `posix_spawn`, `exec`,
@@ -535,6 +559,43 @@ Once replacement is registered, the discarded image's lease retires through
 the same exact-generation ledger used by exit, termination, and destroy.
 Overlapping cleanup paths therefore consume the lease once without removing
 or reaping the replacement's persistent process ID.
+
+NodeKernelHost and BrowserKernel expose an optional
+`onProcessGenerationEvent` observer selected before initialization. Without an
+observer, initialization leaves generation observation disabled and emits no
+extra lifecycle messages. Subscribed observations contain copied, frozen scalar
+data only. `realmId` distinguishes actual kernel-worker creations within one
+host instance; `executionId` is the authenticated externref broker's process-
+image ID within that realm. Neither is Rust's exec counter or memory allocator
+identity, and neither authorizes cleanup. Old worker messages cannot acquire a
+replacement realm's identity.
+
+Admission, semantic exit and committed retirement are separate events. A
+retirement event records the real lease disposition, registration disposition,
+actual main/thread acknowledgments and any failure after the lease commit.
+Cooperative guest-memory retirement requires `leaseDisposition: "quiescent"`,
+acknowledged main/thread fences, `postCommitFailed: false`, and the exact admitted
+identity. Forced or unobserved disposition and missing acknowledgments remain
+distinct. The shared detach ledger publishes its completed tombstone before the
+one-shot observation; callback failures cannot replay release. Observer throws
+or rejected promises do not participate in lifecycle decisions.
+
+These observations prove neither native worker closure nor garbage collection.
+They cannot reconstruct an unpublished failed start or an observation lost on a
+closed channel. Consumers must subscribe before launch, retain missing evidence
+as missing, and independently check normal diagnostics and cleanup.
+
+Each host process registration also captures Rust's full unsigned 64-bit exec
+generation through `kernel_get_process_exec_generation`, using exactly eight
+bytes of leased kernel scratch under the canonical entry. The host publishes
+the complete registration only after that entry ends. Its generation field is
+immutable; exec replaces the record, while fork and vfork read the child's own
+generation. Thread-channel attachment compares the current Rust generation
+against that record before changing channel or thread maps. A mismatch during
+the exec commit window refuses attachment and retains the existing allocated-
+task rollback. A missing getter or invalid result refuses registration without
+publishing partial state. This identity check does not itself grant authority
+to retire an old image or acknowledge physical graphics cleanup.
 
 The login program disables password echo and flushes earlier input before
 showing its password prompt. Input sent in response to that prompt therefore
@@ -571,6 +632,54 @@ pointer and capacity valid for that synchronous import, so
 `checkedWasmImportMemoryRange` normalizes the raw wasm32/wasm64 import value
 and `WasmPosixKernel.writeKernelBytes` checks that range and the producer's
 intrinsic byte span without claiming it came from the scratch allocator.
+A process-to-kernel read copies directly into this authenticated allocation
+within the synchronous import. It retains neither an intermediate full-range
+JavaScript snapshot nor a process-memory view after that call. The destination
+still rechecks allocation capacity, memory identity and generation before its
+one-use publication, including after memory growth during process lookup.
+Full process snapshots for shared-mapping reconciliation use a Rust-owned
+allocation whose length remains zero until that import reports exact full-copy
+success. Only then does Rust expose its initialized bytes. Errors discard the
+unpublished allocation, including any partially written prefix; unexpected
+positive import results are errors. This avoids initializing a buffer before
+the trusted host fills it, while retaining the same boundary synchronization,
+alias ordering and snapshot comparisons. Other mapping backends retain the
+safe initialized-slice implementation.
+
+For file mappings, the Wasm backend first compares the live process range
+against the existing initialized Rust snapshot through the synchronous
+`host_proc_compare_bytes` import. The host validates both complete ranges,
+rechecks the exact kernel Memory and generation after process lookup, and
+keeps all read-only native authority inside that call. Exactly zero means
+equal, one means different, and two means the optional comparator is
+unavailable; unavailability never establishes equality. Shared-file
+publication retains an equal snapshot without allocating a new full range;
+changed bytes and unavailable comparisons use bounded page reads, advancing
+the baseline only for completed merges. Callers requiring an independent
+owned process snapshot retain their separately checked full-copy path.
+Errors never publish a partial owned snapshot. The fixed read-only Wasm
+helper imports the two existing memories,
+allocates no linear memory, writes nothing, and never retains an Instance
+or exported function beyond the synchronous borrow. Only compiled modules
+and frozen scalar constructor descriptors are cached. Trusted constructor
+sites record actual address width, sharing and maximum; unknown externally
+supplied memory descriptors retain the owned-copy path. SIMD is preferred
+when supported, with a scalar Wasm variant and finally owned-copy fallback.
+Native instance churn, browser-memory and application performance validation
+are required before accepting this experimental implementation. The normal
+host build checks all32 fixed generated variants against their WAT template
+and generator using the declared WABT tools. Regenerate with
+`scripts/dev-shell.sh npm --prefix host run generate:snapshot-comparator`;
+`check:snapshot-comparator` verifies without updating the checked-in bytes.
+Each comparison is one observation: every mapping still participates
+in the authoritative backing-refresh phase, including stale readers,
+descriptor writes and earlier aliases of a later publisher, and a later
+guest store remains detectable against the retained baseline. Changed
+mappings pay an additional comparison. The one place an observation is
+carried forward is the completion boundary of a syscall, described under
+[Shared mapping coherence](#shared-mapping-coherence): there a comparison
+the entry boundary already made is skipped when the kernel can prove it
+would find the same answer.
 Process memory,
 framebuffers, and explicit shared-memory mappings keep their own ownership
 models. A TypeScript-compiler-backed JavaScript/TypeScript repository audit
@@ -585,6 +694,19 @@ source as a potential reintroduction of the former raw kernel-memory accessor
 and follows its result into aliases, helper parameters, views, and writes.
 Same-named non-kernel APIs need an exact reviewed allowance. This narrow
 backstop is not a claim of sound general JavaScript taint analysis.
+
+The audit summarizes recursive device graphs only when every descendant
+carries concrete non-kernel memory, buffer, view, or instance ownership. The
+summary retains those owner tags without repeatedly cloning the whole graph.
+Kernel evidence, allocator or reservation callables, constructors, and scratch
+authority keep their detailed paths: any of those could produce a kernel
+capability later. New kernel taint still merges through its exact field path
+and prevents this summary. Allocator invocation and allocator return authority
+are separate states. Calling a raw allocator returns a pointer, while a
+callback that returns an allocator keeps that callable visible even through
+higher-order wrappers and casts. Numeric pointer formatting therefore requires
+no scratch-call exception. The audit retains its complete source inventory,
+fixed-depth conservative fallback, and exact exception multiset.
 
 The Rust dispatcher has a separate source-contract test for raw process
 addresses. It rejects the former raw-channel-pointer macro, matches every
@@ -849,8 +971,10 @@ ABI floor in the same ABI reconciliation that versions and snapshots the new
 surface.
 
 Host-runtime failure diagnostics are kept separate from guest file descriptor
-2. Worker traps, protocol failures, and failed process or thread transitions
-produce typed `host_diagnostic` messages; `NodeKernelHost` and `BrowserKernel`
+2. Worker traps, protocol failures, failed process or thread transitions, and
+GL emulation the host could not apply to a guest draw (the draw still runs
+with WebGL's behavior; `host/src/webgl/diagnostics.ts`) produce typed
+`host_diagnostic` messages; `NodeKernelHost` and `BrowserKernel`
 expose them through `onHostDiagnostic`. An ordinary process exit, including a
 nonzero exit used as POSIX control flow, is reported only through its exit
 status and is not a host warning. Node records actual host diagnostics on the
@@ -874,6 +998,15 @@ Compiled into every user program. Three main files:
 ## Syscall Channel Protocol
 
 Each process has a dedicated channel region in its SharedArrayBuffer memory. The channel is placed in a host-reserved control slab immediately before the guest-managed brk/mmap region, not at the maximum memory address. This lets a process start with a small shared `WebAssembly.Memory` while keeping the channel address stable as guest brk/mmap activity grows memory on demand.
+
+JavaScript-generated channel requests share `waitForChannelCompletion` in
+`host/src/channel-completion-wait.ts`. It borrows the caller's status view,
+re-enters the native wait after notifications while the status remains pending,
+and preserves native failures. Each caller still owns request publication,
+result interpretation, signal handling and exit behavior. These waits retain
+their unbounded policy; libc's separate bounded wait and heap safepoint remain
+unchanged. This shared routine supplies no execution hold or proof of unchanged
+process memory and does not omit shared-mapping synchronization.
 
 ### Channel Layout
 
@@ -1139,13 +1272,27 @@ kernel operations that reuse scratch. The same generated ABI surface owns the
 `poll` and `epoll` event bits and `fd_set` sizing used by host-side readiness
 marshalling, so the host does not restate those values.
 
-For pipe-readable and pipe-writable records, the host first retries ordinary
-`poll()` and `ppoll()` channels whose captured kernel pipe index matches the
-event. A signal-mask-swapping `ppoll()` remains parked for the existing
-signal-safe grace period, and the broad fallback still covers wait classes
-without an exact pipe identity, including `select()` and `pselect6()`.
-Host-originated pipe bridge notifications use the same target-before-fallback
-order in the shared Node.js/browser runtime.
+For pipe-readable and pipe-writable records, the host first retries `poll()`
+and `ppoll()` channels whose captured kernel pipe index matches the event,
+with or without a temporary signal mask. The broad fallback, which runs on
+the next worker turn, covers wait classes without an exact pipe identity,
+including `select()` and `pselect6()`. Host-originated pipe bridge
+notifications use the same target-before-fallback order in the shared
+Node.js/browser runtime.
+
+No readiness wake is delayed because the waiter swapped its signal mask.
+POSIX requires `pselect()` and `ppoll()` to install the mask and wait as one
+atomic step, so a signal the mask unblocks that is pending or generated while
+the call is blocked interrupts it with `EINTR`. It does not require a signal
+generated after a descriptor became ready to win over that descriptor: the
+call may return the ready descriptor and restore the caller's mask, and the
+signal then stays pending until the caller unblocks it. The kernel keeps the
+temporary mask installed for as long as the wait is parked, and generating a
+signal retries parked waits immediately, so no signal can be lost between the
+swap and the wait. The host used to hold masked waits back for 50 ms after
+each readiness event so that a peer's "write, then kill" would be observed as
+`EINTR`; that ordering is unspecified, and the delay cost an interactive shell
+waiting in a masked `pselect6()` up to 50 ms per keystroke.
 
 Finite `poll()`/`ppoll()` and `select()`/`pselect6()` waits retain one absolute
 deadline from their first attempt. Targeted readiness events, broad wakeups,
@@ -1186,6 +1333,69 @@ sources and concurrent registration. Host network notification counters,
 signal queue generations, and the independent PCM consumer clock retain
 activity that happens between attempts. See the [epoll matrix](epoll.md) for
 interfaces, event bits, ownership details and explicit compatibility limits.
+
+The epoll safety timer can ask `kernel_epoll_wait_retry_state(pid, tid, token,
+deadline_handle)` whether that exact retained invocation is still blocked.
+Only the value `1` permits rearming the unchanged timer without replaying the
+syscall. The query checks the live task, pending signals, exact lease and finite
+deadline, and evaluates supported local readiness without consuming events,
+edge candidates, one-shot state, the batch cursor or the temporary signal mask.
+Unknown sources, readiness errors, expired deadlines and stale identities force
+the normal retry. The host also requires the original process registration,
+request and mailbox scalars, and refuses this shortcut for pending cancellation
+or stopped/resuming tasks. A missing optional probe export uses normal replay.
+Targeted and broad notifications retain their existing full retry path.
+
+This is an internal observation of an already-blocked call, not another guest
+syscall boundary or a result publication. The initial call and every actual
+completion retain full shared-mapping and imported-buffer synchronization.
+Sibling tasks and other processes still publish at their own real boundaries;
+the probe assumes neither writer quiescence nor a dirty-store epoch. The host
+still owns the park and its 10 ms safety timer. Moving epoll into the kernel-owned
+wait queue requires complete source, lifecycle and copyout integration; this
+probe does not claim that migration or an application performance gain.
+
+**Timer and eventfd readiness reach host-owned waits through the kernel
+timer and the broad retry.** A timerfd expiry and an eventfd write change
+readiness with no pipe or listener token for a targeted wake, and the epoll,
+`poll`/`select` and blocking `read` retries the host owns would otherwise
+see them only at their 10 ms (epoll, read) or up to 50 ms (`poll`,
+`select`) safety retry. Linux wakes those waiters from the timer callback
+and from `eventfd_write`, so Kandelo does the same at the real deadline:
+
+- `kernel_wait_next_timeout_ns` answers the earliest of the kernel-owned
+  park deadlines and every armed timerfd's next expiry, each measured on the
+  timer's own clock (`CLOCK_MONOTONIC`, `CLOCK_REALTIME`, absolute or
+  relative), so the host's single kernel timer fires at the deadline.
+  Arming a timerfd queues `TYPE_WAIT_COMPLETE`, which makes the host collect
+  completions and re-read that answer, so a waiter that blocked before
+  another thread armed the timer is still woken on time.
+- `kernel_drain_wait_completions` accounts every due timerfd (expiration
+  count, epoll candidates) exactly as a read or poll of it would, and
+  queues one untargeted `IDX_FENCE_READY` readable record. The host's timer
+  callback collects completions, then drains wake records, so the broad
+  retry re-runs the blocked waits at the deadline. When completions were
+  collected after a wake batch was already drained, the record would wait
+  for some later syscall; `kernel_wait_next_timeout_ns` therefore answers
+  `0` once for an undrained expiry record, and the host re-enters at once.
+  It answers once, not until the record drains, so a host that does not
+  drain wake records on that timer degrades to the old safety retry rather
+  than spinning.
+- An eventfd write queues the same untargeted record from inside the
+  syscall, whose own completion drains it. A read queues it only when a
+  writer can be waiting: one was refused `EAGAIN` since the last read, or
+  the counter was saturated and therefore not writable for a poller.
+
+No clock is read per syscall: armed timers are examined only when the host
+collects completions or asks for the next deadline. A clock the host cannot
+read leaves that one timer unscheduled (its read or poll reports the error)
+without stopping the other deadlines. The remaining latency is the host
+timer's granularity, about a millisecond on Node and in browsers, not
+Linux's timer slack. Browsers also clamp a timer that is re-armed from its
+own callback to 4 ms once five such callbacks are nested (the HTML timer
+nesting rule), so successive expiries of a periodic timerfd shorter than
+4 ms are delivered about 4 ms apart in a browser; the expiration count read
+from the descriptor stays exact.
 
 ## Multi-Process Model
 
@@ -1555,11 +1765,22 @@ kernel retains it, avoiding an extra export call on syscalls with no waiter.
 The shared host drains it alongside the packed wake stream
 and reschedules blocked read, poll, select, and epoll retries. PTY queues have
 no pipe slot identity, so this notification uses the existing broad readiness
-retry path without impersonating a pipe event. Ordinary waiters retry as soon
-as the entry scope is revoked, even if an unrelated signal-masked wait is
-parked. Signal-mask wait deferral and finite deadlines remain owned by the
-normal retry implementation. Host PTY
+retry path without impersonating a pipe event. Every parked waiter, including
+a `ppoll()` or `pselect()` with a temporary signal mask, retries as soon as the
+entry scope is revoked. Finite deadlines remain owned by the normal retry
+implementation. Host PTY
 input schedules its reader wake independently of output callback attachment.
+
+Terminal resize storage and signal routing belong to the shared process table.
+`TIOCSWINSZ` compares all four window-size fields and signals live members of
+that terminal's foreground process group in its controlling session only when
+the value changes. The master setter need not belong to that group. An
+unclaimed terminal stores the size without inventing a controlling session.
+Host rows/columns resize uses the same routing, retaining its cell-change-only
+notification policy. Delivery selects each recipient's actual task and wakes
+parked terminal/readiness retries to observe pending signals without adding
+input bytes. Source regressions cover routing, masks, no-ops and kernel parks;
+normal compiled guest and real Foot/Bash validation remain pending.
 
 ### exec()
 
@@ -1869,6 +2090,25 @@ SIGCHLD, so the kernel reaps them as they exit, as a Linux init does. They
 are the kernel-started Kandelo exchange agent and every orphan adopted as
 described next.
 
+The lifecycle exports (`kernel_exec_commit`, `kernel_spawn_exec_commit`,
+the exit, signal-exit, thread-exit, removal, reap and blocking-retry release
+exports) validate their request and commit it in one synchronous call
+(`crates/kernel/src/lifecycle.rs`). Production GL and DRI run synchronously
+in the kernel worker, and device cleanup reports its real outcome from
+inside the commit (see "DRM/KMS" below), so no lifecycle transition waits on
+host work. A process whose prepared exec target has an uncertain native
+close is contained instead: every lifecycle request and terminating signal
+returns `EBUSY` or stays queued until that target's custody resolves.
+
+Prepared-target cancel proves final regular-file OFD and cross-process
+handle ownership before attempting a final host close once. Success creates
+exact preclosed custody for normal OFD retirement without a second native
+close. An ambiguous error retains the sealed target and OFD; it cannot be
+read, retained, committed, retried by raw fd, discarded through process
+teardown or mistaken for an absent target. Other executable-release sites
+still have ordinary error-retention gaps; this is not a general close
+transaction implementation.
+
 ### Orphan adoption
 
 POSIX requires that when a process terminates, each of its children,
@@ -2024,6 +2264,39 @@ rather than simulated Ctrl+C input. No guest ABI or syscall changed.
 
 Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
 
+Rust allocates the exact TID before the detached host Worker launch. Every
+late launch outcome keeps cleanup authority for that allocation, including
+after teardown completed the caller's mailbox or exec replaced its image.
+Cleanup enters a fresh canonical kernel scope without requiring the old
+mailbox to remain pending. Publishing a clone result separately requires
+the same frozen request, channel object, registration, Memory and Rust exec
+generation; Rust commits exec before the replacement host registration.
+
+A successful callback that attached its thread transfers ownership to the
+host Worker registry, including a job-control-deferred Worker. If the parent
+result becomes stale afterward, the host keeps that thread's channel until
+ordinary generation teardown and cooperative exit release it. Revoking the
+channel here would prevent the Worker's memory-quiescence acknowledgement.
+Only unlaunched, rejected or unattached allocations use clone rollback.
+
+Rollback removes only the exact attached channel and TID. It clears a
+parent-TID word only while that word still names the allocation, preserving
+replacement task state. A terminal creator-gate refusal has a private error
+identity and is classified only after rollback succeeds. A still-pending
+caller receives failure; genuine Worker failures remain diagnostic and
+uncertain rollback remains fatal. Node and browser share this path without
+a guest ABI or channel-wire change. Cross-engine lifecycle and memory
+acceptance remains required for the combined graphics candidate.
+
+Maintainer decision D-59 approves an exec/exit-only boundary for inherited
+native Wayland connections after multithreaded fork: reject their use and
+cleanup loudly rather than traversing a peer's interrupted native graph.
+The parent connection and exact kernel resource ownership must remain
+intact. Detector and regression work is pending; ordinary Wayland cleanup,
+single-threaded/fresh-child graphics and the remaining acceptance criteria
+are not waived. See the current shipping decisions in
+[`graphics/compatibility-v1.md`](graphics/compatibility-v1.md).
+
 ### Compiled module sharing
 
 Every program a process runs is a `WebAssembly.Module` compiled by the
@@ -2139,6 +2412,31 @@ Processes may export `__wasm_posix_thread_slots` to declare their maximum concur
 
 ### Shared mapping coherence
 
+`/proc/kandelo/shared_mapping_failures` retains the first eight failed
+publication, refresh or fork-inheritance operations, plus total and dropped
+counts. Records
+identify the phase, process, mapping range, retained backing handle, signed
+errno and I/O credit at refusal. Recording uses fixed numerical state and
+never retains a resource, allocates memory or changes the original result.
+The ordinary procfs read renders the report only when requested. These
+failures are distinct from acknowledged writeback loss; a refused snapshot
+allocation alone does not establish that file data was lost. Fork records
+identify whether refusal happened while preparing retained child state,
+rollback bytes, mapping metadata or process-memory writes. A handle of -1
+means that no file authority belongs to that record; cohort-only metadata
+records have no mapping range. Diagnostics preserve the original error and
+never change the inheritance transaction's publication or rollback order.
+
+Peer refresh stages replacement snapshots and guard metadata against the
+bounded temporary I/O allowance. A guard borrows its exact old snapshot,
+admits any retained growth, and preserves rollback credit in both the live
+and temporary classes. All source reads and replacement admissions finish
+before the first guest-memory write. Only a completed mapping refresh
+publishes its new snapshot, content version and clean stamp; a later failure
+restores uncommitted replacements without allocating or consuming another
+mapping's rollback headroom. Empty refresh selections acquire no credit and
+walk no mapping table. Ordinary owned reads retain their live-I/O policy.
+
 Different processes have different WebAssembly memories, so a pointer store in
 one process cannot immediately mutate another process's linear memory. Kandelo
 coordinates anonymous `MAP_SHARED`, SysV SHM attachments, and regular-file
@@ -2146,9 +2444,20 @@ coordinates anonymous `MAP_SHARED`, SysV SHM attachments, and regular-file
 the owner of the bytes compares process memory with the snapshot that process
 last observed, merges only changed byte runs into one authoritative backing,
 and then imports peer updates into every stale alias in the calling process.
+For files the kernel owns, the comparison happens when the mapping can be
+observed rather than at every boundary of its own process; see below.
 Fork force-publishes the parent before the child inherits the same backing;
 `exec`, exit, crash, `munmap`, `mremap`, and `MAP_FIXED` update backing
 ownership explicitly.
+
+A fork's child snapshots and mapping nodes retain ordinary live I/O credit.
+The child-original bytes needed only to undo a failed commit, and their
+transaction vector, use bounded temporary I/O instead. All original reads and
+child admissions precede process-memory writes. Failed preparation publishes
+no child mappings; a later write refusal restores previously written ranges
+before the transaction releases its temporary custody. These two owners must
+stay distinct: a child that fits its retained allowance must not be refused
+solely because rollback bytes compete for the same live credit.
 
 Who keeps a mapping coherent follows who owns its bytes. The host keeps
 anonymous regions and files on host-mounted directories
@@ -2176,10 +2485,21 @@ fallible shared I/O admission before cache mutation.
 Unreleased storage-memory work also admits file-cache page payloads and
 cache nodes through that shared budget, reclaims only clean pages on
 admission pressure, and prepares replacement pages before publishing a
-refresh. Failure invalidation walks resident cache entries without
+refresh. If publication cannot admit its next page while a kernel-owned
+write-through backing retains dirty pages, it first persists that already
+accepted prefix, releases the resulting clean cache, and retries the same
+immutable source page once against its advanced comparison snapshot. This
+avoids needing a whole mapping of dirty cache in addition to its retained
+snapshots. Ordinary publication adds no per-page flush. A failed pressure
+writeback retains dirty custody and records the writeback loss; the
+unaccepted tail still returns its original admission failure. A retry
+cannot replay an accepted prefix over a later descriptor write. Failure invalidation walks resident cache entries without
 allocating a logical-page cohort. File publication reads process memory
 through fixed page scratch and streams changed runs, retaining accepted
-progress if a later page read fails. These changes are not in checkpoint
+progress if a later page read fails. The optional native comparison borrows
+the retained snapshot to recognize an unchanged range. A differing range
+still uses page scratch: requiring a second mapping-sized live copy can
+refuse publication even though the mapping itself was already admitted. These changes are not in checkpoint
 1.13. The subsequent chunk admits retained mapping snapshots,
 anonymous backing bytes, fork rollback/replacement payloads and mapping
 registry nodes. File mapping preparation runs before VM allocation in the
@@ -2219,6 +2539,103 @@ also notify the mapping table before subsequent growth can hide a smaller EOF.
 These notifications run after filesystem/backing borrows end and invalidate
 pending bytes without allocating teardown or page-selection cohorts.
 
+The other direction, mapped stores reaching descriptor I/O, needs a fence.
+A process's stores sit in its own linear memory until something publishes
+them, so before any syscall reads or writes a kernel-owned file's content
+the kernel *pulls* every writable mapping of that file: it compares each
+process's bytes with its snapshot and merges the changed runs into the
+file, without writing any process's memory. The pull is publish-only on
+purpose. The pulled process may be running on another thread, and writing
+its memory back could overwrite a store it made between the read and the
+write. One classifier, `descriptor_fence_for` in
+`crates/runtime-core/src/memory.rs`, lists the syscalls that touch file
+content (`read`/`pread`/`readv`/`preadv`, `write`/`pwrite`/`writev`/`pwritev`,
+`sendfile`, `splice` and `copy_file_range` on both descriptors, `ftruncate`,
+`fallocate`). `kernel_handle_channel` runs the fence before dispatch and
+before any `&mut Process` borrow, for the raw and record transports alike,
+and so also before the `pread` that fills a `MAP_PRIVATE` copy. `fsync`,
+`fdatasync` and `truncate` fence inside their exports because the host calls
+those exports directly too. Operations that name the file by path rather
+than descriptor (`truncate`, an `O_TRUNC` open, an exec or spawn target, and
+the host's `kernel_rootfs_read_file`, `kernel_rootfs_inspect_read_file`,
+`kernel_rootfs_write_file` and filesystem exports) fence every mapped file
+instead of resolving the path before dispatch; nothing is done when no
+kernel-owned file is mapped. `host/test/descriptor-fence-contract.test.ts`
+keeps the classifier's list in step with the host's own list for
+host-mounted files. A publication the file refuses fails the descriptor
+operation with `EIO`, as the host's `flushSharedBackingForFd` does. Without
+the fence a sole writer's store was invisible to `read()` until `msync`,
+`munmap`, `exec` or exit, and a later `pwrite` or `ftruncate` could be
+overwritten by that store when it was finally published.
+
+Only the process whose syscall is being handled has its memory written,
+and then only where the file changed under it. A new mapping joining a
+file pulls the existing mappings (it used to publish *and* refresh each of
+them, writing the whole range back into processes that might be running),
+and a refresh at a process's own boundary writes only the byte runs where
+the file differs from the bytes that process last published or imported
+(runs closer than 32 bytes are joined into one write). A whole-range write
+could otherwise overwrite a store a sibling thread made, after the
+comparison read it, to bytes no peer had changed.
+
+Each pull also records *when* it saw a mapping's bytes, so a later pull
+can prove a comparison redundant (`CleanStamp` in
+`crates/runtime-core/src/memory.rs`). The host keeps a mutation epoch per
+process memory and changes it whenever guest code may run on that memory
+or the host writes it: a published or materialized syscall completion, a
+registered process, an attached thread channel, a kernel-published wait
+completion, and every `host_proc_write_bytes`. The required kernel-host
+import `host_proc_quiescent_epoch(pid) -> i64` answers that epoch only
+while every thread channel of the process sits at `CH_PENDING` and no
+vfork child borrows its memory, and -1 otherwise. A thread at `CH_PENDING`
+runs only the syscall glue's wait loop, which stores nothing inside a
+mapping, and a new thread's channel is zeroed (idle) and attached before
+its Worker is created, so a process that reports an epoch has no guest
+code running. A pull that read a mapping at epoch `e`, and finds the
+process quiescent at the same `e` with no kernel write into the range
+since (`KernelProcessWriteLog`), would read the same bytes again, so the
+comparison is skipped. Host writes into guest memory are covered: a
+completion's output bytes, and anything a host-handled syscall stores
+directly into guest buffers, land before the completion is materialized,
+which changes the epoch even while a stopped process's completion stays
+parked; refreshes of host-owned shared mappings and DRI buffer bindings
+write only those mappings' own address ranges, and an address range
+belongs to one mapping at a time (`MAP_FIXED` replaces by unmapping first).
+A kernel built with the `shared-mapping-proof-verify` cargo feature
+compares anyway, traps on a contradicted proof, and counts confirmed
+proofs in the diagnostic export `kernel_shared_mapping_proofs_verified`.
+
+When a kernel-owned file refuses a mapping's bytes (for example a full
+tmpfs), the loss is real data the program believed it stored, so it is
+never quiet. The dirty pages stay on the backing for a later attempt, the
+loss is recorded in `/proc/kandelo/writeback_losses`, and it is reported to
+the program the way Linux reports a writeback error (errseq): once to every
+open file description of the file that existed when it happened, from its
+next `fsync`, `fdatasync` or `close`, and once to every mapping of the file,
+from its next `msync` (`writeback_loss::note_file_writeback_error`,
+`SharedMappingTable::take_writeback_error`). A description opened later does
+not see it. The mapping layer's other two inconsistencies, releasing a file
+pin that no backing held and a publication pass reaching a live process
+without its memory length, can only come from Kandelo's own bookkeeping,
+never from a file or a program, so they are fatal kernel faults
+(`writeback_loss::shared_mapping_fault`): continuing would free a file under
+a live mapping, leak it, or silently skip a process's `MAP_SHARED`
+coherence. Mappings of host-mounted files are kept by the host
+(`host/src/kernel-worker.ts`) and report a failed writeback the same way, on
+Node and in the browser: the host marks every mapping of the file (its next
+`msync` answers `EIO` once) and calls `kernel_report_host_mapping_writeback_error`,
+which records the loss and marks the file's open descriptions, identified by
+`host_fstat` device and inode as for locks
+(`writeback_loss::note_host_file_writeback_error`). A descriptor whose own
+syscall already fails with `EIO` because of that writeback is not told twice.
+
+A failed kernel-owned synchronization is not successful boundary completion.
+Entry failure prevents syscall dispatch and follows the existing recoverable
+`EIO` completion path. If synchronization fails after completion output bytes
+were applied, those effects remain visible and the channel reports `EIO`;
+there is no rollback or syscall replay. Raw error completion makes one contained
+synchronization retry, whose ordinary failure is caught before publication.
+
 Host-file mappings add a backend-qualified stable identity and retain the
 original fd's host handle for the mapping lifetime. Identity is derived and
 revalidated through that live handle, never by reopening its remembered path.
@@ -2237,17 +2654,67 @@ invalidate or refresh mapped cache pages. `msync`, replacement, unmap, exec,
 and process teardown persist dirty pages through the stable handle, including
 after the original guest fd is closed or its pathname is unlinked or renamed.
 
+Kernel-owned file mappings are *pulled lazily*. A compositor maps each
+client's `wl_shm` pool `PROT_READ|PROT_WRITE`, and comparing every
+writable mapping at both boundaries of every syscall cost labwc and sway
+with one 4 MiB SFWBar pool about 3,000 whole-pool comparisons a second
+during pointer motion, every one equal (6.5 ms of kernel-worker time per
+frame after an earlier completion-only skip). A process's own copy is
+therefore not compared at its own boundaries any more; it is compared
+when something can observe it (`sync_file_at_completion` in
+`crates/runtime-core/src/memory.rs`):
+
+- at the *completion* of a syscall of another process that maps the same
+  file, which then imports what it published before it resumes. This is
+  where every cross-process happens-before edge ends: a process learns of
+  a peer's store only through the kernel (a pipe or socket byte, a signal,
+  an exit status, a lock, a file write), every such chain begins with a
+  syscall the writer made after storing (its `CH_PENDING` store is
+  sequentially consistent, so a read of its memory that sees it parked
+  sees the store), and ends at the syscall of the reader that consumes
+  it. A writer that never makes another syscall is still observed, at the
+  reader's next completion. Nothing is needed at an entry: the reader has
+  learned nothing new there;
+- before the kernel reads or writes the file's content through a
+  descriptor (the fence above), when a new mapping joins the file, and at
+  `msync`, `munmap`, `mremap`, `MAP_FIXED`, fork, the exec preflight, exit
+  (the exit syscall publishes the process's file mappings before its
+  memory goes away) and teardown;
+- at its own completion only when it holds a second mapping of the same
+  file, or when the mapping is about to be refreshed, so that its pending
+  stores (including a syscall's output into the mapping) win their bytes.
+
+A pull of a process the host proves has not run since its previous pull
+is skipped (the `CleanStamp` proof above), so an idle client costs a busy
+compositor nothing, and a client's pool is compared at most once for each
+time the client ran guest code. A kernel built with the
+`shared-mapping-proof-verify` feature keeps comparing and traps if any
+proof is contradicted; it is the evidence that every epoch event is
+accounted for, run over the mapping tests and a desktop session. The host
+passes `force = 3` (`ENTRY`) to `kernel_shared_mapping_sync_process` at an
+entry, which does SysV work only, and `0` (`COMPLETION`) at a completion;
+the retired `2` is read as a completion. Host-owned mappings (anonymous
+`MAP_SHARED`, host-mounted files) and SysV attachments keep comparing at
+both boundaries.
+
 This is syscall-boundary coherence, not shared physical memory. A process that
-only performs direct loads/stores does not publish or import peer changes until
-it crosses into the kernel. Futex waits and wakes also target the caller's own
+only performs direct loads/stores does not import peer changes until one of its
+syscalls completes; for kernel-owned files its own stores reach a peer at the
+peer's next completion without a syscall of its own, and for host-owned
+mappings and SysV attachments only at its next syscall. Futex waits and wakes also target the caller's own
 process `SharedArrayBuffer`, so process-shared pthread mutexes/futexes remain
-unsupported across PIDs. Shared mappings of in-kernel memfds return `ENOTSUP`,
-as do file mappings on any backend that cannot provide stable identity;
-`MAP_PRIVATE` is unaffected. File bytes past
-the current EOF are zero-filled or discarded on refresh/writeback rather than
+unsupported across PIDs. In-kernel memfd shared mappings converge the same
+way, backed by the memfd's kernel pages. File mappings on any backend that
+cannot provide stable identity return `ENOTSUP`; `MAP_PRIVATE` is unaffected.
+File bytes past the current EOF are zero-filled or discarded on refresh/writeback rather than
 raising Linux's `SIGBUS`, and writes made outside Kandelo's file syscall paths
-are not detected. The boundary scans are on the syscall hot path; no performance
-claim is made without before/after Node and browser benchmarks.
+are not detected. Large wasm32 snapshot comparisons use safe eight-byte chunks and an exact
+byte tail; native and smaller comparisons retain slice equality. Host changed-run
+merging can skip equal aligned words, but still publishes only individually
+changed bytes. These comparisons do not add dirty-store tracking or omit any
+publication boundary, alias or final writer. The boundary scans are on the
+syscall hot path; no application performance claim is made without before/after
+Node and browser benchmarks.
 
 Every spawn or exec computes a fresh layout from the target binary's memory
 import and `__heap_base`; the brk, mmap, control-channel, allocator, and kernel
@@ -2258,8 +2725,33 @@ later process: shared Wasm memory cannot shrink, engines retain native backing
 stores differently, and `Worker.terminate()` is not a portable ownership
 fence.
 
+Each allocator record also owns one opaque execution-admission metadata handle,
+shared by its explicit alias leases. An exact lease can reserve at most one
+writer admission at a time; reservation and exposure advance its admission
+epoch before Memory escapes. Cancellation is allowed only before exposure, and
+consuming a lease invalidates its outstanding reservation. Tokens retain only
+a weak reference to that exact lease, while retained owner handles contain no
+Memory, view, lease or allocator-record reference. Fresh allocations have
+distinct owners even when a PID survives exec. Bare `lease.memory` access and
+injected construction callbacks conservatively mark the owner unknown; forced
+termination poisons all aliases. These flags are sticky. Exposure counts are
+cumulative diagnostic admissions, not live-writer counts. This metadata does
+not prove writer coverage, quiescence or a clean mapping, and does not enable
+scan elision. Production worker/host-writer admission and trusted completion
+waits still need a source-bound ownership protocol before any such activation.
+
 Normal exit and exec wait for an exact `memory_quiescent` message from every
-process Worker and pthread Worker before dropping host aliases. Forced
+process Worker and pthread Worker before dropping host aliases. A deferred
+pthread launch has a distinct absence proof: its exact handle is permanently
+sealed before any Worker construction attempt. Both hosts may then reclaim its
+slot without inventing either `memory_quiescent` or `exec_retired`. The attempt
+bit is monotonic and set before factory entry; a constructor exception, null
+backing handle, timeout or `terminate()` result never proves absence. Thread
+ownership records retain this proof separately from message fences; optional
+generation diagnostics count `absentThreads` separately from
+`acknowledgedThreads` and report `acknowledged-or-absent` when appropriate.
+Batch retirement accepts those exact proofs while a missing proof keeps serial
+containment and forced lease retirement. Main-Worker message fences remain actual ACKs. Forced
 termination drops the kernel realm's aliases but never makes the backing
 eligible for reuse. Whole-host destroy synchronously closes process/pthread
 Worker creation admission, waits for every already-admitted async creator to
@@ -2269,6 +2761,38 @@ graceful detach attempt fails or times out. That realm boundary is the final
 release fallback; a false graceful result never asks the main thread to keep a
 partially detached kernel Worker alive.
 
+Every main generation prepares its own exact-handle absence proof before
+publication or deferred start. Cold exit, exec and destroy paths may accept that
+sealed never-attempted proof instead of waiting for a message from a realm that
+never existed. It permanently cancels future starts; a constructor attempt,
+unknown handle, timeout or successful native termination cannot create it.
+Neither message fence is settled synthetically. Optional retirement diagnostics
+retain `mainFence: missing` and report `mainAbsent: true` separately, so absence
+cannot be mistaken for guest return. Rollback and final retirement keep the
+captured generation even when its numeric PID has an exec replacement.
+
+Main-worker message authority requires both the exact current Worker realm and
+the payload's bound PID. Memory/exec fences additionally require an absent
+thread discriminator. Browser error/exit messages and interrupt-timer dispatch
+use the same PID predicate as Node. Native Worker error/exit events carry no
+message PID and retain their separate exact-realm authority. The shared timer
+handler already rejected foreign PIDs before scheduling; the entry predicate
+adds parity without claiming a former scheduling violation. These checks cannot
+manufacture a missing acknowledgement or prove its cause.
+
+An asynchronously launched fork owns its newly allocated Rust child and
+pre-publication descriptor mirrors until its host callback transfers custody.
+Cleanup uses a fresh kernel entry even if the caller's original mailbox has
+completed or its image has changed. A private creator-gate refusal is expected
+only after the exact child image and its unpublished mirrors are retired;
+matching error text is not proof, and uncertain cleanup remains fatal. A
+replacement child registration or image is never removed by numeric PID alone.
+The original caller receives a result only while its exact registration,
+Memory, pending request and Rust exec generation still agree. A transferred
+child retains its independent lifetime when that caller has already woken.
+Both host adapters publish job-family custody only after creator admission.
+These ownership checks run on fork launch/completion, not unrelated syscalls.
+
 A pthread Worker is terminated when its `memory_quiescent` arrives, except on
 JavaScriptCore browsers: there the exited thread's Worker stays idle, holding
 its instances, and is terminated with its process (exit, exec, forced
@@ -2276,7 +2800,12 @@ termination or destroy). JavaScriptCore crashes when process memory grows
 while another thread destroys an instance of it
 ([`JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN`](../tests/runtime-workarounds/JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN/entry.md)).
 The thread's slot and channel are reclaimed at `memory_quiescent` on every
-host.
+host, or after sealing a never-attempted deferred launch. Node may also reclaim
+an individually joined thread slot after the returned backing handle's
+termination promise fulfills; that platform join is not reported as a Worker
+message ACK. A constructor that attempted then threw provides no returned
+handle to join. Node retains that exact ownership row and slot until whole
+process containment, rather than turning a resolved no-op into a join proof.
 
 The allocator applies a hard live-address-space count and samples a live-byte
 admission budget before each new allocation. Uninstrumented
@@ -3114,8 +3643,12 @@ the same admission limit; production uses the streamed reachable-metadata mode.
 Journal cache slots and clean/dirty payloads, retained metadata-cache ownership,
 encoded/replayed transaction frames and prepared-publication vectors now share
 an I/O admission pool with ordinary and archive verified-read tables, chunks
-and streaming verification buffers. Both hosts configure the smaller of 32 MiB
-and one eighth of the kernel ceiling. A fixed 2 MiB slice is reserved for dirty
+and streaming verification buffers. The pool also owns retained mapping
+baselines and inherited child state, not only disposable cache. Both hosts
+configure the smaller of 128 MiB and one eighth of the existing kernel ceiling
+(128 MiB on desktop, 96 MiB on constrained). This changes admission capacity;
+it neither preallocates those bytes nor enlarges a Wasm memory maximum. A fixed
+2 MiB slice is reserved for dirty
 writeback cloning, framing and publication scratch; ordinary cache fills cannot
 spend it. Accepted dirty data can drain when ordinary admission is exhausted.
 This is distinct from the journal-state node reserve described above.
@@ -3224,7 +3757,11 @@ overflow. Fork/spawn first group their host handles and prepare all new records
 and final counts before changing any inherited resource reference. Once other
 fallible resource preparation succeeds, publishing the host counts allocates
 nothing. Failed preparation leaves existing counts intact; final close drops
-the record and its credit.
+the record and its credit. Permanently preopened host streams 0, 1 and 2
+have no native close lifetime and never enter this table. Their guest OFD
+and descriptor ownership remains ordinary, but retiring an independent root
+must not consume another fork family's native-file references for those
+reused stream numbers.
 
 Retained SCM_RIGHTS batches own admitted vector capacity through blocked-send
 templates, stream/datagram queues, peeks and consuming receives. Template and
@@ -3896,6 +4433,29 @@ kernel ceiling and an 8 MiB logical disk, preserving both free space and
 deferred descriptions through reboot and checkpoint. Host transport and
 closed-asset buffers are not covered by that kernel ceiling.
 
+If native length or digest validation rejects a deferred body, the read fails
+with `EIO` without materializing it. `host_discard_deferred` evicts that
+transport body, changes its download progress from complete to error, and
+emits a `vfs-integrity` host diagnostic (also visible on the console). This
+remains visible even if the guest library handles `EIO` by omitting a font
+or other data. No automatic retry follows an integrity failure. A later
+explicit read requests `cache: "reload"`; the browser service worker evicts
+that exact entry from its own scoped lazy cache and replaces it from the
+origin. Node carries the same request through its transport. Content
+admission still belongs to Rust's size/digest checks, not the service worker.
+
+Transfer failures preserve their underlying transport cause in the shared
+Node/browser progress event rather than flattening HTTP, native size-bound
+and network failures into missing bytes. Terminal transport slots keep their
+existing bounded EIO policy. The UI retains unresolved errors ahead of active
+transfers, including after remount, while successful transfers may fade. A
+dismissal acknowledges one observed event sequence; a later failure must be
+acknowledged again even if its URL and wall-clock timestamp are unchanged.
+A new machine boot clears its predecessor's summaries and visible failures;
+old acknowledgements cannot suppress the replacement's errors. This
+presentation consumes authoritative download state and never changes VFS
+admission or invents a successful desktop state.
+
 Relative URIs are resolved against the deployment at fetch time: the browser
 uses `BrowserKernel`'s `lazyUrlBase`, Node the peer
 `NodeKernelHost.rootfsLazyUrlBase`. The image itself is never rewritten.
@@ -4551,6 +5111,15 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
 
 2. **TlsNetworkBackend**: Terminates the guest's TLS connection with a generated, in-VFS CA and sends the decoded HTTP request through browser `fetch()`. Service-worker-controlled apps may proxy cross-origin fetches transparently. Other embedders set `BrowserKernelOptions.corsProxyUrl`; the option crosses the main-thread/worker protocol and routes backend fetches through the application's CORS proxy.
 
+   The shared TLS 1.2 implementation and its upstream NOTICE live in
+   `host/src/networking/tls/`, inside the host runtime's source/declaration
+   boundary; the host build preserves its NOTICE in
+   `dist/networking/tls/NOTICE`. The legacy OpenSSL example worker imports this same source;
+   it is not part of the guest OpenSSL C recipe. Fetch and WebCrypto receive
+   exact byte ranges with non-shared backing. Private views retain their
+   byte offsets; shared views are copied rather than admitted by globally
+   widening the platform's WebCrypto types.
+
    The browser bridge deliberately declines TLS 1.2 session resumption.
    TLS 1.3-capable clients can send a nonempty legacy session ID even without
    an existing Kandelo session. Echoing it after selecting TLS 1.2 would
@@ -4717,7 +5286,14 @@ maximum spends reservation capacity even when most pages are unused. A clone
 in the persistent UI realm can keep the entire process address space charged
 after its Worker terminates, until that realm's collector runs. Independent
 pixel storage costs only the framebuffer's actual length and cannot retain a
-retired guest address space. Memory growth requires no UI rebind: the worker
+retired guest address space. `attachCanvas(canvas, registry, pid)` consumes
+only this independent storage. It checks existing and newly published
+bindings and refuses a missing mirror with a diagnostic, retiring its own
+animation callback and registry subscription. It never recovers a guest
+memory from the browser proxy. An explicit memory accessor remains available
+to a renderer inside the owning realm; browser consumers use the independent
+pixel path. Stopping either attachment retires its animation and ownership
+subscription. Memory growth requires no UI rebind: the worker
 reads the current guest buffer for each copy. Node has no separate browser UI
 realm and retains its direct-mapping presentation path.
 
@@ -4777,6 +5353,12 @@ ID so another finger or a hovering mouse cannot clear its button state.
 Full snapshots release old buttons before
 introducing new presses, and both KMS pointer feeds place motion before the
 button edge. Node's translated-event input API and the kernel ABI are unchanged.
+The session KMS pointer adapter sends each complete evdev frame through the
+existing Node/browser batch transport: position records and their `SYN_REPORT`
+first, then changed buttons and their own `SYN_REPORT`. The worker preserves
+record order and schedules blocked-reader wake work after each complete frame.
+Repeated updates are retained; there is no motion coalescing or frame dropping.
+Adapters without the optional batch method send the same records individually.
 
 SDL2's direct evdev backend merges pending keyboard and pointer records by
 kernel timestamp, retaining a 32-record read batch per device. Reading all
@@ -5005,8 +5587,8 @@ to do with. It is independent of drag and drop; the design is
   once. A stored output may be read any number of times, by range; a
   streamed one once. Nothing in the platform turns an output into a file or
   a download. The browser app opens an output of type
-  `application/x-kandelo-terminal-command` as a terminal running the
-  command it carries instead of offering it in its tray (see "Terminal
+  `application/x-kandelo-terminal-command`, emitted by the shell
+  `kandelo-page-terminal` helper, as a terminal running the command it carries instead of offering it in its tray (see "Terminal
   requests" in `docs/browser-support.md`); that is the app's use of an
   output, not a platform behavior.
 - **Quotas.** `work/` and `outbox/` together hold at most min(256 MiB, a
@@ -5275,31 +5857,95 @@ throughput or performance claim.
 
 ## DRM/KMS (`/dev/dri/card0`, `/dev/dri/renderD128`)
 
+Graphics execution currently remains synchronous on the kernel worker.
+The maintainer's revised D-54 requires guest-local GL authority (Stage B),
+Rust asynchronous scheduling and fences (C1), executor separation (C2), and
+a dedicated GPU worker (C3) in the current baseline. These are planned
+changes, not the architecture implemented here. Each stage must preserve
+kernel ownership, ordering, mapped-buffer publication and Node/browser
+parity. See the [current shipping targets](graphics/compatibility-v1.md#current-shipping-priority-2026-11-03)
+and [migration plan](future-improvements.md#move-gl-authority-into-the-guest-library-and-the-rust-kernel-current-iteration).
+
 Kernel BO references, not the host mapping inventory, own DRI pixel
 backing. Unmapped PRIME imports and selected cursors retain storage after
 the allocator exits. Normal OFD close and process removal share the same
 DRI release collector: kernel references retire synchronously, then the
 owning adapter drains final BO, framebuffer, GL, and master notifications.
-Failed spawn rollback drains those effects too. Spawn counts inherited
-cursor references alongside GEM handles and framebuffers.
+Failed spawn rollback drains those effects too. GEM names and their allocator belong to the DRM open description: dup,
+fork, vfork and spawn aliases share one namespace. Each entry owns one BO
+reference; final namespace close releases its remaining entries. Fork
+settles the deserialized snapshot's duplicate references before publishing
+the shared namespace. Spawn adds references only for copied PRIME and
+cursor sidecars; GEM and framebuffer tables retain their existing holds.
+PRIME reimport returns an existing live handle on the same DRM file.
+KMS master, cursor and event inheritance still have separate gaps; see
+[graphics compatibility v1](graphics/compatibility-v1.md).
 
 The worker's DRI registry merges changed byte runs relative to a private
 snapshot of each mapping. It uses the same merge primitive as anonymous
 `MAP_SHARED` publication. Allocator and importer writes both publish at
-mapping, readiness, texture submission, and cursor/scanout presentation
-boundaries; unchanged readers do not overwrite newer bytes. Refreshing a
-reader also refreshes its snapshot. A pending reader remains eligible for
+mapping, readiness, successful receive/child-wait completion, texture
+submission, and cursor/scanout presentation boundaries; unchanged readers do not
+overwrite newer bytes. A readiness wake is insufficient when a producer
+stores pixels and sends another commit while the consumer is draining its
+socket. Successful `read`, `readv`, `recvfrom` and `recvmsg` completions
+therefore refresh live imported BO mappings after their output writes land
+and before the guest resumes. Successful `wait4` and `waitid` completions
+refresh after status/siginfo and shared-map materialization too: child exit
+can publish BO bytes while leaving the parent's independent view stale.
+Both ordinary/frozen retries and kernel-decided parked waits refresh before
+completion publication. `waitid` succeeds with zero; a successful WNOHANG
+zero may refresh without claiming a child event. Failed waits preserve their
+errno and pending readers. EOF, failed receives and unrelated calls do not
+perform this scan; a process without mapped imports does not copy BOs.
+Refreshing a reader also refreshes its snapshot. A pending reader remains eligible for
 refresh after the last writer unmaps, exits, or replaces its address space.
+Publication scans retain the independent baseline without copying it when
+no changed runs are found. A changed publication advances only its copied
+runs, using the exact bytes that reached canonical storage, and marks
+readers pending. It never rereads the live producer to advance that
+baseline: stores made during the scan must remain detectable at the next
+publication, including stores to an earlier byte the scan already passed.
+Readiness refresh remains unconditional for the
+selected BO's mapped readers: mutable canonical pixel views do not provide
+an authoritative version that would permit skipping those refreshes.
 This remains boundary synchronization,
 not live aliasing between Wasm memories. A snapshot is bounded by the
 mapping length and BO size and retired with its mapping; backing is retired
-only by the kernel's final-reference destroy notification. GPU textures
-follow that same destruction event. All guest mappings and snapshots stay
-inside disposable workers. No guest ABI layout or import is changed.
+only by the kernel's final-reference destroy notification. Partial DRI
+`munmap` trims or splits that ownership instead of revoking the whole
+mapping. Each surviving fragment retains its canonical BO byte offset and
+one kernel reference; fork registers those offsets before priming the
+child's memory. A replaced hole no longer participates in device coherence.
+Split metadata and additional references are acquired before destructive
+cleanup, so reference overflow leaves the mappings unchanged. Pending
+reader refresh survives alias retirement, including publications made by
+that retirement itself. GPU textures follow the same final destruction
+event. All guest mappings and snapshots stay inside disposable workers.
+The host bind import includes the canonical offset; it ships with the
+matching kernel within the single program ABI 56 / host-adapter 4 family.
+Fixed anonymous, private-file and new device mappings retire the affected
+device interval before the host populates replacement bytes. DRI admission
+stages new metadata, flushes the old aliases, then commits clipped views
+with their canonical offsets. This preserves dirty storage when the same
+BO is remapped through a PRIME descriptor. Allocation or bind rejection
+returns temporary references and restores the old allocator and device
+bindings; accepted retirement cannot revoke the newly installed view.
+Framebuffer and GL command replacements install their new owner after
+retiring old device bindings. Device `mremap` shrink retires only its tail through
+that same plan, and an unchanged-size remap retains the existing binding.
+GEM mappings cannot expand: growth, including `MREMAP_MAYMOVE`, fails with
+`EFAULT` without changing the mapping or storage references, following
+Linux GEM's fixed-size VMA model. The fixed framebuffer/GL command mappings
+also reject expansion. Ordinary moved mappings preserve their protection
+and shared-publication metadata. Broader remap flag/partial-file coverage
+remains separate work; see the
+compatibility ledger.
 
 The host's independent display statistics buffer publishes the current
 DRM master PID in slot 8 (zero when unowned), alongside presentation and
-scanout counters. The dedicated kernel worker snapshots this state on
+scanout counters, and the scanout state in slot 9 (1 while the CRTC scans
+out a framebuffer, 0 while it shows nothing). The dedicated kernel worker snapshots this state on
 vblank even when no framebuffer is bound. Node stats-only consumers and
 browser canvas consumers observe the same owner; no guest memory is
 exposed. This is host display metadata, with no kernel/guest ABI change.
@@ -5309,11 +5955,658 @@ and canvas sizing for subsequent applications.
 
 This section is the implementation walk-through; [Linux-compatible graphics devices](#linux-compatible-graphics-devices) states the device-level contract.
 
-`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP (`DUMB_BUFFER`, `PRIME`, and 64×64 cursor dimensions report support after host negotiation; every other capability reads 0), SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_ADDFB2 / RMFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. `MODE_CURSOR` / `MODE_CURSOR2` provide one virtual cursor plane. There is no general plane, property or atomic interface (no MODE_GETPLANERESOURCES, OBJ_GETPROPERTIES or ATOMIC), no legacy ADDFB or DIRTYFB, and any other DRM request fails with `ENOSYS`; `docs/plans/2026-09-30-real-hyprland-port-inventory.md` lists what a Hyprland- or wlroots-class compositor would need beyond this. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same DRM interfaces. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the reported pixel dimensions, even-aligned and clamped to [640, 3840] × [480, 2160], so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The preferred mode is sampled per GETCONNECTOR call and clients generally cache it at startup; resizing the pane afterwards changes presentation rather than switching the guest mode. The kernel also advertises 17 standard 60 Hz modes from 640×480 through 3840×2160, deduplicating the preferred size. Only the host-provided first mode is preferred. Both hosts expose this same catalog through the existing DRM ioctl, without a new host import or ABI layout. A count query reports the full list length; an undersized modes buffer is left untouched so libdrm can retry. The guest can switch modes using ordinary SDL or libdrm APIs, and the browser fits the selected scanout with letterboxing. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
+`crates/runtime-core/src/dri/ioctl_kms.rs` (with the device state in `dri/kms.rs`, the commit engine in `dri/atomic.rs` and the buffer registry in `dri/bo.rs`; the shared render-node ioctls stay in `syscalls.rs`) handles DRM_IOCTL_VERSION, GET_CAP, SET_CLIENT_CAP, GET_MAGIC / AUTH_MAGIC, SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_GETPLANERESOURCES, MODE_GETPLANE, MODE_OBJ_GETPROPERTIES, MODE_GETPROPERTY, MODE_GETPROPBLOB, MODE_OBJ_SETPROPERTY / MODE_SETPROPERTY, MODE_CURSOR / CURSOR2, MODE_ADDFB / ADDFB2 / GETFB / GETFB2 / RMFB / CLOSEFB, MODE_DIRTYFB, MODE_GETGAMMA / SETGAMMA, MODE_CREATEPROPBLOB / DESTROYPROPBLOB, GET_UNIQUE, MODE_PAGE_FLIP, MODE_ATOMIC, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. These are the legacy and atomic KMS interfaces a wlroots compositor such as cage or sway drives:
 
-`DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
+- **Mode objects.** One CRTC (id 1), one virtual encoder (2), one virtual connector (3) and one primary plane (4). Linux allocates every mode object and property from one id space, and libdrm clients read properties with `DRM_MODE_OBJECT_ANY`, so no two objects share an id (`crates/runtime-core/src/dri/kms.rs`). The primary plane is listed by MODE_GETPLANERESOURCES only after `DRM_CLIENT_CAP_UNIVERSAL_PLANES`, and reports the formats ADDFB2 accepts (XRGB8888, ARGB8888, RGB565, ABGR8888, XBGR8888, R8, GR88, the four 2101010 orders, ABGR16161616F and XBGR16161616F). R8 and GR88 show their channels with the channels they lack zero; 10-bit and half-float planes are reduced to 8 bits per channel (see the scanout formats below). The legacy cursor ioctl is available separately; the general plane list contains the primary plane.
+- **Capabilities.** GET_CAP answers every capability Linux defines and fails with `EINVAL` for an unknown one, as `drm_getcap` does. `CRTC_IN_VBLANK_EVENT` and `TIMESTAMP_MONOTONIC` are 1 (flip events carry the CRTC id and a `CLOCK_MONOTONIC` timestamp); `ADDFB2_MODIFIERS` and `ASYNC_PAGE_FLIP` are 0; `SYNCOBJ` and `SYNCOBJ_TIMELINE` are 1 on both nodes (see [explicit synchronization](#explicit-synchronization-fences-sync_file-and-drm-sync-objects)). SET_CLIENT_CAP accepts `STEREO_3D`, `UNIVERSAL_PLANES`, `ASPECT_RATIO` and `ATOMIC` (0, 1 or 2, as `drm_setclientcap` takes it; it sets universal planes alike), and `WRITEBACK_CONNECTORS` only after `ATOMIC` (there are no writeback connectors to list). The atomic cap is advertised as soon as atomic commits are implemented (decision D-13), so a compositor that probes it takes the atomic path by itself.
+- **Properties.** The planes carry the immutable `type` enum (Primary, Cursor). The connector carries `EDID` (an immutable blob, below), `DPMS`, `link-status` (Good) and `non-desktop` (0). The CRTC carries `GAMMA_LUT` and the immutable `GAMMA_LUT_SIZE` (256). The atomic properties are attached as Linux attaches them and, as Linux does, listed by OBJ_GETPROPERTIES and GETCONNECTOR only to a file that enabled `DRM_CLIENT_CAP_ATOMIC`: each plane's `FB_ID`, `CRTC_ID`, `SRC_X`/`Y`/`W`/`H` (16.16), `CRTC_X`/`Y` (signed), `CRTC_W`/`H`, `IN_FENCE_FD` and `FB_DAMAGE_CLIPS`; the CRTC's `ACTIVE`, `MODE_ID` and `OUT_FENCE_PTR`; the connector's `CRTC_ID` (one property shared with the planes). They carry `DRM_MODE_PROP_ATOMIC` and Linux's types (object, signed range, range, blob). There is no `IN_FORMATS`: no format modifiers are advertised (decision D-15, below). Any file can still read a property by id, and the master can set any mutable one through OBJ_SETPROPERTY, which becomes a one-property commit (below).
+- **Legacy gamma.** The CRTC has a 256-entry gamma ramp per channel, as common 8-bit legacy drivers report through MODE_GETCRTC's `gamma_size`, following `drivers/gpu/drm/drm_color_mgmt.c`. The ramp (`gamma_store`) starts as the identity `i << 8`. MODE_GETGAMMA copies it to anyone; MODE_SETGAMMA needs the master. Both fail with `ENOENT` for another CRTC and `EINVAL` for another size, and copy red, green and blue in turn, so a fault is `EFAULT` after the channels before it moved. A complete SETGAMMA then does what `drm_atomic_helper_legacy_gamma_set` does: it makes `GAMMA_LUT` a new kernel-owned blob of 256 `drm_color_lut` entries (no file may destroy it), which `kms_color`'s legacy-gamma-reset reads back. `OBJ_SETPROPERTY` sets `GAMMA_LUT` to 0 (no LUT) or to any blob of exactly 256 entries (`EINVAL` otherwise) without touching the ramp. The CRTC holds a reference on the blob it uses, so it outlives its creator's DESTROYPROPBLOB or close and is freed when replaced. Each change of the LUT reaches the host through `host_kms_set_gamma(crtc, lut, entries)` (0 entries: none).
+- **Scanout state.** SETCRTC validates its connector list as Linux does and records the mode and framebuffer, which MODE_GETCRTC and MODE_GETPLANE report. The mode lives in a kernel-owned `MODE_ID` blob (a new one only when the mode changes), as `drm_atomic_set_mode_for_crtc` keeps it.
+- **One commit path.** Every change to the CRTC, its planes and its connector is a commit (`dri/atomic.rs`): a copy of the device state is staged, the whole result is checked once, and only then is the device state replaced and the host told. WHY: on a Linux atomic driver the legacy ioctls are helpers that build an atomic state, so one check gives SETCRTC, PAGE_FLIP, SETPLANE, CURSOR/CURSOR2, DPMS, SETGAMMA, OBJ_SETPROPERTY and MODE_ATOMIC the same rules and errnos, and a rejected request can never leave half of its change behind. Nothing after a successful check may fail: an internal failure there (a blob or BO that vanished) is a kernel fault that stops the kernel, never a partial commit. Legacy commits take effect when the ioctl returns, as before; PAGE_FLIP and atomic commits on a lit CRTC are pending until the vblank that completes them.
+- **Event storage.** Event-requesting legacy flips, atomic commits and
+  WAIT_VBLANK reserve pending metadata and completion bytes before native
+  or guest-visible effects. Vblank delivery consumes that owned capacity;
+  it cannot fail allocation after a successful commit promised an event.
+  Operations that request no event do not reserve event storage. Fixed BO
+  replacement admits its new binding in the survivor table it will publish,
+  while final whole unmap needs no extra binding slots.
+- **Atomic commits.** MODE_ATOMIC needs the current master and the atomic cap (`EINVAL` without it, `EACCES` on the render node). It copies each element of the request arrays into the kernel once and parses that copy, in the order Linux's `get_user` loop reaches the elements (in bounded chunks, falling back to the one element a chunk past the caller's memory would hide), so a fault or an invalid object or property id reports Linux's errno at the same element (`EFAULT`, `ENOENT`). Values are checked as `drm_property_change_valid_get` checks them (`EINVAL` for an immutable property, a value out of range, or an id that is not a live object of the property's type), then staged as `drm_atomic_set_property` stages them, and the result is checked as `drm_atomic_check_only` checks it: plane `CRTC_ID` and `FB_ID` together or not at all, formats, coordinates (`ERANGE`), sources inside the framebuffer (`ENOSPC`), damage rectangles, `ACTIVE` only with a mode, an enabled CRTC driving its connector and showing a mode the connector advertises, the primary plane present while the CRTC has a mode, and `DRM_MODE_ATOMIC_ALLOW_MODESET` for any mode, active or routing change. `TEST_ONLY` runs the check and nothing else: no host effects, events or fences (and `TEST_ONLY` with `PAGE_FLIP_EVENT` is `EINVAL`). `NONBLOCK` is `EBUSY` while the previous commit is pending. A blocking commit waits for the previous commit, applies, then waits for its own flip, and neither wait is interrupted by a signal. WHY: Linux's `drm_atomic_helper_commit` swaps in the new state at its point of no return and waits for the previous commit (`drm_atomic_helper_wait_for_dependencies`) and its own flip (`drm_atomic_helper_wait_for_vblanks`) with uninterruptible waits, so a blocking commit never fails with `EINTR` and never runs twice. Kandelo applies after the previous commit completes rather than before, so that commit's frame still gets its vblank, as Linux programs the hardware only then. Both waits park the caller on the host's ordinary EAGAIN retry path under a per-thread wait record; while the record exists the kernel leaves the thread's caught signals pending (`kernel_dequeue_signal` delivers none), as in `TASK_UNINTERRUPTIBLE`, and delivers them when the ioctl returns; default actions such as termination still apply. The parked thread cannot issue another system call, so the host's retry of its ioctl is the only call that finds the record: the retry of an applied commit only waits. `PAGE_FLIP_EVENT` reserves event space (`ENOMEM` when full; `EINVAL` when no CRTC is in the commit) and queues `DRM_EVENT_FLIP_COMPLETE` with the request's `user_data`, the CRTC id and the real vblank sequence and time when the host's vblank pump completes the commit, or at once when the commit turns the CRTC off. `PAGE_FLIP_ASYNC` is `EINVAL` (`DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP` is 0). WHY the hot path stays allocation-free: a compositor issues one atomic commit per frame plus TEST_ONLY probes for direct scanout, so staging copies fixed-size state, the arrays are copied through stack buffers, and the mode list and blobs are read only when a commit changes them.
+- **Planes (decision D-12).** The CRTC has a primary plane and a cursor plane and no overlay planes, and neither plane scales. WHY: the DRM uAPI leaves the plane set and each plane's limits to the driver, the host presenters show exactly an unscaled primary that covers the CRTC plus a positioned cursor, and no program Kandelo runs needs overlays or scaling. The check refuses the rest the way Linux drivers with the same planes do through `drm_atomic_helper_check_plane_state` with no scaling: scaling is `ERANGE`; positioning, partial coverage or a sub-pixel source origin of the primary, a primary on a disabled CRTC, and no primary on an enabled CRTC are `EINVAL`. The cursor plane is positioned freely (negative and off-screen positions included) but takes only a packed, zero-offset ARGB8888 image of up to 64×64, uncropped (`EINVAL`). A larger primary framebuffer still pans by whole pixels through `SRC_X`/`SRC_Y`, which GETCRTC reports as `x`/`y`.
 
-`DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) is the fully GPU-backed tier: the bo is a host `WebGLTexture` plus a color-attachment FBO — no SAB, unmappable on the CPU. WebGL textures are not shareable across contexts, so all GPU-tier bos and every GL client that touches them live on **one** shared multiplexer context: the DRM-master compositor's scanout WebGL2 context. A non-master GL client (which has no display canvas of its own) is routed onto that shared context at `host_gl_create_context`; the existing `GlMuxer` (keyed by the WebGL2 context) multiplexes the compositor and its clients by replaying each binding's shadow state on `switchTo`. A client renders into the bo by targeting its FBO: the bo handle reaches the next `eglCreateWindowSurface`'s `GLIO_CREATE_SURFACE` either explicitly (`libEGL`'s `wpkEglSetWindowSurfaceTarget(handle)`) or, for a libwayland-egl `wl_egl_window`, from the bo that window allocated; the kernel translates the per-fd handle to a global bo id and the host redirects the client's "bind default framebuffer 0" to the bo's FBO (sizing the viewport to the bo). Because a toolkit may create the window surface *before* the GL context, the redirect target is captured at surface creation and (re)applied at whichever of context-creation or surface-creation runs last, since it needs both `b.gl` and the resolved bo. A `wl_egl_window_resize` (a tiling compositor resizes every window it maps) gives the window a new bo at the new size and has `libEGL` destroy and re-create the window surface against it, flushing first so commands already queued land in the old bo; the old buffer is destroyed only after the next `eglSwapBuffers` has attached and committed its successor. As in Mesa, the resize takes effect from the next frame. `eglSwapBuffers` flushes the shared context as the buffer-ready fence before `wl_surface.commit`; command order through the one submit queue gives render-before-sample ordering for free (no explicit sync object in v1). `BIND_FOREIGN_TEXTURE` on a GPU-tier bo then degenerates to returning the texture id — true zero-copy, no upload. Allocation degrades to a CPU-tier dumb bo whenever no shared context exists — headless Node has no WebGL2, and in the browser the compositor must have created its context first — so `libgbm` only requests the GPU tier for render-only bos (RENDERING set, none of SCANOUT/CURSOR/WRITE/LINEAR) and falls back to CREATE_DUMB on any error. This producer path is browser-only. Each GPU-tier bo's FBO has color, 24-bit depth, and 8-bit stencil storage, so default-framebuffer depth testing and stencil clipping work for Wayland clients as well as canvas-backed sessions.
+Immediate GPU flips and the vblank pump use the same checked primary-plane
+scanout helper. Both force only the displayed alpha to one, preserving BO
+alpha for EGLImage siblings and restoring native framebuffer selectors,
+scissor, color mask and clear color. Copying alpha only on the immediate
+path would expose the browser page between otherwise opaque presentations.
+
+- **Modifiers (decision D-15).** Framebuffers are linear, and no plane carries `IN_FORMATS`. WHY: CPU buffers are linear by definition and GPU-tier buffers are opaque native textures, so advertising a tiled layout or modifier list would describe a layout that does not exist (the same reason `DRM_CAP_ADDFB2_MODIFIERS` is 0).
+- **Fences.** `IN_FENCE_FD` takes -1 (no fence) or a `sync_file` fd, whose fence the plane waits for; any other fd is `EINVAL`, as `sync_file_get_fence` fails on Linux, and so is a second `IN_FENCE_FD` on one plane in one commit. A nonblocking commit with an unsignaled in-fence swaps its state in at once (GET reports it) but latches its host effects (scanout, cursor, color stage, and the releases that follow them) at the first vblank after the fence signals; its flip events and out-fence complete at that vblank, and the CRTC stays busy (`EBUSY` for another nonblocking commit) until then. A blocking commit waits for its in-fences before its state is swapped in, interruptibly, as `drm_atomic_helper_commit` does, so it parks with no commit record and a signal can end it; legacy `OBJ_SETPROPERTY` commits do the same. A nonzero `OUT_FENCE_PTR` receives -1 when staged (`EFAULT` for a bad pointer). A TEST_ONLY commit makes no fence. A real commit creates the CRTC's next fence (one fence context per CRTC, `drm_crtc_create_fence`), installs a close-on-exec `sync_file` for it and writes the fd once the commit is certain to apply (after its check and busy test; a fault fails the commit untouched); the vblank that completes the commit signals it with that vblank's time, a commit that leaves the CRTC dark signals it at once, and a CRTC turned off by removing its framebuffer signals it with the last vblank's time. See [explicit synchronization](#explicit-synchronization-fences-sync_file-and-drm-sync-objects).
+- **ACTIVE and DPMS.** `ACTIVE` off keeps the mode and planes but scans out nothing: the host is told to show no framebuffer, the cursor transport reports no image, and the vblank counter stops. A dark CRTC's output is black on every presenter (the 2D blit, the WebGL2 scanout presenter, direct GPU scanout and a GL session that owns the canvas, whose window frames do not reach a dark CRTC), cleared once per dark period, and the stats buffer's slot 9 reads 0 on Node and in the browser alike; a CRTC whose scanned framebuffer was removed is dark too. WHY: a display that is off shows nothing, so keeping the last frame on screen would present a state the system is not in. Legacy DPMS is an `ACTIVE` commit, as `drm_atomic_connector_commit_dpms` makes it: On lights the CRTC, Standby, Suspend and Off darken it and read back as Off, and after every modeset DPMS follows `ACTIVE`. Atomic writes to `DPMS` are `EINVAL`, as on Linux.
+- **EDID (decision D-14).** The connector's `EDID` is a Kandelo-identified E-EDID 1.4 base block (`dri/edid.rs`) with a stable identity: manufacturer `KDL` (a code chosen for Kandelo, not an assigned PNP ID), product code 1, product name `Kandelo`, serial 1 and serial string `0001`. WHY: compositors name outputs by EDID make, model and serial, and their configuration matches on that name, so a stable identity lets a user's output configuration keep applying. Its preferred detailed timing is the connector's first mode exactly as GETCONNECTOR lists it, a display range limits descriptor (no timing formula) bounds every advertised mode, and its sizes are the connector's `mm_width`/`mm_height` (undefined when the host reports none). It claims no established or standard timings, because those name VESA timings that differ from the virtual modes. `KDL` is an unregistered virtual-device identity: EDID parsers accept any three-letter code and show an unknown one as it is, so a registered ID is not needed for correct parsing; registration guarantees uniqueness among physical products, and `KDL` is unassigned in the UEFI PNP ID registry today. Probing the connector (GETCONNECTOR, or OBJ_GETPROPERTIES on it) rebuilds the blob when the host's preferred mode or size changed, as `drm_connector_update_edid_property` replaces it, and keeps the same blob otherwise. A preferred mode that cannot be a detailed timing is a host fault (the host bounds it at 3840×2160) and stops the kernel.
+- **Damage.** `FB_DAMAGE_CLIPS` is a hint: its rectangles are validated (`EINVAL` for a blob that is not whole `drm_mode_rect`s, or an empty or negative rectangle) and the blob is held by the plane state, but the host presents the whole plane each vblank.
+- **Framebuffers.** RMFB of the framebuffer on the CRTC disables the CRTC, as on Linux. CLOSEFB drops the fd's framebuffer id but leaves a scanned-out framebuffer on the CRTC until the next SETCRTC or PAGE_FLIP replaces it; wlroots closes its framebuffers this way. Framebuffer ids are device-wide. Framebuffers belong to the open file: a child that inherits it through `fork()` or `posix_spawn()` shares the parent's framebuffers, and they are removed only when the last process closes the open file, as Linux does with a `drm_file`. A compositor's child that closes its inherited `O_CLOEXEC` `card0` fd at `exec` leaves the compositor's scanout framebuffer on the CRTC.
+- **Cursor.** MODE_CURSOR and MODE_CURSOR2 retain main's negotiated 64×64 ARGB cursor implementation and BO references. Hosts without that transport report zero cursor capacity and reject cursor operations with ENOTSUP.
+- **Master.** The first open of `card0` while no file is master becomes master, as Linux's `drm_master_open` does, so a compositor that never calls SET_MASTER (wlroots over libseat's noop backend) can modeset. DROP_MASTER and the master's last close release it; a later SET_MASTER from another file then succeeds.
+- **Authentication and leases.** GET_MAGIC issues a per-open-file token and AUTH_MAGIC lets the master accept it (`EACCES` from a non-master, `EINVAL` for an unknown token such as the 0 that libdrm's `drmIsMaster` probes with). Kandelo does not gate primary-node ioctls on authentication. MODE_CREATE_LEASE fails with `EOPNOTSUPP`: DRM leases are not implemented.
+
+Nested KMS query outputs are preprobed together before any write. DRM
+leases are not implemented. The DRM
+nodes report char devices 226:0 and 226:128 and are described by sysfs.
+CPU-tier PRIME fds map their BO at offset zero; GPU-tier mappings fail
+with EINVAL. PRIME fstat reports the BO size and anonymous-inode mode.
+
+`host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the reported pixel dimensions, even-aligned and clamped to [640, 3840] × [480, 2160], so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The preferred mode is sampled per GETCONNECTOR call and clients generally cache it at startup; resizing the pane afterwards changes presentation rather than switching the guest mode. The kernel also advertises 17 standard 60 Hz modes from 640×480 through 3840×2160, deduplicating the preferred size. Only the host-provided first mode is preferred. Both hosts expose this same catalog through the existing DRM ioctl, without a new host import or ABI layout. A count query reports the full list length; an undersized modes buffer is left untouched so libdrm can retry. The guest can switch modes using ordinary SDL or libdrm APIs, and the browser fits the selected scanout with letterboxing. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
+
+
+The EGL library imports single-plane linear dma-buf images and the GLES
+library binds them to textures or renderbuffers. The image handle and its
+GL siblings have independent lifetimes. The implementation and evidence
+ledger is [graphics compatibility v1](graphics/compatibility-v1.md);
+these interfaces do not establish complete EGL1.5 or GLES2 conformance.
+
+GLES vertex-array buffer identity and format are tracked independently of
+native WebGL state. Clearing an attribute uses a native null ARRAY binding
+and `vertexAttribPointer` with offset zero, as WebGL permits. The logical
+size, type, stride and original offset remain available to GLES queries;
+no temporary native buffer is allocated merely to represent null. Native
+changes and their inverses are checked before logical publication. A
+restoration a live renderer refuses is a fatal host fault (see native
+retirement below).
+Deleted buffer names and backing-storage retirement remain separate, so
+another context or an unbound vertex array can retain the old storage.
+
+
+Compressed texture uploads use checked opaque staging rather than texture
+row bands. A context admits the original signed metadata and a monotonic
+upload token, copies consecutive chunks into independently owned host bytes,
+then consumes that token for one full native compressed image/subimage call.
+The staging acknowledgement does not promise native storage acceptance;
+format-specific sizing, level and block rules remain native COMMIT checks.
+The selected context, logical texture, view, storage revision and unit must
+still match. Cancellation drops bytes, and an uncertain COMMIT is never
+replayed. Context retirement releases staged bytes before native retirement.
+The resource policy bounds one staged upload to 16 MiB per context; larger
+uploads or allocation failure report `GL_OUT_OF_MEMORY`, not success or
+truncation. Empty uploads still validate through the full native operation.
+Positive-size NULL compressed sources are refused without synthesizing data;
+ES2 defines no compressed NULL-allocation counterpart to `TexImage2D`.
+Actual native compressed-format enumeration is unchanged, and no compression
+extension is enabled merely by this transport. Normal rebuilt guests and
+native browser compressed-format validation remain separate evidence gates.
+
+`DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd, fourcc)` (PRIME import on the EGL fd, refused with `EINVAL` when a GPU-tier bo was made in storage `fourcc` does not name, by the same `DRM_IOCTL_WPK_CHECK_BO_FORMAT` check an `EGL_LINUX_DMA_BUF_EXT` import applies) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
+
+`DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) allocates host-native
+texture/FBO storage without CPU-mappable bytes. The virtual GPU has one
+native renderer, independent of DRM master and of whichever process first
+creates an EGL context. It prefers an already registered WebGL2 display
+context and otherwise creates an offscreen resource context. A render-node
+file may therefore create GPU resources before any primary-file context.
+Logical GL object groups, context state and file authority remain separate;
+the shared native context does not grant another context's public names or
+KMS controls. Node without a configured WebGL backend returns ENOSYS from
+GPU allocation and retains the existing CPU-buffer fallback.
+
+A client can target a retained GPU BO through its window surface or import
+its dma-buf as an EGLImage and attach a logical renderbuffer/texture view.
+The kernel resolves per-file GEM handles to backing storage. Surface targets
+and image siblings retain their own references; public image/handle deletion
+does not authorize deletion of a surviving sibling's storage. GPU BOs include
+color, 24-bit depth and 8-bit stencil attachments.
+
+`GL_OES_EGL_image_external` gives every texture unit a third binding,
+`TEXTURE_EXTERNAL_OES`, whose textures take only EGLImages and are sampled
+through `samplerExternalOES` (wlroots samples external-only dma-bufs this
+way). WebGL 2 has no such target, so the host
+(`host/src/webgl/external-texture.ts`) keeps each unit's external binding in
+its shadow state, separate from the unit's TEXTURE_2D binding, and an
+external texture's storage is an ordinary native 2D texture (the image
+sibling view) that only the draws of a program sampling it bind, to that
+unit's native TEXTURE_2D, restoring the unit's 2D binding after the draw.
+Why: one native binding point cannot hold both of a unit's bindings, and
+binding per draw only for programs that sample external textures costs
+every other draw one lookup. When `glShaderSource` gives the host a
+shader that names the extension, the host compiles a rewrite once: the
+shader's own `#extension GL_OES_EGL_image_external` directive defines a
+private type macro as `sampler2D` (`disable` undefines it), so the type
+exists exactly where the extension is enabled, even under conditional
+compilation, `GL_OES_EGL_image_external` is defined as 1, and `#line`
+keeps the guest's line numbers; `glGetShaderSource` still returns the
+guest's text. Reflection reports `SAMPLER_EXTERNAL_OES` for those samplers.
+Because WebGL then sees sampler2Ds, the rewrite also checks sampler flow
+the way a conforming compiler types it, through global uniforms, array
+elements, struct members and function parameters: a lookup the extension
+does not define for an external sampler (any Lod, Grad, projective-Lod,
+cube, 3D or shadow lookup, or `texture2D`/`texture2DProj` with a bias) and
+an external sampler given to a parameter of another sampler type (or the
+reverse) become calls to an undeclared function named for the misuse
+(`samplerExternalOES_cannot_use_texture2DLodEXT`), so the compile fails
+with that name in the info log; overloads that differ only between
+sampler2D and samplerExternalOES are renamed per sampler signature and
+each call to the overload its arguments select, so they stay distinct.
+A sampler2D and a samplerExternalOES reading one unit are two sampler
+types on one unit, which ES 2.0 section 2.10.4 makes `INVALID_OPERATION`
+at draw and a `glValidateProgram` failure; WebGL compiles both as
+sampler2D, so the host checks that itself, from sampler units cached per
+link and per `glUniform1i`. An external texture starts with LINEAR
+filters and CLAMP_TO_EDGE wraps, accepts only NEAREST or LINEAR filters
+and CLAMP_TO_EDGE wraps (`INVALID_ENUM` otherwise), takes no image or
+mipmap command, and its object keeps the external target
+(`INVALID_OPERATION` for a 2D or cube bind, and the reverse). It samples
+one RGBA image, so `REQUIRED_TEXTURE_IMAGE_UNITS_OES` is 1 for every
+target and no texture unit or uniform is taken from the advertised
+limits. Its sibling view copies the image only when the image's storage
+write count moved (`host/src/webgl/image-writes.ts`), as 2D siblings do.
+
+Targeting a texture at the image it is already a sibling of keeps its
+sibling view: `glEGLImageTargetTexture2DOES` then refreshes the view's
+copy if the image was written since, and advances the object's image
+revision, as any accepted respecification does. It allocates a new view
+only when the texture is not exactly that image's sibling (another image,
+other levels, or a respecified texture). WHY: wlroots makes a new
+`wlr_texture` over its cached EGLImage and GL texture name on every commit
+of a client dmabuf, and so targets the same image at the same texture once
+per client frame. Natively the texture keeps the image's storage; a new
+view each time cost a texture, a framebuffer, a full copy, a retarget of
+every container and two deletions per client frame.
+
+GLSL ES 1.00's built-in limit constants (`gl_MaxVertexAttribs` through
+`gl_MaxDrawBuffers`) must equal the values the guest queries, but WebGL's
+compiler gives them native WebGL 2 values. Those differ where the host
+reserves private uniform rows from the advertised limits (one fragment
+row for the blend-fold variant; one vertex row on Firefox for the
+depth-range workaround; `host/src/webgl/limits.ts`), and for
+`gl_MaxDrawBuffers`, which is 1 because ES 2.0 has one color output and
+Kandelo does not advertise `EXT_draw_buffers`, while WebGL 2 compilers
+report the native draw-buffer count. GLSL ES reserves `gl_` names, so
+the constants cannot be redefined; when `glShaderSource` gives the host
+an ESSL 1.00 shader that names one, the host compiles a rewrite, made
+once, in which each use in code or in a `#define` body becomes
+`int(N)`, N the queried value. `int(N)` is, like the built-in, a
+constant expression, not an l-value and not a macro, so other
+preprocessor directives still treat the name as the engine does.
+`glGetShaderSource` returns the guest's text.
+
+OpenGL ES 2.0 has one shading language, GLSL ES 1.00, and the context
+reports `OpenGL ES GLSL ES 1.00` as `GL_SHADING_LANGUAGE_VERSION`. WebGL 2
+also compiles ESSL 3.00, so `glCompileShader` refuses a shader whose
+leading `#version` directive names any other number (`#version 300 es`,
+`#version 110`, ...) before any rewrite or translation
+(`unsupportedShaderVersion` in `host/src/webgl/essl3-translation.ts`). The
+shader object then fails natively, as on an ES 2.0 driver:
+`COMPILE_STATUS` is `GL_FALSE`, the info log reads `unsupported shading
+language version 300 es; this OpenGL ES 2.0 context supports GLSL ES 1.00
+(#version 100) only` at the directive's line, a program linking it fails,
+and `glGetShaderSource` still returns the guest's text. Why: compiling the
+guest's ESSL 3.00 as written gave an ES 2.0 context ES 3.0 shaders
+(integer types, `texture()`, `in`/`out`, ES 3.0 sampling of cube maps and
+depth textures) that no ES 2.0 driver offers, and let them link with the
+host's translations of ES 1.00 partners. A version that is not a decimal
+number (`#version AAA`, `#version 100.0`) and a `#version` that is not
+first stay with the ES 1.00 compile, which rejects them with its own log.
+The ESSL 3.00 that WebGL compiles is therefore always the host's own
+translation of an ES 1.00 shader.
+
+OpenGL ES 2.0 compiles all of GLSL ES 1.00, but WebGL holds ESSL 1.00
+shaders to the "minimum functionality" of GLSL ES 1.00 Appendix A: no
+`while` or `do`-`while` loops, `for` loops only with a constant-bounded,
+constant-stepped index, and temporary arrays indexed only by constants and
+loop indices. GLES 2 drivers accept more, and guest software (and
+dEQP-GLES2, e.g. `functional.shaders.indexing.tmp_array.*` and about 830
+performance and stress shaders) relies on it. WebGL does not apply
+Appendix A to ESSL 3.00, whose language is a superset of ESSL 1.00, so the
+host compiles such a shader as an ESSL 3.00 translation with the same
+meaning (`host/src/webgl/essl3-translation.ts`). The engine's own ESSL
+1.00 front end stays the judge of ES 1.00 validity: `glCompileShader`
+first compiles the guest's 1.00 source, and translates only when the
+compile fails with nothing but Appendix A errors. ANGLE (the front end of
+Chromium, Firefox and WebKit) runs its Appendix A pass only after a shader
+has parsed and type-checked without error, and each of its messages is
+unique to that pass, so such a shader is otherwise valid ES 1.00, while
+every other failure, its info log included, reaches the guest unchanged.
+Why: a translator that also had to reject everything ES 1.00 rejects but
+ESSL 3.00 accepts (bitwise and modulo operators, `switch`, `uint`, array
+constructors, `.length()`, `in`/`out` globals, ...) would need a complete
+ES 1.00 front end of its own; asking the engine needs none, and leaves
+every shader WebGL already compiled exactly as it was, at no extra cost.
+The one ES 1.00 rule ANGLE checks after Appendix A, that a fragment shader
+cannot use both `gl_FragColor` and `gl_FragData`, the translation reports
+itself. A translated shader costs the rejected 1.00 compile, the
+translation (about 0.1 to 0.8 ms for a 4 KB source in Chromium, Firefox
+and WebKit) and the 3.00 compile, once per `glCompileShader`; no draw pays
+anything. ES forbids linking shaders of different language versions, so
+`glLinkProgram` compiles a 1.00 partner of a translated shader as its own
+translation (its meaning, and `COMPILE_STATUS`, are unchanged; its info
+log is now the 3.00 compile's).
+
+A failed native ES100 compile now also retries two source normalizations,
+still through the same ES100 syntax/type validator. Macro-produced `defined`
+in conditional expressions is evaluated against the current macro table;
+WebGL deliberately rejects that otherwise undefined GLES preprocessing
+choice. Only affected conditionals change, while other directives and
+malformed operators remain visible to native validation. ES100 function
+bodies receive a child compound statement so their locals can shadow
+parameters as §4.2.2 requires. The ES300 translation preserves that child
+scope too. Same-scope duplicates remain invalid. Original guest source
+bytes still serve GetShaderSource; retained private executables rebuild
+the exact normalized ES100 source that passed validation. This is
+compile-only work and introduces no draw/frame cost for unused features.
+See the standalone WebGL scope control in
+`tests/runtime-workarounds/WEBGL-ESSL100-PARAMETER-SCOPE/`.
+
+Firefox also rejects a local that hides a global structure type when the
+initializer uses a dynamic constructor. A failed-native-compile retry
+alpha-renames only the proven local binding and its lexical references.
+Each initializer sees the preceding binding; publishing an alias sooner
+would turn its constructor into a variable reference. Same-scope duplicates
+reuse the alias so they remain invalid. Member selectors and public types
+retain their own namespaces. Conditional/macro bindings, local structures,
+arrays and colliding parameter names remain unchanged when this lexical
+proof cannot establish ownership. The standalone reproduction and removal
+criteria are in `tests/runtime-workarounds/FIREFOX-ESSL100-STRUCT-HIDING/`.
+This adds compilation work, with no per-frame feature bookkeeping.
+
+A native expression-complexity rejection can also decompose a long flat
+float/vector product into bounded local prefixes. The proof requires
+unambiguous identifier operands with the same explicit type and precision.
+Only standalone local declarations in proven function compound blocks are
+split: for headers, unbraced controlled statements and initializer ranges
+containing directives remain intact. In addition,
+macro-expanded operands, calls, const results and self-shadowing
+initializers remain with native validation. Every prefix is the original
+left fold, placed first in the next expression. Multiplying independently
+computed chunks would reassociate operations and change rounding. Private
+names cannot capture guest identifiers, and subsequent source lines retain
+their numbering. The same ES100 compiler validates the transformed full
+shader; its accepted source also supplies private executable rebuilds.
+The native ES100 retry runs only after an expression-complexity rejection;
+ES300 output also applies the decomposition because an Appendix A rejection
+can precede the native expression-budget check. Private variants therefore
+receive the same bounded expressions. This adds compile-time work, with no
+new per-draw/frame lookup. No application or compile-time performance
+improvement is claimed.
+
+The translation works on the shader after preprocessing
+(`host/src/webgl/essl-preprocessor.ts`, ES 1.00 rules for input ANGLE has
+already accepted), so each decision is about code the compiler parsed, not
+text in an inactive `#if` group or an unused macro, and it emits one
+output line per guest line with `#line`, so info logs and `__LINE__` keep
+the guest's numbering. `#version 300 es` comes first; `attribute` becomes
+`in`, `varying` becomes `out` or `in`; `gl_FragColor` and `gl_FragData`
+become declared mediump outputs (`gl_FragData` an array of one, ES 2.0
+having one draw buffer, so `gl_FragData[1]` stays an error); the ES 1.00
+lookups take their 3.00 names where that stage has them (`texture2D` to
+`texture`, `texture2DLod` to `textureLod`, ...). Identifiers that ESSL
+3.00 reserves or names but ES 1.00 does not (`sample`, `layout`, `uint`,
+`texture`, `round`, ...) are renamed `kandelo_essl1_<name>`, and guest
+identifiers beginning `kandelo_essl` are escaped the same way, so the
+renaming is injective. Uniform and attribute names are API-visible:
+reflection, location queries and `glBindAttribLocation` of a translated
+program translate them both ways, so the guest only ever sees its own
+names. ES 1.00 lets a shader overload a built-in function; ESSL 3.00 does
+not, so the name is renamed and private forwarders with the ES 1.00
+signatures call the built-in, except inside constant expressions, where
+the built-in is the only possible meaning. ANGLE accepts non-constant
+global initializers only for ES 1.00, so the translation runs them, in
+order, at the start of a new `main`. ESSL 3.00 fragment inputs cannot be
+invariant and `#pragma STDGL invariant(all)` is vertex-only, so the
+fragment qualifiers go and an invariant varying is renamed in both
+stages: an invariance mismatch, a link error in ES 1.00, then still fails
+to link. Draw-time variants (reversed depth, depth sampling, blend
+folding, attribute aliasing) rewrite the ES 1.00 source as before and are
+then translated the same way, so each of those rewrites stays ES
+1.00-only.
+
+`GL_OES_standard_derivatives` is advertised because WebGL 2 has the
+derivatives, but WebGL 2 enables no ESSL 1.00 extension, so `#extension
+GL_OES_standard_derivatives : require` failed and `dFdx` was undeclared.
+Every ES 1.00 source now gets the extension the way
+`GL_OES_EGL_image_external` is provided: uses of the macro name read a
+private macro defined as 1, each `dFdx`, `dFdy` and `fwidth` token is a
+macro that names the guest's own identifier until the shader's own
+`#extension` directive (rewritten on its line) makes it the built-in, so
+the functions exist exactly where the extension is enabled. The validity
+compile declares them with the extension's genType signatures, so calls
+type-check as against the real built-ins, and a fragment shader that
+enables them is compiled as ESSL 3.00, where they are the core functions.
+They do not exist in vertex shaders.
+
+Known gaps in translated programs: a fragment shader's `invariant
+gl_FragCoord` no longer requires an invariant `gl_Position` in the vertex
+shader (ES 1.00 makes that a link error); a dynamically indexed
+`gl_FragData` is still rejected, as ESSL 3.00 requires constant output
+indices; and a sampler array indexed by a loop index (ES 1.00 Appendix A
+allows it; ESSL 3.00 requires a constant expression) fails to compile.
+Headless Chromium also loses the WebGL context when it
+links an ESSL 3.00 program that overloads a function by array size (a
+suspected engine defect, reproduced without Kandelo code; the ES 1.00
+form links), so such a shader that also needs the translation loses the
+context. ANGLE's own failures stay what they are in either language:
+"Expression too complex" for very long expressions, a `defined` produced
+by macro expansion in `#if`, and a local variable that hides a function
+parameter (valid ES 1.00, where the function body is a new scope).
+
+OpenGL ES 2.0 samples a cube map one face at a time (sections 3.7.5 and
+3.7.7): the major axis of the direction selects a face, and that face's
+(s, t) are wrapped and filtered within the face alone. WebGL 2 follows ES
+3.0, where cube-map sampling is always seamless: linear filtering near an
+edge mixes texels of the adjacent face, and no WebGL state turns that off
+(reproduced in Chromium, Firefox and WebKit without Kandelo code). So a
+guest cube map is stored as a native six-layer `TEXTURE_2D_ARRAY` (layer i
+is face `TEXTURE_CUBE_MAP_POSITIVE_X + i`, `host/src/webgl/cube-storage.ts`),
+each layer wrapped and filtered by itself exactly as ES 2.0 samples a
+face, and every shader that uses `samplerCube` is compiled as its ESSL
+3.00 translation, even when ES 1.00 accepts it, because ESSL 1.00 has no
+`sampler2DArray`. There `samplerCube` becomes `sampler2DArray` (with
+`samplerCube`'s default `lowp` precision) and `textureCube` and
+`textureCubeLod` become private functions that select the face by ES 2.0
+table 3.21 and sample its layer. A fragment lookup passes explicit
+gradients: the derivatives of the selected face's (s, t), computed from
+the derivatives of the direction in that face's frame by the quotient
+rule. Why: ES 2.0 derives the level of detail from the selected face's
+u(x, y) and v(x, y); `texture()` on the array would differentiate the face
+coordinates themselves, which jump where neighbouring fragments select
+different faces, and pick a far too small level along every edge. A bias
+scales the gradients by 2^bias; a vertex lookup uses level 0 or the given
+level. Reflection reports `SAMPLER_CUBE` for those uniforms. Every cube
+image command (`TexImage2D`, `TexSubImage2D`, `CopyTexImage2D`,
+`CopyTexSubImage2D` and the compressed commands on a face,
+`GenerateMipmap`, `TexParameter`, `GetTexParameter`) works on that
+storage; `FramebufferTexture2D` of a face attaches its layer; an EGLImage
+exported from a face (`KHR_gl_texture_cubemap_image`) is its layer and is
+orphaned on respecification as a 2D source is. `MAX_CUBE_MAP_TEXTURE_SIZE`
+reports what that storage can hold: the smaller of the native cube and 2D
+limits (array layers are 2D-limited; WebGL 2 guarantees at least 256
+layers).
+
+A 2D array level has one size and format for all six layers, while ES 2.0
+lets each face of a level have its own while the cube is incomplete, and
+every face image stays an image that can be attached, copied from or
+updated. So a cube owns one or more arrays, each face image lives in
+exactly one at its own layer, and images of one size and format gather in
+one array: a cube specified in the usual ways (six faces per level in any
+order, `GenerateMipmap`, every face respecified at a new size) has all its
+images in its own array, while a face respecified apart from its siblings
+moves to a second array instead of destroying their images, taking its
+framebuffer attachments along. When the images a complete cube samples
+are spread over arrays they are copied into the array holding the base
+level; that copy goes through a framebuffer, so a format that cannot be
+attached (luminance, for one) reports `GL_OUT_OF_MEMORY` there, as
+orphaning a linked EGLImage source already does. A draw samples the array
+holding all six base images only while the cube is complete under ES 2.0
+rules; otherwise no texture, which samples (0, 0, 0, 1), because the
+array allocates all six layers of a level and would otherwise accept
+faces never specified (likewise, an attached face never specified is
+`FRAMEBUFFER_INCOMPLETE_ATTACHMENT`). That array is bound to the unit's
+`TEXTURE_2D_ARRAY` for the draw only when it differs from the unit's
+guest binding; a complete cube in its own array costs a cached comparison,
+and a program without cube samplers keeps the one per-draw lookup it
+already made for external textures.
+
+ES 2.0 section 3.7.9 makes the minification/magnification switch-over
+point c = 0.5 when the magnification filter is `LINEAR` and the
+minification filter is `NEAREST_MIPMAP_NEAREST` or `NEAREST_MIPMAP_LINEAR`
+(ES 2.0's initial pair is `NEAREST_MIPMAP_LINEAR` with `LINEAR`), so a
+level of detail lambda in (0, 0.5] magnifies: `LINEAR` on level 0. ES 3.0
+dropped that case, and Chromium, Firefox and WebKit minify there (c = 0,
+reproduced without Kandelo code), returning `NEAREST` from level 0 or a
+`NEAREST` blend of levels 0 and 1. The host emulates c = 0.5
+(`host/src/webgl/lod-switchover.ts`). It records each 2D and cube
+texture's filters at `TexParameter`, and each context keeps the traits of
+its unit bindings (and texture zero) in the summary depth-texture sampling
+already kept (`samplingUnits` in `host/src/webgl/depth-sampling.ts`), so a
+bind looks up only the texture it binds and a draw while no unit holds a
+depth texture or a texture with the pair makes the one comparison it made
+before. Otherwise the program's sampler units (cached per link and
+`Uniform1i`) name the samplers that read such a texture, and the draw runs
+a private variant,
+built once per program and sampler set like the reversed-depth and
+depth-sampling variants. In it the lookups through those samplers compute
+lambda as ES 2.0 section 3.7.7 does (log2 of the larger derivative length
+of (s, t) times the level-0 size, plus the bias; for a cube map from the
+selected face's (s, t), as the per-face lookups do; in a vertex shader the
+`texture2DLod`, `texture2DProjLod` or `textureCubeLod` argument) and call
+`textureLod` at lambda when lambda > 0.5 and at 0 otherwise. Why that is
+exact: `textureLod(..., 0.0)` has lambda 0 <= c = 0 in WebGL 2, so it is
+the magnification ES 2.0 makes for lambda <= 0.5 (same `MAG` filter, level
+0, since ES 2.0 has no base level or LOD clamps); above 0.5 both rules
+minify, and `textureLod` at lambda makes ES 2.0's level choice and blend at
+that lambda. A vertex shader's implicit lookups have level of detail 0 and
+magnify under either rule, and ES 2.0 fragment shaders have no explicit
+level of detail, so neither changes. The rewrite works on the
+translation's preprocessed tokens (`textureSize` and fragment `textureLod`
+exist only in ESSL 3.00, so the variant of an ES 1.00 program is its
+translation): a uniform sampler, a member or constant-indexed element of
+one, an element indexed by an expression (a per-index function) and a
+sampler parameter of a user function (an added `bool` parameter every call
+passes) are resolved; other lookups (a sampler inside a struct parameter,
+an array parameter, overloads of one arity with different sampler
+positions, an index containing a call) keep c = 0, as does a draw whose
+variant does not compile (a sampler array indexed by a loop index, which
+ESSL 3.00 rejects): those are the remaining gap, never a refused draw.
+They are not silent (decision D-55): the translation returns each
+unattributed lookup that may read an affected sampler, and the variant
+builder reports it, or a variant that did not build, as a host diagnostic
+(`host/src/webgl/diagnostics.ts`, source `GLES texture switch-over
+point`) naming the process, the guest program id, the samplers and the
+reason, once per linked executable, reason and sampler, at build time
+rather than per draw. Compositors such as wlroots set
+`LINEAR` or `NEAREST` filters, and imported foreign textures start
+`LINEAR`, so their draws never select the variant; costs are measured in
+`docs/measurements/2026-11-02-gles2-lod-switchover.md`.
+
+GBM, `DRM_IOCTL_WPK_CREATE_GPU_BO` and dma-buf import share one set of
+single-plane formats, each stored exactly: R8, GR88, RGB565, the four
+8888 orders, the four 2101010 orders, and ABGR/XBGR16161616F. A GPU-tier
+BO is a WebGL 2 texture of the format's own internal format (R8, RG8,
+RGB565, RGBA8, RGB10_A2 or RGBA16F; RGBA16F renders only with
+`EXT_color_buffer_float`, which the device context enables, and
+allocation fails without it), with a LINEAR-equivalent stride of the
+format's bytes per pixel rounded to 4 bytes. A GPU BO has no CPU bytes,
+so ARGB and ABGR orders share storage; a format without alpha keeps a
+stored alpha of 1.0 that rendering never writes. A CPU-tier BO imported
+as an EGLImage is mirrored in a texture of the same internal format, with
+an exact byte conversion each way (`host/src/webgl/cpu-image-codec.ts`:
+10-bit fields swap for the ARGB order, half floats read back as float32
+and convert to the same half, padding bits are preserved). An exported
+GLES image's BO is described in its format's bytes per pixel. The kernel
+records each GPU-tier BO's format (the allocation's fourcc, or the DRM
+format naming an exported image's internal format), and libgbm and libEGL
+check a dma-buf import's claimed fourcc against it with
+`DRM_IOCTL_WPK_CHECK_BO_FORMAT`: a GPU BO is a texture of that format, so
+a claim naming other storage (GR88 over RGB565, ABGR8888 over
+ABGR2101010) or a format without alpha over storage with alpha fails
+(`EINVAL`; `EGL_BAD_MATCH`), while channel order alone (ARGB over ABGR) is
+not observable on a GPU BO and is accepted. CPU-tier BOs are bytes that
+any format may describe, as on Linux. EGL window
+surfaces, and therefore `gbm_surface`s, remain 8888 only, because
+Kandelo's EGL configs are 8888 configs. General CPU/GPU coherence,
+format reinterpretation and native GBM ring posting remain incomplete;
+see the graphics compatibility ledger for the exact implemented scope.
+
+Every layer sizes a pixel format from one table: the planes, bytes per
+sample and chroma subsampling of each format, Linux's `drm_format_info`
+for R8, GR88, RGB565, the 8888, 2101010 and 16161616F orders, and the YUV
+formats NV12, NV21, YUV420, YVU420, YUYV, UYVY and P010, with each RGB
+format's GPU-tier storage (its WebGL 2 internal format, which the GPU
+buffer allocator, the dma-buf format check, the CPU mirror codecs and the
+scanout presenters all read) and whether its alpha is padding. The kernel
+(`wasm_posix_shared::dri::DRM_FORMATS`), libgbm and libEGL
+(`libc/glue/drm_format_info.h`) and the host
+(`host/src/webgl/drm-format-info.ts`) carry the same rows, and
+`host/test/webgl-drm-format-info.test.ts` fails if they differ. Why: a
+plane that the allocator, the importer, the kernel and the host size
+differently is read out of bounds or misread, so the layout has exactly one
+definition. MODE_ADDFB2 runs Linux's `framebuffer_check` over every plane
+of the format first (a missing handle or short pitch of any plane is
+EINVAL, a plane extent past 32 bits is ERANGE) and only then refuses a
+format no plane of this device scans out (EINVAL, as i915 and amdgpu do at
+framebuffer creation): the primary plane scans out RGB only, so a
+well-formed YUV framebuffer is refused there. `DRM_IOCTL_WPK_IMPORT_IMAGE`
+takes a plane of any single-plane RGB format at that format's own bytes
+per pixel; the dumb buffer's allocation bpp plays no part, because a
+dma-buf is bytes whose meaning the importer names.
+
+GBM allocates a YUV buffer (NV12, NV21, YUV420, YVU420, YUYV, UYVY, P010)
+as one linear CPU-tier dumb object holding every plane, as Mesa's drivers
+lay planar images out: each plane's rows hold its subsampled samples
+(rounded up; a packed YUYV/UYVY row ends with a whole pixel pair) rounded
+to 4 bytes, one plane after another, reported through the per-plane
+accessors. A YUV buffer is sampled, never rendered to or scanned out: no
+WebGL 2 texture format stores YUV planes as a render target and no KMS
+plane scans YUV out, so `GBM_BO_USE_RENDERING`, `_SCANOUT` and `_CURSOR`
+fail with EINVAL and `gbm_device_is_format_supported` reports 0 for them
+(`gbm_bo_create_with_modifiers`, whose implied usage is scanout and
+rendering, therefore fails too). `gbm_bo_get_bpp` is 0 for YUV, as Mesa
+reports. `GBM_BO_IMPORT_FD_MODIFIER` takes one fd, stride and offset per
+plane of the format (one object or several), checks each plane against
+its own object's size, and `GBM_BO_IMPORT_FD` names one plane, so it
+takes packed YUYV/UYVY but not a planar format. A plane may also be a
+GPU-tier object whose storage is the plane's own format (NV12's luma R8
+and chroma GR88; each YUV420/YVU420 plane R8), at offset 0, since a
+texture has no byte addressing; `DRM_IOCTL_WPK_CHECK_BO_FORMAT` checks it
+against that plane format (EINVAL otherwise), and an import with any
+GPU-tier plane refuses `GBM_BO_USE_WRITE`, whose bytes it does not have.
+P010 and the packed formats have no GPU-tier plane: no GPU buffer has
+R16, GR1616 or YUYV storage.
+
+`EGL_EXT_image_dma_buf_import` imports those YUV formats with one fd,
+offset and pitch per plane (planes 0 to 2; a plane the format lacks is
+`EGL_BAD_ATTRIBUTE`, a missing attribute of a plane it has
+`EGL_BAD_PARAMETER`, a pitch shorter than a row or a plane past its
+dma-buf `EGL_BAD_ACCESS`, and every plane that names a modifier must name
+plane 0's, as Mesa requires). The color-space, sample-range and siting
+hints select the conversion; absent hints are BT.601, narrow range and
+siting 0, Mesa's defaults. `eglQueryDmaBufModifiersEXT` reports the YUV
+formats `external_only`: a YUV image is the sibling of an external texture
+only (`GL_OES_EGL_image_external`), and a TEXTURE_2D or renderbuffer
+target is `GL_INVALID_OPERATION`. A plane is CPU-tier bytes or GPU-tier
+storage of the plane's format at offset 0 (as for GBM above; another
+format is `EGL_BAD_MATCH`, an offset `EGL_BAD_ACCESS`), and
+`GBM_BO_IMPORT_EGL_IMAGE` of a YUV image yields a bo with all of its
+planes. Binding the image through `DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE`
+gives the host the planes' bo ids and the conversion; the kernel checks
+each plane against its object first (CPU bytes against the object's size,
+GPU storage against the plane format it recorded and the plane's size).
+The host (`host/src/webgl/yuv-convert.ts`, `yuv-gpu-convert.ts`,
+`cpu-image-storage.ts`) converts the planes to an RGBA texture (RGBA8 for 8-bit formats, RGB10_A2 for P010, so
+no sample loses precision) with the BT.601, BT.709 or BT.2020 matrix and
+narrow or full range, reconstructing chroma by linear interpolation
+between the samples where the siting hints place them, and no transfer
+function (the extension keeps the source's color space). Why convert, and
+when: sampling RGBA keeps an external texture to one texture unit and no
+private uniforms, so `REQUIRED_TEXTURE_IMAGE_UNITS_OES` is 1 and no
+advertised limit shrinks; converting only when a plane's canonical bytes
+were written (each BO's write count, advanced when a CPU writer's mapping
+is merged or a device writes it) means no draw and no unchanged frame
+pays for it. An image with a GPU-tier plane is converted on the GPU, so
+those pixels never leave it: each plane is copied (GPU planes) or
+uploaded (CPU planes) into a private texture of its plane format only
+when its write count changed (a GPU plane's storage write count, advanced
+by every draw, clear, texture command or copy into it), and a fragment
+shader computing exactly the CPU converter's arithmetic writes the RGBA8
+image in a private native pass after which the guest's context is
+replayed; a native error in that pass is a fatal host fault. The
+converted texture's own write count then lets sibling views copy it only
+after a conversion. With the image write-count audit
+on (the graphics test gate), an unchanged count with changed plane bytes
+is a fatal fault.
+
+`EGL_MESA_image_dma_buf_export` describes any image with a DRM format as
+dma-bufs: `eglExportDMABUFImageQueryMESA` reports the format, its plane
+count and each plane's modifier, and `eglExportDMABUFImageMESA` returns a
+caller-owned PRIME descriptor, pitch and byte offset per plane (one per
+plane even when planes share a dma-buf, as current Mesa exports them).
+A plane of CPU bytes reports LINEAR; GPU-tier storage (an exported GLES
+image or a GPU BO) reports `DRM_FORMAT_MOD_INVALID`, an implicit layout,
+because a native texture has no byte layout to name; importing either
+works. An image no DRM format describes (for example an RGBA32F texture
+image) cannot be exported: `EGL_BAD_MATCH`, where Mesa returns
+`EGL_FALSE` with no error, so a caller can tell why.
+
+In the image-backed producer path, rendering resources and presenting them
+are separate operations. Authorized KMS operations select a framebuffer;
+the vblank pump presents its retained GPU BO even when the producer uses
+an independent render file. On the same native display context it blits
+the selected FBO, with KMS row zero at the top. Primary scanout forces only
+its displayed alpha to one, matching both CPU presenters; source BO alpha
+remains available to image siblings. Native color masks and clear values
+are restored through the same checked inverse journal. A 2D display or
+a different native canvas receives an independent RGBA readback. GPU access
+is synchronous inside the kernel entry while the latched framebuffer owns
+its BO; only owned pixel bytes survive into detached presentation.
+
+Native device blits/readback restore their selector, scissor and packing
+inverses through the shared checked journal. They retain native handles and
+scalars rather than guest memories or bindings. CPU WebGL scanout also resets
+its complete draw/upload dependencies on each accepted frame. Every utility
+captures the outgoing logical owner's errors before native work. Generic
+presenter callbacks invalidate the muxer so later GLES work restores that
+context's state. A reviewed already-current drawable release/rebind may instead
+retain the exact selected owner with only its read/draw framebuffer selectors
+marked unknown only if the pure synchronous logical commit changes those
+references. Comparing its two local pre-commit references can add dirtiness,
+never clear an earlier dirty bit. Before that owner executes again, a private checked sequence
+rebinds both selectors from desired logical state; a failed prefix invalidates
+and refuses dependent work. This does not treat a mutated shadow as proof of
+physical selector values. First-current viewport/scissor initialization,
+new surfaceless allocation, owner-dead surface collection, pending repair or
+execution cleanup and client-array restoration retain full invalidation.
+A forwarded drawable mark follows only its acknowledged successful pure logical
+commit. Peer selection and full invalidation discard the partial witness;
+a thrown full-replay prefix also revokes the previous owner's identity. The fixed GPU cursor readback, scanout and GBM front-copy/readback
+helpers may preserve its selected owner after their complete checked selector
+inverse succeeds. Front export retains its own errno and private errors; CPU
+front bytes are published only after the final error, context-loss and pending
+repair checks succeed. Failed native export or publication revokes selection
+reuse. Shared query, submit, import and front-copy preparation invalidates
+before pending native cleanup can change selectors. Resize invalidates before the first drawing-buffer
+dimension write. Failure
+or context loss also invalidates, and private device errors remain separate
+from the guest's pending flags. This is selector validity, not content
+immutability. Package-private immutable
+graphics access exposes these native operations separately from raw kernel
+memory authority. Context loss stands GPU scanout down; complete restoration
+of lost resources remains an ordinary implementation gap.
+
+The vblank pump observes every GPU-tier CRTC and the cursor plane at every
+vblank (about 60 times a second), idle or not. An observation that would return what the previous
+one returned is not repeated; anything that could change the result makes
+the next observation do the full native work. A GPU cursor readback is
+reused while the BO, its native storage, the renderer's loss count and that
+storage's image write count (`host/src/webgl/image-writes.ts`) are all
+unchanged and no native repair is pending. Every image write path advances
+that count: draws and clears into the BO or an EGLImage sibling of it, image
+commands through a sibling, a sibling view's refresh of its private copy
+(the storage of a GLES image exported from that sibling), GBM front copies,
+multisample resolves, mirror uploads and foreign-texture uploads. GPU-tier BOs have no CPU mapping, and
+CPU-tier cursors are still read from their mapping on every observation.
+Same-BO writes without another cursor request are therefore still observed.
+The graphics test gate turns on the write-count audit, under which every
+reuse reads back anyway and a change behind an unchanged count is fatal.
+A direct GPU scanout is not blitted again while the canvas provably still
+shows it: same storage, framebuffer, kernel commit count and viewport,
+the canvas at the framebuffer's size, the same color-stage LUT and cursor
+when a stage is in use, an unchanged loss count, no pending repair, a
+context created with `preserveDrawingBuffer`, and an unchanged write epoch
+of the native context (`host/src/webgl/context-writes.ts`). That epoch
+counts every call on the context except a fixed list of calls that cannot
+change any pixel (state, binds, queries, buffer data, object creation,
+program work, `readPixels`), so writes to the source storage and every
+other writer of the canvas (a GL session presenting to it, a dark CRTC's
+clear, any host utility) invalidate it without being enumerated. WHY: on
+an idle labwc or sway desktop in Chromium the pump otherwise issued about
+3,300 WebGL calls a second, half of them `getError`, to redraw and re-read
+unchanged pixels. A
+reused observation issues no native call, so it neither borrows device
+state nor reads the selected owner's error flags; the stats slots still
+report each presented vblank.
+
+`gbm_bo_create` treats SCANOUT as CPU-facing. Modifier-aware rendering
+allocators, including wlroots' SCANOUT|RENDERING allocations, request GPU
+storage. GBM native-window ring storage/posting still needs repair: its
+current lock/release bookkeeping does not establish a faithful rendered
+front/back-buffer contract. This limitation is not a browser boundary.
 
 The absolute pointer defaults to a fixed 0–65535 device range on both hosts.
 Display pixels are converted to these device units by the KMS session
@@ -5346,12 +6639,17 @@ The cursor plane accepts Linux's 28-byte `drm_mode_cursor` and 36-byte
 unknown flags, oversized images, and undersized buffers
 fail before changing state. Images are tightly packed CPU-shared premultiplied ARGB8888
 buffers, up to 64×64, independent of the allocation's original pitch,
-matching [Linux's legacy cursor layout](https://github.com/torvalds/linux/blob/v6.6/drivers/gpu/drm/drm_plane.c#L959). Showing a cursor retains its buffer independently
-of the application's GEM handle. Hiding it, dropping master, or closing
-the owning card descriptor releases that reference. Exec retains it;
-fork children do not inherit the parent's cursor ownership. The internal
-fork-state encoding is version 19, produced and consumed by one kernel
-build. The new ioctl descriptions are additive under ABI 50.
+matching [Linux's legacy cursor layout](https://github.com/torvalds/linux/blob/v6.6/drivers/gpu/drm/drm_plane.c#L959). The cursor plane is device state,
+as Linux plane state is: its framebuffer, position, hotspot and one
+reference on the image's buffer belong to the plane, not to the master
+grant or the installing file. Dropping master neither hides nor clears it,
+a new master sees it through `GETPLANE` and inherits it until it changes
+it, and closing the installing descriptor leaves a legacy cursor image
+alive and visible (an image that is one of the file's own framebuffers is
+removed with that framebuffer, as Linux's `drm_fb_release` does).
+Replacing or hiding the image releases the plane's reference. No DRM file
+carries a cursor reference across fork or exec; the fork-state cursor slot
+is always zero.
 
 DRM cursor positions locate the image origin. Signed hotspot values are
 virtualization hints and do not offset the image, following the
@@ -5360,26 +6658,36 @@ SDL's KMS backend converts pointer coordinates to image coordinates on
 motion, warp, and shape changes. This keeps nonzero-hotspot cursors aligned
 without changing DRM semantics for other clients.
 
-Cursor transport adds no required Wasm import. The optional
-`kernel_kms_cursor_configure(version)` export accepts protocol 1 and returns
-1, or negative `ENOTSUP` for unknown versions. Until negotiation, cursor
+Cursor transport adds no required Wasm import. The
+`kernel_kms_cursor_configure(version)` export accepts protocol 4 and returns
+4, or negative `ENOTSUP` for other versions. Until negotiation, cursor
 capabilities report zero and valid master cursor requests that reach the
-kernel fail `ENOTSUP` before retaining a buffer. An older host adapter can
-reject the unknown ioctl earlier with `EINVAL`; the zero capability is the
-supported way to detect the unavailable plane. Both Node and browser hosts
-negotiate support;
-a visible display is not required. The two cursor exports are optional in
-ABI 50 and become required in ABI 51 through the export lifecycle table.
+kernel fail `ENOTSUP` before retaining a buffer. Both Node and browser hosts
+negotiate support; a visible display is not required. The two cursor exports
+were optional in ABI 50 and became required in ABI 51 through the export
+lifecycle table. Current hosts refuse a mismatched protocol acknowledgment.
 
-`kernel_kms_cursor_read(out, capacity)` returns 0 when unchanged, 32 after
-copying one complete state, or negative `EINVAL` for invalid output. Its
-32-byte protocol-1 record contains eight little-endian words: owner PID,
-buffer ID, width, height, signed x/y, and signed hotspot x/y. Image and
-motion requests coalesce without losing the image; dropping master clears
-pending state before its buffer can be reused. The host drains this state
-inside the existing vblank kernel entry before reading pixels, using a
-scratch lease and owned copies. Records from retired owners are discarded.
-Older kernels without the exports remain loadable by new hosts.
+`kernel_kms_cursor_read(out, capacity)` returns 0 when unchanged, 40 after
+copying one complete state, or negative `EINVAL` for a null/short output.
+The 40-byte protocol-4 record contains eight reserved zero bytes (protocol 3
+carried the master grant there), then eight 32-bit words: buffer ID, width, height, signed x/y, signed hotspot
+x/y and actual framebuffer ID. Offset 36 is framebuffer identity, not a
+reserved word. A displayed image has nonzero buffer and framebuffer IDs;
+a disabled image has zero buffer, framebuffer, dimensions and hotspot.
+Shared Rust constants generate the host values and the kernel-host snapshot.
+
+Image and motion requests coalesce without losing framebuffer identity.
+Before draining, the kernel reads the actual cursor plane under its global
+lock; a master change does not alter the record. An authoritative disabled plane replaces a stale pending
+or cached image once. A nonzero framebuffer mismatch returns `EIO` without
+writing output or consuming pending state; no missing image is fabricated.
+The host drains inside the vblank kernel entry before reading pixels, using
+a scratch lease and owned copies, and rejects a record with nonzero reserved
+bytes. Same-buffer, same-geometry images with different framebuffer IDs
+are distinct replacements. The plane's reference keeps the presented image
+alive; when the kernel destroys a buffer the host is still presenting (the
+replacement record is already pending), the host stops presenting it rather
+than read retired storage.
 
 `KmsRegistry` refreshes the packed cursor image from its producer mapping
 at vblank, using the shared GBM coherence boundary. It retains an owned
@@ -5387,7 +6695,32 @@ RGBA snapshot until pixels change; position-only updates reuse it. The
 copy is bounded to the cursor image rather than the allocation size.
 The worker composites this state
 on a separate transparent canvas at vblank, independently of CPU, GPU,
-or application-owned scanout. It never reads live guest memory during
+or application-owned scanout, while the CRTC has no color stage.
+
+The CRTC color stage is the legacy gamma LUT, which Linux applies to the
+CRTC output after the planes are blended. The host reduces each 16-bit
+entry to 8 bits as `drm_color_lut_extract` does; a table that maps every
+value to itself is no stage at all, and the presenters then do exactly
+what they do without a LUT. With a stage, every presenter shows the
+blended, corrected frame. The 2D blit already converts each pixel on the
+CPU, so it blends the cursor and looks each channel up in the 8-bit
+table there (`host/src/dri/kms-gamma.ts`). Every WebGL presenter applies
+the stage on the GPU instead (`host/src/webgl/kms-color-stage.ts`): the
+table is a 256x1 texture uploaded once per LUT change, the cursor image
+a texture uploaded once per image, and a fragment shader blends the
+cursor and indexes the table per pixel with the same integer arithmetic
+as the CPU stage, so both produce identical bytes and no frame is read
+back to the CPU. The WebGL2 scanout presenter draws its raw scanout
+texture through the stage at framebuffer size and then scales that
+output as usual. A CRTC whose canvas a GL session owns (a direct GPU
+scanout, a SETCRTC flip onto the session's canvas, an EGL window
+present, or a frame drawn straight to the canvas) copies the frame into
+a texture with a GPU blit and draws it to the canvas through the stage.
+That texture keeps the frame before correction, so a new LUT or a moved
+cursor is shown at the next vblank even when the guest presents nothing
+more, and the frame is restored as presented when the LUT is cleared.
+The cursor overlay shows nothing while the stage is active. Node and
+browser run the same code. It never reads live guest memory during
 that detached presentation phase and never exposes a partially drawn
 application frame. Node retains the same state without a canvas.
 
@@ -5398,6 +6731,35 @@ can map a retained handle into its new memory and recover its pixels.
 Kernel close-on-exec and final-reference callbacks still destroy buffers
 and release master state; trap/exit cleanup retains its process teardown
 backstop. Both Node and browser use this same path.
+
+Those kernel callbacks must finish, or the kernel stops. The kernel
+retires a DRM buffer, framebuffer, master grant or GL session immediately:
+`close`, `munmap`, `_exit` and `RMFB` have no POSIX failure for a host that
+cannot release its copy, and the kernel goes on to reuse the address range
+or file the object named. It then calls `host_gbm_bo_unbind`,
+`host_gbm_bo_destroy`, `host_kms_rmfb`, `host_kms_drop_master` or
+`host_gl_unbind`, which run synchronously in the kernel worker. Each either
+completes (`dri_cleanup_status::COMPLETE`) or reports a fatal host fault:
+the unmapped range must detach and its final writeback must reach the
+buffer, the buffer's backing and every native GL view of it must be
+deleted, and no GL execution may still hold a retired context. Whatever the
+host failed to release could never be released again (a detached mapping's
+lost bytes, a binding that would copy a reused range into the buffer, a GPU
+object nothing will delete), so it is treated as the system breaking down,
+not as a loss to record. The host reports the fault through the kernel
+callback `onHostFault` with a message naming the operation, object, pid and
+reason (`DriCleanupFault`, or `GbmMappingFault` from the buffer registry),
+then throws out of the import. `CentralizedKernelWorker` turns
+`onHostFault` into the same fatal shutdown as a trapped kernel export
+(`onKernelFatal`, a `kernel fatal` diagnostic and worker termination), on
+Node and in the browser alike. A host that returned anything but `COMPLETE`
+would make the kernel trap (`syscalls::apply_dri_release_effect`). The exec
+and exit backstop (`WasmPosixKernel.releaseProcessViews`) and the buffer
+registry's own publication paths follow the same rule: a primed mapping
+that has lost its address space or baseline cannot publish, and is fatal.
+Native GL deletions are not deferred past these calls: the host keeps no
+journal that would retry a refused deletion before later GL work, which
+nothing guarantees will ever come.
 
 The browser's optional image-owned `presentation.displayScale` advertises
 a readable virtual monitor for bitmap interfaces. The guest mode, 96-DPI
@@ -5416,13 +6778,301 @@ for static menus. Cancelled progress subscriptions cannot revive the indicator
 with late terminal output. These are host/UI changes; guest imports, the
 stats buffer layout, and ABI 50 are unchanged.
 
-`MODE_PAGE_FLIP` latches the new framebuffer as the host-side scanout immediately (`host_kms_set_fb`, same call `MODE_SETCRTC` makes) and queues a flip-complete event that `kernel_vblank` — driven by the host's 60 Hz vblank pump — retires into the fd's event ring at the next tick. Two consequences: libdrm's `drmModePageFlip → poll → drmHandleEvent` loop runs at refresh rate rather than ioctl rate, and any host-side consumer of the current scanout (the vblank pump's WebGL2 scanout presenter or the legacy 2D canvas blit used by CPU-rendered demos) always reads the most recently flipped buffer, never a double-buffered client's back buffer. The immediate latch is race-free because a well-behaved client fully paints a bo before flipping to it and only reuses the old bo after the flip-complete event.
+`MODE_PAGE_FLIP` latches the new framebuffer as the host-side scanout immediately (`host_kms_set_fb`, same call `MODE_SETCRTC` makes, carrying the CRTC's viewport: the mode's active area at its panning offset; `host_kms_addfb` carries the plane offset, and every presenter shows exactly that region of the BO); the flip completes at the next vblank of the host's vblank pump (described below), which retires a `DRM_EVENT_FLIP_COMPLETE` into the fd's event ring only when the caller passed `DRM_MODE_PAGE_FLIP_EVENT`. Until that tick the CRTC is busy (`EBUSY`) whichever file queued the flip. Two consequences: libdrm's `drmModePageFlip → poll → drmHandleEvent` loop runs at refresh rate rather than ioctl rate, and any host-side consumer of the current scanout (the vblank pump's WebGL2 scanout presenter or the legacy 2D canvas blit used by CPU-rendered demos) always reads the most recently flipped buffer, never a double-buffered client's back buffer. The immediate latch is race-free because a well-behaved client fully paints a bo before flipping to it and only reuses the old bo after the flip-complete event.
+
+The same tick drives `DRM_IOCTL_WAIT_VBLANK`. The kernel keeps a 64-bit vblank counter for the one CRTC, stamped with each vblank's `CLOCK_MONOTONIC` time, and follows `drm_wait_vblank_ioctl`: `RELATIVE`, `ABSOLUTE` and `NEXTONMISS` resolve a target once; a blocking wait returns `EAGAIN` onto the host's ordinary blocking-retry path, and the kernel keeps the resolved target per waiting task so the host's retries of the unchanged request continue the same wait; `_DRM_VBLANK_EVENT` queues a `DRM_EVENT_VBLANK` for the target vblank within the file's 4 KiB event space. When a tick queues an event or reaches a parked waiter's target, the kernel raises a coalesced flag that the host takes with `kernel_kms_take_vblank_wake` and wakes its parked retries at that vblank (Node and browser run the same pump). The counter runs only while the CRTC is lit (a mode set and connector DPMS On); turning it off sends queued vblank events and ends parked waits successfully, as `drm_crtc_vblank_off` does. Like Linux, the parked attempt leaves the request rewritten to its absolute target (`RELATIVE` cleared). When a handler signal ends the wait, the host's `EINTR` completion publishes that in/out argument (as it publishes every failed ioctl's argument), so libdrm's `drmWaitVBlank` retry, or an `SA_RESTART` resubmission, waits for the same vblank; the kernel forgets the task's record, so a later identical request is a new wait.
+
+**When a vblank happens** (`host/src/dri/vblank-clock.ts`). Every mode the connector advertises refreshes at 60 Hz, and the pump in the kernel worker gives the kernel about 60 vblanks a second while it runs (from the first canvas or stats attach, or the first scanout; a kernel that never touches KMS has no pump). In Chromium and Firefox the kernel worker's `requestAnimationFrame` is the display: each vblank lands on a display frame and the host calls `kernel_vblank_elapsed` with the frame's age, so the kernel stamps flip events, `WAIT_VBLANK` replies, vblank events and out-fences with the frame's time (its `CLOCK_MONOTONIC` minus that age, never before the previous vblank). Frames are decimated to the mode's cumulative 60 Hz schedule: a 60 Hz display gives a vblank on every frame, a 120 Hz display on every other frame, and other faster rates a mix of frame spacings averaging 60 Hz (100–120 Hz panels give every other frame, 110 Hz 55 Hz, since no two vblanks come closer than 0.6 periods); a display a little faster than 60 Hz skips a frame now and then (60.05 Hz about one in 1200) so the counter keeps the mode's rate; a display or browser delivering fewer frames (a low-power 30 Hz throttle, a 50 Hz panel) gives one vblank per frame it shows, because a frame the browser cannot show is not a vblank. When no frame arrives for 2.5 periods (a hidden page: browsers stop or throttle animation frames there) and on Node, which has no display, a timer gives vblanks at the mode's rate, stamped when it fires, until frames resume. WHY frames: a free-running `setInterval(1000 / 60)` ran every 16 ms in Chromium at a phase unrelated to the display's, so about one display frame in 24 got two vblanks and under load composed frames were replaced before they were shown; Firefox ran the same timer at 58–59 Hz on the labwc desktop (about 52 Hz in an idle worker). WHY a hidden page keeps 60 Hz: the guest turned the CRTC on and only the guest turns it off (`ACTIVE`/DPMS, which stops the counter); a page nobody looks at is a monitor nobody watches, which on Linux keeps scanning out at its mode's refresh, and slowing or stopping vblanks there would make vblank counts disagree with the advertised mode or stall clients waiting for flips. The advertised mode stays 60 Hz on a 120 Hz display: the mode list does not follow the measured display rate, because the rate can change while a compositor holds a mode and Kandelo reports no connector hotplug to make it re-probe. Per engine (checked with Playwright's Chromium 153, Firefox 155 and WebKit 26.6, headless): Chromium and Firefox call a dedicated worker's animation frames on the display's frames, without any `OffscreenCanvas`, with the page's frame timestamps; WebKit's worker animation frames come from a 15 ms timer (`WorkerAnimationController`) stamped with the callback time, not from the display (the HTML standard leaves a worker's frame cadence to the browser), so a WebKit kernel worker (`isJavaScriptCoreUserAgent`) keeps the timer: following those frames ran the counter at 63 Hz undecimated and, decimated to 60 Hz, gave more doubled display frames than the timer on the labwc desktop in Playwright WebKit (39 and 60 per window against 21 and 42). Display-aligned vblanks on WebKit would need the page's own animation frames relayed to the kernel worker, which this does not do. A worker that cannot animate (the HTML standard has `requestAnimationFrame` throw `NotSupportedError` there) keeps the pump on the timer. While frames flow the pump's watchdog timer is re-armed at each frame and never fires, so the kernel worker wakes once per display frame (twice per vblank on a 120 Hz display) rather than once per 16 ms timer tick.
+
+### Explicit synchronization (fences, `sync_file` and DRM sync objects)
+
+Explicit synchronization lets independent programs order their GPU work
+without implicit kernel bookkeeping: a Wayland client hands the compositor a
+point on a timeline that becomes complete when its rendering is done
+(`linux-drm-syncobj-v1`), and the compositor hands back a release point.
+Every interface involved (`sync_file`, DRM sync objects, the dma-buf
+implicit-fence ioctls, `EGL_ANDROID_native_fence_sync`, KMS in/out fences)
+is defined over one Linux kernel object, the `dma_fence`, and two shapes
+built from it: the fence array a `SYNC_IOC_MERGE` produces and the fence
+chain a timeline sync object grows. `crates/runtime-core/src/dri/fence.rs`
+reproduces those three shapes rather than modelling each interface, so the
+cross-interface behavior programs rely on (merge a timeline point with
+another fence, import that into a dma-buf, wait on it through a syncobj
+eventfd) follows from one model.
+
+Final-reference release walks owned fence containers iteratively. A long
+sync-object timeline or nested array therefore uses bounded call-stack
+space when retired. Shared children keep their other owners, weak poll
+references do not retain the payload, and each pending host GL leaf queues
+its native release exactly once when its last strong reference disappears.
+Leaf-only release keeps the direct path and allocates no traversal storage.
+
+**Fences and their sources.** A leaf fence is pending on one source until
+it signals once, with an error (a negative errno) or without. A second
+signal is a kernel invariant violation and stops the kernel. Sources:
+
+- *Software*: signaled by a kernel operation. `DRM_IOCTL_SYNCOBJ_SIGNAL`
+  and `TIMELINE_SIGNAL` attach already-signaled stubs, as Linux does; the
+  kernel's software timeline (`SwTimeline`, Linux's `sw_sync`) is the shape
+  a CRTC's out-fences use.
+- *KMS*: a commit's completion at the vblank that retires it
+  (`OUT_FENCE_PTR`), on the CRTC's own fence context; see the atomic
+  **Fences** notes above for in-fences and latching.
+- *Host GL*: a GL fence. Decision D-17 makes a fence on the virtual GPU's
+  shared native context complete in submission order: every Kandelo
+  consumer of its results (another session on that context, the KMS
+  presenter) runs later in that same command stream, exactly as
+  `eglWaitSync` already treats it, so it is created signaled and costs
+  nothing. A fence on a *separate* native context has no shared command
+  stream; the host retains it under a kernel-issued export id and the fence
+  stays pending until the host observes its native status. The host polls
+  only fences a waiter has enabled (poll/epoll, a parked wait, an armed
+  eventfd), once per worker turn, because WebGL updates a sync's status
+  only between tasks. Enabling is sticky, as Linux's
+  `dma_fence_enable_sw_signaling` is, so a fence that a timed-out waiter
+  enabled is still polled until it completes. That is deliberate: Linux
+  never disarms a fence's completion path once a waiter armed it, the next
+  waiter would have to arm it again at once, and the cost is bounded
+  because a GL fence completes as soon as its already submitted work does
+  (decision recorded with the maintainer, 2026-11-01). A context loss completes the
+  fence with `-EIO`, as a device loss completes Linux fences with an error.
+  The host learns of new work, and of fences the kernel released, only from
+  the coalesced `IDX_FENCE_HOST_WORK` wake event, so a machine with no
+  waited separate-context fence does no fence work at all.
+
+**Waking waiters.** A signal (or a sync object gaining a fence) queues one
+coalesced `TYPE_READABLE` wake record with the reserved index
+`IDX_FENCE_READY`, which names no pipe; the host's existing broad retry then
+re-runs parked sync-object waits and poll/select/epoll calls. It also
+notifies epoll interests on `sync_file` and dma-buf descriptions and fires
+armed sync-object eventfds. Nothing here runs while no fence changes.
+
+**`sync_file`.** A read-only anonymous descriptor holding one fence:
+`poll` reports `POLLIN` once it has signaled (a poller enables it);
+`SYNC_IOC_MERGE` makes a new close-on-exec file whose fence completes when
+both inputs have (signaled leaves drop out, one fence per context
+survives, an all-signaled merge is a stub carrying the latest timestamp);
+`SYNC_IOC_FILE_INFO` reports the file's name and status and, on request,
+each unwrapped fence's timeline, driver, status and timestamp;
+`SYNC_IOC_SET_DEADLINE` records a hint that no Kandelo source can act on.
+`read` is `EINVAL`, `lseek` `ESPIPE`, other ioctls `ENOTTY`, and `fstat`
+reports mode `0600` with no type bits, as for Linux's anonymous inode. The
+descriptor shares its object across `dup`, `fork`, `posix_spawn` and
+`SCM_RIGHTS`; the fork wire carries only the object's identity.
+
+**DRM sync objects.** Every sync-object ioctl is render-allowed and works
+on both nodes: `CREATE` (optionally signaled), `DESTROY`, `HANDLE_TO_FD`
+and `FD_TO_HANDLE` (a close-on-exec syncobj fd, or `sync_file`
+export/import at a point), `WAIT` and `TIMELINE_WAIT` (`WAIT_ALL`,
+`WAIT_FOR_SUBMIT`, `WAIT_AVAILABLE`, `WAIT_DEADLINE` as a hint),
+`RESET`, `SIGNAL`, `TIMELINE_SIGNAL`, `QUERY` (`LAST_SUBMITTED`),
+`TRANSFER` and `EVENTFD`. Handles belong to the DRM open file description
+(lowest free handle first, like Linux's idr) and are shared by its
+aliases. A timeline point completes once it and every earlier point have
+signaled; an unordered point starts a new chain context, as
+`dma_fence_chain_init` does. Every pointer member is a `__u64`, so one
+layout serves wasm32 and wasm64; the shorter encodings that older headers
+produce (before `drm_syncobj_handle.point` and the waits' `deadline_nsec`
+were added) are accepted too, zero-extended as `drm_ioctl` does. A blocking wait parks on the host's EAGAIN retry path
+with Linux's snapshot rule: the fences a wait observes are those its
+objects held when it began, or, with `WAIT_FOR_SUBMIT`, the first fence
+attached afterwards. The kernel keeps that snapshot per waiting task across
+retries and drops it when the call completes, its absolute deadline passes
+(`ETIME`), a handler signal interrupts it, or the task or process goes
+away. `TRANSFER` with `WAIT_FOR_SUBMIT` parks the same way for at most
+five seconds. `EVENTFD` holds a reference on its eventfd and adds one to
+its counter when the point's fence signals (or, with `WAIT_AVAILABLE`,
+when it is attached).
+
+**dma-buf implicit fences.** A PRIME descriptor's buffer carries its
+reservation (`dma_resv`) for its lifetime. `DMA_BUF_IOCTL_IMPORT_SYNC_FILE`
+adds a `sync_file`'s fences as writers or readers;
+`DMA_BUF_IOCTL_EXPORT_SYNC_FILE` returns, as a new close-on-exec
+`sync_file`, what an access must wait for (a read waits for writers, a
+write for every fence; a stub when nothing is pending); and dma-buf `poll`
+reports `POLLIN` once writers have signaled and `POLLOUT` once every fence
+has. A KMS plane update without an explicit `IN_FENCE_FD` waits for its
+framebuffer buffer's unsignaled writers, as `drm_gem_plane_helper_prepare_fb`
+does (an explicit in-fence overrides them); while no buffer holds a fence
+that costs one integer test per commit. GL rendering adds no implicit
+fences: under D-17 it is complete in submission order.
+
+GL work waits for implicit fences too, as a Linux driver makes a job that
+reads a buffer wait for its writers and a job that writes it wait for every
+fence (`crates/runtime-core/src/dri/implicit_sync.rs`). Kandelo's GL runs
+synchronously, so there is no job queue to wait in, and deferring the work is
+not truthful (the host reads the commands from the guest's own buffer, and
+every later command, query and presentation depends on them). The GL entry
+points that can read or write buffer contents (command and query submission,
+presentation, image import and export, foreign-texture upload) therefore
+wait before reaching the host until every fence of every buffer the process
+names through its DRM files has signaled; fence queries, server waits and
+surface limits do not wait. Draw sampling, EGLImage sibling copies, CPU-tier
+mirror uploads and publication, and readback all happen inside those entry
+points, so none of them can observe a buffer whose writers are unfinished or
+overtake its readers. KMS scanout waits through the plane rule above. The
+grain is coarser than Linux's (the kernel cannot see which buffers a
+command buffer touches, so a process waits for any buffer it names, as a
+writer would), which can only delay work, never reorder it. The wait cannot
+deadlock: the only fences that can be pending are a GL fence on a separate
+native context (the host observes its completion) and a KMS out-fence (the
+vblank pump completes it); neither depends on a guest thread. It is
+uninterruptible, because on Linux the call never waits and so never fails
+with `EINTR`: caught signals stay pending until it proceeds, default
+actions still apply. While no buffer holds a fence it is one integer test.
+
+**EGL_ANDROID_native_fence_sync.** `eglCreateSync(KHR)` with
+`EGL_SYNC_NATIVE_FENCE_ANDROID` creates a GL fence (condition
+`PRIOR_COMMANDS_COMPLETE`), or, given `EGL_SYNC_NATIVE_FENCE_FD_ANDROID`,
+takes ownership of that `sync_file` (condition
+`NATIVE_FENCE_SIGNALED_ANDROID`; a descriptor that is not a `sync_file` is
+`EGL_BAD_ATTRIBUTE` and stays the caller's). `eglDupNativeFenceFDANDROID`
+exports a GL fence once through the private render-node ioctl
+`DRM_IOCTL_WPK_EXPORT_FENCE` (the kernel asks the host with the
+kernel-only query `QOP_EXPORT_FENCE` whether the fence is on the shared
+context or must be retained) and returns close-on-exec duplicates.
+Client waits and status on an imported sync poll its descriptor.
+`eglWaitSync` on an imported sync sends `QOP_SERVER_WAIT` with the
+descriptor and token 0: the kernel answers itself when nothing is pending
+(`ORDERED`) or when a pending fence has no native command stream to wait in
+(`CLIENT_SIGNAL`, after which the caller waits on the descriptor), and
+forwards exactly one pending host fence to the host, which issues the
+native `waitSync` when the destination shares that fence's context.
+
+## Wayland kiosk compositor (`cage`)
+
+`packages/registry/cage/` builds upstream cage 0.3.1 on upstream wlroots
+0.20.2. cage runs one application as its whole session: it forks and execs
+the client, shows its toplevel fullscreen on the one output, and exits with
+the client's status. It reaches the platform the way a Linux compositor does:
+
+- **Seat.** libseat's `noop` backend (`LIBSEAT_BACKEND=noop`) opens
+  `/dev/dri/card0` and the evdev nodes directly. The first open of `card0`
+  takes DRM master, so wlroots can modeset without SET_MASTER.
+- **Device discovery.** libudev-zero walks `/sys` (see "Sysfs" in
+  `docs/posix-status.md`) to find the card and the input devices, and
+  watches an `AF_NETLINK` `NETLINK_KOBJECT_UEVENT` socket that never
+  reports a hotplug.
+- **Display.** The card advertises `DRM_CLIENT_CAP_ATOMIC`, so the wlroots
+  DRM backend drives the atomic interface described above: one MODE_ATOMIC
+  commit per frame (TEST_ONLY probes included) and CLOSEFB.
+  `WLR_DRM_NO_ATOMIC=1` selects its legacy path (SETCRTC, PAGE_FLIP).
+- **Rendering.** The card has a render node, so wlroots chooses its GLES2
+  renderer. It opens `/dev/dri/renderD128`, creates a gbm device on it, and
+  reaches EGL through the GBM platform (`EGL_KHR_platform_gbm`). The gbm
+  allocator gives it GPU-tier scanout buffers
+  (`gbm_bo_create_with_modifiers`); wlroots binds each one as an EGLImage
+  renderbuffer and renders into it, and the page flip that scans it out
+  blits it onto the display canvas, which cage's GL context claimed. A
+  client's `wl_shm` buffer is uploaded as a texture with
+  `GL_EXT_texture_format_BGRA8888` and `GL_EXT_unpack_subimage`. A
+  readback into an XRGB8888 or ARGB8888 buffer (screencopy, for example)
+  uses `glReadPixels` with `GL_BGRA_EXT`, which wlroots refuses without
+  `GL_EXT_read_format_bgra`. WebGL 2 reads no BGRA layout, so the guest
+  encoder asks the host for the native RGBA/UNSIGNED_BYTE read and
+  converts the rows itself (byte swizzle, or ARGB4444/ARGB1555 packing)
+  under the caller's pack alignment. A
+  `linux-dmabuf` buffer is imported with `EGL_EXT_image_dma_buf_import`,
+  zero-copy for a GPU-tier buffer (a GL client's) and copied from the
+  dma-buf mapping for a CPU-tier one. The Node host has no WebGL2, so the
+  GLES2 renderer cannot start there and a session must ask for the pixman
+  renderer with `WLR_RENDERER=pixman`; pixman composites into DRM dumb
+  buffers and reads a client's `wl_shm` pool by mapping the pool fd, a
+  PRIME fd or a memfd.
+- **Input.** libinput's udev backend reads the evdev devices, and cage
+  routes keys and buttons to the focused toplevel.
+
+cage offers no layer shell, data-control, tiling or multi-window layout, so
+the desktops (`wldesktop`, `omarchydesktop`, `hyprdesktop`) and their shell
+clients (Waybar, mako, quickshell, kclipd, qtgallery) stay on `wlcompositor`.
+
+The browser shell image carries cage as a lazy file, and its `cage` machine
+runs `cage -- wlterm`. The machine declares `kms-gl-scanout`, so the vblank
+pump's WebGL2 scanout presenter shows the CRTC whenever no GL context owns
+the canvas: before cage's GLES2 context claims it, after that context ends,
+and for a session on the pixman renderer. The connector's preferred mode
+follows the containing layout viewport's device pixels (or its explicit
+bitmap render scale). The fitted guest canvas is not display authority:
+changing a guest framebuffer's backing size or aspect must not withdraw
+the monitor mode that the guest selected before its first page flip.
+`LiveKernelHost.attachKmsDisplay` accepts a host-local `displayViewport`
+element for this purpose, observes genuine viewport resizing, and never
+sends that DOM element to a worker. Standalone canvas embedders may retain
+the canvas itself as their physical surface. Closing or remounting a pane
+retires or replaces the observation target. Terminal and demo dock
+controls reserve the same row height, so switching views does not invent
+a monitor resize while a hidden KMS pane is being measured.
+
+Gates: `host/test/cage-smoke.test.ts` (a raw libwayland client gets a
+configure, a presentation feedback after a real page flip, the keymap, a key
+and a button), and foot, GTK3, libkwl and wlterm as session clients
+(`host/test/{foot,gtk3,libkwl,wlterm}-smoke.test.ts`), all on the pixman
+renderer. The tests share the session root in `host/test/wlroots-session.ts`.
+`apps/browser-demos/test/kandelo-cage.spec.ts` gates the GLES2 renderer in
+the browser.
+
+## Wayland tiling compositor (`sway`)
+
+`packages/registry/sway/` builds upstream sway 1.12 on the same wlroots
+0.20.2 and seat, discovery, display and input path as cage, plus json-c for
+its IPC. The package also ships `swaymsg`, `swaybar`, `swaynag` and the
+upstream default config at `/etc/sway/config`; it is built without the tray
+(no sd-bus provider), gdk-pixbuf or man pages.
+
+On top of cage's path, sway forks and runs each config `exec` through
+`/bin/sh`, tiles toplevels, and serves i3 IPC on a Unix socket
+(`$SWAYSOCK`). It sets `SIGCHLD` to `SIG_IGN` and relies on the kernel
+reaping its children.
+
+Static linking puts sway's own `expand_path` and `list_insert` in the same
+module as libxkbcommon's and libinput's internal functions of those names.
+`wasm-ld` links such a signature mismatch with only a warning and replaces
+the library's calls with traps, so the build renames sway's two symbols.
+
+sway starts `swaybar` and `swaynag` itself: it forks, keeps one end of a
+`socketpair` open across `exec`, and passes its number in
+`WAYLAND_SOCKET`. Each client maps a layer-shell surface that reserves an
+edge of the output. swaybar forks the bar's `status_command` through
+`/bin/sh` and reads its stdout; a swaynag button runs its action through
+`/bin/sh`. Upstream swaynag fills its unused Wayland listener slots with one
+unprototyped function, and a WebAssembly indirect call traps on the type
+mismatch, so `patches/0001-*` gives each slot a function of its event's
+prototype.
+
+Gate: `host/test/sway-smoke.test.ts`, on the pixman renderer in Node: two
+clients from the config tile side by side in `swaymsg -t get_tree`, a click
+focuses each and it receives a button and a key, and `swaymsg exit` ends the
+session with status 0. A config `bar` block starts swaybar, which reserves
+the bottom of the workspace and runs its `status_command`. A config error
+starts swaynag, which reserves the top of the workspace, and a click on its
+"Exit sway" button ends the session with status 0.
+
+The browser shell image carries sway, swaybar, swaynag, swaymsg and swaybg as
+lazy files, and its `sway` machine runs sway on the GLES2 renderer. Like the
+`cage` machine it declares `kms-gl-scanout`, so a sway started again from
+the machine's shell on the pixman renderer still reaches the canvas.
+`apps/browser-demos/test/kandelo-sway.spec.ts` gates the GLES2 renderer,
+swaybar, workspaces, tiling, swaynag's exit button and that restart.
 
 ## Wayland compositor (`wlcompositor`, `wlterm`)
 
-On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (a desktop machine's launcher script, `wldesktop` or `omarchydesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.25.0 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). Buffer sharing is zero-copy: clients allocate `wl_shm` pools backed by `gbm` dumb BOs and pass the prime-fd to the compositor via `SCM_RIGHTS`. The same prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888`/`XBGR8888`/`ABGR8888` + `LINEAR` only, no feedback; a GL client's buffer from `libwayland-egl` is `XBGR8888`, because a WebGL RGBA texture stores `[R,G,B,A]` bytes, and the compositor samples it without the red/blue swizzle it applies to `XRGB8888` `[B,G,R,X]` buffers): `zwp_linux_buffer_params_v1.add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to importing with `gbm_bo_import` and CPU-blitting into the scanout buffer. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-EIO` when the canvas context reports `isContextLost()`, `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails, and the compositor's repaint falls through to the CPU path and terminates EGL — no guest-side context-loss API is needed. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
+The upstream Foot, mako, GTK and Qt clients use ordinary shared-memory
+pool allocation. Their former Kandelo DRM-pool rewrites have been removed.
+The compositor owns fd mapping, buffer offsets and texture upload; clients
+need no renderer-specific pool allocator. Node exercises the same pool
+protocol through CPU compositing, while browser specs exercise GPU drawing.
+
+On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (a desktop machine's launcher script, `wldesktop` or `omarchydesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.28.1 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). A `wl_shm` pool is any mappable fd the client passes over `SCM_RIGHTS` — a memfd, a `/dev/shm` file, or a `gbm` dumb BO's prime-fd — and the compositor maps it `PROT_READ`/`MAP_SHARED` at `create_pool` (remapping on `resize`, refusing a shrink, as libwayland's `wl_shm` does), so each buffer is read at its offset in that mapping and the kernel's shared-mapping coherence (see `mmap()` in `docs/posix-status.md`) carries the client's later stores into it at the compositor's syscall boundaries (`host/test/wlcompositor-shm-memfd-smoke.test.ts`). A dumb BO's prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888`/`XBGR8888`/`ABGR8888` + `LINEAR` only, no feedback; a GL client's buffer from `libwayland-egl` is `XBGR8888`, because a WebGL RGBA texture stores `[R,G,B,A]` bytes, and the compositor samples it without the red/blue swizzle it applies to `XRGB8888` `[B,G,R,X]` buffers): `zwp_linux_buffer_params_v1.create[_immed]` first imports the plane with `gbm_bo_import` as the claimed fourcc and refuses a buffer no import can sample (`failed`, or `invalid_wl_buffer` for `create_immed`): a plane outside its dma-buf, or a GPU-tier buffer made in storage that fourcc does not name. `add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` with the buffer's real fourcc + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) — a `wl_shm` buffer whose pool is no dma-buf, or that starts partway into its pool, is uploaded from the pool mapping instead (`glTexImage2D`, then `glTexSubImage2D` per dirtying commit, its bytes as `GL_RGBA` so the shader's swizzle matches an imported bo) — and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to CPU-blitting into the scanout buffer, reading `wl_shm` buffers from the pool mapping and `linux-dmabuf` buffers through `gbm_bo_import`. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-ENODEV` once the binding's renderer was lost (`host/src/webgl/renderer-loss.ts`; sticky across a later restoration of the same context object), `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails with `EGL_CONTEXT_LOST`, and the compositor's repaint falls through to the CPU path and terminates EGL. An `ENODEV` reply on submit, query or make-current lets libEGL record the context reset; its failure-only checked scope receipt propagates known physical renderer loss to the share group while keeping logical A3 resets local. `glGetGraphicsResetStatus` (`GL_EXT_robustness`/`GL_KHR_robustness`) answers from the recorded state without another host request. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
 
 Kandelo-authored clients build on `libkwl` (`examples/libs/libkwl/`), a small toolkit over `libwayland-client` that wraps registry bind, an `xdg` CSD toplevel, double-buffered `wl_shm` back buffers, xkb keysym/UTF-8 translation, and a `kwl_dispatch` event loop; it exposes `kwl_display_fd()` so an app can `poll` the Wayland connection alongside its own fds. Drawing goes through `libwpkdraw` (`examples/libs/wpkdraw/`), a CPU rasterizer (alpha-blended clear/pixel/rect + an `stb_truetype` font engine over a bundled Inconsolata) that renders into a caller-owned ARGB buffer. `programs/wlterm/` is the first real client: a terminal that `forkpty()`s `sh` (bash, which every Kandelo image binds to `/bin/sh`), runs an in-tree VT100 core (`vt100.c`), and multiplexes the Wayland display fd and the PTY master fd in one `poll` loop — Wayland key events become PTY writes, PTY output feeds the VT100 grid and is rendered back into the libkwl window. Because `wlterm` forks, its wasm is mandatorily processed by `wasm-fork-instrument` (see [fork-instrumentation.md](fork-instrumentation.md)).
+
+Libkwl uses libwayland's connection selection whenever `WAYLAND_DISPLAY`,
+`WAYLAND_SOCKET` or `XDG_RUNTIME_DIR` is present. This lets a compositor
+select a relative or absolute socket name or pass an inherited descriptor.
+An explicit endpoint failure is returned to the caller; it does not connect
+to another compositor. With all three variables absent, the original
+in-tree desktop connection at `/tmp/wayland-0` retains its startup retry.
+
 
 The terminal core honors VT100 scrolling margins (`CSI top;bottom r`),
 including line feeds, delayed wraps, index, next line, and reverse index.
@@ -5432,7 +7082,7 @@ ignored, and resizing restores full-screen margins. This is terminal behavior,
 independent of the child program or package. The existing limited terminal
 subset (including no alternate screen or VT100 line-drawing set) is unchanged.
 
-The stack is dual-host: the Node smoke gates (`host/test/{wpkdraw,libkwl,wlcompositor,wlterm,wldesktop,wldesktop-liveness}-smoke.test.ts`) drive compositor+client harnesses (two-process for the single-client gates, compositor + wlclock + wlpaint for the desktop gates), and the browser demo (the `wayland` machine in the shell image, declared in `packages/registry/shell/source-rootfs-shell-demo.json`, listed in `apps/browser-demos/pages/kandelo/gallery-roster.json`, and gated by `apps/browser-demos/test/kandelo-wayland.spec.ts`) boots the compositor plus three clients — `wlclock` (animated clock), `wlpaint` (pointer painting), and `wlterm` — against `card0` mirrored to an `OffscreenCanvas`, with DOM keyboard input injected as evdev events and the pane's pointer bridge feeding `event1`. This is the same KMS-to-canvas + `BrowserInputSource` path the `modeset` and `sdl2` demos use. The pane opts into the vblank pump's WebGL2 scanout presenter (`mode: "webgl2-scanout"`: scanout-to-texture upload with shader-side XRGB→RGB swizzle, change-driven presents gated on the kernel commit count plus a ~15 Hz content-probe backstop, and GPU scaling at the pane's device-pixel resolution); in the browser the compositor's own GLES context then claims the canvas for GPU compositing (`markKmsCanvasGlOwned` — the presenter stands down, stats slot 7 flips to 3/`webgl2-gl`), while headless/Node runs stay on the CPU-composite + presenter pipeline. A legacy `mode: "2d"` putImageData blit remains available. See [browser-support.md](browser-support.md#wayland-desktop-demo).
+The stack is dual-host: the Node smoke gates (`host/test/{wpkdraw,wlcompositor,wldesktop,wldesktop-liveness}-smoke.test.ts`) drive compositor+client harnesses (two-process for the single-client gates, compositor + wlclock + wlpaint for the desktop gates; `libkwl` and `wlterm` are gated under cage), and the browser demo (the `wayland` machine in the shell image, declared in `packages/registry/shell/source-rootfs-shell-demo.json`, listed in `apps/browser-demos/pages/kandelo/gallery-roster.json`, and gated by `apps/browser-demos/test/kandelo-wayland.spec.ts`) boots the compositor plus three clients — `wlclock` (animated clock), `wlpaint` (pointer painting), and `wlterm` — against `card0` mirrored to an `OffscreenCanvas`, with DOM keyboard input injected as evdev events and the pane's pointer bridge feeding `event1`. This is the same KMS-to-canvas + `BrowserInputSource` path the `modeset` and `sdl2` demos use. The pane opts into the vblank pump's WebGL2 scanout presenter (`mode: "webgl2-scanout"`: scanout-to-texture upload with shader-side XRGB→RGB swizzle, change-driven presents gated on the kernel commit count plus a ~15 Hz content-probe backstop, and GPU scaling at the pane's device-pixel resolution); in the browser the compositor's own GLES context then claims the canvas for GPU compositing (`markKmsCanvasGlOwned` — the presenter stands down, stats slot 7 flips to 3/`webgl2-gl`), while headless/Node runs stay on the CPU-composite + presenter pipeline. A legacy `mode: "2d"` putImageData blit remains available. See [browser-support.md](browser-support.md#wayland-desktop-demo).
 
 ### Tiling window manager (`WLC_LAYOUT`, workspaces, `kwlctl`, keybinds)
 
@@ -5457,9 +7107,9 @@ theme. Those are ordinary Wayland clients, but they need a protocol that lets a
 surface anchor to an output edge and reserve space from the windows — which is
 what `zwlr_layer_shell_v1` is, and what Quickshell, Waybar, mako and every
 other shell component speak. The compositor implements it (protocol XML
-vendored at
-`packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml`),
-and the in-tree clients below consume it. This is the **O1** milestone of
+from the `wlr-protocols` package,
+`share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml`), and the
+in-tree clients below consume it. This is the **O1** milestone of
 [docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md](plans/2026-07-14-build-hyprland-class-compositor-plan.md).
 The Omarchy machine runs Quickshell in every one of these slots instead
 (see [browser-support.md](browser-support.md#omarchy-desktop-demo)); the
@@ -5563,17 +7213,14 @@ See [browser-support.md](browser-support.md#omarchy-desktop-demo).
 ### Stock upstream clients (`foot` + the font stack)
 
 Every client above is Kandelo-authored on `libkwl`. `foot` 1.17.2
-(`packages/registry/foot/`) is the first **unmodified upstream** Wayland
+(`packages/registry/foot/`) is the first upstream Wayland
 client: stock `wl_display_connect()` (via `XDG_RUNTIME_DIR`), stock
-xdg-shell/SSD negotiation, and a real font pipeline. Two declared patches are
-the entire delta, both kernel-model boundaries rather than feature edits:
-`0001` allocates its `wl_shm` pools as `gbm` prime-fd dumb-bos instead of
-memfds (written when a memfd `MAP_SHARED` mapping never converged across
-processes, so the compositor would have composited stale bytes; the kernel
-now keeps memfd mappings coherent at syscall boundaries, so this patch is a
-candidate for removal), and `0002` serializes
-its font loading (concurrent `FcFontMatch` garbles pattern doubles under the
-kernel's thread model — any future threaded font consumer hits the same wall).
+xdg-shell/SSD negotiation, and a real font pipeline. Its ordinary memfd
+`wl_shm` pools are mapped by wlcompositor; the earlier DRM-pool patch and
+its GBM link are removed. The remaining declared patch,
+`0002-serial-font-loading.patch`, serializes font loading (the recorded
+concurrent `FcFontMatch` pattern-double corruption remains separate
+platform work).
 foot forks its shell (`slave.c`), so its wasm is mandatorily
 fork-instrumented; it runs with `--term=vt100` because no foot terminfo is
 staged in any VFS image.
@@ -5604,10 +7251,10 @@ What it took, on each side of the protocol:
   deliverable. A kernel without those exports is refused, not run with the
   mask silently ignored.
 
-Gated end-to-end by `host/test/foot-smoke.test.ts` (foot on wlcompositor:
-connect, fontconfig+fcft startup, first composited frame through the gbm pool
-path, keys typed into its forked `dash`, clean exit). In the browser, foot is
-a launcher entry of the Omarchy machine — a lazy binary at
+Gated end-to-end by `host/test/foot-smoke.test.ts` (foot as the session
+client of cage: connect, fontconfig+fcft startup, a mapped toplevel through
+the gbm pool path, keys typed into its forked `dash`, clean exit). In the
+browser, foot is a launcher entry of the Omarchy machine — a lazy binary at
 `/usr/bin/foot`, with the desktop's `fonts.conf` and Inconsolata under
 `/usr/share/kandelo/fonts` — gated by
 `apps/browser-demos/test/kandelo-omarchy.spec.ts`.
@@ -5658,6 +7305,13 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
    `EINTR`. `longjmp` and `siglongjmp` retire abandoned handler/wait contexts;
    `siglongjmp` then applies the jump buffer's saved mask when requested.
 5. If the signal interrupted a blocking syscall, EINTR is returned
+
+A terminating default signal is checked before it consumes its queued
+instance or changes mask-wait and handler bookkeeping: while a prepared exec
+target has an uncertain native close, the Rust `try_*` signal helpers return
+`SignalProgress::ProtocolFaultOwned`, which retains the queued signal,
+process resources and existing signal state. Legacy delivery calls and the
+host-free default signal consumer fail closed if they bypass that ordering.
 
 PTY input follows the same completion path as other signal ingress on both
 Node and browser hosts. After the line discipline queues an ISIG signal to
@@ -5760,6 +7414,13 @@ The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY rou
 
 **Browser kernel worker** (`host/src/browser-kernel-worker-entry.ts`): Dedicated web worker that hosts `CentralizedKernelWorker`, following the standard architecture requirement. Process workers are sub-workers created by the kernel worker. Syscall notification remains event-driven through `Atomics.waitAsync`, not channel polling. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue; this keeps syscall handling and worker messages progressing together under multi-process bridge load. Node.js retains its native/default batching unchanged.
 
+**HTTP readiness ownership:** the page reuses its host while replacing machine
+activations, so each activation owns a distinct abort controller for preview
+readiness. Preview disposal cancels the active request and retry delay before
+removing the HTTP bridge. Guarding only the final UI update would leave the
+outgoing activation issuing requests to a retired machine. The current
+activation retains its original readiness/request deadlines and error reporting.
+
 **dinit service supervisor** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first user process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. It receives the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit reaps its directly supervised children. A service that daemonizes by double fork leaves its grandchild to synthetic init, which the kernel reaps (see "Orphan adoption"); dinit is not a subreaper here because it requests `PR_SET_CHILD_SUBREAPER` only under `__linux__`. dinit disables restarts by default and enforces inter-service `depends-on` ordering.
 
 **Service Worker** (`apps/browser-demos/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
@@ -5777,6 +7438,13 @@ devices:
 - `/dev/fb0` remains the simpler framebuffer path for software that writes a
   linear BGRA buffer directly.
 
+KMS now uses device-wide object IDs and framebuffer IDs. Inherited open
+file descriptions share their framebuffer table; the last reference removes
+its entries. Connector and property queries preprobe every nested output
+before writing any of them. The full dynamic mode catalog and cursor path
+remain available. See [the compatibility inventory](graphics/compatibility-v1.md)
+for implementation and validation status.
+
 The kernel owns the device ABI, fd-local GEM handles, DRM-master ownership,
 KMS framebuffer refcounts, BO mmap authorization, and process lifecycle
 cleanup. User programs cannot mmap an arbitrary BO id: the mmap offset must
@@ -5791,15 +7459,316 @@ TLV commands, the kernel validates the submitted range, and the host decodes
 the commands against a browser `WebGL2RenderingContext` or a test double in
 Node.js. The kernel does not contain GL rendering code.
 
+GL always executes in the kernel worker, on both hosts. Command submission,
+queries, and context and surface lifecycle run against
+the WebGL 2 context the kernel worker owns (an `OffscreenCanvas`, a transferred
+KMS canvas, or an embedder-supplied canvas). There is no main-thread GL
+forwarding path: an earlier exported fallback that replayed commands and
+queries on the page's main thread had no production caller and was removed.
+
+For `GLIO_QUERY`, the kernel rejects nonzero reserved fields, bounds both
+buffer lengths and validates every nonempty guest range before renderer
+dispatch. It probes the full output capacity even if the renderer might
+return no bytes: queries can consume error flags or mutate object state.
+Nonempty null ranges fail with `EFAULT`; zero-length pointers are ignored.
+Input is copied before dispatch, so overlapping input/output buffers work.
+Failed or oversized host replies return `EIO` without publishing output;
+a successful short reply leaves the unused destination tail untouched.
+The host-memory bridge still permits address zero as an ordinary byte;
+the query ioctl owns its null-pointer semantics.
+
+`GLIO_SUBMIT_QUERY` adds one synchronous ordered request for a nonempty
+command prefix followed by a checked query. Its native-width `InOut` header
+is 48 bytes for wasm32 or 64 for wasm64. The kernel captures the descriptor,
+open file description, session and caller TID once, executes the existing
+submit path, then reads input and validates output for the existing query
+path. Submit failure prevents query execution; query failure leaves the
+already-consumed prefix intact. Both phases retain their native checks,
+CPU-image publication and error ownership. Ordinary submit/query requests
+keep their existing contract.
+
+The outer ioctl returns success to acknowledge a complete phase result,
+including negative per-phase errno values. It does not accept a GL mutation:
+only the nested checked reply can commit C binding or reference state. The
+client consumes the prefix on every compound return and never retries or
+falls back after uncertain execution. Reply and phase data remain heap-owned;
+allocation failure takes the original ordinary-flush path before reporting
+OOM. Empty command queues keep the ordinary query. This is not rollback,
+persistent replay authority or deferred server ordering. The program-surface
+digest includes the new transport; normal SDK and product artifacts need a
+coherent rebuild. Validation status remains in the compatibility inventory.
+
+Framebuffer selection is authoritative in the host. Ordinary
+`glBindFramebuffer` queues the existing command rather than maintaining a C
+selector mirror. Image attachment queries optionally return a 16-byte checked
+receipt containing the accepted logical container name. Image deletion queries
+optionally return a 20-byte receipt containing the invoking context's selected
+draw/read container names. Identity is captured after the queued prefix and
+before query effects; zero identifies logical default storage, while accepted
+attachments require a named container. Legacy 12-byte replies retain their
+layout and behavior.
+
+C reserves attachment publication storage and uncertain-completion holds before
+query entry. Only a validated successful receipt publishes ownership changes;
+definite non-entry releases candidates, while uncertain entry retains them
+through the existing group lifetime without replay. Deletion releases matching
+object references only in the acknowledged selected containers. Unbound and
+peer containers retain their references. The Program digest binds these opt-in
+layouts so matching numeric epochs cannot admit older incompatible products.
+
+The combined graphics branch uses ABI 56, one version above current main's
+ABI 55, with kernel-host version 3. It joins main's kernel-owned waits,
+executable admission and lifecycle contracts with the graphics interfaces
+from earlier development versions.
+Operation table 17 remains independently versioned. Generated source metadata
+and normal SDK/program/package/image artifacts must be regenerated and
+validated together after integration with main.
+
+EGL exposes two RGBA8/depth24/stencil8 ES2 configs for ABGR8888 and
+ARGB8888 native windows, using one attribute table for enumeration,
+selection and queries. Selection honors size minima, masks, exact values,
+defaults and explicit config IDs. Config operations require an initialized
+display and publish outputs only after validation. Both configs' renderable
+masks remain ES2-only; EGL's default ES1 selection filter consequently matches
+none. Tools enumerating all configurations use eglGetConfigs. The source
+facade supports independent window and pbuffer surfaces. Other EGL core
+gaps and normal rebuilt-guest validation remain tracked in the graphics
+compatibility inventory.
+
+Operation-table version 16 adds an immutable surface-capability query to
+initialized, mapped object sessions in a live display generation. It requires
+no context or current binding and grants no authority to inspect ordinary
+context-local state. The exact zero-byte input and 16-byte output carry
+width, height, maximum pixel count and the completion marker. The renderer
+uses the smaller texture/renderbuffer dimension and caps the pixel count
+only at the representable EGLint maximum. C caches the accepted limits per
+display generation; a malformed reply leaves caller output unchanged.
+The kernel worker preserves outgoing GLES errors before querying, without selecting a logical context, changing drawable bindings,
+resizing a canvas or claiming KMS presentation. A host without an available
+renderer reports failure.
+
+Both configs advertise PBUFFER_BIT. Pbuffer creation validates attributes,
+uses generation-owned offscreen storage and preserves the pending native
+window target. It stores accepted dimensions and query attributes. Largest
+requests obey native dimensions/pixel limits and search smaller pixel budgets
+only after definite allocation rejection; unknown completion stops the search.
+A context created after its pbuffer reuses its existing offscreen renderer
+without resizing or claiming KMS scanout. Context-first KMS ordering and
+pump coexistence remain in the lifecycle audit. Texture binding
+capabilities remain false, so texture-bound requests fail
+with BAD_MATCH. Logical zero dimensions use minimal private native storage;
+viewport/scissor initialization honors those logical dimensions. Pbuffer swaps
+still validate the current draw surface and flush, without posting. Raw
+presentation also recognizes the surface kind and avoid blitting
+its private target to the visible canvas.
+
+Core and EXT platform-window constructors validate live GBM dimensions,
+format and rendering usage before allocating a backend surface. GBM lookup
+uses its locked live registry without dereferencing foreign pointers. The
+window format must match its config's native visual; mismatches fail with
+BAD_MATCH. Public config IDs remain distinct in context/surface queries.
+Both byte orders use canonical RGBA8 native storage. Exported CPU fronts
+pack ABGR or ARGB bytes after successful native readback/restoration,
+including top-row-first orientation and independent alpha. GPU fronts
+preserve logical native color channels. The core attribute parser checks
+pointer-width EGLAttrib keys/values before narrowing;
+EXT attributes retain their EGLint layout. Requested render buffer and GL
+colorspace are stored separately from actual rendering: QueryContext reports
+BACK_BUFFER even for a SINGLE_BUFFER request. Public ES2 contexts do not
+support sRGB rendering, so both windows and pbuffers retain the requested
+colorspace but render linearly as permitted by EGL 1.5 section 3.5.1.
+
+Surface setters support default resolve/destroyed behavior and the no-effect
+NO_TEXTURE mipmap level. Unsupported config capabilities return BAD_MATCH.
+Texture bind/release, pixmap creation/copy and OpenVG client-buffer creation
+now expose entry points and the specific errors required by the current
+configuration and GBM platform. They preserve queued GL work and thread
+ownership. Implemented EGL functions resolve through GetProcAddress; core
+server waits, GL-source images and broader error/lifecycle semantics
+remain inventory gaps.
+
+Core EGL image creation reads pointer-width EGLAttrib lists, while the KHR
+entry point reads EGLint lists. Both use one retained-image registry and
+support the existing dma-buf import target; either destruction spelling
+invalidates the same public handle without releasing surviving siblings.
+Attribute keys and values are checked before narrowing or importing.
+Required plane offset presence is distinct from zero. Validated YUV hints
+have no effect on supported RGB images. GL-source image creation and full
+CPU/storage metadata conformance remain open compatibility work.
+
+Surface allocation reserves native deletion receipts and every selector update
+before creating texture/renderbuffer/framebuffer objects. Checked storage and
+read/draw/texture/renderbuffer inverses are checked; a refused restoration or
+cleanup is a fatal host fault. Accepted replacement storage stays committed if retiring an old
+target fails. Surface destruction retires the
+same receipts, preserving the distinction between owned native targets and
+borrowed BO framebuffers. Broader resource factories, context loss and unknown
+transport completion remain in the compatibility inventory.
+
+EGL client/GL waits flush pending commands and require successful native
+finish through the existing empty QOP_FINISH query. The host preserves earlier
+GL errors and rejects failed completion or renderer loss, and acknowledges only
+after acceptance. Chromium's and WebKit's WebGL `finish()` return before
+earlier draws complete, so on those engines the host also waits on a private
+buffer copy read back with `getBufferSubData` before acknowledging
+(`host/src/webgl/finish.ts`; see "Chromium and WebKit WebGL finish() returns
+early" in `docs/browser-support.md`). The C wait keeps current ownership
+and reports failure without holding the EGL metadata mutex during completion.
+GLES glFinish also exposes failed completion instead of discarding it. Swap
+interval validates display/context/draw ownership; every request clamps to the
+configs' zero bounds. Retained EGL fence client waits are described
+below; server-side wait ordering remains separate compatibility work.
+
+EGL error status and bound client API are thread-local; an unsupported API
+bind reports BAD_PARAMETER while preserving the calling thread's prior API.
+Current bindings use heap-backed pthread-key records with exclusive context
+ownership. Release and thread exit flush before dropping current references;
+destroy-current and terminate-current defer backend retirement until release.
+Each created EGL context also owns an opaque heap encoder record. The
+current thread binding selects that record; it contains the cursor, client
+arrays, upload layout, errors, image siblings and returned strings. Each
+encoder also owns the mipmap-generation and advertised OES derivative hint
+values. Both start at DONT_CARE and remain independent in contexts that
+share objects. Hint quality is advisory, but valid values remain queryable
+through integer, float and boolean getters; invalid targets or modes raise
+INVALID_ENUM without changing either value.
+An unbound thread cannot mutate another context's client state. Release preserves the record for transfer
+to another thread; final destruction retires its image references and
+frees it without selecting it or emitting into another command stream.
+Allocation failure precedes backend creation and leaves no published
+context. C encoders retain a separate reference-counted name owner. Metadata-only
+locks serialize whole-batch buffer/texture/renderbuffer reservations and
+shader/program name allocation, including implicit binds. Array bindings
+and every VAO's element/attribute capture retain actual buffer records;
+namespace deletion does not erase an inactive container's old identity.
+Texture 2D/cube units, the renderbuffer binding and framebuffer attachments
+also retain explicit C records. First bind fixes texture dimensionality;
+wrong-target binds and unrealized/wrong-type attachments preserve old
+client references. Inactive FBOs keep an unnamed old record through name
+reuse. Binding queries retain logical names; the host canonicalizes native
+image views to their logical objects. Ordinary/raw WPK queries retain native
+authority. Public
+WPK BO texture names are registered after acknowledged creation, and checked
+liveness reconciles owner-revoked names before C bind/attachment validation.
+Private EGLImage source tokens use a separate registry and never enter the
+public GLuint namespace. The inline 32-unit
+capacity grows to the queried renderer limit,
+with failed growth preserving selection and final teardown releasing it.
+Public C texture/renderbuffer binds now wait for a checked renderer reply
+before replacing binding references or fixing a texture's dimensionality.
+The query and queued paths share native candidate creation and validation;
+namespace bookkeeping is reserved before native binding and a rejected
+candidate is removed. Accepted query binds also collect retired images.
+This establishes definite bind acceptance, while an indeterminate transport
+failure still needs lifecycle reconciliation or context-loss handling.
+GPU image targets now retain distinct logical texture/RBO identities while
+sharing canonical source pixels. Texture views preserve independent sampling
+parameters; FBO attachments target canonical storage and retain their logical
+query identity. Sampling views copy current source pixels before drawing.
+Respecification stages an owned view and retargets all referencing group
+FBOs before replacement. Shared container retargeting retains exact host
+bookkeeping checks even inside a predicted guest batch: publishing a new
+image while a healthy peer still attaches the previous storage would make
+attachment reads disagree with sampling. An unpredicted native refusal
+resets the submitting context and unwinds the container changes before
+the replacement is published. Guest acceptance remains host-predicted;
+the private publication checks do not turn native flags into late API errors.
+C image holds release old backing only after checked
+orphaning. Confirmed holds belong to retained shared object records;
+ambiguous imports retain candidate object/image references until final group
+retirement. Association revisions prevent older completions from replacing
+newer holds. Final reference and replacement cleanup release images outside
+the metadata mutex. CPU coherence, concurrent C/native namespace ordering
+and indeterminate multi-failure recovery remain open. Public C contexts
+now join these object groups; this is not complete image conformance.
+
+Client staging retains a separate buffer-record reference, restores its
+pointer/name/serial directly and keeps any pending capture encoder-owned.
+The host saves the actual native ARRAY view in a context-local slot across
+submit boundaries; buffer collection includes that pin across group
+members, including separate index/vertex views. Empty BEGIN/END commands
+restore identity independently of public names. The private ARRAY savepoint
+uses exact host-bookkeeping restoration before publishing END completion.
+A logical reset unwinds its native inverse; refusal by a live renderer is
+fatal rather than a later END retry. Context destruction releases its pin.
+Full indeterminate-submit recovery and interrupted temporary-name cleanup
+remain open.
+Name reservation is separate from GPU realization for buffers, textures
+and renderbuffers. Their Gen records do not allocate or mutate host object
+maps; the first accepted Bind publishes the native object. Delayed shared
+reservations cannot replace a peer's realized storage or revive a deleted
+name. The C owner still reserves complete batches before returning names.
+Local reference cleanup precedes releasing the common owner. The private
+shared-owner constructor supplies public C shared-context creation. A
+separate group dispatch mutex spans standard buffer/texture/RBO name lookup,
+native binding/deletion/attachment and C publication. Metadata locks stay
+outside device IO; general indeterminate failure recovery remains open.
+User-visible context/surface handles are monotonic. Each backend
+session admits one context and surface. The public EGL facade allocates
+additional sessions for independent context/surface records within a
+generation. Each context has its own encoder and command mapping; current
+bindings can select separate draw/read surfaces from other sessions in the
+same generation. A surface can survive its session's context destruction.
+A retained current old generation can overlap a newly initialized one.
+Public C shared contexts join the retained C owner and native/kernel group;
+the full API/error and lifecycle audit remains open.
+
+Surface creation uses a 36-byte input/output GlSurfaceCreateInfo:
+32 attribute bytes followed by a zero-on-input surface identity. The
+kernel returns a fresh identity and accepted dimensions only after the
+renderer acknowledges creation. A private copy translates the caller's
+GEM handle for the host; the successful guest reply preserves that handle.
+Failure leaves caller bytes, context/current state and previous backing
+unchanged, with ordered candidate cleanup. The C library stores the
+returned ID and uses it for make-current; it no longer assumes ID 1.
+
+The host stages private surface storage before publishing it. Explicit
+storage retains its accepted size independently of a shared canvas. A retired
+request frees its unpublished candidate. Identity-checked destruction
+cannot remove a later surface. Ordinary canvas swap blits private storage
+to the visible default target. Source tests exercise
+accepted dimensions, retained pixels and stale cleanup across all three browser engines; full
+guest marshalling and the public C cross-context facade remain unvalidated.
+
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
-accepts versions 1 and 2, and rejects zero or newer versions with `ENOSYS`.
+accepts versions 1 through 17, and rejects zero or newer versions with `ENOSYS`.
 Its version and extension strings describe that API. Extension queries carry
 an optional operation-table version: legacy requests retain their empty list,
 while version 2 advertises bridged capabilities. Optional float rendering and
 filtering extensions appear only when the host enables them. Uniform
 reflection, vector/matrix uploads, indexed draws, texture updates and
 depth/stencil operations use the same command/query path as other programs.
+A submitted command batch is structurally validated in full before dispatch;
+an invalid trailing TLV record cannot execute earlier records in that batch.
+This does not roll back valid commands that report ordinary GL errors.
+The source-only host gate is `cd host && npx vitest run --config
+vitest.graphics.config.ts`; rendered and guest integration checks are separate.
+Uniform getters use one checked, fixed-size renderer reply carrying count
+and values. They do not depend on an earlier reflection call or a C width
+cache. Shared program/location associations validate ownership and link
+state before reading without changing the current program. C publishes
+only a completed successful reply; failed or malformed results preserve
+caller output. Table 7 adds this query, preserving all older
+tags/layouts. Table 8 adds checked active-uniform chunks and context-owned
+name lookup transfers in the existing 64 KiB query messages. Uniform
+locations are numbered per program, as Mesa and native ANGLE number them
+(decision D-41, `host/src/webgl/uniform-layout.ts`): active uniforms in
+GetActiveUniform order from 0, one location per array element, no
+location for `gl_` built-ins or host-private variant uniforms. Ported
+software (and dEQP-GLES2 `performance.shader.operator`) uses one
+program's location with another program of the same declarations
+current, which works on Linux drivers. Uniform* resolves a location
+against the context's installed executable, GetUniformLocation and
+GetUniform* against the named program's latest successful link; a
+location the current executable lacks, or a mismatched signature, is
+`INVALID_OPERATION`. A relink with an identical active set keeps the
+previous numbering. Lookup transfers are token-checked, replaced
+or cancelled independently per context and released on retirement. C
+publishes reflected metadata/names only after accumulating every requested
+chunk. Fixed C name/reflection buffers are removed. Shader-name translation
+beyond WebGL limits and the full setter/link audit remain open.
+See [the graphics compatibility inventory](graphics/compatibility-v1.md).
 Texture uploads copy shared and
 possibly unaligned guest bytes into the typed views WebGL requires. GLES2's
 unsized float, red/green and depth formats map to equivalent sized WebGL2
@@ -5812,10 +7781,1073 @@ GPU-backed Wayland window buffers also own 24-bit depth and 8-bit stencil
 attachments. Allocation checks framebuffer completeness and restores the
 shared context's texture, renderbuffer, and separate read/draw framebuffer
 bindings. Destroying the buffer releases all three GL objects.
-The multiplexer restores masks, stencil operations, clear values, constant
-vertex attributes and texture bindings when switching guest contexts. Node
+Host surface records own presentation allocations independently of context
+state. An explicit live surface keeps its target when its context is
+destroyed and recreated. Draw/read selectors retain their surface records;
+retiring the owner description defers target deletion until both kinds of
+reference end. Framebuffer zero resolves the selected draw and read targets
+separately, including a combined `GL_FRAMEBUFFER` bind. A candidate resize
+allocates a complete replacement before changing the surface or any of its
+selectors. Failed allocation preserves the previous target and pixels;
+successful replacement preserves user FBOs and updates selecting contexts.
+Kernel and host selectors now resolve independent draw/read surfaces across
+object sessions within a live display generation. The kernel checks PID,
+generation and validated current TID before backend entry. Retired owners
+cannot grant new selection. Explicit destruction is busy while selected;
+owner close, unmap or termination retires its ownership while existing
+current selectors retain storage. One canonical surface record owns its BO
+hold, independent of the number of owner/draw/read references. The public C
+facade now owns separate context/surface records and exposes independent
+draw/read selection and shared object-group creation. C image holds belong
+to retained group records and program metadata belongs to the host group.
+Kernel surfaces hold their target BO independently of GEM handles. An acknowledged update transfers that hold only after acceptance;
+rejection releases its candidate and preserves the previous hold. Native
+surface destruction/unbind precedes the final host BO destruction effect.
+
+Graphics cleanup identity and surface BO holds are shared across inherited
+open descriptions; command mappings and current-thread authority remain
+local to the creating image. Closing or execing a child cannot retire the
+parent's renderer. Final description close releases it once. The creating
+image also keeps weak cleanup references, so exec, exit, forced removal or
+command-memory unmap revokes its native binding even after its last local
+fd closes while a child retains the description. Weak references do not
+extend description or storage lifetime. They carry mapping bounds for
+revocation, never submission authority in the child. General forked GEM
+handle-map sharing remains an open part of the full OFD model. Current
+cleanup reachability also survives closing a context's last local fd while
+a child retains that description: replacement or thread retirement releases
+its former selectors before their final BO destruction. Backend rejection
+preserves the prior current references.
+
+Host surface lookup grants new selection only through a live owner on the
+same process and renderer. The kernel worker selects the actual records; framebuffer zero and swap use the selected draw/read
+resources. GPU retargeting prepares all affected default references and
+drawable metadata before publication, then changes the canonical record
+without native calls or allocation during commit. User FBOs, independent
+read targets and viewport/scissor state are preserved. The BO registry now
+keeps original width/height separately from padded stride, so accepted
+kernel retargets retain actual geometry.
+The multiplexer restores masks, stencil operations, clear values, dither,
+constant vertex attributes, independent 2D/cube texture bindings and pixel
+storage state when switching guest contexts. A scalar constant-attribute
+clearing range survives full invalidation and retirement; incoming indices
+enter that range before the first fallible native replay prefix. Replay
+bounds it by a checked native attribute limit, restoring incoming constants
+or the default `(0,0,0,1)` even after former owner metadata is discarded.
+Only accepted vertex-attribute limit queries populate that immutable native
+limit cache; unavailable or rejected queries refuse entry and can retry. Generic native
+callbacks mark all attribute constants unknown before callback effects, so
+restoration covers the entire accepted native range, including indices absent
+all guest shadows. No guest bindings, attribute values or sparse key sets are
+retained by that clearing range. Full replay still has its existing unchecked
+native-error behavior; this change closes lost reset coverage, not acceptance
+checking for every state replay. Queued constant-attribute setters validate the
+index against the accepted native limit before any write or shadow growth.
+Their old scalar value enters the native repair journal before effects, and
+new shadow values publish only after checked acceptance. A refused inverse
+is a fatal host fault. Existing private tuples
+update without a Map clone; new indices reserve only valid native slots before
+publication, rather than copying historical invalid entries. Synchronous native-state queries
+select the caller through that same multiplexer after destination preflight.
+
+Fixed GPU KMS presentation helpers capture the actual native read/draw FBO,
+pack-buffer/layout, scissor, color mask and clear-color selectors through a
+checked native query before each synchronous operation. They compare that
+snapshot with the selectors needed by that operation and reserve inverse
+records only for writes that will actually be attempted. A write whose value
+already matches is omitted along with its redundant inverse. Every attempted
+native operation still receives its checked post-call error capture, and a
+refused inverse is a fatal host fault.
+
+Owned RGBA/UNSIGNED_BYTE readback uses zero pack row length and skips. It
+retains captured PACK_ALIGNMENT 1/2/4/8 when that alignment divides width*4;
+otherwise it selects alignment4. Thus alignment8 is retained for even widths
+and temporarily changed for odd widths. Primary scanout still blits then
+clears alpha to1 with RGB masked off. Its alpha-only clear retains the captured
+clear RGB; when captured clear alpha is already1, no clear-color write or
+inverse is needed. This is per-operation native-state admission, without a
+persistent selector cache, pixel cache or presentation/frame elision. Storage
+ownership, context-loss gates, operation order, alpha semantics and final
+restoration/repair requirements are unchanged.
+
+
+The host now has a retained native-fence owner as a prerequisite for EGL
+sync support. Creation reserves a private candidate and deletion receipt
+before inserting the native fence; publication is separate from acceptance.
+Public-token destruction prevents new lookups while existing waiter leases
+retain the actual native context and sync object. Context destruction does
+not retire these references. Final session removal revokes public authority;
+the final waiter release permits checked deletion. Failed deletion remains
+in the existing native-retirement queue and blocks dependent admission.
+Records retain native handles and private error flags, with no guest memory
+or binding callback. Kernel teardown captures errors from all
+retained native contexts, including fences whose creator is already gone.
+Operation table 17 connects this owner to create/status/release queries.
+Each request carries one nonzero, monotonically allocated client token;
+its 16-byte reply contains status, echoed token, a signaled bit and magic.
+The client knows the token before creation, so cancellation can retire a
+lost reply and tombstone a request delivered late. Duplicate creation
+returns the retained identity without inserting another native fence.
+Creation requires current-thread and live-display authority. Status and
+release require a mapped, native-live object session owned by the caller,
+including after its creator/display root retires; this grants no ordinary
+GL query authority. Replies publish creation only
+after output acceptance. Empty-payload flush has a separate acknowledgement
+and does not imply completion. Public C glFlush submits the encoder before
+requesting this native flush, and preserves GL error reporting on failure.
+Internal encoder-only submission retains its separate helper contract.
+
+Core eglCreateSync, eglDestroySync, eglGetSyncAttrib and eglClientWaitSync
+now use generation-owned records and never-reused public handles. Each
+record reserves heap request/reply storage and a reply mutex before native
+creation, and independently retains its creator's initialized session.
+Destroying the creator does not invalidate its syncs. Public destruction
+invalidates future lookups while existing waiters keep their references;
+display termination invalidates public handles while in-flight waits retain
+the old mapping and descriptor. Unknown creation and deletion replies keep
+the known token for idempotent cleanup; unresolved cleanup gates further
+allocation on that session instead of discarding ownership.
+
+Client waits poll outside the EGL metadata lock, serialize only each wire
+reply, and use monotonic elapsed time for finite waits. They yield between
+polls, implement zero/FOREVER timeouts, and flush the waiting thread's
+current context only when requested and initially unsignaled. Cancellation
+releases the waiter reference. Metadata retirement disables cancellation
+until unlocking, so a cleanup ioctl cannot strand peers. The four
+KHR_fence_sync spellings share these records, retain 64-bit timeout values,
+validate their narrow input lists independently and copy only EGLint-sized
+attribute outputs. Unsupported types produce KHR's BAD_ATTRIBUTE rather
+than core's BAD_PARAMETER. EGL advertises EGL_KHR_fence_sync and the C GLES
+extension layer adds GL_OES_EGL_sync, indicating that this client API can
+place fences.
+
+eglWaitSync and EGL_KHR_wait_sync (`QOP_SERVER_WAIT`) rely on the host
+executing every accepted submission before `host_gl_submit` returns, and on
+fences being created only while their session has no queued work. The guest
+names the fence's session by its own fd; the kernel replaces that fd with
+the session identity of an object session the same process owns, so the host
+never interprets a guest fd number. When the fence and the waiting context
+share one physical WebGL context, the host issues the native `waitSync`
+barrier. Separate physical contexts share no native command stream, so the
+host answers `CLIENT_SIGNAL` and the C facade observes the fence's signal
+before eglWaitSync returns; later destination commands therefore follow the
+source work. That is stronger than the minimum server-wait contract and
+never passes one context's sync handle to another. The definitions still
+require the normal combined graphics build and conformance phase.
+
+Owned drawable allocation leases now retain the native framebuffer,
+dimensions and private retirement receipt independently of the mutable
+surface or its selecting bindings. Resize may publish fresh storage while
+a retained allocation remains usable; surface destruction revokes lookup
+without deleting that held allocation. Existing leases may clone their
+hold after retirement, while a new lookup cannot acquire a retiring receipt.
+
+Native retirement distinguishes a deliberate reference hold from failed
+cleanup. Held allocations and their retirement dependants do not block
+admission, so retained work can execute and release them; the last release
+captures selected-owner errors and deletes the storage in the same call
+(at the end of the native change in flight, if any). A deletion or a state
+restoration that a live renderer refuses is not retried "before later GL
+work": nothing guarantees that work will come, the host created and still
+tracks every object involved, so a live WebGL renderer has no valid reason to
+refuse, and the refusal means host state no longer matches the renderer. It
+is a fatal host fault (`NativeGlFault`, `host/src/webgl/native-recovery.ts`),
+reported through the kernel's `onHostFault` before it is thrown, so the
+kernel worker stops exactly as for a trapped kernel export on Node and in
+the browser. The reporter latches the original fatal cause before invoking
+shutdown callbacks. Reentrant reporting or a second failure during final
+cleanup rethrows that same cause without reporting another transition.
+A kernel-export failure raised by the reporter retains its exact branded
+identity through cleanup. Installing a new kernel's reporter clears this
+latch; ordinary per-context resets do not enter this fatal path.
+A lost renderer is the exception and a normal event: its
+objects and state are gone with it (including after a restoration of the
+same context object, detected through the renderer's loss count), so cleanup
+completes without native calls, pending restorations are dropped, and the
+bindings that used it report the loss as a graphics reset through
+`host/src/webgl/renderer-loss.ts` (`ENODEV` replies).
+Native cleanup keeps the object's original renderer generation, even when
+its deletion receipt is first created after restoration. Independent native
+owners and exported images copy that generation without retaining a guest
+binding. A synchronous loss result advances it before the queued canvas
+loss event, which does not count the same loss twice. Ending a context
+clears its session's observation baseline, so a new independent context can
+use the restored renderer. Hosts without canvas events observe restoration
+when a new owner begins, so its next physical loss is detected too.
+Refused cleanup of that new generation remains
+fatal; a logical guest reset alone does not discard live native resources.
+Prepared program-query custody also separates public names from native
+executables. Deleting a program with no logical current context removes its
+name even while private query pins retain the native program. A sharing peer
+therefore cannot select or query that deleted name. A program still current
+in a peer remains delete-pending until that context unbinds it. The last pin
+releases an unnamed executable through the existing exact native cleanup,
+including fatal refused deletion. This custody foundation does not enable
+local guest program-selection validation or its deferred command path.
+The same leases cover borrowed GPU BO allocations through a native-only
+allocation receipt copied into the surface record. Public BO retirement
+revokes lookup while existing leases keep the old allocation usable. A
+replacement BO with the same numeric ID receives a distinct texture ID,
+receipt and storage. New holds cannot revive a retiring allocation; existing
+holds may clone. Surface destruction drops its allocation description
+without taking over the kernel BO's ownership.
+
+GPU BO allocation now reserves native cleanup before creating its texture,
+framebuffer and depth/stencil buffer. Checked creation, storage setup,
+completeness and selected texture/renderbuffer/read/draw restoration all
+precede publication. A refused inverse restoration is a fatal host fault. The kernel host import captures
+selected-owner errors before this private utility runs. Cleanup receipts
+can enforce member order, preserving canonical texture backing after a
+rejected container deletion and skipping members already accepted.
+Retained execution groups remain part of raw BO-view retirement even after
+public context replacement.
+
+Context execution leases separately retain a native execution owner after
+public context destruction or session removal. Acquisition reserves a fresh
+public slot before work can be accepted. Destruction revokes lookup and
+clears the old guest command view; the session may
+create a replacement context with fresh local state while existing leases
+continue to use the old native identities. Public fence ownership remains
+session-scoped. Existing execution references may clone after revocation;
+fresh lookups cannot revive the retired context.
+
+Final execution release captures selected-peer errors before forgetting
+the muxer's current state. Failed capture or native cleanup retains a
+renderer-scoped retirement record. Admission retries failed unreferenced
+records before new native work, while intentionally retained executions
+remain usable. Native cleanup receipts retain local containers, shaders,
+programs and default textures; checked image/buffer retirement preserves
+rejected ownership without replaying accepted members. Live share-group
+peers continue owning their shared objects. These are source ownership
+models; normal submits still drain synchronously.
+
+GL submission now captures only the requested command span into an owned
+SubmitFrame before validation. Kernel-worker dispatch validates and decodes
+that same snapshot, so guest rewrites or renderer
+callbacks cannot change later accepted records. Captured typed-array
+accessors avoid overridable source properties. A frame is admitted once,
+consumed before dispatch, and cleared on session/process purge. A failed
+or partially executed packet is not replayed.
+
+Empty queue entries release their actual lane membership without rechecking
+DRM master authority. The file grant may change after admission, and failed
+dispatch can stop the drain immediately. Cleanup must release the consumed
+binding's references in that same turn rather than wait for another drain.
+
+During synchronous dispatch the binding temporarily exposes the owned bytes
+to the existing decoder. Finally restores its cached guest view only if a
+memory rebind or teardown has not replaced it. Drain
+remains synchronous: deferred server waits still need per-work drawable
+selection, dependency ownership, query/presentation barriers and asynchronous
+retirement. Command snapshots
+and execution leases do not yet implement server ordering.
+
+`GLIO_QUERY` and `GLIO_SUBMIT_QUERY` execute their query and publish its
+result within the ioctl (`gl_query_request::GlQueryRequest`); there is no
+retained or parked query path between the kernel and host.
+
+The retained server-wait source model separates command custody from result
+custody. A queue owns the exact source `GlFenceLease`, destination execution and
+operation ticket; an accepted wait survives result cancellation or Forget.
+Same-native ordering uses the captured sync handle, while foreign-native
+ordering polls that source on later host turns without blocking peer streams.
+A fence lease also pins its actual native-retirement journal, so the sync is
+not deleted while a query or wait still owns it. Public kernel
+source-fd capture, scheduling and lifecycle activation remain required before
+this source model supports end-to-end EGL server waits.
+
+Variable shader/program queries use a context-owned copied-result transaction.
+The C facade requests one original log, source, active-variable record or
+attached-shader list through `QOP_OBJECT_CAPTURE` (0x34). BEGIN captures both
+metadata and the requested prefix; CHUNK copies those independent bytes and
+never re-reads an object that another shared context may have changed. RELEASE
+acknowledges disposal before C publishes any caller output. Unknown completion
+never replays the original query. Each context admits monotonic caller tokens;
+stale cancellation cannot dispose of a later capture. Public context retirement
+and canvas detachment revoke copied storage separately from native execution
+custody. The 64 MiB copied-storage budget is independent of the 64 KiB transport
+limit and fails with OUT_OF_MEMORY rather than silently truncating a query.
+This source implementation still requires rebuilt runtime validation.
+
+The host import returns success only after a live renderer accepts creation;
+the kernel publishes its context identity afterwards. Missing, lost or
+throwing renderers leave creation retryable and do not claim the KMS canvas.
+EGL exposes backend allocation failure as
+`EGL_NO_CONTEXT` and `EGL_BAD_ALLOC`. A Node host without a rendering
+backend follows the same failure path as a browser without a usable context.
+Each GL open description has a distinct kernel-issued session identity.
+Initialization distinguishes display roots from object sessions. A root
+returns a fresh generation identity; an object session must join a live
+same-process root using its descriptor and generation. Duplicated root
+descriptors retain authority until the last alias closes. Revocation or
+final close prevents new contexts, surfaces and positive binds, while
+already-current children retain submit/query/release/destruction paths.
+Descriptor reuse cannot revive an old generation. Roots have no command
+mapping or renderer and therefore send no renderer unbind on cleanup.
+An EGL native GBM device selects its exact DRM open file. Display roots
+still keep their GL state on separate render-node files, so independent
+EGL displays may reference aliases of the same native file without
+colliding. `GlInitInfo.display_fd` on a DISPLAY initialization selects a
+held DRM file, or -1 keeps that render file's own identity; OBJECTS still
+joins its display root. The kernel validates the selected file before
+publishing state and passes its stable identity to the host. It does not
+infer native display or master authority from the process ID.
+The GBM library resolves native handles through a live-device registry
+with monotonic identities. EGL display handles are cached by device
+identity, independent of recycled heap pointers. Immutable display
+records are atomically published for safe handle validation; each record
+selects its active generation under the context lock. The default display
+chooses a primary DRM file. Each initialized generation owns a CLOEXEC
+duplicate of its native file until final context/surface/sync retirement,
+including after public termination. Display metadata has process lifetime.
+KMS scanout advertises the same thirteen formats accepted by ADDFB2:
+XRGB8888, ARGB8888, XBGR8888, ABGR8888, RGB565, R8, GR88, the four
+2101010 orders, and ABGR/XBGR16161616F. Every presenter (a 2D canvas or a
+WebGL canvas) outputs 8 bits per channel, so the CRTC behaves like one
+connected to a monitor at 8 bpc: a 10-bit channel is shown as
+round(v * 255 / 1023) and a half float clamped to [0, 1] (NaN as 0) as
+round(f * 255). The reduction is defined once and applied identically on
+every presentation path, on the CPU for the 2D blit
+(`host/src/dri/scanout-format.ts`) and in the CRTC output stage's shader
+for every WebGL path (`host/src/webgl/kms-color-stage.ts`), because a
+blit or a readback would leave the rounding to the driver (and refuses
+float-to-fixed blits outright): the same framebuffer must look the same
+whichever presenter shows it. The gamma LUT is indexed by the reduced
+8-bit value, as an 8-bpc legacy LUT is. Framebuffer admission
+checks complete visible row extents against BO backing before retaining or
+publishing an FB. GPU views also remain within the native texture extent;
+valid padded RGB565 CPU views remain admitted. Nonzero-offset presentation
+and the complete layout/modifier model remain incomplete. CPU presenters validate
+visible row lengths and pitch before copying. The 2D presenter converts
+little-endian pixels to opaque RGBA; the WebGL presenter uploads each
+format to its own texture (RGBA8 with a shader channel swap, RGB565, R8,
+RG8). Pixel snapshots are copied
+under the kernel entry before detached presentation. The low-rate
+unflipped-write check compares the entire owned snapshot against the last
+upload instead of relying on a sparse hash that could miss one pixel.
+This does not complete flip admission/vblank ordering or all buffer views.
+
+The EGL library retains one heap record per display generation. Public
+lookups use that display's active generation; thread bindings retain their actual
+generation's descriptor, mapping and encoder after termination. A new
+initialization can therefore overlap old current resources. Successful
+replacement releases the old generation after backend acceptance; a failed
+bind preserves it. Images retain their importing generation so cleanup
+cannot close a reused numeric GEM handle on a newer description. Image
+lookup acquires a temporary reference before a GL sibling is installed,
+and termination revokes public image handles under the same reference lock.
+Public image tokens are monotonic, independent of heap addresses, so a
+recycled allocation cannot revive a deleted or prior-generation handle.
+Command buffers, native object maps, shadow state, queries and
+retirement are selected by process plus session. Process-only registry
+lookups refuse ambiguity. Closing or unmapping one session leaves sibling
+sessions intact, while process memory growth invalidates every cached view.
+KMS canvas ownership is retained until its last claiming session releases.
+GL context identities are also kernel-issued and returned by creation;
+foreign texture imports select the exact context. Cross-process inherited
+descriptions cannot operate another process's renderer or invalidate its
+command mapping; final cleanup retains the renderer's original process.
+Context creation can name a live source context in the same process
+and display generation. The kernel validates authority before backend
+entry; the host joins the new context to its source's object maps before
+acknowledgement. Source-session lookup preserves local bindings, errors, default textures and FBO/VAO containers.
+Cancelled creation removes only its unpublished member. Source destruction
+leaves surviving members and their shared storage usable. The C facade
+still rejects sharing until its own client object/reference layer can join
+that group safely; see the graphics compatibility ledger.
+The kernel owns each session's current thread identity. Bind requests name
+the context and both draw/read surfaces; zero surfaces bind surfaceless,
+while an all-zero request releases the caller's bindings. Submit, query and
+foreign-texture operations require that authoritative thread identity.
+Another thread cannot acquire a live binding. A replacement is acknowledged
+before displacing the caller's prior binding, and thread exit revokes it.
+The first accepted bind initializes viewport/scissor from the drawable,
+including zero dimensions for surfaceless; later binds preserve client state.
+Native Wayland window resizing updates an existing GPU target atomically
+without destroying its current EGL surface. Failed updates preserve the old
+target and attached size. This path currently requires an existing GPU
+window target on the same native renderer. Native Wayland buffers own
+independent render descriptors rather than borrowing a current context's
+fd. EGL transfers BO names into context/surface sessions through PRIME,
+closes export capabilities and temporary imported names after the operation,
+and preserves names already owned by images on the generation descriptor.
+Resize queries update only after accepted retargeting. Public surface
+queries report stored accepted dimensions and attributes; deleted handles
+remain invalid while current bindings retain storage. Native/source-browser
+checks cover multiple public contexts, independent surfaces and generation
+overlap. Share groups, the full lifecycle/error audit, normal guest-artifact
+and conformance validation remain pending.
+
+Surfaceless bindings use a context-owned native framebuffer with no
+attachments to represent the absent default framebuffer. It has no guest
+name, cannot accept guest attachments, and is retired with its context.
+Native completeness checks therefore reject clear/draw/copy/read commands;
+the status query exposes `GL_FRAMEBUFFER_UNDEFINED_OES`. The GLES extension
+list includes `GL_OES_surfaceless_context` for this host behavior. First-bind
+allocation failure preserves the prior drawable and reports failure to EGL.
+User framebuffer objects remain usable. Read/draw framebuffer state is
+retained independently through native context switches; deleting a bound
+user FBO restores the appropriate default target. Native readback errors
+are retained for glGetError and return no output bytes, so libc does not
+overwrite the caller's buffer with an unsuccessful reply. These source
+semantics still require guest CTS and combined-artifact validation.
+Native GL errors are drained into the outgoing session's error flags before
+renderer switching or invalidation. Error queries merge native and retained flags before
+consumption, so another session cannot consume them or repeat a duplicate.
+A failed drain preserves the outgoing flags for a later retry and does not
+prevent cleanup. Queue dispatch reports renderer exceptions as EIO and
+releases the consumed frame. Complete GL negative-API coverage remains open.
+
+Because native flags are sticky and owned by the selected session until a
+capture moves them, the host reads them (`getError`, a synchronous renderer
+round trip, a GPU-process IPC in Chromium) only where something depends on
+the answer. Flags are captured when ownership changes (a muxer switch or
+invalidation), when the session queries them, before native work that
+would otherwise absorb them into another owner (a pending repair or
+retirement, a fence poll, a storage lease's release), and before and after
+device operations. A submission or query entry with no pending repair or
+retirement captures nothing. A guest call keeps its own exact check only
+where host bookkeeping commits on native acceptance that the host cannot
+know in advance: object creation and deletion (names, fences, VAOs,
+framebuffers), shader compilation, attachment and program link/use,
+framebuffer binding with its selector rollback, blend factors and depth
+range (whose WebGL-specific refusals the host does not pre-validate), image
+and storage commands, and attribute arrays at or past the renderer's limit.
+A capability toggle on one of ES 2.0's nine capabilities, and an attribute
+array below the limit already read from the renderer, cannot be refused, so
+they commit their shadow with no check. Host device operations built from
+state they just read (KMS blit and readback) check once per dependency
+group: the selectors before the blit or readback that reads and writes
+through them, the blit and alpha mask before the clear that relies on the
+mask; their inverse is one batched group whose single check still turns a
+refusal by a live renderer into a `NativeGlFault`. A flag therefore reaches
+the guest exactly once, possibly in a different order relative to other
+pending flags than a per-call drain gave; ES 2.0 section 2.5 leaves that
+order to the implementation. A renderer whose flags never clear still fails
+loudly at the next capture, and context loss is still detected at every
+entry (`renderer-loss.ts`).
+
+Framebuffer name deletion separates reversible selector changes from
+irreversible native retirement. It reserves an empty native cleanup ticket
+before unbinding, commits the logical name/attachment removal after the
+selectors accept, then retires the native framebuffer through that ticket.
+A live renderer's refusal is fatal and leaves explicit pending ownership;
+it cannot be predicted as a successful deletion followed by a context reset
+that loses the native handle. Failed selectors retain their native inverses
+and keep the public name. This uses the existing retirement protocol on
+Node and browser, with no new wire field or version.
+
+Guest execution now uses host GLES validation as the acceptance authority
+(`webgl/native-batch.ts`). Each submitted frame, result-bearing query and
+present runs in one synchronous native batch, including muxer replay and
+CPU-image preparation/publication. Checked calls on that guest's error owner
+execute without native `getError`; guest-owned inverses use the same policy.
+Native flags are sampled at batch completion before another logical context
+can acquire the shared renderer. A clean submitted batch takes one error
+sample. A `glGetError` query that only reads host-owned flags issues no
+native sample; muxer replay or utility work on that path still marks native
+execution and receives its boundary sample.
+Fence creation, status queries and same-renderer server waits share this
+batch policy too; retained fence leases borrow the requesting error owner
+only for that synchronous execution, without storing a guest binding. Fence
+creation/status errors reset that binding before a reply or new fence is
+published. Export/release paths with no native work need no sample, and
+retained sync cleanup remains available after the guest context resets.
+Off-batch or foreign-context polling keeps exact private checks and preserves
+the previously selected guest's flags separately.
+Private allocation and retirement owners still use exact checks where native
+success is required to publish or delete a handle. If such a check discovers
+an error within a guest batch, it routes the error to that batch's reset
+policy instead of swallowing it in a private error queue. Private buffer
+transfers also retain exact checks while a guest batch is active: allocation,
+selector changes, chunk reads/writes and restoration must succeed before a
+shared or derived view becomes valid. An early logical reset unwinds nested
+native changes and retires unpublished buffers before another context can
+acquire the renderer. Refused restoration on a live renderer remains fatal;
+physical renderer loss drops the obsolete native state. These checks do not
+change guest-command acceptance or consume previously recorded guest flags.
+Private ARRAY savepoints and widened/padded index draws also check their
+selector finalizers before discarding the inverse. Guest draw acceptance
+remains predicted. A private restoration cannot claim completion merely
+because the active guest owns the same error queue; if its final sample
+were deferred, the batch could reset after losing the inverse needed to
+restore shared native state. These checks run on those private paths;
+direct index draws do not acquire a new restoration check.
+Private image allocation and preservation copies also require native success
+before a sibling view is published. Refreshing an image view leaves its sync
+count stale until the private copy succeeds, so a healthy peer cannot skip a
+needed refresh after the submitter resets. Possible writes remain counted
+through reset unwinding for exported siblings. Framebuffer attachment and
+sampling must resolve coherent contents for the accepted shared generation.
+
+An unpredicted native error resets the guilty logical binding, emits a
+`gl-context-reset` host diagnostic naming its process, session, batch and
+entry, and returns `ENODEV`. Later work on that binding executes nothing;
+unrelated logical contexts keep their renderer and objects. The guest's
+robustness handling records that context's reset. A failure-only checked
+`QOP_CONTEXT_RESET_SCOPE` receipt distinguishes a logical reset from physical
+renderer loss before libc invalidates any shared peer. Only a known physical
+loss propagates to the EGL share group; a logical reset leaves its healthy
+peers and shared objects usable. An unavailable or malformed scope receipt
+prints a diagnostic and retains the reset locally; peers learn a physical
+loss from their own device replies. Reset/error getters remain local after
+that observation. Native `OUT_OF_MEMORY` uses the logical reset path:
+WebGL's asynchronous allocation failure is an approved platform boundary,
+rather than a late API error attributed to a later command. Native flags
+never enter the guest's API-error queue on these paths. Host validation and
+the guest's client-error trailer own those flags.
+
+The native-divergence audit (`webgl/native-audit.ts`) remains opt-in through
+`KernelConfig.glAudit`. It instruments every native method and compares the
+observed error with the host prediction, naming the native call, kernel
+import, process, session, batch and guest operation. The gap inventory in
+`webgl/native-predictions.ts` identifies rules needing additional coverage.
+`"record"` collects per-call findings; `"fatal"` latches a `NativeGlFault`
+at the first divergence. A validation divergence under either audit mode is fatal, so the production
+reset cannot hide it during audit validation. Native OOM and actual context
+loss remain reset boundaries in the audit too. The audit
+adds a native round trip per call and is disabled by default. Node has no
+WebGL renderer and keeps its documented loud initialization failure.
+
+The first audit of dEQP-GLES2, dEQP-EGL and the compositor sessions on
+Chromium found every native refusal at a site the gap table already named,
+all in dEQP's negative API cases, plus one host defect: a texture view of a
+renderbuffer EGLImage was allocated with RGBA/UNSIGNED_BYTE whatever the
+renderbuffer's format, which WebGL 2 refuses for RGB565. The host now
+evaluates those rules itself (`webgl/es2-validation.ts`) and records the
+GLES 2.0 error before any native call: TexParameter values (table 3.10),
+TexImage2D and CopyTexImage2D sizes and border, sub-image bounds of a level
+the host recorded, RenderbufferStorage's target, size and binding rules,
+AttachShader's one shader per type, BindAttribLocation's index and `gl_`
+prefix, and attribute array indices. Framebuffer completeness for draws,
+clears, reads and copies combines the ES 2.0 clauses WebGL 2 does not apply
+with the renderer's own `checkFramebufferStatus`, asked once per framebuffer
+whenever its inputs change (`image-sizes.ts`), so an incomplete framebuffer
+is refused before the call rather than by `getError` after it. Sibling
+views take the transfer pair WebGL 2 requires for their sized format.
+The host also predicts rules real applications reach on hot paths, so the
+renderer is not asked about them either: CreateShader types, UseProgram of
+a program whose link the host saw fail, a texture bound to a target other
+than the one recorded at its first bind, sampler uniform values outside the
+texture units (WebGL's INVALID_VALUE, which the guest has always seen
+here), BufferData usages, and WebGL's rule that client pixel data must
+cover what a TexImage2D or TexSubImage2D reads at the current unpack
+alignment. What remains left to the renderer is listed with its rule in
+`webgl/native-predictions.ts`. Node has
+no WebGL renderer, so there it has nothing to instrument. Running suites
+with it is described in
+[graphics conformance testing](graphics/conformance-testing.md#native-divergence-audit).
+
+Translated sampler-array lookups use private dispatch functions with
+constant native indices (`webgl/sampler-arrays.ts`), because ESSL 1.00
+accepts loop-indexed sampler arrays while ESSL 3.00 requires constant integral
+indices. Dispatch preserves one evaluation of the coordinates and index,
+selects one lookup, carries the c = 0.5 flag, and preserves guest `out`/`inout`
+parameters. Guest sampler-array parameters are flattened into scalar sampler
+parameters too. A standalone WebGL page reproduces a Firefox 153/155 link
+crash when array-parameter elements are forwarded to another function;
+scalar parameters avoid it (registry
+`FIREFOX-SAMPLER-ARRAY-DISPATCH-LINK-CRASH`). Shaders without an indexed sampler
+lookup get no dispatch helper. This is shader work at compile time and adds
+no host draw-time branch.
+
+The guest side of the same contract keeps `glGetError` off the transport
+when the answer is already known. Applications that check every call (a
+debug GL wrapper is `glGetError(); call; glGetError()`) otherwise pay a
+synchronous kernel-worker request for each check, most of them with
+nothing queued since the previous answer. `glGetError` sends the
+`QOP_GET_ERROR` retained-drain form (`shared::gl::error_drain_receipt`): queued commands
+ride as the compound submit prefix, the encoder's unacknowledged client
+flags ride in the request mask, and the renderer captures native flags and
+moves every recorded flag, oldest first, into a checked reply that also
+says whether any flag was retained. libGLESv2 holds the moved flags in the
+context encoder beside its own client flags and returns one per call. When
+nothing was retained, only proven infallible scalar setters have been queued
+and no graphics-device request has been made since (libEGL counts every request
+from both libraries, process-wide; a fork child's count is advanced by a
+`pthread_atfork` handler), no command can have recorded a new flag, so
+`glGetError` answers from the guest with no request. The first B1 increment
+tracks the end of that exact command prefix for `glClearColor`,
+`glBlendColor`, `glClearDepthf`, `glClearStencil`, `glColorMask`,
+`glDepthMask`, `glStencilMask`, `glPolygonOffset`, `glDepthRangef` and
+`glSampleCoverage`. These scalar setters cannot raise GLES API errors;
+their original records still reach the host for independent validation and
+execution. An unknown command leaves the proven prefix behind and forces
+the next error drain. Automatic buffer submission also invalidates the
+request epoch, even when the command cursor wraps to the same address.
+Draws and object-dependent commands do not extend this exact prefix.
+Ordinary requests, including a state query, make-current, swap, fence
+operation or another thread's work, void that knowledge, and the next
+`glGetError` drains again. This relies on the host recording a flag only into the context
+whose request produced it, as described above. Reset reporting is
+consulted before any local answer and is still learned from the next
+request's `ENODEV`. A malformed or failed drain reply is reported as one
+`GL_INVALID_OPERATION` and never establishes local knowledge. Each context
+reserves one fixed receipt before native execution. The new 12-byte request
+adds a wrapping transaction identity; the 52-byte reply seals its status and
+identity before copying out the original count/retained/error-list payload.
+The old empty/4-byte pop and 8-byte drain forms keep their contracts.
+
+On a lost or malformed reply, C retains that transaction and its client-mask
+custody. The next `glGetError` first uses read-only `QOP_ERROR_DRAIN_RECEIPT`
+to recover the exact completed transfer or prove nonentry. It never retries
+an entered drain. Recovery neither selects a native context, captures/drains
+errors, interrupts an upload nor synchronizes buffers; ordinary current-thread
+and context ownership still apply. After recovery a fresh drain observes new
+queued work before local knowledge can resume. The original failed call has
+already returned `INVALID_OPERATION`, so recovery consumes that earlier
+coalesced flag once while preserving other flags and a later repetition.
+Only the successor transaction may enter. Serial context ownership and one
+outstanding call make unsigned 32-bit wrap unambiguous; no exhaustion boundary
+is added. Unexpected drain bookkeeping faults retain indeterminate custody
+and report a fatal attributed host fault. Acknowledged backend retirement clears its numeric receipt. Normal successful checks retain one device request;
+additional read-only recovery occurs only on failure.
+
+The scalar validator also covers viewport/scissor dimensions, capabilities,
+depth/face/line arguments, blend factors/equations, stencil arguments,
+attribute enable/disable, active texture and pixel-store alignment. Their
+original records, including rejected arguments, still reach the independent
+host validator. Locally predicted flags live beside held flags in the guest;
+`OP_ERROR_OBSERVED` records their pending mask and the one flag already
+returned by `glGetError`. The host consumes that flag at this exact stream
+position, preserving unrelated flags and allowing a later command to record
+the same value again. It performs no native GL operation. The fatal audit
+compares the pending mask before consumption and rejects a divergence with
+process, context, batch and operation identity. Client-only guards remain a
+separate error source and cannot mask an incorrect command prediction.
+Reserving an observation can submit a full buffer; the guest rechecks the
+epoch before consuming any flag and uses the ordinary drain if it changed.
+A fully checked synchronous mutation receipt can retain an existing exact
+proof. The guest snapshots its current encoder, command-buffer base and
+request count before the query. It restores knowledge only for an accepted
+mutation in the same context, with exactly one device request, an emptied
+command buffer, no reset and no pending client-only trailer. Ordinary query
+success, an unknown prefix, extra I/O and rejected or malformed receipts
+provide no such proof. Binds still execute synchronously. An unreturned
+predicted flag may remain on the host after acceptance; even with an empty
+buffer, a local `glGetError` must queue its ordered observation before
+consuming that flag. Later I/O revokes the proof through the normal epoch
+check.
+
+Validated array-buffer storage definitions can also extend an existing exact
+error proof. Their binding must have a separate acceptance proof: a lost
+mutation reply can change the host binding without publishing its C mirror,
+and draining error flags cannot recover that binding. Failed transport,
+failed submission and indeterminate mutation replies revoke binding
+knowledge. Until an acknowledged array bind restores it, `glBufferData`
+checks actual binding presence through the existing buffer-parameter query
+and leaves error observation on the ordinary drain path. It does not infer
+an object identity from that query. Healthy acknowledged bindings need no
+extra query. Element-buffer definitions retain the ordinary path because
+queued vertex-array selection is not yet mirrored exactly.
+
+Large `glBufferData` calls define storage and fill it with the existing
+bounded subdata records. The driver preserves its exact error proof
+across that fill only for a known array binding and an uninterrupted
+prefix: each chunk is in range of the immediately preceding definition.
+The normal request epoch and cursor checks revoke that proof if reserve
+submits mid-call or foreign device I/O intervenes. Standalone
+`glBufferSubData`, unknown bindings and element-buffer definitions
+retain their normal error observation. No storage-size cache or extra
+per-draw/per-frame owner scan is introduced.
+
+The large path emits its definition directly and stops if reservation
+fails. A recursive void definition used to return after a refused
+prefix, allowing the outer call to fill unrelated old storage. After a
+lost accepted bind reply, the normal checked binding-presence query
+remains sufficient for the complete large definition and fill; a stale C
+name cannot reject a buffer that the host actually bound. Such unknown
+bindings still do not establish local error knowledge. Native controls
+verify complete bytes, held errors, standalone fallback, rollover
+revocation, refused-prefix stop and actual binding recovery.
+
+Admitted program journals also support exact scalar, vector and matrix
+uniform error prediction. Each cold journal owns32 numeric signature cells keyed by
+its current generation token and dense uniform location. Token zero
+identifies the executable installed at admission; successful same-name
+selections still update the token, rejected selections keep their
+predecessor, and closure clears the cache. Public names cannot prove a
+signature because a peer relink leaves this context's older executable
+installed.
+
+Small inline client-array draws can also retain the error proof when all
+enabled attributes have known client definitions and packed source spans,
+the default VAO/framebuffer have never been displaced and EGL has a live draw
+surface. A cold bounded scan of the owned executable's uniform signatures
+proves that every active sampler has the same guest type (or that there are
+none); numeric per-token cells, with a last-cell hint, retain that immutable
+fact until journal closure. It does not infer a signature from a mutable public
+program name. Original draw records still
+reach the independent host validator and error audit. Mixed client/VBO rows,
+mixed sampler types, unresolved metadata and framebuffer/VAO uncertainty retain
+the existing error observation. Buffer-backed draw/storage authority remains
+separate required B1 work; this selected proof does not complete the stage.
+No additional scan runs when the draw has no inline client arrays.
+
+Vertex-pointer setters reserve their complete command record before changing
+C layout or buffer-reference ownership. A refused rollover prefix leaves the
+old size, type, normalization and pointer observable through getters; it
+cannot publish a new client layout whose command was never recorded.
+
+Optional journal action8 reads the owned immutable pin's uniform type,
+remaining array elements and already-known native-location state. It
+requires own-current-thread/context/journal authority, cannot run
+through the lifecycle barrier, leaves sealed mutation receipts intact
+and neither selects the queried program nor drains errors, interrupts
+uploads, resolves deferred long names or synchronizes buffers. A cold C
+miss publishes metadata and submits only the caller's prefix. Small
+scalar, vector and matrix updates retain the exact error proof for type,
+boolean conversion, count and native-location presence checks while their
+original records reach the independent host oracle. Sampler integer setters
+check only the accepted array prefix, ignoring excessive tails. They use an
+already learned immutable texture-unit limit, or accept only units0–7 under
+the ES2 guaranteed minimum; other values keep host observation until the
+existing explicit active-texture path learns the actual limit. Ordinary
+setters add no limit query.
+
+Optional action9 uses the same request and reply lengths to add the guest type
+in reply word9. Action8 retains its exact layout, including zero in word9.
+The guest type comes from the owned executable's existing translation metadata:
+ordinary and external2D samplers have the same native setter type but different
+guest types, while translated cubes have a different native type. Draw proof
+requests action9, upgrades an existing numeric signature cell in place and
+refuses unknown or mixed guest kinds. Same-kind sampler arrays are permitted;
+same-kind samplers cannot conflict solely because they share a texture unit.
+Ordinary uniform
+setters keep action8 and add no guest-type query. Both queries preserve the
+same current-thread/context/journal authority and immutable-generation lifetime.
+This cache is not B4's public program interface.
+
+Inactive location-1 updates use known logical executable presence without
+reading data. Unresolved positive-count
+locations, ordinary/uncertain state and large uniform uploads keep
+ordinary observation. Journals now admit ordinary applications at their
+first eligible program selection. A failed standalone numeric getter revokes
+binding/error observation without discarding the independently owned program
+namespace: it cannot create, delete, relink or select a program. In particular,
+GLES3 version probes rejected by the GLES2 surface do not permanently disable
+local program selection. Compound submissions with uncertain mutating prefixes
+and ENODEV resets still revoke program knowledge. The failed getter preserves
+its GL error and leaves caller output untouched. This remains partial B1 and
+does not finish B4's once-per-link interface cache.
+
+Ordinary vertex-layout updates can reuse an existing host attribute slot
+inside an authoritative guest batch. Aligned BYTE/UNSIGNED_BYTE/SHORT/
+UNSIGNED_SHORT/FLOAT layouts with stride at most 255 need neither a shadow
+map clone nor a native-retirement reservation. First installations, converted
+layouts and private exact owners keep the transactional path. The guest
+extends its error proof only for a known array binding, a known existing
+slot and a context that has never selected a nondefault VAO. Attribute
+creation remains ordered before use. Indeterminate submissions or mutations
+revoke slot knowledge separately from error flags; acknowledging an array
+bind does not restore those slots. Wider encoded offsets remain outside this
+proof. Client arrays retain their usual draw-time staging.
+
+Program selection retains its ordinary submission/error path. A successful
+link-status observation alone cannot prove future program namespace or
+executable ownership. A new sharing context on another pthread can delete or
+relink a program while its selection is still queued. Guest validation must
+retain logical current and pending-version references before making that
+selection local; disabling a cache after sharing begins cannot repair work
+already accepted. The normal program-sharing fixture keeps the original
+context current, deletes its program through a newly created peer, then
+checks errors and rendered pixels in the original context.
+
+This is still partial B1; the remaining draw/object validation, later driver
+stages and desktop acceptance measurements are not established by these
+scalar checks.
+Host object groups own shareable name maps, shader/program metadata and
+imported textures. Normal EGL shared-context creation joins the requested
+source group on its renderer. Context state, errors, VAOs and FBO containers
+stay local. Group resources survive member retirement until the last owner
+ends; pending program deletion and retained link executables consider
+every member.
+Deleted texture/renderbuffer names now retain their native objects while
+another context binding or FBO attachment still refers to them. Deletion
+unbinds only the caller and detaches only its bound FBO attachments;
+unbound FBOs retain storage. Reusing a name creates a distinct object, while
+surviving bindings still query their original name. Packed depth/stencil
+attachments retain each point independently. Native retirement follows the
+last reference; BO-owned textures retain their separate canonical owner.
+Deleted buffer names likewise retain native objects referenced by other
+contexts or unbound VAOs. Array bindings stay context-local; element bindings
+and attribute definitions belong to each VAO. Caller deletion clears only its
+active VAO references, using the legal native null-buffer attribute definition
+to clear references without allocating scratch storage or deleting shared
+storage. Logical offsets and strides remain intact. Retirement scans every group
+member and container. The C encoder mirrors VAO ownership, reserves buffer
+names and distinguishes reused-name generations; failed client staging drops
+temporary names and suppresses the draw. Logical buffer stores track size,
+usage and one authoritative native view; separate stable vertex/index views
+synchronize before binding, partial updates and draws. Transfers use bounded
+independent 64 KiB readback chunks, preserve native copy bindings and avoid a
+full CPU mirror. Queries and retirement resolve each view to the logical
+identity, including old references after name reuse. Failed synchronization
+keeps the view invalid and suppresses drawing until a successful retry.
+Fixed-point and wide-stride attributes use stable packed derived views.
+Raw source updates invalidate them; conversion uses bounded independent
+source/output chunks and preserves native copy bindings. Logical VAOs retain
+GLES formats, strides and offsets while native pointers use packed data.
+Disabled/unbound attributes retain views; replacement and container teardown
+release unused views. Small positive nonindexed client-array draws on the
+default VAO use one owned `OP_DRAW_CLIENT_ARRAYS` record (0x0506). Its
+16-byte header and sorted 20-byte attribute descriptors carry only packed
+referenced elements, with a total payload at most 65535 bytes and at most
+16 attributes. The encoder validates every source layout and overflow before
+reservation or source reads. No public buffer names or logical ARRAY bindings
+change. The host validates the whole record before effects, copies bounded
+independent upload bytes, converts FIXED values and reserves retirement
+receipts before acquiring private native buffers. Checked pointer inverses
+restore the exact prior null definitions and ARRAY selector. Failed inverses
+fence subsequent work and retain backing until repair; cleanup retries never
+replay a submitted draw. Mixed public VBO attributes retain their normal
+storage preparation. Indexed, larger, zero-count and named-VAO draws retain
+the existing path. Normal guest/desktop acceptance of this new record is
+pending; isolated C and native-browser evidence is in the compatibility ledger.
+Client staging likewise packs only referenced elements,
+avoiding unreadable prefixes, stride gaps and sparse-index holes, with bounded
+scratch/masks and signed size checks. Indexed draws widen byte/short values into private native index buffers,
+using bounded chunks and one draw to preserve complete primitive topology.
+This keeps GLES2 maximum indices from becoming WebGL restart markers.
+Native element/copy bindings are restored and private handles deleted on
+all exits. Core draw enums are checked before client reads. Bound index
+buffers can also drive client attributes: a checked synchronous query reads
+the authoritative index storage and returns its maximum and an 8192-byte
+presence bitset. The encoder stages only referenced client vertices. New
+operation-table v3 queries use a status/payload/completion envelope; GL
+failures remain owned by the host error flags, and malformed/incomplete
+replies preserve caller outputs. Existing operation layouts remain valid;
+the global ABI stays 55. Buffer queries read logical size/usage rather than
+stale native views. Vertex queries preserve original client pointers,
+formats and strides despite private draw staging. Object and enable
+predicates use the appropriate logical namespace and context state.
+Operation-table v4 adds core attribute/source/attached-shader and image
+parameter queries plus program validation. Original source bytes belong to
+the shared shader object; attachment queries retain old names through
+namespace reuse. String/list replies use bounded chunks, with private C
+accumulation before caller outputs change. EGLImage attachment queries
+translate matching native storage back to its public sibling type/name.
+Each GLES context also owns separate unnamed 2D and cube textures. Private
+native stand-ins materialize on storage/parameter use and bind to every
+unit whose logical name is zero, including unselected units. Muxer replay,
+named-object deletion and explicit zero binding restore those stand-ins;
+queries still return name zero. They do not enter shared name maps and
+retire with their individual context. Failed allocation/binding rolls back
+partial installation and suppresses the dependent texture operation.
+Operation-table v5 removes the single-record shader source upload limit.
+Large source calls concatenate into bounded acknowledged chunks and commit
+only a complete upload. Pending bytes belong to one context; replacement,
+abort, shader deletion and context teardown retire that ownership. Source
+bytes belong to the shared shader only after native installation succeeds.
+Failed submissions are observable and stop dependent queries/uploads.
+All 142 GLES2 core symbols are defined and resolved. Full conformance,
+complete query/negative/limit coverage, device-failure propagation, image sibling
+sampler identity, kernel display-generation authority and C group routing
+remain open.
+Shader/program attachment records retain deleted shaders and current
+programs until their last logical reference releases. Native program deletion
+is deferred while the program is current in its owner, allowing muxer replay
+after another owner temporarily uses the shared WebGL context. Rejected
+program switches and attachments preserve the prior ownership state and keep
+the driver's error observable. Destroying a context unbinds its physically
+current program before deleting objects, without unbinding another owner.
+The logical current program name is distinct from its installed native
+executable. Relinking a current program uses a separate native link target:
+failure updates link status/logs while keeping the installed executable;
+success installs the replacement, which keeps the previous uniform
+numbering when its active uniforms are identical. Shader
+attachments and explicit attribute bindings seed replacement targets. Native
+shader deletion is deferred while these logical attachments retain it.
+Context teardown releases both the latest link target and any older installed
+executable.
+Foreign BO uploads save the physical context's alignment and unpack skips,
+neutralize them for the upload, and restore them even on failure. A failed
+new upload does not publish a texture name. Node
 hosts without WebGL2 cannot render these sessions; no software simulation
 stands in for the native LÖVE renderer.
+
+Operation-table v11 adds checked implicit-bound image target/state queries.
+They address the retained logical object rather than resolving its public
+number again after peer deletion/reuse. A shared per-object image-association
+revision advances on accepted import/orphaning, remains unchanged after
+definite replacement failure and is removed at final native collection.
+Unsigned revision exhaustion fails before publication. The v10 explicit-name
+queries keep their original request/reply layouts. C imports and orphan-state
+reads use the implicit-bound queries. Shared retained C records own confirmed
+image/source/revision state; bindings and containers retain those records
+instead of separate image/query mirrors. Publication accepts newer revisions
+and discards stale candidates. Older owned-state replies cannot clear a
+newer import or authorize dependent texture rows. Standard C name-based
+transactions now serialize lookup through publication across peers. Raw WPK
+publication uses the same group scope. Its retained group also reserves one
+pending unpublished texture name before native allocation can occur. Rejected
+or unknown candidate deletion keeps that slot; subsequent name transactions
+and object-existence queries must reconcile it before proceeding. No new raw
+allocation or ordinary realization can reuse the name while cleanup is pending.
+Deletion is safely repeatable here because the candidate was never published
+and group dispatch prevents reuse; general opaque mutations are not retried.
+The slot survives submitting-encoder retirement, and final acknowledged native
+group teardown owns remaining candidate destruction. General failure
+reconciliation and full error validation remain open.
+Indeterminate import candidates already belong to the group: submitting
+encoder retirement cannot release backing a peer might retain. Final group
+retirement releases these candidates outside the metadata mutex.
+
+Operation-table v12 adds checked image attachment/deletion and allocation.
+C container and namespace references publish only after accepted native
+mutation. Uncertain attachments pin the candidate object in the shared
+group's quarantine, preserving the old C attachment until reconciliation or
+retirement. Confirmed backing follows the retained object itself. Texture
+allocation is acknowledged before C emits pixel rows, so a failed allocation
+cannot overwrite existing storage through later rows.
+Queued/checked paths share host ownership transactions and storage dispatch.
+Metadata allocation precedes native effects; definite deletion failure restores
+attempted active attachments and bindings. FBO deletion preserves separate
+read/draw defaults. General transport and context-loss recovery remain incomplete.
+
+Operation-table v13 adds an exact checked framebuffer-bind query. C updates
+its attachment-container selection only after native acceptance. Host queued
+and checked binds share candidate realization, namespace staging and rollback,
+including independent EGL read/draw defaults. Indeterminate completion still
+needs general native/client reconciliation before full sharing is supported.
+
+Operation-table v14 adds a checked buffer-bind query (target/name, eight-byte
+input, 12-byte acceptance reply). C changes its ARRAY/ELEMENT object record,
+name and serial only after acceptance, preserving pointer interpretation on
+definite rejection. Queued and checked host binds share native realization,
+view synchronization and rollback. Namespace/store/view metadata is reserved
+before binding; failed candidates and their metadata are removed and prior
+native selection restored. Standard name transactions use group dispatch
+serialization. Indeterminate completion still requires general reconciliation.
+
+Operation-table v15 adds checked single-name buffer deletion (four-byte
+input, 12-byte acceptance reply). C pins the selected record through native
+acceptance before releasing namespace, active ARRAY/ELEMENT and active-VAO
+attribute references. Host queued/batched and checked deletion share staged
+namespace/retired/attribute metadata. Native clearing uses a temporary buffer,
+then checks individual attribute, ARRAY and ELEMENT changes. A definite
+failure restores attempted steps in reverse, including original converted
+vertex views and the separate native index view. Metadata publishes after
+all native changes accept; final storage collection follows logical retirement.
+Inactive containers, other contexts and saved client-array identities keep
+retired storage. Failed native restoration now retains typed inverse calls for
+buffer deletion, image deletion and framebuffer selection/deletion. The repair
+record is reserved before mutation and belongs to the physical native context,
+so neither the same logical context nor another group can run over dirty state.
+Recovery replays all attempted inverses, including the rejected step. Selector
+failure suppresses dependent calls; independent restorations are still attempted.
+Only native handles, scalars, error flags and context-local shadow lifetime enter
+the journal. Callbacks and guest bindings are excluded. Queries preserve output
+when restoration remains blocked, command batches stop before dependent records,
+and muxer switching repairs before its cached-owner shortcut. Surface/current/
+GPU allocation and raw BO revocation also respect pending repairs. Image
+import/orphan/retarget utility work and buffer binding/copy-view synchronization
+use the same journal. Nested plans restore copy selectors before the outer
+binding can complete. Image retargeting stages each affected peer container and
+the selected native bindings, restoring utility selectors on success or failure.
+Its shared inverse survives submitter retirement; retiring a native container
+prunes that target instead of reviving it. Context-local plans retire with their
+owner. Neither path destroys shared peer objects.
+
+Once a change is known to be rejected, its pending native inverse is exact
+host recovery even if it shares the active guest batch's error owner.
+Prediction cannot establish that restoration completed. A live renderer
+refusing that recovery remains fatal; real renderer loss drops obsolete
+native state. This scope runs on pending recovery, while ordinary successful
+guest acceptance keeps its batch prediction and native sampling policy.
+
+Native candidate and retired-view ownership is reserved before allocation or
+publication. Cleanup receipts retain handles across failed deletion, clear each
+accepted delete independently and retry the remainder without repeating accepted
+calls. Image destruction retains its receipt until collection completes. Pending
+cleanup gates native work and delays canonical GPU BO retirement. Native cleanup
+keeps the retired error owner; a reused session receives a fresh error array.
+These native inverse and cleanup records retain no full guest binding or
+address space. Vertex pointer installation stages its attribute map, converted
+view maps and view field before native effects. Both normal and converted formats
+retain the prior native pointer and ARRAY selection through rejection. Restoring
+an initially unbound attribute allocates an owned private buffer only if inverse
+repair needs one, then retires it after restoration. Native GLES2 format/size/
+index/stride preflight uses the actual attribute limit.
+
+Private client-array END records retain a native completion ticket. Native repair
+sets the ticket; query, decoder and muxer admission publish the saved ARRAY
+identity and release the capture pin before using or replaying state. Reservation
+failure preserves the end request, and failed decoded batches request restoration
+for an active capture. Neither path requires another private END record. Local
+retirement cancels the ticket without publishing into a reused context. Tickets
+contain only native identity/scalar completion, with no guest-binding callback.
+
+Promoted-index and deletion temporaries use reserved ownership and retained
+selectors. Recovery never repeats the already accepted draw. Converted cache
+retirement and final buffer collection share cleanup dependencies, preventing
+duplicate accepted deletes. Reusing a layout after completed retirement creates
+a new native view rather than reviving the old handle.
+
+Raw CPU uploads and GPU carrier initialization also reserve native ownership
+before creating their texture. Namespace or native failure leaves cleanup owned
+until deletion accepts. CPU uploads journal selection of unit zero before
+querying its binding, then reserve a nested texture/unpack finalizer before
+upload effects. GPU initialization retains its actual active-unit binding.
+Failed utility restoration fences queries and subsequent uploads; repair and
+candidate cleanup survive retirement of the submitting context. Pixel-store
+inverses contain only scalar state, with no upload bytes or guest address space.
+Accepted uploads are not replayed by native repair. CPU image coherence, other
+resources and the full staging/error audit remain open. Indeterminate transport,
+context loss/recreation and general failed resource deletion remain open.
+
+Raw BO revocation stages retired-name and peer-container metadata before native
+detachment. It captures actual unit bindings in a separate retained utility
+transaction, completing active-unit restoration before attachment/binding
+mutations. A shared mutation plan snapshots native image attachment identities,
+sampling views and separate draw/read selectors. Failed detach or utility
+finalization retains every attempted inverse and fences dependent work before
+logical retirement commits. Repair survives submitting-context and final-member
+retirement; native container retirement prunes dead targets. BO canonical
+storage remains owned until shared repairs and native view cleanup complete.
+These records contain native handles/scalars rather than callbacks, logical
+bindings or guest memory.
+
+Public `eglCreateContext` sharing validates a live source handle in the active
+display generation, joins its retained C object owner, and sends the source
+backend identity through the existing ABI-58 creation request. Native failure
+unwinds the unpublished encoder/session without disturbing the source. Source
+retirement does not retire objects retained by peers. Standard name-based C
+operations hold a separate group dispatch mutex across lookup, checked native
+mutation and client publication. Scoped cleanup releases it on every return;
+cancellation is disabled during the transaction and the caller's state restored
+after unlocking. Metadata reservation remains independent, allowing final image
+cleanup to reenter the allocator without holding its mutex. This establishes
+ordinary shared creation and tested name ordering, not complete sharing
+conformance: indeterminate transport, multiple native restoration failures and
+worker/process crash recovery still need their full audit and normal guest
+lifecycle validation.
+
+Raw WPK BO texture publication holds the C group dispatch scope across the
+checked command flush, native candidate allocation and C namespace adoption.
+Native allocation skips realized names; C rejects candidates that collide with
+reserved or ordinary names, deletes only the unpublished candidate through the
+existing checked image-delete query and retries. A rejected flush cannot publish
+a raw name. The private cross-archive guard changes no device/wire layout.
+
+GPU raw imports own distinct logical texture views of private canonical BO
+pixels. Parameters and respecification belong to the logical object. Explicit
+refresh can reimport canonical pixels into the same live object; delete and
+reimport creates a new identity, preserving peers' retained deleted views.
+CPU raw imports still upload snapshots; full CPU canonical coherence is open.
+
+BO ownership tracks every raw view by object identity, including deleted names
+retained by peer bindings or containers. BO retirement clears those references
+without deleting an unrelated replacement using the same public number. Native
+detachment and utility state restoration precede logical publication. Definite
+failure keeps a cleanup journal and canonical GPU storage for retry, including
+after the last member retires. Journal owners hold only shared object metadata,
+native context and error state, never guest memory authority. Dependent submit,
+query, present and raw-bind operations retry pending retirement and reject an
+affected group while its raw views remain. Invalid query destinations and
+malformed command spans are rejected before cleanup is attempted. Native view
+and canonical deletion failures remain reachable for retry. This does not
+establish general recovery after repeated rollback failure or context loss.
 
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package
@@ -5966,3 +8998,786 @@ effects; it does not call kernel exports. Gateways forward only the
 original operation and the gate callback's exact scope and effect
 registrar. Notification callbacks and their captured state are created
 only on the active-watch path.
+
+
+### Native desktop measurement endpoint
+
+`benchmarks/desktop-latency/` contains an external macOS owned-window
+observer, separate from Kandelo's production rendering path. Its native
+legacy pixel matcher compares sparse calibrated foreground samples at bounded
+candidate positions. A separate opt-in complete-response matcher checks every
+pixel in the old and new response rectangles in one frame, including a fresh
+response-bound challenge, background and old-position erasure. Its synthetic
+expected pixels are specified independently of captured candidate images.
+Ambiguous and missing matches are observations, not successful responses.
+Calibration may request window rasters; timed matching emits scalar identities
+and scores. The Node/browser graphics contract is unchanged by this diagnostic.
+
+The current recorder observes a selected-display crop with no window
+exclusions. Each callback checks the exact owned window, foreground/visibility,
+geometry and intersecting overlays; losing authority stops observation loudly.
+An independent-window stream can retain content hidden by another window, so
+older independent-window samples do not establish unoccluded display timing.
+The new crop and authority models still need actual visible calibration.
+
+For a qualified selected-display stream, ScreenCaptureKit metadata is an upper endpoint for the first visible
+response if capture coalesces frames. The preceding captured non-response
+provides the lower endpoint, with asymmetric clock uncertainty on both.
+Clock-only bounds around the first captured response are insufficient.
+Coordinates, actual guest cursor/content correlation and instrumentation
+overhead must be validated before this observer establishes desktop latency.
+Headless DOM/worker pixel controls establish classification only.
+
+Original/coalesced browser timestamps and host offered-stimulus timestamps
+remain separate clock domains in the opt-in evidence ledger. Epoch changes
+retain history; capacity/read failures invalidate completeness instead of
+dropping slow tails. Known offers and the original outcome are persisted before
+an explicitly bounded source-observation RPC. A late reply cannot replace a
+recorded timeout. The injected-delay control requires an informative lower
+visibility bound; a broad upper bound alone cannot qualify the observer.
+Sparse capture may therefore be uncertain without being incorrect.
+`completePresentationCoverage` remains false: capture gaps do not identify
+guest missed frames. These helpers have no production rendering imports.
+
+
+The moving-pixel controller fits CSS viewport coordinates from temporary
+markers rather than assuming browser toolbar offsets. It learns templates
+from foreground/background captures separately for each pose, then validates
+each identity in fresh frames. The shared matcher bounds the sum of all
+candidate-template comparisons. This accounts for position-dependent edge
+coverage at fractional capture scales without widening match tolerances. Capture output is explicitly sRGB so marker bytes
+have a declared color space. Browser PNG and native compositor edge coverage
+are not treated as interchangeable. A shared headless replay exercises the
+controller with synthetic geometry/timestamps; it cannot establish native
+desktop latency. The native path remains driven by WindowServer samples,
+with no worker-acknowledgement substitute for a visible response.
+
+
+The cursor template rectangle is bounded at128×128 raster pixels, with at
+most256 sparse points. This accommodates calibrated CSS patches at display
+scale, including a near-unit fit that rounds63 CSS pixels to65 raster
+pixels. Native calibration uses its retained WindowServer rasters directly;
+extra DevTools screenshots belong only to the headless path. R214 correlates
+actual Foot and ScummVM cursor changes on a frozen partial-B1 Chromium
+desktop, including concurrent ScummVM load and no-op controls. These eight
+samples per cohort establish the method, not the final workload matrix,
+tail distributions or total instrumentation overhead. See the
+[native cursor measurement record](measurements/2026-11-04-native-desktop-cursor-method.md).
+
+
+The opt-in desktop cursor method uses the same controller for real Foot and
+ScummVM cursors through ordinary browser input, with original event timestamps
+and separate KMS cursor pixels. ScummVM template qualification requires its
+red software cursor; the browser OS cursor must be hidden. Headless replay
+proves captured-pixel correlation with synthetic clocks only. Its screenshot
+acquisition budgets and durations are separate from the native observer's
+deadline and display timestamps. Native capture additionally requires the
+owned window to fit fully on one display. Positive physical validation, total
+instrumentation overhead and the full desktop workload matrix remain open.
+
+
+The R757 selected-display attempt is refused before input on all six
+three-engine DOM/worker cohorts despite an unlocked preflight: the current
+rectangle authority check sees an intersecting window. No visible timing
+is accepted from that run. Whole-window overlay metadata is not pixel-opacity
+proof, and sparse foreground matches cannot prove full response appearance
+or erasure. A complete response-region/fresh-trial successor remains private
+and unqualified. It must observe actual unfiltered display pixels, retain
+unknowns and refused inputs, and distinguish visible content from native
+layer attribution. No diagnostic marker may substitute for a real
+application response. These method requirements change neither production
+rendering nor the desktop ship bar.
+
+
+Surfaceless EGL contexts retain normal GL error semantics: their absent
+default framebuffer rejects clear, read and copy operations with
+`GL_INVALID_FRAMEBUFFER_OPERATION` before native work. This guest API error
+does not reset the context or its sharing peers. A later real drawable can
+render normally. Real window-system default targets are complete by
+construction; guest framebuffer attachment caches apply to user targets.
+
+
+The guest driver has a narrow exact-error proof for logical-zero framebuffer
+binds and clears on a real EGL drawable before any user framebuffer has been
+selected. Indeterminate submissions revoke the clear proof permanently for
+that context. Host execution still validates the original commands. Default
+targets are preallocated: authoritative zero binds need no rollback metadata,
+and GPU allocation reserves the color-storage write counter before publishing
+its target. Private exact and user framebuffer operations keep transactional
+allocation/error behavior; surfaceless clears retain ordinary host validation.
+
+
+Program captures retain an exact native executable independently of its public
+program name. Internal share-group captures remain private. Optional GL17
+`QOP_PROGRAM_CAPTURE` (0x3a) exposes context-owned captures with ordinary query
+replay, buffer dependencies and current-thread authority. Acquire is `[1,name]`,
+checked selection is `[2,name,handle]`, and release is `[3,handle]`. The16-byte
+reply is `[status,linked_or_accepted,handle_or_zero,QUERY_REPLY_MAGIC]`.
+Successful acquisition of an unlinked program returns `[0,0,0,magic]` without
+replacing an older current executable. Selection requires this context's exact
+capture of the latest named executable; a stale, deleted or peer-owned capture
+cannot select a different generation. Release may end a shared peer's context
+cache owner, but cannot release a private internal group capture.
+
+Acquisition reserves result storage and execution/cache ownership before
+publication. Ordinary resource failure supplies no handle; refused private
+native retirement is a fatal host fault, preserving custody for containment.
+The registry closes each context's acquired cache before retiring its execution
+and closes internal group caches before the last public context retires.
+Accepted work retains independent clones. Retained private execution keeps its
+installed native program but ceases to own a public program-name reference at
+context destruction. Delete-pending names therefore disappear while accepted
+work can still render using the retained native executable.
+
+The C API does not yet consume these capture receipts. Its typed shared names,
+current references and shader attachments remain on checked mutation receipts.
+Complete C executable generations, pending-batch custody and ordered logical
+current publication before enabling local program-selection error proofs.
+These are intermediate B1 mechanisms, not application performance acceptance.
+
+
+The optional GL17 `QOP_CREATE_SHADER_PROGRAM` receipt creates a reserved
+shader/program name only on its owning current context. Its12-byte request
+is `[object_kind, shader_type_or_zero, reserved_name]`, where4 denotes a
+shader and5 a program; the12-byte reply is `[status, accepted_name_or_zero,
+QUERY_REPLY_MAGIC]`. Status0 acknowledges the echoed name, while status1
+has a zero payload and preserves the operation's API error in the original
+binding. Malformed lengths, object kinds or a nonzero program type fail with
+EINVAL before renderer execution and leave output untouched. Shader enums
+remain API validation, including their priority over a colliding name.
+
+This allocation path reserves both reply bytes and the reply view before
+native ownership, then uses exact private allocation checks. Older guest
+flags remain with the original context; a reply cannot acknowledge a
+preexisting colliding object. Failed map publication rolls back the native
+handle, and native OOM follows the existing local-reset boundary. The query
+retains ordinary replay, CPU-image publication and buffer dependencies;
+it does not bypass them or grant pre-MakeCurrent query authority. The C driver
+now uses this receipt for glCreateShader/glCreateProgram and returns a name
+only after canonical acceptance. It holds the existing dispatch/name scope
+across admission, keeps name reservation monotonic, and never retries an
+uncertain creation. A malformed or lost reply returns zero and invalidates
+binding knowledge; older guest flags remain independently observable. The
+legacy creation commands remain available to existing clients. No guest
+program-selection cache is enabled: C executable-generation/pending references
+and ordered logical-current publication remain necessary.
+
+Immediate GL queries preserve a recognized renderer-reset ENODEV through
+both plain and compound GLIO replies, allowing libc to record the already
+specified reset scope. Other negative or oversized host results remain EIO.
+Failure never publishes output bytes or authorizes a query replay. In
+particular, native OOM resets only the guilty logical context while a healthy
+shared peer keeps running; this is the existing native-OOM boundary, not a
+new boundary for C metadata allocation failure.
+
+The optional query is an additive program-surface snapshot entry. Existing
+receipt fields are exact compatibility contracts, and their modification or
+removal is rejected. Versions stay program56/host3/GL17/fork21; the changed
+program digest requires normally rebuilt coherent programs and images.
+
+
+The optional GL17 `QOP_PROGRAM_MUTATION` query admits one shared shader/program
+operation through the ordinary dispatcher: attach/detach (12 input bytes),
+delete shader/program, link or use (8 input bytes). Each input prefixes the
+unchanged command payload with its u32 opcode. Kernel and host validate the
+entire shape and require the caller's own current context before execution;
+ordinary query replay and buffer dependencies remain in force. The12-byte
+reply is `[status, accepted_boolean, QUERY_REPLY_MAGIC]`. An accepted command
+returns `[0,1,magic]`; a recorded operation error returns `[1,0,magic]`.
+
+The receipt reserves its staging bytes and view before dispatch. Its private
+error scope uses the real binding, so current-program changes and peer
+finalization publish to the actual context while older flags stay observable.
+Even a repeated error already set before admission produces rejection. Reset
+retains its existing authority and does not resurrect the old flags. A
+completed link can have false LINK_STATUS and still be acknowledged: the
+installed old executable remains separate from the latest failed link. An
+unaccepted or uncertain reply supplies no new mirror-state proof and never
+authorizes replay of a possibly executed mutation.
+
+The ordinary C mutation entrypoints now wait for these receipts; no local
+selector is enabled by this query. The remaining driver work is immutable
+executable-generation/pending custody and ordered logical-current publication.
+The additive program-surface mutation and capture entries change the digest,
+with versions56/3/17/21 unchanged; final normal desktop products must be rebuilt
+coherently.
+
+
+The C driver now reserves a typed shader/program record before native creation
+and publishes it only after the creation receipt. Attach, detach, use, delete
+and link use the checked mutation query under the shared dispatch scope.
+Current-context references and program attachment references retain separate C
+records through delete-pending state. A context keeps its current-program
+reference while unbound or transferred to another thread; retirement drops it
+after host context destruction using C-only cleanup, with no query to the
+dead session. The metadata mutex is not held across device IO, and cancellation
+stays disabled until receipt handling and C publication finish.
+
+Shared dispatch guards support same-thread nesting so a query, submission or
+lifecycle barrier can compose with its surrounding object operation. The
+recursive dispatch mutex keeps other threads excluded until the outer guard
+ends. Only the outer name scope reconciles an unpublished external candidate;
+an inner scope must not recursively reconcile that same candidate. Retirement
+scopes keep their separate rule of performing no current-context reconciliation.
+Each guard restores its incoming cancellation state after releasing its lock,
+so pending asynchronous cancellation cannot interrupt outer C publication.
+Ending a guard clears it; a later cleanup of that same guard has no effect.
+The separate metadata mutex remains free across device IO. This composition
+does not itself enable C journal publication or local program selection.
+
+Every reference increment has reserved capacity before native admission.
+Rejected or uncertain mutation receipts do not publish a new C reference;
+uncertainty revokes group knowledge and never authorizes replay. Link-status
+observations are serialized with mutations. The context-owned cold capture
+layer below now retains native generations separately from these names;
+pending-batch custody and ordered logical-current publication remain required.
+Selection stays synchronous. This is intermediate B1 ownership implementation,
+not native-feel acceptance.
+
+
+The checked diagnostic C link/use path does not acquire private executable captures.
+Its checked mutation receipt establishes public-name/current-reference state;
+the host retains the installed executable independently. An explicitly admitted
+journal acquires a native-generation pin only on a cold cache miss, registers
+that pin with its journal token, then releases the temporary capture after the
+exact receipt. The bounded token cache owns queued selection generations.
+Removing the older selected/prepared capture descriptors avoids private device
+queries for applications that never enable journals. A successful checked use
+establishes a linked program; otherwise cold acquisition observes link status
+before local acceptance. A failed link supplies no fresh capture and cannot
+replace an older installed executable. Peer contexts acquire their own handles
+and never read or flush another encoder. Captures do not keep public names alive.
+
+Capture request, reply and compound-packet storage are embedded in the encoder
+before its context is published. Cold capture publication and release therefore
+need no later C heap allocation. Successful release clears its descriptor only
+after the exact receipt. A rejected, malformed or uncertain capture operation
+stops further acquisition in that context; known handles and any host owner
+whose receipt was lost remain covered by acknowledged native-context retirement.
+Transport failure also atomically revokes shared program-mirror knowledge.
+None of this metadata authorizes guest-local program acceptance or a retry of
+an uncertain mutation. The ordinary checked selection remains authoritative.
+
+EGL holds its lifetime guard and the share group's dispatch guard across
+GLIO_DESTROY_CONTEXT and C program/capture retirement. EBUSY/refusal preserves
+all C owners. On acknowledgement the host has already closed its context-owned
+capture index; C then drops descriptors and current-name references without
+querying the destroyed session. Creation-failure encoders have no host captures.
+Other object/image cleanup follows after releasing dispatch serialization.
+This is cold program/context work, with no added draw/frame maintenance; its
+application performance and the full final memory/conformance gates remain
+unmeasured. The next layer must reserve independent pending-work/result custody
+and publish ordered logical-current history before enabling local selection.
+
+The prepared host `GlProgramJournal` separates a public logical program name
+from the installed native executable. Only the public getter and name retirement
+consult the optional logical owner; draw/uniform paths continue using installed
+state. Journal activation and capture registration are cold operations. They
+reserve bounded intent/result cells, an exact installed-executable root pin
+(including an old executable after failed relink), and immutable captured
+native generations before publication can begin.
+
+Publication uses a shared group sequence and a per-context execution ticket.
+It validates names/generations independently, changes logical name ownership,
+and stores its result in the reserved cell. It does not install a native program
+or insert an early error into the runtime queue. Execution later selects the
+captured executable or records that stored error at its original command
+position. Repeated errors separated by observations therefore remain distinct.
+Each successor retains its predecessor until the native switch completes, even
+if the predecessor has already lost its public name and cache owner.
+
+Publication accepts metadata only within one process/object group. The optional
+journal query validates the caller's live current-thread session authority;
+peer entries name host-issued group-scoped journal handles, never context
+pointers. Namespace cleanup uses the metadata caller's error owner, not the
+target peer's. No peer native-selection authority is granted. Busy
+cells, stale tickets and out-of-order execution are refused. Native selection
+failure is consumed and cannot be replayed. A driver must drain and disable
+journal mode before an ordinary synchronous link/use operation.
+
+Public context retirement closes journal caches and logical name ownership
+while accepted cells retain independent generation/context custody. Exact
+cleanup refusals retain their receivers for containment; neither a partially
+published cold index nor a failed public-name finalization loses ownership.
+Session reuse clears the retired logical-name override. These mechanisms are
+shared by Node and browser and add no journal lookup to draw/uniform handlers.
+
+The optional GL17 query0x3b now exposes cold journal reservation, own-context
+capture registration, batched logical publication, cache release/disable and
+read-only recovery/status. The kernel freezes and validates the full nested
+shape and destination before effects. A48-byte receipt retains transaction,
+action, result and group/context progress; it is staged as indeterminate before
+entry. A possibly entered mutation is never replayed: READ_LAST retrieves the
+retained receipt, while indeterminate status blocks further mutators. Read-only
+recovery remains available after reset, without native replay, error draining,
+buffer synchronization or interruption of pending uploads. A recovered receipt
+does not clear a context reset; existing reset-scope handling still governs
+execution. The host import preflights its destination and reserves reply storage
+before ordinary upload interruption or foreign retirement work. Its metadata
+path preserves staged uniform/compressed transfers as well as older error flags;
+the lower-level query exception alone is insufficient. Transactions and
+handles are bounded nonzero u32 values; sequence/ticket counters are exact u53
+values. Handles never wrap into older authority within their owning scope.
+
+Receipt completion is published only after every progress field is sealed.
+Unexpected exceptions before that seal follow the existing fatal host-invariant
+path, attributed to process, session, transaction and action before propagation.
+A partly published group cannot continue behind an ordinary EIO. Legitimate
+context-reset unwinds and kernel-export faults retain their existing handling.
+A lost copyout after a completed seal still recovers the retained receipt
+without replay. Tests check both direct host queries and kernel imports, plus
+actual browser machines refusing subsequent work after the fatal latch.
+
+Publication preflights every row before committing any intent. Native command
+0x030c selects only the submitting context's exact journal/slot/ticket. Original
+error-observation records consume independently predicted slot results at their
+execution positions. Neither peer metadata publication nor a retained pointer
+grants new public submission authority. Metadata-only queries do not touch
+buffer contents; actual submit prefixes and selectors retain ordinary buffer
+ordering. Legacy queries and commands keep their existing contracts.
+
+Lifecycle query0x3c provides only publication and recovery (actions3/6/7) through
+a live public object context owned by the calling process. EGL retirement can
+run without a current binding, yet pending peer selections must become visible
+before retirement finalizes a delete-pending name. Rust checks creator PID,
+context liveness, object-session role and mapped native-resource ownership.
+An unbound context or one current on another thread grants only this metadata
+capability. Ordinary0x3b operations keep their own-current-TID checks; creation,
+capture registration, cache release/disable and native command prefixes gain no
+authority from0x3c. A retained private execution cannot replace a live public
+context. Both query paths share the outer context's transaction receipt ledger.
+Publication fails after reset; read-only recovery remains available without
+reviving the context. The explicitly admitted C prototype publishes through
+this barrier before shared-name queries, caller-prefix submission and EGL
+retirement, including retirement without a current GL binding.
+
+A wire receipt owns logical metadata, not an admitted native job. Stage B submits
+synchronously, so public context/session retirement discards abandoned wire
+cells that can no longer be submitted. Retained host executions keep their
+separate accepted-work lifetime. When adding asynchronous submission in C1,
+transfer exact slot custody to the accepted job before admission and preserve
+it through completion or explicit cancellation. Native program counts are
+checked before whole-machine teardown, including pending-context destruction
+and process exit, so terminating a worker cannot hide leaked owners.
+
+The checked diagnostic path uses synchronous program selection. An
+internal diagnostic admission entry point now enables a C selection prototype.
+Each context owns a cold-allocated stream with a32-entry generation-token cache,
+256 bounded intent/result slots and persistent request/recovery storage. Cache
+keys include the public name and link epoch; private native captures and C
+logical-current references retain separate executable and name lifetimes.
+Warm selection reserves its command record and immutable shared intent before
+local acceptance. Publication never reads or flushes a peer's mutable encoder.
+Cold capture acquisition submits only the caller's older prefix. Successful
+synchronous prefix acknowledgement permits slot reuse; asynchronous C1 jobs
+must acquire explicit slot custody before their admission acknowledgement.
+
+A group-level receiver is reserved before publication enters the device. If
+its response is lost, another publisher must reconcile that receiver with
+READ_LAST before issuing a new mutation. Read-only recovery validates the exact
+transaction/action/count and clears only receipt uncertainty, preserving
+execution-loss and capture ownership. A proven unchanged predecessor permits
+retry; an unknown entered result cannot authorize replay. Group ownership is
+stamped before any fork: inherited dispatch is refused before taking a possibly
+orphaned mutex, and sharing such an encoder reports EGL_BAD_CONTEXT. A refused
+cold registration releases known capture ownership after an acknowledged
+journal disable, rather than dropping its descriptor.
+
+A failed guest error observation now appends an empty transport-observation
+record before any later command. It consumes only the coalesced earlier
+INVALID_OPERATION that this call already returned. Other flags and later
+repetitions remain independent; ordinary exact-mask observations retain their
+fatal audit. Reserved tail space and coalescing adjacent failure records make
+this path allocation-free without retrying publication or command execution.
+Only the failure path scans records; unused encoders gain no failure-state
+lookup per command. The optional Program snapshot section changes the contract
+digest while keeping versions56/3/17/21, requiring normal matching products.
+
+Connected C-journal controls now inject native OOM during selector execution
+while a healthy thread retains an unsubmitted prefix and an older error flag.
+They check context-only reset, subsequent peer pixels and selections, public
+name retirement, and native program ownership before process exit can reap
+forgotten descriptors. This covers those explicit scenarios, rather than the
+complete publication-loss and final-context audit.
+
+A native reset can interrupt publication after a logical prefix. The C
+receiver now uses read-only snapshots to require one consistent group sequence
+and each affected journal's exact published/executed tickets. Only that proven
+prefix becomes published locally; a healthy metadata caller publishes the
+remaining suffix under fresh transaction authority. The reset caller stays
+blocked and its consumed transaction is never retried. Inconsistent snapshots
+retain every receiver for a later read-only retry. This failure path allocates
+no C storage and adds no normal draw/frame work.
+
+Shader public names also retire independently of their native objects. Public
+shader creation reserves one cleanup node before native allocation. When a
+program's last logical reference ends, all dependent shader names retire before
+any fallible native cleanup. Intrusive group custody retains interrupted
+cleanup without allocating after logical publication. Shader finalization and
+explicit context retirement drain it; ordinary draws do not inspect it. Its
+physical renderer epoch survives a logical context reset, while pre-existing
+errors still belong to the current cleanup caller. Refused native cleanup
+remains fatal; read-only recovery performs neither cleanup nor error drains.
+
+Focused controls recover interrupted metadata publication, including a lost
+caller's pending intent and an inconsistent snapshot retry, on three engines
+and both widths. Healthy rendering, vanished public names, no selector replay
+and native shader/program ownership before process exit are checked. They do
+not establish full native-loss/final-context coverage or desktop performance.
+C retirement no longer requires a successful publication through a lost
+final publisher before attempting backend retirement. After a
+publication failure, read-only reset-scope checks distinguish a lost
+physical renderer, individually reset contexts and healthy shared
+contexts. A healthy owner can carry metadata through the existing
+lifecycle barrier even if it never enabled a journal. The share group's
+cold carrier is reserved before the first local selection; it owns only
+a transport receiver, no selector slots or native pins. It cannot change
+owners while an entered publication still needs reconciliation, and its
+authority ends before that context enables its own journal.
+
+When every owner is proven reset, retirement keeps each exact C receiver
+until that owner's backend destroy acknowledges success, then releases
+only its records. Unknown scope retains ownership with a loud diagnostic
+and permits a later proof/retry. It never guesses that healthy shared
+objects vanished. Foreign metadata ENODEV marks the actual encoder owner
+through a cookie whose lifetime is protected by the dispatch guard.
+Sticky loss and pending CONTEXT_LOST occupy one atomic state, so
+notification never writes another thread's TLS or consumes an unrelated
+current context's errors. Checked flush reports ENODEV for already known
+loss, without a new device request. Recovery scans and reset-scope
+probes occur only after publication failure; ordinary draws and frames
+perform no additional member scan. Native and three-engine regressions
+sample zero public contexts, executions, bindings and native
+programs/shaders before guest exit after explicit cleanup, including
+both shared retirement orders, unavailable-proof retry, native OOM and
+healthy unadmitted peers.
+
+Automatic journal admission now runs at the first eligible nonzero
+program selection under dispatch serialization. A known program can
+enter the existing cold journal without an application-specific call;
+unknown records and invalid/known-failed names keep checked host
+validation. Uncertain admission stops selection and preserves its exact
+custody. Context creation samples the presence of
+KANDELO_GL_CHECKED_PROGRAM_SELECTION to retain checked selection for
+diagnostics/raw-wire controls. This adds no per-draw/frame scan or new
+wire/version. The default path has focused Node and three-engine browser
+controls, including sharing, creation, target errors and matrix-
+generation semantics. Full B1 conformance, loss/final-context audit
+closure, application measurements and a coherent normal preview remain
+acceptance work. Warm device counts do not establish application latency
+or native desktop feel.
+
+
+The program journal also owns an optional, cold-prepared buffer-copy bank.
+Cold preparation reserves bounded receivers and native deletion custody before
+creating buffers, and retains partial failure until exact retirement. Accepted
+small definitions copy their bytes separately from mutable ordinary storage;
+resolution checks the canonical object, generation, byte range and retained
+context/renderer authority. Later shared reallocation or public-name reuse
+cannot change an accepted copy. Reusing a cell is synchronous command order,
+not asynchronous job eviction; borrowed native handles must not outlive that
+command stack. Warm uploads use the existing predicted batch and one final
+native sample. Optional journal action10 now prepares it through a sealed mutation receipt;
+OP_BUFFER_DATA_SNAPSHOT0x0107 independently validates and copies original
+ARRAY definitions. Lost preparation replies recover without native replay.
+Restoration metadata is reserved before the original storage mutation, so
+CPU reservation refusal cannot leave an accepted definition without its copy.
+The ordinary C driver now activates the bank for eligible small-buffer draws
+on a known default framebuffer. Cold action11 captures the actual retained
+attribute store, including definitions older than journal admission. Its sealed
+receipt recovers the same generation after copyout loss. Opcode0x0507 validates
+every enabled row against canonical identity, token, layout and byte span before
+borrowing native sources and restoring the public VAO. A cold derived binding
+shares the original logical reset identity and excludes ordinary robust padding
+only for these independently range-proven sources.
+
+The C cache uses object serials and nonwrapping tokens, revokes standalone
+updates and unknown raw I/O, and does not evict a row while gathering one draw.
+First sharing is ordered with local admission; new local proofs remain revoked
+after the last peer leaves. Known own bind0 can restore default-target knowledge
+only while its independent rearmable proof survives. Ordinary inactive paths
+allocate no bank or duplicate uploads. The duplicate-upload/application cost is
+unmeasured. See the compatibility ledger's R432–R444 evidence and limits.
+
+The journal also cold-captures eligible offscreen targets and input native
+generations. Private framebuffer metadata describes the retained attachment,
+separately from a public texture that can acquire replacement storage. Target
+pins force storage orphaning; input pins preserve native identity while following
+in-place metadata updates until replacement. Their deletion custody converges
+with EGLImage ownership rather than manufacturing a new BO/export lifetime.
+Private framebuffer deletion precedes release of its target pin. Raw graphics
+I/O revokes program, layout and target knowledge together; a later successful
+error drain cannot recreate that authority.
+
+Upload scratch, native call arguments, inverse receivers and uniform write
+counters are reserved before granting their corresponding local prediction.
+Uniform uploads borrow bounded nonshared arrays synchronously. Optional CPU
+preparation refusal is distinct from guest GL flags: a preallocated scope binds
+the exact private error receiver, preserving earlier flags and nested owners.
+Definite refusal executes the original API through its observed path; uncertain
+entry is reconciled without replay. Native OOM retains the approved context-reset
+policy, including under the audit; other unpredicted native errors remain fatal
+under the audit. No numeric error filtering substitutes for provenance.
+
+Optional action13 now reserves exact executable/sampling authority before the
+guest accepts eligible retained-buffer or inline draws. Separate families avoid
+allocating inline upload storage for VBO users. The bounded C readiness cache
+keys canonical input serials and shared image revisions: a peer's replacement
+storage renews new-call authority, while ordinary content updates keep the warm
+proof. Old accepted records retain their original native generations. Private
+uniform mirrors exist only while opted-in proofs reference their executable;
+exceptional native-reset recovery reconciles them before a healthy peer resumes.
+
+Prepared inline records preserve the full first-vertex operand and use bounded
+CPU upload scratch. A compact header handles the existing maximum-size payload
+without narrowing the GL API. Successful native context admission reserves the
+bounded payload receiver, immutable scalar capabilities and checked native-call
+rows before acknowledging creation. Journals share that binding-owned receiver;
+Node's null-renderer refusal allocates none. Decoding borrows bytes only for the
+synchronous command stack and clears them in finally,
+including after Wasm memory growth. Full shape and authority checks precede any
+upload or private pointer mutation. Stale authority gets the ordinary GL error;
+an invariant lost after preflight fails loudly.
+
+Cold CPU receivers own native pins before any later map insertion. Shader
+variants likewise reserve program/shader deletion receipts and their result
+receiver before native creation, retaining the original context owner through
+publication failure, deferred cleanup and normal retirement. Nested retirement
+cannot collect the same in-flight receipt twice.
+
+Predicted scalar setters mutate their context's live rows without replacing
+tuples or querying capabilities late. Shared blend variants compare both context
+row identity and value revision; saturation stays permanently dirty rather than
+reusing stale values. Checked native DepthRange/BlendFunc failures still use the
+current logical context's original reset authority.
+
+These controls do not establish B1 completion. Final application/conformance
+checks, measurements and the complete normal preview remain required. Ordinary
+GL now shares reusable decoding, whose CPU cost remains unmeasured. Retaining
+storage alone does not prove every later CPU emulation receiver exists.
+
+### Fatal native-error audit and submitted batches
+
+The native error audit has two evidence modes. Record mode retains the
+per-method native oracle for inventory and localization. Fatal mode follows
+the production submission boundary for host-accepted work: validated native
+calls do not independently read `getError`, and the submitted batch samples
+the real native error queue. Explicit error predictions, remaining
+native-decides paths, and private bookkeeping retain exact checks. Before
+crossing into an exact check, the audit fences earlier deferred work so its
+error cannot be attributed to the next operation or authorize publication.
+Unexpected flags reset the original logical owner before the fatal boundary;
+native out-of-memory retains its documented context-reset policy.
+
+Oracle-held flags distinguish older observations from observations in the
+current submission. A current exact boundary cannot disappear merely because
+a utility omitted its own drain; an older held flag cannot become a new
+batch failure. The submission identity is an empty token, without a logical
+binding, guest memory or a cleanup callback. An allocation result reaches its
+reserved native receiver before an exact out-of-memory post-check resets the
+context. Batch diagnostics describe actual observed flags at their real
+boundary and do not claim a fabricated per-method `NO_ERROR` result.
+
+The internal `withNativeBatch` dispatcher is a live ESM binding. Audit
+configuration installs its fatal adapter, and reset/record configuration
+restores the original production body. Production callers use ESM imports;
+dynamic test consumers retain the module namespace. Copying/destructuring
+this internal callable is forbidden by the source lifetime guard, including
+common literal element and string-key captures. This is an internal caller
+constraint, not a guest API or wire ABI change. The guard checks supported
+callers and common capture forms; it is not a general JavaScript alias
+interpreter. Configure-before-import and configure/reset/reconfigure controls
+protect module initialization and import cycles.
+
+
+### Exact graphics file and buffer ownership
+
+The B1 ownership endpoint (`0xc14064e7`, a 320-byte private ioctl packet)
+separates retained graphics resources from public descriptor numbers. A
+capability binds the process and exec generation to an explicit open file
+description reference. Buffer capabilities additionally retain the exact
+internal buffer object and its namespace custody. Closing or replacing a
+public descriptor, or closing and reusing a GEM handle, cannot redirect
+cleanup to the replacement resource. Ordinary descriptor operations retain
+their existing semantics.
+
+Mutations have monotonic transaction identities and immutable receipts. A
+lost reply permits reading that exact receipt, never replaying the native
+operation. Receipt acknowledgement is distinct from resource consumption;
+an error after consumption cannot authorize a second release. Fork copies
+independent child pins and receipt custody, while exec/exit drain the
+process's resources through ordinary complete file-description cleanup.
+Storage inheritance does not grant execution in the parent's GL renderer.
+
+Owned mappings use a staged constructor. The kernel reserves a mapping
+plan without retiring a fixed-address predecessor. While holding the same
+serialized kernel entry, the host grows memory, asks the optional
+`kernel_owned_mapping_finish` export to commit or roll back, and constructs
+new host mapping state before publishing success. Re-reading a completed
+receipt cannot zero or re-prime a mapping that guest code has since used.
+Read-only polls retain their original timeout budget and exact task
+identity; cancellation retires that wait rather than an unrelated request.
+
+The endpoint is additive within program 56, unpublished host 3, GL 17 and
+fork 21. This source checkpoint and its focused controls do not establish
+complete B1 application, browser-memory, conformance or native-feel
+acceptance. The new guest-library connection and coherent normal-built
+preview must complete those gates in this iteration.
+
+
+The guest graphics libraries now carry these capabilities through private C
+receivers instead of retaining public descriptor numbers for later cleanup.
+A single libc archive member owns receiver and nonce state; software that
+never references the graphics helpers acquires no graphics initialization or
+universal descriptor hook. Acquisition and capture publish recoverable
+custody even when the caller's reply fails. A completed mutation commits its
+transaction, acknowledgement and consumption metadata before clearing its
+pending marker, so a forked child recovers the original immutable receipt
+rather than repeating an operation.
+
+Public image identity, explicit storage holds, renderer holds and lexical
+per-thread borrows are separate lifetime categories. A child preserves the
+fork caller's active borrows and process storage while dropping vanished
+peer-thread borrows and inherited renderer access. Graphics metadata mutexes
+use process epochs rather than inherited pthread owners. Cold publication
+uses one fork guard for pointer/reference changes and transfers retiring
+capabilities into a globally rooted, epoch-claimed queue before native work.
+No native operation, receiver lock or driver futex wake runs under that guard.
+
+The ownership connection now has selected normally built target controls for
+descriptor reuse, replacement mappings and inherited BO/image storage on Node
+and all three browser engines. EGL's outer queues have durable pending native
+capsules. Full raw-client callback enforcement, the complete application/image
+rebuild and stage, memory, conformance and latency gates remain required.
+
+
+An image now retains an independent exact source-file edge as well as its BO
+storage. Final generation retirement revokes every matching image's borrowed
+generation pointer before freeing the generation; allocator address reuse
+cannot admit an old image to a replacement renderer. A cold retain/publish
+transaction couples the FILE reference increment with the global image root,
+and releases the publication guard before receiver unlock. Private transfers
+use the retained source file, while renderer/public admission requires a live
+matching generation. Only creation and final retirement perform this work.
+
+Private mapping actions13/14 additionally bind cleanup to a nonzero,
+monotonic Rust-owned mapping identity. Splitting/shrinking a mapping keeps
+that identity; a new mapping at the same address and BO gets another one.
+Both public GEM and owned FILE/BO mappings accept a nonempty prefix bounded
+by page-rounded CPU storage, as PRIME mappings already do. Requiring a whole
+BO would reject legal partial replacement before its ownership could be
+tested. The constructor retains the requested binding length, and its staged
+overlap transaction preserves every unaffected fragment and exact identity.
+Conditional retirement preflights every remaining original fragment before
+native effects and leaves replacement VMAs untouched. Ordinary POSIX
+`mmap`/`munmap` and established action4 retain their semantics. Rust copies
+the complete mapping counter and IDs at fork independently of the unchanged
+fork21 serialized layout, including after every prior mapping has retired.
+
+Guest mapping capsules remain rooted with their FILE/BO sources until exact
+retirement is known complete. Receipt recovery publishes the capsule before
+another FILE operation can acknowledge its result; atomic release/acquire
+phase publication also covers unrelated same-FILE recovery callers. Private
+EGL session/image constructors become discoverable before native effects
+but cannot be selected publicly until sealed. GBM BO/surface destruction
+keeps whole rings rooted through callbacks and removes exact nodes rather
+than retaining list cursors. A pending front-hold release consumes its caller
+slot with the corresponding ring obligation in one guarded publication.
+Ordinary frame release acquires no retirement actor or global queue scan.
+
+Heap ActorScope identities distinguish a continuing callback stack from a
+dead/vanished peer. EGL outer surface/generation queues use independent
+claims and bounded cold retries. Durable native leaf APIs distinguish pending
+custody, completion and explicit inherited-boundary transfer; unknown progress
+cannot be inferred from a void return. Raw-client D-59 entry and callback-return
+enforcement now has source/native controls; rebuilt target and application
+acceptance remains required. These controls do not establish full B1. Libc
+preserves a child-only multithreaded-fork epoch
+before rebinding its copied thread list; this primitive alone does not
+implement the approved Wayland boundary.
+
+Native cleanup backends request EGL's existing cold post-context-unlock drain
+only after publishing actual ready work. The backend retains an exact heap
+actor claim; another live actor's work rearms that request, and completed or
+blocked work does not introduce a repeated frame scan. Each positive rearm
+is persisted before entering the next callback-capable backend, because that
+callback may end its thread. Cached unlocks add no new native hook.
+
+D-59's foundation classifies inherited Wayland custody using the private libc
+multithread-fork epoch and platform-owned metadata, without following an old
+native graph. A transferred heap owner is distinct from completed cleanup or
+a Worker acknowledgement. Raw client wrappers check object admission before
+native dereference. Ordinary parent allocations keep the epoch-zero fast path;
+after multithreaded fork, only newly allocated native ranges enter the child's
+balanced provenance index. The copied native graph is never used as proof.
+
+Wayland native continuations retain caller-rooted live/retired capsules across
+proxy, queue, surface and connection release. Owned ordinary logging captures
+immutable formatted text and the selected canonical handler; native progress
+seals before handlers run outside native/window/EGL locks. Separate diagnostic
+owners preserve FIFO per origin, and independent actor claims prevent replay
+of a handler that ended its thread. The event/error-only resolver uses an
+existing claimed window operation; cached successful frames do not prepare or
+scan diagnostic state. Single-thread child disconnect performs local cleanup
+without shutting down the parent's shared socket OFD. Inherited rendering
+admission remains revoked independently of the multithread native boundary.
+
+EGL's outer surface/generation queues now retain these exact live/retired
+capsules, publishing custody before enqueue and keeping an independent actor
+claim across native effects and callbacks. PENDING or ERROR retains the shell
+for another cold lifecycle event; ERROR emits a raw diagnostic outside locks.
+COMPLETE and BOUNDARY_TRANSFERRED remain distinct, and either permits shell
+retirement only after every child slot is empty. Optional native backends must
+provide the pending contract before acquisition; no opaque void release can
+substitute for it. Both pending references remain weak for KMS-only linkage.
+No hot draw/frame retry or diagnostic scan is added. Normal-target runtime and
+application acceptance remains pending; neither an opaque native return nor
+explicit boundary transfer acknowledges completed native cleanup.
+
+
+Raw callback continuations capture original native object references before
+upstream validation can replace a destroyed argument with NULL. Application
+arguments retain native semantics; only the original native unref tail is
+completed after a callback ends. Delivered file descriptors are marked before
+user code runs and cannot be closed by later closure cleanup after number reuse.
+Cancellation is suspended only around actual undelivered descriptor closure,
+then restored after native unlock. An exact cold token permits the audited
+hidden EGL queue to use its retained owner instead of public callback custody;
+queue identity, epochs, owner claim and current log capture must all agree.
+A generic log capture does not authorize this exception. An entry with no
+callback roots does not traverse the callback-completion list. The package
+build checks the exact reviewed upstream layouts before compiling these hooks.
+
+Cold EGL buffer transfers keep acquired FILE, PRIME and up to three BO owners
+in a persistent capsule on the already rooted target session. A claim is
+published before effects, and completed capture outputs never live only on a
+vanished peer's stack. The capsule spans the final native consumer and all
+YUV planes; every remaining edge moves to durable exact retirement before its
+claim is cleared. A separate generation-rooted receiver owns import/format
+validation until it atomically publishes the public record. It avoids a second
+anonymous public-BO retain. Unknown outcomes remain rooted and loud.
+
+Foreign-fork cleanup adopts vanished-peer receivers but retains a continuing
+forkcaller's entire old operation, including session and storage owner fields.
+Fresh initialization can proceed with its normal independent storage retain;
+it does not reuse the old receiver or replace its namespace. Only an old graph
+with no live operation can be unlinked. These are cold ownership operations;
+warmed selectors and unused graphics features acquire no added scans or native
+queries. Node/browser execution, coherent application builds, conformance and
+native-feel measurements remain separate acceptance requirements.
+
+
+The complete-response control uses an explicit selected-display ROI policy.
+It retains owned PID/window/foreground/geometry checks and overlay metadata,
+while determining response visibility from actual unfiltered display pixels.
+The recorder rejects legacy sparse matcher commands in that mode before
+changing state. This prevents a sparse configuration from inheriting relaxed
+rectangle authority. Synthetic source challenges paint with the response;
+unarmed originals and failures remain in the evidence ledger. The standalone
+launcher copies and seals its authored source/config closure before compiling
+or executing it and refuses changed origin or sealed inputs afterward.
+
+Integrated Swift/Node and three-engine headless controls validate these tooling
+contracts only. Physical opaque/partial/hidden-window adversarial controls and
+observer overhead remain unqualified. No complete-presentation coverage,
+originating native layer, application latency or native-feel claim follows.

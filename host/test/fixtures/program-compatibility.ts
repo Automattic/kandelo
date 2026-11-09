@@ -5,11 +5,19 @@ import { readWasmCustomSectionPayload } from "../../src/constants";
 import { WPK_FORK_LINKED_FRAME_FORMAT_SECTION, WPK_FORK_LINKED_FRAME_FORMAT_VERSION } from "../../src/generated/abi";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
-const directory = new URL("../../../abi/program-fixtures/v55/", import.meta.url);
+const directory = new URL("../../../abi/program-fixtures/v56/", import.meta.url);
 export const programCompatibilityManifest = JSON.parse(readFileSync(new URL("manifest.json", directory), "utf8")) as {
+  programAbi: number;
+  programContractDigest: string;
   fixtures: { name: string; file: string; size: number; sha256: string }[];
   preparationSource: { file: string; size: number; sha256: string };
 };
+
+const baseline = JSON.parse(readFileSync(new URL("../../../abi/supported-program-baseline.json", import.meta.url), "utf8"));
+if (baseline.abi_version !== 56 || programCompatibilityManifest.programAbi !== 56
+  || programCompatibilityManifest.programContractDigest !== baseline.program_contract_digest) {
+  throw new Error("Frozen programs must match the declared ABI-56 baseline; ABI-55 is retired");
+}
 
 function frozenBytes(record: { file: string; size: number; sha256: string }): Buffer {
   const bytes = readFileSync(new URL(record.file, directory));

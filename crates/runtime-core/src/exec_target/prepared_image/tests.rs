@@ -9,21 +9,21 @@ use wasm_posix_shared::mode::{S_ISGID, S_ISUID};
 
 mod host;
 
-const ORIGINAL: &[u8] = include_bytes!("../../../../../abi/program-fixtures/v55/raw-fork.wasm");
+const ORIGINAL: &[u8] = include_bytes!("../../../../../abi/program-fixtures/v56/raw-fork.wasm");
 
 #[test]
 fn initial_exec_commits_the_retained_path_once_after_complete_observation() {
     let _namespace = NamespaceGuard::enter();
     let mut proc = Process::new(100);
     let mut locks = AdvisoryLockManager::new();
-    let source = include_bytes!("../../../../../abi/program-fixtures/v55/echo.wasm");
+    let source = include_bytes!("../../../../../abi/program-fixtures/v56/echo.wasm");
     let descriptor = install(&mut proc, b"/source", source);
     let owner = PreparedExecOwner::Process { pid: 100, caller_tid: 100, generation: 0 };
     let token = prepare(&mut proc, &mut locks, &mut NoopHost, owner, AT_FDCWD, b"/source", 0).unwrap();
     sys_unlink(&mut proc, &mut NoopHost, b"/source").unwrap();
     install(&mut proc, b"/source", ORIGINAL);
     assert_eq!(observe(&mut proc, &mut NoopHost, token), source);
-    assert!(matches!(admit(&proc, 100, token, 55), Ok(Admission::Program)));
+    assert!(matches!(admit(&proc, 100, token, wasm_posix_shared::ABI_VERSION), Ok(Admission::Program)));
     commit_initial(&mut proc, &mut locks, &mut NoopHost, 100, token).unwrap();
     assert_eq!(proc.exec_generation, 1);
     assert!(proc.exe.is_some());
@@ -133,7 +133,7 @@ fn profile() -> PreparationProfile {
         optimizer_sha256: None,
         options_sha256: [2; 32],
         dependency_closure_sha256: [3; 32],
-        program_abi: 55,
+        program_abi: wasm_posix_shared::ABI_VERSION,
         program_contract_sha256: wasm_artifact::facts::read_custom_section(
             ORIGINAL,
             wasm_artifact::ABI_CONTRACT_SECTION,

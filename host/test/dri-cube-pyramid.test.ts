@@ -5,26 +5,27 @@
  * sees ≥2 distinct (pid, ctx_id) bindings.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import { NodeWorkerAdapter } from "../src/worker-adapter";
 import { detectPtrWidth, extractHeapBase } from "../src/constants";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { resolveBinary } from "../src/binary-resolver";
 import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
 } from "../src/fork-replay-gate";
 import { GlMuxer } from "../src/webgl/muxer";
 import type { GlBinding } from "../src/webgl/registry";
+import { loggingGraphicsGl } from "./support/logging-graphics-gl";
 import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
 } from "../src/worker-protocol";
 import { TestProcessReferenceOwners } from "./process-reference-owner-helper";
 
-const programBinary = tryResolveBinary("programs/cube_pyramid.wasm") ?? "";
-const kernelBinary = tryResolveBinary("kernel.wasm") ?? "";
+const programBinary = resolveBinary("programs/cube_pyramid.wasm");
+const kernelBinary = resolveBinary("kernel.wasm");
 
 const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;
@@ -42,30 +43,6 @@ function createProcessMemory(pages: number): WebAssembly.Memory {
   });
 }
 
-/** Proxy WebGL2 context: every call lands in `log`; `create*` returns
- *  a fresh object so the bridge's per-name maps stay distinct. */
-function makeFakeGl(): {
-  log: Array<[string, unknown[]]>;
-  gl: WebGL2RenderingContext;
-} {
-  const log: Array<[string, unknown[]]> = [];
-  const handler: ProxyHandler<object> = {
-    get(_t, prop) {
-      if (typeof prop !== "string") return undefined;
-      return (...args: unknown[]) => {
-        log.push([prop, args]);
-        if (prop.startsWith("create")) return {};
-        if (prop.startsWith("get")) return 0;
-        return undefined;
-      };
-    },
-  };
-  return {
-    log,
-    gl: new Proxy({}, handler) as unknown as WebGL2RenderingContext,
-  };
-}
-
 function makeFakeCanvas(gl: WebGL2RenderingContext) {
   return {
     getContext(kind: string) {
@@ -78,7 +55,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
+describe(
   "dri cube + pyramid end-to-end multiplex (plan 3 §C2)",
   () => {
     it("two forked processes drive two GL contexts; muxer arbitrates", async () => {
@@ -87,7 +64,7 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
       const ptrWidth = detectPtrWidth(programBytes);
       expect(ptrWidth).toBe(4);
 
-      const { gl: fakeGl } = makeFakeGl();
+      const { gl: fakeGl } = loggingGraphicsGl();
       const fakeCanvas = makeFakeCanvas(fakeGl);
 
       // Spy must be installed before the kernel constructs muxers.

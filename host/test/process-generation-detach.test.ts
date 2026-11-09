@@ -4,7 +4,7 @@ import {
   type ExactProcessGenerationDetach,
 } from "../src/process-generation-detach";
 import { retireSupersededExecGeneration, type ProcessGenerationOwnership } from "../src/process-lifecycle";
-import type { ProcessMemoryLease } from "../src/process-memory";
+import { ProcessMemoryAllocator } from "../src/process-memory";
 
 interface Generation {
   readonly name: string;
@@ -16,6 +16,13 @@ function generation(name: string): Generation {
     name,
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
   };
+}
+
+// Use the actual lease contract, including its private execution-owner identity.
+function ownedGeneration(): ProcessGenerationOwnership {
+  const allocator = new ProcessMemoryAllocator({ maxMemories: 1, maxTotalBytes: 65536 });
+  const memoryLease = allocator.acquire({ ptrWidth: 4, initialPages: 1, maximumPages: 1 });
+  return { memory: memoryLease.memory, memoryLease };
 }
 
 function harness() {
@@ -49,25 +56,13 @@ function transaction(
 
 describe("exact process-generation detach ledger", () => {
   it.each([true, false])("shares exec retirement with a termination that captured the old image (quiescent=%s)", async quiescent => {
-    const oldMemory = generation("old").memory;
-    let consumed = false;
-    const consume = vi.fn(() => {
-      if (consumed) throw new Error("Process memory lease was already consumed");
-      consumed = true;
-    });
-    const old: ProcessGenerationOwnership = {
-      memory: oldMemory,
-      memoryLease: {
-        memory: oldMemory, ptrWidth: 4, maximumPages: 1,
-        retainAlias: () => { throw new Error("not used"); },
-        release: consume, releaseAfterForcedTermination: consume,
-      } satisfies ProcessMemoryLease,
-    };
-    const successorMemory = generation("successor").memory;
-    const successor = { memory: successorMemory, memoryLease: {
-      ...old.memoryLease, memory: successorMemory,
-      release: vi.fn(), releaseAfterForcedTermination: vi.fn(),
-    } };
+    const old = ownedGeneration();
+    const oldMemory = old.memory;
+    const release = vi.spyOn(old.memoryLease, "release");
+    const forced = vi.spyOn(old.memoryLease, "releaseAfterForcedTermination");
+    const successor = ownedGeneration();
+    vi.spyOn(successor.memoryLease, "release");
+    vi.spyOn(successor.memoryLease, "releaseAfterForcedTermination");
     const current = new Map([[19, old]]);
     const ledger = new ExactProcessGenerationDetachLedger<ProcessGenerationOwnership>(
       pid => current.get(pid),
@@ -86,27 +81,22 @@ describe("exact process-generation detach ledger", () => {
     await Promise.all([termination, exec]);
     // A second late termination must also observe the completion tombstone.
     await retireSupersededExecGeneration(ledger, 19, old, quiescent);
-    expect(consume).toHaveBeenCalledOnce();
+    expect(release.mock.calls.length + forced.mock.calls.length).toBe(1);
     expect(current.get(19)).toBe(successor);
     expect(successor.memoryLease.release).not.toHaveBeenCalled();
     expect(successor.memoryLease.releaseAfterForcedTermination).not.toHaveBeenCalled();
+    successor.memoryLease.release();
     expect(ledger.pendingCount).toBe(0);
   });
 
   it.each([true, false])("an exec retirement cannot authorize termination of its successor (quiescent=%s)", async quiescent => {
-    const memory = generation("old").memory;
-    const release = vi.fn();
-    const forced = vi.fn();
-    const old: ProcessGenerationOwnership = { memory, memoryLease: {
-      memory, ptrWidth: 4, maximumPages: 1,
-      retainAlias: () => { throw new Error("not used"); },
-      release, releaseAfterForcedTermination: forced,
-    } };
-    const successorMemory = generation("successor").memory;
-    const successor = { memory: successorMemory, memoryLease: {
-      ...old.memoryLease, memory: successorMemory,
-      release: vi.fn(), releaseAfterForcedTermination: vi.fn(),
-    } };
+    const old = ownedGeneration();
+    const memory = old.memory;
+    const release = vi.spyOn(old.memoryLease, "release");
+    const forced = vi.spyOn(old.memoryLease, "releaseAfterForcedTermination");
+    const successor = ownedGeneration();
+    vi.spyOn(successor.memoryLease, "release");
+    vi.spyOn(successor.memoryLease, "releaseAfterForcedTermination");
     const current = new Map([[20, successor]]);
     const ledger = new ExactProcessGenerationDetachLedger<ProcessGenerationOwnership>(
       pid => current.get(pid), pid => { current.delete(pid); },
@@ -124,6 +114,7 @@ describe("exact process-generation detach ledger", () => {
     expect(current.get(20)).toBe(successor);
     expect(successor.memoryLease.release).not.toHaveBeenCalled();
     expect(successor.memoryLease.releaseAfterForcedTermination).not.toHaveBeenCalled();
+    successor.memoryLease.release();
   });
 
   it("retires a superseded generation without waiting for its live successor", async () => {

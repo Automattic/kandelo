@@ -36,7 +36,7 @@ pub fn procfs_buf_idx(h: i64) -> usize {
 
 /// Encode a procfs buffer index as a host_handle.
 #[inline]
-fn procfs_buf_handle(idx: usize) -> i64 {
+pub fn procfs_buf_handle(idx: usize) -> i64 {
     debug_assert!(
         idx < (crate::descriptor_backing::SYNTHETIC_REGULAR_HANDLE_BASE - PROCFS_BUF_BASE) as usize
     );
@@ -76,6 +76,7 @@ pub enum ProcfsEntry {
     KandeloDir,             // /proc/kandelo
     KandeloWritebackLosses, // /proc/kandelo/writeback_losses
     KandeloFilesystemMemory,
+    KandeloSharedMappingFailures, // /proc/kandelo/shared_mapping_failures
 }
 
 impl ProcfsEntry {
@@ -110,12 +111,13 @@ impl ProcfsEntry {
 ///
 /// The current kernel has no runtime mount/umount path and does not yet receive
 /// the host VFS mount router's table. Keep this to filesystems owned directly
-/// by the Rust kernel: the root view plus its procfs/devfs virtual filesystems.
+/// by the Rust kernel: the root view plus its procfs/devfs/sysfs virtual
+/// filesystems.
 pub const MOUNTS_CONTENT: &[u8] =
-    b"kandelo-root / kandelo-vfs rw 0 0\nproc /proc proc rw,nosuid,nodev,noexec 0 0\ndevfs /dev devfs rw,nosuid 0 0\n";
+    b"kandelo-root / kandelo-vfs rw 0 0\nproc /proc proc rw,nosuid,nodev,noexec 0 0\ndevfs /dev devfs rw,nosuid 0 0\nsysfs /sys sysfs ro,nosuid,nodev,noexec 0 0\n";
 
 const MOUNTINFO_CONTENT: &[u8] =
-    b"1 0 0:1 / / rw - kandelo-vfs kandelo-root rw\n2 1 0:2 / /proc rw,nosuid,nodev,noexec - proc proc rw,nosuid,nodev,noexec\n3 1 0:3 / /dev rw,nosuid - devfs devfs rw,nosuid\n";
+    b"1 0 0:1 / / rw - kandelo-vfs kandelo-root rw\n2 1 0:2 / /proc rw,nosuid,nodev,noexec - proc proc rw,nosuid,nodev,noexec\n3 1 0:3 / /dev rw,nosuid - devfs devfs rw,nosuid\n4 1 0:4 / /sys ro,nosuid,nodev,noexec - sysfs sysfs ro\n";
 
 /// Return the process scope of an entry, if it is under `/proc/<pid>`.
 ///
@@ -144,7 +146,8 @@ pub fn entry_pid(entry: &ProcfsEntry) -> Option<u32> {
         | ProcfsEntry::ThreadSelfLink
         | ProcfsEntry::KandeloDir
         | ProcfsEntry::KandeloWritebackLosses
-        | ProcfsEntry::KandeloFilesystemMemory => None,
+        | ProcfsEntry::KandeloFilesystemMemory
+        | ProcfsEntry::KandeloSharedMappingFailures => None,
     }
 }
 
@@ -202,6 +205,9 @@ pub fn match_procfs(path: &[u8], current_pid: u32) -> Option<ProcfsEntry> {
     }
     if rest == b"kandelo/fs_memory" {
         return Some(ProcfsEntry::KandeloFilesystemMemory);
+    }
+    if rest == b"kandelo/shared_mapping_failures" {
+        return Some(ProcfsEntry::KandeloSharedMappingFailures);
     }
     if rest.starts_with(b"kandelo/") {
         // A named directory whose contents are a closed set: an unknown name
@@ -443,22 +449,157 @@ pub fn generate_environ(proc: &Process) -> Result<crate::IoBuffer<u8>, Errno> {
     Ok(buf)
 }
 
-/// Generate /proc/<pid>/maps content.
+/// Generate /proc/<pid>/maps content from the kernel's mapping tables.
 pub fn generate_maps(proc: &Process) -> Result<crate::IoBuffer<u8>, Errno> {
-    let mut buf = crate::IoBuffer::new();
+    format_maps(proc, |shmid| {
+        // SAFETY: the kernel is single-threaded; this is a read of the
+        // segment table the shmget/shmctl syscalls own.
+        unsafe { crate::ipc::global_ipc_table() }.shm_key(shmid)
+    })
+}
+
+/// One `/proc/<pid>/maps` line before formatting.
+struct MapsLine<'a> {
+    start: u64,
+    end: u64,
+    prot: u32,
+    shared: bool,
+    offset: u64,
+    dev: u64,
+    ino: u64,
+    name: Option<NameColumn<'a>>,
+}
+
+enum NameColumn<'a> {
+    Bytes(&'a [u8]),
+    Owned(crate::IoBuffer<u8>),
+}
+
+/// Format `/proc/<pid>/maps` in Linux's layout (fs/proc/task_mmu.c,
+/// `show_vma_header_prefix` and `show_map_vma`):
+///
+/// ```text
+/// start-end perms offset major:minor inode [padding pathname]
+/// ```
+///
+/// Every value comes from kernel state: the process's mmap regions (with the
+/// object recorded at `mmap` for a file mapping), its SysV attachments, and
+/// its program break. `sysv_key` maps a shmid to the segment's key, or `None`
+/// once `IPC_RMID` removed it (Linux then reports key 0, `IPC_PRIVATE`).
+///
+/// Two regions Linux lists are absent because the kernel does not know them,
+/// and they are not invented: the main thread's `[stack]` (the shadow stack
+/// lives in the program's data area, whose bounds the kernel is not told)
+/// and the program image (Wasm code is not in linear memory, and the data
+/// segment below the initial break is not recorded as a region).
+pub fn format_maps(proc: &Process, sysv_key: impl Fn(i32) -> Option<i32>) -> Result<crate::IoBuffer<u8>, Errno> {
+    use wasm_posix_shared::mmap::MAP_SHARED;
+
+    let mut lines = crate::IoBuffer::try_with_capacity(proc.memory.mappings().len().checked_add(1).ok_or(Errno::ENOMEM)?)?;
     for region in proc.memory.mappings() {
         let start = region.addr as u64;
         let end = start + region.len as u64;
-        let r = if region.prot & 1 != 0 { 'r' } else { '-' }; // PROT_READ
-        let w = if region.prot & 2 != 0 { 'w' } else { '-' }; // PROT_WRITE
-        let x = if region.prot & 4 != 0 { 'x' } else { '-' }; // PROT_EXEC
-        let p = if region.flags & 2 != 0 { 's' } else { 'p' }; // MAP_SHARED vs MAP_PRIVATE
-        buf.try_write_fmt(format_args!(
-            "{:08x}-{:08x} {}{}{}{} 00000000 00:00 0\n",
-            start, end, r, w, x, p,
-        ))?;
+        // WHY: the host attaches a SysV segment through an ordinary
+        // MAP_PRIVATE|MAP_ANONYMOUS reservation and supplies the sharing
+        // itself, so the attachment table, not the reservation's flags, is
+        // what says this region is shared. Linux names it after the
+        // segment's key and uses the shmid as its inode.
+        if let Some(attachment) = proc.shm_mapping_at(region.addr) {
+            let key = sysv_key(attachment.shmid).unwrap_or(0);
+            lines.push(MapsLine {
+                start,
+                end,
+                prot: region.prot,
+                shared: true,
+                offset: 0,
+                dev: 0,
+                ino: attachment.shmid as u64,
+                name: Some(NameColumn::Owned(
+                    crate::IoBuffer::formatted(format_args!("/SYSV{:08x} (deleted)", key as u32))?,
+                )),
+            });
+            continue;
+        }
+        let (offset, dev, ino, name) = match &region.file {
+            Some(file) => (
+                region.file_offset,
+                file.dev,
+                file.ino,
+                Some(NameColumn::Bytes(&file.name[..])),
+            ),
+            None => (0, 0, 0, None),
+        };
+        lines.push(MapsLine {
+            start,
+            end,
+            prot: region.prot,
+            shared: region.flags & MAP_SHARED != 0,
+            offset,
+            dev,
+            ino,
+            name,
+        });
+    }
+
+    // The program break's range is the heap Linux labels `[heap]`. Its end
+    // is rounded up to Kandelo's 64 KiB page, as Linux rounds `brk` to its
+    // page; a break that has not grown has no heap region.
+    let layout = proc.memory.layout_metadata();
+    let brk = proc.memory.get_brk();
+    if brk > layout.initial_brk {
+        lines.push(MapsLine {
+            start: layout.initial_brk as u64,
+            end: (brk as u64).saturating_add(0xFFFF) & !0xFFFF,
+            prot: wasm_posix_shared::mmap::PROT_READ | wasm_posix_shared::mmap::PROT_WRITE,
+            shared: false,
+            offset: 0,
+            dev: 0,
+            ino: 0,
+            name: Some(NameColumn::Bytes(b"[heap]")),
+        });
+    }
+    lines.sort_by_key(|line| line.start);
+
+    // Linux pads the fixed columns to `25 + sizeof(void *) * 6 - 1` bytes
+    // before a pathname, then writes one space.
+    let name_column = 25 + usize::from(proc.pointer_width.max(4)) * 6 - 1;
+    let mut buf = crate::IoBuffer::new();
+    for line in &lines {
+        write_maps_line(&mut buf, line, name_column)?;
     }
     Ok(buf)
+}
+
+fn write_maps_line(buf: &mut crate::IoBuffer<u8>, line: &MapsLine, name_column: usize) -> Result<(), Errno> {
+    use alloc::format;
+    use wasm_posix_shared::mmap::{PROT_EXEC, PROT_READ, PROT_WRITE};
+
+    let line_start = buf.len();
+    let r = if line.prot & PROT_READ != 0 { 'r' } else { '-' };
+    let w = if line.prot & PROT_WRITE != 0 { 'w' } else { '-' };
+    let x = if line.prot & PROT_EXEC != 0 { 'x' } else { '-' };
+    let s = if line.shared { 's' } else { 'p' };
+    // dev_t decoded as libc's major()/minor() decode it, so the column
+    // matches what a program computes from its own fstat.
+    let major = ((line.dev >> 32) & 0xffff_f000) | ((line.dev >> 8) & 0x0fff);
+    let minor = ((line.dev >> 12) & 0xffff_ff00) | (line.dev & 0x00ff);
+    buf.try_write_fmt(format_args!("{:08x}-{:08x} {}{}{}{} {:08x} {:02x}:{:02x} {} ",
+        line.start, line.end, r, w, x, s, line.offset, major, minor, line.ino))?;
+    if let Some(name) = &line.name {
+        let name: &[u8] = match name {
+            NameColumn::Bytes(bytes) => bytes,
+            NameColumn::Owned(bytes) => bytes,
+        };
+        let written = buf.len() - line_start;
+        buf.try_reserve(name_column.saturating_sub(written).checked_add(name.len()).and_then(|size| size.checked_add(2)).ok_or(Errno::ENOMEM)?)?;
+        if written < name_column {
+            buf.resize(buf.len() + (name_column - written), b' ');
+        }
+        buf.push(b' ');
+        buf.extend_from_slice(name);
+    }
+    buf.try_push(b'\n')?;
+    Ok(())
 }
 
 /// Generate /proc/<pid>/fdinfo/<fd> content.
@@ -595,6 +736,7 @@ fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
         ProcfsEntry::KandeloDir => (0, 22),
         ProcfsEntry::KandeloWritebackLosses => (0, 23),
         ProcfsEntry::KandeloFilesystemMemory => (0, 24),
+        ProcfsEntry::KandeloSharedMappingFailures => (0, 25),
     }
 }
 
@@ -735,6 +877,11 @@ pub(crate) fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<cr
             crate::writeback_loss::render_writeback_losses()
         }
         ProcfsEntry::KandeloFilesystemMemory => crate::metadata_budget::render_filesystem_memory(),
+        ProcfsEntry::KandeloSharedMappingFailures => {
+            // Ordinary procfs read allocates the rendered text; recording a
+            // failure itself used only fixed kernel-owned numerical state.
+            unsafe { crate::memory::global_shared_mapping_table() }.render_failures()
+        }
         ProcfsEntry::PidMounts(pid) => {
             validate_pid(proc, *pid)?;
             crate::IoBuffer::copy_from(MOUNTS_CONTENT)
@@ -1049,6 +1196,7 @@ pub(crate) fn dir_entries(
         ProcfsEntry::KandeloDir => {
             entries.try_push((crate::IoBuffer::copy_from(b"writeback_losses")?, DT_REG, procfs_ino(0, 23)))?;
             entries.try_push((crate::IoBuffer::copy_from(b"fs_memory")?, DT_REG, procfs_ino(0, 24)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"shared_mapping_failures")?, DT_REG, procfs_ino(0, 25)))?;
         }
         ProcfsEntry::PidDir(pid) => {
             // /proc/<pid>/: fd, fdinfo (dirs), status files, mount tables, cwd/exe/root symlinks
@@ -1508,12 +1656,14 @@ mod tests {
         assert!(mounts_str.contains("kandelo-root / kandelo-vfs rw 0 0"));
         assert!(mounts_str.contains("proc /proc proc rw,nosuid,nodev,noexec 0 0"));
         assert!(mounts_str.contains("devfs /dev devfs rw,nosuid 0 0"));
+        assert!(mounts_str.contains("sysfs /sys sysfs ro,nosuid,nodev,noexec 0 0"));
 
         let mountinfo = generate_content(&proc, &ProcfsEntry::PidMountinfo(1)).unwrap();
         let mountinfo_str = core::str::from_utf8(&mountinfo).unwrap();
         assert!(mountinfo_str.contains(" - kandelo-vfs kandelo-root "));
         assert!(mountinfo_str.contains(" - proc proc "));
         assert!(mountinfo_str.contains(" - devfs devfs "));
+        assert!(mountinfo_str.contains(" /sys ro,nosuid,nodev,noexec - sysfs sysfs ro\n"));
     }
 
     #[test]
@@ -1866,6 +2016,21 @@ mod tests {
     }
 
     #[test]
+    fn shared_mapping_failures_are_kernel_owned_and_have_distinct_proc_identity() {
+        let entry = match_procfs(b"/proc/kandelo/shared_mapping_failures", 1).unwrap();
+        assert_eq!(entry, ProcfsEntry::KandeloSharedMappingFailures);
+        assert_eq!(entry_pid(&entry), None);
+        assert!(!entry.is_dir());
+        assert!(!entry.is_symlink());
+        assert_ne!(regular_file_object_id(&entry), regular_file_object_id(&ProcfsEntry::KandeloFilesystemMemory));
+        let process = crate::process::Process::new(1);
+        let report = generate_content(&process, &entry).unwrap();
+        assert!(report.starts_with(b"version 1\ntotal "));
+        let entries = dir_entries(&process, b"/proc/kandelo", &[]).unwrap();
+        assert!(entries.iter().any(|(name, _, _)| name.as_slice() == b"shared_mapping_failures"));
+    }
+
+    #[test]
     fn filesystem_admission_report_is_kernel_owned_and_has_a_distinct_regular_identity() {
         let entry = match_procfs(b"/proc/kandelo/fs_memory", 1).unwrap();
         assert_eq!(entry, ProcfsEntry::KandeloFilesystemMemory);
@@ -2000,5 +2165,149 @@ mod tests {
             WRITEBACK_LOSS_RECORD_CAPACITY,
             "the report must list exactly the records it says it kept"
         );
+    }
+
+    fn maps_text(proc: &Process, sysv_key: impl Fn(i32) -> Option<i32>) -> String {
+        String::from_utf8(format_maps(proc, sysv_key).unwrap().to_vec()).unwrap()
+    }
+
+    #[test]
+    fn maps_reports_shared_and_private_from_the_mapping_flags() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(7);
+        let private = proc.memory.mmap_anonymous(
+            0, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        let shared = proc.memory.mmap_anonymous(
+            0, 0x10000, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS);
+        let text = maps_text(&proc, |_| None);
+        assert_eq!(
+            text,
+            alloc::format!(
+                "{:08x}-{:08x} rw-p 00000000 00:00 0 \n{:08x}-{:08x} rw-s 00000000 00:00 0 \n",
+                private, private + 0x10000, shared, shared + 0x10000,
+            )
+        );
+    }
+
+    #[test]
+    fn maps_formats_a_file_mapping_like_linux() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(7);
+        let addr = proc.memory.mmap_anonymous(
+            0, 0x30000, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS);
+        // makedev(0x103, 0x2a5): major 259, minor 677 use the extended bits.
+        let dev = ((0x103u64 & 0xfff) << 8) | (0x2a5 & 0xff) | ((0x2a5u64 & !0xff) << 12);
+        let file = alloc::rc::Rc::new(crate::memory::MappingFile {
+            dev,
+            ino: 1234,
+            name: b"/usr/lib/libfoo.so".to_vec(),
+        });
+        assert!(proc.memory.set_mapping_file(addr, 0x20000, file));
+        let line = maps_text(&proc, |_| None);
+        let header = alloc::format!(
+            "{:08x}-{:08x} r-xp 00020000 103:2a5 1234 ",
+            addr, addr + 0x30000,
+        );
+        assert!(line.starts_with(&header), "{line}");
+        // wasm32 pads to 25 + 4 * 6 - 1 = 48 bytes, then one space.
+        assert_eq!(&line[48..], " /usr/lib/libfoo.so\n", "{line:?}");
+        assert!(line[header.len()..48].bytes().all(|b| b == b' '));
+    }
+
+    #[test]
+    fn maps_pads_a_wasm64_process_to_the_64_bit_column() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(7);
+        proc.pointer_width = 8;
+        let addr = proc.memory.mmap_anonymous(0, 0x10000, PROT_READ, MAP_SHARED | MAP_ANONYMOUS);
+        let file = alloc::rc::Rc::new(crate::memory::MappingFile {
+            dev: 0,
+            ino: 9,
+            name: b"/dev/fb0".to_vec(),
+        });
+        proc.memory.set_mapping_file(addr, 0, file);
+        let line = maps_text(&proc, |_| None);
+        assert_eq!(&line[72..], " /dev/fb0\n", "{line:?}");
+    }
+
+    #[test]
+    fn maps_moves_the_file_offset_with_a_trimmed_or_split_mapping() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(7);
+        let addr = proc.memory.mmap_anonymous(
+            0, 0x40000, PROT_READ, MAP_SHARED | MAP_ANONYMOUS);
+        let file = alloc::rc::Rc::new(crate::memory::MappingFile {
+            dev: 0x801,
+            ino: 55,
+            name: b"/dev/shm/pool".to_vec(),
+        });
+        proc.memory.set_mapping_file(addr, 0x100000, file);
+        // Trim the first page, then punch a hole in the middle.
+        proc.memory.munmap(addr, 0x10000);
+        proc.memory.munmap(addr + 0x20000, 0x10000);
+        let text = maps_text(&proc, |_| None);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].starts_with(&alloc::format!(
+            "{:08x}-{:08x} r--s 00110000 08:01 55 ",
+            addr + 0x10000, addr + 0x20000,
+        )), "{text}");
+        assert!(lines[1].starts_with(&alloc::format!(
+            "{:08x}-{:08x} r--s 00130000 08:01 55 ",
+            addr + 0x30000, addr + 0x40000,
+        )), "{text}");
+        assert!(lines.iter().all(|line| line.ends_with(" /dev/shm/pool")));
+    }
+
+    #[test]
+    fn maps_reports_a_sysv_attachment_as_a_shared_segment() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(7);
+        // The host reserves a SysV attachment as private anonymous memory and
+        // supplies the sharing itself; the attachment table is the authority.
+        let addr = proc.memory.mmap_anonymous(
+            0, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        proc.record_shm_mapping(addr, 3, 4096).unwrap();
+        let live = maps_text(&proc, |id| (id == 3).then_some(0x1234_abcd));
+        assert!(live.contains(" rw-s 00000000 00:00 3 "), "{live}");
+        assert!(live.ends_with(" /SYSV1234abcd (deleted)\n"), "{live}");
+        // After IPC_RMID Linux reports the key as IPC_PRIVATE.
+        let removed = maps_text(&proc, |_| None);
+        assert!(removed.ends_with(" /SYSV00000000 (deleted)\n"), "{removed}");
+    }
+
+    #[test]
+    fn maps_reports_the_grown_program_break_as_the_heap() {
+        let mut proc = Process::new(7);
+        proc.memory.set_brk_base(0x0012_3450);
+        assert_eq!(maps_text(&proc, |_| None), "", "an ungrown break has no heap");
+        assert_eq!(proc.memory.set_brk(0x0013_0000 + 0x10), 0x0013_0010);
+        let text = maps_text(&proc, |_| None);
+        assert!(
+            text.starts_with("00123450-00140000 rw-p 00000000 00:00 0 "),
+            "{text}"
+        );
+        assert_eq!(&text[48..], " [heap]\n", "{text:?}");
+    }
+
+    #[test]
+    fn maps_inherits_file_mappings_across_fork() {
+        use wasm_posix_shared::mmap::*;
+        let mut parent = Process::new(7);
+        let addr = parent.memory.mmap_anonymous(0, 0x10000, PROT_READ, MAP_SHARED | MAP_ANONYMOUS);
+        let file = alloc::rc::Rc::new(crate::memory::MappingFile {
+            dev: 0,
+            ino: 77,
+            name: b"/memfd:pool (deleted)".to_vec(),
+        });
+        parent.memory.set_mapping_file(addr, 0, file);
+        let mut child = Process::new(8);
+        let mut mappings = crate::IoBuffer::try_with_capacity(parent.memory.mappings().len()).unwrap();
+        for mapping in parent.memory.mappings() {
+            mappings.push(crate::memory::MappedRegion::anonymous(mapping.addr, mapping.len, mapping.prot, mapping.flags));
+        }
+        child.memory.set_mappings(mappings);
+        child.memory.inherit_mapping_files(parent.memory.mappings());
+        assert_eq!(maps_text(&child, |_| None), maps_text(&parent, |_| None));
     }
 }

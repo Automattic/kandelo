@@ -1,3 +1,13 @@
+import {scalarColorsUnclamped,scalarNativeCalls} from "./scalar-state.js";
+import type {GlWirePayload} from "./wire-payload.js";
+import {validPreparedInlineDraw,validPreparedInlineCompact,validPreparedInlineBody} from "./owned-inline-draw.js";
+import {clearFramebufferSnapshot,validFramebufferSnapshotClear} from "./private-framebuffer-clear.js";
+import {drawBufferSnapshots,validBufferSnapshotDraw} from "./private-buffer-draw.js";
+import {nativeGlFault,checkedPreparedNativeCall} from "./native-recovery.js";
+import {journalInteger} from "./program-journal-query.js";
+import { interruptCompressedUpload } from "./compressed-upload.js";
+import { rendererLost } from "./renderer-loss.js";
+import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
 /**
  * Cmdbuf TLV walker + per-op dispatch.
  *
@@ -18,8 +28,51 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { interruptUniformUpload, runUniformUpload, uniformUploadOp, validUniformUploadPayload } from "./uniform-upload.js";
+import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors, consumeObservedGlError } from "./errors.js";
+import { acceptedUniformCount, recordPreparedUniformValues, type GlUniformTarget } from "./uniform-setters.js";
+import { imageTextureOperation, imageRenderbufferStorage, prepareCubeRespecification, prepareImageDraw, renderbufferNative } from "./image-storage.js";
+import { cubeGenerateMipmap, cubeImagesChanged, cubeSpecifyImage, cubeTexParameter, cubeUpdateImage, TEXTURE_2D_ARRAY } from "./cube-storage.js";
+import { boundTextureObject, isCubeFace, recordGeneratedMipmaps, recordTextureLevel, textureLevel } from "./texture-levels.js";
+import { noteTextureFilter } from "./lod-switchover.js";
+import { repairNativeState, rethrowNativeGlFault } from "./native-recovery.js";
+import { bindImageObject } from "./image-bindings.js";
+import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
+import { capabilityEnabled } from "./state-query.js";
+import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
+import { expandedFloatFormat, expandedNative, expandedSourceBytes, expandRows } from "./luminance-float.js";
+import { glesExtensionAdvertised } from "./capabilities.js";
+import { clearStorageAlphaToOne, setOpaqueAlphaStorage, prepareDrawTarget } from "./opaque-alpha.js";
+import { copiedTextureColorRenderable, depthTextureFormat, nativeRenderbufferFormat, renderbufferColorRenderable,
+  renderbufferOpaqueAlpha,
+  renderbufferDepthRenderable, renderbufferStencilRenderable, textureColorRenderable } from "./es2-formats.js";
+import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
+import { installShaderSource, nativeShaderSource } from "./shader-source.js";
+import { compileGuestShader, compatibleShaderSource, recordShaderLanguage, type ShaderLanguage } from "./essl3-translation.js";
+import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
+import { webglForbiddenBlendPair, updateBlendSourceFactor } from "./blend-constant.js";
+import { attributeAliasLayout } from "./attribute-aliasing.js";
+import { noteSamplerWrite } from "./depth-sampling.js";
+import { externalTexParameter, recordCompiledExternalSamplers, TEXTURE_EXTERNAL_OES, validateExternalSamplers } from "./external-texture.js";
+import { recordProgramValidation } from "./validate-status.js";
+import { recordRenderbufferSize, requireGlesFramebufferComplete } from "./image-sizes.js";
+import { noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
+import { drawGlesElements } from "./index-data.js";
+import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-client-draw.js";
+import { installExistingVertexAttribute, installVertexAttribute, installVertexConstant } from "./vertex-data.js";
+import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
+import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted, requireProgramObject, requireShaderObject, shaderType } from "./program-objects.js";
+import { stateArgumentError } from "./state-validation.js";
+import { attachShaderError, bindAttribLocationError, renderbufferStorageError, subImageError, texImageSizeError,
+  texParameterValueError, uploadBytes, uploadSizeError, vertexAttribIndexError } from "./es2-validation.js";
+import { glAuditOn, noteGlAuditOp, withGlAuditFrame, auditGuestErrorFlags } from "./native-audit.js";
+import { combinedTextureUnits, knownVertexAttributeLimit, MAX_RENDERBUFFER_SIZE, MAX_TEXTURE_SIZE, MAX_VERTEX_ATTRIBS,
+  maxCubeMapTextureSize, maxViewport, predictionLimit } from "./limits.js";
 import * as O from "./ops.js";
+import { withMultisampleRead } from "./multisample.js";
+import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, deleteFramebufferName, attachImageObject, bindFramebufferObject } from "./image-references.js";
+import { activeVertexArray, collectRetiredBuffers, defaultVertexArray, deleteBufferNames, vertexAttribute } from "./buffer-references.js";
 import {
   GL_BACK,
   GL_FRONT,
@@ -61,6 +114,13 @@ function updateStencilFaces(
   if (face === GL_BACK || face === GL_FRONT_AND_BACK) update(shadow.stencil.back);
 }
 
+/** ES 2.0 clamps ClearColor/BlendColor to [0,1]; with a floating-point
+ * color buffer extension the values are kept as specified. */
+
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
 let glBridgeFailureLogs = 0;
 function logGlBridgeFailure(phase: string, op: number, err: unknown): void {
   if (glBridgeFailureLogs >= 20) return;
@@ -73,17 +133,74 @@ export function decodeAndDispatch(
   b: GlBinding,
   offset: number,
   length: number,
+  storage?: {before: () => boolean; after: () => boolean},
+): number {
+  // Test-only native-divergence audit: attribute this frame's native calls.
+  if (glAuditOn) return withGlAuditFrame(b, () => decodeAndDispatchFrame(b, offset, length, storage));
+  return decodeAndDispatchFrame(b, offset, length, storage);
+}
+
+function decodeAndDispatchFrame(
+  b: GlBinding,
+  offset: number,
+  length: number,
+  storage?: {before: () => boolean; after: () => boolean},
 ): number {
   if (!b.cmdbufView || !b.gl) return GL_SUBMIT_OK;
-  return walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
-    try {
-      dispatch(b.gl!, b, payload, 0, op);
+  // Validate the entire batch before the first observable mutation. A bad
+  // trailing record must not leave a partially executed, rejected batch.
+  const reader=b.wirePayload??undefined;
+  const validation = walkCommandBuffer(b.cmdbufView,offset,length,null,reader);
+  if (validation !== GL_SUBMIT_OK) {b.compressedUpload=null;b.uniformUpload=null;return validation;}
+  const result = walkCommandBuffer(b.cmdbufView,offset,length,b,reader,storage);
+  if (result < 0) {b.uniformUpload=null;requestClientArrayRestore(b);}
+  if (!repairNativeState(b.gl) || !reconcileClientArrayRestore(b,b.gl)) {
+    b.uniformUpload=null;
+    requestClientArrayRestore(b);
+    return GL_SUBMIT_EIO;
+  }
+  collectRetiredImages(b);
+  collectRetiredBuffers(b);
+  return result;
+}
+
+function dispatchParsedPayload(b:GlBinding,payload:DataView,op:number,storage?:{before:()=>boolean;after:()=>boolean}):number {
+    if (glAuditOn) noteGlAuditOp(op, payload);
+    // Flags have no native effects and may accompany a partial upload batch.
+    // Merge before repair/utility work without interrupting that transaction.
+    if (op === O.OP_CLIENT_ERRORS) {
+      mergeClientGlErrors(b,payload.getUint32(0,true));
       return GL_SUBMIT_OK;
-    } catch (err) {
+    }
+    if (op === O.OP_TRANSPORT_ERROR_OBSERVED) {
+      // WHY: a failed transport has already returned INVALID_OPERATION.
+      // Consume the coalesced earlier flag here, without claiming knowledge
+      // of other flags or consuming the same flag from a later command.
+      consumeObservedGlError(b,1 << (0x502 - 0x500));
+      return GL_SUBMIT_OK;
+    }
+    if (op === O.OP_ERROR_OBSERVED) {
+      if (glAuditOn) auditGuestErrorFlags(b.errors,payload.getUint32(0,true));
+      consumeObservedGlError(b,payload.getUint32(4,true));
+      return GL_SUBMIT_OK;
+    }
+    if (interruptCompressedUpload(b)) return GL_SUBMIT_OK;
+    if (!uniformUploadOp(op) && interruptUniformUpload(b)) return GL_SUBMIT_OK;
+    try {
+      if (!repairNativeState(b.gl!) || !reconcileClientArrayRestore(b,b.gl!)) return GL_SUBMIT_EIO;
+      if (storage && !storage.before()) return GL_SUBMIT_EIO;
+      // Publish CPU-image storage even when dispatch threw, but never let
+      // that result replace the exception: a NativeGlFault must propagate.
+      let failure: { error: unknown } | null = null;
+      try { dispatch(b.gl!, b, payload, 0, op); }
+      catch (error) { failure = { error }; }
+      const published = !storage || storage.after();
+      if (failure) throw failure.error;
+      return published ? GL_SUBMIT_OK : GL_SUBMIT_EIO;
+    } catch (err) { rethrowNativeGlFault(err);
       logGlBridgeFailure("submit", op, err);
       return GL_SUBMIT_EIO;
     }
-  });
 }
 
 export function validateCommandBuffer(
@@ -91,26 +208,31 @@ export function validateCommandBuffer(
   offset: number,
   length: number,
 ): number {
-  return walkCommandBuffer(buf, offset, length, () => GL_SUBMIT_OK);
+  return walkCommandBuffer(buf, offset, length, null);
 }
 
 function walkCommandBuffer(
   buf: Uint8Array,
   offset: number,
   length: number,
-  visit: (payload: DataView, op: number) => number,
+  binding:GlBinding|null,
+  reader?:GlWirePayload,
+  storage?:{before:()=>boolean;after:()=>boolean},
 ): number {
   if (!isSafeSpan(offset, length, buf.byteLength)) return GL_SUBMIT_EINVAL;
-  const view = new DataView(buf.buffer, buf.byteOffset + offset, length);
+  const view = reader??new DataView(buf.buffer, buf.byteOffset + offset, length);
+  reader?.begin();
+  try {
   let p = 0;
   while (p < length) {
+    reader?.reset(buf,offset,length);
     if (length - p < 4) return GL_SUBMIT_EINVAL;
     const op = view.getUint16(p, true);
     const payloadLen = view.getUint16(p + 2, true);
     const payloadStart = p + 4;
     const payloadEnd = payloadStart + payloadLen;
     if (payloadEnd > length) return GL_SUBMIT_EINVAL;
-    const payload = new DataView(
+    const payload = reader?reader.reset(buf,offset+payloadStart,payloadLen):new DataView(
       view.buffer,
       view.byteOffset + payloadStart,
       payloadLen,
@@ -123,11 +245,12 @@ function walkCommandBuffer(
       );
       return GL_SUBMIT_EINVAL;
     }
-    const rc = visit(payload, op);
+    const rc = binding?dispatchParsedPayload(binding,payload,op,storage):GL_SUBMIT_OK;
     if (rc !== GL_SUBMIT_OK) return rc;
     p = payloadEnd;
   }
   return GL_SUBMIT_OK;
+  }finally{reader?.end();}
 }
 
 function isSafeSpan(offset: number, length: number, limit: number): boolean {
@@ -195,7 +318,7 @@ function countedIntPayload(
   return v.byteLength === headerLen + count * intsPerCount * 4;
 }
 
-function copyBytes(v: DataView, offset: number, length: number): Uint8Array {
+function copyBytes(v: DataView, offset: number, length: number): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(length);
   out.set(new Uint8Array(v.buffer, v.byteOffset + offset, length));
   return out;
@@ -226,6 +349,30 @@ function copyPixels(v: DataView, offset: number, length: number, type: number) {
   }
 }
 
+/** Expand guest rows packed at the current UNPACK_ALIGNMENT. A short
+ * payload is the same INVALID_OPERATION a native upload would raise. */
+function expandedUpload(b: GlBinding, format: number, type: number, bytes: Uint8Array,
+                        width: number, height: number): ArrayBufferView | null {
+  const alignment = b.shadow.unpackAlignment;
+  const stride = Math.ceil(width * expandedSourceBytes(format, type) / alignment) * alignment;
+  const data = width < 0 || height < 0 ? null : expandRows(format, type, bytes, width, height, stride);
+  if (!data) recordGlError(b, 0x502);
+  return data;
+}
+
+/** 16-bit depth rows packed at the current UNPACK_ALIGNMENT, widened to
+ * tightly packed 32-bit values (c * 65537 maps 0xffff to 0xffffffff). */
+function widenedDepthUpload(b: GlBinding, bytes: Uint8Array, width: number, height: number): Uint32Array | null {
+  const alignment = b.shadow.unpackAlignment, stride = Math.ceil(width * 2 / alignment) * alignment;
+  if (width < 0 || height < 0 || (width && height && bytes.length < (height - 1) * stride + width * 2)) {
+    recordGlError(b, 0x502); return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), out = new Uint32Array(width * height);
+  for (let r = 0; r < height; r++)
+    for (let x = 0; x < width; x++) out[r * width + x] = view.getUint16(r * stride + x * 2, true) * 65537;
+  return out;
+}
+
 function normalizeTextureType(type: number): number {
   // GLES2's OES_texture_half_float extension uses GL_HALF_FLOAT_OES, while
   // WebGL2 accepts the core GL_HALF_FLOAT token. Native renderers such as LOVE
@@ -235,7 +382,8 @@ function normalizeTextureType(type: number): number {
 
 function normalizeTextureInternalFormat(internal: number, format: number, type: number): number {
   // GLES2 extensions use unsized RED/RG and floating-point formats. WebGL2
-  // requires their sized GLES3 equivalents; preserve explicit sized formats.
+  // requires their sized GLES3 equivalents. es2-formats.ts has already
+  // required internal === format, so only those unsized pairs arrive here.
   if (internal !== format) return internal;
   switch (format) {
     case 0x1903 /* RED */:
@@ -269,7 +417,36 @@ function normalizeTextureInternalFormat(internal: number, format: number, type: 
 }
 
 function validPayload(op: number, v: DataView): boolean {
+  if (op === O.OP_TRANSPORT_ERROR_OBSERVED) return exact(v,0);
+  if (op === O.OP_CLIENT_ERRORS) return exact(v,4) && (v.getUint32(0,true) & ~GL_CLIENT_ERROR_MASK) === 0;
+  if (op === O.OP_ERROR_OBSERVED) {
+    if (!exact(v,8)) return false;
+    const expected = v.getUint32(0,true), consumed = v.getUint32(4,true);
+    return (expected & ~GL_CLIENT_ERROR_MASK) === 0 && (consumed & ~expected) === 0 &&
+      (consumed === 0 || (consumed & (consumed - 1)) === 0);
+  }
+  if (uniformUploadOp(op)) return validUniformUploadPayload(op,v);
   switch (op) {
+    case O.OP_USE_PROGRAM_JOURNAL:
+      return exact(v,16) && v.getUint32(0,true)!==0 && v.getUint32(4,true)<256 &&
+        v.getUint32(12,true)<=0x1f_ffff && journalInteger(v,8)!==0;
+    case O.OP_DRAW_CLIENT_ARRAYS:
+      return validPreparedInlineBody(v);
+    case O.OP_DRAW_BUFFER_SNAPSHOTS:
+      return validBufferSnapshotDraw(v);
+    case O.OP_DRAW_FRAMEBUFFER_SNAPSHOTS:
+      return validBufferSnapshotDraw(v,true);
+    case O.OP_DRAW_PREPARED_SNAPSHOTS:
+      return validBufferSnapshotDraw(v,false,true);
+    case O.OP_DRAW_PREPARED_INLINE:
+      return validPreparedInlineDraw(v);
+    case O.OP_DRAW_PREPARED_INLINE_COMPACT:
+      return validPreparedInlineCompact(v);
+    case O.OP_CLEAR_FRAMEBUFFER_SNAPSHOT:
+      return validFramebufferSnapshotClear(v);
+    case O.OP_BEGIN_CLIENT_ARRAY:
+    case O.OP_END_CLIENT_ARRAY:
+      return exact(v,0);
     case O.OP_CLEAR:
     case O.OP_ENABLE:
     case O.OP_DISABLE:
@@ -283,6 +460,7 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_DELETE_SHADER:
     case O.OP_CREATE_PROGRAM:
     case O.OP_LINK_PROGRAM:
+    case O.OP_VALIDATE_PROGRAM:
     case O.OP_USE_PROGRAM:
     case O.OP_DELETE_PROGRAM:
     case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY:
@@ -375,6 +553,12 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_BIND_ATTRIB_LOCATION:
       return tailBytesPayload(v, 12, 8);
 
+    case O.OP_BUFFER_DATA_SNAPSHOT: {
+      if(v.byteLength<24 || !v.getUint32(0,true) || v.getUint32(4,true)>=32 ||
+        !v.getUint32(8,true) || v.getUint32(12,true)!==GL_ARRAY_BUFFER)return false;
+      const bytes=v.getUint32(16,true);
+      return bytes<=32768 && (v.byteLength===24 || v.byteLength===24+bytes);
+    }
     case O.OP_BUFFER_DATA:
       return bufferDataPayload(v);
     case O.OP_UNIFORM_MATRIX4FV:
@@ -409,64 +593,259 @@ function validPayload(op: number, v: DataView): boolean {
   }
 }
 
+/** Checked storage requests prefix an unchanged command payload with its opcode.
+ * Subimages admit only destination metadata here; pixel rows follow separately.
+ * Validate complete spans before replies or native side effects. */
+export function validImageStorageRequest(input: Uint8Array): boolean {
+  if (input.byteLength < 4) return false;
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength), op = view.getUint32(0, true);
+  if (op === O.OP_TEX_IMAGE_2D || op === O.OP_TEX_SUB_IMAGE_2D) {
+    if (input.byteLength !== 40 || view.getUint32(36, true) !== 0) return false;
+  } else if (op === O.OP_RENDERBUFFER_STORAGE) {
+    if (input.byteLength !== 20) return false;
+  } else return false;
+  return validPayload(op, new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4));
+}
+/** Execute storage allocation or destination admission after span validation. */
+export function executeImageStorageRequest(b: GlBinding, input: Uint8Array): boolean {
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
+  const payload = new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4);
+  if (glAuditOn) noteGlAuditOp(view.getUint32(0, true), payload);
+  return dispatch(b.gl!, b, payload, 0, view.getUint32(0, true), true) === true;
+}
+
+/** Result-bearing program graph changes use the unchanged command payload.
+ * Keep the allowlist narrow: arbitrary commands cannot acquire a receipt. */
+export function validProgramMutationRequest(input: Uint8Array): boolean {
+  if (input.byteLength !== 8 && input.byteLength !== 12) return false;
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
+  const op = view.getUint32(0, true);
+  switch (op) {
+    case O.OP_ATTACH_SHADER: case O.OP_DETACH_SHADER:
+      return input.byteLength === 12;
+    case O.OP_DELETE_SHADER: case O.OP_DELETE_PROGRAM:
+    case O.OP_LINK_PROGRAM: case O.OP_USE_PROGRAM:
+      return input.byteLength === 8;
+    default: return false;
+  }
+}
+
+/** Use the real binding for current-program writes and peer finalization.
+ * A temporary operation error owner distinguishes rejection even if the same
+ * flag was already set. This scope is synchronous and never leaves dispatch. */
+export function executeProgramMutationRequest(b: GlBinding, input: Uint8Array): boolean {
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
+  const payload = new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4);
+  const previous = b.errors;
+  b.errors = [];
+  try {
+    if (glAuditOn) noteGlAuditOp(view.getUint32(0, true), payload);
+    dispatch(b.gl!, b, payload, 0, view.getUint32(0, true));
+    return b.errors.length === 0 && !rendererLost(b);
+  } finally {
+    const errors = b.errors;
+    b.errors = previous;
+    if (rendererLost(b)) previous.length = 0;
+    else for (const error of errors) recordGlError(b, error);
+  }
+}
+
+/** Record a predicted GLES 2.0 error; true when there is none. */
+function predicted(b: GlBinding, error: number): boolean {
+  if (error === 0) return true;
+  recordGlError(b, error);
+  return false;
+}
+
+/** ES 2.0 section 3.7.1 sizes of a 2D image (es2-validation.ts). */
+function texImageSizeValid(b: GlBinding, level: number, width: number, height: number, border: number): boolean {
+  return predicted(b, texImageSizeError(predictionLimit(b.gl!, MAX_TEXTURE_SIZE), level, width, height, border));
+}
+
+/** ES 2.0 section 3.7.2 destination rules of a sub-image update against the
+ * level the host recorded for the bound texture (es2-validation.ts). */
+function subImageValid(b: GlBinding, target: number, level: number, x: number, y: number, width: number, height: number): boolean {
+  const object = boundTextureObject(b, target);
+  return predicted(b, subImageError(object ? textureLevel(object, target, level) : undefined, x, y, width, height));
+}
+
+/** ES 2.0 section 3.7.1 sizes of a cube-map face image: square, within
+ * MAX_CUBE_MAP_TEXTURE_SIZE at its level, border 0 (INVALID_VALUE). Native
+ * cube targets checked this; the face's 2D array storage
+ * (cube-storage.ts) would accept a non-square layer. */
+function cubeImageSizeValid(b: GlBinding, level: number, width: number, height: number, border: number): boolean {
+  const maximum = maxCubeMapTextureSize(b);
+  if (maximum === null) return false;
+  if (width < 0 || height < 0 || width !== height || width > maximum >> level || border !== 0) {
+    recordGlError(b, 0x501); return false;
+  }
+  return true;
+}
+
+/** Compressed formats are those the native renderer lists, as for 2D
+ * images (compressed-upload.ts); any other is INVALID_ENUM. */
+function compressedFormatListed(b: GlBinding, format: number): boolean {
+  let formats: unknown = null;
+  if (!checkedGlCall(b, () => { formats = b.gl!.getParameter(0x86a3); })) return false;
+  if (!(ArrayBuffer.isView(formats) || Array.isArray(formats)) || !Array.from(formats as ArrayLike<number>).includes(format)) {
+    recordGlError(b, 0x500); return false;
+  }
+  return true;
+}
+
+/** One reused holder: each Uniform* command fills it while validating and
+ * consumes it in the same dispatch, so a setter allocates nothing. */
+const uniformTarget: GlUniformTarget = { native: null, layout: null };
+
 function dispatch(
   gl: WebGL2RenderingContext,
   b: GlBinding,
   v: DataView,
   p: number,
   op: number,
-): void {
+  destinationOnly = false,
+): boolean | void {
+  if (uniformUploadOp(op)) {
+    runUniformUpload(b,op,v,(original,payload)=>{dispatch(gl,b,payload,0,original);});
+    return;
+  }
+  if (interruptUniformUpload(b)) return;
+
+  const error = stateArgumentError(op, v);
+  if (error !== 0) {
+    recordGlError(b, error);
+    return;
+  }
+  // GLES 2 format admission precedes target materialization and native calls:
+  // WebGL 2 would otherwise accept GLES 3 sized/integer formats.
+  const formatError =
+    op === O.OP_TEX_IMAGE_2D ? texImageFormatError(gl,v.getUint32(p+8,true),v.getUint32(p+24,true),v.getUint32(p+28,true))
+    : op === O.OP_TEX_SUB_IMAGE_2D ? texSubImageFormatError(gl,v.getUint32(p+24,true),v.getUint32(p+28,true))
+    : op === O.OP_COPY_TEX_IMAGE_2D ? copyTexImageFormatError(gl,v.getUint32(p+8,true))
+    : op === O.OP_RENDERBUFFER_STORAGE ? renderbufferFormatError(gl,v.getUint32(p+4,true)) : 0;
+  if (formatError !== 0) {
+    recordGlError(b, formatError);
+    return;
+  }
+  // OES_depth_texture and OES_packed_depth_stencil: depth and depth-stencil
+  // textures exist only for TEXTURE_2D; any other image target is
+  // INVALID_OPERATION (WebGL 2 accepts depth cube maps).
+  if ((op === O.OP_TEX_IMAGE_2D || op === O.OP_TEX_SUB_IMAGE_2D) &&
+      depthTextureFormat(v.getUint32(p+24,true)) && isCubeFace(v.getUint32(p,true))) {
+    recordGlError(b, 0x502);
+    return;
+  }
+  switch (op) {
+    case O.OP_TEX_IMAGE_2D: case O.OP_TEX_SUB_IMAGE_2D:
+    case O.OP_COPY_TEX_IMAGE_2D: case O.OP_COPY_TEX_SUB_IMAGE_2D:
+      if (!prepareTextureOperation(b,v.getUint32(p,true),true,v.getInt32(p+4,true))) return;
+      break;
+    case O.OP_COMPRESSED_TEX_IMAGE_2D: case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D:
+      // Compressed extensions can define different level rules (including
+      // negative paletted levels); keep their native format validation separate.
+      if (!prepareTextureOperation(b,v.getUint32(p,true),true)) return;
+      break;
+    case O.OP_TEX_PARAMETERI: case O.OP_TEX_PARAMETERF:
+      if (!validGlesTextureParameter(v.getUint32(p+4,true))) { recordGlError(b,0x500); return; }
+      // An external texture has no native target (external-texture.ts),
+      // and its own value rules.
+      if (v.getUint32(p,true) !== TEXTURE_EXTERNAL_OES) {
+        if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
+        const value = op === O.OP_TEX_PARAMETERI ? v.getInt32(p+8,true) : v.getFloat32(p+8,true);
+        if (!predicted(b, texParameterValueError(v.getUint32(p+4,true), value))) return;
+      }
+      break;
+    case O.OP_GENERATE_MIPMAP:
+      if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
+      break;
+  }
+  let uniformCount=1;
+  if (op >= O.OP_UNIFORM1I && op <= O.OP_UNIFORM_MATRIX3FV) {
+    uniformTarget.native=null;uniformTarget.layout=null;
+    const count=acceptedUniformCount(b,op,v,p,uniformTarget);
+    if(count===null || count===0) return;
+    uniformCount=count;
+    // Only live prepared-owned-draw authorities opt this executable into a
+    // mirror. Unused private variants impose no value-copy work on programs.
+    recordPreparedUniformValues(uniformTarget,op,v,p,count);
+    noteUniformWrite(b.currentProgram);
+    // Sampler units, which select depth-sampling variants, change only here.
+    if (op === O.OP_UNIFORM1I || op === O.OP_UNIFORM1IV) noteSamplerWrite(b.currentProgram);
+  }
   switch (op) {
     // ----- state ----------------------------------------------------------
-    case O.OP_CLEAR:
+    case O.OP_CLEAR: {
+      if (!requireGlesFramebufferComplete(b)) return;
+      // RGB color storage kept as RGBA: the native alpha is never written;
+      // sampled siblings of the storage see the write.
+      prepareDrawTarget(b);
       gl.clear(v.getUint32(p, true));
       return;
-    case O.OP_CLEAR_COLOR:
-      b.shadow.clearColor = [
-        v.getFloat32(p, true), v.getFloat32(p + 4, true),
-        v.getFloat32(p + 8, true), v.getFloat32(p + 12, true),
-      ];
-      gl.clearColor(...b.shadow.clearColor);
+    }
+    case O.OP_CLEAR_COLOR: {
+      // GL_EXT_color_buffer_half_float issues 5 and 8: the clear color is not
+      // clamped when specified (fixed-point buffers clamp when cleared).
+      const extended=scalarColorsUnclamped(gl),color=b.shadow.clearColor;
+      for(let i=0;i<4;i++){const value=v.getFloat32(p+i*4,true);color[i]=extended?value:clampUnit(value);}
+      gl.clearColor(color[0],color[1],color[2],color[3]);
       return;
-    case O.OP_VIEWPORT:
-      b.shadow.viewport = [
-        v.getInt32(p, true), v.getInt32(p + 4, true),
-        v.getInt32(p + 8, true), v.getInt32(p + 12, true),
-      ];
-      gl.viewport(...b.shadow.viewport);
+    }
+    case O.OP_VIEWPORT: {
+      const maximum = maxViewport(gl);
+      // These context-owned rows are live state, not immutable snapshots.
+      // Native inverses and submitted drawable selectors copy their scalars;
+      // replacing the row here would allocate after local acceptance.
+      const viewport=b.shadow.viewport;
+      viewport[0]=v.getInt32(p,true);viewport[1]=v.getInt32(p+4,true);
+      viewport[2]=Math.min(v.getInt32(p+8,true),maximum?.[0]??Infinity);
+      viewport[3]=Math.min(v.getInt32(p+12,true),maximum?.[1]??Infinity);
+      gl.viewport(viewport[0],viewport[1],viewport[2],viewport[3]);
       return;
+    }
     case O.OP_SCISSOR: {
       const x = v.getInt32(p, true);
       const y = v.getInt32(p + 4, true);
       const w = v.getInt32(p + 8, true);
       const h = v.getInt32(p + 12, true);
       gl.scissor(x, y, w, h);
-      b.shadow.scissor.rect = [x, y, w, h];
+      const rect=b.shadow.scissor.rect;rect[0]=x;rect[1]=y;rect[2]=w;rect[3]=h;
       return;
     }
+    // The capability is one of ES 2.0's nine, each a WebGL 2 capability, and
+    // glEnable/glDisable's only error is INVALID_ENUM for any other. Native
+    // acceptance is therefore known before the call, the shadow is committed
+    // with it, and no getError pair is spent per toggle (compositors toggle
+    // blending and scissoring around most draws). Flags already pending stay
+    // native and owned by this selected context.
     case O.OP_ENABLE: {
       const cap = v.getUint32(p, true);
+      if (capabilityEnabled(b,cap) === undefined) { recordGlError(b,0x500); return; }
       gl.enable(cap);
       setCap(b.shadow, cap, true);
       return;
     }
     case O.OP_DISABLE: {
       const cap = v.getUint32(p, true);
+      if (capabilityEnabled(b,cap) === undefined) { recordGlError(b,0x500); return; }
       gl.disable(cap);
       setCap(b.shadow, cap, false);
       return;
     }
-    case O.OP_BLEND_FUNC: {
-      const s = v.getUint32(p, true), d = v.getUint32(p + 4, true);
-      gl.blendFunc(s, d);
-      b.shadow.blendFunc = { srcRGB: s, dstRGB: d, srcA: s, dstA: d };
-      return;
-    }
+    case O.OP_BLEND_FUNC:
     case O.OP_BLEND_FUNC_SEPARATE: {
+      const separate = op === O.OP_BLEND_FUNC_SEPARATE;
       const srcRGB = v.getUint32(p, true), dstRGB = v.getUint32(p + 4, true);
-      const srcA = v.getUint32(p + 8, true), dstA = v.getUint32(p + 12, true);
-      gl.blendFuncSeparate(srcRGB, dstRGB, srcA, dstA);
-      b.shadow.blendFunc = { srcRGB, dstRGB, srcA, dstA };
+      const srcA = separate ? v.getUint32(p + 8, true) : srcRGB, dstA = separate ? v.getUint32(p + 12, true) : dstRGB;
+      const logical=b.shadow.blendFunc;
+      // ES 2.0 table 4.1 allows constant color with constant alpha; WebGL
+      // does not, so that RGB source factor is applied by the draw
+      // (blend-constant.ts) and the native one is ONE.
+      const nativeSource=webglForbiddenBlendPair(srcRGB,dstRGB)?1:srcRGB;
+      const receiver=scalarNativeCalls(gl).blend,call=receiver.call as ["blendFuncSeparate",number,number,number,number];
+      call[1]=nativeSource;call[2]=dstRGB;call[3]=srcA;call[4]=dstA;
+      if(!checkedPreparedNativeCall(b,receiver))return;
+      logical.srcRGB=srcRGB;logical.dstRGB=dstRGB;logical.srcA=srcA;logical.dstA=dstA;
+      updateBlendSourceFactor(b.shadow);
       return;
     }
     case O.OP_BLEND_EQUATION: {
@@ -482,15 +861,14 @@ function dispatch(
       b.shadow.blendEquation = { rgb: modeRGB, alpha: modeA };
       return;
     }
-    case O.OP_BLEND_COLOR:
-      b.shadow.blendColor = [
-        v.getFloat32(p, true),
-        v.getFloat32(p + 4, true),
-        v.getFloat32(p + 8, true),
-        v.getFloat32(p + 12, true),
-      ];
-      gl.blendColor(...b.shadow.blendColor);
+    case O.OP_BLEND_COLOR: {
+      // Issue 7: the constant blend color is not clamped when specified.
+      const extended=scalarColorsUnclamped(gl),color=b.shadow.blendColor;
+      for(let i=0;i<4;i++){const value=v.getFloat32(p+i*4,true);color[i]=extended?value:clampUnit(value);}
+      gl.blendColor(color[0],color[1],color[2],color[3]);
+      updateBlendSourceFactor(b.shadow);
       return;
+    }
     case O.OP_CLEAR_DEPTHF:
       b.shadow.clearDepth = Math.min(1, Math.max(0, v.getFloat32(p, true)));
       gl.clearDepth(b.shadow.clearDepth);
@@ -499,15 +877,12 @@ function dispatch(
       b.shadow.clearStencil = v.getInt32(p, true);
       gl.clearStencil(b.shadow.clearStencil);
       return;
-    case O.OP_COLOR_MASK:
-      b.shadow.colorMask = [
-        v.getUint32(p, true) !== 0,
-        v.getUint32(p + 4, true) !== 0,
-        v.getUint32(p + 8, true) !== 0,
-        v.getUint32(p + 12, true) !== 0,
-      ];
-      gl.colorMask(...b.shadow.colorMask);
+    case O.OP_COLOR_MASK: {
+      const mask=b.shadow.colorMask;
+      for(let i=0;i<4;i++)mask[i]=v.getUint32(p+i*4,true)!==0;
+      gl.colorMask(mask[0],mask[1],mask[2],mask[3]&&!b.shadow.drawTarget.locked);
       return;
+    }
     case O.OP_DEPTH_MASK:
       b.shadow.depthMask = v.getUint32(p, true) !== 0;
       gl.depthMask(b.shadow.depthMask);
@@ -600,10 +975,20 @@ function dispatch(
       b.shadow.polygonOffset = [v.getFloat32(p, true), v.getFloat32(p + 4, true)];
       gl.polygonOffset(...b.shadow.polygonOffset);
       return;
-    case O.OP_DEPTH_RANGEF:
-      b.shadow.depthRange = [v.getFloat32(p, true), v.getFloat32(p + 4, true)].map(x => Math.min(1, Math.max(0, x))) as [number, number];
-      gl.depthRange(...b.shadow.depthRange);
+    case O.OP_DEPTH_RANGEF: {
+      // ES 2.0 section 2.5: a command that generates an error has no effect,
+      // so the shadow (replayed by the muxer) changes only after acceptance.
+      // ES 2.0 section 2.12.1 permits n > f; WebGL does not. The native range
+      // is the ordered pair and reversed draws run a z-negating twin
+      // executable (reversed-depth.ts), so the shadow keeps the logical pair.
+      const near=clampUnit(v.getFloat32(p,true)),far=clampUnit(v.getFloat32(p+4,true));
+      const nativeNear=near>far?far:near,nativeFar=near>far?near:far;
+      const receiver=scalarNativeCalls(gl).range,call=receiver.call as ["depthRange",number,number];
+      call[1]=nativeNear;call[2]=nativeFar;
+      if(!checkedPreparedNativeCall(b,receiver))return;
+      b.shadow.depthRange[0]=near;b.shadow.depthRange[1]=far;
       return;
+    }
     case O.OP_SAMPLE_COVERAGE:
       b.shadow.sampleCoverage = [Math.min(1, Math.max(0, v.getFloat32(p, true))), v.getUint32(p + 4, true) !== 0];
       gl.sampleCoverage(...b.shadow.sampleCoverage);
@@ -612,38 +997,40 @@ function dispatch(
       const pname = v.getUint32(p, true);
       const param = v.getInt32(p + 4, true);
       gl.pixelStorei(pname, param);
+      // stateArgumentError admitted only the two alignments.
       if (pname === GL_UNPACK_ALIGNMENT) b.shadow.unpackAlignment = param;
-      else if (pname === GL_PACK_ALIGNMENT) b.shadow.packAlignment = param;
+      else b.shadow.packAlignment = param;
       return;
     }
 
     // ----- buffers --------------------------------------------------------
     // Payload: u32 n, u32 names[n]
-    case O.OP_GEN_BUFFERS: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const buf = gl.createBuffer();
-        if (buf) b.buffers.set(name, buf);
-      }
-      return;
-    }
+    // Name reservations belong to the C namespace owner. GPU objects acquire
+    // state on first bind; a delayed reservation must never recreate or
+    // replace an object already realized (or deleted) by a sharing peer.
+    case O.OP_GEN_BUFFERS: return;
+
     case O.OP_DELETE_BUFFERS: {
       const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.buffers.get(name);
-        if (obj) gl.deleteBuffer(obj);
-        if (obj === b.shadow.arrayBuffer) b.shadow.arrayBuffer = null;
-        b.buffers.delete(name);
-      }
+      deleteBufferNames(b,Array.from({length:n},(_,i) => v.getUint32(p+4+i*4,true)));
       return;
     }
-    case O.OP_BIND_BUFFER: {
-      const target = v.getUint32(p, true);
-      const buffer = b.buffers.get(v.getUint32(p + 4, true)) ?? null;
-      gl.bindBuffer(target, buffer);
-      if (target === GL_ARRAY_BUFFER) b.shadow.arrayBuffer = buffer;
+    case O.OP_BEGIN_CLIENT_ARRAY:
+      beginClientArray(b); return;
+    case O.OP_END_CLIENT_ARRAY:
+      endClientArray(b); return;
+    case O.OP_BIND_BUFFER:
+      bindBufferObject(b,v.getUint32(p,true),v.getUint32(p+4,true));
+      return;
+    // Private copied definitions retain the original target/length/usage.
+    // The journal is the submitting context's, never a peer's native owner.
+    case O.OP_BUFFER_DATA_SNAPSHOT: {
+      const journal=b.programJournal;
+      if(!journal || journal.id!==v.getUint32(p,true)){recordGlError(b,0x502);return;}
+      const bytes=v.getUint32(p+16,true);
+      const index=v.getUint32(p+4,true),token=v.getUint32(p+8,true),target=v.getUint32(p+12,true),usage=v.getUint32(p+20,true);
+      if(v.byteLength===24)journal.defineBufferSnapshot(index,token,target,bytes,usage);
+      else journal.defineBufferSnapshotFromWire(index,token,target,v,p+24,bytes,usage);
       return;
     }
     // Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage
@@ -652,11 +1039,11 @@ function dispatch(
       const byteLength = v.getUint32(p + 4, true);
       if (v.byteLength === 12) {
         const usage = v.getUint32(p + 8, true);
-        gl.bufferData(target, byteLength, usage);
+        replaceBufferData(b,target,byteLength,usage);
       } else {
         const usage = v.getUint32(p + 8 + byteLength, true);
         const data = copyBytes(v, p + 8, byteLength);
-        gl.bufferData(target, data, usage);
+        replaceBufferData(b,target,data,usage);
       }
       return;
     }
@@ -666,40 +1053,23 @@ function dispatch(
       const dstOff = v.getInt32(p + 4, true);
       const dataLen = v.getUint32(p + 8, true);
       const data = copyBytes(v, p + 12, dataLen);
-      gl.bufferSubData(target, dstOff, data);
+      updateBufferData(b,target,dstOff,data);
       return;
     }
 
     // ----- textures -------------------------------------------------------
-    case O.OP_GEN_TEXTURES: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const tex = gl.createTexture();
-        if (tex) b.textures.set(name, tex);
-      }
-      return;
-    }
+    case O.OP_GEN_TEXTURES: return;
+
     case O.OP_DELETE_TEXTURES: {
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.textures.get(name);
-        if (obj) gl.deleteTexture(obj);
-        b.shadow.textureUnits = b.shadow.textureUnits.map(tex => tex === obj ? null : tex);
-        b.textures.delete(name);
+        deleteTextureName(b,name);
       }
       return;
     }
     case O.OP_BIND_TEXTURE: {
-      const target = v.getUint32(p, true);
-      const texName = v.getUint32(p + 4, true);
-      const tex = b.textures.get(texName) ?? null;
-      gl.bindTexture(target, tex);
-      const unit = b.shadow.activeTexture;
-      if (unit >= 0 && unit < b.shadow.textureUnits.length) {
-        b.shadow.textureUnits[unit] = tex;
-      }
+      bindImageObject(b,1,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
     }
     // Payload: u32 target, i32 level, i32 internalFormat, i32 width,
@@ -715,14 +1085,41 @@ function dispatch(
       const format = v.getUint32(p + 24, true);
       const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
-      const data = dataLen === 0
-        ? null
-        : copyPixels(v, p + 36, dataLen, type);
-      gl.texImage2D(
-        target, level, normalizeTextureInternalFormat(internalFormat, format, type), width, height, border,
-        format, type, data,
-      );
-      return;
+      // Luminance/alpha float levels are stored as expanded RGBA (see
+      // luminance-float.ts); every other admitted triple maps directly.
+      const expanded = expandedFloatFormat(format, type);
+      // WebGL refuses client data shorter than the upload reads.
+      if (dataLen !== 0 && !expanded &&
+          !predicted(b, uploadSizeError(uploadBytes(width, height, format, type, b.shadow.unpackAlignment), dataLen))) return false;
+      let data: ArrayBufferView | null = null;
+      if (dataLen !== 0) {
+        data = expanded
+          ? expandedUpload(b, format, type, copyBytes(v, p + 36, dataLen), width, height)
+          : copyPixels(v, p + 36, dataLen, type);
+        if (!data) return false;
+      }
+      const native = expanded ? expandedNative(type)
+        : { internal: normalizeTextureInternalFormat(internalFormat, format, type), format };
+      // A cube face is a layer of the cube's 2D array storage (cube-storage.ts).
+      const cube = isCubeFace(target);
+      if (cube && (!cubeImageSizeValid(b, level, width, height, border) || !prepareCubeRespecification(b))) return false;
+      if (!cube && !texImageSizeValid(b, level, width, height, border)) return false;
+      const accepted = cube
+        ? cubeSpecifyImage(b, target, level, { size: width, internalFormat: native.internal, format: native.format, type, compressed: false },
+          data === null ? null : layer => gl.texSubImage3D(TEXTURE_2D_ARRAY, level, 0, 0, layer, width, height, 1, native.format, type, data),
+          { inPlace: true })
+        : imageTextureOperation(b,target,true,()=>gl.texImage2D(
+          target, level, native.internal, width, height, border, native.format, type, data,
+        ),level!==0,level);
+      if (accepted) {
+        recordTextureLevel(boundTextureObject(b,target),target,level,
+          {width,height,internalFormat:native.internal,format:native.format,type,compressed:false,
+            gles:{internalFormat,format,type,expanded,
+              colorRenderable:textureColorRenderable(internalFormat,format,type,glesExtensionAdvertised(gl,"GL_EXT_color_buffer_half_float")),
+              depth:depthTextureFormat(format),stencil:format===0x84f9}});
+        if (cube) cubeImagesChanged(b);
+      }
+      return accepted;
     }
     // Payload: u32 target, i32 level, i32 xoff, i32 yoff, i32 width,
     //          i32 height, u32 format, u32 type,
@@ -737,53 +1134,178 @@ function dispatch(
       const format = v.getUint32(p + 24, true);
       const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
-      const data = copyPixels(v, p + 36, dataLen, type);
-      gl.texSubImage2D(
-        target, level, xoff, yoff, width, height, format, type, data,
-      );
-      return;
+      // GLES 2 performs no format conversion. An expanded level accepts only
+      // its own logical format/type, and an expanded format reaches only such
+      // a level; the RGBA stand-in would otherwise accept RGBA data natively.
+      const expanded = expandedFloatFormat(format, type);
+      const logical = textureLevel(boundTextureObject(b,target)!,target,level)?.gles;
+      if ((expanded || logical?.expanded) && (!logical?.expanded || logical.format !== format || logical.type !== type)) {
+        recordGlError(b,0x502); return false;
+      }
+      // OES_packed_depth_stencil 3.8.1: depth data only for depth levels, and
+      // depth levels only from depth data.
+      if (logical && logical.depth !== depthTextureFormat(format)) { recordGlError(b,0x502); return false; }
+      // OES_depth_texture issue 3: the type only selects the bits supplied.
+      // WebGL 2 stores 32-bit depth as DEPTH_COMPONENT24, which accepts only
+      // UNSIGNED_INT, so 16-bit data is widened exactly (c * 65537).
+      const widenDepth = logical?.format === 0x1902 && logical.type === 0x1405 && format === 0x1902 && type === 0x1403;
+      const nativeType = widenDepth ? 0x1405 : type;
+      const nativeFormat = expanded ? expandedNative(type).format : format;
+      let data: ArrayBufferView | null;
+      if (expanded && dataLen !== 0) {
+        data = expandedUpload(b, format, type, copyBytes(v, p + 36, dataLen), width, height);
+        if (!data) return false;
+      } else if (widenDepth && dataLen !== 0) {
+        data = widenedDepthUpload(b, copyBytes(v, p + 36, dataLen), width, height);
+        if (!data) return false;
+      } else {
+        // WebGL refuses client data shorter than the upload reads.
+        if (!destinationOnly && !predicted(b, uploadSizeError(
+          uploadBytes(width, height, nativeFormat, nativeType, b.shadow.unpackAlignment), dataLen))) return false;
+        data = copyPixels(v, p + 36, dataLen, nativeType);
+      }
+      if (destinationOnly) {
+        // GLES 2.0 section 3.7.2 bounds are x>=0, y>=0, x+w<=wt, y+h<=ht.
+        // A zero-area native update at the checked endpoint validates the same
+        // destination without writing texels or reading a caller pixel pointer.
+        // Source layout is validated when the actual packed rows are submitted.
+        const endX = xoff + width, endY = yoff + height;
+        if (xoff < 0 || yoff < 0 || width < 0 || height < 0 ||
+            endX > 0x7fff_ffff || endY > 0x7fff_ffff) {
+          recordGlError(b,0x501); return false;
+        }
+        if (!subImageValid(b, target, level, xoff, yoff, width, height)) return false;
+        let unpackBuffer: WebGLBuffer | null = null;
+        if (!checkedGlCall(b,()=>{ unpackBuffer=gl.getParameter(0x88ef); })) return false;
+        if (isCubeFace(target)) return cubeUpdateImage(b,target,level,layer=>{
+          if (unpackBuffer) gl.texSubImage3D(TEXTURE_2D_ARRAY,level,endX,endY,layer,0,0,1,nativeFormat,nativeType,0);
+          else gl.texSubImage3D(TEXTURE_2D_ARRAY,level,endX,endY,layer,0,0,1,nativeFormat,nativeType,data);
+        });
+        return imageTextureOperation(b,target,false,()=>{
+          // WebGL2 requires the offset overload exactly when a real unpack
+          // buffer is bound. Neither branch changes that binding or reads data.
+          if (unpackBuffer) gl.texSubImage2D(target,level,endX,endY,0,0,nativeFormat,nativeType,0);
+          else gl.texSubImage2D(target,level,endX,endY,0,0,nativeFormat,nativeType,data);
+        });
+      }
+      if (isCubeFace(target)) {
+        // Negative values are INVALID_VALUE before an undefined image's
+        // INVALID_OPERATION, as for the native call.
+        if (xoff < 0 || yoff < 0 || width < 0 || height < 0) { recordGlError(b,0x501); return false; }
+        if (!subImageValid(b, target, level, xoff, yoff, width, height)) return false;
+        return cubeUpdateImage(b,target,level,layer=>gl.texSubImage3D(
+          TEXTURE_2D_ARRAY, level, xoff, yoff, layer, width, height, 1, nativeFormat, nativeType, data));
+      }
+      if (!subImageValid(b, target, level, xoff, yoff, width, height)) return false;
+      return imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.texSubImage2D(
+        target, level, xoff, yoff, width, height, nativeFormat, nativeType, data,
+      ));
     }
     case O.OP_TEX_PARAMETERI:
+      if (v.getUint32(p, true) === TEXTURE_EXTERNAL_OES) {
+        externalTexParameter(b, v.getUint32(p + 4, true), v.getInt32(p + 8, true));
+        return;
+      }
+      // Filters are tracked for ES 2.0's switch-over point (lod-switchover.ts).
+      if (v.getUint32(p, true) === 0x8513) {
+        if (cubeTexParameter(b, v.getUint32(p + 4, true), target => gl.texParameteri(target, v.getUint32(p + 4, true), v.getInt32(p + 8, true))))
+          noteTextureFilter(boundTextureObject(b, 0x8513), v.getUint32(p + 4, true), v.getInt32(p + 8, true));
+        return;
+      }
       gl.texParameteri(
         v.getUint32(p, true),
         v.getUint32(p + 4, true),
         v.getInt32(p + 8, true),
       );
+      noteTextureFilter(boundTextureObject(b, v.getUint32(p, true)), v.getUint32(p + 4, true), v.getInt32(p + 8, true));
       return;
     case O.OP_TEX_PARAMETERF:
+      // An external texture's parameters are enums, which a float names
+      // after conversion to the nearest integer (ES 2.0 section 2.3.1).
+      if (v.getUint32(p, true) === TEXTURE_EXTERNAL_OES) {
+        externalTexParameter(b, v.getUint32(p + 4, true), Math.round(v.getFloat32(p + 8, true)));
+        return;
+      }
+      if (v.getUint32(p, true) === 0x8513) {
+        if (cubeTexParameter(b, v.getUint32(p + 4, true), target => gl.texParameterf(target, v.getUint32(p + 4, true), v.getFloat32(p + 8, true))))
+          noteTextureFilter(boundTextureObject(b, 0x8513), v.getUint32(p + 4, true), v.getFloat32(p + 8, true));
+        return;
+      }
       gl.texParameterf(
         v.getUint32(p, true),
         v.getUint32(p + 4, true),
         v.getFloat32(p + 8, true),
       );
+      noteTextureFilter(boundTextureObject(b, v.getUint32(p, true)), v.getUint32(p + 4, true), v.getFloat32(p + 8, true));
       return;
     case O.OP_ACTIVE_TEXTURE: {
       const unit = v.getUint32(p, true);
+      const index = unit - GL_TEXTURE0;
+      if (index < 0 || index >= combinedTextureUnits(gl)) {
+        recordGlError(b, 0x500); // INVALID_ENUM
+        return;
+      }
       gl.activeTexture(unit);
-      b.shadow.activeTexture = unit - GL_TEXTURE0;
+      b.shadow.activeTexture = index;
+      while (b.shadow.textureUnits.length <= index) b.shadow.textureUnits.push(null);
+      while (b.shadow.cubeTextureUnits.length <= index) b.shadow.cubeTextureUnits.push(null);
+      while (b.shadow.externalTextureUnits.length <= index) b.shadow.externalTextureUnits.push(null);
       return;
     }
-    case O.OP_GENERATE_MIPMAP:
-      gl.generateMipmap(v.getUint32(p, true));
+    case O.OP_GENERATE_MIPMAP: {
+      const target = v.getUint32(p,true);
+      // OES_depth_texture issue 1 (resolution b): GenerateMipmap on a depth
+      // texture is INVALID_OPERATION. Depth textures are 2D only.
+      if (target === 0x0de1 && textureLevel(boundTextureObject(b,target)!,target,0)?.gles?.depth) {
+        recordGlError(b,0x502); return;
+      }
+      if (target === 0x8513) {
+        if (prepareCubeRespecification(b) && cubeGenerateMipmap(b)) {
+          recordGeneratedMipmaps(boundTextureObject(b,target),target);
+          cubeImagesChanged(b);
+        }
+        return;
+      }
+      if (imageTextureOperation(b,target,true,()=>gl.generateMipmap(target)))
+        recordGeneratedMipmaps(boundTextureObject(b,target),target);
       return;
+    }
     case O.OP_COMPRESSED_TEX_IMAGE_2D: {
       const dataLen = v.getUint32(p + 24, true);
       const data = copyBytes(v, p + 28, dataLen);
-      gl.compressedTexImage2D(
-        v.getUint32(p, true),
-        v.getInt32(p + 4, true),
-        v.getUint32(p + 8, true),
-        v.getInt32(p + 12, true),
-        v.getInt32(p + 16, true),
+      const target = v.getUint32(p, true), level = v.getInt32(p + 4, true);
+      const internalFormat = v.getUint32(p + 8, true);
+      const width = v.getInt32(p + 12, true), height = v.getInt32(p + 16, true);
+      const cube = isCubeFace(target);
+      if (cube && (!compressedFormatListed(b, internalFormat) || !cubeImageSizeValid(b, level, width, height, v.getInt32(p + 20, true))
+          || !prepareCubeRespecification(b))) return;
+      if (cube ? cubeSpecifyImage(b, target, level, { size: width, internalFormat, format: internalFormat, type: 0, compressed: true },
+          layer => gl.compressedTexSubImage3D(TEXTURE_2D_ARRAY, level, 0, 0, layer, width, height, 1, internalFormat, data),
+          { inPlace: true, compressedBytes: dataLen })
+        : imageTextureOperation(b,target,true,()=>gl.compressedTexImage2D(
+        target, level, internalFormat, width, height,
         v.getInt32(p + 20, true),
         data,
-      );
+      ),level!==0,level)) {
+        // ES 2.0 section 4.4.5: compressed formats are not color-renderable.
+        recordTextureLevel(boundTextureObject(b,target),target,level,
+          {width,height,internalFormat,format:internalFormat,type:0,compressed:true,
+            gles:{internalFormat,format:internalFormat,type:0,expanded:false,colorRenderable:false,depth:false,stencil:false}});
+        if (cube) cubeImagesChanged(b);
+      }
       return;
     }
     case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D: {
       const dataLen = v.getUint32(p + 28, true);
       const data = copyBytes(v, p + 32, dataLen);
-      gl.compressedTexSubImage2D(
+      if (isCubeFace(v.getUint32(p, true))) {
+        const level = v.getInt32(p + 4, true), format = v.getUint32(p + 24, true);
+        if (compressedFormatListed(b, format))
+          cubeUpdateImage(b, v.getUint32(p, true), level, layer => gl.compressedTexSubImage3D(TEXTURE_2D_ARRAY, level,
+            v.getInt32(p + 8, true), v.getInt32(p + 12, true), layer, v.getInt32(p + 16, true), v.getInt32(p + 20, true), 1, format, data));
+        return;
+      }
+      imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.compressedTexSubImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getInt32(p + 8, true),
@@ -792,23 +1314,58 @@ function dispatch(
         v.getInt32(p + 20, true),
         v.getUint32(p + 24, true),
         data,
-      );
+      ));
       return;
     }
-    case O.OP_COPY_TEX_IMAGE_2D:
-      gl.copyTexImage2D(
-        v.getUint32(p, true),
-        v.getInt32(p + 4, true),
-        v.getUint32(p + 8, true),
+    case O.OP_COPY_TEX_IMAGE_2D: {
+      if (!requireGlesFramebufferComplete(b,true)) return;
+      const target = v.getUint32(p, true), level = v.getInt32(p + 4, true);
+      const internalFormat = v.getUint32(p + 8, true);
+      const width = v.getInt32(p + 20, true), height = v.getInt32(p + 24, true);
+      // A cube face is a layer of the cube's 2D array storage
+      // (cube-storage.ts): the copied format (sized for RED and RG, which
+      // WebGL 2 has no unsized form of) is allocated, then copied into.
+      const cube = isCubeFace(target);
+      if (cube && (!cubeImageSizeValid(b, level, width, height, v.getInt32(p + 28, true)) || !prepareCubeRespecification(b))) return;
+      if (!cube && !texImageSizeValid(b, level, width, height, v.getInt32(p + 28, true))) return;
+      const nativeInternal = cube ? normalizeTextureInternalFormat(internalFormat, internalFormat, GL_UNSIGNED_BYTE) : internalFormat;
+      // ES 2.0 copies take an unsized internal format from the framebuffer;
+      // a multisampled default framebuffer supplies its resolved values.
+      if (withMultisampleRead(b,()=>cube
+        ? cubeSpecifyImage(b, target, level, { size: width, internalFormat: nativeInternal, format: internalFormat, type: GL_UNSIGNED_BYTE, compressed: false },
+          layer => gl.copyTexSubImage3D(TEXTURE_2D_ARRAY, level, 0, 0, layer, v.getInt32(p + 12, true), v.getInt32(p + 16, true), width, height),
+          { inPlace: false })
+        : imageTextureOperation(b,target,true,()=>gl.copyTexImage2D(
+        target, level, internalFormat,
         v.getInt32(p + 12, true),
         v.getInt32(p + 16, true),
-        v.getInt32(p + 20, true),
-        v.getInt32(p + 24, true),
+        width, height,
         v.getInt32(p + 28, true),
-      );
+      ),level!==0,level))) {
+        recordTextureLevel(boundTextureObject(b,target),target,level,
+          {width,height,internalFormat:nativeInternal,format:internalFormat,type:0x1401,compressed:false,
+            gles:{internalFormat,format:internalFormat,type:0x1401,expanded:false,
+              colorRenderable:copiedTextureColorRenderable(internalFormat),depth:false,stencil:false}});
+        if (cube) cubeImagesChanged(b);
+      }
       return;
+    }
     case O.OP_COPY_TEX_SUB_IMAGE_2D:
-      gl.copyTexSubImage2D(
+      if (!requireGlesFramebufferComplete(b,true)) return;
+      // OES_depth_texture: CopyTexSubImage2D is not supported for depth
+      // levels; the color read buffer has no components for them.
+      if (textureLevel(boundTextureObject(b,v.getUint32(p,true))!,v.getUint32(p,true),v.getInt32(p+4,true))?.gles?.depth) {
+        recordGlError(b,0x502); return;
+      }
+      if (!subImageValid(b, v.getUint32(p,true), v.getInt32(p+4,true), v.getInt32(p+8,true), v.getInt32(p+12,true),
+          v.getInt32(p+24,true), v.getInt32(p+28,true))) return;
+      if (isCubeFace(v.getUint32(p,true))) {
+        withMultisampleRead(b,()=>cubeUpdateImage(b,v.getUint32(p,true),v.getInt32(p+4,true),layer=>gl.copyTexSubImage3D(
+          TEXTURE_2D_ARRAY, v.getInt32(p+4,true), v.getInt32(p+8,true), v.getInt32(p+12,true), layer,
+          v.getInt32(p+16,true), v.getInt32(p+20,true), v.getInt32(p+24,true), v.getInt32(p+28,true))));
+        return;
+      }
+      withMultisampleRead(b,()=>imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.copyTexSubImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getInt32(p + 8, true),
@@ -817,7 +1374,7 @@ function dispatch(
         v.getInt32(p + 20, true),
         v.getInt32(p + 24, true),
         v.getInt32(p + 28, true),
-      );
+      )));
       return;
 
     // ----- shaders / programs --------------------------------------------
@@ -825,8 +1382,7 @@ function dispatch(
     case O.OP_CREATE_SHADER: {
       const type = v.getUint32(p, true);
       const name = v.getUint32(p + 4, true);
-      const sh = gl.createShader(type);
-      if (sh) b.shaders.set(name, sh);
+      createShaderIfAccepted(b,type,name);
       return;
     }
     // Payload: u32 cmdbufName, u32 srcLen, u8 src[srcLen] (UTF-8)
@@ -841,50 +1397,94 @@ function dispatch(
       // Uint8Array — also detaches from SAB grow races.
       const srcBytes = new Uint8Array(srcLen);
       srcBytes.set(new Uint8Array(v.buffer, v.byteOffset + p + 8, srcLen));
-      const src = new TextDecoder().decode(srcBytes);
       const sh = b.shaders.get(name);
-      if (sh) gl.shaderSource(sh, src);
+      if (!sh) { recordGlError(b,b.programs.has(name) ? 0x502 : 0x501); return; }
+      b.shaderUpload = null;
+      installShaderSource(b,sh,srcBytes);
       return;
     }
     case O.OP_COMPILE_SHADER: {
-      const sh = b.shaders.get(v.getUint32(p, true));
-      if (sh) gl.compileShader(sh);
+      const sh = requireShaderObject(b, v.getUint32(p, true));
+      if (!sh) return;
+      // The ES 1.00 compile judges the shader; one rejected only for GLSL ES
+      // 1.00 Appendix A limits compiles as ESSL 3.00 (essl3-translation.ts).
+      // Twins and private executables rebuild from the ES 1.00 source.
+      const native = nativeShaderSource(sh), source = native?.text ?? "";
+      let language: ShaderLanguage | null = null, fragment = false;
+      if (checkedGlCall(b, () => {
+        fragment = Number(gl.getShaderParameter(sh, 0x8b4f)) === 0x8b30;
+        language = compileGuestShader(gl, sh, source, fragment);
+      })) {
+        const acceptedSource = compatibleShaderSource(sh, source);
+        recordCompiledShader(sh, native ? acceptedSource : undefined);
+        recordCompiledExternalSamplers(sh, native?.samplers);
+        recordShaderLanguage(sh, language, acceptedSource, fragment);
+      }
+      return;
+    }
+    case O.OP_VALIDATE_PROGRAM: {
+      const name = v.getUint32(p,true), program = b.programs.get(name);
+      if (!program) { recordGlError(b,b.shaders.has(name) ? 0x502 : 0x501); return; }
+      if (checkedGlCall(b, () => gl.validateProgram(program))) {
+        validateExternalSamplers(b, program);
+        // [RUNTIME-WORKAROUND: FIREFOX-VALIDATE-UNLINKED-PROGRAM]
+        recordProgramValidation(b, program);
+      }
       return;
     }
     case O.OP_DELETE_SHADER: {
       const name = v.getUint32(p, true);
       const sh = b.shaders.get(name);
-      if (sh) gl.deleteShader(sh);
-      b.shaders.delete(name);
+      if (!sh) { if (name !== 0) recordGlError(b, 0x501); return; }
+      if (!b.shaderDeletePending.has(name)) {
+        // Keep the native shader attachable while logical programs retain
+        // it, including a replacement native program for current relinking.
+        b.shaderDeletePending.add(name);
+        finalizeShader(b, name);
+      }
       return;
     }
     case O.OP_CREATE_PROGRAM: {
       const name = v.getUint32(p, true);
-      const prog = gl.createProgram();
-      if (prog) b.programs.set(name, prog);
+      createProgramIfAccepted(b,name);
       return;
     }
     case O.OP_ATTACH_SHADER: {
-      const prog = b.programs.get(v.getUint32(p, true));
-      const sh = b.shaders.get(v.getUint32(p + 4, true));
-      if (prog && sh) gl.attachShader(prog, sh);
+      const programName = v.getUint32(p, true), shaderName = v.getUint32(p + 4, true);
+      const prog = requireProgramObject(b, programName);
+      if (!prog) return;
+      const sh = requireShaderObject(b, shaderName);
+      if (!sh) return;
+      if (b.programShaders.get(programName)?.has(shaderName)) { recordGlError(b, 0x502); return; }
+      const attachedTypes = [...b.programShaders.get(programName) ?? []].map(name => shaderType(b.shaders.get(name)));
+      if (!predicted(b, attachShaderError(attachedTypes, shaderType(sh)))) return;
+      // Aliasing executables keep attachments logical (attribute-aliasing.ts).
+      if (attributeAliasLayout(prog) || checkedGlCall(b, () => gl.attachShader(prog, sh))) {
+        let attached = b.programShaders.get(programName);
+        if (!attached) { attached = new Set(); b.programShaders.set(programName, attached); }
+        attached.add(shaderName);
+      }
       return;
     }
     case O.OP_LINK_PROGRAM: {
-      const prog = b.programs.get(v.getUint32(p, true));
-      if (prog) gl.linkProgram(prog);
+      linkProgramRetainingExecutable(b, v.getUint32(p, true));
+      return;
+    }
+    case O.OP_USE_PROGRAM_JOURNAL: {
+      const journal=b.programJournal;
+      if(!journal || journal.id!==v.getUint32(p,true) || !journal.execute(v.getUint32(p+4,true),journalInteger(v,p+8)))
+        nativeGlFault("Program journal selector has no exact accepted context/ticket owner");
       return;
     }
     case O.OP_USE_PROGRAM: {
-      const prog = b.programs.get(v.getUint32(p, true)) ?? null;
-      gl.useProgram(prog);
-      b.currentProgram = prog;
-      b.shadow.currentProgram = prog;
+      useProgramIfAccepted(b, v.getUint32(p, true));
       return;
     }
     // Payload: u32 program, u32 index, u32 nameLen, u8 name[nameLen]
     case O.OP_BIND_ATTRIB_LOCATION: {
-      const prog = b.programs.get(v.getUint32(p, true));
+      const programName = v.getUint32(p, true);
+      const prog = requireProgramObject(b, programName);
+      if (!prog) return;
       const index = v.getUint32(p + 4, true);
       const nameLen = v.getUint32(p + 8, true);
       // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
@@ -893,43 +1493,56 @@ function dispatch(
       const nameBytes = new Uint8Array(nameLen);
       nameBytes.set(new Uint8Array(v.buffer, v.byteOffset + p + 12, nameLen));
       const name = new TextDecoder().decode(nameBytes);
-      if (prog) gl.bindAttribLocation(prog, index, name);
+      if (!predicted(b, bindAttribLocationError(index, predictionLimit(gl, MAX_VERTEX_ATTRIBS), name))) return;
+      if (checkedGlCall(b, () => gl.bindAttribLocation(prog, index, name))) {
+        let attributes = b.programAttributeBindings.get(programName);
+        if (!attributes) { attributes = new Map(); b.programAttributeBindings.set(programName, attributes); }
+        attributes.set(name, index);
+      }
       return;
     }
     case O.OP_DELETE_PROGRAM: {
       const name = v.getUint32(p, true);
       const prog = b.programs.get(name);
-      if (prog) gl.deleteProgram(prog);
-      b.programs.delete(name);
+      if (!prog) { if (name !== 0) recordGlError(b, 0x501); return; }
+      b.programDeletePending.add(name);
+      finalizeProgram(b, name);
       return;
     }
     case O.OP_DETACH_SHADER: {
-      const prog = b.programs.get(v.getUint32(p, true));
-      const sh = b.shaders.get(v.getUint32(p + 4, true));
-      if (prog && sh) gl.detachShader(prog, sh);
+      const programName = v.getUint32(p, true), shaderName = v.getUint32(p + 4, true);
+      const prog = requireProgramObject(b, programName);
+      if (!prog) return;
+      const sh = requireShaderObject(b, shaderName);
+      if (!sh) return;
+      if (!b.programShaders.get(programName)?.has(shaderName)) { recordGlError(b, 0x502); return; }
+      if (attributeAliasLayout(prog) || checkedGlCall(b, () => gl.detachShader(prog, sh))) {
+        b.programShaders.get(programName)!.delete(shaderName);
+        finalizeShader(b, shaderName);
+      }
       return;
     }
 
     // ----- uniforms -------------------------------------------------------
-    // Locations are kernel-routed indices issued by `runGlQuery` for
-    // `QOP_GET_UNIFORM_LOC`; they round-trip back here as i32.
+    // Locations are per-program indices (uniform-layout.ts); the accepted
+    // command's native location was resolved by acceptedUniformCount.
     case O.OP_UNIFORM1I: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const loc = uniformTarget.native;
       gl.uniform1i(loc, v.getInt32(p + 4, true));
       return;
     }
     case O.OP_UNIFORM1F: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const loc = uniformTarget.native;
       gl.uniform1f(loc, v.getFloat32(p + 4, true));
       return;
     }
     case O.OP_UNIFORM2F: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const loc = uniformTarget.native;
       gl.uniform2f(loc, v.getFloat32(p + 4, true), v.getFloat32(p + 8, true));
       return;
     }
     case O.OP_UNIFORM3F: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const loc = uniformTarget.native;
       gl.uniform3f(
         loc,
         v.getFloat32(p + 4, true),
@@ -939,7 +1552,7 @@ function dispatch(
       return;
     }
     case O.OP_UNIFORM4F: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const loc = uniformTarget.native;
       gl.uniform4f(
         loc,
         v.getFloat32(p + 4, true),
@@ -951,85 +1564,124 @@ function dispatch(
     }
     // Payload: i32 location, u32 count, u32 transposeBool, f32 mat[count*16]
     case O.OP_UNIFORM_MATRIX4FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = uniformTarget.native;
+      const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
-      gl.uniformMatrix4fv(loc, transpose, floatsAt(v, p + 12, count * 16));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniformMatrix4fv(loc,transpose,cpu.readFloats(v,p+12,count*16),0,count*16);
+      else gl.uniformMatrix4fv(loc, transpose, floatsAt(v, p + 12, count * 16));
       return;
     }
     // Payload: i32 location, u32 count, f32 v[count*4]
     case O.OP_UNIFORM4FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
-      gl.uniform4fv(loc, floatsAt(v, p + 8, count * 4));
+      const loc = uniformTarget.native;
+      const count = uniformCount;
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform4fv(loc,cpu.readFloats(v,p+8,count*4),0,count*4);
+      else gl.uniform4fv(loc, floatsAt(v, p + 8, count * 4));
       return;
     }
     case O.OP_UNIFORM1FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
-      gl.uniform1fv(loc, copyFloat32Array(v, p + 8, count));
+      const loc = uniformTarget.native;
+      const count = uniformCount;
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform1fv(loc,cpu.readFloats(v,p+8,count*1),0,count*1);
+      else gl.uniform1fv(loc,copyFloat32Array(v,p+8,count));
       return;
     }
     case O.OP_UNIFORM2FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
-      gl.uniform2fv(loc, copyFloat32Array(v, p + 8, count * 2));
+      const loc = uniformTarget.native;
+      const count = uniformCount;
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform2fv(loc,cpu.readFloats(v,p+8,count*2),0,count*2);
+      else gl.uniform2fv(loc,copyFloat32Array(v,p+8,count * 2));
       return;
     }
     case O.OP_UNIFORM3FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
-      gl.uniform3fv(loc, copyFloat32Array(v, p + 8, count * 3));
+      const loc = uniformTarget.native;
+      const count = uniformCount;
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform3fv(loc,cpu.readFloats(v,p+8,count*3),0,count*3);
+      else gl.uniform3fv(loc,copyFloat32Array(v,p+8,count * 3));
       return;
     }
     case O.OP_UNIFORM1IV: {
-      const locIndex = v.getInt32(p, true);
-      const loc = b.uniformLocations.get(locIndex) ?? null;
-      const count = v.getUint32(p + 4, true);
-      const values = copyInt32Array(v, p + 8, count);
-      gl.uniform1iv(loc, values);
+      const loc = uniformTarget.native;
+      const count = uniformCount;
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform1iv(loc,cpu.readIntegers(v,p+8,count*1),0,count*1);
+      else gl.uniform1iv(loc,copyInt32Array(v,p+8,count));
       return;
     }
     case O.OP_UNIFORM2IV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
-      gl.uniform2iv(loc, copyInt32Array(v, p + 8, count * 2));
+      const loc = uniformTarget.native;
+      const count = uniformCount;
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform2iv(loc,cpu.readIntegers(v,p+8,count*2),0,count*2);
+      else gl.uniform2iv(loc,copyInt32Array(v,p+8,count * 2));
       return;
     }
     case O.OP_UNIFORM3IV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
-      gl.uniform3iv(loc, copyInt32Array(v, p + 8, count * 3));
+      const loc = uniformTarget.native;
+      const count = uniformCount;
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform3iv(loc,cpu.readIntegers(v,p+8,count*3),0,count*3);
+      else gl.uniform3iv(loc,copyInt32Array(v,p+8,count * 3));
       return;
     }
     case O.OP_UNIFORM4IV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
-      gl.uniform4iv(loc, copyInt32Array(v, p + 8, count * 4));
+      const loc = uniformTarget.native;
+      const count = uniformCount;
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniform4iv(loc,cpu.readIntegers(v,p+8,count*4),0,count*4);
+      else gl.uniform4iv(loc,copyInt32Array(v,p+8,count * 4));
       return;
     }
     case O.OP_UNIFORM_MATRIX2FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = uniformTarget.native;
+      const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
-      gl.uniformMatrix2fv(loc, transpose, copyFloat32Array(v, p + 12, count * 4));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniformMatrix2fv(loc,transpose,cpu.readFloats(v,p+12,count*4),0,count*4);
+      else gl.uniformMatrix2fv(loc, transpose, copyFloat32Array(v, p + 12, count * 4));
       return;
     }
     case O.OP_UNIFORM_MATRIX3FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = uniformTarget.native;
+      const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
-      gl.uniformMatrix3fv(loc, transpose, copyFloat32Array(v, p + 12, count * 9));
+      const cpu=b.programJournal?.uniformCpuPreparation();
+      if(cpu)gl.uniformMatrix3fv(loc,transpose,cpu.readFloats(v,p+12,count*9),0,count*9);
+      else gl.uniformMatrix3fv(loc, transpose, copyFloat32Array(v, p + 12, count * 9));
       return;
     }
 
     // ----- vertex attribs / draws -----------------------------------------
-    case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY:
-      gl.enableVertexAttribArray(v.getUint32(p, true));
+    // The only error is INVALID_VALUE for an index at or past the native
+    // MAX_VERTEX_ATTRIBS. Below the limit already read from this renderer the
+    // call is accepted, as for OP_ENABLE; otherwise the native answer decides.
+    case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY: {
+      const index = v.getUint32(p,true);
+      if (index >= knownVertexAttributeLimit(gl)) {
+        const attributes = predictionLimit(gl, MAX_VERTEX_ATTRIBS);
+        if (attributes === null) { if (!checkedGlCall(b, () => gl.enableVertexAttribArray(index))) return; }
+        else if (!predicted(b, vertexAttribIndexError(index, attributes))) return;
+        else gl.enableVertexAttribArray(index);
+      } else gl.enableVertexAttribArray(index);
+      activeVertexArray(b).attributes.set(index,{...vertexAttribute(b,index),enabled:true});
       return;
-    case O.OP_DISABLE_VERTEX_ATTRIB_ARRAY:
-      gl.disableVertexAttribArray(v.getUint32(p, true));
+    }
+    case O.OP_DISABLE_VERTEX_ATTRIB_ARRAY: {
+      const index = v.getUint32(p,true);
+      if (index >= knownVertexAttributeLimit(gl)) {
+        const attributes = predictionLimit(gl, MAX_VERTEX_ATTRIBS);
+        if (attributes === null) { if (!checkedGlCall(b, () => gl.disableVertexAttribArray(index))) return; }
+        else if (!predicted(b, vertexAttribIndexError(index, attributes))) return;
+        else gl.disableVertexAttribArray(index);
+      } else gl.disableVertexAttribArray(index);
+      activeVertexArray(b).attributes.set(index,{...vertexAttribute(b,index),enabled:false});
       return;
+    }
     // Payload: u32 index, i32 size, u32 type, u32 normalizedBool,
     //          i32 stride, i32 offset
     case O.OP_VERTEX_ATTRIB_POINTER: {
@@ -1039,37 +1691,60 @@ function dispatch(
       const normalized = v.getUint32(p + 12, true) !== 0;
       const stride = v.getInt32(p + 16, true);
       const off = v.getInt32(p + 20, true);
-      gl.vertexAttribPointer(index, size, type, normalized, stride, off);
+      if (installExistingVertexAttribute(b,index,size,type,normalized,stride,off)) return;
+      const attribute = {buffer:b.shadow.arrayBuffer && canonicalBuffer(b,b.shadow.arrayBuffer),enabled:vertexAttribute(b,index).enabled,
+        size,type,normalized,stride,offset:off};
+      const vao = activeVertexArray(b);
+      let attributes: typeof vao.attributes;
+      try { attributes = new Map(vao.attributes); attributes.set(index,attribute); }
+      catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return; }
+      if (!installVertexAttribute(b,index,attribute)) return;
+      vao.attributes = attributes;
       return;
     }
+    case O.OP_DRAW_CLIENT_ARRAYS:
+      drawPrivateClientArrays(b,v); return;
+    case O.OP_DRAW_BUFFER_SNAPSHOTS:
+      drawBufferSnapshots(b,v); return;
+    case O.OP_DRAW_FRAMEBUFFER_SNAPSHOTS:
+      drawBufferSnapshots(b,v,true); return;
+    case O.OP_DRAW_PREPARED_SNAPSHOTS:
+      drawBufferSnapshots(b,v,false,true);return;
+    case O.OP_DRAW_PREPARED_INLINE: {
+      const journal=b.programJournal,proof=journal?.id===v.getUint32(p,true)?journal.ownedDraw(v.getUint32(p+4,true),v.getUint32(p+8,true),0xffff_ffff,0,1):null;
+      const workspace=journal?.inlineDrawWorkspace();
+      if(!proof||!workspace){recordGlError(b,0x502);return;}
+      workspace.drawPrepared(b,v,proof);return;
+    }
+    case O.OP_DRAW_PREPARED_INLINE_COMPACT: {
+      const packed=v.getUint32(p,true),journal=b.programJournal;
+      const proof=journal?.id===v.getUint32(p+8,true)?journal.ownedDraw((packed>>>8)&31,v.getUint32(p+12,true),0xffff_ffff,0,1):null;
+      const workspace=journal?.inlineDrawWorkspace();
+      if(!proof||!workspace){recordGlError(b,0x502);return;}
+      workspace.drawPreparedCompact(b,v,proof);return;
+    }
+    case O.OP_CLEAR_FRAMEBUFFER_SNAPSHOT:
+      clearFramebufferSnapshot(b,v); return;
     case O.OP_DRAW_ARRAYS:
-      gl.drawArrays(
-        v.getUint32(p, true),
-        v.getInt32(p + 4, true),
-        v.getInt32(p + 8, true),
-      );
+      if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
+      if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }
+      if (v.getInt32(p+4,true) < 0 || v.getInt32(p+8,true) < 0) { recordGlError(b,0x501); return; }
+      if (!requireGlesFramebufferComplete(b) || !validateDrawFramebufferWithoutProgram(b)) return;
+      if (!prepareBufferDraw(b,false)||!prepareImageDraw(b)) return;
+      issueGlesDraw(b,{mode:v.getUint32(p,true),empty:v.getInt32(p+8,true) === 0,observed:false,
+        issue:() => gl.drawArrays(v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+8,true)),
+        vertices:() => sequentialVertices(v.getInt32(p+4,true),v.getInt32(p+8,true)),
+        maxVertex:v.getInt32(p+4,true)+v.getInt32(p+8,true)-1});
       return;
     case O.OP_DRAW_ELEMENTS:
-      gl.drawElements(
-        v.getUint32(p, true),
-        v.getInt32(p + 4, true),
-        v.getUint32(p + 8, true),
-        v.getUint32(p + 12, true),
-      );
+      if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
+      if(!prepareImageDraw(b))return;
+      drawGlesElements(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true));
       return;
     // Payload: u32 index, f32 x, f32 y, f32 z, f32 w
     case O.OP_VERTEX_ATTRIB_4FV:
-      b.shadow.vertexAttribValues.set(v.getUint32(p, true), [
-        v.getFloat32(p + 4, true), v.getFloat32(p + 8, true),
-        v.getFloat32(p + 12, true), v.getFloat32(p + 16, true),
-      ]);
-      gl.vertexAttrib4f(
-        v.getUint32(p, true),
-        v.getFloat32(p + 4, true),
-        v.getFloat32(p + 8, true),
-        v.getFloat32(p + 12, true),
-        v.getFloat32(p + 16, true),
-      );
+      installVertexConstant(b,v.getUint32(p,true),v.getFloat32(p+4,true),v.getFloat32(p+8,true),
+        v.getFloat32(p+12,true),v.getFloat32(p+16,true));
       return;
 
     // ----- VAOs -----------------------------------------------------------
@@ -1077,8 +1752,11 @@ function dispatch(
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
-        const vao = gl.createVertexArray();
-        if (vao) b.vaos.set(name, vao);
+        if (!name || b.vaos.has(name)) { recordGlError(b,0x502); continue; }
+        let vao: WebGLVertexArrayObject | null = null;
+        if (checkedGlCall(b, () => { vao = gl.createVertexArray(); }) && vao) {
+          b.vaos.set(name,vao); b.vertexArrays.set(name,defaultVertexArray());
+        } else recordGlError(b,0x505);
       }
       return;
     }
@@ -1087,108 +1765,87 @@ function dispatch(
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
         const obj = b.vaos.get(name);
-        if (obj) gl.deleteVertexArray(obj);
+        if (obj && !checkedGlCall(b, () => gl.deleteVertexArray(obj))) continue;
+        if (obj && name === b.vertexArrayId) {
+          gl.bindVertexArray(b.shadow.defaultVao);
+          b.shadow.vao = null; b.vertexArrayId = 0;
+        }
         b.vaos.delete(name);
+        if (name) b.vertexArrays.delete(name);
       }
       return;
     }
     case O.OP_BIND_VERTEX_ARRAY: {
-      const vao = b.vaos.get(v.getUint32(p, true)) ?? null;
+      const name = v.getUint32(p,true), vao = b.vaos.get(name) ?? null;
+      if (name !== 0 && !vao) { recordGlError(b,0x502); return; }
       // Vertex array 0 is this binding's own default (see GlShadowState).
-      gl.bindVertexArray(vao ?? b.shadow.defaultVao);
+      if (!checkedGlCall(b, () => gl.bindVertexArray(vao ?? b.shadow.defaultVao))) return;
       b.shadow.vao = vao;
+      b.vertexArrayId = name;
+      activeVertexArray(b);
       return;
     }
 
     // ----- framebuffers / renderbuffers -----------------------------------
-    case O.OP_GEN_FRAMEBUFFERS: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const fbo = gl.createFramebuffer();
-        if (fbo) b.fbos.set(name, fbo);
-      }
-      return;
-    }
+    // A generated name is not a framebuffer until its first bind (ES 2.0
+    // section 4.4.1), which bindFramebufferObject realizes. Creating one here
+    // would also replace an object a bind already created for that name,
+    // orphaning it and its attachments. The encoder owns name reservation.
+    case O.OP_GEN_FRAMEBUFFERS: return;
     case O.OP_DELETE_FRAMEBUFFERS: {
       const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.fbos.get(name);
-        if (obj) gl.deleteFramebuffer(obj);
-        b.fbos.delete(name);
-      }
+      for (let i = 0; i < n; i++) deleteFramebufferName(b,v.getUint32(p+4+i*4,true));
       return;
     }
-    case O.OP_BIND_FRAMEBUFFER: {
-      const target = v.getUint32(p, true);
-      const name = v.getUint32(p + 4, true);
-      let fbo = b.fbos.get(name) ?? null;
-      // GPU-tier producer redirect: "bind default framebuffer 0" (the
-      // client's window) becomes "render into the target bo's FBO" so a
-      // routed client's output lands in the bo the compositor samples.
-      // Only name 0 is remapped — a real FBO name the client generated
-      // (offscreen ping-pong, etc.) is honored as-is.
-      if (fbo === null && name === 0 && b.renderTargetFbo) {
-        fbo = b.renderTargetFbo;
-      }
-      gl.bindFramebuffer(target, fbo);
-      if (target !== GL_READ_FRAMEBUFFER) b.shadow.fbo = fbo;
+    case O.OP_BIND_FRAMEBUFFER:
+      bindFramebufferObject(b,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
-    }
     // Payload: u32 target, u32 attachment, u32 textarget, u32 textureName,
     //          i32 level
-    case O.OP_FRAMEBUFFER_TEXTURE_2D: {
-      const target = v.getUint32(p, true);
-      const attachment = v.getUint32(p + 4, true);
-      const textarget = v.getUint32(p + 8, true);
-      const tex = b.textures.get(v.getUint32(p + 12, true)) ?? null;
-      const level = v.getInt32(p + 16, true);
-      gl.framebufferTexture2D(target, attachment, textarget, tex, level);
+    case O.OP_FRAMEBUFFER_TEXTURE_2D:
+      attachImageObject(b,1,v.getUint32(p,true),v.getUint32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true),v.getInt32(p+16,true));
       return;
-    }
-    case O.OP_GEN_RENDERBUFFERS: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const rbo = gl.createRenderbuffer();
-        if (rbo) b.rbos.set(name, rbo);
-      }
-      return;
-    }
+    case O.OP_GEN_RENDERBUFFERS: return;
+
     case O.OP_DELETE_RENDERBUFFERS: {
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.rbos.get(name);
-        if (obj) gl.deleteRenderbuffer(obj);
-        if (obj === b.shadow.renderbuffer) b.shadow.renderbuffer = null;
-        b.rbos.delete(name);
+        deleteRenderbufferName(b,name);
       }
       return;
     }
-    case O.OP_BIND_RENDERBUFFER:
-      b.shadow.renderbuffer = b.rbos.get(v.getUint32(p + 4, true)) ?? null;
-      gl.bindRenderbuffer(v.getUint32(p, true), b.shadow.renderbuffer);
-      return;
-    // Payload: u32 target, u32 internalformat, i32 width, i32 height
-    case O.OP_RENDERBUFFER_STORAGE:
-      gl.renderbufferStorage(
-        v.getUint32(p, true),
-        v.getUint32(p + 4, true),
-        v.getInt32(p + 8, true),
-        v.getInt32(p + 12, true),
-      );
-      return;
-    // Payload: u32 target, u32 attachment, u32 rbtarget, u32 rboName
-    case O.OP_FRAMEBUFFER_RENDERBUFFER: {
-      const target = v.getUint32(p, true);
-      const attachment = v.getUint32(p + 4, true);
-      const rbtarget = v.getUint32(p + 8, true);
-      const rbo = b.rbos.get(v.getUint32(p + 12, true)) ?? null;
-      gl.framebufferRenderbuffer(target, attachment, rbtarget, rbo);
+    case O.OP_BIND_RENDERBUFFER: {
+      bindImageObject(b,2,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
     }
+    // Payload: u32 target, u32 internalformat, i32 width, i32 height
+    case O.OP_RENDERBUFFER_STORAGE: {
+      const internal = v.getUint32(p + 4, true);
+      if (!predicted(b, renderbufferStorageError(v.getUint32(p, true), v.getInt32(p + 8, true),
+          v.getInt32(p + 12, true), predictionLimit(gl, MAX_RENDERBUFFER_SIZE), b.shadow.renderbuffer !== null))) return false;
+      const accepted = imageRenderbufferStorage(b,()=>{
+        gl.renderbufferStorage(v.getUint32(p, true), nativeRenderbufferFormat(internal),
+          v.getInt32(p + 8, true), v.getInt32(p + 12, true));
+        // RGB16F is stored as RGBA16F with alpha 1.0 that is never written
+        // (opaque-alpha.ts). The bound storage is the one just specified.
+        if (renderbufferOpaqueAlpha(internal)) {
+          const native = gl.getParameter(0x8ca7) as WebGLRenderbuffer | null;
+          clearStorageAlphaToOne(gl, target => gl.framebufferRenderbuffer(target, 0x8ce0, 0x8d41, native));
+        }
+      });
+      // New storage replaces earlier contents, opaque or not.
+      if (accepted && b.shadow.renderbuffer)
+        setOpaqueAlphaStorage(renderbufferNative(b, b.shadow.renderbuffer), renderbufferOpaqueAlpha(internal));
+      if (accepted) recordRenderbufferSize(b.shadow.renderbuffer,v.getInt32(p+8,true),v.getInt32(p+12,true),
+        internal,{colorRenderable:renderbufferColorRenderable(internal),
+          depthRenderable:renderbufferDepthRenderable(internal),stencilRenderable:renderbufferStencilRenderable(internal)});
+      return accepted;
+    }
+    // Payload: u32 target, u32 attachment, u32 rbtarget, u32 rboName
+    case O.OP_FRAMEBUFFER_RENDERBUFFER:
+      attachImageObject(b,2,v.getUint32(p,true),v.getUint32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true),0);
+      return;
     case O.OP_DRAW_BUFFER: {
       gl.drawBuffers([v.getUint32(p, true)]);
       return;

@@ -1,0 +1,18 @@
+Use the bundled Linux UAPI headers on platforms other than FreeBSD.
+
+include/linux/input.h picks the bundled Linux or FreeBSD copy by
+__linux__ / __FreeBSD__ and expands to nothing anywhere else, so the
+build fails on any other platform that speaks the Linux evdev ABI.
+Kandelo implements that ABI but is not Linux and does not define
+__linux__ (sdk/config.site). Fall back to the Linux copy instead of to
+nothing. Same change as libevdev's patches/0001.
+
+--- a/include/linux/input.h
++++ b/include/linux/input.h
+@@ -2,4 +2,6 @@
+ #include "linux/input.h"
+ #elif __FreeBSD__
+ #include "freebsd/input.h"
++#else
++#include "linux/input.h"
+ #endif

@@ -37,6 +37,9 @@ int main(int argc, char **argv) {
         pixels[4095] = 0xff445566;
         struct prime shared = {.handle = bo.handle, .flags = 2 /* DRM_RDWR */};
         CHECK(ioctl(fd, 0xc00c642d, &shared) == 0);
+        /* The allocator's primary-card open acquired master. A consumer
+         * opening a different description cannot steal that authority. */
+        CHECK(ioctl(fd, 0x641f, 0) == 0);
         int ready[2];
         CHECK(pipe(ready) == 0);
         pid_t consumer = fork();

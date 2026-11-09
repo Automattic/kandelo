@@ -24,9 +24,10 @@ const store = createGcStore(provider, transit, wide, {
     const imports = tables.bind(getInstance, memory);
     const activation = frames.bind(getInstance, memory, tables.bindings.at(-1), mode);
     Object.assign(imports.env, activation.env);
+    const importedInstance = new WebAssembly.Instance(imported);
     Object.assign(imports.h, activation.h, {
       callback: value => value + 10,
-      root: new WebAssembly.Instance(imported).exports.root,
+      root: importedInstance.exports.root,
     });
     imports.env.__wpk_fork_unwind = new WebAssembly.Tag({ parameters: [] });
     unwindTags.set(memory, imports.env.__wpk_fork_unwind);

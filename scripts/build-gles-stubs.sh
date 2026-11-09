@@ -10,7 +10,20 @@ set -euo pipefail
 # split.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SYSROOT="$REPO_ROOT/sysroot"
+ARCH="wasm32posix"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arch)
+            [ $# -ge 2 ] || { echo "Error: --arch requires a value" >&2; exit 1; }
+            ARCH="$2"; shift 2 ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+case "$ARCH" in
+    wasm32posix) TARGET_ARCH=wasm32; SYSROOT="$REPO_ROOT/sysroot" ;;
+    wasm64posix) TARGET_ARCH=wasm64; SYSROOT="$REPO_ROOT/sysroot64" ;;
+    *) echo "Error: unsupported arch '$ARCH'. Use wasm32posix or wasm64posix." >&2; exit 1 ;;
+esac
 GLUE_DIR="$REPO_ROOT/libc/glue"
 
 # shellcheck source=build-step-input-hash.sh
@@ -38,7 +51,7 @@ if [ ! -f "$SYSROOT/include/EGL/egl.h" ]; then
 fi
 
 CFLAGS=(
-    --target=wasm32-unknown-unknown
+    --target="$TARGET_ARCH-unknown-unknown"
     --sysroot="$SYSROOT"
     -I"$GLUE_DIR"
     -nostdlib
@@ -61,6 +74,7 @@ GLES_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \
     scripts/build-gles-stubs.sh \
     scripts/write-graphics-pkgconfig.sh \
     scripts/build-step-input-hash.sh \
+    "literal:ARCH=$ARCH" \
     libc/glue \
     libc/musl-overlay/include)"
 

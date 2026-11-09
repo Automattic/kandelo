@@ -2863,10 +2863,9 @@ guest_path = '/usr/share/runtime.dat'
     expect(() => resolveBinary(fixture.relPath)).toThrow();
     rmSync(join(relocatedRepo, "packages"));
 
-    // A sealed runtime can carry implementation source at the historical
-    // package path without gaining source-registry policy. Formula browser
-    // validation needs the vendored TLS modules but still resolves programs
-    // against the bounded index shipped beside the host runtime.
+    // Leftover source at a historical package path must not manufacture a
+    // source registry. The sealed runtime still resolves programs against
+    // the bounded index shipped beside the host runtime.
     mkdirSync(
       join(relocatedRepo, "packages/registry/openssl/src/tls"),
       { recursive: true },

@@ -33,4 +33,31 @@ describe("MAP_SHARED coherence for kernel-owned files", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
   }, 30_000);
+
+  // Descriptor I/O fences the file's mappings first (`DescriptorFence` in
+  // crates/runtime-core/src/memory.rs): a store made through a mapping is
+  // seen by read()/sendfile()/copy_file_range()/a MAP_PRIVATE copy, and a
+  // later pwrite()/ftruncate() lands after it, even when the storing process
+  // is the file's only mapper and makes no further syscall.
+  it("fences mapped stores before descriptor I/O on the file", async () => {
+    const result = await runCentralizedProgram({
+      programPath: join(
+        __dirname,
+        "../../examples/shm_mapping_fence_test.wasm",
+      ),
+      timeout: 30_000,
+      useDefaultRootfs: false,
+    });
+
+    expect(result.stdout).toContain("own-pread-after-store: PASS");
+    expect(result.stdout).toContain("pread-after-edge: PASS");
+    expect(result.stdout).toContain("sendfile-after-edge: PASS");
+    expect(result.stdout).toContain("copy-file-range-after-edge: PASS");
+    expect(result.stdout).toContain("private-map-after-edge: PASS");
+    expect(result.stdout).toContain("truncate-drops-mapped-store: PASS");
+    expect(result.stdout).toContain("pwrite-after-mapped-store: PASS");
+    expect(result.stdout).toContain("SHM_MAPPING_FENCE_PASS");
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+  }, 45_000);
 });
