@@ -1,0 +1,1842 @@
+{
+  "kind": "Source-level PR architecture reuse audit; not runtime conformance or merge approval",
+  "createdAt": "2026-11-09T21:55:01.098123+00:00",
+  "frozenHead": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+  "mainComparison": "92e3496082e85dfc751935eb4ceb9e81682756b5",
+  "scope": {
+    "prs": 33,
+    "interveningFoundationBase": "18b6947f2bdce203e219517beeb531fb2b95fc6b",
+    "foundationCampaignCommits": 235
+  },
+  "runtimeTestsRun": false,
+  "buildsRun": false,
+  "trackedChangesMade": false,
+  "verifiedSourceAnchors": 135,
+  "definition": "Whole upstream reuse means source is consumed as a complete module, distinguished from mere vendoring, references, selected sections, third-party alternatives and handwritten public APIs. Whole-file reuse does not imply all dependencies are upstream or behavior conforms.",
+  "prs": [
+    {
+      "number": 1595,
+      "title": "Node: Fix core filesystem, process, and web API behavior",
+      "head": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+      "base": "1a3ea3b9a73f6975d31f755be37e532aec6f8ad3",
+      "mergeBase": "1a3ea3b9a73f6975d31f755be37e532aec6f8ad3",
+      "upstreamReuse": "No executable upstream Node core module is imported. whatwg-url14.2.0, tr465.1.1 and web-streams-polyfill4.3.0 are other projects, bundled with dependencies. Public fs/process/URL/Buffer/stdin logic remains handwritten.",
+      "backend": "Real guest libc chmod/fsync operations; fd-read nonblocking admission, cancellation by exact pending Promise, independent loop reference state. JS fixes negative errno/partial writes, child PATH/cwd and EOF but those public policies are not native binding implementations.",
+      "usefulness": "High native fd/POSIX/cancellation and regression value; low wholesale frontend fit.",
+      "disposition": [
+        "Extract/adapt genuine native owners behind the new fs/stream bindings, considering later ownership-corrected descendants.",
+        "Retain file/write/stdin/PATH/exit/URL/Buffer regressions.",
+        "Replace handmade public APIs and alternative public URL/WebStreams libraries with whole Node modules/dependencies. Do not transplant the entire bootstrap/bundle."
+      ],
+      "sourceAnchors": [
+        {
+          "commit": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+          "path": "third_party/node-web-platform/package.json",
+          "line": 6,
+          "symbol": "\"whatwg-url\"",
+          "why": "third-party library identity"
+        },
+        {
+          "commit": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+          "path": "third_party/node-web-platform/build.mjs",
+          "line": 7,
+          "symbol": "stdin:",
+          "why": "consumed non-Node bundle entry"
+        },
+        {
+          "commit": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+          "path": "packages/registry/spidermonkey/patches/0023-kandelo-chmod.patch",
+          "line": 4,
+          "symbol": "static bool osfile_chmod",
+          "why": "real libc chmod"
+        },
+        {
+          "commit": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+          "path": "packages/registry/spidermonkey/patches/0024-kandelo-fsync.patch",
+          "line": 4,
+          "symbol": "static bool osfile_fsync",
+          "why": "real libc fsync"
+        },
+        {
+          "commit": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+          "path": "packages/registry/spidermonkey/patches/0025-kandelo-stdin-read-control.patch",
+          "line": 48,
+          "symbol": "static bool KandeloNativeFdReadControl",
+          "why": "exact read cancellation/ref state"
+        },
+        {
+          "commit": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 3018,
+          "symbol": "function _spawnWithPath",
+          "why": "handwritten public spawn policy"
+        }
+      ],
+      "notes": [],
+      "evidenceLimits": "Read-only source/diff audit; no tests, runtime probes, generation or builds. Historical evidence applies only to its exact source/artifact identity. This review does not establish runtime correctness, current main regression protection, or complete Node internalBinding contract fit.",
+      "headSha": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+      "baseSha": "1a3ea3b9a73f6975d31f755be37e532aec6f8ad3",
+      "url": "https://github.com/Automattic/kandelo/pull/1595",
+      "reviewSource": "early-review.json",
+      "summary": {
+        "upstreamReuse": "No Node core import; third-party URL/Web Streams.",
+        "backend": "chmod/fsync, read cancellation and reference state.",
+        "usefulness": "Keep I/O mechanisms/tests; replace public shims and alternative frontends."
+      }
+    },
+    {
+      "number": 1604,
+      "title": "Node: Pin LTS target and restore upstream suite",
+      "head": "1a99195b017167ff4c51d612195582c73778abd6",
+      "base": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+      "mergeBase": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+      "upstreamReuse": "No new executable core module library. Pinned Node source/native archives are inputs to unchanged upstream tests and differential controls. Target/version embedding is metadata, not runtime module reuse.",
+      "backend": "Conformance/build infrastructure: coherent target manifest feeds CLI and process identity; source hashes and native/browser/guest runners retain real flags, environment, timeouts, artifact identities and unsupported/error statuses. Removes false Linux/V8/libuv/module-ABI metadata.",
+      "usefulness": "High reuse for provenance and validation, separate from runtime implementation.",
+      "disposition": [
+        "Reuse archive pin/coherence, native reference and honest per-host result accounting, including later1611 integrity corrections.",
+        "Verify the target/source/native reference against official sources separately; this audit does not validate the release designation.",
+        "Replace monolithic import-stripping bootstrap assembly with the new shared module environment as needed."
+      ],
+      "sourceAnchors": [
+        {
+          "commit": "1a99195b017167ff4c51d612195582c73778abd6",
+          "path": "packages/registry/node-compat/target.json",
+          "line": 3,
+          "symbol": "\"version\"",
+          "why": "target/source/reference pin"
+        },
+        {
+          "commit": "1a99195b017167ff4c51d612195582c73778abd6",
+          "path": "scripts/generate-node-bootstrap.py",
+          "line": 13,
+          "symbol": "shared_lines",
+          "why": "legacy assembly strips import declarations"
+        },
+        {
+          "commit": "1a99195b017167ff4c51d612195582c73778abd6",
+          "path": "scripts/nodejs-source-helper.ts",
+          "line": 97,
+          "symbol": "export function preparePinnedArchive",
+          "why": "source integrity"
+        },
+        {
+          "commit": "1a99195b017167ff4c51d612195582c73778abd6",
+          "path": "scripts/nodejs-guest-runner.ts",
+          "line": 15,
+          "symbol": "export function unsupportedGuestRequirements",
+          "why": "unsupported requirements remain visible"
+        },
+        {
+          "commit": "1a99195b017167ff4c51d612195582c73778abd6",
+          "path": "scripts/nodejs-test-results.ts",
+          "line": 7,
+          "symbol": "export function classifyNodejsResult",
+          "why": "actual outcomes"
+        },
+        {
+          "commit": "1a99195b017167ff4c51d612195582c73778abd6",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 785,
+          "symbol": "platform: 'kandelo'",
+          "why": "actual platform identity"
+        }
+      ],
+      "notes": [],
+      "evidenceLimits": "Read-only source/diff audit; no tests, runtime probes, generation or builds. Historical evidence applies only to its exact source/artifact identity. This review does not establish runtime correctness, current main regression protection, or complete Node internalBinding contract fit.",
+      "headSha": "1a99195b017167ff4c51d612195582c73778abd6",
+      "baseSha": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+      "url": "https://github.com/Automattic/kandelo/pull/1604",
+      "reviewSource": "early-review.json",
+      "summary": {
+        "upstreamReuse": "Upstream source/reference used for tests, not module execution.",
+        "backend": "Pinning, runners, artifact identity and honest result accounting.",
+        "usefulness": "Carry provenance/harness; verify target; replace bootstrap assembly."
+      }
+    },
+    {
+      "number": 1605,
+      "title": "Node: Correct text codec boundaries and EOF",
+      "head": "90180c605b92bfc45aa565c627b1197ee35987f3",
+      "base": "1a99195b017167ff4c51d612195582c73778abd6",
+      "mergeBase": "1a99195b017167ff4c51d612195582c73778abd6",
+      "upstreamReuse": "No whole upstream public module reuse. TextEncoder/TextDecoder and StringDecoder are handwritten JS. The StringDecoder explicitly adapts byte-boundary accounting from Node src/string_decoder.cc: an algorithm port, not lib/string_decoder.js or internal/encoding execution.",
+      "backend": "No new native primitive. Uses existing native decodeUtf8 only for validated complete non-shared spans, with JS state machines, intrinsic byte-view access, surrogate replacement and stdin EOF flush.",
+      "usefulness": "High as codec/backend requirements and regressions; low as public implementation to retain.",
+      "disposition": [
+        "Keep malformed/split UTF8/UTF16, BOM/fatal, encodeInto, view brands and stdin EOF tests.",
+        "Execute upstream encoding/StringDecoder modules and implement their native transcoder/buffer state needs.",
+        "Do not retain these handwritten public classes as the new module implementation."
+      ],
+      "sourceAnchors": [
+        {
+          "commit": "90180c605b92bfc45aa565c627b1197ee35987f3",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 55,
+          "symbol": "globalThis.TextEncoder = class",
+          "why": "handwritten encoder"
+        },
+        {
+          "commit": "90180c605b92bfc45aa565c627b1197ee35987f3",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 161,
+          "symbol": "globalThis.TextDecoder = class",
+          "why": "handwritten decoder"
+        },
+        {
+          "commit": "90180c605b92bfc45aa565c627b1197ee35987f3",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 3070,
+          "symbol": "Byte-boundary accounting adapted",
+          "why": "explicit algorithm port"
+        },
+        {
+          "commit": "90180c605b92bfc45aa565c627b1197ee35987f3",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 3132,
+          "symbol": "StringDecoder.prototype.write",
+          "why": "handwritten public buffering"
+        },
+        {
+          "commit": "90180c605b92bfc45aa565c627b1197ee35987f3",
+          "path": "host/test/node-text-decoder.test.ts",
+          "line": 189,
+          "symbol": "describe(",
+          "why": "differential regression cases"
+        }
+      ],
+      "notes": [],
+      "evidenceLimits": "Read-only source/diff audit; no tests, runtime probes, generation or builds. Historical evidence applies only to its exact source/artifact identity. This review does not establish runtime correctness, current main regression protection, or complete Node internalBinding contract fit.",
+      "headSha": "90180c605b92bfc45aa565c627b1197ee35987f3",
+      "baseSha": "1a99195b017167ff4c51d612195582c73778abd6",
+      "url": "https://github.com/Automattic/kandelo/pull/1605",
+      "reviewSource": "early-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten codecs; ported Node C++ algorithm.",
+        "backend": "Uses existing decoding primitive; no new native binding.",
+        "usefulness": "Keep boundary tests; replace public codecs with upstream modules."
+      }
+    },
+    {
+      "number": 1606,
+      "title": "Node: Restore assertion matchers and deep comparisons",
+      "head": "977351ed76181a247864c5b67800b99538de3722",
+      "base": "90180c605b92bfc45aa565c627b1197ee35987f3",
+      "mergeBase": "90180c605b92bfc45aa565c627b1197ee35987f3",
+      "upstreamReuse": "Genuine complete Node assert.js, internal/util/comparisons.js and internal/assert/utils.js are hash-checked and inserted into executed factories. assert-utils has one generated diagnostic substitution. Other dependencies remain handwritten substitutes: AssertionError, errors, validators, inspection, partial primordials and local require map.",
+      "backend": "Native Promise brand uses CheckedUnwrapStatic and JS::IsPromiseObject without calling then/getters. Existing genuine native Error/Proxy brands are forwarded. Byte comparisons/non-index property filtering supply internal services in JS; they are not one coherent shared Node environment yet.",
+      "usefulness": "High; closest early PR to whole-module architecture, with substantial dependency substitution debt.",
+      "disposition": [
+        "Reuse pinned original modules and tests through the new shared builtin loader.",
+        "Carry engine brand/byte/property primitives only after their actual realm/security/GC contracts fit.",
+        "Replace local AssertionError/errors/validators/primordials/inspection substitutes with their upstream modules and genuine backend; disclose/remove diagnostic source adaptation rather than count it as full parity."
+      ],
+      "sourceAnchors": [
+        {
+          "commit": "977351ed76181a247864c5b67800b99538de3722",
+          "path": "third_party/node-core/sources.json",
+          "line": 9,
+          "symbol": "\"internal/util/comparisons\"",
+          "why": "pinned original modules"
+        },
+        {
+          "commit": "977351ed76181a247864c5b67800b99538de3722",
+          "path": "third_party/node-core/build.py",
+          "line": 25,
+          "symbol": "entries.append",
+          "why": "whole-source factory insertion"
+        },
+        {
+          "commit": "977351ed76181a247864c5b67800b99538de3722",
+          "path": "third_party/node-core/build.py",
+          "line": 23,
+          "symbol": "source = source.replace",
+          "why": "explicit diagnostic adaptation"
+        },
+        {
+          "commit": "977351ed76181a247864c5b67800b99538de3722",
+          "path": "third_party/node-core/adapter.js",
+          "line": 99,
+          "symbol": "class AssertionError",
+          "why": "handwritten internal substitute"
+        },
+        {
+          "commit": "977351ed76181a247864c5b67800b99538de3722",
+          "path": "third_party/node-core/adapter.js",
+          "line": 115,
+          "symbol": "const modules =",
+          "why": "feature-local dependency map"
+        },
+        {
+          "commit": "977351ed76181a247864c5b67800b99538de3722",
+          "path": "packages/registry/spidermonkey/patches/0026-kandelo-promise-brand.patch",
+          "line": 10,
+          "symbol": "static bool KandeloNativeIsPromise",
+          "why": "genuine engine brand backend"
+        },
+        {
+          "commit": "977351ed76181a247864c5b67800b99538de3722",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 2544,
+          "symbol": "const assert = _nodeCore.assert",
+          "why": "actual consumed upstream export"
+        }
+      ],
+      "notes": [],
+      "evidenceLimits": "Read-only source/diff audit; no tests, runtime probes, generation or builds. Historical evidence applies only to its exact source/artifact identity. This review does not establish runtime correctness, current main regression protection, or complete Node internalBinding contract fit.",
+      "headSha": "977351ed76181a247864c5b67800b99538de3722",
+      "baseSha": "90180c605b92bfc45aa565c627b1197ee35987f3",
+      "url": "https://github.com/Automattic/kandelo/pull/1606",
+      "reviewSource": "early-review.json",
+      "summary": {
+        "upstreamReuse": "Whole assert/comparison modules; substituted internals and diagnostic patch.",
+        "backend": "Native Promise brand; byte/property/type services.",
+        "usefulness": "Reuse modules; replace substitute dependency graph and adapt primitives."
+      }
+    },
+    {
+      "number": 1607,
+      "title": "Node: Finalize eval shutdown and uncaught main failures",
+      "head": "39d6e685ccb0568697a8f294b908d22b8c4166ea",
+      "base": "977351ed76181a247864c5b67800b99538de3722",
+      "mergeBase": "977351ed76181a247864c5b67800b99538de3722",
+      "upstreamReuse": "No upstream core module import. Natural-exit and ESM error bookkeeping are handwritten bootstrap policy.",
+      "backend": "Real SpiderMonkey shell hook after job/timer/I/O draining and rejection reporting calls a private JS finalizer and returns process status. Explicit failure flag preserves primitive thrown values.",
+      "usefulness": "High lifecycle/backend requirement; public shutdown policy should be replaced by upstream bootstrap/process behavior.",
+      "disposition": [
+        "Adapt shell completion/fatal result handling to the actual upstream process/bootstrap contract.",
+        "Retain eval/CJS/ESM, unset/cleared exitCode, pending work and primitive-throw cases.",
+        "Consider later1616/1619 lifecycle successors before extracting this early hook."
+      ],
+      "sourceAnchors": [
+        {
+          "commit": "39d6e685ccb0568697a8f294b908d22b8c4166ea",
+          "path": "packages/registry/spidermonkey/patches/0027-kandelo-node-eval-exit.patch",
+          "line": 14,
+          "symbol": "__kandeloNodeFinalize",
+          "why": "shell event-loop completion hook"
+        },
+        {
+          "commit": "39d6e685ccb0568697a8f294b908d22b8c4166ea",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 5651,
+          "symbol": "function _runNaturalExit",
+          "why": "handwritten exit policy"
+        },
+        {
+          "commit": "39d6e685ccb0568697a8f294b908d22b8c4166ea",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 5700,
+          "symbol": "let failed = false",
+          "why": "primitive throw tracking"
+        },
+        {
+          "commit": "39d6e685ccb0568697a8f294b908d22b8c4166ea",
+          "path": "host/test/fixtures/node-process-exit.ts",
+          "line": 88,
+          "symbol": "nodeProcessExitExpected",
+          "why": "guest lifecycle fixture"
+        }
+      ],
+      "notes": [],
+      "evidenceLimits": "Read-only source/diff audit; no tests, runtime probes, generation or builds. Historical evidence applies only to its exact source/artifact identity. This review does not establish runtime correctness, current main regression protection, or complete Node internalBinding contract fit.",
+      "headSha": "39d6e685ccb0568697a8f294b908d22b8c4166ea",
+      "baseSha": "977351ed76181a247864c5b67800b99538de3722",
+      "url": "https://github.com/Automattic/kandelo/pull/1607",
+      "reviewSource": "early-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten shutdown logic.",
+        "backend": "Engine completion hook and final status/failure handling.",
+        "usefulness": "Keep lifecycle mechanism/tests; use upstream process policy and later fixes."
+      }
+    },
+    {
+      "number": 1608,
+      "title": "Node: Preserve descriptor cursors for positioned I/O",
+      "head": "74f638fc6d8729bd007bce2f67a432c275773d0b",
+      "base": "39d6e685ccb0568697a8f294b908d22b8c4166ea",
+      "mergeBase": "39d6e685ccb0568697a8f294b908d22b8c4166ea",
+      "upstreamReuse": "No whole fs module reuse. read/readSync/writeSync/FileHandle overloads, validation and callbacks are handwritten.",
+      "backend": "Real libc pread/pwrite binding with exact signed64 BigInt/safe-number offsets, bounds checking and no OFD cursor mutation. Count/-errno seam is not itself Node fs internalBinding request/wrapper/error/async contract.",
+      "usefulness": "High native filesystem primitive and regression value; replace public fs JS.",
+      "disposition": [
+        "Adapt positioned I/O backend behind whole upstream fs modules; retain64-bit offset and cursor/pipe error tests.",
+        "Replace public overload/error/callback implementations.",
+        "Review later backing/borrowing/GC ownership corrections; old ArrayBuffer-only seam is not full current shared/growable buffer support."
+      ],
+      "sourceAnchors": [
+        {
+          "commit": "74f638fc6d8729bd007bce2f67a432c275773d0b",
+          "path": "packages/registry/spidermonkey/patches/0028-kandelo-positioned-io.patch",
+          "line": 10,
+          "symbol": "static bool PositionedIO",
+          "why": "actual libc positioned primitive"
+        },
+        {
+          "commit": "74f638fc6d8729bd007bce2f67a432c275773d0b",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 1897,
+          "symbol": "function _readParameters",
+          "why": "handwritten overload processing"
+        },
+        {
+          "commit": "74f638fc6d8729bd007bce2f67a432c275773d0b",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 1913,
+          "symbol": "function _readTransfer",
+          "why": "actual backend consumer"
+        },
+        {
+          "commit": "74f638fc6d8729bd007bce2f67a432c275773d0b",
+          "path": "host/test/fixtures/node-positioned-io.ts",
+          "line": 13,
+          "symbol": "pread changed cursor",
+          "why": "cursor preservation requirement"
+        }
+      ],
+      "notes": [],
+      "evidenceLimits": "Read-only source/diff audit; no tests, runtime probes, generation or builds. Historical evidence applies only to its exact source/artifact identity. This review does not establish runtime correctness, current main regression protection, or complete Node internalBinding contract fit.",
+      "headSha": "74f638fc6d8729bd007bce2f67a432c275773d0b",
+      "baseSha": "39d6e685ccb0568697a8f294b908d22b8c4166ea",
+      "url": "https://github.com/Automattic/kandelo/pull/1608",
+      "reviewSource": "early-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten fs wrappers.",
+        "backend": "Real pread/pwrite, signed64 offsets and preserved file cursor.",
+        "usefulness": "Keep native operations/tests; adapt to Node fs request contracts."
+      }
+    },
+    {
+      "number": 1609,
+      "title": "Node: Track Response consumption and clone body streams",
+      "head": "26c78f2d95c3622d4eceacfda1ab561800587fdb",
+      "base": "74f638fc6d8729bd007bce2f67a432c275773d0b",
+      "mergeBase": "74f638fc6d8729bd007bce2f67a432c275773d0b",
+      "upstreamReuse": "No Node Blob/Fetch/WebStreams module import. Handwritten Blob, FetchResponse, body state/header validation and cloneBody logic use web-streams-polyfill; stream-state.cjs inspects that other implementation's _disturbed/_readableStreamController slots.",
+      "backend": "Exposes genuine SpiderMonkey serialize/deserialize graph cloning as cloneValue for independent stream chunk graphs. Actual tee/cancel state comes from third-party streams. Remaining changes are public/middle-layer JS semantics rather than a new transport backend.",
+      "usefulness": "High tests/ownership requirements and useful engine clone primitive; low public frontend fit.",
+      "disposition": [
+        "Keep repeated-consumption, lock/disturbance, independent clone bytes, snapshots and cancellation tests.",
+        "Use Node Blob and the pinned Node bundled Fetch/WebStreams graph with genuine backend support.",
+        "Do not transplant the alternate stream private-slot adapter; review later clone/transfer/GC ownership work before backend extraction."
+      ],
+      "sourceAnchors": [
+        {
+          "commit": "26c78f2d95c3622d4eceacfda1ab561800587fdb",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 6100,
+          "symbol": "class Blob",
+          "why": "handwritten public Blob"
+        },
+        {
+          "commit": "26c78f2d95c3622d4eceacfda1ab561800587fdb",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 6503,
+          "symbol": "function cloneBody",
+          "why": "handwritten Fetch clone"
+        },
+        {
+          "commit": "26c78f2d95c3622d4eceacfda1ab561800587fdb",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 6571,
+          "symbol": "class FetchResponse",
+          "why": "handwritten public Response"
+        },
+        {
+          "commit": "26c78f2d95c3622d4eceacfda1ab561800587fdb",
+          "path": "third_party/node-web-platform/stream-state.cjs",
+          "line": 15,
+          "symbol": "descriptor(value, '_disturbed')",
+          "why": "non-Node private stream slot"
+        },
+        {
+          "commit": "26c78f2d95c3622d4eceacfda1ab561800587fdb",
+          "path": "packages/registry/spidermonkey/node-compat/adapter.js",
+          "line": 371,
+          "symbol": "cloneValue(value)",
+          "why": "actual engine graph clone"
+        }
+      ],
+      "notes": [],
+      "evidenceLimits": "Read-only source/diff audit; no tests, runtime probes, generation or builds. Historical evidence applies only to its exact source/artifact identity. This review does not establish runtime correctness, current main regression protection, or complete Node internalBinding contract fit.",
+      "headSha": "26c78f2d95c3622d4eceacfda1ab561800587fdb",
+      "baseSha": "74f638fc6d8729bd007bce2f67a432c275773d0b",
+      "url": "https://github.com/Automattic/kandelo/pull/1609",
+      "reviewSource": "early-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten Blob/Response; third-party stream internals.",
+        "backend": "Engine graph cloning; existing stream transport.",
+        "usefulness": "Keep clone/consumption tests; replace public body and stream-state adapters."
+      }
+    },
+    {
+      "number": 1610,
+      "title": "POSIX: Preserve wide offsets in resident filesystems",
+      "head": "bd11508e1c0d373bbdae0d60a6a8b0e679645a20",
+      "base": "26c78f2d95c3622d4eceacfda1ab561800587fdb",
+      "mergeBase": "26c78f2d95c3622d4eceacfda1ab561800587fdb",
+      "upstreamReuse": "No JS module reuse; platform-level filesystem correction with tests.",
+      "backend": "Reads compare wide offsets before narrowing to wasm32 usize; writes reject unrepresentable offsets/EFBIG; export reader avoids wrapping. Independent of Node. Current-main rootfs has equivalent checked conversions after refactoring, while tmpfs still retains the old cast-before-bound-check source pattern.",
+      "usefulness": "High platform prerequisite, but only missing current implementation should be carried.",
+      "disposition": [
+        "Retain wide-offset/EOF/no-corruption/cursor regressions for both backends.",
+        "Do not transplant old rootfs source or duplicate its now-present fixes.",
+        "Inspect/adapt the remaining tmpfs change in current code, preserving current quota refund and set-ID semantics; owning ABI review still applies."
+      ],
+      "sourceAnchors": [
+        {
+          "commit": "bd11508e1c0d373bbdae0d60a6a8b0e679645a20",
+          "path": "crates/runtime-core/src/tmpfs.rs",
+          "line": 918,
+          "symbol": "Compare before narrowing",
+          "why": "tmpfs read correction"
+        },
+        {
+          "commit": "bd11508e1c0d373bbdae0d60a6a8b0e679645a20",
+          "path": "crates/runtime-core/src/tmpfs.rs",
+          "line": 1141,
+          "symbol": "usize::try_from(offset)",
+          "why": "tmpfs write correction"
+        },
+        {
+          "commit": "bd11508e1c0d373bbdae0d60a6a8b0e679645a20",
+          "path": "crates/runtime-core/src/rootfs.rs",
+          "line": 2846,
+          "symbol": "A large file offset must remain EOF",
+          "why": "older rootfs correction"
+        },
+        {
+          "commit": "bd11508e1c0d373bbdae0d60a6a8b0e679645a20",
+          "path": "host/test/fixtures/node-positioned-io.ts",
+          "line": 50,
+          "symbol": "wide read changed buffer",
+          "why": "guest wide-offset requirement"
+        }
+      ],
+      "notes": [
+        "Current main 92e3496082e85dfc751935eb4ceb9e81682756b5: rootfs write5029 checked usize conversion; read5835 checked conversion/EOF; export_tree_read7669 checked conversion. tmpfs read922 and write1144/1164 still narrow offset as usize first. Source inspection only, no newly reproduced runtime failure."
+      ],
+      "evidenceLimits": "Read-only source/diff audit; no tests, runtime probes, generation or builds. Historical evidence applies only to its exact source/artifact identity. This review does not establish runtime correctness, current main regression protection, or complete Node internalBinding contract fit.",
+      "headSha": "bd11508e1c0d373bbdae0d60a6a8b0e679645a20",
+      "baseSha": "26c78f2d95c3622d4eceacfda1ab561800587fdb",
+      "url": "https://github.com/Automattic/kandelo/pull/1610",
+      "reviewSource": "early-review.json",
+      "summary": {
+        "upstreamReuse": "None; filesystem-level fix.",
+        "backend": "Wide-offset/EOF/no-corruption behavior.",
+        "usefulness": "Rootfs equivalent already on main; review missing tmpfs fix; keep tests."
+      }
+    },
+    {
+      "number": 1611,
+      "title": "Tests: Preserve complete Node upstream source inputs",
+      "head": "f84ff24293d7b917b17feb258e74acad07a0dcf2",
+      "base": "bd11508e1c0d373bbdae0d60a6a8b0e679645a20",
+      "mergeBase": "bd11508e1c0d373bbdae0d60a6a8b0e679645a20",
+      "upstreamReuse": "Complete upstream source tree is preserved as unchanged TEST INPUT, including doc/deps/root files, empty directories, links and modes. This is fixture reuse, not activating lib modules as runtime implementation.",
+      "backend": "Conformance infrastructure only: typed entry hashes include directories/modes/links; VFS copies all source entries and preflight probes them. Browser immutable image input is cached as plain bytes and copied independently per guest.",
+      "usefulness": "High import/integrity/validation reuse with honest scope.",
+      "disposition": [
+        "Carry all-entry source integrity and full fixture preservation into the new importer/harness, adapted to current VFS/browser quiet policy.",
+        "Keep exact artifact manifests and failure/unsupported accounting.",
+        "Do not count copied lib sources in a test image or historical5147case baseline as current module implementation/conformance."
+      ],
+      "sourceAnchors": [
+        {
+          "commit": "f84ff24293d7b917b17feb258e74acad07a0dcf2",
+          "path": "scripts/nodejs-source-helper.ts",
+          "line": 88,
+          "symbol": "export const sourceEntries",
+          "why": "all-entry discovery"
+        },
+        {
+          "commit": "f84ff24293d7b917b17feb258e74acad07a0dcf2",
+          "path": "scripts/nodejs-source-helper.ts",
+          "line": 97,
+          "symbol": "kind === 'directory'",
+          "why": "typed tree hashing"
+        },
+        {
+          "commit": "f84ff24293d7b917b17feb258e74acad07a0dcf2",
+          "path": "scripts/build-nodejs-test-vfs-image.ts",
+          "line": 20,
+          "symbol": "for (const name of sourceEntries(sourceRoot))",
+          "why": "complete archive fixture materialization"
+        },
+        {
+          "commit": "f84ff24293d7b917b17feb258e74acad07a0dcf2",
+          "path": "scripts/nodejs-browser-runner.ts",
+          "line": 35,
+          "symbol": "immutableImage(origin)",
+          "why": "independent plain-byte image inputs"
+        }
+      ],
+      "notes": [],
+      "evidenceLimits": "Read-only source/diff audit; no tests, runtime probes, generation or builds. Historical evidence applies only to its exact source/artifact identity. This review does not establish runtime correctness, current main regression protection, or complete Node internalBinding contract fit.",
+      "headSha": "f84ff24293d7b917b17feb258e74acad07a0dcf2",
+      "baseSha": "bd11508e1c0d373bbdae0d60a6a8b0e679645a20",
+      "url": "https://github.com/Automattic/kandelo/pull/1611",
+      "reviewSource": "early-review.json",
+      "summary": {
+        "upstreamReuse": "Unchanged upstream test/source fixtures, not runtime activation.",
+        "backend": "Source-tree integrity and fixture/image preparation.",
+        "usefulness": "Carry integrity checks and harness accounting."
+      }
+    },
+    {
+      "number": 1612,
+      "title": "Node: Apply connection defaults to real socket attempts",
+      "head": "60c3ce9b540b73723fccdf15318f94b2df1e7b93",
+      "base": "f84ff24293d7b917b17feb258e74acad07a0dcf2",
+      "mergeBase": "f84ff24293d7b917b17feb258e74acad07a0dcf2",
+      "upstreamReuse": "No whole net/dns import. dns.lookup normalization/order, IP parsing, family alternation, connectionAttempt events, deadlines and Socket/TLS integration are handwritten JS.",
+      "backend": "Real getaddrinfo/inet_ntop lookup, IPv4/IPv6 nonblocking connect/local bind, SO_ERROR outcome, getsockname/getpeername and owned-fd cleanup. Promise identifies pending connect cancellation. Guest kernel/runtime fixes IPv6 wildcard source address while preserving bound port. Interfaces are private Promise/fd records, not Node TCPWrap/GetAddrInfoReqWrap bindings.",
+      "usefulness": "High socket/DNS/source-address/cancellation foundation and independent C-peer evidence; replace public connection policy.",
+      "disposition": [
+        "Adapt genuine operations/owners to upstream Node wrappers/request objects/callback timing, using later ownership-corrected code.",
+        "Keep native-peer multi-address/bind/timeout/abort/error/cleanup tests.",
+        "Replace handmade public net/dns option/result/attempt policy with whole upstream modules. Remaining fabricated dns.resolve records in the old bootstrap are not fixed by this PR and must not be carried as support."
+      ],
+      "sourceAnchors": [
+        {
+          "commit": "60c3ce9b540b73723fccdf15318f94b2df1e7b93",
+          "path": "packages/registry/spidermonkey/patches/0029-kandelo-node-network-attempts.patch",
+          "line": 55,
+          "symbol": "static bool KandeloNativeSocketLookup",
+          "why": "real libc lookup"
+        },
+        {
+          "commit": "60c3ce9b540b73723fccdf15318f94b2df1e7b93",
+          "path": "packages/registry/spidermonkey/patches/0029-kandelo-node-network-attempts.patch",
+          "line": 234,
+          "symbol": "static bool KandeloNativeSocketCancelConnect",
+          "why": "owned-connect cancellation"
+        },
+        {
+          "commit": "60c3ce9b540b73723fccdf15318f94b2df1e7b93",
+          "path": "packages/registry/spidermonkey/patches/0029-kandelo-node-network-attempts.patch",
+          "line": 255,
+          "symbol": "static bool KandeloNativeSocketAddress",
+          "why": "real socket endpoints"
+        },
+        {
+          "commit": "60c3ce9b540b73723fccdf15318f94b2df1e7b93",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "line": 3916,
+          "symbol": "_nodeBeginSocketConnection = function",
+          "why": "handwritten connection policy"
+        },
+        {
+          "commit": "60c3ce9b540b73723fccdf15318f94b2df1e7b93",
+          "path": "crates/kernel/src/wasm_api.rs",
+          "line": 12007,
+          "symbol": "A bound wildcard still selects",
+          "why": "guest IPv6 source state"
+        },
+        {
+          "commit": "60c3ce9b540b73723fccdf15318f94b2df1e7b93",
+          "path": "host/test/fixtures/node-network-peer.c",
+          "line": 15,
+          "symbol": "int main",
+          "why": "independent peer"
+        }
+      ],
+      "notes": [],
+      "evidenceLimits": "Read-only source/diff audit; no tests, runtime probes, generation or builds. Historical evidence applies only to its exact source/artifact identity. This review does not establish runtime correctness, current main regression protection, or complete Node internalBinding contract fit.",
+      "headSha": "60c3ce9b540b73723fccdf15318f94b2df1e7b93",
+      "baseSha": "f84ff24293d7b917b17feb258e74acad07a0dcf2",
+      "url": "https://github.com/Automattic/kandelo/pull/1612",
+      "reviewSource": "early-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten net/dns connection policy.",
+        "backend": "getaddrinfo, IPv4/IPv6 connect/bind/address queries/cancellation.",
+        "usefulness": "Reuse final socket/DNS owners behind Node wrappers; replace public policy."
+      }
+    },
+    {
+      "number": 1613,
+      "title": "Node: Separate public globals from embedding utilities",
+      "url": "https://github.com/Automattic/kandelo/pull/1613",
+      "baseSha": "60c3ce9b540b73723fccdf15318f94b2df1e7b93",
+      "headSha": "8181022ff8206ac54d964ad9f2caaffdb6ac7d01",
+      "upstreamReuse": "None added as whole upstream Node files. _installNodeGlobalScope and ECMA/public-name/descriptor lists are handwritten target-derived bootstrap policy; buffer atob/btoa aliases reuse existing function identities, not a new imported module.",
+      "backend": "JavaScript engine-adapter boundary captures real shell utilities before removing shell globals; prepareGlobalScope deletes non-ECMA/nonpublic shell names while closures retain I/O/worker/shutdown functions. No new native C++/kernel operation.",
+      "usefulness": "High as bootstrap isolation requirements and public-global regression fixtures; moderate as code to transplant.",
+      "disposition": "Keep safe capture/removal mechanism after loader design review. Replace/manual descriptor policy with upstream bootstrap mechanisms where applicable. Do not use non-enumerability as the privacy mechanism for privileged internal bindings.",
+      "sourceAnchors": [
+        {
+          "commit": "8181022ff8206ac54d964ad9f2caaffdb6ac7d01",
+          "path": "packages/registry/spidermonkey/node-compat/adapter.js",
+          "symbol": "shellGlobalNames / ecmaGlobalNames / _nodeNative.prepareGlobalScope"
+        },
+        {
+          "commit": "8181022ff8206ac54d964ad9f2caaffdb6ac7d01",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "symbol": "_installNodeGlobalScope / _builtinModules.buffer.atob,btoa"
+        },
+        {
+          "commit": "8181022ff8206ac54d964ad9f2caaffdb6ac7d01",
+          "path": "host/test/fixtures/node-global-scope.ts",
+          "symbol": "shared native/guest global-scope program"
+        }
+      ],
+      "requiredBindingContract": "One private builtin/internalBinding environment, canonical global identities/descriptors and actual captured engine functions. Existing __kandelo* properties are made non-enumerable, not inaccessible; review exposure when designing the new environment.",
+      "evidenceLimits": "Source reviewed. PR reports historical controls partly on descendant f0eaf908 (PR1614), not independent current-candidate proof. Fixture requirements transfer; source-specific bootstrap assertions need replacement.",
+      "laterSourceToConsult": null,
+      "reviewSource": "runtime-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten bootstrap/global exposure policy.",
+        "backend": "Captures privileged embedding functions before removing shell globals.",
+        "usefulness": "Keep isolation mechanism/tests; use upstream bootstrap/global policy."
+      }
+    },
+    {
+      "number": 1614,
+      "title": "Node: Load file entrypoints through the native module graph",
+      "url": "https://github.com/Automattic/kandelo/pull/1614",
+      "baseSha": "8181022ff8206ac54d964ad9f2caaffdb6ac7d01",
+      "headSha": "f0eaf9086765e269dd7257c327e7e11e2a03c5af",
+      "upstreamReuse": "No whole Node CJS/ESM loader imported in this increment. Handwritten _makeRequire, _looksLikeEsmMain, namespace generation and CJS/ESM resolver remain; the regex static-import rewrite is removed in favor of real engine module evaluation.",
+      "backend": "SpiderMonkey ScriptPrivate origin registration for compiled CJS wrappers; real native import() submission, engine parse/link/cycles/TLA; resolve-only metadata hook avoids executing CJS during import.meta.resolve; file entry returns to owning jobs/I/O/timers loop and exits unresolved graph with status13.",
+      "usefulness": "Very high backend precursor for whole upstream loader integration; strong unchanged guest entrypoint/cycle/TLA/error fixtures.",
+      "disposition": "Salvage compiled-script identity, native module graph and host event-loop handoff behind Node ModuleWrap/contextify-style bindings. Replace custom public resolution/cache/synthetic namespace policy with upstream Node loader/internal modules. Do not import the old loader wholesale.",
+      "sourceAnchors": [
+        {
+          "commit": "f0eaf9086765e269dd7257c327e7e11e2a03c5af",
+          "path": "packages/registry/spidermonkey/patches/0030-kandelo-node-module-entrypoints.patch",
+          "symbol": "JS::SetScriptPrivate / ProcessArgs / KandeloResolveBareSpecifier(resolveOnly) / ModuleLoader resolve"
+        },
+        {
+          "commit": "f0eaf9086765e269dd7257c327e7e11e2a03c5af",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "symbol": "_makeRequire / _runEsmMain / __kandeloResolveBare / __kandeloNodeFinalize"
+        },
+        {
+          "commit": "f0eaf9086765e269dd7257c327e7e11e2a03c5af",
+          "path": "host/test/fixtures/node-module-entrypoints.ts",
+          "symbol": "CJS identity, native ESM cycles/TLA and error programs"
+        }
+      ],
+      "requiredBindingContract": "Real engine module records, identity and asynchronous evaluation must serve upstream ModuleWrap and loader contracts; custom /__kandelo_bare__ tokens, enumerable-property named-export snapshots and heuristic .js detection are not Node equivalents.",
+      "evidenceLimits": "Historical normal-image four-host observations in PR body; not rerun. Component tests use VM/mocked importModule and do not prove native graphs. Existing package/format/URL/query/export-discovery gaps explicitly remain.",
+      "laterSourceToConsult": "Current native-vm-modules.cpp, native-module-syntax.cpp, module-record-platform-adapter.js and later module/import ownership changes are candidates to inspect before reusing an early patch.",
+      "reviewSource": "runtime-review.json",
+      "summary": {
+        "upstreamReuse": "Custom CJS/ESM loader; no whole Node loader.",
+        "backend": "Real engine module graphs, script identities and event-loop handoff.",
+        "usefulness": "Reuse engine primitives; replace custom resolution/cache/namespace policy."
+      }
+    },
+    {
+      "number": 1615,
+      "title": "Node: Capture call sites from engine saved frames",
+      "url": "https://github.com/Automattic/kandelo/pull/1615",
+      "baseSha": "f0eaf9086765e269dd7257c327e7e11e2a03c5af",
+      "headSha": "3dff86662e9b3e33df1df60065a08c5012ebbb54",
+      "upstreamReuse": "No whole upstream util module imported. getCallSites argument/options validation and result policy are handwritten; adapter traverses genuine SpiderMonkey SavedFrames.",
+      "backend": "Actual saveStack source IDs/function names/coordinates; C++ compile-options first-line support for wrapped CJS and ESM public sourceURL without changing native registry keys.",
+      "usefulness": "High engine capability for upstream util binding and diagnostics. Early public wrapper is migration debt.",
+      "disposition": "Retain actual saved-frame/source-origin capabilities behind upstream internalBinding(util).getCallSites; replace public wrapper with whole upstream util. Preserve actual engine identity and recorded source-map limits; do not hardcode a two-frame skip into a different wrapper architecture.",
+      "sourceAnchors": [
+        {
+          "commit": "3dff86662e9b3e33df1df60065a08c5012ebbb54",
+          "path": "packages/registry/spidermonkey/node-compat/adapter.js",
+          "symbol": "captureSavedStack / _nodeNative.captureCallSites"
+        },
+        {
+          "commit": "3dff86662e9b3e33df1df60065a08c5012ebbb54",
+          "path": "packages/registry/spidermonkey/patches/0031-kandelo-node-wrapper-source-origin.patch",
+          "symbol": "CompileOptions firstLine / ModuleLoader sourceMeta.url"
+        },
+        {
+          "commit": "3dff86662e9b3e33df1df60065a08c5012ebbb54",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "symbol": "util.getCallSites"
+        },
+        {
+          "commit": "3dff86662e9b3e33df1df60065a08c5012ebbb54",
+          "path": "host/test/fixtures/node-call-sites.ts",
+          "symbol": "actual CJS/ESM/eval coordinates"
+        }
+      ],
+      "requiredBindingContract": "Upstream lib/util.js calls binding.getCallSites(frameCount). Caller filtering, UTF16 positions, script identity, GC/realm policy and source-map cache must remain coherent with whichever upstream stack layers execute.",
+      "evidenceLimits": "PR retains explicit source-map failure, Amaro skip and ENOSPC harness setup failure. Existing historical frame checks are bounded; current combined source is not validated.",
+      "laterSourceToConsult": "Current bootstrap getCallSites uses shared validators/explicit source-map mapping and later native assertion/error/source-map work. Evaluate current implementation, not early validation/skip assumptions alone.",
+      "reviewSource": "runtime-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten public getCallSites wrapper.",
+        "backend": "Genuine saved frames and compilation coordinates.",
+        "usefulness": "Reuse engine capture; let whole util/internal modules define public behavior."
+      }
+    },
+    {
+      "number": 1616,
+      "title": "Node: Stop fatal exits before draining live work",
+      "url": "https://github.com/Automattic/kandelo/pull/1616",
+      "baseSha": "3dff86662e9b3e33df1df60065a08c5012ebbb54",
+      "headSha": "e667d0953d34bd61ba557c5aad092f58e6736843",
+      "upstreamReuse": "No whole upstream internal/process/execution.js or promises.js imported here. ESM failure handler and native default-fatal policy are custom.",
+      "backend": "Engine preserves thrown timer/ESM failures, checks pending rejections at actual microtask checkpoints, stops draining native I/O/timers after fatal failure and reaches one finalizer instead of waiting forever on live handles.",
+      "usefulness": "High engine lifecycle prerequisite, but fatal-policy separation is essential.",
+      "disposition": "Carry actual pending-exception/checkpoint/fatal-loop-stop capabilities; put policy and hook dispatch in upstream process modules. Reconcile later callback/uncaught recovery owners before reusing early hardcoded report/exit branches.",
+      "sourceAnchors": [
+        {
+          "commit": "e667d0953d34bd61ba557c5aad092f58e6736843",
+          "path": "packages/registry/spidermonkey/patches/0032-kandelo-node-fatal-event-loop.patch",
+          "symbol": "KandeloRunDueTimers / RunShellJobs / ReportUnhandledRejections"
+        },
+        {
+          "commit": "e667d0953d34bd61ba557c5aad092f58e6736843",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "symbol": "_runEsmMain rejection callback"
+        },
+        {
+          "commit": "e667d0953d34bd61ba557c5aad092f58e6736843",
+          "path": "host/test/fixtures/node-fatal-exit.ts",
+          "symbol": "fatal with live timers/child I/O and nonfatal controls"
+        }
+      ],
+      "requiredBindingContract": "Notify upstream rejection/uncaught handlers with original exception identity and correct fromPromise/checkpoint ordering; allow real fatal-vs-handled decision. Do not run parent JS after a terminal fatal decision or unconditionally override installed process handlers.",
+      "evidenceLimits": "Historical focused four-host results, not current proof; custom uncaughtException/unhandledRejection/beforeExit remained gaps. Later mixed-fatal and intermittent Firefox failures were separately retained.",
+      "laterSourceToConsult": "Current native-async.cpp, callback-execution-stack.h, patch0119-node-native-exception-recovery.patch and later private Promise-dispatch proposal contain successor lifecycle work, not automatic compatibility closure.",
+      "reviewSource": "runtime-review.json",
+      "summary": {
+        "upstreamReuse": "Custom fatal/rejection policy.",
+        "backend": "Real exception checkpoints and fatal-loop shutdown.",
+        "usefulness": "Keep execution mechanisms; use upstream process policy and newer recovery owners."
+      }
+    },
+    {
+      "number": 1617,
+      "title": "Node: Back TCP listeners and half-close with real sockets",
+      "url": "https://github.com/Automattic/kandelo/pull/1617",
+      "baseSha": "e667d0953d34bd61ba557c5aad092f58e6736843",
+      "headSha": "0945a0f1378038068c347b5df538471d1325210a",
+      "upstreamReuse": "No whole upstream net.js/Server/Socket imported. Handwritten Server/Socket implements overloads, async delivery, half-close and close/ref policy over the new primitives.",
+      "backend": "Real POSIX nonblocking socket/bind/listen/accept; FD_CLOEXEC and close-on-error ownership; asynchronous Accept watches; SHUT_WR; per-operation referenced state by actual promise/fd.",
+      "usefulness": "Very high backend starting point; real independent C peers/IPv4/IPv6/half-close tests are particularly reusable.",
+      "disposition": "Retain socket semantics through a reviewed current native owner, expose Node tcp_wrap/stream_wrap request/handle contracts, and execute whole upstream net/stream logic. Replace the handwritten public Server/Socket and do not transplant bare-fd Promise API as the final binding interface.",
+      "sourceAnchors": [
+        {
+          "commit": "0945a0f1378038068c347b5df538471d1325210a",
+          "path": "packages/registry/spidermonkey/patches/0033-kandelo-node-tcp-listeners.patch",
+          "symbol": "KandeloAcceptSocket / KandeloNativeSocketListen / KandeloNativeSocketAccept / KandeloNativeSocketShutdown / KandeloNativeSocketRef"
+        },
+        {
+          "commit": "0945a0f1378038068c347b5df538471d1325210a",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "symbol": "net.Server.listen/_accept/close; Socket._adoptFd/_final"
+        },
+        {
+          "commit": "0945a0f1378038068c347b5df538471d1325210a",
+          "path": "host/test/fixtures/node-tcp-server-peer.c",
+          "symbol": "independent POSIX peer"
+        }
+      ],
+      "requiredBindingContract": "Pinned net.js depends on TCP/TCPConnectWrap, ShutdownWrap, Pipe/PipeConnectWrap and stream_base_commons. Handle lifetime, original callback receiver/request, cancellation/ref and accepted-owner transfer must conform; returning numeric fds and promises alone is insufficient.",
+      "evidenceLimits": "Historical actual listener/C-peer four-host evidence is useful but not a current-candidate pass. Full overloads/socket controls/stream/IPC behavior were missing. Existing later ownership corrections mean the early patch should not be used in isolation.",
+      "laterSourceToConsult": "Current third_party/node-core/native-listener.cpp, listener-owner.h, native-socket-owner.cpp and socket-owner.h plus commits ea719c2a42, a4dea36e9d, 4dd5dd1ddb, 18b6947f2b, cceda903aa and3c52b3233e supersede early receiver/descriptor/lifetime designs.",
+      "reviewSource": "runtime-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten Server/Socket.",
+        "backend": "Real bind/listen/accept, half-close and handle reference operations.",
+        "usefulness": "Reuse final TCP backend; implement Node handle contracts; replace net facade."
+      }
+    },
+    {
+      "number": 1619,
+      "title": "Node: Preserve exit-listener status and fatal diagnostics",
+      "url": "https://github.com/Automattic/kandelo/pull/1619",
+      "baseSha": "0945a0f1378038068c347b5df538471d1325210a",
+      "headSha": "3a36145e0375b0f2d901d5a85091840d14054402",
+      "upstreamReuse": "No whole upstream process lifecycle module reuse in this increment. _runNaturalExit fatal/exit-listener policy and status-only query are handwritten.",
+      "backend": "C++ saves/restores the actual pending exception around a status query, reports original diagnostic and preserves validated Node status including explicit zero rather than letting standalone-shell reporter override it.",
+      "usefulness": "High lifecycle requirements and public exit controls; moderate direct code reuse because finalizer architecture changes.",
+      "disposition": "Carry exception preservation and final native status/teardown mechanism. Move public exit emission/fatal policy into upstream process/bootstrap modules. Adapt the native query to a genuine process-owned status contract rather than retain an arbitrary public JS finalizer protocol.",
+      "sourceAnchors": [
+        {
+          "commit": "3a36145e0375b0f2d901d5a85091840d14054402",
+          "path": "packages/registry/spidermonkey/patches/0034-kandelo-node-exit-listener-status.patch",
+          "symbol": "AutoSaveExceptionState / restoreNodeStatus / nodeStatus"
+        },
+        {
+          "commit": "3a36145e0375b0f2d901d5a85091840d14054402",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "symbol": "_runNaturalExit / __kandeloNodeFinalize(statusOnly)"
+        },
+        {
+          "commit": "3a36145e0375b0f2d901d5a85091840d14054402",
+          "path": "host/test/fixtures/node-exit-listeners.ts",
+          "symbol": "status, cleared status, explicit exits and original diagnostics"
+        }
+      ],
+      "requiredBindingContract": "Exactly-once exit notification, actual authoritative exit code, original pending exception roots and fatal suppression semantics must compose with upstream process execution. Reporting a listener exception must not create a new status contrary to the chosen Node contract.",
+      "evidenceLimits": "PR documents historical four-host controls and prior fixture/include-order failures, all not rerun. Custom uncaught/beforeExit lifecycle remained incomplete; source ownership does not prove current teardown behavior.",
+      "laterSourceToConsult": null,
+      "reviewSource": "runtime-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten exit-listener policy.",
+        "backend": "Preserves pending exception and final process status.",
+        "usefulness": "Keep exception/status machinery and tests; use upstream exit policy."
+      }
+    },
+    {
+      "number": 1620,
+      "title": "Node: Enforce TCP server connection limits",
+      "url": "https://github.com/Automattic/kandelo/pull/1620",
+      "baseSha": "3a36145e0375b0f2d901d5a85091840d14054402",
+      "headSha": "d2fb64061ea9f9b50e756a9622595e46b2209b79",
+      "upstreamReuse": "No imported whole Node module or pinned source-excerpt wiring. Adds handwritten net.Server maxConnections/drop policy to the custom accept path.",
+      "backend": "No new native binding. Existing accept/address/close primitives are used to account live accepted connections, emit endpoint records and close excess descriptors in finally.",
+      "usefulness": "High as regression requirements, low as implementation to carry under the whole-net.js rule.",
+      "disposition": "Keep unchanged upstream connection-limit/drop cases, actual endpoint/descriptor assertions and C-peer fixtures. Let upstream net.js own maxConnections/drop policy; supply accurate accept/endpoints/close and resource accounting beneath it.",
+      "sourceAnchors": [
+        {
+          "commit": "d2fb64061ea9f9b50e756a9622595e46b2209b79",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "symbol": "Server._accept maxConnections/drop/finally close"
+        },
+        {
+          "commit": "d2fb64061ea9f9b50e756a9622595e46b2209b79",
+          "path": "host/test/fixtures/node-tcp-server.ts",
+          "symbol": "zero-ipv4 / zero-ipv6 / release-capacity"
+        },
+        {
+          "commit": "d2fb64061ea9f9b50e756a9622595e46b2209b79",
+          "path": "tests/nodejs/README.md",
+          "symbol": "three selected upstream limit/drop tests"
+        }
+      ],
+      "requiredBindingContract": "Upstream Server must see actual accepted handles and close completion. Capacity/drop accounting belongs to upstream public logic, not a second parallel connection counter in a bespoke public Server.",
+      "evidenceLimits": "Historical focused four-host limit/drop evidence, not full net conformance. Cluster distribution/dropMaxConnection were absent. Later actual-owner acceptance paths supersede this early public counter wiring.",
+      "laterSourceToConsult": null,
+      "reviewSource": "runtime-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten Server capacity/drop policy.",
+        "backend": "No new native binding.",
+        "usefulness": "Keep public/peer regressions; upstream net.js supplies policy."
+      }
+    },
+    {
+      "number": 1621,
+      "title": "Node: Preserve timer lifetime, cancellation and refresh",
+      "url": "https://github.com/Automattic/kandelo/pull/1621",
+      "baseSha": "d2fb64061ea9f9b50e756a9622595e46b2209b79",
+      "headSha": "d005cc6a1be679f6ecaa7ec26311c39f4cc137b5",
+      "upstreamReuse": "No whole upstream timers or timers/promises imported by this PR. Timeout, Immediate, normalization/warnings, promisify and Promise timer/scheduler behavior are handwritten. Its private deadline heap is also custom JS, not Node internal/timers.",
+      "backend": "Native monotonicTime from SpiderMonkey TimeStamp and event-loop referenced-work check; JS scheduler separates deadlines from reference state, queues cancellable callbacks and permits microtask checkpoints between entered callbacks.",
+      "usefulness": "Very high clock/wakeup/ref foundations and timer behavior fixtures; substantial public/internal JS replacement required.",
+      "disposition": "Keep real clock and backend liveness/wakeup capabilities. Execute whole upstream timers and internal/timers and implement their timers/task_queue bindings. Replace custom Timeout/Immediate/Promise timers, warnings/promisify and duplicate deadline heap policy; avoid two schedulers owning the same public lifecycle.",
+      "sourceAnchors": [
+        {
+          "commit": "d005cc6a1be679f6ecaa7ec26311c39f4cc137b5",
+          "path": "packages/registry/spidermonkey/patches/0035-kandelo-node-timer-references.patch",
+          "symbol": "KandeloNativeMonotonicTime / KandeloNodeTimersHaveReferences / RunShellJobs"
+        },
+        {
+          "commit": "d005cc6a1be679f6ecaa7ec26311c39f4cc137b5",
+          "path": "packages/registry/spidermonkey/node-compat/adapter.js",
+          "symbol": "createTimerScheduler"
+        },
+        {
+          "commit": "d005cc6a1be679f6ecaa7ec26311c39f4cc137b5",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "symbol": "Timeout / Immediate / timersPromises / emitWarning / promisify"
+        },
+        {
+          "commit": "d005cc6a1be679f6ecaa7ec26311c39f4cc137b5",
+          "path": "host/test/fixtures/node-timers.ts",
+          "symbol": "public timer/abort/ref/refresh programs"
+        }
+      ],
+      "requiredBindingContract": "Pinned internal/timers consumes immediateInfo/timeoutInfo, getLibuvNow/scheduleTimer/toggleTimerRef and task_queue enqueueMicrotask; it owns scheduling/async-hook algorithms. Existing per-callback heap API is not the same contract. Real warning/task queues, phase order, cancellation and receiver identity are needed.",
+      "evidenceLimits": "Historical timer-specific four-host evidence exists alongside persistent upstream failures/unsupported/timeout and unresolved WebKit PATH ENOMEM; do not summarize whole milestone as all green. Component tests extract private code/use a synthetic clock, so retain public programs and retarget internal tests.",
+      "laterSourceToConsult": "Later source227 adds whole upstream timers/promises (third_party/node-core/timers-promises-platform-adapter.js, upstream/timers-promises/lib/timers/promises.js); current classic timers remain custom. Reuse later consumer/insertion fixes as evidence, not proof that upstream internal/timers already works.",
+      "reviewSource": "runtime-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten timers, Promise timers and deadline scheduler.",
+        "backend": "Monotonic clock, wakeup/reference and callback-checkpoint seams.",
+        "usefulness": "Keep clock/liveness; replace duplicated timer classes/scheduler with upstream internals."
+      }
+    },
+    {
+      "number": 1622,
+      "title": "Node: Run synchronous child processes through POSIX pipes",
+      "url": "https://github.com/Automattic/kandelo/pull/1622",
+      "baseSha": "d005cc6a1be679f6ecaa7ec26311c39f4cc137b5",
+      "headSha": "9254e99aab3c7aba2ed4ae96e20e2f0a2a752d9c",
+      "upstreamReuse": "No whole upstream child_process.js/internal/child_process.js imported here. spawnSync/execSync/execFileSync validation, normalization, PATH/stdin/stdio/errors and credential/kill wrappers are handwritten.",
+      "backend": "Real synchronous POSIX child controller interleaves pipe I/O with wait/reap without pumping parent JS, monotonic timeout/maxBuffer/signals, RAII pipe/child cleanup, only parent endpoint nonblocking, close-on-exec and stdio-fd alias avoidance; real credentials/setsid; correct -e argv binding.",
+      "usefulness": "Very high native process/pipe foundation and independent PID/credential/session/cleanup test value. Binding adaptation and later fd-action fixes remain necessary.",
+      "disposition": "Retain native child/pipe/credential/CLI mechanisms after reviewing successor ownership fixes. Implement upstream spawn_sync.spawn(options)/process_wrap/pipe_wrap contracts and use whole child_process modules for public validation/options/errors. Replace custom JS normalization and Linux-numbered errno map with authoritative guest error binding.",
+      "sourceAnchors": [
+        {
+          "commit": "9254e99aab3c7aba2ed4ae96e20e2f0a2a752d9c",
+          "path": "packages/registry/spidermonkey/patches/0036-kandelo-node-sync-processes.patch",
+          "symbol": "KandeloNativePipe / KandeloSyncChild / KandeloNativeRunChildSync / KandeloNativeCredentials / BindScriptArgs"
+        },
+        {
+          "commit": "9254e99aab3c7aba2ed4ae96e20e2f0a2a752d9c",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "symbol": "spawnSync / _spawnWithPath / checkSyncResult / process.kill"
+        },
+        {
+          "commit": "9254e99aab3c7aba2ed4ae96e20e2f0a2a752d9c",
+          "path": "host/test/fixtures/node-sync-process-peer.c",
+          "symbol": "PID, uid/gid and session/process-group peer"
+        }
+      ],
+      "requiredBindingContract": "Upstream internal/child_process.js calls internalBinding(spawn_sync).spawn(options); current API instead accepts an already-spawned pid, owned fd array and input/deadline limits. Preserve transfer ownership, no JS reentry, binary output and actual wait status while redesigning the adapter. Need authoritative errno/signals and normalized stdio, security/getter ordering.",
+      "evidenceLimits": "Historical focused actual four-host peer/control evidence; one upstream required flag unsupported, not pass. Source/VM tests mock native seam and cannot prove native lifetimes. Full product/overall suites deferred and current binary products intentionally removed.",
+      "laterSourceToConsult": "Later b960dac57b retains spawn pipe sources until all stdio actions finish; inspect that fix and current child-wait.h plus later child abort/timeout/exec ownership before migrating the early controller.",
+      "reviewSource": "runtime-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten child_process frontend.",
+        "backend": "POSIX child/pipe I/O, wait/reap, limits, credentials and cleanup.",
+        "usefulness": "Strong backend candidate; adapt spawn_sync/process/pipe contracts; replace normalization."
+      }
+    },
+    {
+      "number": 1623,
+      "title": "Node: Enforce socket inactivity deadlines",
+      "url": "https://github.com/Automattic/kandelo/pull/1623",
+      "baseSha": "9254e99aab3c7aba2ed4ae96e20e2f0a2a752d9c",
+      "headSha": "bde15b2302d1127b8452692eaeeb3f14fde5fcd2",
+      "upstreamReuse": "No whole upstream net.js imported; custom SocketCore/ServerCore call/construct wrappers, timeout refresh, duration warnings and metadata object implement public behavior manually.",
+      "backend": "Genuine pending-write byte count from each native Write watch buffer.size()-offset. JS metadata is tied to one captured descriptor state and retired on close rather than reading a reused fd; real read/write activity refreshes unreferenced deadlines.",
+      "usefulness": "High backend observation/ownership and stalled-vs-progressing write tests; public timeout/constructor code should be replaced.",
+      "disposition": "Reuse actual write-progress accounting behind Node-compatible StreamBase/TCP handle properties and callbacks. Let upstream net.js/internal stream helpers implement timeout policy and constructors. Keep private owner/generation authority, not a mutable public _handle metadata object, as the source of truth.",
+      "sourceAnchors": [
+        {
+          "commit": "bde15b2302d1127b8452692eaeeb3f14fde5fcd2",
+          "path": "packages/registry/spidermonkey/patches/0037-kandelo-socket-write-progress.patch",
+          "symbol": "KandeloNativeSocketWriteQueueSize"
+        },
+        {
+          "commit": "bde15b2302d1127b8452692eaeeb3f14fde5fcd2",
+          "path": "packages/registry/node-compat/bootstrap.js",
+          "symbol": "SocketCore._ownSocketFd / _unrefTimer / _onTimeout / setTimeout / Socket,Server wrappers"
+        },
+        {
+          "commit": "bde15b2302d1127b8452692eaeeb3f14fde5fcd2",
+          "path": "host/test/fixtures/node-socket-write-peer.c",
+          "symbol": "independent write-progress peer"
+        },
+        {
+          "commit": "bde15b2302d1127b8452692eaeeb3f14fde5fcd2",
+          "path": "host/test/fixtures/node-socket-timeouts.ts",
+          "symbol": "shared native/guest public controls"
+        }
+      ],
+      "requiredBindingContract": "Pinned net.js uses stream_base_commons.setStreamTimeout and native handle writeQueueSize. Its actual retained write request/handle must own byte offsets across partial writes, closure, fd reuse, cancellation and callbacks. Early global watch-list/fd lookup is a primitive, not the finished upstream handle contract.",
+      "evidenceLimits": "Historical focused upstream/socket/C-peer four-host evidence; full net/stream/socket controls remained gaps and prior WebKit spawn anomaly persists separately. Many component tests execute custom Socket fragments against mocked natives; retain unchanged public/peer tests when replacing implementation.",
+      "laterSourceToConsult": "Current native-socket-owner.cpp/socket-owner.h/socket-stream-adapter.js and later queued write/shutdown/accepted-owner corrections should be evaluated instead of carrying an early fd-only design verbatim.",
+      "reviewSource": "runtime-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten socket timeout/constructor policy.",
+        "backend": "Actual pending-write bytes and descriptor-bound progress state.",
+        "usefulness": "Keep write accounting/ownership/tests; upstream net owns timeout behavior."
+      }
+    },
+    {
+      "number": 1653,
+      "title": "Node: Add native SQLite, FIPS and TTY foundations",
+      "base": "18b6947f2bdce203e219517beeb531fb2b95fc6b",
+      "head": "d210a21f8fe580bb8926bd052abf5d2328103708",
+      "reuseCategory": "Excerpts; no new whole public module",
+      "upstreamReuse": "Adds crypto-util FIPS cache excerpt to existing whole WebIDL. SQLTagStore public JS is handwritten.",
+      "backend": "Real ncrypto FIPS state/generation; native constructible TTY and init-before-fd admission; SQLite statement LRU/GC/connection ownership.",
+      "usefulness": "High backend value. Reuse native owners after contract review; replace public SQLite/crypto wrappers with upstream modules/native binding exports.",
+      "disposition": "High backend value. Reuse native owners after contract review; replace public SQLite/crypto wrappers with upstream modules/native binding exports.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/crypto-webidl-sources.json",
+          "line": 54,
+          "symbol": "\"fipsState\"",
+          "commit": "d210a21f8fe580bb8926bd052abf5d2328103708",
+          "url": "https://github.com/Automattic/kandelo/blob/d210a21f8fe580bb8926bd052abf5d2328103708/third_party/node-core/crypto-webidl-sources.json#L54"
+        },
+        {
+          "path": "third_party/node-core/native-terminal.cpp",
+          "line": 761,
+          "symbol": "static bool KandeloTerminalInitializeStream",
+          "commit": "d210a21f8fe580bb8926bd052abf5d2328103708",
+          "url": "https://github.com/Automattic/kandelo/blob/d210a21f8fe580bb8926bd052abf5d2328103708/third_party/node-core/native-terminal.cpp#L761"
+        },
+        {
+          "path": "third_party/node-core/native-sqlite.cpp",
+          "line": 601,
+          "symbol": "static bool KandeloSqliteTagOperation",
+          "commit": "d210a21f8fe580bb8926bd052abf5d2328103708",
+          "url": "https://github.com/Automattic/kandelo/blob/d210a21f8fe580bb8926bd052abf5d2328103708/third_party/node-core/native-sqlite.cpp#L601"
+        },
+        {
+          "path": "third_party/node-core/sqlite-platform-adapter.js",
+          "line": 346,
+          "symbol": "function createTagStore",
+          "commit": "d210a21f8fe580bb8926bd052abf5d2328103708",
+          "url": "https://github.com/Automattic/kandelo/blob/d210a21f8fe580bb8926bd052abf5d2328103708/third_party/node-core/sqlite-platform-adapter.js#L346"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces.",
+      "headSha": "d210a21f8fe580bb8926bd052abf5d2328103708",
+      "baseSha": "18b6947f2bdce203e219517beeb531fb2b95fc6b",
+      "url": "https://github.com/Automattic/kandelo/pull/1653",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "FIPS helper excerpt; handwritten SQLite tag-store frontend.",
+        "backend": "FIPS state, TTY construction and native SQLite LRU/resource ownership.",
+        "usefulness": "Reuse native owners; replace public/helper assembly."
+      }
+    },
+    {
+      "number": 1655,
+      "title": "Node: Extend Promise, DNS, TCP and crypto compatibility",
+      "base": "d210a21f8fe580bb8926bd052abf5d2328103708",
+      "head": "5bd3bd32938986aa40e0b03a36b0c429b3de4d81",
+      "reuseCategory": "Selected upstream helpers; native C++ reference",
+      "upstreamReuse": "getMacs/FIPS-generation cache excerpts from internal/crypto/util.js. Imported crypto_mac.cc is a reference, not unchanged compiled Node implementation. Async JS dispatch remains custom.",
+      "backend": "OpenSSL provider MAC names; c-ares resolver fallback reconfiguration; accepted TCP capabilities/listener admission; engine Promise identity/observer channels and private microtasks.",
+      "usefulness": "High shared-backend value. Carry final coherent DNS/TCP/Promise owners, including1662 listener restoration; replace helper splicing/private lifecycle dispatch with full upstream internal consumers.",
+      "disposition": "High shared-backend value. Carry final coherent DNS/TCP/Promise owners, including1662 listener restoration; replace helper splicing/private lifecycle dispatch with full upstream internal consumers.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/digest-operations.h",
+          "line": 136,
+          "symbol": "inline std::vector<std::string> MacNames()",
+          "commit": "5bd3bd32938986aa40e0b03a36b0c429b3de4d81",
+          "url": "https://github.com/Automattic/kandelo/blob/5bd3bd32938986aa40e0b03a36b0c429b3de4d81/third_party/node-core/digest-operations.h#L136"
+        },
+        {
+          "path": "third_party/node-core/dns-resolver.h",
+          "line": 171,
+          "symbol": "int EnsureServersLocked()",
+          "commit": "5bd3bd32938986aa40e0b03a36b0c429b3de4d81",
+          "url": "https://github.com/Automattic/kandelo/blob/5bd3bd32938986aa40e0b03a36b0c429b3de4d81/third_party/node-core/dns-resolver.h#L171"
+        },
+        {
+          "path": "third_party/node-core/native-listener.cpp",
+          "line": 199,
+          "symbol": "static bool KandeloNativeListenerStart",
+          "commit": "5bd3bd32938986aa40e0b03a36b0c429b3de4d81",
+          "url": "https://github.com/Automattic/kandelo/blob/5bd3bd32938986aa40e0b03a36b0c429b3de4d81/third_party/node-core/native-listener.cpp#L199"
+        },
+        {
+          "path": "third_party/node-core/sources.json",
+          "line": 3177,
+          "symbol": "\"runtimeProviderCache\"",
+          "commit": "5bd3bd32938986aa40e0b03a36b0c429b3de4d81",
+          "url": "https://github.com/Automattic/kandelo/blob/5bd3bd32938986aa40e0b03a36b0c429b3de4d81/third_party/node-core/sources.json#L3177"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces.",
+      "headSha": "5bd3bd32938986aa40e0b03a36b0c429b3de4d81",
+      "baseSha": "d210a21f8fe580bb8926bd052abf5d2328103708",
+      "url": "https://github.com/Automattic/kandelo/pull/1655",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Crypto helper excerpts; custom async dispatch.",
+        "backend": "Promise observations, resolver/listener operations and MAC enumeration.",
+        "usefulness": "Reuse final coherent native owners; supply upstream crypto/dns/net/async bindings."
+      }
+    },
+    {
+      "number": 1656,
+      "title": "Node: Extend spawn, Fetch, Worker and benchmark foundations",
+      "base": "5bd3bd32938986aa40e0b03a36b0c429b3de4d81",
+      "head": "3087652d4f98f679b06c988fa49a01e2883f9f0d",
+      "reuseCategory": "Whole internal benchmark modules plus custom public logic",
+      "upstreamReuse": "Whole bench_runner benchmark/harness/benchmarks_stream/runner and internal/error_serdes become testing factories. Public node:bench remains inactive. Spawn-timeout, data-URL fetch and Worker constructor orchestration are custom JS.",
+      "backend": "Real Worker warning CLI/execArgv/env parsing reaches child bootstrap; actual histogram/clock/clone/V8 dependencies. Timeout/cancel paths consume real timers/processes/streams but are higher-level JS orchestration.",
+      "usefulness": "Keep full internal sources and reusable Worker startup/CLI owners. Replace custom child_process/Worker/Undici public algorithms as full upstream modules activate; retain their error/order/cancellation obligations.",
+      "disposition": "Keep full internal sources and reusable Worker startup/CLI owners. Replace custom child_process/Worker/Undici public algorithms as full upstream modules activate; retain their error/order/cancellation obligations.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/build.py",
+          "line": 1563,
+          "symbol": "for name, text in testing_sources.items():",
+          "commit": "3087652d4f98f679b06c988fa49a01e2883f9f0d",
+          "url": "https://github.com/Automattic/kandelo/blob/3087652d4f98f679b06c988fa49a01e2883f9f0d/third_party/node-core/build.py#L1563"
+        },
+        {
+          "path": "third_party/node-core/native-worker.cpp",
+          "line": 136,
+          "symbol": "if (!strcmp(operation.get(), \"execArgv\"))",
+          "commit": "3087652d4f98f679b06c988fa49a01e2883f9f0d",
+          "url": "https://github.com/Automattic/kandelo/blob/3087652d4f98f679b06c988fa49a01e2883f9f0d/third_party/node-core/native-worker.cpp#L136"
+        },
+        {
+          "path": "third_party/node-core/fetch-body-platform-adapter.js",
+          "line": 54,
+          "symbol": "async function fetchDataURL",
+          "commit": "3087652d4f98f679b06c988fa49a01e2883f9f0d",
+          "url": "https://github.com/Automattic/kandelo/blob/3087652d4f98f679b06c988fa49a01e2883f9f0d/third_party/node-core/fetch-body-platform-adapter.js#L54"
+        },
+        {
+          "path": "third_party/node-core/testing-platform-adapter.js",
+          "line": 67,
+          "symbol": "if (name === 'v8')",
+          "commit": "3087652d4f98f679b06c988fa49a01e2883f9f0d",
+          "url": "https://github.com/Automattic/kandelo/blob/3087652d4f98f679b06c988fa49a01e2883f9f0d/third_party/node-core/testing-platform-adapter.js#L67"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces. Public benchmark activation and real V8 serializer remain missing.",
+      "headSha": "3087652d4f98f679b06c988fa49a01e2883f9f0d",
+      "baseSha": "5bd3bd32938986aa40e0b03a36b0c429b3de4d81",
+      "url": "https://github.com/Automattic/kandelo/pull/1656",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Whole internal benchmark/error-serialization modules; public bench inactive.",
+        "backend": "Worker CLI/startup data; custom spawn/Fetch orchestration.",
+        "usefulness": "Keep internal sources/startup owners; replace public facades; activation gaps remain."
+      }
+    },
+    {
+      "number": 1658,
+      "title": "Node: Extend native stream and TLS certificate handling",
+      "base": "3087652d4f98f679b06c988fa49a01e2883f9f0d",
+      "head": "952a3f4b85a271bb15eef02c9d039d03c9b9c4ee",
+      "reuseCategory": "Adapted stream/TLS excerpts",
+      "upstreamReuse": "writeGeneric is selected and rewritten; translatePeerCertificate is selected from newly imported full internal/tls/common.js. Existing full X509 module remains consumed; no new full net/tls module.",
+      "backend": "Actual TCP/TTY native string writes, TTY ShutdownWrap and OpenSSL peer-certificate/legacy material conversion with owned bytes.",
+      "usefulness": "High StreamBase/TTY/X509 backend value. Reconcile native shapes/lifetimes with upstream bindings; replace custom TLSSocket methods and selected dispatch helpers.",
+      "disposition": "High StreamBase/TTY/X509 backend value. Reconcile native shapes/lifetimes with upstream bindings; replace custom TLSSocket methods and selected dispatch helpers.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/build.py",
+          "line": 749,
+          "symbol": "if name == 'writeGeneric':",
+          "commit": "952a3f4b85a271bb15eef02c9d039d03c9b9c4ee",
+          "url": "https://github.com/Automattic/kandelo/blob/952a3f4b85a271bb15eef02c9d039d03c9b9c4ee/third_party/node-core/build.py#L749"
+        },
+        {
+          "path": "third_party/node-core/build.py",
+          "line": 2374,
+          "symbol": "legacy_spec = x509_spec['selections']['legacyTranslation']",
+          "commit": "952a3f4b85a271bb15eef02c9d039d03c9b9c4ee",
+          "url": "https://github.com/Automattic/kandelo/blob/952a3f4b85a271bb15eef02c9d039d03c9b9c4ee/third_party/node-core/build.py#L2374"
+        },
+        {
+          "path": "third_party/node-core/native-socket-owner.cpp",
+          "line": 728,
+          "symbol": "static bool KandeloSocketWriteString",
+          "commit": "952a3f4b85a271bb15eef02c9d039d03c9b9c4ee",
+          "url": "https://github.com/Automattic/kandelo/blob/952a3f4b85a271bb15eef02c9d039d03c9b9c4ee/third_party/node-core/native-socket-owner.cpp#L728"
+        },
+        {
+          "path": "third_party/node-core/x509-operations.h",
+          "line": 217,
+          "symbol": "X509Legacy Legacy() const",
+          "commit": "952a3f4b85a271bb15eef02c9d039d03c9b9c4ee",
+          "url": "https://github.com/Automattic/kandelo/blob/952a3f4b85a271bb15eef02c9d039d03c9b9c4ee/third_party/node-core/x509-operations.h#L217"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces.",
+      "headSha": "952a3f4b85a271bb15eef02c9d039d03c9b9c4ee",
+      "baseSha": "3087652d4f98f679b06c988fa49a01e2883f9f0d",
+      "url": "https://github.com/Automattic/kandelo/pull/1658",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Selected stream/TLS helpers; no new whole net/tls module.",
+        "backend": "TCP/TTY string writes, shutdown and peer-certificate storage/conversion.",
+        "usefulness": "Reuse StreamBase/TTY/X509 mechanisms; replace selected dispatch helpers."
+      }
+    },
+    {
+      "number": 1659,
+      "title": "Node: Own source-map caches and backing snapshots",
+      "base": "952a3f4b85a271bb15eef02c9d039d03c9b9c4ee",
+      "head": "05087555fd0b1456ed1a3160e7408c64394d6e73",
+      "reuseCategory": "Mixed whole cache modules and excerpts/rewrites",
+      "upstreamReuse": "Whole source-map cache/cache-map factories join existing whole SourceMap; private storage is rewritten. Full util.js/modules/helpers.js imports supply selected helpers rather than complete dependency execution.",
+      "backend": "Rooted CJS sourceURL/sourceMappingURL capture before execution; real current-runtime ArrayBuffer allocation census and allocator byte sizes, not process.memoryUsage/RSS/V8 heap support.",
+      "usefulness": "Reuse compiler metadata and needed observation capabilities. Replace local source-map dependency maps/private-symbol substitutions with full upstream modules and correct shared bindings.",
+      "disposition": "Reuse compiler metadata and needed observation capabilities. Replace local source-map dependency maps/private-symbol substitutions with full upstream modules and correct shared bindings.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/build.py",
+          "line": 2192,
+          "symbol": "for name, source_name in source_map_spec['cacheModules'].items():",
+          "commit": "05087555fd0b1456ed1a3160e7408c64394d6e73",
+          "url": "https://github.com/Automattic/kandelo/blob/05087555fd0b1456ed1a3160e7408c64394d6e73/third_party/node-core/build.py#L2192"
+        },
+        {
+          "path": "third_party/node-core/native-module-syntax.cpp",
+          "line": 42,
+          "symbol": "static bool KandeloPublishCommonJsSourceInfo",
+          "commit": "05087555fd0b1456ed1a3160e7408c64394d6e73",
+          "url": "https://github.com/Automattic/kandelo/blob/05087555fd0b1456ed1a3160e7408c64394d6e73/third_party/node-core/native-module-syntax.cpp#L42"
+        },
+        {
+          "path": "third_party/node-core/native-retained-memory.cpp",
+          "line": 60,
+          "symbol": "static bool KandeloNativeBackingSnapshot",
+          "commit": "05087555fd0b1456ed1a3160e7408c64394d6e73",
+          "url": "https://github.com/Automattic/kandelo/blob/05087555fd0b1456ed1a3160e7408c64394d6e73/third_party/node-core/native-retained-memory.cpp#L60"
+        },
+        {
+          "path": "third_party/node-core/source-map-platform-adapter.js",
+          "line": 52,
+          "symbol": "function internalBinding(name)",
+          "commit": "05087555fd0b1456ed1a3160e7408c64394d6e73",
+          "url": "https://github.com/Automattic/kandelo/blob/05087555fd0b1456ed1a3160e7408c64394d6e73/third_party/node-core/source-map-platform-adapter.js#L52"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces.",
+      "headSha": "05087555fd0b1456ed1a3160e7408c64394d6e73",
+      "baseSha": "952a3f4b85a271bb15eef02c9d039d03c9b9c4ee",
+      "url": "https://github.com/Automattic/kandelo/pull/1659",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Whole source-map cache modules with rewrites; util/helper excerpts.",
+        "backend": "Compiler source-map metadata and actual backing-allocation observations.",
+        "usefulness": "Keep native metadata; use shared bindings and whole upstream dependency modules."
+      }
+    },
+    {
+      "number": 1660,
+      "title": "Node: Own assertion sources and parser retirement",
+      "base": "05087555fd0b1456ed1a3160e7408c64394d6e73",
+      "head": "853f7702bd806603e2d416fdfcc2f9c967c9f772",
+      "reuseCategory": "Whole tiny freelist; assertion tokenizer excerpt",
+      "upstreamReuse": "Executes whole internal/freelist.js for parser pooling. error_source.js becomes selected getFirstExpression tokenizer plus custom wrapper; assert-utils gets a source replacement. Vendored whole Acorn alone is not whole error_source execution.",
+      "backend": "Actual SpiderMonkey caller script/PC/source capture; llhttp Reset/Release with deferred Free/Close preserving active frame/input, list membership and publication rollback.",
+      "usefulness": "High parser lifecycle value; source capture useful but diagnostic parity partial. Carry real native mechanics with later UTF8/AsyncReset fixes; replace selected assertion/parser orchestration with upstream internals.",
+      "disposition": "High parser lifecycle value; source capture useful but diagnostic parity partial. Carry real native mechanics with later UTF8/AsyncReset fixes; replace selected assertion/parser orchestration with upstream internals.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/build.py",
+          "line": 50,
+          "symbol": "assert_source_selection = assert_source_spec['tokenizer']",
+          "commit": "853f7702bd806603e2d416fdfcc2f9c967c9f772",
+          "url": "https://github.com/Automattic/kandelo/blob/853f7702bd806603e2d416fdfcc2f9c967c9f772/third_party/node-core/build.py#L50"
+        },
+        {
+          "path": "third_party/node-core/build.py",
+          "line": 2280,
+          "symbol": "marker = '/* NODE_HTTP_FREE_LIST */'",
+          "commit": "853f7702bd806603e2d416fdfcc2f9c967c9f772",
+          "url": "https://github.com/Automattic/kandelo/blob/853f7702bd806603e2d416fdfcc2f9c967c9f772/third_party/node-core/build.py#L2280"
+        },
+        {
+          "path": "third_party/node-core/native-error-source.cpp",
+          "line": 13,
+          "symbol": "static bool KandeloCaptureAssertionSource",
+          "commit": "853f7702bd806603e2d416fdfcc2f9c967c9f772",
+          "url": "https://github.com/Automattic/kandelo/blob/853f7702bd806603e2d416fdfcc2f9c967c9f772/third_party/node-core/native-error-source.cpp#L13"
+        },
+        {
+          "path": "third_party/node-core/native-http-parser.cpp",
+          "line": 33,
+          "symbol": "static void KandeloHttpRetire",
+          "commit": "853f7702bd806603e2d416fdfcc2f9c967c9f772",
+          "url": "https://github.com/Automattic/kandelo/blob/853f7702bd806603e2d416fdfcc2f9c967c9f772/third_party/node-core/native-http-parser.cpp#L33"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces.",
+      "headSha": "853f7702bd806603e2d416fdfcc2f9c967c9f772",
+      "baseSha": "05087555fd0b1456ed1a3160e7408c64394d6e73",
+      "url": "https://github.com/Automattic/kandelo/pull/1660",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Whole internal/freelist; selected assertion tokenizer/wrapper.",
+        "backend": "Caller script/PC/source capture and parser lifetime/rollback.",
+        "usefulness": "Keep parser/source mechanisms with successor fixes; replace excerpt assembly."
+      }
+    },
+    {
+      "number": 1661,
+      "title": "Node: Connect FIPS state and diagnostic consumers",
+      "base": "853f7702bd806603e2d416fdfcc2f9c967c9f772",
+      "head": "4ff3fb09a49bb0faf195d1b416986da9108080bd",
+      "reuseCategory": "Whole internal reporters; handwritten FIPS frontend",
+      "upstreamReuse": "Whole internal benchmark JSON/Spec reporter modules become factories; public node:bench/reporters inactive. Public getFips/setFips/accessors reproduce selected ordinary crypto.js branches by hand.",
+      "backend": "Real ncrypto FIPS mutation/generation, process/Worker ownership gate and locked error queue; ScriptSource UTF8 offset decoding.",
+      "usefulness": "Reuse native FIPS/error and source decoding; keep full reporters. Replace handwritten crypto public installer; forced startup/config/provider admission and serializer remain prerequisites.",
+      "disposition": "Reuse native FIPS/error and source decoding; keep full reporters. Replace handwritten crypto public installer; forced startup/config/provider admission and serializer remain prerequisites.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/crypto-fips-platform-adapter.js",
+          "line": 4,
+          "symbol": "function _installNodeCryptoFips",
+          "commit": "4ff3fb09a49bb0faf195d1b416986da9108080bd",
+          "url": "https://github.com/Automattic/kandelo/blob/4ff3fb09a49bb0faf195d1b416986da9108080bd/third_party/node-core/crypto-fips-platform-adapter.js#L4"
+        },
+        {
+          "path": "third_party/node-core/native-digests.cpp",
+          "line": 246,
+          "symbol": "static bool KandeloNativeSetFipsCrypto",
+          "commit": "4ff3fb09a49bb0faf195d1b416986da9108080bd",
+          "url": "https://github.com/Automattic/kandelo/blob/4ff3fb09a49bb0faf195d1b416986da9108080bd/third_party/node-core/native-digests.cpp#L246"
+        },
+        {
+          "path": "third_party/node-core/native-error-source.cpp",
+          "line": 48,
+          "symbol": "const bool utf8 =",
+          "commit": "4ff3fb09a49bb0faf195d1b416986da9108080bd",
+          "url": "https://github.com/Automattic/kandelo/blob/4ff3fb09a49bb0faf195d1b416986da9108080bd/third_party/node-core/native-error-source.cpp#L48"
+        },
+        {
+          "path": "third_party/node-core/sources.json",
+          "line": 2264,
+          "symbol": "\"internal/bench_runner/reporter/json\"",
+          "commit": "4ff3fb09a49bb0faf195d1b416986da9108080bd",
+          "url": "https://github.com/Automattic/kandelo/blob/4ff3fb09a49bb0faf195d1b416986da9108080bd/third_party/node-core/sources.json#L2264"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces.",
+      "headSha": "4ff3fb09a49bb0faf195d1b416986da9108080bd",
+      "baseSha": "853f7702bd806603e2d416fdfcc2f9c967c9f772",
+      "url": "https://github.com/Automattic/kandelo/pull/1661",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Whole internal benchmark reporters; manual public FIPS installer.",
+        "backend": "Real FIPS mutation/error ownership and UTF8 source decoding.",
+        "usefulness": "Keep reporter sources/native mechanisms; replace crypto installer; public bench remains inactive."
+      }
+    },
+    {
+      "number": 1662,
+      "title": "Restore Node listener and public TTY foundations",
+      "base": "4ff3fb09a49bb0faf195d1b416986da9108080bd",
+      "head": "cceda903aa26a4968fe8fd683c5a688734ed0667",
+      "reuseCategory": "Whole public tty.js activation",
+      "upstreamReuse": "Executes complete upstream lib/tty.js through a factory and exposes builtin tty, replacing empty public stream shells. Source-map support getter reuses existing cache module. Dependencies still use private maps.",
+      "backend": "Restores missing matching listener engine dispatcher/binding, successful-listen read registration, accepted-fd rollback and callback scope; unwraps actual TTY shutdown request packet.",
+      "usefulness": "Strong recent example of desired whole-module direction. Reuse tty_wrap/StreamBase/listener owners behind shared bindings; carry with1655 and subsequent fixes, not isolated cherry-pick.",
+      "disposition": "Strong recent example of desired whole-module direction. Reuse tty_wrap/StreamBase/listener owners behind shared bindings; carry with1655 and subsequent fixes, not isolated cherry-pick.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/build.py",
+          "line": 1208,
+          "symbol": "terminal_public_source =",
+          "commit": "cceda903aa26a4968fe8fd683c5a688734ed0667",
+          "url": "https://github.com/Automattic/kandelo/blob/cceda903aa26a4968fe8fd683c5a688734ed0667/third_party/node-core/build.py#L1208"
+        },
+        {
+          "path": "third_party/node-core/tty-public-platform-adapter.js",
+          "line": 15,
+          "symbol": "if (name !== 'tty_wrap')",
+          "commit": "cceda903aa26a4968fe8fd683c5a688734ed0667",
+          "url": "https://github.com/Automattic/kandelo/blob/cceda903aa26a4968fe8fd683c5a688734ed0667/third_party/node-core/tty-public-platform-adapter.js#L15"
+        },
+        {
+          "path": "third_party/node-core/listener-owner.h",
+          "line": 29,
+          "symbol": "int Listen(int backlog)",
+          "commit": "cceda903aa26a4968fe8fd683c5a688734ed0667",
+          "url": "https://github.com/Automattic/kandelo/blob/cceda903aa26a4968fe8fd683c5a688734ed0667/third_party/node-core/listener-owner.h#L29"
+        },
+        {
+          "path": "third_party/node-core/native-listener.cpp",
+          "line": 136,
+          "symbol": "static bool KandeloListenerReadRegistered",
+          "commit": "cceda903aa26a4968fe8fd683c5a688734ed0667",
+          "url": "https://github.com/Automattic/kandelo/blob/cceda903aa26a4968fe8fd683c5a688734ed0667/third_party/node-core/native-listener.cpp#L136"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces.",
+      "headSha": "cceda903aa26a4968fe8fd683c5a688734ed0667",
+      "baseSha": "4ff3fb09a49bb0faf195d1b416986da9108080bd",
+      "url": "https://github.com/Automattic/kandelo/pull/1662",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Whole public tty.js; dependencies still use private maps.",
+        "backend": "Listener dispatch, accepted-fd rollback and TTY shutdown integration.",
+        "usefulness": "Strong whole-module example; reuse coherent TTY/listener backend through shared bindings."
+      }
+    },
+    {
+      "number": 1663,
+      "title": "Preserve Node Promise and queued socket ownership",
+      "base": "cceda903aa26a4968fe8fd683c5a688734ed0667",
+      "head": "c17c1ee7180194cbb70562b32f7bc0d7f6c10ddd",
+      "reuseCategory": "No fresh whole-module reuse",
+      "upstreamReuse": "Updates custom async adapter for actual Promise parent and custom Fetch argument/WebIDL boundary.",
+      "backend": "Real rooted engine Promise-parent channel; TCP connect/read/write registration, ordered queued/zero-byte writes, failed-connect cancellation and callback retirement; DEBUG-only nursery release-build correction.",
+      "usefulness": "High Promise/TCP foundation value. Reconcile final owner interfaces with upstream async_hooks/net; public Promise registry remains missing. Replace Fetch facade; retain ordering/identity failures.",
+      "disposition": "High Promise/TCP foundation value. Reconcile final owner interfaces with upstream async_hooks/net; public Promise registry remains missing. Replace Fetch facade; retain ordering/identity failures.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/async-platform-adapter.js",
+          "line": 268,
+          "symbol": "function lifecycle(kind, resource, capturedFrame, promiseParent)",
+          "commit": "c17c1ee7180194cbb70562b32f7bc0d7f6c10ddd",
+          "url": "https://github.com/Automattic/kandelo/blob/c17c1ee7180194cbb70562b32f7bc0d7f6c10ddd/third_party/node-core/async-platform-adapter.js#L268"
+        },
+        {
+          "path": "third_party/node-core/native-socket-owner.cpp",
+          "line": 634,
+          "symbol": "static bool KandeloSocketHasQueuedWrite",
+          "commit": "c17c1ee7180194cbb70562b32f7bc0d7f6c10ddd",
+          "url": "https://github.com/Automattic/kandelo/blob/c17c1ee7180194cbb70562b32f7bc0d7f6c10ddd/third_party/node-core/native-socket-owner.cpp#L634"
+        },
+        {
+          "path": "third_party/node-core/socket-owner.h",
+          "line": 111,
+          "symbol": "class Registration",
+          "commit": "c17c1ee7180194cbb70562b32f7bc0d7f6c10ddd",
+          "url": "https://github.com/Automattic/kandelo/blob/c17c1ee7180194cbb70562b32f7bc0d7f6c10ddd/third_party/node-core/socket-owner.h#L111"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces. Later cumulative source271 producing3c52b3233e compiled/linked/cache-accepted but ran no guest startup/API/four-host tests; original retention wrapper failure was corrected separately.",
+      "headSha": "c17c1ee7180194cbb70562b32f7bc0d7f6c10ddd",
+      "baseSha": "cceda903aa26a4968fe8fd683c5a688734ed0667",
+      "url": "https://github.com/Automattic/kandelo/pull/1663",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Custom async/Fetch changes; no new whole module.",
+        "backend": "Engine Promise parent and TCP queue/cancellation/retirement ownership.",
+        "usefulness": "Keep final Promise/TCP owners; replace facade and complete upstream hook dependencies."
+      }
+    },
+    {
+      "number": 1664,
+      "title": "Node: Connect SQLite extensions and core resource policies",
+      "base": "c17c1ee7180194cbb70562b32f7bc0d7f6c10ddd",
+      "head": "b17352a6c379ca67dc7cd20ee8e97c586a97a393",
+      "reuseCategory": "No fresh whole-module reuse",
+      "upstreamReuse": "SQLite extension wrappers and environment descriptor handler remain handwritten; codec changes are native.",
+      "backend": "Actual SQLite connection extension permission/enable/load lifetime; native Brotli/Zstd init errors; real legacy watcher event interest/retirement; own-field env descriptor semantics.",
+      "usefulness": "High backend correctness/security value. Expose proper native SQLite/env bindings; retain side-module format/ABI/permission and throwing error-setter obligations rather than carrying bespoke public JS wholesale.",
+      "disposition": "High backend correctness/security value. Expose proper native SQLite/env bindings; retain side-module format/ABI/permission and throwing error-setter obligations rather than carrying bespoke public JS wholesale.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/sqlite-store.h",
+          "line": 148,
+          "symbol": "void CheckLoadExtension() const",
+          "commit": "b17352a6c379ca67dc7cd20ee8e97c586a97a393",
+          "url": "https://github.com/Automattic/kandelo/blob/b17352a6c379ca67dc7cd20ee8e97c586a97a393/third_party/node-core/sqlite-store.h#L148"
+        },
+        {
+          "path": "third_party/node-core/native-sqlite.cpp",
+          "line": 760,
+          "symbol": "else if (operation == \"loadExtension\")",
+          "commit": "b17352a6c379ca67dc7cd20ee8e97c586a97a393",
+          "url": "https://github.com/Automattic/kandelo/blob/b17352a6c379ca67dc7cd20ee8e97c586a97a393/third_party/node-core/native-sqlite.cpp#L760"
+        },
+        {
+          "path": "third_party/node-core/codec-handle.cpp",
+          "line": 292,
+          "symbol": "static bool KandeloCodecCodedError",
+          "commit": "b17352a6c379ca67dc7cd20ee8e97c586a97a393",
+          "url": "https://github.com/Automattic/kandelo/blob/b17352a6c379ca67dc7cd20ee8e97c586a97a393/third_party/node-core/codec-handle.cpp#L292"
+        },
+        {
+          "path": "third_party/node-core/process-state-adapter.js",
+          "line": 57,
+          "symbol": "define(key, descriptor)",
+          "commit": "b17352a6c379ca67dc7cd20ee8e97c586a97a393",
+          "url": "https://github.com/Automattic/kandelo/blob/b17352a6c379ca67dc7cd20ee8e97c586a97a393/third_party/node-core/process-state-adapter.js#L57"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces. Source272-275 changes postdate accepted271 and remain uncompiled/unexecuted.",
+      "headSha": "b17352a6c379ca67dc7cd20ee8e97c586a97a393",
+      "baseSha": "c17c1ee7180194cbb70562b32f7bc0d7f6c10ddd",
+      "url": "https://github.com/Automattic/kandelo/pull/1664",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Handwritten SQLite/environment wrappers.",
+        "backend": "SQLite extension ownership, codec errors and watcher/event/env behavior.",
+        "usefulness": "Keep backend/security work; adapt native binding exports and preserve ABI obligations."
+      }
+    },
+    {
+      "number": 1665,
+      "title": "Node: Preserve HTTP and TLS resource lifetimes",
+      "base": "b17352a6c379ca67dc7cd20ee8e97c586a97a393",
+      "head": "4ef78a500868092e2e026d56cd87a9e570329280",
+      "reuseCategory": "No fresh whole-module reuse",
+      "upstreamReuse": "Custom HTTP resource classes/parser orchestration and net-before-stdio bootstrap order around previously imported modules.",
+      "backend": "HTTP native AsyncReset/resource/frame/provider ownership and per-callback task checkpoints; deferred parser retirement; TLS real SSL read/write interest and input/output progress.",
+      "usefulness": "High HTTP/TLS/AsyncWrap value. Carry real lifecycle/event-interest mechanisms; use complete upstream HTTP/bootstrap orchestration and normal binding contracts. Preserve early stdio/Socket ordering constraint.",
+      "disposition": "High HTTP/TLS/AsyncWrap value. Carry real lifecycle/event-interest mechanisms; use complete upstream HTTP/bootstrap orchestration and normal binding contracts. Preserve early stdio/Socket ordering constraint.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/native-http-parser.cpp",
+          "line": 111,
+          "symbol": "static bool KandeloHttpResetAsync",
+          "commit": "4ef78a500868092e2e026d56cd87a9e570329280",
+          "url": "https://github.com/Automattic/kandelo/blob/4ef78a500868092e2e026d56cd87a9e570329280/third_party/node-core/native-http-parser.cpp#L111"
+        },
+        {
+          "path": "third_party/node-core/native-callback.cpp",
+          "line": 79,
+          "symbol": "bool Checkpoint()",
+          "commit": "4ef78a500868092e2e026d56cd87a9e570329280",
+          "url": "https://github.com/Automattic/kandelo/blob/4ef78a500868092e2e026d56cd87a9e570329280/third_party/node-core/native-callback.cpp#L79"
+        },
+        {
+          "path": "third_party/node-core/http-parser-platform-adapter.js",
+          "line": 26,
+          "symbol": "class HTTPClientAsyncResource",
+          "commit": "4ef78a500868092e2e026d56cd87a9e570329280",
+          "url": "https://github.com/Automattic/kandelo/blob/4ef78a500868092e2e026d56cd87a9e570329280/third_party/node-core/http-parser-platform-adapter.js#L26"
+        },
+        {
+          "path": "third_party/node-core/tls-owner.h",
+          "line": 226,
+          "symbol": "ReadMayProgress",
+          "commit": "4ef78a500868092e2e026d56cd87a9e570329280",
+          "url": "https://github.com/Automattic/kandelo/blob/4ef78a500868092e2e026d56cd87a9e570329280/third_party/node-core/tls-owner.h#L226"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces. Source272-275 changes postdate accepted271 and remain uncompiled/unexecuted.",
+      "headSha": "4ef78a500868092e2e026d56cd87a9e570329280",
+      "baseSha": "b17352a6c379ca67dc7cd20ee8e97c586a97a393",
+      "url": "https://github.com/Automattic/kandelo/pull/1665",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Custom HTTP/bootstrap orchestration around existing modules.",
+        "backend": "Parser AsyncWrap/checkpoints/lifetime and TLS read/write readiness.",
+        "usefulness": "Keep native lifecycle/readiness; replace custom HTTP/bootstrap orchestration."
+      }
+    },
+    {
+      "number": 1666,
+      "title": "Node: Connect source maps and core metadata owners",
+      "base": "4ef78a500868092e2e026d56cd87a9e570329280",
+      "head": "6e14e85198334c371c74ad55ed664dca78cea5df",
+      "reuseCategory": "Selected crypto/util fragments",
+      "upstreamReuse": "getCurves and reconstructCallSite/mapCallSite excerpts inserted into adapters; custom Fetch dispatch now consumes genuine Request record. No new whole crypto/util module.",
+      "backend": "Actual ncrypto curve enumeration; five separate engine Promise observations/AsyncWrap identity admission and settled-once state; real private source-map cache for explicit call-site mapping.",
+      "usefulness": "High engine/provider value. Wire complete shared Promise-hook registry and upstream crypto/util/Undici modules. Retain real identity/cancellation/source-position requirements; replace helper assembly.",
+      "disposition": "High engine/provider value. Wire complete shared Promise-hook registry and upstream crypto/util/Undici modules. Retain real identity/cancellation/source-position requirements; replace helper assembly.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/build.py",
+          "line": 2211,
+          "symbol": "callsite_marker = '/* NODE_UTIL_CALLSITE_MAPPING */'",
+          "commit": "6e14e85198334c371c74ad55ed664dca78cea5df",
+          "url": "https://github.com/Automattic/kandelo/blob/6e14e85198334c371c74ad55ed664dca78cea5df/third_party/node-core/build.py#L2211"
+        },
+        {
+          "path": "third_party/node-core/native-digests.cpp",
+          "line": 330,
+          "symbol": "static bool KandeloNativeCurveNames",
+          "commit": "6e14e85198334c371c74ad55ed664dca78cea5df",
+          "url": "https://github.com/Automattic/kandelo/blob/6e14e85198334c371c74ad55ed664dca78cea5df/third_party/node-core/native-digests.cpp#L330"
+        },
+        {
+          "path": "third_party/node-core/native-async.cpp",
+          "line": 292,
+          "symbol": "static bool KandeloNativeSetPromiseHookMode",
+          "commit": "6e14e85198334c371c74ad55ed664dca78cea5df",
+          "url": "https://github.com/Automattic/kandelo/blob/6e14e85198334c371c74ad55ed664dca78cea5df/third_party/node-core/native-async.cpp#L292"
+        },
+        {
+          "path": "third_party/node-core/source-map-platform-adapter.js",
+          "line": 63,
+          "symbol": "const lazySourceMap = cache;",
+          "commit": "6e14e85198334c371c74ad55ed664dca78cea5df",
+          "url": "https://github.com/Automattic/kandelo/blob/6e14e85198334c371c74ad55ed664dca78cea5df/third_party/node-core/source-map-platform-adapter.js#L63"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces. Source272-275 changes postdate accepted271 and remain uncompiled/unexecuted. Shared public Promise registry/ordinary errors remain held; raw engine channel alone is not support.",
+      "headSha": "6e14e85198334c371c74ad55ed664dca78cea5df",
+      "baseSha": "4ef78a500868092e2e026d56cd87a9e570329280",
+      "url": "https://github.com/Automattic/kandelo/pull/1666",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Crypto/util/source-map excerpts; custom Fetch routing.",
+        "backend": "Native curves and distinct Promise observation/identity state.",
+        "usefulness": "Keep providers/engine channels; load upstream crypto/util/Undici and shared hook registry."
+      }
+    },
+    {
+      "number": 1667,
+      "title": "Node: Connect filesystem checks, HTTP timing and guest groups",
+      "base": "6e14e85198334c371c74ad55ed664dca78cea5df",
+      "head": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+      "reuseCategory": "Selected fs/HTTP public functions",
+      "upstreamReuse": "Exact fs.exists/existsSync/custom-promisify section and _http_client timing start/stop excerpts. Removes invented fs.promises.exists. No whole fs/ClientRequest execution added.",
+      "backend": "Real supplementary-group syscall snapshots/effective-GID inclusion and native error/array publication; existing FS access queue and actual HTTP clock/observer events consumed.",
+      "usefulness": "Narrow credentials backend useful. fs/HTTP sections should become redundant under whole upstream modules. Keep API-absence and timing-order obligations; expose GetGroups through upstream credentials binding.",
+      "disposition": "Narrow credentials backend useful. fs/HTTP sections should become redundant under whole upstream modules. Keep API-absence and timing-order obligations; expose GetGroups through upstream credentials binding.",
+      "sourceAnchors": [
+        {
+          "path": "third_party/node-core/sources.json",
+          "line": 4524,
+          "symbol": "function exists(path, callback) {",
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "url": "https://github.com/Automattic/kandelo/blob/5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8/third_party/node-core/sources.json#L4524"
+        },
+        {
+          "path": "third_party/node-core/http-agent-adapter.js",
+          "line": 89,
+          "symbol": "function observeResponseHeaders",
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "url": "https://github.com/Automattic/kandelo/blob/5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8/third_party/node-core/http-agent-adapter.js#L89"
+        },
+        {
+          "path": "third_party/node-core/process-state.h",
+          "line": 31,
+          "symbol": "inline GroupsResult GetGroups()",
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "url": "https://github.com/Automattic/kandelo/blob/5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8/third_party/node-core/process-state.h#L31"
+        },
+        {
+          "path": "third_party/node-core/native-os.cpp",
+          "line": 65,
+          "symbol": "static bool KandeloProcessGroupsError",
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "url": "https://github.com/Automattic/kandelo/blob/5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8/third_party/node-core/native-os.cpp#L65"
+        }
+      ],
+      "evidenceLimits": "No fresh runtime tests/builds/probes. Source inspection and historical component controls do not establish isolated PR correctness or guest/four-host compatibility. Later patches supersede earlier owner interfaces. Source272-275 changes postdate accepted271 and remain uncompiled/unexecuted.",
+      "headSha": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+      "baseSha": "6e14e85198334c371c74ad55ed664dca78cea5df",
+      "url": "https://github.com/Automattic/kandelo/pull/1667",
+      "reviewSource": "recent-review.json",
+      "summary": {
+        "upstreamReuse": "Selected fs.exists and HTTP timing algorithms.",
+        "backend": "Real supplementary groups; existing FS and timing owners consumed.",
+        "usefulness": "Keep credentials backend/tests; whole fs/HTTP modules supersede selected public logic."
+      }
+    }
+  ],
+  "foundation": {
+    "sourceCommit": "18b6947f2bdce203e219517beeb531fb2b95fc6b",
+    "scope": "235 campaign commits in intervening base without its own PR; thematic source-level architecture audit, not per-API conformance or exhaustive235commit code review.",
+    "sourceCandidateCompiled": false,
+    "fourHostConformance": false,
+    "areas": [
+      {
+        "area": "Upstream JavaScript modules",
+        "reuse": "Mixed. Whole modules are consumed by factories for path, many classic/Web stream internals, inspection, EventTarget/AbortController, query codecs, Domain and other groups. Filesystem, Buffer, crypto, process and loader integrations also select sections or supply handwritten behavior. Whole-file import is not whole dependency-graph reuse.",
+        "backend": "Per-family private require/internalBinding maps and shared platform/native bridges.",
+        "disposition": "Reuse exact upstream sources/provenance and module tests; replace per-family loader islands with one coherent internal module environment. Prefer loading the pinned upstream tree directly to transplanting the section-assembly generator.",
+        "anchors": [
+          "third_party/node-core/build.py: path_factories/value_factories/stream factories",
+          "third_party/node-core/sources.json: modules/pathPlatform/streamPlatform and selected-section records",
+          "third_party/node-core/path-platform-adapter.js: require/modules/loading",
+          "third_party/node-core/stream-platform-adapter.js: modules/internalBinding/require",
+          "packages/registry/node-compat/bootstrap.js: fs/timers/net/child_process exports"
+        ]
+      },
+      {
+        "area": "Native work, callbacks, async execution and retained storage",
+        "reuse": "Upstream AsyncLocalStorage/context modules coexist with selected AsyncHook/TickObject/fatal algorithms and handwritten internal registry glue.",
+        "backend": "SpiderMonkey work queues, actual Promise/frame/context channels, callback execution ownership, rooted completion/error state, retained byte allocations and memory ownership.",
+        "disposition": "Priority reuse candidates. Map each owner to Node native binding/AsyncWrap expectations and real GC/realm/teardown semantics; do not import bespoke callback packets as if already Node binding compatible.",
+        "anchors": [
+          "third_party/node-core/native-work.cpp",
+          "third_party/node-core/native-async.cpp: KandeloNativeAsyncState",
+          "third_party/node-core/native-callback.cpp",
+          "third_party/node-core/callback-scope.h",
+          "third_party/node-core/native-backing-store.cpp",
+          "third_party/node-core/retained-backing-store.h"
+        ]
+      },
+      {
+        "area": "Filesystem backend",
+        "reuse": "Many unchanged selected fs functions, plus some complete internal modules; public fs object and assembly remain mixed.",
+        "backend": "Real guest libc operations, FS request owners, native work completion/cancellation, file handles, directory traversal, copy and read/write ownership.",
+        "disposition": "Reuse operations and resource owners behind real internalBinding(fs) contracts. Replace extracted public wrappers and sync-to-callback conveniences with upstream fs modules; preserve ordering/errors/lifecycle controls.",
+        "anchors": [
+          "third_party/node-core/native-fs.cpp: KandeloFsRequestState/KandeloFsWork",
+          "third_party/node-core/native-fs-promise.cpp",
+          "third_party/node-core/native-file-handle.cpp",
+          "third_party/node-core/native-copy-file.cpp",
+          "third_party/node-core/native-copy-directory.cpp",
+          "third_party/node-core/fs-callback-adapter.js"
+        ]
+      },
+      {
+        "area": "Network, HTTP parsing, TLS, DNS and UDP",
+        "reuse": "Whole HTTP Agent/OutgoingMessage and selected complete frontend files coexist with net/HTTP/TLS helpers and source selections. Vendor/reference files alone are not executed frontend reuse.",
+        "backend": "Guest sockets, descriptor ownership/watch/ref state, protocol parsing, TLS/OpenSSL credentials and encrypted I/O, c-ares/DNS requests, datagram backing ownership.",
+        "disposition": "Reuse low-level operations and ownership mechanisms after mapping to TCP/Pipe/UDP/StreamWrap, HTTPParser and TLS/c-ares binding contracts. Retire handwritten public networking policy as upstream modules activate.",
+        "anchors": [
+          "third_party/node-core/native-socket-owner.cpp",
+          "third_party/node-core/native-listener.cpp",
+          "third_party/node-core/native-datagram.cpp",
+          "third_party/node-core/native-dns-lookup.cpp",
+          "third_party/node-core/native-dns-records.cpp",
+          "third_party/node-core/native-tls-context.cpp",
+          "third_party/node-core/http-parser.h"
+        ]
+      },
+      {
+        "area": "Native libraries and package integration",
+        "reuse": "Actual Node-vendored ncrypto plus c-ares, llhttp, SIMD JSON, SQLite and codec library packages are native dependency reuse, distinct from public Node JS reuse.",
+        "backend": "SDK/resolver-owned pinned builds and engine bindings to these libraries. Threaded shared OpenSSL migration affects non-Node consumers.",
+        "disposition": "Retain provenance and build contracts; reuse required libraries selectively. Independently review global OpenSSL changes and dependent package rebuild/validation needs. Native library presence does not complete public module behavior.",
+        "anchors": [
+          "packages/registry/node-ncrypto/build-node-ncrypto.py: prepare/build",
+          "packages/registry/node-cares/",
+          "packages/registry/node-llhttp/",
+          "packages/registry/node-codecs/",
+          "packages/registry/node-sqlite/",
+          "packages/registry/node-simdjson/",
+          "packages/registry/openssl/build-openssl.sh"
+        ]
+      },
+      {
+        "area": "VM, modules, Workers and native integration",
+        "reuse": "Public VM/testing/worker/module helpers include both whole module factories and selected portions; WASI/SQLite/FFI/SEA still depend on substantial native implementations.",
+        "backend": "Actual SpiderMonkey script/module records, deadlines/source identities, thread/startup/clone/port transport, SQLite/FFI/POSIX import state.",
+        "disposition": "Useful engine primitives, not a reason to retain replacement Node CJS/ESM resolution. Design expected contextify/module_wrap/messaging bindings first. Native nested guest Wasm is still unfinished and stays deferred.",
+        "anchors": [
+          "third_party/node-core/native-vm.cpp",
+          "third_party/node-core/native-vm-modules.cpp",
+          "third_party/node-core/native-vm-import.cpp",
+          "third_party/node-core/native-worker.cpp",
+          "third_party/node-core/native-ports.cpp",
+          "third_party/node-core/native-sqlite.cpp",
+          "third_party/node-core/native-ffi-library.cpp"
+        ]
+      },
+      {
+        "area": "Shared host/kernel and ABI prerequisites",
+        "reuse": "No upstream Node public module reuse established by these changes.",
+        "backend": "Secure entropy, timestamp/no-follow/OPFS behavior, filesystem correctness, epoll/EventFd/backing-read wake ownership, private fsnotify prerequisites and proposed file-advice baseline.",
+        "disposition": "Treat as independent platform changes. Check exact current-main equivalents before importing. Public inotify and successor file-advice/statfs activation remain gated; preserve immutable ABI55 history. Node frontend reset cannot waive cross-host or ABI obligations.",
+        "anchors": [
+          "host/src/secure-random.ts",
+          "host/src/platform/node.ts: utimensat",
+          "host/src/vfs/opfs.ts",
+          "crates/runtime-core/src/epoll.rs",
+          "crates/runtime-core/src/fsnotify.rs",
+          "crates/runtime-core/src/wait_retry.rs",
+          "crates/kernel/src/wasm_api.rs",
+          "tests/nodejs/outline/file-advice-program-baseline-plan.md"
+        ]
+      },
+      {
+        "area": "Audit, harness and evidence",
+        "reuse": "Requirements and unchanged upstream tests are validation inputs, not implementation reuse.",
+        "backend": "No runtime backend from report generation itself.",
+        "disposition": "Carry audited API requirements, pin/provenance checks and meaningful tests; simplify the campaign bookkeeping for the new loader architecture. Do not reuse historical source/component/native outcomes as current four-host conformance.",
+        "anchors": [
+          "tests/nodejs/audit/audit-report.md",
+          "tests/nodejs/audit/api-matrix.json",
+          "tests/nodejs/audit/roadmap.md",
+          "tests/nodejs/outline/implementation-state.json",
+          "scripts/run-nodejs-library-tests.ts",
+          "scripts/nodejs-test-results.ts"
+        ]
+      }
+    ]
+  },
+  "restartDisposition": {
+    "approach": "Clean main-based branch; execute whole upstream public and internal JS modules; selectively reuse current backend implementations behind actual Node binding contracts.",
+    "carryFirst": [
+      "Pinned source acquisition/identity and unchanged-test infrastructure",
+      "Shared primitives: work/callback/frame ownership, retained backing storage, native error/brand/source/module capabilities",
+      "Real guest filesystem/process/socket/clock/TTY/native library operations and current ownership corrections"
+    ],
+    "replace": [
+      "Handwritten public fs/net/timers/child_process/Blob/Response/codec behavior",
+      "Per-family private module loaders and substitute internal JavaScript dependencies",
+      "Selected-function assembly and textual source substitutions used instead of missing bindings"
+    ],
+    "mustResolve": [
+      "Shared builtin-loader/cache/CJS-ESM identity and bootstrap order",
+      "Binding object/request shapes and completion/error/cancellation/lifetime contracts",
+      "Engine-specific private storage, stack/frame, serialization, Promise and Worker capabilities",
+      "Current-main equivalents, independent OpenSSL/host/kernel changes and ABI-gated prerequisites"
+    ],
+    "evidence": "Whole-file source reuse and backend source presence are not runtime conformance. Current frozen candidate remains uncompiled/unvalidated across four hosts."
+  }
+}
