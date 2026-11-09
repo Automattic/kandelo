@@ -154,7 +154,10 @@ changes. See [API stability](docs-site/reference/api-stability.md).
 
 - **GPL-2.0-or-later** for the platform: kernel, host runtime, SDK, build
   scripts, and examples.
-- **MIT** for the runtime glue and musl overlay linked into user programs.
+- **MIT** for the runtime glue and musl overlay linked into user programs,
+  apart from a few copied upstream headers that keep their own permissive
+  licenses.
 
 Ported packages keep their upstream licenses. See [LICENSE](LICENSE) for the
-full licensing model, including running your own proprietary programs.
+full licensing model, including running your own proprietary programs, and
+for every piece of third-party code kept in this repository.

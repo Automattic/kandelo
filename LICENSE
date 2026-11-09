@@ -35,13 +35,101 @@ MIT:
   libc/musl-overlay/    Architecture overlay for musl libc (matches musl's license)
   libc/glue/            Syscall glue compiled into user programs
 
+The MIT grant covers the code we wrote in those two directories. They also
+hold a few unmodified upstream headers that keep their own licenses; see
+"Copied into libc/musl-overlay/ and libc/glue/" below. Each of those licenses
+permits linking into proprietary programs, so the paragraph above still holds.
+
 
 Third-Party Software
 --------------------
 
-musl libc — Copyright (c) 2005-2020 Rich Felker, et al.
-Licensed under the MIT License. See libc/musl/COPYRIGHT for full details.
+Third-party code kept in this repository retains its original license. The
+list below is the complete inventory; when you add third-party code to the
+tree, add it here.
 
-The packages/registry/ directory contains source trees of third-party software
-(nginx, PHP, MariaDB, Redis, CPython, Git, GNU coreutils, etc.) which retain
-their original licenses. See the license files within each subdirectory.
+musl libc (libc/musl, git submodule)
+  Copyright (c) 2005-2020 Rich Felker, et al. MIT License.
+  See libc/musl/COPYRIGHT.
+
+tests/sortix/os-test (git submodule)
+  os-test. Copyright Jonas 'Sortie' Termansen and contributors. ISC License.
+
+tests/libc/libc-test (git submodule)
+  libc-test from the musl project. Copyright libc-test authors. MIT License.
+
+sdk/rust/libc-upstream (git submodule)
+  The Rust libc crate. MIT OR Apache-2.0.
+
+Copied into libc/musl-overlay/ (paths below are relative to it) and
+libc/glue/:
+  Overlay sources adapted from musl (for example
+  src/thread/wasm32posix/pthread_mutex_*.c)
+      Keep musl's copyright and MIT License. See libc/musl/COPYRIGHT.
+  include/EGL/, include/GLES2/gl2platform.h
+      Khronos EGL and OpenGL ES platform headers. Copyright The Khronos
+      Group Inc. Apache-2.0 (SPDX tag in each file).
+  include/GLES2/gl2.h, include/GLES2/gl2ext.h, include/KHR/khrplatform.h
+      Khronos OpenGL ES and KHR headers. Copyright The Khronos Group Inc.
+      MIT (license text in each file).
+  include/gbm.h
+      Mesa libgbm header, mesa-24.3.0. Copyright 2011 Intel Corporation.
+      MIT (license text in the file). Provenance in include/gbm.SOURCE.txt.
+  include/linux/input-event-codes.h
+      Linux UAPI header. Copyright Vojtech Pavlik and Hans de Goede.
+      GPL-2.0-only WITH Linux-syscall-note. The syscall note lets user-space
+      programs include the header without the GPL applying to them.
+  libc/glue/wayland-egl-include/
+      wayland-egl headers from the Wayland project. Copyright Kristian
+      Høgsberg and Benjamin Franzke. MIT (license text in each file).
+  src/setjmp/wasm32/rt.c
+      Based on the wasi-libc setjmp/longjmp runtime, which sits in
+      wasi-libc's musl tree. MIT (musl's license).
+
+tests/posix/open-posix-testsuite/
+  A subset of the Open POSIX Test Suite, taken from the Linux Test Project.
+  BSD-2-Clause for newer code, GPL-2.0-or-later for the original suite.
+  See tests/posix/open-posix-testsuite/COPYING.
+
+tests/graphics/cts/query-context-cases.inc, surfaceless-case.inc
+  Unmodified excerpts from the Khronos VK-GL-CTS dEQP EGL tests. Copyright
+  The Android Open Source Project. Apache-2.0. Provenance, hashes and the
+  harness adaptations are recorded in tests/graphics/cts/upstream.json.
+
+third_party/stb_truetype.h
+  Sean Barrett. MIT or public domain (Unlicense). See third_party/NOTICE.md.
+
+third_party/Inconsolata-Regular.ttf
+  Raph Levien and The Inconsolata Project Authors. SIL Open Font License
+  1.1. See third_party/NOTICE.md.
+
+packages/registry/wayland-protocols/xml/
+  Protocol XML from wayland 1.24.0, wayland-protocols 1.45 and wlroots'
+  wlr-protocols. Most files carry their own copyright and MIT-style license
+  text; the rest are covered by wayland-protocols' MIT license, copied to
+  packages/registry/wayland-protocols/COPYING.
+
+packages/registry/openssl/src/tls/
+  TLS 1.2 implementation from WordPress Playground. Copyright WordPress
+  Foundation and contributors. GPL-2.0-or-later. Local changes are listed in
+  packages/registry/openssl/src/tls/NOTICE.
+
+images/vfs/ruby-todo-app/vendor/
+  Rack 3.2.7 (Copyright Leah Neukirchen) and Roda 3.108.0 (Copyright Jeremy
+  Evans and contributors), unmodified. MIT License. See MIT-LICENSE in
+  vendor/rack/ and vendor/roda/.
+
+programs/sdl2/presets/{image,sound}/tunnelwisp.frag
+  "Trailing the Twinkling Tunnelwisp" from Shadertoy
+  (https://www.shadertoy.com/view/WfcGWj), ported to GLSL ES 1.00. The
+  shader's author marks it CC0. UNRESOLVED: the sound shader's music is
+  credited to Pestis, from "Cassini's Cosmic Conclusion"
+  (https://github.com/vsariola/cassinis-cosmic-conclusion), whose source has
+  no license. No grant from Pestis for reuse of the music has been found.
+
+Packages
+  packages/registry/ holds build recipes and patches for third-party
+  software (nginx, PHP, MariaDB, Redis, CPython, Git, GNU coreutils, etc.).
+  Their sources are fetched at build time and keep their original
+  licenses; each package.toml records the license. The exceptions kept in
+  this tree are listed above.
