@@ -178,6 +178,25 @@ cross build:
 - **Wasm traces without names** mean `wasm-opt` stripped the name section; keep it for debugging rather than guessing from `wasm-function[N]`.
 - **A missing POSIX API is a platform gap**, not a package patch. Stub honestly or implement it in the kernel/libc.
 
+## Include reader-facing news
+
+Include a `changelog.d/` entry with a new port or a meaningful package
+capability change. Read `docs/changelog.md` "Write about what people can do"
+for category choice, the fragment format, and automatic highlight nominations.
+Lead with the workflow the port enables: who can use it, what they can now
+do inside Kandelo, and why that matters. Include availability, a concrete
+example or usage link, and material limits backed by the validation performed.
+
+Nominate a highlight for a significant new workflow or audience using the
+optional `headline` and `highlight` front matter. Compiler, language-tooling,
+and agent-facing ports can enable development inside the browser OS; explain
+that capability when demonstrated. A library port may unlock an application
+or ecosystem. Routine recipe maintenance need not become a highlight.
+Distinguish build success, a tested partial image, and default image
+availability. Do not advertise any of those as another. For internal-only
+maintenance, use the documented `Changelog: none <reason>` omission instead.
+Run `scripts/dev-shell.sh scripts/changelog check` before the PR.
+
 ## Feedback
 
 End your final report with one line, so maintainers can see where this skill helped or misled:

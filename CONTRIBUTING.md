@@ -104,6 +104,9 @@ remove them.
 - Keep Node.js and browser behavior aligned. Document differences caused
   by real host limits.
 - Update the docs that describe changed behavior. State known gaps plainly.
+- Add a `changelog.d/` fragment for a user or contributor change, or explain
+  `Changelog: none <reason>` in the PR body. See the
+  [changelog workflow](docs/changelog.md) for categories and publication.
 - Use commit and PR titles such as `Docs: Shorten the README` or
   `Kernel: Preserve shared file offsets`. Explain the problem before the fix.
 

@@ -1,0 +1,219 @@
+# Changelog and dated updates
+
+Kandelo publishes dated progress updates, identified as `YYYY.MM.DD`,
+independently of program ABI and kernel/host versions. An update is not a
+stable-API promise or a tested binary distribution. Host and SDK package
+versions remain separate; this workflow does not bump package or ABI versions,
+rebuild packages, change ABI artifact releases, or deploy the browser app.
+
+## Add an entry with a change
+
+Add a fragment under `changelog.d/`, alongside the implementation and its
+documentation. Use `<PR-number>.<category>`, or `+<unique-slug>.<category>`
+before the PR number is known. A leading `+` omits the issue link. Write the
+user or contributor outcome in plain prose without a heading or leading
+bullet. Include concrete limitations and migration instructions when needed.
+
+For example, `changelog.d/+terminal-paste.ui` might contain:
+
+```text
+Pasting several lines into the terminal preserves their line breaks.
+```
+
+| Extension | Content |
+| --- | --- |
+| `ui` | User interface, terminal interaction, sharing, accessibility |
+| `agentic` | Agent and automation capabilities; say whether these serve users or contributors |
+| `ports` | Newly available software, upstream upgrades, package improvements |
+| `correctness` | Existing behavior now produces the correct result |
+| `completeness` | Missing or partial POSIX interfaces implemented more fully |
+| `features` | New capabilities beyond the existing supported surface |
+| `breaking` | Breaking changes, removals, and migration instructions; first detailed category |
+
+Choose one primary category per outcome; distinct outcomes may have separate
+fragments. Fixing an existing `waitpid` result is correctness; implementing a
+previously unsupported POSIX interface is completeness. Do not turn an
+unmeasured optimization into a performance claim.
+
+## Write about what people can do
+
+Lead with the capability, the person it helps, or the frustration it removes.
+For a major addition, explain what makes it significant: Kandelo's compilers
+run inside the browser computer, and Cargo can build and test programs there.
+Give that achievement room instead of compressing it into a package list.
+
+For example, a Rust-toolchain entry could start:
+
+```markdown
+**Build Rust inside your browser computer.** The experimental guest toolchain
+brings Cargo builds and tests, rustfmt, Clippy, and documentation into Kandelo.
+```
+
+Then link to the setup instructions and name material limits, such as the
+experimental image, offline workflow, and unsupported procedural-macro crates.
+Keep the useful claim and its scope together.
+
+- State the outcome before implementation details. "Use tmux inside Kandelo"
+  gives epoll work a recognizable purpose.
+- Use concrete examples: a Rust project that calls C++, a WordPress site,
+  or a multiplayer game. Explain which workflow is available now.
+- Add a short bold opening when it helps readers scan. A small fix can simply
+  say "Pasting several lines into the terminal preserves their line breaks."
+- Give readers a next step: a command, a guide, or a reproducible example.
+- Keep evidence and technical detail in the linked references. Specific
+  support limits and migration actions still belong beside the affected claim.
+
+### Nominate a highlight in the news fragment
+
+For a substantial capability, add optional TOML front matter to the fragment.
+The author or coding agent writes the reader-facing significance while the
+implementation, evidence, and limitations are fresh:
+
+```markdown
++++
+headline = "Give an agent a development computer in your browser"
+highlight = """Use WebMCP to edit source, run installed compilers and tests,
+and inspect results in the same computer as the user. Requires a browser
+with WebMCP registration support. [Explore the tools](https://github.com/Automattic/kandelo/blob/main/docs/webmcp.md)."""
++++
+Image-declared tools let an environment expose its own commands to agents.
+Editing a definition refreshes the tool without reloading the computer.
+Commands run as owned jobs of the agent account, with cancellation.
+```
+
+Use both `headline` and `highlight`, or omit the front matter entirely.
+`headline` is a short, single-line outcome; `highlight` is a short summary
+with the significance, material scope, and a way to try it. The text after
+the front matter remains the detailed categorized entry. This example is a
+writing model, not a request to announce an existing capability again.
+
+`prepare` automatically puts nominated highlights before the detailed
+categories. It passes only the detailed body to the Rust renderer, so
+metadata never appears as news. Plain fragments keep working. `check`
+rejects malformed front matter, missing or empty fields, unknown fields,
+and nominations without detailed news.
+
+All distinct nominations appear in a stable filename order, with exact
+duplicates combined. Nothing is silently dropped or ranked by commit count.
+The draft includes every nomination even when there are more than five;
+review can select three to five, combine related outcomes, and choose the
+update title and opening. Small updates need no nominations.
+
+Nominate changes that enable a new workflow, help a new audience, or resolve
+a recognizable problem. A port of a compiler or development tool can matter
+because of the work it enables, beyond the fact that another package builds.
+Libraries can unlock applications or language ecosystems. Routine rebuilds
+and recipe maintenance usually need no highlight.
+
+For each significant port, explain what the tool does, why running it inside
+Kandelo is useful, where it is available, and how to try it. Link to the
+usage guide and recorded validation. Distinguish a tested development image
+from default availability, and a successful build from a tested workflow.
+
+WebMCP plus in-guest development tools is an important combined capability:
+an agent can work in an in-browser OS using its commands, files, processes,
+and previews. Describe the guest OS as the environment for those commands.
+Keep guest-command isolation distinct from browser-origin isolation:
+same-origin preview scripts share the app's WebMCP trust boundary, as
+documented in [WebMCP](webmcp.md). Do not imply a separate browser-origin
+security boundary that has not been implemented.
+
+Review checks nominations against the documented behavior and evidence.
+It can also promote an overlooked plain entry; author nominations are a
+starting point. Automation preserves authored claims without inventing new
+capabilities, performance results, or security guarantees.
+Keep breaking changes as the first detailed category after highlights, and
+keep source and compatibility metadata at the end. The detailed entries
+should expand on highlights rather than repeat the same paragraphs.
+
+Every PR needs a new fragment or a line in its body explaining an omission:
+
+```text
+Changelog: none Internal refactor with no observable behavior change.
+```
+
+Update-assembly PRs consume already-reviewed fragments and need no new entry.
+An omission is appropriate for internal maintenance and test-only changes.
+The PR check also rejects empty fragments, unknown categories, invalid names,
+and a stale generated index. Existing fragments are not rewritten by CI.
+
+```bash
+scripts/dev-shell.sh scripts/changelog check
+```
+
+## Tools and historical survey
+
+`scripts/changelog-tool` installs exact Rust CLI releases with Cargo's locked
+dependency resolution into `.context/changelog-tools/` on first use:
+
+- `changelog-builder` 0.10.1 renders fragments using `towncrier.toml`.
+- `git-cliff` 2.14.0 builds an editorial history inventory using `cliff.toml`.
+
+No global Cargo installation or Python package is needed. The wrapper and
+validation use repository-provided Python; rendering and history collection
+use the Rust CLIs. Use the dev shell for all commands. First use needs network
+access to the Cargo registry. `changelog-builder` lacks Towncrier's `create`
+and `check` commands; fragment creation is an ordinary file edit, and
+`scripts/changelog check` provides the repository-specific checks.
+
+The first update is a curated baseline survey through its pinned source
+commit. It does not invent older releases. Reproduce a history inventory from
+inside the development shell:
+
+```bash
+scripts/dev-shell.sh bash
+scripts/changelog history <commit-or-range> > .context/changelog-history.md
+```
+
+History collection includes unmatched commit subjects for review and ignores
+artifact/archive tags as release boundaries. Commit prefixes are routing
+hints, not evidence that a capability works. Check candidate milestones
+against current authoritative docs and implementation before publishing.
+
+## Prepare and publish an update
+
+From a clean checkout with committed fragments:
+
+```bash
+scripts/dev-shell.sh scripts/changelog prepare --date 2026-11-15 --preview
+scripts/dev-shell.sh scripts/changelog prepare --date 2026-11-15
+scripts/dev-shell.sh scripts/changelog check
+```
+
+Preview renders in a temporary directory without changing the working tree.
+Preparation collects nominated highlights, records `HEAD` and its ABI
+snapshot, writes `changelog/updates/YYYY.MM.DD.md`, consumes the pending fragments, and
+regenerates `CHANGELOG.md`. Dates must advance; this workflow publishes at
+most one update per day. Unrelated untracked files are left alone.
+
+The canonical text lives in `changelog/updates/*.md`. Edit those files to
+choose a title, review the nominated highlights, and polish the update.
+Then run `scripts/changelog assemble` to regenerate the root index.
+The documentation page includes that index rather than keeping
+a separate copy. Metadata is checked against the pinned source snapshot.
+These checks verify publication bookkeeping, not runtime conformance.
+
+The weekly **Prepare changelog update** workflow runs on Mondays and can also
+be dispatched manually on `main`. With pending fragments and no open update
+PR, it prepares a dated update, checks it, and opens a draft PR. Review the
+text and merge the PR to publish. It never merges a PR automatically.
+
+GitHub must allow Actions to create pull requests. An optional
+`CHANGELOG_BOT_TOKEN` secret may hold an appropriately scoped bot token so
+the generated PR triggers ordinary PR workflows. With the default
+`GITHUB_TOKEN`, GitHub suppresses those downstream events; the prepare job
+runs the changelog checks itself, and maintainers must arrange any other
+required PR checks before merging. No personal token is required for local
+preparation.
+
+On `main`, **Publish changelog updates** publishes newly added update files
+as GitHub Releases under `kandelo-update-YYYY.MM.DD`. Tags point to the pinned
+source commit, and update releases do not replace GitHub's latest software
+release. Existing tags/releases are checked rather than overwritten; reruns
+can finish an interrupted publication. A manual dispatch retries a selected
+update. These workflows become available only after landing on `main`;
+their hosted behavior must still be verified there.
+
+The documentation page ships with the normal guide publication. This change
+does not introduce a separate website deployment. The existing
+`binaries-abi-v…` releases continue to serve package artifacts independently.

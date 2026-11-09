@@ -1,0 +1,44 @@
+name: Changelog checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+    paths:
+      - "changelog/**"
+      - "changelog.d/**"
+      - "CHANGELOG.md"
+      - "towncrier.toml"
+      - "cliff.toml"
+      - "scripts/changelog*"
+      - "tests/changelog/**"
+      - ".github/workflows/changelog*.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # Check the proposed head, not GitHub's synthetic merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Validate entries and generated index
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ -n "$PR_BASE" ]]; then
+            scripts/dev-shell.sh scripts/changelog check --base "$PR_BASE" --event "$GITHUB_EVENT_PATH"
+          else
+            scripts/dev-shell.sh scripts/changelog check
+          fi
+      - name: Verify rendering and publication behavior
+        run: scripts/dev-shell.sh python3 -m unittest discover -s tests/changelog -v

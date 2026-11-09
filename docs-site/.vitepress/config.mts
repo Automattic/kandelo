@@ -19,6 +19,7 @@ export default defineConfig({
     nav: [
       { text: "Guide", link: "/guide/current-ui" },
       { text: "API Stability", link: "/reference/api-stability" },
+      { text: "Changelog", link: "/changelog" },
       { text: "Live UI", link: "https://automattic.github.io/kandelo/" },
       { text: "API Docs", link: "https://automattic.github.io/kandelo/api/" },
     ],

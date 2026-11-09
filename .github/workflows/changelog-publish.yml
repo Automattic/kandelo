@@ -1,0 +1,52 @@
+name: Publish changelog updates
+
+on:
+  push:
+    branches: [main]
+    paths: ["changelog/updates/*.md"]
+  workflow_dispatch:
+    inputs:
+      update:
+        description: "Update to publish or retry (YYYY.MM.DD)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-nix
+      - name: Validate and publish added updates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE_SHA: ${{ github.event.before }}
+          UPDATE_ID: ${{ inputs.update }}
+        run: |
+          set -euo pipefail
+          scripts/dev-shell.sh scripts/changelog check
+          if [[ -n "$UPDATE_ID" ]]; then
+            updates=("$UPDATE_ID")
+          else
+            paths_file=$(mktemp)
+            git diff --name-only --diff-filter=A \
+              "$BEFORE_SHA" "$GITHUB_SHA" -- 'changelog/updates/*.md' > "$paths_file"
+            mapfile -t updates < <(sed -E 's@^changelog/updates/(.*)\.md$@\1@' "$paths_file")
+          fi
+          for update in "${updates[@]}"; do
+            scripts/dev-shell.sh scripts/changelog publish "$update" --repo "$GITHUB_REPOSITORY"
+          done

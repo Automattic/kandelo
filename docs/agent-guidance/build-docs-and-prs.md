@@ -159,6 +159,21 @@ Vitest/conformance, so rebuild with `./run.sh setup` after any kernel Rust edit.
 
 ## Documentation And PRs
 
+Include a `changelog.d/` fragment with meaningful user or contributor changes.
+Lead with what someone can do or which problem is fixed; explain significant
+capabilities with concrete examples and a next step. During update review,
+choose a descriptive title and a few reader-relevant highlights. Follow the
+editorial guidance in the changelog workflow below.
+For substantial additions, nominate a highlight in the fragment's optional
+`headline` and `highlight` front matter; update preparation collects those
+nominations automatically. Keep availability, limits, and evidence explicit.
+Use one primary category per outcome; breaking entries need migration
+instructions and limits. For internal maintenance, explain
+`Changelog: none <reason>` in the PR body. Follow the
+[changelog workflow](../changelog.md) for filenames, categories, validation,
+dated updates, and publishing. Edit
+canonical update files rather than the generated root `CHANGELOG.md`.
+
 PR titles and commit subjects must begin with a concise purpose prefix in the
 form `Area: Purpose`. Use the primary contract or capability affected, not a
 mechanical verb or team name. Common prefixes include:

@@ -1,0 +1,85 @@
+name: Prepare changelog update
+
+on:
+  schedule:
+    - cron: "0 14 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-prepare
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CHANGELOG_BOT_TOKEN || github.token }}
+      - name: Check for pending entries and an open update PR
+        id: pending
+        env:
+          GH_TOKEN: ${{ secrets.CHANGELOG_BOT_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          open_updates=$(gh pr list --state open --json headRefName --limit 1000 \
+            --jq '[.[] | select(.headRefName | startswith("changelog/update-"))] | length')
+          if [[ "$open_updates" == 0 ]] && find changelog.d -type f ! -name README.md | grep -q .; then
+            echo 'prepare=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: ./.github/actions/setup-nix
+        if: steps.pending.outputs.prepare == 'true'
+      - name: Prepare and validate the update
+        if: steps.pending.outputs.prepare == 'true'
+        id: update
+        run: |
+          set -euo pipefail
+          update_date=$(date -u +%F)
+          update_id=${update_date//-/.}
+          scripts/dev-shell.sh scripts/changelog prepare --date "$update_date"
+          scripts/dev-shell.sh scripts/changelog check
+          scripts/dev-shell.sh python3 -m unittest discover -s tests/changelog -v
+          echo "id=$update_id" >> "$GITHUB_OUTPUT"
+      - name: Open a reviewable update PR
+        if: steps.pending.outputs.prepare == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CHANGELOG_BOT_TOKEN || github.token }}
+          UPDATE_ID: ${{ steps.update.outputs.id }}
+        run: |
+          set -euo pipefail
+          branch="changelog/update-$UPDATE_ID"
+          git switch -c "$branch"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add CHANGELOG.md changelog/updates changelog.d
+          git commit -m "Docs: Publish Kandelo update $UPDATE_ID"
+          git push origin "HEAD:refs/heads/$branch"
+          body_file=$(mktemp)
+          cat > "$body_file" <<'BODY'
+          ## Why
+
+          Users need a readable account of Kandelo's progress and compatibility changes without reconstructing individual commits.
+
+          ## What changed
+
+          - Collect pending entries into a dated update pinned to its source and compatibility versions.
+          - Review nominated highlights and choose a descriptive title before merging.
+          - Merge publishes a GitHub update release.
+
+          ## Validation
+
+          - Passed: changelog validation and rendering/publication tests.
+          - Not run: runtime tests; this update only changes changelog text.
+          - With the default Actions token, downstream PR workflows do not start automatically; arrange any other required checks before merging.
+          BODY
+          gh pr create --draft --base main --head "$branch" \
+            --title "Docs: Publish Kandelo update $UPDATE_ID" --body-file "$body_file"

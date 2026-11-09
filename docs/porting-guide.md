@@ -1139,6 +1139,12 @@ Locally, iterate against a partial image (step 4), then run
 through the local SourceOnly graph and its dependent canonical VFS
 products, and verify the result there before opening the PR.
 
+Include reader-facing news for a new port or a meaningful capability change.
+Explain what people can now do inside Kandelo, where the port is available,
+and how to try it; link to usage and validation evidence. Nominate significant
+new workflows for automatic highlighting using the optional fragment front
+matter. See [changelog writing and highlight guidance](changelog.md#write-about-what-people-can-do).
+
 ### 6. Register in `run.sh` (optional)
 
 If users should be able to `./run.sh build <name>` or see the package

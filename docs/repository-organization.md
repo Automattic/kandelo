@@ -28,6 +28,8 @@ Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes ar
 | `tools/` | Repo automation such as `xtask` and `mkrootfs` | Product runtime code |
 | `sdk/` | Cross-compilation wrapper CLI and SDK support code | Runtime host implementation |
 | `libc/` | musl submodule, musl overlay, syscall glue | General package registry |
+| `changelog.d/` | Pending reader-facing change fragments | Commit history or release artifacts |
+| `changelog/updates/` | Canonical dated updates; generates `CHANGELOG.md` | ABI and package version policy |
 
 Hosted ABI staging is not operational in this foundation. The paths above
 define local product, policy, and validation authority only until protected
