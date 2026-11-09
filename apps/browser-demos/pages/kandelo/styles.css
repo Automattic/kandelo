@@ -4126,6 +4126,50 @@
   text-transform: uppercase;
   color: var(--k-text-faint);
 }
+
+/* ── Credits dialog (uses the About dialog's frame) ─────────────────────── */
+
+.kcredits h3 {
+  margin: 22px 0 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--k-border);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  color: var(--k-text);
+}
+.kcredits section > p {
+  margin: 0 0 8px;
+  color: var(--k-text-muted);
+}
+.kcredits-list {
+  margin: 0;
+}
+.kcredits-list dt {
+  margin-top: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.kcredits-list dt:first-child {
+  margin-top: 0;
+}
+.kcredits-list dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--k-text-muted);
+}
+.kcredits-by {
+  font-weight: 400;
+  color: var(--k-text-faint);
+}
+.kcredits a {
+  color: var(--k-accent);
+  text-decoration: none;
+}
+.kcredits a:hover {
+  text-decoration: underline;
+}
 .kshare-url {
   padding: 10px 12px;
   background: var(--k-surface-sunk);

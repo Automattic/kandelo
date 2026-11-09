@@ -20,6 +20,7 @@ import { DEFAULT_COMPUTER_RETENTION } from "../../../../../web-libs/kandelo-sess
 import { OpenWebsiteDialog } from "./OpenWebsiteDialog";
 import type { WebPreviewTarget } from "../../../../../web-libs/kandelo-session/src/web-preview-address";
 import { AboutDialog } from "./AboutDialog";
+import { CreditsDialog } from "./CreditsDialog";
 import { PersistenceWarningDialog } from "./PersistenceReleaseWarning";
 import { isMachineProgressBlocking } from "../panes/machine-progress-format";
 import { EmptyState } from "../views/EmptyState";
@@ -127,6 +128,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     setOpenWebsite(true);
   }, []);
   const [previewError, setPreviewError] = React.useState<string | null>(null);
+  const [creditsOpen, setCreditsOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
@@ -683,6 +685,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
           onOpenAbout={() => setAboutOpen(true)}
           servicesAvailable={services.entries.length > 0 || services.starting || services.error !== null}
           onOpenServices={() => setServicesOpen(true)}
+          onOpenCredits={() => setCreditsOpen(true)}
           onCloseGuide={() => setDemoGuideOpen(false)}
           onCloseInternals={() => setInternalsOpen(false)}
           onCloseTheme={() => setThemeOpen(false)}
@@ -695,6 +698,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
       {persistenceDialog && library.current && <PersistenceWarningDialog title={library.current.title} onKeep={persistenceDialog === "keep" ? () => void keepCurrentComputer() : undefined} onClose={() => setPersistenceDialog(null)} />}
       {openWebsite && <OpenWebsiteDialog session={networkSession.state.snapshot} initialTarget={websiteTarget} onClose={() => setOpenWebsite(false)} />}
       {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
+      {creditsOpen && <CreditsDialog onClose={() => setCreditsOpen(false)} />}
       {servicesOpen && <ServicesPanel controls={services} onClose={() => setServicesOpen(false)} onStarted={service => {
         const preview = host.getWebPreview();
         const target = preview?.destination ?? (preview?.port === undefined ? undefined : { hostname: "localhost", port: preview.port });

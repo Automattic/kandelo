@@ -43,6 +43,7 @@ export default defineConfig({
         items: [
           { text: "API Stability", link: "/reference/api-stability" },
           { text: "Troubleshooting", link: "/reference/troubleshooting" },
+          { text: "Credits", link: "/reference/credits" },
           { text: "Repo Docs", link: `${repo}/tree/main/docs` },
         ],
       },
