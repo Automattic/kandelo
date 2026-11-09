@@ -1,0 +1,26 @@
+kind = "program"
+name = "findutils-docs"
+version = "4.10.0"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `findutils` package (find, xargs).
+# The source, SHA-256 and version are the `findutils` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/findutils/findutils-4.10.0.tar.xz"
+sha256 = "1387e0b67ff247d2abde998f90dfbf70c1491391a59ddfecb8ae698789f0a4f5"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/findutils.git/tree/COPYING"
+
+[build]
+script_path = "packages/registry/findutils-docs/build-findutils-docs.sh"
+
+[[outputs]]
+name = "findutils-docs"
+wasm = "findutils-docs.zip"
+fork_instrumentation = "disabled"

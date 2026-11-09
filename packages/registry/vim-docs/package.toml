@@ -1,0 +1,26 @@
+kind = "program"
+name = "vim-docs"
+version = "9.1.0900"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `vim` package (vim).
+# The source, SHA-256 and version are the `vim` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/vim/vim/archive/refs/tags/v9.1.0900.tar.gz"
+sha256 = "30efb714ed82c5d7a1491f3e4aac6487d2c493d33c834d7ef043e6f45176772e"
+provider = "archive"
+
+[license]
+spdx = "Vim"
+url = "https://github.com/vim/vim/blob/v9.1.0900/LICENSE"
+
+[build]
+script_path = "packages/registry/vim-docs/build-vim-docs.sh"
+
+[[outputs]]
+name = "vim-docs"
+wasm = "vim-docs.zip"
+fork_instrumentation = "disabled"

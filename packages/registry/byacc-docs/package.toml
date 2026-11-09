@@ -1,0 +1,26 @@
+kind = "program"
+name = "byacc-docs"
+version = "20241231"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `byacc` package (yacc).
+# The source, SHA-256 and version are the `byacc` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://invisible-island.net/archives/byacc/byacc-20241231.tgz"
+sha256 = "192c2fae048d4e7f514ba451627f9c4e612765099f819c19191f9fde3e609673"
+provider = "archive"
+
+[license]
+spdx = "LicenseRef-Public-Domain"
+url = "https://invisible-island.net/byacc/byacc.html"
+
+[build]
+script_path = "packages/registry/byacc-docs/build-byacc-docs.sh"
+
+[[outputs]]
+name = "byacc-docs"
+wasm = "byacc-docs.zip"
+fork_instrumentation = "disabled"

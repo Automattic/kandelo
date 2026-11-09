@@ -1,0 +1,26 @@
+kind = "program"
+name = "bzip2-docs"
+version = "1.0.8"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `bzip2` package (bzip2, bunzip2, bzcat).
+# The source, SHA-256 and version are the `bzip2` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
+sha256 = "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+provider = "archive"
+
+[license]
+spdx = "bzip2-1.0.6"
+url = "https://gitlab.com/bzip2/bzip2/-/blob/master/LICENSE"
+
+[build]
+script_path = "packages/registry/bzip2-docs/build-bzip2-docs.sh"
+
+[[outputs]]
+name = "bzip2-docs"
+wasm = "bzip2-docs.zip"
+fork_instrumentation = "disabled"

@@ -267,14 +267,47 @@ Where possible, include upstream man pages as lazy references in the image
 that carries the port. If it has none, no new man page needs to be authored or
 generated for now.
 
-The existing shell convention is a separate `<program>-docs` package with
-a declared `<program>-docs.zip` output, registered as a lazy archive. See
-`packages/registry/coreutils-docs/` and `packages/registry/lsof-docs/` for
-the packaging shape. Their content sources are special cases: coreutils
-pages are generated from the actual Kandelo binary's help output, and
-lsof's page is authored for the in-tree implementation. Neither is a
-requirement to invent documentation for another port. Prefer the port's
-own upstream pages, matching its version and documentation license.
+The shell convention is a separate `<program>-docs` package with a
+declared `<program>-docs.zip` output, registered as a lazy archive.
+
+For upstream pages, the docs package pins the program package's own
+`version`, source `url` and `sha256`, so its pages come from the release
+that built the installed binary.
+`tests/package-system/package-docs-source-parity.test.ts` fails if the two
+drift, which is what makes a separate package safe: a version bump of the
+program cannot leave the manual describing an older release. Its build
+script is a page list on top of `scripts/install-package-man-pages.sh`
+(`packages/registry/xz-docs/` is a typical example):
+
+- `kandelo_man_pages_stage_source "$HERE"` stages the pinned, verified
+  source.
+- `install_package_man_pages <docs-pkg> "$SRC" <spec>...` stages each page
+  and installs the ZIP. `relpath[:name]` copies a page (the section comes
+  from the destination name); `alias.1=page.1` adds a symlink for a command
+  the image installs under a second name, such as `unxz` for `xz`.
+- `kandelo_man_pages_substitute <in> <out> <token=value>...` fills in a
+  page template the way upstream's own build does (`grep.in.1`,
+  `php.1.in`). Take each value from the program package's configure flags
+  and say which flag in a comment. A page upstream generates with a
+  separate documentation toolchain (pod2man, texi2pod, asciidoc, meson
+  `configure_file`) is not a substitution; see the gap list below.
+
+Ship a page only for a command the image installs: `aliases` in
+`images/rootfs/PACKAGES.toml` and `vfsPath`/`symlinks` in
+`SHELL_LAZY_BINARY_SPECS` are the authorities. A page for a command that
+is not there promises behavior the platform lacks. Name pages explicitly
+rather than globbing, because tarballs carry translations, changelogs that
+end in `.1`, and pages for tools that are not built. A file listing does
+not identify installable troff source: `less` keeps it in `less.nro` and
+ships `less.man` preformatted, `vim` is the reverse, and `grep` and `file`
+pages are generated from templates. Render every page through `man` before
+shipping it.
+
+`packages/registry/coreutils-docs/` and `packages/registry/lsof-docs/` are
+special cases: coreutils pages are generated from the actual Kandelo
+binary's help output, and lsof's page is authored for the in-tree
+implementation. Neither is a requirement to invent documentation for
+another port.
 
 - Stage pages as `share/man/man<section>/<name>.<section>` inside the
   archive, and mount it at `/usr/`, yielding
@@ -299,11 +332,32 @@ own upstream pages, matching its version and documentation license.
   man viewer (`mandoc-browser-bundle` in the shell) and verify
   `MANPAGER=cat man <section> <name>` renders the packaged page through lazy
   loading without requiring an additional pager package.
-  `host/test/man-shell-lazy-archive.test.ts` is the existing Node-host
-  integration reference; exercise browser lookup as well for a shipped port.
+  `host/test/man-shell-lazy-archive.test.ts` renders every page of every
+  docs archive in the image through `man` on the Node host; exercise
+  browser lookup as well for a shipped port.
 
 The [lazy-archive contract](#shipping-runtime-files-the-lazy-archive-pattern)
 below applies to these docs bundles too, even for a single small man page.
+
+### Shell commands without man pages
+
+These commands are in the shell image but have no page yet. `man` reports
+`No entry for <name> in the manual` for them, which is the truthful answer.
+
+| Commands | Why there is no page yet |
+|---|---|
+| `curl`, `wget`, `git`, `ffmpeg`, `ffprobe`, `ffplay`, `perl`, `foot`, `sway`, `swaymsg`, `swaybar`, `swaynag`, `swaybg`, `cage`, `labwc`, the `dbus-*` tools | Upstream builds the page with a separate documentation toolchain (curl's `managen`, texi2pod and pod2man, asciidoc, scdoc, xmlto) that the package build does not run yet |
+| `freeciv`, `freeciv-server` | Pages are filled in by meson's `configure_file`, not a plain substitution |
+| `sudo` | Pages are produced by configure-generated sed scripts |
+| `clear`, `reset`, `tput`, `tset`, `tabs`, `tic`, `infocmp`, `toe`, `captoinfo`, `infotocap` | ncurses rewrites its pages with `edit_man.sh` at install time |
+| `redis-cli`, `sqlite3`, `termchat`, `composer`, `node`, `gem` | No upstream page in the pinned source; Kandelo's `node` is its own SpiderMonkey-based runtime, so upstream Node's page would describe a different program |
+| `posix-utils-lite` commands, `kandelo-exchange`, `kandelo-publish`, `login`, `sudo-lite`, `dos-play` and other Kandelo wrappers | Kandelo is upstream and has not written pages for them |
+
+The image also ships no `mandoc.db` index, so `whatis`, `apropos` and
+`man -k` are not available, and mandoc 1.14.6 prints
+`outdated mandoc.db lacks <name>(<section>) entry, run makewhatis
+/usr/share/man` on standard error each time `man` finds a page. The page
+itself renders normally.
 
 ## Shipping runtime files: the lazy-archive pattern
 

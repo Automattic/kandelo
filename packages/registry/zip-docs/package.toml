@@ -1,0 +1,26 @@
+kind = "program"
+name = "zip-docs"
+version = "3.0"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `zip` package (zip).
+# The source, SHA-256 and version are the `zip` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "http://downloads.sourceforge.net/infozip/zip30.tar.gz"
+sha256 = "f0e8bb1f9b7eb0b01285495a2699df3a4b766784c1765a8f1aeedf63c0806369"
+provider = "archive"
+
+[license]
+spdx = "Info-ZIP"
+url = "https://infozip.sourceforge.net/license.html"
+
+[build]
+script_path = "packages/registry/zip-docs/build-zip-docs.sh"
+
+[[outputs]]
+name = "zip-docs"
+wasm = "zip-docs.zip"
+fork_instrumentation = "disabled"

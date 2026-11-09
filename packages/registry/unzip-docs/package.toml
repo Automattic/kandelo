@@ -1,0 +1,26 @@
+kind = "program"
+name = "unzip-docs"
+version = "6.0"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `unzip` package (unzip, zipinfo, funzip).
+# The source, SHA-256 and version are the `unzip` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "http://downloads.sourceforge.net/infozip/unzip60.tar.gz"
+sha256 = "036d96991646d0449ed0aa952e4fbe21b476ce994abc276e49d30e686708bd37"
+provider = "archive"
+
+[license]
+spdx = "Info-ZIP"
+url = "https://infozip.sourceforge.net/license.html"
+
+[build]
+script_path = "packages/registry/unzip-docs/build-unzip-docs.sh"
+
+[[outputs]]
+name = "unzip-docs"
+wasm = "unzip-docs.zip"
+fork_instrumentation = "disabled"

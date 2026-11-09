@@ -1,0 +1,26 @@
+kind = "program"
+name = "bash-docs"
+version = "5.2.37"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `bash` package (bash, and /bin/sh as an alias of it).
+# The source, SHA-256 and version are the `bash` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/bash/bash-5.2.37.tar.gz"
+sha256 = "9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/bash.git/tree/COPYING"
+
+[build]
+script_path = "packages/registry/bash-docs/build-bash-docs.sh"
+
+[[outputs]]
+name = "bash-docs"
+wasm = "bash-docs.zip"
+fork_instrumentation = "disabled"

@@ -307,6 +307,191 @@
       "role": "lazy-archive"
     },
     {
+      "name": "attr-docs",
+      "version": "2.5.2",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "bash-docs",
+      "version": "5.2.37",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "bc-docs",
+      "version": "1.07.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "byacc-docs",
+      "version": "20241231",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "bzip2-docs",
+      "version": "1.0.8",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "cpython-docs",
+      "version": "3.13.3",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "diffutils-docs",
+      "version": "3.10",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "elinks-docs",
+      "version": "0.20.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "file-docs",
+      "version": "5.45",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "findutils-docs",
+      "version": "4.10.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "flex-docs",
+      "version": "2.6.4",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "gawk-docs",
+      "version": "5.3.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "grep-docs",
+      "version": "3.11",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "gzip-docs",
+      "version": "1.13",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "jq-docs",
+      "version": "1.8.2",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "less-docs",
+      "version": "668",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "lhasa-docs",
+      "version": "0.4.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "love-docs",
+      "version": "11.5-kandelo-kms",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "m4-docs",
+      "version": "1.4.19",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "make-docs",
+      "version": "4.4.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "mandoc-docs",
+      "version": "1.14.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "mariadb-docs",
+      "version": "10.5.28",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "nano-docs",
+      "version": "8.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "netcat-docs",
+      "version": "0.7.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "nethack-docs",
+      "version": "3.6.7",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "php-docs",
+      "version": "8.5.12",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "ruby-docs",
+      "version": "4.0.5",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "scummvm-docs",
+      "version": "2026.3.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "sed-docs",
+      "version": "4.9",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "tar-docs",
+      "version": "1.35",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "tmux-docs",
+      "version": "3.8",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "unzip-docs",
+      "version": "6.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "vim-docs",
+      "version": "9.1.0900",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "xz-docs",
+      "version": "5.6.2",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "zip-docs",
+      "version": "3.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "zstd-docs",
+      "version": "1.5.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "sfwbar-docs",
+      "version": "1.0_beta17",
+      "role": "lazy-archive"
+    },
+    {
       "name": "kandelo-sdk-browser-bundle",
       "version": "21.1.7",
       "role": "lazy-archive"

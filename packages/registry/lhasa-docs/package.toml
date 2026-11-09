@@ -1,0 +1,26 @@
+kind = "program"
+name = "lhasa-docs"
+version = "0.4.0"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `lhasa` package (lha).
+# The source, SHA-256 and version are the `lhasa` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/fragglet/lhasa/releases/download/v0.4.0/lhasa-0.4.0.tar.gz"
+sha256 = "a7fc883c304c508562fb93fa307a4c342b0c886fcc265f28b92dc0c39220c5b3"
+provider = "archive"
+
+[license]
+spdx = "ISC"
+url = "https://github.com/fragglet/lhasa/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/lhasa-docs/build-lhasa-docs.sh"
+
+[[outputs]]
+name = "lhasa-docs"
+wasm = "lhasa-docs.zip"
+fork_instrumentation = "disabled"
