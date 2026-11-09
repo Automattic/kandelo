@@ -10,6 +10,13 @@ import { expectRunningMachineAudio } from "./support/machine-audio";
 import { configureNewComputer, currentComputerMetadata } from "./support/computer-library";
 
 async function launch(page: Page, title: string, profile: string): Promise<void> {
+  // Why: mouse-tested compositors retain pointer capture. Release it through
+  // the normal Escape path so dock clicks reach Library, keeping the guest
+  // alive for the next machine's teardown check.
+  if (await page.evaluate(() => document.pointerLockElement !== null)) {
+    await page.keyboard.press("Escape");
+    await expect.poll(() => page.evaluate(() => document.pointerLockElement === null)).toBe(true);
+  }
   await configureNewComputer(page, profile);
   await page.getByLabel("Computer name", { exact: true }).fill(title);
   await page.getByRole("button", { name: "Create and boot", exact: true }).click();
