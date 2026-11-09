@@ -2004,11 +2004,13 @@ pub fn prepare_persistence_compaction(
     let compacted = if source.resizable {
         let live_inodes = live_inodes.as_ref().ok_or(Errno::EIO)?;
         source.journal.compact_metadata_reachable_into(storage, |key, value| {
-            if matches!(key, OverlayKey::Dirent { .. })
-                && value.is_none()
-                && !source.base_dirents.contains(key)
-            {
-                return false;
+            // A removal record matters only while it hides an image entry, and
+            // then it must be kept even when its directory is dead: reopening
+            // rebuilds every image directory from the image, so dropping the
+            // record would put the removed name back inside an unlinked
+            // directory, and replay refuses that namespace.
+            if matches!(key, OverlayKey::Dirent { .. }) && value.is_none() {
+                return source.base_dirents.contains(key);
             }
             let inode = match key {
                 OverlayKey::Inode(inode)
@@ -16381,6 +16383,57 @@ mod tests {
             assert_eq!(*storage.0.lock(), bytes);
             reset();
             assert_eq!(metadata_budget_usage().0, 0);
+        }
+    }
+
+    #[test]
+    fn compaction_keeps_removals_inside_a_deleted_image_directory() {
+        // An SDK upgrade stages a new tree, renames the image's directory
+        // aside, renames the staged tree into its place and deletes the old
+        // one. The old directory is then dead, but reopening rebuilds it from
+        // the image, so its removed entries must survive compaction.
+        let _guard = TestGuard::acquire();
+        for replace in [false, true] {
+            reset();
+            let image = tiny_vfs_described().to_vec();
+            let digest: [u8; 32] = Sha256::digest(&image).into();
+            let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+            let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+            let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+            let mut bytes = image_host(&image);
+            load_image(image.len() as u64, &mut bytes).unwrap();
+            enable_resizable_persistence(Box::new(source), digest, &mut bytes).unwrap();
+            if replace {
+                mkdir(b"/staged", 0o755, 0, 0).unwrap();
+                let handle = open(b"/staged/new.txt", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+                assert_eq!(write(handle, 0, b"upgraded", &mut bytes), Ok(8));
+                release_handle(handle);
+                rename(b"/dir", b"/old").unwrap();
+                rename(b"/staged", b"/dir").unwrap();
+                unlink(b"/old/nested.txt").unwrap();
+                rmdir(b"/old").unwrap();
+            } else {
+                unlink(b"/dir/nested.txt").unwrap();
+                rmdir(b"/dir").unwrap();
+            }
+            prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+            checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+            activate_persistence_compaction().unwrap();
+            let checkpoint_end = target.0.lock().len() as u64;
+
+            reset();
+            load_image(image.len() as u64, &mut bytes).unwrap();
+            enable_resizable_persistence_indexed(
+                Box::new(target), Box::new(index), digest, checkpoint_end, &mut bytes,
+            ).unwrap();
+            assert!(matches!(lstat(b"/old"), Err(Errno::ENOENT)));
+            assert!(matches!(lstat(b"/dir/nested.txt"), Err(Errno::ENOENT)));
+            if replace {
+                assert_eq!(lstat(b"/dir/new.txt").unwrap().st_size, 8);
+                assert_eq!(lstat(b"/dir").unwrap().st_nlink, 2);
+            } else {
+                assert!(matches!(lstat(b"/dir"), Err(Errno::ENOENT)));
+            }
         }
     }
 
