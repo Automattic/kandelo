@@ -4,6 +4,9 @@ Planning checkpoint: 2026-11-09. This is the durable work index for the
 graphics campaign after PR #1594. It describes planned behavior, not
 supported behavior or completed validation.
 
+The [workspace handoff](workspace-handoff.md) locates preserved local drafts,
+Cage evidence and independent previews for continuation in a fresh workspace.
+
 ## Scope and authority
 
 The original baseline is OpenGL ES **2.0**, GLSL ES **1.00**, EGL **1.5**
