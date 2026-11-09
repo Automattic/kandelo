@@ -17,10 +17,16 @@ async function launch(page: Page, title: string, profile: string): Promise<void>
     await page.keyboard.press("Escape");
     await expect.poll(() => page.evaluate(() => document.pointerLockElement === null)).toBe(true);
   }
+  const previousId = new URL(page.url()).searchParams.get("computer");
   await configureNewComputer(page, profile);
   await page.getByLabel("Computer name", { exact: true }).fill(title);
   await page.getByRole("button", { name: "Create and boot", exact: true }).click();
-  await expect(page).toHaveURL(/computer=[0-9a-f-]{36}(?:&|$)/, { timeout: 240_000 });
+  // Why: the retired temporary computer can disappear while its old URL is
+  // still visible. Observe the newly created ID before reading its metadata.
+  await expect.poll(() => {
+    const id = new URL(page.url()).searchParams.get("computer");
+    return id !== previousId && /^[0-9a-f-]{36}$/.test(id ?? "");
+  }, { timeout: 240_000 }).toBe(true);
   await expect.poll(async () => (await currentComputerMetadata(page)).profileId, { timeout: 240_000 }).toBe(profile);
   expect(new URL(page.url()).searchParams.get("memoryProfile")).toBe("constrained");
   await expect(page.locator(".kmprogress-card")).toHaveCount(0, { timeout: 240_000 });
