@@ -378,6 +378,7 @@ host/test/persistent-image-binding.test.ts	source-only
 host/test/persistent-image-writer.test.ts	prepared-product
 host/test/persistent-large-checked-base.test.ts	prepared-product
 host/test/persistent-statfs.test.ts	prepared-product
+host/test/persistent-tail-pressure.test.ts	prepared-product
 host/test/persistent-wordpress-workload.test.ts	prepared-product
 host/test/phase2-raw-syscall-guard.test.ts	source-only
 host/test/php-browser-kernel-owned-vfs.test.ts	source-only

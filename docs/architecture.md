@@ -3630,6 +3630,25 @@ the active-tail limit, like dirty-block flushing, rather than stranding a
 pending sync behind admission intended for new mutations. Allocation or I/O
 can still fail and must be reported; this reserves admission, not physical RAM.
 
+The 63 MiB active journal tail bounds admission of new persistent mutations;
+it is not filesystem capacity. At that bound Rust returns an internal `EAGAIN`
+and records a compaction request. The shared kernel worker consumes the request
+through `kernel_rootfs_take_compaction_request`, retains the syscall's copied
+arguments and existing descriptor retry authority, and asks the live compactor
+to run immediately. Both Node and browser wait for that handoff rather than
+the two-second background poll. Concurrent waiters share one compaction.
+The compactor's ordinary failure backoff does not delay a demand request.
+
+After successful activation, the worker retries the original operation. This
+also covers namespace mutations such as create and rename; their path bytes
+are retained while waiting. Regular-file `O_NONBLOCK` does not bypass storage
+maintenance. An actual compaction failure completes current waiters with its
+storage errno (`ENOSPC` for quota, `ENOMEM` for admission, otherwise `EIO`),
+without caching that failure for future calls. Existing logical capacity
+checks still reject writes that do not fit. Dirty data and timestamp flushing
+continue to bypass tail admission, so compaction can drain accepted state.
+No journal, checkpoint or activation-control disk format changes.
+
 Rust reports pressure at half the ordinary state allowance or whenever the
 writeback reserve is used. Node and browser boot/live compaction consult that
 decision even below the serialized-byte threshold. Production resizable

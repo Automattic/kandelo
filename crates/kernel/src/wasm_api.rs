@@ -2304,6 +2304,11 @@ pub extern "C" fn kernel_rootfs_journal_state_memory_pressure() -> u32 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_take_compaction_request() -> u32 {
+    u32::from(crate::rootfs::take_compaction_request())
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_set_io_budget_bytes(limit: u32) -> i32 {
     match crate::rootfs::set_io_budget_bytes(limit as usize) {
         Ok(()) => 0,
@@ -5231,7 +5236,8 @@ fn retain_blocking_retry_target(syscall_nr: u32, args: &[i64; 6]) -> Result<(), 
         // retries, so a pin taken now would never be released.
         crate::blocked_retry::BlockingRetryOperation::Fcntl
         | crate::blocked_retry::BlockingRetryOperation::Flock => {}
-        crate::blocked_retry::BlockingRetryOperation::Read
+        crate::blocked_retry::BlockingRetryOperation::FileMetadata
+        | crate::blocked_retry::BlockingRetryOperation::Read
         | crate::blocked_retry::BlockingRetryOperation::Write
         | crate::blocked_retry::BlockingRetryOperation::Pread
         | crate::blocked_retry::BlockingRetryOperation::Pwrite
@@ -5343,6 +5349,11 @@ fn handle_owned_channel_allocation(
     transport: ChannelTransport,
 ) -> i32 {
     use wasm_posix_shared::channel::*;
+
+    // A partial successful transfer (or a privileged host mutation) can leave
+    // a tail request behind. Only this attempt's EAGAIN may ask the host to
+    // compact; otherwise an unrelated pipe/socket EAGAIN could inherit it.
+    let _ = crate::rootfs::take_compaction_request();
 
     if offset == 0 || allocation_capacity < MIN_CHANNEL_SIZE {
         unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();

@@ -21570,8 +21570,7 @@ pub fn sys_ftruncate(
     if length < 0 {
         return Err(Errno::EINVAL);
     }
-    let entry = proc.fd_table.get(fd)?;
-    let ofd_idx = entry.ofd_ref.0;
+    let ofd_idx = resolve_io_ofd(proc, fd)?;
     let (file_type, status_flags, host_handle) = {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         (ofd.file_type, ofd.status_flags(), ofd.host_handle)
@@ -21788,8 +21787,8 @@ pub fn sys_fchmod(
     fd: i32,
     mode: u32,
 ) -> Result<(), Errno> {
-    let entry = proc.fd_table.get(fd)?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    let ofd_idx = resolve_io_ofd(proc, fd)?;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.is_path_only() {
         return Err(Errno::EBADF);
     }
@@ -21823,8 +21822,7 @@ pub fn sys_fchmod(
             Ok(())
         });
     }
-    let entry = proc.fd_table.get(fd)?;
-    let ofd_idx = entry.ofd_ref.0;
+    let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     match ofd.file_type {
@@ -21886,8 +21884,8 @@ pub fn sys_fchown(
     uid: u32,
     gid: u32,
 ) -> Result<(), Errno> {
-    let entry = proc.fd_table.get(fd)?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    let ofd_idx = resolve_io_ofd(proc, fd)?;
+    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.is_path_only() {
         return Err(Errno::EBADF);
     }
@@ -21922,8 +21920,7 @@ pub fn sys_fchown(
             Ok(())
         });
     }
-    let entry = proc.fd_table.get(fd)?;
-    let ofd_idx = entry.ofd_ref.0;
+    let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     match ofd.file_type {
@@ -62542,7 +62539,7 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn blocked_descriptor_wait_families_keep_the_exact_ofd_across_reuse() {
-        for syscall in [10, 53, 54, 121, 384] {
+        for syscall in [10, 53, 54, 79, 87, 88, 121, 308, 384] {
             let mut proc = Process::new(500 + syscall);
             let mut host = MockHostIO::new();
             let mut locks = AdvisoryLockManager::new();
@@ -62570,6 +62567,36 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(resolve_io_ofd(&proc, fd), Ok(old_ofd_idx));
             proc.blocked_retries.clear_active();
             release_blocking_retry_binding(&mut proc, &mut locks, &mut host, tid, token).unwrap();
+        }
+    }
+
+    #[test]
+    fn blocked_file_metadata_retries_keep_original_description_policy() {
+        for syscall in [79, 87, 88, 308] {
+            let mut proc = Process::new(800 + syscall);
+            let mut host = MockHostIO::new();
+            let mut locks = AdvisoryLockManager::new();
+            let tid = proc.pid;
+            set_test_current_tid(tid);
+            let fd = sys_open(&mut proc, &mut host, b"/metadata-target", O_RDWR, 0).unwrap();
+            let token = ensure_blocking_retry_ofd_binding(
+                &mut proc, &mut locks, &mut host, tid, syscall, fd, None,
+            ).unwrap();
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+            let replacement = sys_open(&mut proc, &mut host, b"/metadata-replacement", O_PATH, 0).unwrap();
+            assert_eq!(replacement, fd);
+            proc.blocked_retries.activate(tid, token, BlockingRetryOperation::FileMetadata).unwrap();
+            let result = match syscall {
+                79 => sys_ftruncate(&mut proc, &mut host, fd, 20),
+                87 => sys_fchmod(&mut proc, &mut host, fd, 0o600),
+                88 => sys_fchown(&mut proc, &mut host, fd, 0, 0),
+                308 => sys_fallocate(&mut proc, &mut host, fd, 0, 20),
+                _ => unreachable!(),
+            };
+            assert_eq!(result, Ok(()), "retry of syscall {syscall} must not use the replacement O_PATH description");
+            proc.blocked_retries.clear_active();
+            release_blocking_retry_binding(&mut proc, &mut locks, &mut host, tid, token).unwrap();
+            set_test_current_tid(0);
         }
     }
 

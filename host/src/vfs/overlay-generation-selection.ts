@@ -1039,6 +1039,7 @@ export class LiveOverlayCompactor {
   #running: Promise<void> | null = null;
   #stopped = false;
   #retryAfter = 0;
+  #failure: unknown = null;
 
   constructor(
     selected: SelectedOverlayGeneration,
@@ -1070,14 +1071,25 @@ export class LiveOverlayCompactor {
     return this.#running;
   }
 
-  async #compact(): Promise<void> {
+  async compactNow(): Promise<void> {
+    if (this.#stopped) throw new Error("persistent overlay compactor is stopped");
+    // A syscall at the tail bound cannot wait for the periodic timer or its
+    // failure backoff. Share a running handoff rather than starting two writers.
+    if (this.#running === null) this.#running = this.#compact(0);
+    await this.#running;
+    if (this.#failure !== null) throw this.#failure;
+    if (this.#stopped) throw new Error("persistent overlay compactor stopped during compaction");
+  }
+
+  async #compact(minTailBytes = this.minTailBytes): Promise<void> {
     const selected = this.#selected;
+    this.#failure = null;
     try {
       const next = await compactOverlayGeneration(
         selected,
         this.files,
         this.handoff,
-        this.minTailBytes,
+        minTailBytes,
         () => !this.#stopped && this.#selected === selected,
         this.onError,
       );
@@ -1086,6 +1098,7 @@ export class LiveOverlayCompactor {
         this.onGeneration(next);
       }
     } catch (error) {
+      this.#failure = error;
       if (error instanceof UnconfirmedOverlayActivationError) {
         this.#stopped = true;
         if (this.#timer !== null) clearInterval(this.#timer);

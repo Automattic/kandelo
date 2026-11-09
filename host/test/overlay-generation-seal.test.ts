@@ -393,6 +393,67 @@ describe("overlay generation boot selection", () => {
     entries["legacy.activation1"] = new MemoryStorage(record);
   }
 
+  it("compacts on demand below the polling threshold and shares the in-flight handoff", async () => {
+    const source = new MemoryStorage(journalBytes());
+    const backend = files({ "legacy.journal": source });
+    const selected = await enableBestOverlayGeneration(backend, () => {}, true);
+    let release!: () => void;
+    let reached!: () => void;
+    const opened = new Promise<void>(done => { reached = done; });
+    const opening = new Promise<void>(done => { release = done; });
+    let prepared = 0;
+    let activated = 0;
+    const errors: unknown[] = [];
+    const compactor = new LiveOverlayCompactor(selected, {
+      ...backend,
+      open: async (slot, file, create) => {
+        const result = await backend.open(slot, file, create);
+        if (slot !== "legacy" && file === "journal") { reached(); await opening; }
+        return result;
+      },
+    }, {
+      prepare: target => { prepared++; target.writeAllAt(0, source.bytes); },
+      checkpoint: index => { index.writeAllAt(0, Uint8Array.of(1)); },
+      activate: () => { activated++; }, cancel: () => {}, fail: () => {},
+    }, () => {}, error => { errors.push(error); });
+    await compactor.compactIfNeeded();
+    expect(prepared).toBe(0);
+    const first = compactor.compactNow();
+    await opened;
+    const second = compactor.compactNow();
+    expect(prepared).toBe(0);
+    release();
+    await Promise.all([first, second]);
+    expect(prepared).toBe(1);
+    expect(activated).toBe(1);
+    expect(errors).toEqual([]);
+    await compactor.stop();
+  });
+
+  it("returns real quota failures to demand waiters and permits demand during polling backoff", async () => {
+    const source = new MemoryStorage(journalBytes());
+    const backend = files({ "legacy.journal": source });
+    const selected = await enableBestOverlayGeneration(backend, () => {}, true);
+    const quota = Object.assign(new Error("storage is full"), { code: "ENOSPC" });
+    let attempts = 0;
+    const errors: unknown[] = [];
+    const compactor = new LiveOverlayCompactor(selected, backend, {
+      prepare: target => {
+        if (++attempts === 1) throw quota;
+        target.writeAllAt(0, source.bytes);
+      },
+      checkpoint: index => { index.writeAllAt(0, Uint8Array.of(1)); },
+      activate: () => {}, cancel: () => {}, fail: () => {},
+    }, () => {}, error => { errors.push(error); }, 0);
+    await expect(compactor.compactNow()).rejects.toBe(quota);
+    await compactor.compactIfNeeded();
+    expect(attempts).toBe(1);
+    await compactor.compactNow();
+    expect(attempts).toBe(2);
+    expect(errors).toEqual([quota]);
+    await compactor.stop();
+  });
+
   async function reclamationFixture() {
     const entries: Record<string, MemoryStorage> = {
       "g2.journal": new MemoryStorage(journalBytes()), "g2.seal": new MemoryStorage(),

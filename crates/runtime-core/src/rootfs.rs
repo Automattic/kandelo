@@ -1875,6 +1875,10 @@ pub fn fixed_persistence_enabled() -> bool {
     PERSISTENT_ROOTFS.lock().is_some()
 }
 
+pub fn take_compaction_request() -> bool {
+    PERSISTENT_ROOTFS.lock().as_ref().is_some_and(|mount| mount.journal.take_compaction_request())
+}
+
 fn resizable_persistence_enabled() -> bool {
     PERSISTENT_ROOTFS
         .lock()
