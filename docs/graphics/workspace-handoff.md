@@ -3,7 +3,8 @@
 Checkpoint: 2026-11-09. Read the [campaign plan](campaign-plan.md) for scope,
 delivery order and acceptance. This handoff locates local-only recovery
 material after preparing the original Moscow workspace for retirement.
-It does not report a Cage fix or completed graphics validation.
+The retirement checkpoint predates the Cage follow-up recorded below; full
+graphics validation remains open.
 
 ## Durable material
 
@@ -63,9 +64,10 @@ context/outer/.context/gpu-worker-design.md
 They contain historical workspace paths. Use the package's README and
 manifests to resolve preserved material rather than treating an old path
 as an active checkout or a missing artifact as an implementation boundary.
-The previous campaign's integration-path rule names the original workspace;
-establish the successor workspace with the maintainer before future Git
-mutations if that location has been retired.
+On 2026-11-09 the maintainer explicitly authorized Sydney to replace the
+retired Moscow integration checkout for this Cage follow-up’s commits and
+pushes. Do not ask for that location permission again. This authorizes no
+merge or broader campaign activation.
 
 ## Cage reproduction and evidence
 
@@ -133,3 +135,29 @@ The backup task did not remove the original workspace. Other historical
 diagnostic servers still referencing it must be retired by their owners
 or with authorization. No unique work needs to remain solely in Moscow;
 the six retained preview URLs no longer depend on the original workspace.
+
+
+## Sydney continuation — 2026-11-09
+
+[Draft PR #1678](https://github.com/Automattic/kandelo/pull/1678) contains the
+Cage fixture/storage diagnosis, terminal visibility/fit repair and focused
+regressions. The working branch remains `brandonpayton/pasted-text-v3` in
+`/Users/brandon/conductor/workspaces/kandelo/sydney`; the frozen external
+preview copies above remain controls. The runnable normal preview is port
+56501, with its exact shell hash and self-contained Cage URL in the runtime
+report. Availability is separate from full acceptance.
+
+Read the PR’s [reliability report](https://github.com/Automattic/kandelo/blob/c62f45ded1a4bad3be46820a78552853cacdec69/docs/graphics/cage-reliability-2026-11.md)
+and Sydney `.context/cage-r1-evidence/ACTIVE-SYDNEY.md` before continuing.
+Focused normal graphics passed 30/30, host checks 15/15 and terminal UI
+12/12; the full memory gate is not accepted (15 browser passes, three
+mixed-switch failures). Its fixture generation guard and disk-space
+recovery need a complete rerun. Native ENOSPC/write failures and all
+original adverse traces are retained. A shared-cache dry run selects
+18.1 GiB, excluding the six preserved preview projections; destructive
+collection awaits explicit user authorization under the repository guide.
+Do not infer approval from an unanswered question.
+
+Other Cage reports remain unclassified, and profiles justify no performance
+correction or native-feel claim. B2–B6/C1–C3 remain paused. The campaign
+register retains the full Q/D/L/V/P requirements.

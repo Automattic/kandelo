@@ -64,7 +64,7 @@ Unverified old drafts must be reconciled against current main before use.
 
 | ID | Deliverable | Status at this checkpoint | Principal dependency / acceptance |
 | --- | --- | --- | --- |
-| R1 | Cage crashes, startup and performance diagnosis | Authorized investigation; root cause open | Frozen reproduction, owning layer, regression and honest performance evidence |
+| R1 | Cage crashes, startup and performance diagnosis | Focused repairs verified; draft #1678, full mixed-memory gate not accepted | Normal candidate, all-engine regressions, retained failures; other crashes and native-feel work remain open |
 | M1 | Trustworthy input-to-visible measurement | Open; tooling exists, qualification unfinished | Selected-display qualification, original input identity, overhead and uncertainty |
 | M2 | Frozen desktop and game baselines | Open; historical probes retained | M1 for visible latency; pinned workloads, main and native controls |
 | Q1 | Stage A production policy and native-operation audit closure | Production increment shipped; closure open | Exact audit inventory, graphics gate, shader harness and full per-case comparisons |
@@ -124,7 +124,7 @@ or reduced criterion is implied by this plan.
 - [ ] Reproduce current-main Cage startup/render/input/exit and repeated
   boot/teardown with frozen source, products, browser versions and config.
   Keep the shipped build as a separate historical control.
-- [ ] Recover the original matrix and isolated-control diagnostics. The
+- [x] Recover the original matrix and isolated-control diagnostics. The
   known WebKit failure displays `LiveKernelHost setup failed` and an
   `UnknownError` before the test reaches rendering assertions. Neither
   OOM nor a browser defect has been established.
@@ -143,6 +143,35 @@ or reduced criterion is implied by this plan.
 - [ ] Deliver a normally built candidate, before/after evidence supporting
   the exact claim, known gaps and a small follow-up PR. If diagnosis is
   incomplete, report what is known and the next discriminating experiment.
+
+### R1 follow-up checkpoint — 2026-11-09
+
+The original WebKit startup failure is attributed to OPFS root access in
+its ephemeral test context, before any guest starts. Cage now uses the
+existing persistent-page fixture, and production failures retain the native
+cause and name the storage operation. A separate hidden-terminal resize
+race stranded output despite successful client exit; fitting after observed
+visibility and the next frame repairs that UI ordering without forcing
+scrollback or modifying Cage/wlroots.
+
+The normal Sydney candidate, exact commands/products, validation results,
+unsuccessful controls and profiling limitations are recorded in the follow-up
+PR and its `docs/graphics/cage-reliability-2026-11.md` report. See [draft PR #1678](https://github.com/Automattic/kandelo/pull/1678) and
+its [frozen reliability report](https://github.com/Automattic/kandelo/blob/c62f45ded1a4bad3be46820a78552853cacdec69/docs/graphics/cage-reliability-2026-11.md).
+Normal graphics pass 30/30 (10 per engine), terminal UI 12/12 and host
+sessions/PTYs 15/15; normal products, original fixtures and ABI 56/4/17/21
+are verified. The complete memory run passed its 7/253/3/7 source, ownership,
+Node and Bun phases, then passed 15 browser cases and failed three mixed
+switches. A stale-ID fixture guard is committed and typechecked; native
+ENOSPC/image-write failures are retained. Its complete rerun remains blocked
+on working space, with explicit authorization requested for the reviewed
+shared-cache collection. This is incomplete acceptance, not a new deferral. There is no performance correction or
+native-feel claim, and the original shipment failures remain historical
+failures. Other Cage reports are not assigned to either diagnosed cause.
+The broad B2–B6/C1–C3 campaign remains paused; the full Q/D/L/V/P gates stay
+open. The accidentally expanded Freeciv run also retains three direct-display
+failures for D1/V1/P1 investigation, rather than silently treating its
+unexecuted cases as passing.
 
 ## M1/M2: measurement and frozen consumer workloads
 
@@ -373,8 +402,10 @@ a time with disk checks; safe cache GC and no deleting active/unique
 evidence; `agent-job` and its wait command for long jobs; frozen run inputs;
 unique Playwright ports/run UUIDs/private outputs; no sleep-poll loops,
 stash, destructive reset or path checkout; no stopping others' servers.
-Commits/merges/pushes for this campaign originate from the integration
-workspace until the maintainer changes that rule. Do not commit local
+The maintainer authorized Sydney to replace the retired Moscow integration
+workspace for this Cage follow-up’s commits and pushes on 2026-11-09. The
+original frozen preview worktrees remain controls and must not be switched
+or overwritten. No merge is authorized by that location change. Do not commit local
 macOS launcher hacks or patch ported software to fit platform defects.
 
 Keep compact reviewed evidence: command, verdict, counts, identities,
@@ -421,11 +452,11 @@ assertion or overrule maintainer decisions.
 
 | Field | Current value |
 | --- | --- |
-| Selected next work | R1 Cage crash/performance investigation, explicitly requested |
-| Implementation/release scope | To be bounded by the reproduced owning-layer defect and proposed fix |
-| Research inputs | Shipped matrix/control failure, current-main reproduction, frozen Cage workload |
+| Selected next work | Review draft #1678 and finish R1 memory validation after disk-space recovery |
+| Implementation/release scope | Browser storage bootstrap diagnostics, persistent Cage test fixture, terminal visibility/fit ordering and regressions; preserve ABI 56/4/17/21 |
+| Research inputs | Preserved shipment controls, current-main-based normal reproduction, standalone OPFS/xterm controls and frozen Cage copy/native-call profiles |
 | Main risk | Startup failure and reported runtime crashes/slowness may have different causes |
-| Exit from investigation | Concrete diagnosis or discriminating evidence, reproduction, fix/test proposal and remaining gaps |
+| Exit from investigation | Focused repair and diagnosis published; full mixed-memory acceptance remains open, alongside unclassified Cage reports and M1/M2, D1/D2, L1 and V1/P1 |
 | Broader campaign state | Paused pending intentional delivery selection; no blanket activation by this plan |
 
 Completion of the baseline campaign requires Q/D/L closure, accepted B/C
