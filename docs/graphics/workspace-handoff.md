@@ -147,16 +147,20 @@ preview copies above remain controls. The runnable normal preview is port
 56501, with its exact shell hash and self-contained Cage URL in the runtime
 report. Availability is separate from full acceptance.
 
-Read the PR’s [reliability report](https://github.com/Automattic/kandelo/blob/c62f45ded1a4bad3be46820a78552853cacdec69/docs/graphics/cage-reliability-2026-11.md)
+Read the PR’s [reliability report](https://github.com/Automattic/kandelo/blob/276452a958/docs/graphics/cage-reliability-2026-11.md)
 and Sydney `.context/cage-r1-evidence/ACTIVE-SYDNEY.md` before continuing.
 Focused normal graphics passed 30/30, host checks 15/15 and terminal UI
-12/12; the full memory gate is not accepted (15 browser passes, three
-mixed-switch failures). Its fixture generation guard and disk-space
-recovery need a complete rerun. Native ENOSPC/write failures and all
-original adverse traces are retained. A shared-cache dry run selects
-18.1 GiB, excluding the six preserved preview projections; destructive
-collection awaits explicit user authorization under the repository guide.
-Do not infer approval from an unanswered question.
+12/12. The approved bounded cleanup collected 18.1 GiB logical after
+preserving unique diagnostics and verifying all six preview projections;
+50 frozen source/product identities and the previews remain unchanged.
+The full memory rerun passed 17/18 browser cases and all 7/253/3/7 earlier
+phases. WebKit's prior Doom worklet missed its detach acknowledgement;
+replacement Quake audio correctly stayed unprepared. A four-cycle
+instrumented WebKit check passed all 20 detachments, and a native reduction
+passed 512 retirements per engine, without explaining the original failure.
+The gate's warning filter now rejects all containment failures and a full
+rerun is in progress. Retain the failed gate as adverse evidence; acceptance
+remains incomplete. No further cleanup approval is pending.
 
 Other Cage reports remain unclassified, and profiles justify no performance
 correction or native-feel claim. B2–B6/C1–C3 remain paused. The campaign

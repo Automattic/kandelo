@@ -157,15 +157,20 @@ scrollback or modifying Cage/wlroots.
 The normal Sydney candidate, exact commands/products, validation results,
 unsuccessful controls and profiling limitations are recorded in the follow-up
 PR and its `docs/graphics/cage-reliability-2026-11.md` report. See [draft PR #1678](https://github.com/Automattic/kandelo/pull/1678) and
-its [frozen reliability report](https://github.com/Automattic/kandelo/blob/c62f45ded1a4bad3be46820a78552853cacdec69/docs/graphics/cage-reliability-2026-11.md).
+its [frozen reliability report](https://github.com/Automattic/kandelo/blob/276452a958/docs/graphics/cage-reliability-2026-11.md).
 Normal graphics pass 30/30 (10 per engine), terminal UI 12/12 and host
 sessions/PTYs 15/15; normal products, original fixtures and ABI 56/4/17/21
-are verified. The complete memory run passed its 7/253/3/7 source, ownership,
-Node and Bun phases, then passed 15 browser cases and failed three mixed
-switches. A stale-ID fixture guard is committed and typechecked; native
-ENOSPC/image-write failures are retained. Its complete rerun remains blocked
-on working space, with explicit authorization requested for the reviewed
-shared-cache collection. This is incomplete acceptance, not a new deferral. There is no performance correction or
+are verified. The maintainer approved the reviewed shared-cache collection;
+18.1 GiB logical was collected with all six protected projection keys and
+50 frozen source/product identities preserved. The complete rerun passed
+its 7/253/3/7 source, ownership, Node and Bun phases and 17/18 browser cases.
+WebKit missed the prior Doom AudioWorklet's detach acknowledgement, so
+replacement Quake audio correctly remained unprepared. A subsequent
+instrumented four-cycle WebKit case passed all 20 detachments; a standalone
+native worklet reduction passed 512 retirements per engine. Neither result
+explains or repairs the original failure. The memory warning filter now
+rejects all kernel-realm containment failures; the full gate is running
+again. This is incomplete acceptance, not a new deferral. There is no performance correction or
 native-feel claim, and the original shipment failures remain historical
 failures. Other Cage reports are not assigned to either diagnosed cause.
 The broad B2–B6/C1–C3 campaign remains paused; the full Q/D/L/V/P gates stay
@@ -452,7 +457,7 @@ assertion or overrule maintainer decisions.
 
 | Field | Current value |
 | --- | --- |
-| Selected next work | Review draft #1678 and finish R1 memory validation after disk-space recovery |
+| Selected next work | Review draft #1678 and finish R1 memory validation after the audio-retirement failure |
 | Implementation/release scope | Browser storage bootstrap diagnostics, persistent Cage test fixture, terminal visibility/fit ordering and regressions; preserve ABI 56/4/17/21 |
 | Research inputs | Preserved shipment controls, current-main-based normal reproduction, standalone OPFS/xterm controls and frozen Cage copy/native-call profiles |
 | Main risk | Startup failure and reported runtime crashes/slowness may have different causes |
