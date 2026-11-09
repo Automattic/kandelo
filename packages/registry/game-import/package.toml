@@ -1,0 +1,39 @@
+kind = "program"
+name = "game-import"
+version = "0.1.0"
+kernel_abi = 56
+depends_on = []
+
+# Kandelo's game importer: game-import.py inspects a dropped or named ZIP,
+# directory, DOS program, ScummVM game or console ROM and starts the matching
+# player. game-play runs it on a path; game-import is its Kandelo exchange
+# handler. It runs on the shell's python3 (python-browser-bundle), so the shell
+# installs it only alongside Python. The source is authored in this package
+# directory, so the source URL names the project repo and the all-zero
+# SHA-256 is the in-repository-source sentinel.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/game-import/build-game-import.sh"
+
+[[outputs]]
+name = "game-import"
+wasm = "game-import.py"
+fork_instrumentation = "disabled"
+
+[[runtime_files]]
+artifact = "game-play"
+guest_path = "/usr/bin/game-play"
+mode = 493
+
+[[runtime_files]]
+artifact = "game-import"
+guest_path = "/usr/libexec/kandelo/game-import"
+mode = 493

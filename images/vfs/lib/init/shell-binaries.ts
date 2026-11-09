@@ -319,6 +319,11 @@ export const SHELL_LAZY_BINARY_SPECS = [
     resolverPath: `programs/dosbox-pure/share/dos-play/${file}`,
     vfsPath: `/usr/share/dos-play/${file}`, symlinks: [], mode: 0o644,
   })),
+  // The game importer and its two entry points (game-play, and the exchange
+  // handler for dropped game content); it runs on python3.
+  { id: "game-play", dependency: "game-import", resolverPath: "programs/game-import/game-play", vfsPath: "/usr/bin/game-play", symlinks: [], mode: 0o755 },
+  { id: "game-import", dependency: "game-import", resolverPath: "programs/game-import/game-import", vfsPath: "/usr/libexec/kandelo/game-import", symlinks: [], mode: 0o755 },
+  { id: "game-import-py", dependency: "game-import", resolverPath: "programs/game-import/game-import.py", vfsPath: "/usr/libexec/kandelo/game-import.py", symlinks: [], mode: 0o644 },
   // ScummVM: the engine and the GUI data it reads from /usr/share/scummvm
   // (the package's declared runtime_files). /usr/bin/scummvm is the
   // image's launch wrapper, which execs this engine.
@@ -375,8 +380,8 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // retro-emulators: three emulators, each a libretro core named for itself
   // and linked with one small frontend, plus a starter ROM for each (the
   // package's declared runtime_files). retro-nes, retro-genesis and
-  // retro-snes are shorter names for them. /usr/bin/retro-run is the image's
-  // launcher; it picks the emulator from the ROM's contents.
+  // retro-snes are shorter names for them. /usr/bin/retro-run, also the
+  // package's, picks the emulator from the ROM's contents.
   {
     id: "fceumm",
     dependency: "retro-emulators",
@@ -398,6 +403,8 @@ export const SHELL_LAZY_BINARY_SPECS = [
     vfsPath: "/usr/bin/snes9x",
     symlinks: ["/usr/bin/retro-snes"],
   },
+  { id: "retro-run", dependency: "retro-emulators", resolverPath: "programs/retro-emulators/bin/retro-run", vfsPath: "/usr/bin/retro-run", symlinks: [], mode: 0o755 },
+  { id: "retro-load-rom", dependency: "retro-emulators", resolverPath: "programs/retro-emulators/libexec/retro-load-rom", vfsPath: "/usr/libexec/kandelo/retro-load-rom", symlinks: [], mode: 0o755 },
   {
     id: "retro-emulators-rom-nes",
     dependency: "retro-emulators",
@@ -485,8 +492,13 @@ export const SHELL_LAZY_BINARY_SPECS = [
     resolverPath: "programs/sdl2.wasm",
     vfsPath: "/usr/bin/sdl2", symlinks: [],
   },
-  // /usr/bin/fbdoom is the image's launch wrapper (build-source-rootfs-shell-image.ts).
+  // fbDOOM's engine, its launch wrapper (/usr/bin/fbdoom), the machine command
+  // and activity helper, and the exchange handler for a dropped WAD.
   { id: "fbdoom", resolverPath: "programs/fbdoom/fbdoom.wasm", vfsPath: "/usr/libexec/fbdoom", symlinks: [] },
+  { id: "fbdoom-wrapper", dependency: "fbdoom", resolverPath: "programs/fbdoom/fbdoom-wrapper", vfsPath: "/usr/bin/fbdoom", symlinks: [], mode: 0o755 },
+  { id: "doom-launch", dependency: "fbdoom", resolverPath: "programs/fbdoom/doom-launch", vfsPath: "/usr/bin/doom-launch", symlinks: [], mode: 0o755 },
+  { id: "doom-activity", dependency: "fbdoom", resolverPath: "programs/fbdoom/doom-activity", vfsPath: "/usr/bin/doom-activity", symlinks: [], mode: 0o755 },
+  { id: "doom-load-wad", dependency: "fbdoom", resolverPath: "programs/fbdoom/doom-load-wad", vfsPath: "/usr/libexec/kandelo/doom-load-wad", symlinks: [], mode: 0o755 },
   { id: "modeset", resolverPath: "programs/modeset.wasm", vfsPath: "/usr/bin/modeset", symlinks: [] },
   {
     id: "espeak-ng",
@@ -495,6 +507,12 @@ export const SHELL_LAZY_BINARY_SPECS = [
   },
   { id: "sqlite-cli", resolverPath: "programs/sqlite3.wasm", vfsPath: "/usr/bin/sqlite3", symlinks: [] },
   { id: "lhasa", resolverPath: "programs/lha.wasm", vfsPath: "/usr/bin/lha", symlinks: [] },
+  // TyrQuake's engine, its launch wrapper (/usr/bin/quake), the data and
+  // activity helpers, and the exchange handler for a dropped pak0.pak.
   { id: "tyrquake", resolverPath: "programs/tyrquake/quake.wasm", vfsPath: "/usr/libexec/quake", symlinks: [] },
+  { id: "quake-launch", dependency: "tyrquake", resolverPath: "programs/tyrquake/quake-launch", vfsPath: "/usr/bin/quake", symlinks: [], mode: 0o755 },
+  { id: "quake-data", dependency: "tyrquake", resolverPath: "programs/tyrquake/quake-data", vfsPath: "/usr/bin/quake-data", symlinks: [], mode: 0o755 },
+  { id: "quake-activity", dependency: "tyrquake", resolverPath: "programs/tyrquake/quake-activity", vfsPath: "/usr/bin/quake-activity", symlinks: [], mode: 0o755 },
+  { id: "quake-load-pak", dependency: "tyrquake", resolverPath: "programs/tyrquake/quake-load-pak", vfsPath: "/usr/libexec/kandelo/quake-load-pak", symlinks: [], mode: 0o755 },
   { id: "elinks", resolverPath: "programs/elinks.wasm", vfsPath: "/usr/bin/elinks", symlinks: [] },
 ] as const satisfies readonly VfsBinarySpec[];

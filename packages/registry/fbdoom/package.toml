@@ -38,3 +38,18 @@ guest_path = "/usr/share/kandelo/sessions/fbdoom.json"
 artifact = "doom-activity"
 guest_path = "/usr/bin/doom-activity"
 mode = 493
+
+[[runtime_files]]
+artifact = "fbdoom-wrapper"
+guest_path = "/usr/bin/fbdoom"
+mode = 493
+
+[[runtime_files]]
+artifact = "doom-launch"
+guest_path = "/usr/bin/doom-launch"
+mode = 493
+
+[[runtime_files]]
+artifact = "doom-load-wad"
+guest_path = "/usr/libexec/kandelo/doom-load-wad"
+mode = 493

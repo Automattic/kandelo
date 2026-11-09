@@ -96,3 +96,13 @@ guest_path = "/usr/share/retro-emulators/roms/240pSuite-md-1.21.bin"
 [[runtime_files]]
 artifact = "share/retro-emulators/roms/240pSuite-snes-1.03.sfc"
 guest_path = "/usr/share/retro-emulators/roms/240pSuite-snes-1.03.sfc"
+
+[[runtime_files]]
+artifact = "bin/retro-run"
+guest_path = "/usr/bin/retro-run"
+mode = 493
+
+[[runtime_files]]
+artifact = "libexec/retro-load-rom"
+guest_path = "/usr/libexec/kandelo/retro-load-rom"
+mode = 493

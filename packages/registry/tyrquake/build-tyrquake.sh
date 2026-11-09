@@ -113,3 +113,5 @@ install_local_binary tyrquake "$OUT_BIN" quake.wasm
 install_local_runtime_file tyrquake "${HERE}/sessions.json" sessions.json
 install_local_runtime_file tyrquake "${HERE}/quake-data" quake-data
 install_local_runtime_file tyrquake "${HERE}/quake-activity" quake-activity
+install_local_runtime_file tyrquake "${HERE}/quake-launch" quake-launch
+install_local_runtime_file tyrquake "${HERE}/quake-load-pak" quake-load-pak
