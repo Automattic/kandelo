@@ -1,0 +1,36 @@
+{
+  "refs": {
+    "kandelo_main": "df8cf7461f23a6d11d4250aadd3c4ddd4789e81e",
+    "kandelo_local": "a8df3d22dcd0d8793afe238e8e4e90e30ddc000f",
+    "kandelo_existing_pr": "540355f0a017e26d4a54894361eca1e5ebc49c94",
+    "go_upstream_before_wasm32_review": "6c49ac311e5642fa5399b46c736295a9dc4eeec9",
+    "go_upstream_wasm32_review": "5e196a61a223f2590d576909992bea8803d770f9",
+    "go_selected": "f60530600f70a5ea905a907ac311ec8bd2ae8ac4"
+  },
+  "patches": [
+    {
+      "path": "patches/01-upstream-wasm32-review.patch",
+      "base": "6c49ac311e5642fa5399b46c736295a9dc4eeec9",
+      "head": "5e196a61a223f2590d576909992bea8803d770f9",
+      "sha256": "ddc42e230746673cc637e6e6a6a31f416418182a00abfebec58f1e33fa1ef36b",
+      "bytes": 312600,
+      "stat": "285 files changed, 3720 insertions(+), 676 deletions(-)"
+    },
+    {
+      "path": "patches/02-kandelo-go-target-without-regexp.patch",
+      "base": "5e196a61a223f2590d576909992bea8803d770f9",
+      "head": "a0b048e19e1b183db33f52d26c08d1c63b4f1c1d",
+      "sha256": "69c0ddefe7272a689dee549ee625049c349ab35c3de1fce41dbdf8c3b33ab0d1",
+      "bytes": 437057,
+      "stat": "261 files changed, 10415 insertions(+), 300 deletions(-)"
+    },
+    {
+      "path": "patches/03-shared-regexp-change.patch",
+      "base": "a0b048e19e1b183db33f52d26c08d1c63b4f1c1d",
+      "head": "f60530600f70a5ea905a907ac311ec8bd2ae8ac4",
+      "sha256": "dbacd916927063a99db92e45643689f7bf740c2c76a91d03c85c65d55475e612",
+      "bytes": 14471,
+      "stat": "3 files changed, 420 insertions(+), 42 deletions(-)"
+    }
+  ]
+}
