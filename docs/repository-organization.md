@@ -86,6 +86,28 @@ Package behavior tests live with the package so future CI can map changes to rel
 
 `host/test/` should not be a catch-all for anything launched by the host. If a test primarily proves package behavior, it belongs with that package.
 
+## Worktree Local Storage
+
+| Path | Contents and lifetime |
+|------|-----------------------|
+| `.context/` | Retained notes, checkpoints, attachments, integration records, and the small validation ownership marker. Conductor preserves this directory when archiving a workspace. |
+| `.scratch/` | Disposable bulk data: job logs/scratch, Playwright temporary profiles and storage, temporary worktrees, source/build experiments, fuzz results, and deployment bundles. Removed with the workspace; Conductor does not preserve it as archived context. |
+| `test-results/<run-id>/` | Playwright screenshots, traces, attachments, and reports, beside each suite's config. Removed with the workspace; explicit output/reporter overrides remain caller-owned. |
+
+Use a unique directory per run under `.scratch/`, or the job-provided
+`$KANDELO_AGENT_SCRATCH_DIR`. Never nest scratch checkouts or bulk generated
+output in `.context/`. Copy a concise result and any selected evidence that
+must survive archival into `.context/` or another durable destination.
+
+Registered validation evidence remains until reviewed and explicitly
+released, or the workspace is removed. Use the
+[contributor cleanup commands](../CONTRIBUTING.md#retain-and-clean-validation-evidence)
+to check for active writers before release. They also support older runs
+whose registered payloads are under `.context/`; no existing payloads are
+moved automatically. Arbitrary scratch checkouts and build experiments are
+caller-owned and are not swept by these commands. Shared build caches have
+their own lifecycle.
+
 ## Reviewed Integration Tooling
 
 [`scripts/agent-integrate`](agent-integration.md) owns optional reviewed-patch

@@ -74,5 +74,5 @@ test("the main shell uses FHS command paths and preserves the correct state acro
   await runTerminalCommand(page,
     "command -v bash grep make git; ls -ld /bin /usr/bin /usr/local /var/tmp /run/user/1000; " +
     "printf 'FHS_LAYOUT_VERIFIED\\n'", "FHS_LAYOUT_VERIFIED");
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/fhs-layout-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/fhs-layout-${testInfo.project.name}.png`) });
 });

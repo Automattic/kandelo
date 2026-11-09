@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
-output_dir="$(mktemp -d "$repo_root/.context/graphics-wayland-client.XXXXXX")"
+mkdir -p "$repo_root/.scratch"
+output_dir="$(mktemp -d "$repo_root/.scratch/graphics-wayland-client.XXXXXX")"
 trap 'rm -rf "$output_dir"' EXIT
 # Input is the normal resolver's immutable verified source payload. Recheck
 # against the manifest before private extraction; never fetch or publish here.

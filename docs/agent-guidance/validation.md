@@ -384,10 +384,12 @@ store to reclaim test space. This housekeeping does not change Kandelo's
 persistence, durability or crash-recovery semantics.
 
 Run-owned homes and browser temporary profiles now live below
-`.context/validation-scratch/<run-uuid>/tmp` in the Git worktree. A runner
+`.scratch/validation-scratch/<run-uuid>/tmp` in the Git worktree. A runner
 changes only its own `TMPDIR`. Retained local roots can be explicitly
 released with `scripts/agent-job release <run-uuid>` after the runner exits;
 removing the worktree removes these roots even if teardown was skipped.
+Conductor preserves `.context/` on archive, so browser storage belongs in
+`.scratch/`. Existing registered roots under `.context/` remain releasable.
 This does not redirect Darwin-managed staging files described above.
 
 `npm run test:unit` includes the cleanup safety tests. On macOS, run
@@ -411,7 +413,7 @@ itself and never returned, and started second runs that broke the first.
 
 A run that fits in one Bash call, under the tool's 10-minute limit, needs
 none of this. Run it in the foreground with output to a log file
-(`cmd > .context/x.log 2>&1; echo exit=$?`): that is one call and no waiting
+(`cmd > .scratch/x.log 2>&1; echo exit=$?`): that is one call and no waiting
 turns. For anything longer:
 
 ```bash
@@ -493,13 +495,13 @@ run used the wrong config and toolchain, and its results are invalid.
   inside the job with `> "$KANDELO_AGENT_SCRATCH_DIR/integ.log" 2>&1`.
   Every nested `agent-job start` gets a new directory, even if it inherits
   its parent's scratch variable. For short foreground runs, first allocate
-  a fresh directory with `mktemp -d` and keep the returned path when reading
-  the results. Never use fixed host paths such as `/tmp/integ.log`, or a
-  shared `.context/check.log`, for concurrent runs. The job's own stdout
+  a fresh directory under `.scratch/` with `mktemp -d` and keep the returned
+  path when reading the results. Never use fixed host paths such as `/tmp/integ.log`, or a
+  shared `.scratch/check.log`, for concurrent runs. The job's own stdout
   and stderr are already retained in its `output.log`.
 - **Evidence lifecycle:** keep evidence until it has been reviewed, then use
   `scripts/agent-job release <job-id|playwright-run-uuid>`. Bulk job output
-  lives in `.context/agent-jobs/<job-id>`; Playwright scratch and reports also
+  lives in `.scratch/agent-jobs/<job-id>`; Playwright scratch and reports also
   stay in the worktree. `cleanup` closes the current tree to new runs and
   refuses active writers. Use `reopen` if work will continue after cleanup.
   `gc --dry-run` previews reconciliation of removed worktrees and recovery

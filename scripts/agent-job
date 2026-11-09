@@ -67,7 +67,7 @@ those choices:
       Recover orphaned records and old external job payloads whose worktrees
       disappeared. Refuse active writers; never follow a reused worktree path.
 
-Bulk output lives under <worktree>/.context/agent-jobs/<id>/. The shared
+Bulk output lives under <worktree>/.scratch/agent-jobs/<id>/. The shared
 ~/.cache/kandelo/agent-jobs registry (override: KANDELO_AGENT_JOBS_DIR) retains
 metadata, bounded result summaries, leases, workspace UUIDs, and ledger.jsonl
 for history/evals. Reading an old job ID still reads its old global layout.
@@ -497,7 +497,7 @@ def cmd_start_locked(args):
     default_name = " ".join([os.path.basename(key_words[0])] + key_words[1:]) if key_words else "job"
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", args.name or default_name)[:40].strip("-.") or "job"
     job_id = f"{name}-{time.strftime('%m%d-%H%M%S')}-{os.urandom(2).hex()}"
-    record = artifacts.register(worktree, [f".context/agent-jobs/{job_id}"], "job", job_id=job_id)
+    record = artifacts.register(worktree, [f".scratch/agent-jobs/{job_id}"], "job", job_id=job_id)
     payload = os.path.join(record["worktree"], record["roots"][0])
     os.mkdir(os.path.join(payload, "scratch"), 0o700)
     lease_fd = artifacts.open_lease(record)

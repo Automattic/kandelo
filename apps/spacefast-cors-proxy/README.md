@@ -309,7 +309,7 @@ scripts/dev-shell.sh npm --prefix apps/spacefast-cors-proxy run build -- \
 ```
 
 The command requires at least one `--allow-referer` and prints a unique
-`.context/spacefast-cors-proxy-build-*` directory containing only
+`.scratch/spacefast-cors-proxy-build-*` directory containing only
 `handler.mjs`, `functions/cors-proxy-session.php` and `sf.jsonc`. It does
 not install, sign in or publish. The
 approved list is compiled into the worker and takes precedence over a runtime
@@ -333,7 +333,7 @@ then use it:
 
 ```sh
 # WP Cloud: static Kandelo plus the portable PHP signalling endpoint.
-./run.sh build-browser --base / --out .context/kandelo-wpcloud-static \
+./run.sh build-browser --base / --out .scratch/kandelo-wpcloud-static \
   --cors-proxy "${SPACEFAST_PROXY_ORIGIN}/?url=" \
   --signalling-url /signalling/piplet.php
 ```
@@ -399,7 +399,7 @@ scripts/dev-shell.sh node apps/spacefast-cors-proxy/build-site.mjs \
   "$STATIC_BUILD_DIR" --allow-referer "$KANDELO_SPACE_URL"
 ```
 
-The packaging command prints a unique `.context/spacefast-kandelo-build-*`
+The packaging command prints a unique `.scratch/spacefast-kandelo-build-*`
 directory. It contains the static app, a bundled
 `functions/cors-proxy/[...rest].mjs`,
 `functions/cors-proxy-session.php`, `functions/signalling.mjs`, `sf.jsonc`

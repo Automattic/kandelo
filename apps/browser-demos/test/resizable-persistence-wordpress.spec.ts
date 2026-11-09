@@ -80,7 +80,7 @@ test(`${machineTitle} posts and uploads survive OPFS restart without checkpointi
         await expect(imageStatus.getByRole("progressbar", { name: /^Decompressing / }))
           .toBeVisible({ timeout: 60_000 });
         await expect(imageStatus.getByRole("progressbar", { name: /^Downloading / })).toBeVisible();
-        await page.screenshot({ path: "../../.context/persistent-mariadb-decompression.png" });
+        await page.screenshot({ path: "../../.scratch/persistent-mariadb-decompression.png" });
       }
       const frame = previewFrame(page, machineTitle);
       await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, { timeout: 360_000 });
@@ -188,7 +188,7 @@ test(`${machineTitle} posts and uploads survive OPFS restart without checkpointi
       sourceRequestsDuringRecovery = source.observations().refusedImageRequests;
       expect(source.observations()).toEqual({ imageRequests: 1, refusedImageRequests: 0 });
       if (profile === "wordpress-mariadb" && browserName === "chromium") {
-        await recoveryPage.screenshot({ path: "../../.context/persistent-mariadb-demo.png" });
+        await recoveryPage.screenshot({ path: "../../.scratch/persistent-mariadb-demo.png" });
       }
       await testInfo.attach("persistence-application-timings", { contentType: "application/json", body: JSON.stringify({
         profile, browserName, timings, sourceRequestsDuringRecovery, imageCheckpoints: 0,

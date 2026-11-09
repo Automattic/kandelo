@@ -78,7 +78,7 @@ test("Web Stack changes all five service activities live and retains startup pre
   await reopened.getByRole("button", { name: "Library", exact: true }).click();
   await reopened.getByRole("button", { name: "+ New computer", exact: true }).click();
   await expect(reopened.locator("[data-image-id]")).toHaveCount(3);
-  await reopened.screenshot({ path: resolve(import.meta.dirname, `../../../.context/image-families-library-${testInfo.project.name}.png`) });
+  await reopened.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/image-families-library-${testInfo.project.name}.png`) });
 });
 
 test("Web and Graphics switch independently without reloading the website or restarting its computer", async ({ page }, testInfo) => {
@@ -122,7 +122,7 @@ test("Web and Graphics switch independently without reloading the website or res
     await expect(page.getByRole("textbox", { name: "Preview URL path" })).not.toBeVisible();
     expect(await page.locator(".kmodeset-canvas").evaluate((element, originalCanvas) => element === originalCanvas, canvas)).toBe(true);
   }
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/separate-views-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/separate-views-${testInfo.project.name}.png`) });
   await terminal(page);
   await page.getByRole("button", { name: "New terminal", exact: true }).click();
   await expect(page.locator(".kshell-host:visible .xterm-rows").first()).toContainText(/maker@[^:\s]+:[^\r\n]*\$ ?/, { timeout: 120000 });

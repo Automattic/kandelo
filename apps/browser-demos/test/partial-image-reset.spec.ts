@@ -43,7 +43,7 @@ test("rebuilding the partial image resets its computer's saved state", async ({ 
       await page.reload();
       await ready(page);
       expect((await runTerminalCommand(page, "cat ~/partial-marker")).output).toContain("kept");
-      await page.screenshot({ path: join(repo, ".context/partial-reset-before.png") });
+      await page.screenshot({ path: join(repo, ".scratch/partial-reset-before.png") });
 
       // A rebuild does not.
       const reloaded = page.waitForEvent("load", { timeout: 60_000 }).catch(() => {});
@@ -60,7 +60,7 @@ test("rebuilding the partial image resets its computer's saved state", async ({ 
       await page.waitForLoadState("domcontentloaded");
       await ready(page);
       expect((await runTerminalCommand(page, "cat ~/partial-marker 2>&1; true")).output).toMatch(/No such file/);
-      await page.screenshot({ path: join(repo, ".context/partial-reset-after.png") });
+      await page.screenshot({ path: join(repo, ".scratch/partial-reset-after.png") });
       // The computer now records the build it was copied from.
       const recorded = await page.evaluate(() => navigator.locks.request("kandelo-computer-library", async () => {
         const id = new URL(location.href).searchParams.get("computer")!;

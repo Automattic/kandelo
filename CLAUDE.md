@@ -80,6 +80,18 @@ Demos are consumers of Kandelo, not alternate implementations of Kandelo. Demo
 code must not bypass, simulate, or paper over runtime, VFS, package, libc,
 syscall, kernel, or host defects.
 
+## Worktree Storage
+
+Keep retained notes, checkpoints, and attachments in `.context/`. Conductor
+preserves that directory when archiving a workspace. Put disposable bulk
+data in gitignored `.scratch/`: temporary worktrees/checkouts, profiles,
+traces, source/build experiments, and logs. Use a unique directory per run;
+jobs provide `$KANDELO_AGENT_SCRATCH_DIR`. Playwright reports already live
+outside `.context/` in `test-results/`. Copy any evidence needed after
+archival into retained storage before removing the workspace. See
+[`docs/repository-organization.md`](docs/repository-organization.md#worktree-local-storage)
+for storage ownership and cleanup.
+
 ## Agent Work Loop
 
 For nontrivial work:

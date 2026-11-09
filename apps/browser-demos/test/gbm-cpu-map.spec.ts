@@ -52,7 +52,7 @@ test("normal GBM guest retains overlapping CPU views and validates mapping regio
     expect(result.stdout.trim()).toBe("OK GBM CPU regions and retained mapping leases");
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);
-    const evidence = fileURLToPath(new URL("../../../.context/gbm-cpu-map-guests/", import.meta.url));
+    const evidence = fileURLToPath(new URL("../../../.scratch/gbm-cpu-map-guests/", import.meta.url));
     mkdirSync(evidence, { recursive: true });
     const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
     writeFileSync(`${evidence}/${Date.now()}-${test.info().project.name}.json`, JSON.stringify({

@@ -19,6 +19,8 @@ import time
 import uuid
 
 ROOT = Path(os.environ.get('KANDELO_AGENT_JOBS_DIR', '~/.cache/kandelo/agent-jobs')).expanduser().absolute()
+# Keep this small identity stable so old .context payloads remain releasable.
+# New bulk roots live under .scratch (and Playwright's test-results).
 OWNER = Path('.context/validation-owner.json')
 MARKER = '.kandelo-artifact.json'
 

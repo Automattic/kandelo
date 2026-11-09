@@ -12,7 +12,7 @@ else
     case "$1" in /*) out="$1";; *) out="$PWD/$1";; esac
     mkdir -p "$(dirname "$out")";mkdir "$out"
   else
-    mkdir -p "$root/.context";out="$(mktemp -d "$root/.context/response-control-XXXXXXXX")"
+    mkdir -p "$root/.scratch";out="$(mktemp -d "$root/.scratch/response-control-XXXXXXXX")"
   fi
   python3 "$root/benchmarks/desktop-latency/response-source-custody.py" freeze "$root" "$out"
   # Re-exec the copied launcher too; later edits cannot change its command flow.

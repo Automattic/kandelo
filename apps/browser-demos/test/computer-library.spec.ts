@@ -98,7 +98,7 @@ test("saved computers reload and switch independently; temporary computers can b
   await entry.getByRole("textbox", { name: "Computer name" }).fill("Kept test computer");
   await entry.getByRole("button", { name: "Save name", exact: true }).click();
   await expect(entry.locator("strong")).toHaveText("Kept test computer");
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/computer-library-current-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/computer-library-current-${testInfo.project.name}.png`) });
   await bootStoredComputer(page, savedId!);
   await expect.poll(() => new URL(page.url()).searchParams.get("computer"), { timeout: 60_000 }).toBe(savedId);
   await ready(page);

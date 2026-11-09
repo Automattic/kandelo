@@ -350,7 +350,7 @@ def scan_file(path, since, until, n_examples):
             in_tree = (path.startswith(cwd + "/") if path else True) and cwd
             if name in ("TaskStop", "KillShell"):
                 outstanding.pop(str(inp.get("task_id") or inp.get("shell_id") or ""), None)
-            if mutating and in_tree and "/.context/" not in path and "/.claude/" not in path \
+            if mutating and in_tree and "/.context/" not in path and "/.scratch/" not in path and "/.claude/" not in path \
                     and any(j["validation"] and j["cwd"] == cwd for j in outstanding.values()):
                 S["mutations_mid_validation"] += 1
                 add_example("edit during validation", path or strip_cd(cmd))

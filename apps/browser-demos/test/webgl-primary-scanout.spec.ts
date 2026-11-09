@@ -50,7 +50,7 @@ test("primary GPU scanout is opaque while preserving source alpha and guest mask
     expect(result.state).toEqual({ read: true, draw: true, scissor: true,
       mask: [true, false, true, false], clear: [0.25, 0.5, 0.75, 0.125] });
     expect(result.error).toBe(0);
-    const root = fileURLToPath(new URL("../../../.context/graphics-primary-alpha/", import.meta.url));
+    const root = fileURLToPath(new URL("../../../.scratch/graphics-primary-alpha/", import.meta.url));
     mkdirSync(root, { recursive: true });
     await page.locator("#primary-alpha").screenshot({ path: `${root}/${test.info().project.name}.png` });
     writeFileSync(`${root}/${test.info().project.name}.json`, JSON.stringify({

@@ -31,7 +31,7 @@ async function diagnostics(pages: Page[], label: string) {
     directory: (window as any).__peerNetwork.snapshot(),
     processes: (window as any).__peerNetwork.processes(),
   }))));
-  writeFileSync(`../../.context/phase2-${label}-diagnostics.json`, JSON.stringify(state.map((entry) => entry.status === "fulfilled" ? entry.value : { error: String(entry.reason) }), null, 2));
+  writeFileSync(`../../.scratch/phase2-${label}-diagnostics.json`, JSON.stringify(state.map((entry) => entry.status === "fulfilled" ? entry.value : { error: String(entry.reason) }), null, 2));
 }
 
 test("two browsers exchange actual guest nc UDP datagrams through a named piplet", async ({ browser, baseURL, browserName }) => {
@@ -49,8 +49,8 @@ test("two browsers exchange actual guest nc UDP datagrams through a named piplet
     await expect.poll(() => host.evaluate((pid) => (window as any).__peerNetwork.processes()[pid]?.stdout, replyReceiver)).toContain("joiner-to-host");
     await expect.poll(() => joiner.evaluate((pid) => (window as any).__peerNetwork.processes()[pid]?.exit, receiver)).toBe(0);
     await expect.poll(() => host.evaluate((pid) => (window as any).__peerNetwork.processes()[pid]?.exit, replyReceiver)).toBe(0);
-    await host.screenshot({ path: "../../.context/phase2-guest-udp-host.png", fullPage: true });
-    await joiner.screenshot({ path: "../../.context/phase2-guest-udp-joiner.png", fullPage: true });
+    await host.screenshot({ path: "../../.scratch/phase2-guest-udp-host.png", fullPage: true });
+    await joiner.screenshot({ path: "../../.scratch/phase2-guest-udp-joiner.png", fullPage: true });
     await joiner.click("#disconnect");
     await expect.poll(() => host.evaluate(() => (window as any).__peerNetwork.snapshot()?.members.length), { timeout: 15_000 }).toBe(1);
     await expect.poll(() => host.evaluate(() => (window as any).__peerNetwork.snapshot()?.bindings.length)).toBe(0);
@@ -84,7 +84,7 @@ test("the forwarding host carries actual guest datagrams between two browser joi
     await expect.poll(() => third.evaluate((pid) => (window as any).__peerNetwork.processes()[pid]?.exit, receiver)).toBe(0);
     await expect.poll(() => joiner.evaluate((pid) => (window as any).__peerNetwork.processes()[pid]?.exit, replyReceiver)).toBe(0);
     await diagnostics([host, joiner, third], "nc-star");
-    await host.screenshot({ path: "../../.context/phase2-guest-udp-star.png", fullPage: true });
+    await host.screenshot({ path: "../../.scratch/phase2-guest-udp-star.png", fullPage: true });
   } finally { await thirdContext.close(); await close(); }
 });
 
@@ -100,8 +100,8 @@ test("one browser guest serves HTTP and another fetches it with packaged curl", 
     expect(await joiner.evaluate(pid=>(window as any).__peerNetwork.processes()[pid].stdout,result.pid)).toBe("HTTP from Kandelo; client=10.89.0.2\n");
     expect(await host.evaluate(pid=>(window as any).__peerNetwork.processes()[pid].exit,serverPid)).toBeNull();
     await expect.poll(() => host.evaluate(pid=>(window as any).__peerNetwork.processes()[pid].stderr,serverPid)).toContain("[200]");
-    await host.screenshot({path:"../../.context/phase3-http-server.png",fullPage:true});
-    await joiner.screenshot({path:"../../.context/phase3-http-curl.png",fullPage:true});
+    await host.screenshot({path:"../../.scratch/phase3-http-server.png",fullPage:true});
+    await joiner.screenshot({path:"../../.scratch/phase3-http-curl.png",fullPage:true});
     await host.evaluate(() => (window as any).__peerNetwork.stopHttp());
     await expect.poll(() => joiner.evaluate(() => (window as any).__peerNetwork.snapshot()?.tcpListeners.length)).toBe(0);
     const refused = await joiner.evaluate(() => (window as any).__peerNetwork.fetchHttp("http://host:18085/"));

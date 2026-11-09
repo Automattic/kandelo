@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-out="$(mktemp -d "$root/.context/gbm-front-hold.XXXXXX")"
+mkdir -p "$root/.scratch"
+out="$(mktemp -d "$root/.scratch/gbm-front-hold.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 : "${KANDELO_GBM_LIBDRM_PREFIX:?explicit resolver-owned libdrm headers required}"
 mkdir -p "$out/include/drm"
