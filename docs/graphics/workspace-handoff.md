@@ -104,20 +104,21 @@ manifests. The latest Cage URL is:
 http://127.0.0.1:59247/?vfs=%2F%40kandelo-partial%2Fimage.vfs.zst&profile=cage
 ```
 
-External replacements for protected older previews are prepared:
+The protected older previews now run on their original ports from these
+external copies, following explicit maintainer authorization:
 
-| Original port | External copy | Temporary replacement port |
-| --- | --- | --- |
-| 6271 | `previews/legacy6271/` | 6272 |
-| 5693 | `previews/legacy5693/` | 5694 |
-| 6075 | `previews/legacy6075/` | 6076 |
-| 7776 | `previews/legacy7776/` | 7777 |
+| Port | External copy |
+| --- | --- |
+| 6271 | `previews/legacy6271/` |
+| 5693 | `previews/legacy5693/` |
+| 6075 | `previews/legacy6075/` |
+| 7776 | `previews/legacy7776/` |
 
-At this checkpoint their original listeners remain untouched, pending
-maintainer approval to replace servers outside confirmed ownership.
-Consult the local README and `metadata/*preview*` receipts for subsequent
-transitions and exact jobs. Do not archive expecting those original four
-URLs to survive until their transition is resolved.
+Each old listener was verified to run directly from Moscow before shutdown.
+The replacements have external working directories and serve both the page
+and main app module successfully. Temporary verification listeners were
+closed after migration. Consult the local README and `metadata/*preview*`
+receipts for exact jobs, artifact identities and restart instructions.
 
 All six copied preview pages and main modules return HTTP 200, and copied
 product hashes match their originals. Latest and legacy6271 each passed
@@ -131,4 +132,4 @@ products and omitted that unrelated setup.
 The backup task did not remove the original workspace. Other historical
 diagnostic servers still referencing it must be retired by their owners
 or with authorization. No unique work needs to remain solely in Moscow;
-the outstanding archive issue is preserving live preview behavior.
+the six retained preview URLs no longer depend on the original workspace.
