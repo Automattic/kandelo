@@ -1,9 +1,11 @@
 # Cage reliability follow-up — 2026-11-09
 
 Status: draft follow-up; full memory acceptance is incomplete. The focused
-normal graphics and host checks pass. The completed browser-memory run
-passed 15 browser cases and failed its three mixed-switch cases; the latest
-fixture correction and disk-space recovery still need a complete rerun.
+normal graphics and host checks pass. After approved space recovery, the
+complete memory rerun passed 17 of 18 browser cases. WebKit's mixed-switch
+case failed because a prior audio transport's retirement was unconfirmed;
+the replacement machine correctly refused to attach shared audio. That
+failure remains under investigation.
 
 This delivery investigates work package R1 after #1594. It does not activate
 B2–B6/C1–C3 or claim full graphics/native-feel acceptance.
@@ -218,7 +220,7 @@ realm with no memory-boundary or runtime-error reports.
 | Selected normal graphical matrix | 30/30 pass; Chromium 10, Firefox 10, WebKit 10; no skips/retries | `cage-r1-selected-desktops-1109-092408-4ecb`, `selected-browser-results.json` |
 | Host Cage/wlterm/Sway/PTY selection | 15/15 pass in eight files; no skips/load failures | `cage-r1-normal-host-1109-091736-2d84`, `candidate-host.log` |
 | Normal visible Cage review | 1/1 pass; both screenshots inspected | `cage-r1-normal-manual-1109-091735-cb73`, `manual-review-results.json` |
-| Browser-memory gate | Failed: browser 15 passed / 3 failed; source 7, ownership 253, Node 3 and Bun 7 passed | `cage-r1-memory-escape-1109-100214-2053`, `candidate-memory-escape.log` |
+| Browser-memory gate after approved cleanup | Failed: browser 17 passed / 1 failed; source 7, ownership 253, Node 3 and Bun 7 passed | `cage-r1-memory-after-gc-1109-111719-d689`, `candidate-memory-after-gc.log` |
 
 All claimed browser runs use the shared silent fixture, private run UUIDs,
 one worker and zero retries. Browser identities are Chromium
@@ -375,11 +377,12 @@ operator choices, not a changed repository default or relaxed image limit.
 Only inactive ignored Sydney compiler intermediates were removed, with
 runtime and original-cohort hashes verified before/after. The last removal
 was 4,588 native object files: 1.9 GiB logical size but only about 0.13 GiB
-of measured free-space recovery. No shared cache collection or deletion of
-historical failures/previews was performed.
+of measured free-space recovery. At that checkpoint no shared cache
+collection had occurred. The later approved collection is recorded below;
+historical failures and previews remain preserved.
 
 
-## Remaining validation blocker
+## Earlier full-memory failure and working-space blocker (retained)
 
 The completed full memory gate `cage-r1-memory-escape-1109-100214-2053`
 returned exit 1 after 28m32s: 15 browser cases passed, and the Chromium,
@@ -416,8 +419,115 @@ projections. An isolated scratch test verifies dry-run preservation and
 application removing only an unreferenced ABI-55 fixture while retaining a
 live referenced ABI-55 fixture and ABI 56. The first scratch layout selected
 zero generations; the corrected layout performed and checked the real test.
-Shared-cache collection has not been applied: the repository requires an
-explicit user request, and authorization was requested. Physical recovery
-may differ from the logical dry-run estimate. Once working space is restored,
-rerun the complete memory gate against the corrected fixture. This is an
-unresolved acceptance requirement, not a passing gate or a new deferral.
+At that checkpoint collection had not been applied: explicit authorization
+was requested under the repository guide. The user subsequently authorized
+this bounded cleanup. The recovery and new validation outcome are recorded
+below; the earlier failed run remains an adverse result.
+
+
+## Approved working-space recovery and follow-up validation
+
+The maintainer explicitly approved the reviewed below-ABI-56 collection.
+A fresh dry run selected the same 18.1 GiB; none of its 299 generation keys
+matched any of the six preserved preview projections. Before removal,
+59 diagnostic files from abandoned build directories were copied with APFS
+clones into `gc-preserved-debris-diagnostics`. The isolated scratch control
+had already verified that the collector preserves live references and ABI
+56 while removing an unreferenced ABI-55 fixture.
+
+The canonical collector first removed 2.8 GiB from the ordinary cache while
+correctly skipping the source cache's active build lock. The existing peer
+bootstrap was awaited to completion without stopping it. A fresh preview
+rechecked preserved projection keys and debris ownership, and a second
+application removed the remaining 15.3 GiB. Commands, through the dev shell:
+
+```sh
+target/aarch64-apple-darwin/debug/xtask cache-gc --below-abi 56 --max-age-days 36500
+target/aarch64-apple-darwin/debug/xtask cache-gc --below-abi 56 --max-age-days 36500 --apply
+```
+
+Collected logical size is about 18.1 GiB. Observed available disk rose from
+1.01 to 18.88 GiB over the interval; other workspace work also ran, so that
+free-space delta is not an exclusive physical-allocation attribution.
+`gc-approved-complete-result.json`, both apply logs and the preserved-preview
+checks retain the measurements. All 50 frozen candidate/source/original
+fixture identities remained identical. Ports 56501, 59247 and 6271 returned
+HTTP 200 with their existing owners, and the original frozen image's HTTP
+hash remained unchanged.
+
+A standalone native OPFS capacity check then passed on Chromium, Firefox
+and WebKit: each persistent context wrote/flushed 1 GiB of nonzero bytes
+through a real worker `FileSystemSyncAccessHandle`, verified a 1 MiB readback
+sample, closed and removed the test file. This tests host-storage capacity,
+not guest-memory reclamation or whole-file readback. Browser storage usage
+estimates can lag removal. The probe retained an EACCES warning from the
+harness's separate Firefox Downloads-directory cleanup; it is not claimed
+as a clean filesystem cleanup. Job
+`cage-r1-storage-after-gc-1109-111443-71e4` passed 3/3; its JSON/log and exact
+private spec are retained as `storage-capacity-*`.
+
+The complete unchanged memory command was then rerun:
+`./run.sh test browser-memory`, job
+`cage-r1-memory-after-gc-1109-111719-d689`. Its private wrapper attempted to hold a
+read descriptor to the temporary Playwright report, but watched the wrong
+temporary directory after dev-shell entry. The raw summary JSON was therefore
+not retained. The actual canonical console and failed trace are retained. Test cases, four cycles,
+required inputs, one worker and zero retries are unchanged; this run uses its
+own port 56503, UUID and private outputs. The normal preparation's opt-in
+reserve was restored to 12 GiB after space recovery.
+
+The command returned exit 1 after 28m24s. Source contracts (7), host
+ownership (253), Node teardown (3) and Bun teardown (7) passed. Chromium
+and Firefox each passed all six browser cases, including all four mixed
+switch cycles. WebKit passed five cases and failed its mixed-switch case:
+17 passed, one failed, zero skipped or automatic retries overall. Reviewed
+console outcomes are retained in `memory-after-gc-reviewed-outcomes.json`,
+with the full log and failed trace under run
+`a40edf35-1628-4a4c-ad55-d446f88aa778`.
+
+The WebKit failure occurs while switching the third Doom machine to Quake.
+The prior sink reports "PCM AudioWorklet did not acknowledge transport
+detach; context=running; sink=running". The shared-transport safety latch
+then refuses the replacement Quake attachment, leaving audio unprepared.
+The retained active screenshot shows the rendered Quake menu and that
+specific error. This is not the earlier stale-computer-ID or disk-write
+failure, and no OOM or browser defect is inferred. Focused timing diagnostics
+are in progress; the failed gate remains an acceptance blocker.
+
+
+## Audio-retirement investigation after the failed gate
+
+An instrumented copy of the unchanged mixed-switch case completed all four
+WebKit cycles (job `cage-r1-audio-diagnostic-v2-1109-115650-0f38`, 1/1 pass).
+It records each node's native context state, audio clock, detach-send time,
+acknowledgement and port closure. All 20 detachments were acknowledged,
+with a maximum measured acknowledgement delay of 3.68 ms. This is a
+negative diagnostic reproduction, not an owner repair or canonical memory
+acceptance. The first attempt used the wrong Playwright installation and
+failed discovery before executing a case; that log is retained separately.
+
+A standalone page containing no Kandelo runtime then created, rendered,
+detached and disconnected 512 worklet nodes per engine, suspending and
+resuming one context between nodes. All three engines passed; maximum
+measured acknowledgement delays were 0.20 ms (Chromium), 13 ms (Firefox)
+and 18 ms (WebKit). Its exact native worklet source and console results are
+retained as `audio-detach-native-*`, run
+`78bbe849-5705-4beb-8bf6-709d67fd342a`. It emitted the same separate Firefox
+Downloads cleanup EACCES warning. This reduction does not reproduce the
+original failure and establishes no browser defect.
+
+The failed trace also exposed a gap in the memory test's warning filter:
+contained teardown failures were not all recorded as runtime failures. A
+later machine that did not need audio could therefore hide a missed fence.
+The test now records both forced kernel-realm termination and failed realm
+termination warnings, including the PCM shutdown diagnostic. It preserves
+the four cycles, activation requirements, frame assertions, memory budgets
+and zero-retry policy. The browser TypeScript check passes (144 browser and
+46 Node unit roots). The complete gate is running again at commit
+`c5f6486d34`; this reporting correction does not repair or explain the
+unacknowledged audio transport.
+
+Main advanced independently to `c7338521e0008bca446da140f9fd43af76dad960`
+(package-build SDK opt-out, #1679) during validation. The frozen runtime and
+all results above remain based on `a3490ca0f48d7c249592925cb7b4ac1ab74b9c2a`;
+no results from another workspace or the new build recipe are imported.
