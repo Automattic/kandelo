@@ -28231,3 +28231,21 @@ unclassified. Frozen Cage profiles identify copying and synchronous-query
 traffic as leads, with no performance correction or native-feel claim.
 M1/M2, Q1–Q5, D1/D2, L1 and V1/P1 remain open; B2–B6/C1–C3 remain paused.
 The maintainer authorized Sydney as this follow-up's commit/push location.
+
+
+### R1 pointer-performance finding — 2026-11-09
+
+The current normal Cage preview reproduces severe cursor stalls at larger
+outputs. On Chromium, 60 trusted mouse moves over about one second yielded
+40 cursor paint callbacks at 1280×612 but only one at 3840×2052 with the
+light observer. The latter paint arrived after the sweep ended. Full
+instrumentation recorded 8.32 GB of logical mapped-buffer scanning, 8.32 GB
+of copies and 1.16s inside imported-buffer synchronization in the 4K case.
+WebKit also degrades with output size. The owning path synchronizes mapped
+BOs on ready waits and receives, coupling pointer traffic to full-image
+comparisons/imports in the kernel worker that also services cursor/vblank
+presentation. No performance correction has been applied. The [R1 report](cage-reliability-2026-11.md#cursor-slowness-reproduced-on-the-normal-preview)
+records raw scope, observer controls, failed diagnostic attempts and the
+unpartitioned startup time. Functional green does not establish acceptable
+interactive latency; R1 and draft PR #1678 remain open. Broader campaign
+work remains paused.

@@ -1,10 +1,12 @@
 # Cage reliability follow-up — 2026-11-09
 
-Status: draft follow-up. The latest complete memory-gate execution passed
-18/18 browser cases after approved cache recovery and stricter containment
-warning detection. The earlier unacknowledged WebKit audio retirement
-remains unexplained and retained as an open finding; this passing rerun is
-not an owner repair. The focused normal graphics and host checks also pass.
+Status: draft follow-up. Startup and terminal-handoff repairs are implemented,
+and the latest complete memory-gate execution passed 18/18 browser cases.
+**Cage interactive performance remains blocked:** the current normal build
+reproduces severe cursor stalls at larger output sizes. Fresh profiles trace
+substantial CPU time to whole-buffer graphics coherence on input/readiness
+traffic. No performance correction has been made. The earlier intermittent
+WebKit audio retirement also remains an unexplained open finding.
 
 This delivery investigates work package R1 after #1594. It does not activate
 B2–B6/C1–C3 or claim full graphics/native-feel acceptance.
@@ -580,3 +582,101 @@ The normal preview, program 56 / host 4 / GL 17 / fork 21 and the six
 preserved external previews remain unchanged. Available disk later rose to
 about 221 GiB during other activity; that later change is not attributed to
 the bounded 18.1 GiB logical collection.
+
+
+## Cursor slowness reproduced on the normal preview
+
+The maintainer reported a very slow cursor after wlterm rendered and slow
+initial rendering. New probes used the unchanged normal preview on port
+56501, shell SHA `1024edcac14dac7620070ee90a45d6bd2a62fbc36f56f1bd008ff31568f8075b`,
+source `ab3324bcbe9bf3f3029334169414d0d70756a80b`. All 50 prior source/product/
+original-fixture identities and eight additional performance-owner source
+hashes remained unchanged. The server and user preview were not edited or
+restarted. Measurements below are diagnostic characterizations, not a
+before/after performance claim or native visible-display acceptance.
+
+A mouse sweep submits 60 trusted pointer moves, aiming for 60 Hz, from 20%
+to 80% of the rendered canvas width, followed by a 1.5s drain interval.
+Observers record actual DOM input delivery and changes painted by the
+existing KMS cursor plane. The final cursor image origin is consistently
+five pixels left of the target, consistent with a fixed hotspot offset; there is no
+large endpoint-distance scaling error in these cases. The failures are
+update cadence and responsiveness. These are cursor paint callbacks, not
+photographic measurements of what reached the physical display.
+
+The full diagnostic instruments the actual `GbmBoRegistry` methods and
+`Uint8Array.set` inside the disposable kernel worker. Chromium results:
+
+| Guest output | Actual sweep delivery | Cursor paints, including drain | Logical mapped bytes scanned | Logical bytes copied | Inclusive import-sync time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1280×612 | 1.017s | 39 | 6.26 GB | 6.26 GB | 884ms |
+| 2560×1332 | 1.024s | 10 | 8.02 GB | 8.02 GB | 1131ms |
+| 3840×2052 | 1.002s | 1 | 8.32 GB | 8.32 GB | 1160ms |
+
+GB here is decimal logical byte volume, not physical memory-bus traffic.
+Scan volume sums mapped spans passed to the flush hook; copy volume sums
+worker typed-array copy lengths.
+Import-sync time includes its scan/copy callees; their timings must not be
+added. At 4K, the first changed cursor paint arrives about 1047ms after the
+first moving event, after the sweep has ended. The cursor eventually reaches
+the intended endpoint. WebKit also degrades: 47, 21 and 16 cursor paints
+at the same three output sizes; actual sweep delivery stretches to 2.189s
+at 4K, so those counts are not comparable FPS measurements.
+
+A second control removes both registry timers and the typed-array copy hook,
+retaining only the cursor-plane observer. It reproduces the stall:
+
+| Engine | Guest output | Actual sweep delivery | Cursor paints, including drain | First changed paint after first moving event |
+| --- | --- | ---: | ---: | ---: |
+| Chromium | 1280×612 | 1.018s | 40 | 34ms |
+| Chromium | 3840×2052 | 1.002s | 1 | 1057ms |
+| WebKit | 1280×612 | 1.027s | 44 | 15ms |
+| WebKit | 3840×2052 | 2.034s | 15 | 74ms |
+
+This control shows that the severe Chromium stall does not depend on the
+buffer profiling hooks. Its remaining cursor observer is still measurement
+overhead; these runs do not establish native Safari behavior or calibrated
+input-to-visible-display distributions.
+
+The owning path is
+`CentralizedKernelWorker.#syncImportedBosBeforeResume` at ready wait and
+receive completions. For a process sharing graphics mappings,
+`GbmBoRegistry.syncImportsForPid` revisits its BOs, merges mapped writers,
+then copies each whole mapped image from canonical storage into the process
+and into its snapshot. `flushMemoryToSab` compares the entire mapped span to
+its previous snapshot to discover writes. Pointer traffic therefore drives
+large image comparisons and full imports, even though the cursor itself is
+a small separate plane. This synchronous work shares the kernel worker with
+input servicing and vblank/cursor presentation, and grows with image area.
+It is a concrete CPU coherence/scheduling bottleneck in Kandelo's graphics
+path. The previous eventual-render/input/exit checks did not measure this
+interactive performance requirement.
+
+Navigation through the rendered-prompt/download-complete checks took roughly
+6–8.3s in these fresh profiles. That includes app, persistence, kernel and
+guest startup plus observer work; it is not an isolated rendering-duration
+measurement. The cursor bottleneck is reproduced, while the rest of initial
+startup time still needs separation.
+
+The corrective work belongs at the shared graphics-memory synchronization
+and scheduling owners, preserving concurrent mapped writes, canonical
+publication and authoritative kernel cursor state. It needs owner-level
+regressions and measured application/Node/browser validation before a speedup
+claim. The broad B2–B6/C1–C3 campaign remains paused; this performance defect
+keeps the bounded R1 delivery open.
+
+Retained evidence is Sydney `.context/cage-performance-20261109/`: raw
+numeric logs, diagnostic sources/configs, `pointer-reviewed.json`,
+`pointer-light-reviewed.json` and `runtime-identity.json`. Bulk original
+reports/traces remain under their registered test run directories. The
+full pointer probe passed 6/6 and the light control 4/4, with zero retries.
+The first pointer probe completed its movement but failed all six summaries
+because its formatter lost the digit escape; its source, log, reports and
+traces remain retained as failed diagnostic attempts. The corrected capture
+did not change the product. Chromium's initial typed probe passed 2/2,
+WebKit's typed probe passed 2/2, and a larger-output typed probe passed 2/2.
+Two Firefox typed probes failed during worker instrumentation before
+producing summaries (`Execution context was destroyed`); no fresh Firefox
+performance result is claimed. Separate Firefox profile-directory EACCES
+cleanup warnings remain retained. None of these diagnostics replaces or
+reclassifies the earlier functional/host/memory acceptance results.
