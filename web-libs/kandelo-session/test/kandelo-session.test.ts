@@ -2004,7 +2004,7 @@ describe("LiveKernelHost: supervised terminal sessions", () => {
       afterExit: { programPath: "/bin/new-login", argv: ["new-login"] } });
     await vi.advanceTimersByTimeAsync(250);
     expect(harness.spawns.at(-1)?.argv).toEqual(["login", "-p"]);
-    expect(harness.spawns.at(-1)?.programPath).toBe("/usr/bin/login");
+    expect(harness.spawns.at(-1)?.programPath).toBe("/bin/login");
   });
 
   it("resets restart delay after a process survives for two seconds", async () => {
