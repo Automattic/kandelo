@@ -321,11 +321,15 @@ code. A partial image is evidence only for its named packages; build the
 canonical products before a PR. See `docs/agent-guidance/packages-and-builds.md`
 "Partial images are development builds".
 
-Build scripts must honor the resolver contract, use the worktree-local SDK,
-declare every dependency they use, install only into `WASM_POSIX_DEP_OUT_DIR`,
-and produce the outputs declared in package metadata. Fork-using packages must
-be instrumented with `scripts/run-wasm-fork-instrument.sh`; legacy Asyncify
-artifacts are stale and must be rebuilt, not supported.
+Build scripts must honor the resolver contract, declare every dependency
+they use, install only into `WASM_POSIX_DEP_OUT_DIR`, and produce the outputs
+declared in package metadata. For recipes that never use the Kandelo SDK or
+sysroot, declare `[build].toolchain = "none"` after reviewing the script and
+its helpers; see the package guide for retained inputs and the limits of
+its PATH check. SDK builds keep the default and use the worktree-local SDK.
+Fork-using packages must be instrumented with
+`scripts/run-wasm-fork-instrument.sh`; legacy Asyncify artifacts are stale
+and must be rebuilt, not supported.
 
 Kandelo is not Linux. Never define `__linux__` in the SDK, its flags, its
 `config.site`, or the sysroot. When an upstream gates a path on `__linux__`,

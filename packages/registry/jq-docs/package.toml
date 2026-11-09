@@ -18,6 +18,7 @@ spdx = "MIT AND ICU AND BSD-2-Clause"
 url = "https://github.com/jqlang/jq/blob/jq-1.8.2/COPYING"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/jq-docs/build-jq-docs.sh"
 
 [[outputs]]

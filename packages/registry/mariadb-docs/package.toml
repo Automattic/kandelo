@@ -18,6 +18,7 @@ spdx = "GPL-2.0-only"
 url = "https://github.com/MariaDB/server/blob/10.5/COPYING"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/mariadb-docs/build-mariadb-docs.sh"
 
 [[outputs]]

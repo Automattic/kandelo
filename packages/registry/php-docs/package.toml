@@ -18,6 +18,7 @@ spdx = "PHP-3.01"
 url = "https://github.com/php/php-src/blob/master/LICENSE"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/php-docs/build-php-docs.sh"
 
 [[outputs]]

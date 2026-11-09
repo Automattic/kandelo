@@ -18,6 +18,7 @@ spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/make.git/tree/COPYING"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/make-docs/build-make-docs.sh"
 
 [[outputs]]

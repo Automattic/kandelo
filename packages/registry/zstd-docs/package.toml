@@ -18,6 +18,7 @@ spdx = "BSD-3-Clause OR GPL-2.0-only"
 url = "https://github.com/facebook/zstd/blob/dev/LICENSE"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/zstd-docs/build-zstd-docs.sh"
 
 [[outputs]]

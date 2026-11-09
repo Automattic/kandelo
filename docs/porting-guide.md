@@ -313,6 +313,11 @@ another port.
   archive, and mount it at `/usr/`, yielding
   `/usr/share/man/man<section>/<name>.<section>`. Preserve page aliases and
   any included man-page sources so lookup and rendering work.
+- For recipes that only copy pages, substitute literal template values,
+  and write archives, declare `[build].toolchain = "none"`. The resolver
+  removes SDK paths and excludes automatic compiler/sysroot inputs from
+  their keys. This is a reviewed input contract with a PATH check, not a
+  sandbox; see [package management](package-management.md#cache-key-hashing).
 - Use `images/vfs/scripts/create-deterministic-zip.sh`, declare the ZIP
   output with `fork_instrumentation = "disabled"`, and install it through
   `install_local_binary`. Honor the normal resolver work/output roots,

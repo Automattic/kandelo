@@ -18,6 +18,7 @@ spdx = "Python-2.0"
 url = "https://docs.python.org/3/license.html"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/cpython-docs/build-cpython-docs.sh"
 
 [[outputs]]

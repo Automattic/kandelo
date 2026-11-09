@@ -18,6 +18,7 @@ spdx = "Info-ZIP"
 url = "https://infozip.sourceforge.net/license.html"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/zip-docs/build-zip-docs.sh"
 
 [[outputs]]

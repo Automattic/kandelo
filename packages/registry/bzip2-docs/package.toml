@@ -18,6 +18,7 @@ spdx = "bzip2-1.0.6"
 url = "https://gitlab.com/bzip2/bzip2/-/blob/master/LICENSE"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/bzip2-docs/build-bzip2-docs.sh"
 
 [[outputs]]

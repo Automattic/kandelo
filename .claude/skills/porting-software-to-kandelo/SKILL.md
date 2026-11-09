@@ -23,9 +23,24 @@ Many registry scripts predate the resolver contract (e.g. `bzip2` writes into it
 | cmake program | `packages/registry/espeak-ng/` |
 | multi-output program | `packages/registry/diffutils/` |
 | runtime files as a lazy archive | vim, per `docs/porting-guide.md` "Reference implementation" |
-| man pages as a separate lazy docs archive | `packages/registry/coreutils-docs/`, `packages/registry/lsof-docs/`; content sourcing differs, see "Shipping man pages" in `docs/porting-guide.md` |
+| copy/template/ZIP man-page archive, no SDK | `packages/registry/xz-docs/`, `packages/registry/lsof-docs/` |
+| man pages generated from real guest programs | `packages/registry/coreutils-docs/`; retain its guest-program dependencies and default SDK setting |
 
-The current shape: `source scripts/package-build-roots.sh`, `kandelo_package_prepare_build_roots`, `kandelo_package_stage_verified_source`, `source sdk/activate.sh`, configure/make under the work dir, then `install_local_binary` (usage in the header of `scripts/install-local-binary.sh`; it applies the manifest's fork policy).
+Choose `[build].toolchain` before adapting a recipe. Use `"none"` when the
+script and its sourced helpers never use the Kandelo SDK or sysroot,
+such as copying files, substituting literal templates, and creating an
+archive. Keep `"sdk"` (the default) for SDK builds. Review actual inputs;
+a documentation label alone does not establish that the build qualifies.
+See `docs/package-management.md` "Schema" and "Cache-key hashing" for
+retained inputs and the limits of the PATH check.
+
+The current shape: `source scripts/package-build-roots.sh`,
+`kandelo_package_prepare_build_roots`, stage verified source when needed,
+then build under the work dir and call `install_local_binary` (usage in
+`scripts/install-local-binary.sh`; it applies the manifest's fork policy).
+SDK recipes source `sdk/activate.sh` before configure/make. Recipes with
+`toolchain = "none"` must not reactivate the SDK or bypass the PATH check
+with absolute compiler paths or direct sysroot reads.
 
 ## Where the contract lives
 
