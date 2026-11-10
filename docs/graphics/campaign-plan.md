@@ -274,8 +274,10 @@ These are separate results, not six passing game checks.
 The fix branch now includes newly pinned main
 `8161769ed9d2394e7793bfd82be08cbf890e7145`, inheriting its published host ABI
 6 without changing program ABI 56. The merged source ownership/lifecycle
-selection passes 267/267 and source graphics passes 2,353/2,353. Normal preparation and the full browser, memory
-and paired benchmark gates for that combined tree remain in progress.
+selection passes 267/267 and source graphics passes 2,353/2,353. Full normal
+preparation is complete. The prepared host selection passes 239/239 and
+frozen-program offline compatibility passes 6/6 across the three engines.
+The full browser, memory and paired benchmark gates remain in progress.
 The previous full preview stays frozen at host ABI 5. PR #1678 stays a draft.
 See its current `docs/graphics/cage-reliability-2026-11.md` for
 artifact identities, original failures and exact evidence scopes. The
@@ -288,8 +290,10 @@ as Unicode, adding invisible bytes before shifted characters. The native
 regression reproduces twelve three-byte emissions and passes after the
 translator repair (1/1 Vitest wrapper, UBSan). The strengthened Chromium
 Cage case fails the frozen old terminal with `WLTERM_EXIT code=2` instead
-of zero. Rebuilt all-engine and Node Cage/Sway shifted-input checks remain
-pending. Sydney commits `cf9ad53959` / `3a6b148bac` carry the repair, package
+of zero. Rebuilt Node checks pass all five cases, including plain/shifted
+input under both Cage and Sway and signal handling. The normal-entry
+Chromium check passes physical shifted commands, repaint and exit 0;
+the complete all-engine desktop matrix remains in progress. Sydney commits `cf9ad53959` / `3a6b148bac` carry the repair, package
 revision 16 and regressions; the published 56514 rendering preview predates
 this additional input fix. The separate WebKit game-download corruption is
 still unresolved, and no performance/native-feel acceptance is inferred.
@@ -300,6 +304,17 @@ feels similar to Sway. Cage still appears blurrier. The maintainer favors
 landing the current improvement and iterating on sharpness afterward;
 record sharpness as follow-up work. This feedback does not waive the
 remaining correctness, memory, integration or benchmark checks.
+
+The post-update host-adapter-6 Steel Sky selection passes Cage 3/3 and
+Chromium Sway. Firefox Sway fails to open the game menu; WebKit Sway remains
+on a 23% download with syscall `RangeError: Out of memory` and a fatal
+kernel-instance diagnostic in its retained trace. Matching post-update
+pinned-main Sway controls pass Firefox and WebKit (2/2). The exhausted
+allocation and candidate failures still require diagnosis. Port 56517 now
+serves the current normal preview including the wlterm modifier repair;
+56514 remains the separate frozen host-adapter-5 preview. Test-only repairs
+observe captured owned-job output and share the compatibility server port
+with worker config reloads; original failures are retained.
 
 ## M1/M2: measurement and frozen consumer workloads
 
@@ -584,7 +599,7 @@ assertion or overrule maintainer decisions.
 | Implementation/release scope | Browser storage diagnostics, terminal visibility/fit, shared-buffer synchronization and image-owned Cage display policy; preserve published program/graphics/fork contracts and inherit pinned main's host ABI 6 |
 | Research inputs | Preserved shipment controls, current-main-based normal reproduction, standalone OPFS/xterm controls and frozen Cage copy/native-call profiles |
 | Main risk | Startup failure and reported runtime crashes/slowness may have different causes |
-| Exit from investigation | Current partial rendering/input checks pass; canonical preparation, paired performance and full memory validation remain pending. Historical configured memory passes do not validate this revision. Default transport, Sway, unpack, PCM, M1/M2, D1/D2, L1 and V1/P1 remain open |
+| Exit from investigation | Canonical preparation is complete; host 239/239 and compatibility 6/6 pass. Current Sway failures, desktop/memory validation and paired performance remain pending. Historical configured memory passes do not validate this revision. Default transport, Sway, unpack, PCM, M1/M2, D1/D2, L1 and V1/P1 remain open |
 | Broader campaign state | Paused pending intentional delivery selection; no blanket activation by this plan |
 
 Completion of the baseline campaign requires Q/D/L closure, accepted B/C
