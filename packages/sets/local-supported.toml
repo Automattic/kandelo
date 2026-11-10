@@ -571,6 +571,10 @@ name = "mandoc-docs"
 class = "browser-product"
 
 [[packages]]
+name = "man-index"
+class = "browser-product"
+
+[[packages]]
 name = "mandoc-browser-bundle"
 class = "browser-product"
 

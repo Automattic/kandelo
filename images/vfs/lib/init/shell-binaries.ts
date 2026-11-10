@@ -115,6 +115,9 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "wget", resolverPath: "programs/wget.wasm", vfsPath: "/usr/bin/wget", symlinks: [] },
   { id: "git", resolverPath: "programs/git/git.wasm", vfsPath: "/usr/bin/git", symlinks: [] },
   { id: "jq", resolverPath: "programs/jq.wasm", vfsPath: "/usr/bin/jq", symlinks: [] },
+  // mandoc.db, the man-page index for every docs package (man-index); the
+  // shell builder includes it only when all of them are selected.
+  { id: "man-index", resolverPath: "programs/man-index.db", vfsPath: "/usr/share/man/mandoc.db", symlinks: [], mode: 0o644 },
   { id: "wasm-fork-instrument", resolverPath: "programs/wasm-fork-instrument.wasm", vfsPath: "/usr/bin/wasm-fork-instrument", symlinks: [] },
   { id: "php", resolverPath: "programs/php/php.wasm", vfsPath: "/usr/bin/php", symlinks: [] },
   { id: "ffmpeg", resolverPath: "programs/ffmpeg/ffmpeg.wasm", vfsPath: "/usr/bin/ffmpeg", symlinks: [] },

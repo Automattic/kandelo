@@ -52,6 +52,19 @@ describe("upstream man-page packages", () => {
     },
   );
 
+  it("man-index indexes exactly the shell's docs archives", () => {
+    // The index must list every page the shell's docs packages ship and
+    // nothing else, or apropos/whatis would miss pages or offer missing ones.
+    const manifest = readFileSync(join(registry, "man-index", "package.toml"), "utf8");
+    const dependsOn = /^depends_on = \[([^\]]*)\]/m.exec(manifest)?.[1] ?? "";
+    const indexed = [...dependsOn.matchAll(/"([a-z0-9.-]+)@[^"]+"/g)].map((m) => m[1]).sort();
+    const shellDocs = SHELL_LAZY_ARCHIVE_SPECS
+      .filter((spec) => spec.id.endsWith("-docs"))
+      .map((spec) => spec.dependency)
+      .sort();
+    expect(indexed).toEqual(shellDocs);
+  });
+
   it.each(upstreamDocsPackages)("%s is a shell lazy archive", (docs) => {
     const spec = SHELL_LAZY_ARCHIVE_SPECS.find((s) => s.id === docs);
     expect(spec).toMatchObject({

@@ -332,6 +332,8 @@ another port.
   This records the lazy references during image composition; no browser
   registration is needed. An existing runtime bundle may carry the pages
   instead if it already owns those paths; avoid registering them twice.
+  Then add the docs package to `man-index`'s `depends_on` (see "The man-page
+  index" below).
 - Select the docs package explicitly when testing a partial image; selecting
   the program alone does not select a separate docs archive. Include the
   man viewer (`mandoc-browser-bundle` in the shell) and verify
@@ -358,11 +360,19 @@ These commands are in the shell image but have no page yet. `man` reports
 | `redis-cli`, `sqlite3`, `termchat`, `composer`, `node`, `gem` | No upstream page in the pinned source; Kandelo's `node` is its own SpiderMonkey-based runtime, so upstream Node's page would describe a different program |
 | `posix-utils-lite` commands, `kandelo-exchange`, `kandelo-publish`, `login`, `sudo-lite`, `dos-play` and other Kandelo wrappers | Kandelo is upstream and has not written pages for them |
 
-The image also ships no `mandoc.db` index, so `whatis`, `apropos` and
-`man -k` are not available, and mandoc 1.14.6 prints
+### The man-page index
+
+`whatis`, `apropos` and `man -k` search `/usr/share/man/mandoc.db`, which
+the `man-index` package builds with `makewhatis` over every docs package's
+pages. It is a lazy file, fetched the first time `man` runs. A new docs
+package must also be added to `man-index`'s `depends_on`;
+`package-docs-source-parity.test.ts` fails until it is. The shell builder
+refuses to include the index in an image that lacks any of the docs
+packages it covers, so a partial image either selects them all or leaves
+`man-index` out. Without the index, mandoc 1.14.6 prints
 `outdated mandoc.db lacks <name>(<section>) entry, run makewhatis
-/usr/share/man` on standard error each time `man` finds a page. The page
-itself renders normally.
+/usr/share/man` on standard error each time `man` finds a page; the page
+itself still renders.
 
 ## Shipping runtime files: the lazy-archive pattern
 

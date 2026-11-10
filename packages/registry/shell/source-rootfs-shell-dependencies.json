@@ -307,6 +307,11 @@
       "role": "lazy-archive"
     },
     {
+      "name": "man-index",
+      "version": "1.14.6",
+      "role": "lazy-file"
+    },
+    {
       "name": "attr-docs",
       "version": "2.5.2",
       "role": "lazy-archive"
