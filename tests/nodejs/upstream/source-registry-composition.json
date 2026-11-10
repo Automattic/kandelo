@@ -1,0 +1,34 @@
+{
+  "completedAt": "2026-11-10T20:08:48.241986+00:00",
+  "scope": "host-native source registry/metadata composition only; not SpiderMonkey compilation or guest startup",
+  "sourceManifestSha256": "512816907bd18ef06c377d2961ce9341557fb503cc149e20a5172242ca327645",
+  "sources": 443,
+  "exactSourceBytes": 10993403,
+  "kinds": {
+    "kFunction": 406,
+    "kBootstrapScript": 8,
+    "kBootstrapRealm": 1,
+    "kSourceTextModule": 11,
+    "kMainScript": 14,
+    "kPerContextScript": 3
+  },
+  "allSourceBytesAndMetadataMatched": true,
+  "lookupBoundsMissingAndEmbeddedNulControlsPassed": true,
+  "compiler": "clang++ in scripts/dev-shell.sh",
+  "metadataToolSha256": "6341454c85312898926b8a778b08c9be8662d8125b073a304ba6e948b845b793",
+  "metadataSourceSha256": "74a60d09dce591adf01c779a8788ccabccdbe498f93b0487f54a609428324348",
+  "upstreamMetadataInputs": {
+    "builtin_info.cc": "bf8336d85b92460242453232017f2c2dad94aa3b78ba7aecbba5af3e2c3ef1a0",
+    "builtin_info.h": "f81573ce5068e4d2d36a7b46b3ff58c0c86d2832814424b3216ef8ef89cdedc5"
+  },
+  "guestCompilerBuilt": false,
+  "guestStartupRun": false,
+  "fullProductBuild": false,
+  "testedInputSha256": {
+    "scripts/generate-nodejs-source-registry.py": "c4a23b02b681a8c7ee0119b002ff3eff3adfa01bac9e08a42f7d2101e61ce165",
+    "scripts/nodejs-builtin-metadata.cpp": "74a60d09dce591adf01c779a8788ccabccdbe498f93b0487f54a609428324348",
+    "third_party/nodejs/native/builtin-source-registry.cpp": "e6581b73f9ff9644eb0de27f78a4f6c528628d5641bc54d6d1e707487144925d",
+    "third_party/nodejs/native/builtin-source-registry.h": "1b84c5c99de447402c382429df731e1f0def761a9586f6545828043b585296a9",
+    "tests/nodejs/upstream/source-registry-controls.cpp": "b2dfb1fc0b34e7b1054123f467df4a78a84ea5a7ea47d450d473338287ca752f"
+  }
+}

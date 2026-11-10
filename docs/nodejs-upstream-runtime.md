@@ -117,3 +117,47 @@ Detailed source-registration and engine-contract reviews are preserved in
 `tests/nodejs/upstream/engine-contracts.md`, with companion JSON. The import
 preserves original Undici bytes rather than applying upstream js2c's narrow
 Unicode punctuation normalization; that distinction is recorded explicitly.
+
+## Native compiler foundation checkpoint
+
+The source import is still inactive. An immutable native source registry and
+build-time wrapper metadata producer now exist, along with a SpiderMonkey
+function/module compilation consumer. The registry and metadata were compiled
+and checked on the development host. The SpiderMonkey consumer has not been
+compiled against the guest engine, linked, or executed. No upstream bootstrap
+has run on any of the four hosts.
+
+The metadata producer compiles the original Node `builtin_info.cc/.h` rather
+than duplicating its classification and parameter map. The guest compiler
+consumes immutable diagnostic origins, kinds and argument arrays, avoiding
+additional unchecked C++ string/map allocations in its entrypath. Separate
+engine function/module APIs preserve the required wrapper distinction; source
+line origins and ownership remain source-reviewed, not runtime-proven.
+
+The host-native composition control read all 443 records and 10,993,403 bytes
+through the actual compiled registry and compared them with the verified source
+files, independent registration inventory and original parameter contracts.
+Missing IDs, bounds and embedded-NUL lookup controls passed. Exact input/tool
+identities and limits are in `source-registry-composition.json`. Generator
+integrity checks use explicit metadata-protocol fixtures; these are separate
+from the original-C++ composition evidence and do not establish guest behavior.
+
+Reproduce the focused source checks through the development shell:
+
+```sh
+scripts/dev-shell.sh python3 -B   tests/nodejs/upstream/source-registry-generator.test.py
+scripts/dev-shell.sh python3 tests/nodejs/upstream/check-source-registry.py   --work-dir /path/to/new-private-evidence-directory
+```
+
+A bounded source review found real Float16Array, Iterator.from/drop, disposal
+symbols and Error.captureStackTrace implementations in the pinned engine.
+They must not be replaced with fake globals or preclassified as absent. The
+concrete Error gap is its eager fixed-depth string behavior versus Node's
+structured, lazy formatting, CallSites and stackTraceLimit. See
+`primordial-prerequisites.md`; engine configuration and behavior still need
+identified-artifact evidence.
+
+`implementation-ledger.json` separates source inventory, implementation and
+per-host startup/conformance. Next integrate genuine per-realm state and
+binding ownership, then the eager startup closure. The full backend catalog
+is incomplete. No full product or successor-ABI build ran.

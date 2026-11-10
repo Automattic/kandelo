@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "target": {
+    "version": "26.13.0",
+    "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+    "pinChanged": false
+  },
+  "inventoryCoverage": {
+    "registeredSources": 443,
+    "literalBindingNames": 72,
+    "computedReferences": 14,
+    "completeBindingContractCatalog": false
+  },
+  "implementation": [
+    {
+      "area": "upstream library/source admission",
+      "sourceStatus": "complete pinned source import",
+      "evidence": "third_party/nodejs/sources.json",
+      "remaining": "source import is not runtime integration"
+    },
+    {
+      "area": "immutable native source registry and original C++ wrapper metadata",
+      "sourceStatus": "implemented, host-native composition verified",
+      "evidence": "source-registry-composition.json",
+      "remaining": "declare package build inputs/tools and wire generated include into actual guest engine"
+    },
+    {
+      "area": "SpiderMonkey builtin function/module compiler",
+      "sourceStatus": "implemented source only, uncompiled, unintegrated",
+      "evidence": "packages/registry/spidermonkey/node-upstream/builtin-compiler.cpp",
+      "remaining": "actual engine build; realm/rooting/source position/error/GC checks; internalBinding(builtins) connection"
+    },
+    {
+      "area": "per-context/per-realm state and shared binding loader",
+      "sourceStatus": "not implemented in new architecture",
+      "remaining": "real private keys and process/primordial state; execute complete upstream per-context scripts and realm bootstrap"
+    },
+    {
+      "area": "structured Error stack/CallSite/limit contracts",
+      "sourceStatus": "source contracts reviewed, new owning engine implementation missing",
+      "evidence": "primordial-prerequisites.json",
+      "remaining": "use actual engine capture/frame machinery; provide lazy structured formatting/prepareStackTrace and stackTraceLimit; no replacement globals"
+    },
+    {
+      "area": "module_wrap/contextify and CJS/ESM entrypaths",
+      "sourceStatus": "missing from new integration",
+      "remaining": "adapt reviewed native graph/compiler owners; real linking, identity, import.meta, sync/TLA and context contracts"
+    },
+    {
+      "area": "eager Buffer/process/fs/options/task queues/timers/async binding closure",
+      "sourceStatus": "missing from new integration",
+      "remaining": "contract inventory and dependency-ordered owning backends; no placeholder export objects"
+    },
+    {
+      "area": "generated runtime configuration",
+      "sourceStatus": "missing",
+      "remaining": "derive actual guest features and state without copying native reference metadata"
+    },
+    {
+      "area": "nested guest Wasm",
+      "sourceStatus": "not implemented",
+      "remaining": "required for unchanged Undici HTTP1/Amaro/Wasm module paths; defer unless initial startup requires it"
+    },
+    {
+      "area": "complete backend catalog and roadmap",
+      "sourceStatus": "partial syntax index and bounded source reviews",
+      "remaining": "all members/signatures/errors/lifecycles/ownership, lazy/conditional/worker/platform paths, archived reuse map and per-host validation obligations"
+    }
+  ],
+  "runtimeConformance": {
+    "Node": {
+      "upstreamStartup": "not run",
+      "emptyEvaluation": "not run",
+      "simpleScript": "not run",
+      "commonJsEntry": "not run",
+      "esmEntry": "not run",
+      "completeCoreCompatibility": "not established"
+    },
+    "Chromium": {
+      "upstreamStartup": "not run",
+      "emptyEvaluation": "not run",
+      "simpleScript": "not run",
+      "commonJsEntry": "not run",
+      "esmEntry": "not run",
+      "completeCoreCompatibility": "not established"
+    },
+    "Firefox": {
+      "upstreamStartup": "not run",
+      "emptyEvaluation": "not run",
+      "simpleScript": "not run",
+      "commonJsEntry": "not run",
+      "esmEntry": "not run",
+      "completeCoreCompatibility": "not established"
+    },
+    "WebKit": {
+      "upstreamStartup": "not run",
+      "emptyEvaluation": "not run",
+      "simpleScript": "not run",
+      "commonJsEntry": "not run",
+      "esmEntry": "not run",
+      "completeCoreCompatibility": "not established"
+    }
+  },
+  "validationLimits": {
+    "hostNativeCompositionOnly": true,
+    "guestCompilerBuilt": false,
+    "guestStartupRun": false,
+    "overallSuitesRun": false,
+    "fullProductRebuildDeferred": true,
+    "successorAbiArtifactsDeferred": true,
+    "abi55HistoryUnchanged": true
+  },
+  "preservation": {
+    "frozenCheckoutUnchanged": true,
+    "bunAutoUnpackingBranch": "brandonpayton/bun-auto-unpacking",
+    "oldPrArchives": "archive/node-upstream-reset-20261109/"
+  }
+}

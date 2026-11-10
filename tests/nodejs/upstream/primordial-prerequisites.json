@@ -1,0 +1,769 @@
+{
+  "schema": 1,
+  "scope": "Bounded read-only primordial engine prerequisite source audit; no runtime conformance claim",
+  "nodeSourceVersion": "26.13.0",
+  "nodeSourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "mozillaSourceVersion": "140.11.0esr",
+  "mozillaTree": ".context/node26-mozilla-style-source/tree/firefox-140.11.0",
+  "mozillaTreeIsPristine": false,
+  "mozillaTreeNote": "Retained style-source tree includes Kandelo patches; shell resource-management default patch observed. File hashes pin every cited current source input. This task did not regenerate or patch the tree.",
+  "mainCommit": "6d5ebb19b24572480edebd5dc355dfca36ae63c6",
+  "mainRecipe": "packages/registry/spidermonkey/build-spidermonkey.sh",
+  "sourceArchiveExpectedSha256FromMainPackage": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028",
+  "archiveHashRecomputed": false,
+  "archiveRead": "StaticPrefList.yaml was read directly from archive with tarfile.extractfile into memory; no new source extraction performed.",
+  "prefs": [
+    {
+      "archive": ".context/node26-mozilla-style-source/source.tar.xz",
+      "member": "firefox-140.11.0/modules/libpref/init/StaticPrefList.yaml",
+      "line": 8808,
+      "name": "javascript.options.experimental.explicit_resource_management",
+      "value": false,
+      "compileCondition": "ENABLE_EXPLICIT_RESOURCE_MANAGEMENT",
+      "lines": [
+        "8808: -   name: javascript.options.experimental.explicit_resource_management",
+        "8809:     type: bool",
+        "8810:     value: false",
+        "8811:     mirror: always",
+        "8812:     set_spidermonkey_pref: always"
+      ]
+    },
+    {
+      "archive": ".context/node26-mozilla-style-source/source.tar.xz",
+      "member": "firefox-140.11.0/modules/libpref/init/StaticPrefList.yaml",
+      "line": 8815,
+      "name": "javascript.options.experimental.error_capture_stack_trace",
+      "value": true,
+      "lines": [
+        "8815: - name: javascript.options.experimental.error_capture_stack_trace",
+        "8816:   type: bool",
+        "8817:   value: true",
+        "8818:   mirror: always",
+        "8819:   set_spidermonkey_pref: always"
+      ]
+    }
+  ],
+  "eagerConstructorDeclarationInventory": [
+    {
+      "name": "AggregateError",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "ArrayBuffer",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "BigInt",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "BigInt64Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "BigUint64Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Boolean",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "DataView",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Date",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Error",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": true
+    },
+    {
+      "name": "EvalError",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "FinalizationRegistry",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Float16Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": true
+    },
+    {
+      "name": "Float32Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Float64Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Function",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Int16Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Int32Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Int8Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Iterator",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": true
+    },
+    {
+      "name": "Map",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Number",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Object",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "RangeError",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "ReferenceError",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "RegExp",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Set",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "String",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Symbol",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": true
+    },
+    {
+      "name": "SyntaxError",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "TypeError",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "URIError",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Uint16Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Uint32Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Uint8Array",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "Uint8ClampedArray",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "WeakMap",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "WeakRef",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    },
+    {
+      "name": "WeakSet",
+      "nodeEagerConstructor": true,
+      "mozillaProtoRegistryMention": true,
+      "semanticsAuditedHere": false
+    }
+  ],
+  "findings": [
+    {
+      "id": "P01",
+      "intrinsic": "Float16Array",
+      "sourceStatus": "Native constructor/typed-array implementation present; no constructor runtime gate found.",
+      "nodeRequirement": "Node eagerly copies Float16Array constructor and prototype properties in primordials, before any user module.",
+      "engineEvidence": "ProtoKey.h registers REAL(Float16Array, TYPED_ARRAY_CLASP(Float16)); GlobalObject::skipDeselectedConstructor includes it in the unconditional false group. TypedArrayObject-inl.h maps real float16 storage to JSProto_Float16Array; shared TypedArrayObject templates instantiate real class/spec/constructors. This is not a mere alias/export.",
+      "configurationAndRuntimeLimits": "The configured main recipe disables JIT but that does not remove these native/interpreter typed-array registrations. No generated config or built artifact was examined and no primordial startup was executed. Numeric/descriptor/Buffer interoperability is not runtime-proven.",
+      "nextOwningWork": "Do not create a replacement Float16Array global. Use the real engine constructor; later authorize focused unchanged primordial startup and exact Float16Array behavior checks.",
+      "anchors": [
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/per_context/primordials.js",
+          "line": 199,
+          "text": "  'Float16Array',",
+          "sha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Eager Float16Array capture"
+        },
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/per_context/primordials.js",
+          "line": 226,
+          "text": "].forEach((name) => {",
+          "sha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Descriptor/prototype copy without optional guard"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/public/ProtoKey.h",
+          "line": 104,
+          "text": "  REAL(Float16Array, TYPED_ARRAY_CLASP(Float16))                             \\",
+          "sha256": "f5c2393ed70a5ac5d8bc896c5b158da08c5a78917ad4aabf6de61d6b15b4527d",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Unconditional real typed-array class registration"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/GlobalObject.cpp",
+          "line": 151,
+          "text": "    case JSProto_Float16Array:",
+          "sha256": "6e5ee66034640ab63a0d98b775c81ed15dc2587ad5fe7edc84d5a59164069273",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "No runtime constructor deselection"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/GlobalObject.cpp",
+          "line": 174,
+          "text": "      return false;",
+          "sha256": "6e5ee66034640ab63a0d98b775c81ed15dc2587ad5fe7edc84d5a59164069273",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Constructor group returns false"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/TypedArrayObject-inl.h",
+          "line": 155,
+          "text": "struct TypeIDOfType<float16> {",
+          "sha256": "67a5d40ebc37c40b06b51104fa4ab95a7cf4faecded1374705c50c9fc5890758",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Real float16 storage/type binding"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/TypedArrayObject.cpp",
+          "line": 4693,
+          "text": "        JS_FOR_EACH_TYPED_ARRAY(IMPL_TYPED_ARRAY_CLASS_SPEC)",
+          "sha256": "04de5205092d46cd322aec016aa22a06e1b6fedcbe245e231352962c46c8ce17",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "All typed-array class specs instantiated"
+        }
+      ]
+    },
+    {
+      "id": "P02",
+      "intrinsic": "Iterator / Iterator.prototype.drop / Iterator.from",
+      "sourceStatus": "Native constructor and self-hosted implementations present; required methods unconditional.",
+      "nodeRequirement": "Node eagerly captures Iterator methods, calls uncurried Iterator.prototype.drop on an ordinary object with null limit to obtain IteratorHelperPrototype, and calls Iterator.from on an ordinary object to obtain WrapForValidIteratorPrototype.",
+      "engineEvidence": "REAL(Iterator) constructor is not deselected. Iteration.cpp registers static from and prototype drop outside NIGHTLY_BUILD conditionals, attaches those arrays in IteratorObjectClassSpec, and contains actual native helper/wrapper classes. IteratorDrop validates object/limit, creates an engine IteratorHelper with a generator and stops at initial yield; IteratorFrom gets a direct iterator and builds the engine wrapper. An old comment about Iterator Helpers being enabled is not evidence of a remaining runtime gate.",
+      "configurationAndRuntimeLimits": "Nightly gates apply to unrelated concat/range/zip additions; async iterator helper flags are separate. This source evidence does not execute either exact primordial call or prove every iterator helper edge. No new test run.",
+      "nextOwningWork": "Use existing engine implementations unchanged; do not add JS shims or remove Node prototype-discovery calls. Focus later validation on actual primordial invocation and descriptors/real helper prototypes.",
+      "anchors": [
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/per_context/primordials.js",
+          "line": 206,
+          "text": "  'Iterator',",
+          "sha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Eager Iterator capture"
+        },
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/per_context/primordials.js",
+          "line": 284,
+          "text": "    name: 'IteratorHelperPrototype',",
+          "sha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "drop helper prototype discovery"
+        },
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/per_context/primordials.js",
+          "line": 304,
+          "text": "    name: 'WrapForValidIteratorPrototype',",
+          "sha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Iterator.from wrapper prototype discovery"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/public/ProtoKey.h",
+          "line": 146,
+          "text": "  REAL(Iterator, OCLASP(Iterator))                                           \\",
+          "sha256": "f5c2393ed70a5ac5d8bc896c5b158da08c5a78917ad4aabf6de61d6b15b4527d",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Real Iterator global constructor"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/GlobalObject.cpp",
+          "line": 132,
+          "text": "    case JSProto_Iterator:",
+          "sha256": "6e5ee66034640ab63a0d98b775c81ed15dc2587ad5fe7edc84d5a59164069273",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Iterator constructor unconditional group"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/Iteration.cpp",
+          "line": 1945,
+          "text": "static const JSFunctionSpec iterator_static_methods[] = {",
+          "sha256": "73afc8924cefccda86cc778135e04778b4a720c0c86e62cd41d939e74228c53d",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "from registration outside Nightly block"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/Iteration.cpp",
+          "line": 1962,
+          "text": "    JS_SELF_HOSTED_FN(\"drop\", \"IteratorDrop\", 1, 0),",
+          "sha256": "73afc8924cefccda86cc778135e04778b4a720c0c86e62cd41d939e74228c53d",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "drop registration"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/Iteration.cpp",
+          "line": 2199,
+          "text": "static const ClassSpec IteratorObjectClassSpec = {",
+          "sha256": "73afc8924cefccda86cc778135e04778b4a720c0c86e62cd41d939e74228c53d",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "ClassSpec consumes method tables"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/builtin/Iterator.js",
+          "line": 119,
+          "text": "function IteratorFrom(O) {",
+          "sha256": "d2148dcf4912c87938f664737fff9f468060d00b02520c89f5c31ac3efeb19a4",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Real IteratorFrom implementation"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/builtin/Iterator.js",
+          "line": 566,
+          "text": "function IteratorDrop(limit) {",
+          "sha256": "d2148dcf4912c87938f664737fff9f468060d00b02520c89f5c31ac3efeb19a4",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Real IteratorDrop implementation"
+        }
+      ]
+    },
+    {
+      "id": "P03",
+      "intrinsic": "Symbol.dispose / Symbol.asyncDispose",
+      "sourceStatus": "Genuine well-known engine symbols present behind explicit-resource compile macro; main recipe enables it.",
+      "nodeRequirement": "Node generic Symbol property copying derives primordial SymbolDispose/SymbolAsyncDispose aliases from actual Symbol properties. These are not direct pure-primordials assertions, but unchanged consumers such as stream constructors attach methods with SymbolAsyncDispose; absent symbols would produce incorrect public methods.",
+      "engineEvidence": "js/public/Symbol.h includes both well-known codes under IF_EXPLICIT_RESOURCE_MANAGEMENT. TypeDecls.h implements that macro using ENABLE_EXPLICIT_RESOURCE_MANAGEMENT. SymbolClassFinish installs every engine well-known symbol as readonly/permanent Symbol constructor property. Runtime explicit-resource pref controls parser/DisposableStack selection; this symbol installation loop itself has no runtime-pref gate.",
+      "configurationAndRuntimeLimits": "js/moz.configure defaults the compile option to Nightly, but origin/main recipe explicitly supplies --enable-explicit-resource-management. ESR archive defaults the runtime pref false; existing main patch0017 sets it true, with explicit shell --disable override. No actual generated macro/header or shell invocation/artifact was inspected. The cached shell source contains that main patch.",
+      "nextOwningWork": "Retain the native compile option and existing startup pref policy. Do not replace symbols with Symbol.for or ordinary Symbol values. Later verify unchanged consumers use the same native identities.",
+      "anchors": [
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/per_context/primordials.js",
+          "line": 215,
+          "text": "  'Symbol',",
+          "sha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Symbol copied as a real intrinsic"
+        },
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/streams/readable.js",
+          "line": 398,
+          "text": "Readable.prototype[SymbolAsyncDispose] = async function() {",
+          "sha256": "4fccc03c3e5d30aeccfa1879522a0da2f57a2da1d6304d03d2bb66ecdd8c49a2",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Actual public async-disposal symbol consumer"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/public/Symbol.h",
+          "line": 66,
+          "text": "  IF_EXPLICIT_RESOURCE_MANAGEMENT(MACRO(dispose)) \\",
+          "sha256": "2cc5b3fd1085ffa6dd66df3f7328f5cd4a7dbd44db006a0361eed34832bdaa4c",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Well-known disposal symbol macro"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/public/TypeDecls.h",
+          "line": 135,
+          "text": "#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT",
+          "sha256": "b48bd03fc0813b7f29df3d6b795327ebd4fb2f968d6d55c314d2427c0e479d73",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Compile macro expansion"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/builtin/Symbol.cpp",
+          "line": 61,
+          "text": "                              HandleObject proto) {",
+          "sha256": "e6b3861315985be97d48e5b6dda9dbd4791746dc971a02faf6e2ea0c28f0d307",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Native installation of all well-known symbol identities"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/moz.configure",
+          "line": 139,
+          "text": "    \"--enable-explicit-resource-management\",",
+          "sha256": "7bed9aebfa41bd922c2d92afa81b727a0df43774eb539b20e66fcf4bda535f2b",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Compile feature option/default"
+        },
+        {
+          "owner": "main",
+          "path": "packages/registry/spidermonkey/build-spidermonkey.sh",
+          "line": 297,
+          "text": "ac_add_options --enable-explicit-resource-management",
+          "sha256": "f23bf73fe4513e2249ae5567e75f0b3c1288a84b68ca944eb7f793b5cf37f371",
+          "identity": "6d5ebb19b24572480edebd5dc355dfca36ae63c6",
+          "description": "Main explicitly enables compile feature"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/shell/js.cpp",
+          "line": 17737,
+          "text": "#ifdef ENABLE_EXPLICIT_RESOURCE_MANAGEMENT",
+          "sha256": "f5f647655a410e9ceb5170ce1c18e74572be84f04fbef542c758b16283fc22ab",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Patched native shell enables runtime resource pref"
+        }
+      ]
+    },
+    {
+      "id": "P04",
+      "intrinsic": "Error.captureStackTrace",
+      "sourceStatus": "Real native implementation exists and archive runtime pref defaults true; Node-equivalent stack contract remains partial.",
+      "nodeRequirement": "Node captures the actual Error static method into ErrorCaptureStackTrace and uses it for aggregate/hidden constructor boundaries. Exposing a callable method and implementing structured Node stack behavior are separate requirements.",
+      "engineEvidence": "ErrorObject.cpp registers exn_captureStackTrace; JSObject.cpp omits it only if experimental_error_capture_stack_trace is false. Archive StaticPrefList.yaml defaults that pref true. The implementation unwraps the optional callable boundary, captures real SavedFrames, builds a string immediately with fixed MAX_REPORTED_STACK_DEPTH, and defines a writable/configurable nonenumerable stack data property. Its own comment explicitly follows JSC data-property behavior rather than V8 accessor behavior.",
+      "configurationAndRuntimeLimits": "This corrects a blanket statement that the pinned engine lacks captureStackTrace. Runtime flags or embedding may override the pref; no actual running artifact was checked. The absence guards in old Node generation source are not proof of current engine absence.",
+      "nextOwningWork": "Reuse actual engine capture/frame machinery; implement Node structured/lazy formatting and limit/descriptor behavior in the owning engine+errors binding. No new library wrapper or fake global is needed.",
+      "anchors": [
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/per_context/primordials.js",
+          "line": 230,
+          "text": "  copyPropsRenamed(original, primordials, name);",
+          "sha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Static Error properties captured generically"
+        },
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/errors.js",
+          "line": 26,
+          "text": "  ErrorCaptureStackTrace,",
+          "sha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "ErrorCaptureStackTrace dependency"
+        },
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/errors.js",
+          "line": 189,
+          "text": "      ErrorCaptureStackTrace(err, aggregateTwoErrors);",
+          "sha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Required real constructor boundary capture"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/ErrorObject.cpp",
+          "line": 106,
+          "text": "static const JSFunctionSpec error_static_methods[] = {",
+          "sha256": "de48a417c59cbb22f865e18c061c4c8311186526da23515435aad0658e683461",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Native static method registration"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/JSObject.cpp",
+          "line": 2248,
+          "text": "  if (key == JSProto_Function &&",
+          "sha256": "dd6db4cca2928018a449629caf5d6f423ca6fd0a1d803807658f207dee1dc8dc",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Runtime preference gate"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/ErrorObject.cpp",
+          "line": 1104,
+          "text": "  Rooted<JSObject*> caller(cx, nullptr);",
+          "sha256": "de48a417c59cbb22f865e18c061c4c8311186526da23515435aad0658e683461",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Actual callable boundary unwrap"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/ErrorObject.cpp",
+          "line": 1114,
+          "text": "  RootedObject stack(cx);",
+          "sha256": "de48a417c59cbb22f865e18c061c4c8311186526da23515435aad0658e683461",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Actual fixed-depth frame capture"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/ErrorObject.cpp",
+          "line": 1130,
+          "text": "  // V8 installs a non-enumerable, configurable getter-setter on the object.",
+          "sha256": "de48a417c59cbb22f865e18c061c4c8311186526da23515435aad0658e683461",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Explicit eager data-property behavior"
+        }
+      ]
+    },
+    {
+      "id": "P05",
+      "intrinsic": "Error.prepareStackTrace / structured CallSite formatting",
+      "sourceStatus": "Node-required hook contract not found in inspected production SpiderMonkey source.",
+      "nodeRequirement": "Unchanged realm.js unconditionally installs a per-realm setPrepareStackTraceCallback through errors binding and defines Error.prepareStackTrace. internal/errors.js callback expects actual structured CallSite objects and correct originating realm/global. Merely defining a JS function property does not cause the engine to invoke it.",
+      "engineEvidence": "Production js/src and js/public text searches found no prepareStackTrace or stackTraceLimit references. ErrorObject::getStack builds a stack string from SavedFrames directly. SpiderMonkey SetStackFormat supports V8-like string layout only; it is not a structured formatter callback. SavedFrame source/line/column/function/async-parent APIs are real primitives available for an implementation, not an existing complete CallSite API.",
+      "configurationAndRuntimeLimits": "Negative source search is bounded to the inspected retained tree; no built-artifact behavior was queried. Tree includes Kandelo patches, source identity is recorded per file. This is a documented engine/embedding behavior difference, not an upstream defect allegation.",
+      "nextOwningWork": "Earliest substantive owning-engine work: real saved-frame retention, lazy formatter invocation with realm selection/reentrancy, CallSite objects/descriptors and upstream errors callback binding. Keep upstream JS unchanged.",
+      "anchors": [
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/bootstrap/realm.js",
+          "line": 485,
+          "text": "function setupPrepareStackTrace() {",
+          "sha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Mandatory per-realm prepare callback setup"
+        },
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/bootstrap/realm.js",
+          "line": 504,
+          "text": "  ObjectDefineProperty(Error, 'prepareStackTrace', {",
+          "sha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Public Error.prepareStackTrace property installation"
+        },
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/errors.js",
+          "line": 123,
+          "text": " * Every realm has its own prepareStackTraceCallback. When `error.stack` is",
+          "sha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Structured CallSite and realm requirements"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/ErrorObject.cpp",
+          "line": 833,
+          "text": "  RootedObject savedFrameObj(cx, obj->as<ErrorObject>().stack());",
+          "sha256": "de48a417c59cbb22f865e18c061c4c8311186526da23515435aad0658e683461",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Error getStack builds direct engine string"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/public/Stack.h",
+          "line": 54,
+          "text": " * The default format is StackFormat::SpiderMonkey.  Use StackFormat::V8",
+          "sha256": "b59c58aa6b7c73bf42997cf0f8ddf23f4156c7e1458e91fab8e9420a120eadc7",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "V8 string-format option alone"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/SavedStacks.cpp",
+          "line": 777,
+          "text": "JS_PUBLIC_API SavedFrameResult GetSavedFrameSource(",
+          "sha256": "f3ce35c98cda7bfff22c7c929dfab13bc9d9e4f9979d2a1ba013a2f40c85e9ae",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Actual saved-frame source access"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/SavedStacks.cpp",
+          "line": 919,
+          "text": "JS_PUBLIC_API SavedFrameResult GetSavedFrameAsyncParent(",
+          "sha256": "f3ce35c98cda7bfff22c7c929dfab13bc9d9e4f9979d2a1ba013a2f40c85e9ae",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Actual saved-frame async parent access"
+        }
+      ]
+    },
+    {
+      "id": "P06",
+      "intrinsic": "Error.stackTraceLimit",
+      "sourceStatus": "Required Node behavior absent from inspected engine path; fixed depth is not equivalent.",
+      "nodeRequirement": "Node temporarily sets stackTraceLimit=0 around error construction, restores it, tests descriptors, and gates/calls captureStackTrace. Correct limits affect captured/retained frames and later formatted output, not just a JS property value.",
+      "engineEvidence": "No production stackTraceLimit source reference found. Native captureStackTrace directly requests JS::MaxFrames(MAX_REPORTED_STACK_DEPTH); normal Error getStack consumes engine SavedFrames and formats directly. Installing a number property would not make those engine paths honor it.",
+      "configurationAndRuntimeLimits": "No runtime probe run. Do not claim all general engine stack capture must be rewritten: actual engine SavedFrame capture and boundary censoring are useful. Exact constructor/accessor and arbitrary error-object semantics still need design.",
+      "nextOwningWork": "Implement per-realm Error limit/descriptors and enforcement in native error capture/constructor paths, shared with P05. Do not bypass upstream isErrorStackTraceLimitWritable or manufacture frame truncation success in a public JS adapter.",
+      "anchors": [
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/errors.js",
+          "line": 181,
+          "text": "      const limit = Error.stackTraceLimit;",
+          "sha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Node zero-limit construction behavior"
+        },
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/errors.js",
+          "line": 248,
+          "text": "  // Do no touch Error.stackTraceLimit as V8 would attempt to install",
+          "sha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Snapshot/descriptor-sensitive writable check"
+        },
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/errors.js",
+          "line": 416,
+          "text": "        const limit = Error.stackTraceLimit;",
+          "sha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Zero-limit errors construction and restore"
+        },
+        {
+          "owner": "node",
+          "path": ".context/nodejs-lts-cache-v2/node-v26.13.0/lib/internal/errors.js",
+          "line": 546,
+          "text": "      Error.stackTraceLimit && ErrorCaptureStackTrace(error, wrappedFn);",
+          "sha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+          "identity": "Node 26.13.0 / 18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+          "description": "Actual capture gate"
+        },
+        {
+          "owner": "engine",
+          "path": ".context/node26-mozilla-style-source/tree/firefox-140.11.0/js/src/vm/ErrorObject.cpp",
+          "line": 1116,
+          "text": "          cx, &stack, JS::StackCapture(JS::MaxFrames(MAX_REPORTED_STACK_DEPTH)),",
+          "sha256": "de48a417c59cbb22f865e18c061c4c8311186526da23515435aad0658e683461",
+          "identity": "Retained Mozilla 140.11.0 source cache, includes Kandelo patches",
+          "description": "Current fixed max depth capture"
+        }
+      ]
+    }
+  ],
+  "runtimeTestsRun": false,
+  "probesRun": false,
+  "buildsRun": false,
+  "trackedEdits": false,
+  "unresolved": [
+    "Actual generated config/compiled artifact and shell option state have not been inspected.",
+    "No unchanged primordial execution or multi-realm initialization tested.",
+    "General ECMA constructor descriptor/semantics for other eagerly captured names are not audited merely from ProtoKey declarations.",
+    "Full Node CallSite fields, async frame/function identity and cross-realm formatting need a design before implementation."
+  ],
+  "coordinatorVerification": {
+    "anchorFileHashesAndExactLinesVerified": 45,
+    "runtimeNotVerified": true
+  }
+}
