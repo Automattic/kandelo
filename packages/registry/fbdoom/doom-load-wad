@@ -1,0 +1,20 @@
+#!/bin/sh
+# The Kandelo exchange handlers for the game machines, run by kxchgd as the
+# handler account with the batch directory as $1. DOOM and Quake act only
+# while their wrapper runs. The shared importer inspects ZIPs, directories
+# and executable/ROM contents; unrecognized input goes to exchange-save.
+batch="$1"
+status() { setfattr -n user.kandelo.status -v "$1" "$batch" 2>/dev/null || true; }
+wrapper_pid() {
+    pid=$(cat "$1" 2>/dev/null) && kill -0 "$pid" 2>/dev/null && echo "$pid"
+}
+first_entry() { for entry in "$batch"/*; do echo "$entry"; return; done; }
+
+pid=$(wrapper_pid /run/user/1000/doom-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
+wad=$(first_entry)
+cp "$wad" /var/games/doom/user.wad.tmp && mv -f /var/games/doom/user.wad.tmp /var/games/doom/user.wad || {
+    status "failed: could not store the WAD"
+    exit 1
+}
+status "loading $(basename "$wad")"
+kill -HUP "$pid"

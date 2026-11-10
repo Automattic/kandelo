@@ -1,0 +1,46 @@
+#!/bin/sh
+# The Quake software demo's launch wrapper, written eagerly to
+# /usr/bin/quake. It extracts id1/pak0.pak from id's original shareware
+# archive on first launch using the image's own lazy tools (unzip -> lha), then
+# execs the lazy engine at /usr/libexec/quake with the shareware basedir. Using an
+# absolute engine path avoids recursing back into this wrapper via PATH. The
+# step is idempotent and surfaces failure honestly; the engine then reports its
+# own missing-data error rather than faking success. The engine runs under
+# the supervisor, so a pak0.pak sent to the machine restarts it.
+#
+# The supervise function below is a copy of the shell's shared supervisor
+# (SUPERVISE_FUNCTION in images/vfs/scripts/build-source-rootfs-shell-image.ts,
+# which documents it); a test keeps the copies identical.
+set -e
+BASE=/var/games/quake
+PAK="$BASE/id1/pak0.pak"
+ZIP=/usr/share/quake/quake106.zip
+if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
+    /usr/bin/quake-data shareware "$ZIP" "$BASE"
+fi
+supervise() {
+    pidfile="$1"
+    shift
+    exec 3<&0
+    echo $$ > "$pidfile"
+    restart=0
+    trap 'restart=1; kill -TERM "$engine" 2>/dev/null' HUP
+    trap 'kill -TERM "$engine" 2>/dev/null; wait "$engine"; rm -f "$pidfile"; exit 130' INT TERM
+    while :; do
+        restart=0
+        start_engine "$@"
+        status=0
+        wait "$engine" || status=$?
+        # A trapped signal ends the wait early; wait for the engine itself.
+        while kill -0 "$engine" 2>/dev/null; do wait "$engine" || status=$?; done
+        [ "$restart" = 1 ] || break
+    done
+    rm -f "$pidfile"
+    exit "$status"
+}
+
+start_engine() {
+    /usr/libexec/quake -basedir "$BASE" "$@" <&3 3<&- &
+    engine=$!
+}
+supervise /run/user/1000/quake-launch.pid "$@"

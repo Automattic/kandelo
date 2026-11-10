@@ -1,0 +1,106 @@
+#!/bin/bash
+# The emulator launcher, installed as /usr/bin/retro-run. It picks one
+# of the three lazy emulators (fceumm, genesis-plus-gx, snes9x) for a ROM and
+# execs it:
+# `retro-run game.sfc`, passing any further options (`--state FILE`) to the
+# emulator. With no argument it runs the NES starter ROM.
+# `retro-run --identify FILE` prints the system it detected (nes, md, sms, gg
+# or sfc) and exits 0, or exits 1 when FILE is not a ROM. `retro-run --keys
+# [FILE]` prints which key is which button for that ROM's emulator.
+#
+# WHY it reads the ROM instead of trusting its extension: dumps circulate with
+# wrong or generic extensions (.bin, .smc for a HiROM game), so the system is
+# identified the way emulator frontends identify a headerless dump: the iNES
+# magic at offset 0, "SEGA" at 0x100 for Mega Drive, "TMR SEGA" near the end
+# of a Master System or Game Gear ROM, and for SNES the header checksum and
+# its complement at the LoROM/HiROM header offsets (with and without a
+# 512-byte copier header). A file that matches none of them is rejected with
+# a message rather than handed to an arbitrary core.
+#
+# The cores themselves take the system type from the path's extension, so
+# the launcher runs the ROM through a symlink named for what it detected.
+# Pick the emulator core for a ROM from the ROM's own bytes, then exec it.
+#
+# Every process this script starts takes real time on Kandelo, so it reads the
+# ROM's first 64 KiB once and does everything else with bash builtins. Probing
+# each offset with its own dd|od|tr pipeline took about 25 processes to reach
+# the SNES test, and seconds before a SNES game started.
+IDENTIFY=""; KEYS=""
+case "${1:-}" in
+    --identify) IDENTIFY=1; shift ;;
+    --keys) KEYS=1; shift ;;
+esac
+ROM=${1:-/usr/share/retro-emulators/roms/240pee.nes}
+RUN=${XDG_RUNTIME_DIR:-/run/user/$UID}/retro
+
+if [ ! -r "$ROM" ] || [ -d "$ROM" ]; then
+    echo "retro-run: cannot read ROM: $ROM" >&2
+    exit 1
+fi
+
+# Every signature below lies in the first 66,016 bytes.
+HEX=$(od -An -tx1 -v -N 66016 "$ROM" | tr -d ' \n')
+# $1=offset $2=count -> H=lowercase hex of those bytes (shorter past the end)
+hex_at() { H=${HEX:$(( $1 * 2 )):$(( $2 * 2 ))}; }
+
+# A SNES header stores a checksum and its bitwise complement side by side.
+snes_header_at() {
+    hex_at "$1" 4
+    [ ${#H} -eq 8 ] || return 1
+    [ $(( 16#${H:0:4} ^ 16#${H:4:4} )) -eq 65535 ]
+}
+
+CORE=""; EXT=""
+hex_at 0 4
+if [ "$H" = "4e45531a" ]; then
+    CORE=/usr/bin/fceumm; EXT=nes
+else
+    hex_at 256 4
+    if [ "$H" = "53454741" ]; then
+        CORE=/usr/bin/genesis-plus-gx; EXT=md
+    fi
+fi
+if [ -z "$CORE" ]; then
+    for off in 32752 16368 8176; do
+        hex_at "$off" 8
+        if [ "$H" = "544d522053454741" ]; then
+            CORE=/usr/bin/genesis-plus-gx; EXT=sms
+            # Region nibble: 5-7 are Game Gear, 3-4 are Master System.
+            hex_at $((off + 15)) 1
+            case ${H:0:1} in 5|6|7) EXT=gg ;; esac
+            break
+        fi
+    done
+fi
+if [ -z "$CORE" ]; then
+    for off in 32732 65500 33244 66012; do
+        if snes_header_at "$off"; then
+            CORE=/usr/bin/snes9x; EXT=sfc
+            break
+        fi
+    done
+fi
+if [ -z "$CORE" ]; then
+    echo "retro-run: $ROM is not a recognised NES, SNES, Mega Drive, Master System or Game Gear ROM" >&2
+    exit 1
+fi
+# --identify FILE: name the system and stop, for callers deciding whether a
+# file is a ROM at all (the ROM exchange handler).
+if [ -n "$IDENTIFY" ]; then echo "$EXT"; exit 0; fi
+
+# The cores read the system type from the path's extension, so give the ROM
+# a name that carries what its contents said. The rest of the name is the
+# ROM's own: FCEUmm takes an iNES 1.0 ROM's TV system from tags such as
+# "(E)" or "(Europe)" in it, and a European game named "rom" runs at NTSC
+# speed and pitch. Only a conservative character set survives.
+NAME=${ROM##*/}
+BASE=${NAME%.*}
+BASE=${BASE//[^A-Za-z0-9 ._()!,&+-]/_}
+BASE=${BASE:0:120}
+case "$BASE" in ""|.*|-*) BASE="rom$BASE" ;; esac
+case "$ROM" in /*) ;; *) ROM="$PWD/$ROM" ;; esac
+[ -d "$RUN" ] || mkdir -p "$RUN" || exit 1
+LINK="$RUN/$BASE.$EXT"
+ln -sf "$ROM" "$LINK" || exit 1
+[ -n "$KEYS" ] && exec "$CORE" "$LINK" --keys
+exec "$CORE" "$LINK" "${@:2}"

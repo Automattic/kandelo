@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-spec = importlib.util.spec_from_file_location('game_import', Path(__file__).resolve().parents[2] / 'images/vfs/runtime/game-import.py')
+spec = importlib.util.spec_from_file_location('game_import', Path(__file__).resolve().parents[2] / 'packages/registry/game-import/game-import.py')
 game = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(game)
 
