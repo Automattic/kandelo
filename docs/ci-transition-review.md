@@ -22,6 +22,51 @@ old behavior; do not enable old workflows wholesale. Additional registered
 workflows absent from the current tree (including the old CI, benchmarks,
 and Homebrew probes) were already individually disabled and remain so.
 
+## Main update restriction and emergency merges
+
+The active [Main promotion writers ruleset](https://github.com/Automattic/kandelo/rules/26974711)
+restricts updates to `refs/heads/main`. Its current bypass list contains only
+`brandonpayton` (GitHub user ID 530877), with `always` bypass. GitHub confirms
+that this account can bypass the rule. The rule does not affect `develop`.
+Other users cannot merge or push updates to `main` through this rule;
+repository administrators can still edit rulesets as part of their admin
+permissions. This is an update restriction, not a source-branch validator.
+
+For an emergency, review the PR and its latest head, then use GitHub's admin
+merge override while authenticated as `brandonpayton`. The CLI equivalent is:
+
+```bash
+gh pr view <number> --repo Automattic/kandelo --json baseRefName,headRefOid
+# Confirm baseRefName is main and pin the reviewed head SHA below.
+gh pr merge <number> --repo Automattic/kandelo --admin --squash \
+  --match-head-commit <reviewed-head-sha>
+```
+
+This permits an emergency PR merge; it does not grant a non-fast-forward
+force-push. The separate default-branch ruleset still blocks deletion and
+history rewrites with no bypass actors. Emergency PR squash/rebase merges
+may cause `main` and `develop` to diverge: reconcile main back into develop
+through a reviewed PR before resuming ancestry-checked daily promotion.
+Record the reason and any skipped validation with an emergency merge.
+
+The promotion App has not yet been identified or added. The current GitHub
+login cannot enumerate Automattic installations: the organization endpoint
+requires `admin:org`, and the user-installation endpoint requires App user
+authentication. Until a dedicated App is configured, only the named human
+account can update main through the update restriction; daily promotion is
+not operational. Do not substitute a personal token or blanket admin bypass
+for the dedicated promotion identity.
+
+Once the App is identified, install it with access limited to Kandelo and
+contents-write permission, arrange its credentials through private secret
+storage, and add its numeric App ID as an `Integration` bypass actor on the
+update rule. Grant no bypass on the deletion/history protections. The
+existing classic main protection also requires a PR (with admin enforcement
+off); configure an App-specific PR-requirement bypass for its direct
+fast-forward operation, or replace that protection deliberately. An update
+ruleset bypass alone does not bypass another rule or classic protection.
+Validate the App path before claiming automatic promotion is enabled.
+
 ## Review decisions by workflow
 
 | Existing workflow | Current role | Adaptation decision |
@@ -88,8 +133,9 @@ and incomplete jobs cannot become successful validation.
 ## Implementation and enablement sequence
 
 1. Land the branch policy and route change PRs to `develop`. Existing main
-   rules currently prevent deletion and non-fast-forward updates; they do
-   not enforce tests or require PRs. Do not claim a daily gate is enforced.
+   rules prevent deletion and non-fast-forward updates; the new main update
+   rule admits only the named emergency actor until the App is added. Classic
+   protection requires PRs but excludes admins. No daily tests are enforced.
 2. Implement a read-only daily candidate build/test workflow, scheduled from
    `main` with an explicit captured `develop` checkout. Skip the build only
    when no commits need promotion. Reject divergent ancestry.
@@ -113,4 +159,4 @@ and incomplete jobs cannot become successful validation.
 
 No source/runtime tests were run for this review and Dependabot routing
 change. It does not establish daily runner readiness, a passing full suite,
-a working promotion writer, or protection against manual direct merges.
+a working promotion writer, or a test/source-branch gate for the emergency actor.
