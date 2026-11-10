@@ -353,7 +353,7 @@ These commands are in the shell image but have no page yet. `man` reports
 
 | Commands | Why there is no page yet |
 |---|---|
-| `curl`, `wget`, `git`, `ffmpeg`, `ffprobe`, `ffplay`, `perl`, `foot`, `sway`, `swaymsg`, `swaybar`, `swaynag`, `swaybg`, `cage`, `labwc`, the `dbus-*` tools | Upstream builds the page with a separate documentation toolchain (curl's `managen`, texi2pod and pod2man, asciidoc, scdoc, xmlto) that the package build does not run yet |
+| `git`, `ffmpeg`, `ffprobe`, `ffplay`, `foot`, `sway`, `swaymsg`, `swaybar`, `swaynag`, `swaybg`, `cage`, `labwc`, the `dbus-*` tools | Upstream builds the page with a separate documentation toolchain (texi2pod and pod2man, asciidoc, scdoc, xmlto) that the package build does not run yet |
 | `freeciv`, `freeciv-server` | Pages are filled in by meson's `configure_file`, not a plain substitution |
 | `sudo` | Pages are produced by configure-generated sed scripts |
 | `clear`, `reset`, `tput`, `tset`, `tabs`, `tic`, `infocmp`, `toe`, `captoinfo`, `infotocap` | ncurses rewrites its pages with `edit_man.sh` at install time |

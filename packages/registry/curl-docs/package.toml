@@ -1,0 +1,26 @@
+kind = "program"
+name = "curl-docs"
+version = "8.11.1"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `curl` package (curl), generated
+# with upstream's own documentation tooling from the same pinned source.
+# tests/package-system/package-docs-source-parity.test.ts keeps the source,
+# SHA-256 and version equal to the `curl` package's.
+[source]
+url = "https://curl.se/download/curl-8.11.1.tar.xz"
+sha256 = "c7ca7db48b0909743eaef34250da02c19bc61d4f1dcedd6603f109409536ab56"
+provider = "archive"
+
+[license]
+spdx = "curl"
+url = "https://github.com/curl/curl/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/curl-docs/build-curl-docs.sh"
+
+[[outputs]]
+name = "curl-docs"
+wasm = "curl-docs.zip"
+fork_instrumentation = "disabled"

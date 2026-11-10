@@ -183,6 +183,10 @@ name = "curl"
 class = "user-software"
 
 [[packages]]
+name = "curl-docs"
+class = "browser-product"
+
+[[packages]]
 name = "dash"
 class = "user-software"
 
@@ -687,6 +691,10 @@ name = "perl"
 class = "user-software"
 
 [[packages]]
+name = "perl-docs"
+class = "browser-product"
+
+[[packages]]
 name = "perl-browser-bundle"
 class = "browser-product"
 
@@ -961,6 +969,10 @@ class = "user-software"
 [[packages]]
 name = "wget"
 class = "user-software"
+
+[[packages]]
+name = "wget-docs"
+class = "browser-product"
 
 [[packages]]
 name = "wordpress"
