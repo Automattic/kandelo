@@ -274,12 +274,25 @@ These are separate results, not six passing game checks.
 The fix branch now includes newly pinned main
 `8161769ed9d2394e7793bfd82be08cbf890e7145`, inheriting its published host ABI
 6 without changing program ABI 56. The merged source ownership/lifecycle
-selection passes 267/267. Normal preparation and the full browser, memory
+selection passes 267/267 and source graphics passes 2,353/2,353. Normal preparation and the full browser, memory
 and paired benchmark gates for that combined tree remain in progress.
 The previous full preview stays frozen at host ABI 5. PR #1678 stays a draft.
 See its current `docs/graphics/cage-reliability-2026-11.md` for
 artifact identities, original failures and exact evidence scopes. The
 broader B2–B6/C1–C3 campaign and full native acceptance remain paused/open.
+
+A smaller WebKit Sway/Foot diagnostic preserves a reference grid after 2,000
+carriage-return writes, with a changed-grid negative control. Cage fails
+before that workload: wlterm wrongly encodes XKB modifier/function keysyms
+as Unicode, adding invisible bytes before shifted characters. The native
+regression reproduces twelve three-byte emissions and passes after the
+translator repair (1/1 Vitest wrapper, UBSan). The strengthened Chromium
+Cage case fails the frozen old terminal with `WLTERM_EXIT code=2` instead
+of zero. Rebuilt all-engine and Node Cage/Sway shifted-input checks remain
+pending. Sydney commits `cf9ad53959` / `3a6b148bac` carry the repair, package
+revision 16 and regressions; the published 56514 rendering preview predates
+this additional input fix. The separate WebKit game-download corruption is
+still unresolved, and no performance/native-feel acceptance is inferred.
 
 ## M1/M2: measurement and frozen consumer workloads
 
