@@ -316,7 +316,11 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
 } as const;
 
 /**
- * The game machines' supervisor loop, shared by their launch wrappers.
+ * The game machines' supervisor loop, shared by their launch wrappers: the
+ * ScummVM wrapper below, and the DOOM and Quake wrappers the fbdoom and
+ * tyrquake packages ship (packages/registry/fbdoom/doom-launch,
+ * packages/registry/tyrquake/quake-launch), which carry a copy that
+ * source-rootfs-shell-bridge.test.ts keeps identical to this one.
  *
  * Kandelo exchange hands a dropped WAD, pak or zip to a handler running as
  * the handler account (docs/architecture.md, "Kandelo exchange"). The handler
@@ -338,7 +342,7 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
  * so an engine started with a bare `&` never saw a key. supervise saves the
  * terminal on fd 3 before the first start.
  */
-const SUPERVISE_FUNCTION = `supervise() {
+export const SUPERVISE_FUNCTION = `supervise() {
     pidfile="$1"
     shift
     exec 3<&0
@@ -358,182 +362,6 @@ const SUPERVISE_FUNCTION = `supervise() {
     rm -f "$pidfile"
     exit "$status"
 }
-`;
-
-/**
- * fbDOOM's machine command, /usr/bin/doom-launch: DOOM with the user's
- * WAD when one has been sent to the machine, else the shareware one, under
- * the supervisor above. The doom WAD handler writes the user's WAD and sends
- * SIGHUP, so the next DOOM plays it.
- */
-const DOOM_LAUNCH_SCRIPT = `#!/bin/sh
-USER_WAD=/var/games/doom/user.wad
-${SUPERVISE_FUNCTION}
-start_engine() {
-    wad=/usr/share/doom/doom1.wad
-    [ -f "$USER_WAD" ] && wad="$USER_WAD"
-    /usr/bin/fbdoom -iwad "$wad" "$@" <&3 3<&- &
-    engine=$!
-}
-supervise /run/user/1000/doom-launch.pid "$@"
-`;
-
-/**
- * The Kandelo exchange handlers for the game machines, run by kxchgd as the
- * handler account with the batch directory as $1. DOOM and Quake act only
- * while their wrapper runs. The shared importer inspects ZIPs, directories
- * and executable/ROM contents; unrecognized input goes to exchange-save.
- */
-const GAME_HANDLER_PRELUDE = `#!/bin/sh
-batch="$1"
-status() { setfattr -n user.kandelo.status -v "$1" "$batch" 2>/dev/null || true; }
-wrapper_pid() {
-    pid=$(cat "$1" 2>/dev/null) && kill -0 "$pid" 2>/dev/null && echo "$pid"
-}
-first_entry() { for entry in "$batch"/*; do echo "$entry"; return; done; }
-`;
-
-const DOOM_LOAD_WAD_HANDLER = `${GAME_HANDLER_PRELUDE}
-pid=$(wrapper_pid /run/user/1000/doom-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
-wad=$(first_entry)
-cp "$wad" /var/games/doom/user.wad.tmp && mv -f /var/games/doom/user.wad.tmp /var/games/doom/user.wad || {
-    status "failed: could not store the WAD"
-    exit 1
-}
-status "loading $(basename "$wad")"
-kill -HUP "$pid"
-`;
-
-const QUAKE_LOAD_PAK_HANDLER = `${GAME_HANDLER_PRELUDE}
-pid=$(wrapper_pid /run/user/1000/quake-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
-pak=$(first_entry)
-dest=/var/games/quake/id1/pak0.pak
-cp "$pak" "$dest.tmp" && mv -f "$dest.tmp" "$dest" || {
-    status "failed: could not store the pak"
-    exit 1
-}
-status "loading $(basename "$pak")"
-kill -HUP "$pid"
-`;
-
-const GAME_IMPORT_SOURCE = fileURLToPath(new URL("../runtime/game-import.py", import.meta.url));
-const GAME_CONTENT_HANDLER = `#!/bin/sh
-export PYTHONHOME=/usr
-exec /usr/bin/python3 /usr/libexec/kandelo/game-import.py exchange "$@"
-`;
-const GAME_PLAY_SCRIPT = `#!/bin/sh
-export PYTHONHOME=/usr
-exec /usr/bin/python3 /usr/libexec/kandelo/game-import.py play "$@"
-`;
-
-/**
- * The emulator launcher, written eagerly to /usr/bin/retro-run. It picks one
- * of the three lazy emulators (fceumm, genesis-plus-gx, snes9x) for a ROM and
- * execs it:
- * `retro-run game.sfc`, passing any further options (`--state FILE`) to the
- * emulator. With no argument it runs the NES starter ROM.
- * `retro-run --identify FILE` prints the system it detected (nes, md, sms, gg
- * or sfc) and exits 0, or exits 1 when FILE is not a ROM. `retro-run --keys
- * [FILE]` prints which key is which button for that ROM's emulator.
- *
- * WHY it reads the ROM instead of trusting its extension: dumps circulate with
- * wrong or generic extensions (.bin, .smc for a HiROM game), so the system is
- * identified the way emulator frontends identify a headerless dump: the iNES
- * magic at offset 0, "SEGA" at 0x100 for Mega Drive, "TMR SEGA" near the end
- * of a Master System or Game Gear ROM, and for SNES the header checksum and
- * its complement at the LoROM/HiROM header offsets (with and without a
- * 512-byte copier header). A file that matches none of them is rejected with
- * a message rather than handed to an arbitrary core.
- *
- * The cores themselves take the system type from the path's extension, so
- * the launcher runs the ROM through a symlink named for what it detected.
- */
-const RETRO_RUN_SCRIPT = `#!/bin/bash
-# Pick the emulator core for a ROM from the ROM's own bytes, then exec it.
-#
-# Every process this script starts takes real time on Kandelo, so it reads the
-# ROM's first 64 KiB once and does everything else with bash builtins. Probing
-# each offset with its own dd|od|tr pipeline took about 25 processes to reach
-# the SNES test, and seconds before a SNES game started.
-IDENTIFY=""; KEYS=""
-case "\${1:-}" in
-    --identify) IDENTIFY=1; shift ;;
-    --keys) KEYS=1; shift ;;
-esac
-ROM=\${1:-/usr/share/retro-emulators/roms/240pee.nes}
-RUN=\${XDG_RUNTIME_DIR:-/run/user/$UID}/retro
-
-if [ ! -r "$ROM" ] || [ -d "$ROM" ]; then
-    echo "retro-run: cannot read ROM: $ROM" >&2
-    exit 1
-fi
-
-# Every signature below lies in the first 66,016 bytes.
-HEX=$(od -An -tx1 -v -N 66016 "$ROM" | tr -d ' \\n')
-# $1=offset $2=count -> H=lowercase hex of those bytes (shorter past the end)
-hex_at() { H=\${HEX:$(( $1 * 2 )):$(( $2 * 2 ))}; }
-
-# A SNES header stores a checksum and its bitwise complement side by side.
-snes_header_at() {
-    hex_at "$1" 4
-    [ \${#H} -eq 8 ] || return 1
-    [ $(( 16#\${H:0:4} ^ 16#\${H:4:4} )) -eq 65535 ]
-}
-
-CORE=""; EXT=""
-hex_at 0 4
-if [ "$H" = "4e45531a" ]; then
-    CORE=/usr/bin/fceumm; EXT=nes
-else
-    hex_at 256 4
-    if [ "$H" = "53454741" ]; then
-        CORE=/usr/bin/genesis-plus-gx; EXT=md
-    fi
-fi
-if [ -z "$CORE" ]; then
-    for off in 32752 16368 8176; do
-        hex_at "$off" 8
-        if [ "$H" = "544d522053454741" ]; then
-            CORE=/usr/bin/genesis-plus-gx; EXT=sms
-            # Region nibble: 5-7 are Game Gear, 3-4 are Master System.
-            hex_at $((off + 15)) 1
-            case \${H:0:1} in 5|6|7) EXT=gg ;; esac
-            break
-        fi
-    done
-fi
-if [ -z "$CORE" ]; then
-    for off in 32732 65500 33244 66012; do
-        if snes_header_at "$off"; then
-            CORE=/usr/bin/snes9x; EXT=sfc
-            break
-        fi
-    done
-fi
-if [ -z "$CORE" ]; then
-    echo "retro-run: $ROM is not a recognised NES, SNES, Mega Drive, Master System or Game Gear ROM" >&2
-    exit 1
-fi
-# --identify FILE: name the system and stop, for callers deciding whether a
-# file is a ROM at all (the ROM exchange handler).
-if [ -n "$IDENTIFY" ]; then echo "$EXT"; exit 0; fi
-
-# The cores read the system type from the path's extension, so give the ROM
-# a name that carries what its contents said. The rest of the name is the
-# ROM's own: FCEUmm takes an iNES 1.0 ROM's TV system from tags such as
-# "(E)" or "(Europe)" in it, and a European game named "rom" runs at NTSC
-# speed and pitch. Only a conservative character set survives.
-NAME=\${ROM##*/}
-BASE=\${NAME%.*}
-BASE=\${BASE//[^A-Za-z0-9 ._()!,&+-]/_}
-BASE=\${BASE:0:120}
-case "$BASE" in ""|.*|-*) BASE="rom$BASE" ;; esac
-case "$ROM" in /*) ;; *) ROM="$PWD/$ROM" ;; esac
-[ -d "$RUN" ] || mkdir -p "$RUN" || exit 1
-LINK="$RUN/$BASE.$EXT"
-ln -sf "$ROM" "$LINK" || exit 1
-[ -n "$KEYS" ] && exec "$CORE" "$LINK" --keys
-exec "$CORE" "$LINK" "\${@:2}"
 `;
 
 /**
@@ -591,144 +419,36 @@ exit $rc
 `;
 
 /**
- * The Kandelo exchange handler for a dropped ROM, on every shell machine: it
- * keeps the drop in ~/roms and starts the emulator on its first ROM, so
- * dropping a game, or a folder of them, on the machine plays it. The
- * machine's view brings the display forward when the emulator binds /dev/fb0.
- *
- * WHY it takes every drop and reads contents: ROM collections name files
- * .rom, .bin or nothing at all, and arrive as folders, so no extension rule
- * can pick them out. A drop with no ROM in it goes to exchange-save, exactly
- * as the 99-save catch-all would have handled it.
- *
- * The emulator runs outside any terminal (kxchgd gives handlers /dev/null as
- * stdin), so it reads keys from the machine's keyboard device rather than
- * from a terminal (packages/registry/retro-emulators/frontend/main.c).
- *
- * A dropped ROM replaces the game that is playing: the handler stops the
- * emulator a previous drop or a terminal started (its pid file names it) and
- * waits until it is gone, so the display is free. A display held by another
- * program is not taken; the emulator's own failure (EBUSY on /dev/fb0) is
- * reported as the batch's status.
+ * The image's exchange rules (in /etc): the game machines' and the ROM rule.
+ * Each rule's handler is a lazy file its owner package ships (fetched when a
+ * matching drop first arrives; kxchgd waits for a handler without a time
+ * limit), while the rule itself is eager because kxchgd reads every rule
+ * when it starts.
  */
-const RETRO_LOAD_ROM_HANDLER = `#!/bin/sh
-batch="$1"
-status() { setfattr -n user.kandelo.status -v "$1" "$batch" 2>/dev/null || true; }
-RUNTIME=\${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
-PIDFILE=$RUNTIME/retro.pid
-LOG=$RUNTIME/retro.log
-
-# A ROM is recognised by its contents (retro-run --identify), not its name:
-# collections name ROMs .rom, .bin or nothing at all, and arrive as folders.
-# Only names that could be a ROM are read, so a dropped photo or archive
-# costs one directory walk. The first ROM in path order is played.
-could_be_rom() {
-    base=\${1##*/}
-    case "$base" in
-        .*) return 1 ;;
-        *.*) ;;
-        *) return 0 ;;
-    esac
-    case "$base" in
-        *.[nN][eE][sS]|*.[sS][fF][cC]|*.[sS][mM][cC]|*.[mM][dD]|*.[gG][eE][nN]|*.[sS][mM][dD]) return 0 ;;
-        *.[sS][mM][sS]|*.[gG][gG]|*.[rR][oO][mM]|*.[bB][iI][nN]) return 0 ;;
-    esac
-    return 1
-}
-rom=$(find "$batch" -type f | sort | while IFS= read -r f; do
-    could_be_rom "$f" || continue
-    /usr/bin/retro-run --identify "$f" >/dev/null 2>&1 && { printf '%s\\n' "$f"; break; }
-done)
-# Not a game: what any other drop gets.
-[ -n "$rom" ] || exec /usr/libexec/kandelo/exchange-save "$batch"
-
-# The batch is removed when this handler exits, so the drop is kept in
-# ~/roms as it arrived: a file as itself, a folder with what is in it.
-dir="$HOME/roms"
-mkdir -p "$dir" || { status "failed: could not create $dir"; exit 1; }
-for entry in "$batch"/*; do
-    cp -Rf "$entry" "$dir/" || { status "failed: could not store $(basename "$entry") in $dir"; exit 1; }
-done
-path=\${rom#"$batch"/}
-name=\${rom##*/}
-
-# The game runs as a command in a terminal of its own, typed at the prompt:
-# the user sees what the drop ran, and once the game exits, Up and Enter run
-# it again. kandelo-page-terminal asks the page for that terminal. Where nothing
-# outside the machine opens one (the Node host, or no page taking outputs),
-# the game starts in the background instead, as below.
-quoted=$(printf '%s' "$path" | sed "s/'/'\\\\\\\\''/g")
-if /usr/bin/kandelo-page-terminal --display --title "$name" "retro-run ~/roms/'$quoted'" 2>/dev/null; then
-    status "opened a terminal: retro-run ~/roms/$path"
-    exit 0
-fi
-
-old=$(cat "$PIDFILE" 2>/dev/null)
-if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
-    status "stopping the current game"
-    kill -TERM "$old"
-    tries=0
-    while kill -0 "$old" 2>/dev/null; do
-        tries=$((tries + 1))
-        [ "$tries" -le 50 ] || { status "failed: the running emulator (pid $old) did not stop"; exit 1; }
-        sleep 0.1
-    done
-fi
-rm -f "$PIDFILE"
-
-status "starting $name"
-/usr/bin/retro-run "$dir/$path" </dev/null >"$LOG" 2>&1 &
-pid=$!
-# The emulator publishes its pid once it holds the display, sound and
-# keyboard. The first start of a core fetches it, which can take a while.
-tries=0
-while :; do
-    [ "$(cat "$PIDFILE" 2>/dev/null)" = "$pid" ] && { status "playing $name"; exit 0; }
-    if ! kill -0 "$pid" 2>/dev/null; then
-        # The emulator's own lines start with "[" and its key list with
-        # "Keys for" or two spaces; the last other line is the error.
-        why=$(grep -v -e '^\\[' -e '^Keys for ' -e '^  ' "$LOG" | tail -n 1)
-        [ -n "$why" ] || why=$(tail -n 1 "$LOG")
-        case "$why" in
-            "open /dev/fb0: "*busy*) why="another program holds the display; stop it and drop the ROM again" ;;
-        esac
-        status "failed: $why"
-        exit 1
-    fi
-    tries=$((tries + 1))
-    [ "$tries" -le 1200 ] || { status "failed: the emulator did not start within 2 minutes (see $LOG)"; exit 1; }
-    sleep 0.1
-done
-`;
-
-/** The image's exchange rules (in /etc): the game machines' and the ROM rule. */
 const GAME_EXCHANGE_RULES: ReadonlyArray<{
   name: string;
   handler: string;
-  script: string;
   rule: string;
-  /** The package whose game the rule feeds; a partial shell without it omits the rule. */
-  owner: string;
+  /** The packages the rule needs; a partial shell without them omits it. */
+  owners: readonly string[];
 }> = [
   {
     name: "50-doom-wad.handler",
     handler: "/usr/libexec/kandelo/doom-load-wad",
-    owner: "fbdoom",
-    script: DOOM_LOAD_WAD_HANDLER,
+    owners: ["fbdoom"],
     rule: "# A WAD for DOOM: it restarts with it.\nmatch extension .wad\nkind file\nmax-bytes 33554432\nrun /usr/libexec/kandelo/doom-load-wad\n",
   },
   {
     name: "50-quake-pak.handler",
     handler: "/usr/libexec/kandelo/quake-load-pak",
-    owner: "tyrquake",
-    script: QUAKE_LOAD_PAK_HANDLER,
+    owners: ["tyrquake"],
     rule: "# A pak0.pak for Quake: it restarts with it.\nmatch extension .pak\nkind file\nmax-bytes 33554432\nrun /usr/libexec/kandelo/quake-load-pak\n",
   },
   {
     name: "60-game-content.handler",
     handler: "/usr/libexec/kandelo/game-import",
-    owner: "python-browser-bundle",
-    script: GAME_CONTENT_HANDLER,
+    // The importer is a Python program.
+    owners: ["game-import", "python-browser-bundle"],
     rule: "# Inspect ZIP, DOS, ScummVM and console ROM contents before choosing a runtime.\nkind any\nmax-bytes 536870912\nrun /usr/libexec/kandelo/game-import\n",
   },
   {
@@ -737,8 +457,7 @@ const GAME_EXCHANGE_RULES: ReadonlyArray<{
     // anything else to exchange-save as the catch-all would.
     name: "90-retro-rom.handler",
     handler: "/usr/libexec/kandelo/retro-load-rom",
-    owner: "retro-emulators",
-    script: RETRO_LOAD_ROM_HANDLER,
+    owners: ["retro-emulators"],
     rule: [
       "# A drop holding a NES, SNES, Mega Drive, Master System or Game Gear",
       "# ROM, whatever it is named: kept in ~/roms and played. Anything",
@@ -750,56 +469,6 @@ const GAME_EXCHANGE_RULES: ReadonlyArray<{
     ].join("\n"),
   },
 ];
-
-/**
- * The Quake software demo's launch wrapper, written eagerly to
- * /usr/bin/quake. It extracts id1/pak0.pak from id's original shareware
- * archive on first launch using the image's own lazy tools (unzip -> lha), then
- * execs the lazy engine at /usr/libexec/quake with the shareware basedir. Using an
- * absolute engine path avoids recursing back into this wrapper via PATH. The
- * step is idempotent and surfaces failure honestly; the engine then reports its
- * own missing-data error rather than faking success. The engine runs under
- * the supervisor, so a pak0.pak sent to the machine restarts it.
- */
-const QUAKE_LAUNCH_SCRIPT = `#!/bin/sh
-set -e
-BASE=/var/games/quake
-PAK="$BASE/id1/pak0.pak"
-ZIP=/usr/share/quake/quake106.zip
-if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
-    /usr/bin/quake-data shareware "$ZIP" "$BASE"
-fi
-${SUPERVISE_FUNCTION}
-start_engine() {
-    /usr/libexec/quake -basedir "$BASE" "$@" <&3 3<&- &
-    engine=$!
-}
-supervise /run/user/1000/quake-launch.pid "$@"
-`;
-
-/**
- * fbDOOM's launch wrapper, written eagerly to /usr/bin/fbdoom; the
- * engine is the lazy /usr/libexec/fbdoom. Doom keeps its settings in the user's
- * config file ($HOME/.fdoom.tar/default.cfg, read at startup and saved again
- * when Doom quits; fbdoom's 0009 patch restores both) and has no system-wide
- * one. As a distribution's skeleton files would, the wrapper writes
- * this machine's defaults into a missing config on first launch:
- *
- * - screenblocks 10: the full-width view with the status bar. Doom's own
- *   default, 9, insets the view inside a tiled border; 11 hides the status
- *   bar. Doom's menu (Options, Screen Size) still changes it, and the choice
- *   is saved like any other setting.
- *
- * Keys missing from the file keep Doom's defaults, and an existing config is
- * never touched. exec keeps the process the display's owner, so the machine's
- * dock and "Load WAD" signal Doom itself.
- */
-const FBDOOM_LAUNCH_SCRIPT = `#!/bin/sh
-if [ -n "\${HOME:-}" ] && [ ! -e "$HOME/.fdoom.tar/default.cfg" ]; then
-    mkdir -p "$HOME/.fdoom.tar" && printf 'screenblocks 10\\n' > "$HOME/.fdoom.tar/default.cfg"
-fi
-exec /usr/libexec/fbdoom "$@"
-`;
 
 /**
  * The ScummVM demo's launch wrapper, written eagerly to /usr/bin/scummvm.
@@ -2131,25 +1800,9 @@ export async function buildSourceRootfsShellImage(
   // wlcompositor's statically linked libinput reads its device quirks from
   // LIBINPUT_QUIRKS_DIR, compiled in as /usr/share/libinput.
   if (desktop !== null) unpackDataZip(fs, "/usr/share/libinput", desktop.libinputQuirks);
-  // fbDOOM is a lazy /usr/bin binary; only its launch wrapper is eager.
-  if (includes("fbdoom")) {
-    writeVfsBinary(
-      fs,
-      "/usr/bin/fbdoom",
-      new TextEncoder().encode(FBDOOM_LAUNCH_SCRIPT),
-      0o755,
-    );
-  }
-  // The Quake engine, unzip, and lha are lazy /usr/bin binaries; only this
-  // small extraction+launch wrapper is written eagerly.
-  if (includes("tyrquake")) {
-    writeVfsBinary(
-      fs,
-      "/usr/bin/quake",
-      new TextEncoder().encode(QUAKE_LAUNCH_SCRIPT),
-      0o755,
-    );
-  }
+  // The DOOM and Quake engines, their launch wrappers (/usr/bin/fbdoom,
+  // /usr/bin/doom-launch, /usr/bin/quake) and their exchange handlers are lazy
+  // files the fbdoom and tyrquake packages ship (SHELL_LAZY_BINARY_SPECS).
   // The verified shareware archive is static data. The unprivileged wrapper
   // extracts its playable data into /var/games/quake, never into /usr.
   ensureDirRecursive(fs, "/usr/share");
@@ -2182,21 +1835,11 @@ export async function buildSourceRootfsShellImage(
   }
   // DOOM: the machine command supervises fbdoom; a WAD sent to the machine
   // lands in /var/games/doom, owned by the unprivileged handler account.
-  if (includes("fbdoom")) {
-    writeVfsBinary(fs, "/usr/bin/doom-launch", new TextEncoder().encode(DOOM_LAUNCH_SCRIPT), 0o755);
-    ensureDirRecursive(fs, "/usr/share/doom");
-  }
-  // The emulators and their starter ROMs are lazy; only the launcher that
-  // picks one for a ROM is eager. A dropped ROM runs through it too (the
-  // retro ROM exchange handler below).
-  if (includes("retro-emulators")) {
-    writeVfsBinary(fs, "/usr/bin/retro-run", new TextEncoder().encode(RETRO_RUN_SCRIPT), 0o755);
-  }
-  if (includes("python-browser-bundle")) {
-    writeVfsBinary(fs, "/usr/bin/game-play", new TextEncoder().encode(GAME_PLAY_SCRIPT), 0o755);
-    ensureDirRecursive(fs, "/usr/libexec/kandelo");
-    writeVfsBinary(fs, "/usr/libexec/kandelo/game-import.py", readFileSync(GAME_IMPORT_SOURCE), 0o644);
-  }
+  if (includes("fbdoom")) ensureDirRecursive(fs, "/usr/share/doom");
+  // The emulators, their starter ROMs, the retro-run launcher and the ROM
+  // exchange handler are lazy files the retro-emulators package ships; the
+  // game importer (game-play, game-import, game-import.py) is the
+  // game-import package's.
   // The page publisher belongs to the base shell, while kandelo-terminal is
   // SFWBar's native Foot launcher. Sharing a path overwrites that lazy file
   // canonically and makes independent partial images claim an unselected app.
@@ -2231,9 +1874,19 @@ export async function buildSourceRootfsShellImage(
     }
   }
   ensureDirRecursive(fs, "/usr/libexec/kandelo");
-  for (const { name, handler, script, rule, owner } of GAME_EXCHANGE_RULES) {
-    if (!includes(owner)) continue;
-    writeVfsBinary(fs, handler, new TextEncoder().encode(script), 0o755);
+  for (const { name, handler, rule, owners } of GAME_EXCHANGE_RULES) {
+    if (!owners.every(includes)) continue;
+    // A rule whose handler no selected package installed would hand every
+    // matching drop to a missing program.
+    let handlerStat;
+    try {
+      handlerStat = fs.stat(handler);
+    } catch (error) {
+      throw new Error(`exchange rule ${name} runs ${handler}, which no selected package installs`, { cause: error });
+    }
+    if ((handlerStat.mode & FILE_TYPE_MASK) !== REGULAR_FILE_MODE || (handlerStat.mode & EXECUTE_BITS) === 0) {
+      throw new Error(`exchange rule ${name} runs ${handler}, which is not an executable file`);
+    }
     writeVfsBinary(fs, `${rulesDir}/${name}`, new TextEncoder().encode(rule), 0o644);
   }
   // Create the id1 game dir too: the pak handler writes

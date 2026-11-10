@@ -237,6 +237,10 @@ for rom in 240pee.nes 240pSuite-md-1.21.bin 240pSuite-snes-1.03.sfc; do
     install_local_runtime_file retro-emulators "$STAGE/roms/$rom" \
         "share/retro-emulators/roms/$rom"
 done
+# The ROM launcher and the exchange handler for dropped ROMs: lazy files in
+# the shell, fetched the first time a ROM is played or dropped.
+install_local_runtime_file retro-emulators "$HERE/retro-run" bin/retro-run
+install_local_runtime_file retro-emulators "$HERE/retro-load-rom" libexec/retro-load-rom
 
 # Upstream notices travel with the archive; LICENSE-MAP.md says which notice
 # covers which output and ROM.

@@ -1,0 +1,5 @@
+#!/bin/sh
+# The Kandelo exchange handler for dropped game content: kxchgd runs it as
+# the handler account with the batch directory as $1 (60-game-content.handler).
+export PYTHONHOME=/usr
+exec /usr/bin/python3 /usr/libexec/kandelo/game-import.py exchange "$@"

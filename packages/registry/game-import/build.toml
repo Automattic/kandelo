@@ -1,0 +1,11 @@
+script_path = "packages/registry/game-import/build-game-import.sh"
+inputs = [
+  "packages/registry/game-import/build-game-import.sh",
+  "packages/registry/game-import/game-import",
+  "packages/registry/game-import/game-import.py",
+  "packages/registry/game-import/game-play",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

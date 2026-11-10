@@ -25,7 +25,6 @@ inputs = [
   "packages/registry/shell/scummvm-freeware-games.json",
   "images/vfs/scripts/build-source-rootfs-shell-image.ts",
   "images/vfs/scripts/image-eager-budget.ts",
-  "images/vfs/runtime/game-import.py",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
   "images/vfs/scripts/program-originals.ts",
   "images/vfs/scripts/dependency-original-inputs.ts",

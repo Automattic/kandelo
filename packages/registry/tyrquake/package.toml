@@ -43,3 +43,13 @@ mode = 493
 artifact = "quake-activity"
 guest_path = "/usr/bin/quake-activity"
 mode = 493
+
+[[runtime_files]]
+artifact = "quake-launch"
+guest_path = "/usr/bin/quake"
+mode = 493
+
+[[runtime_files]]
+artifact = "quake-load-pak"
+guest_path = "/usr/libexec/kandelo/quake-load-pak"
+mode = 493
