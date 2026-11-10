@@ -2,15 +2,21 @@
 
 Status (2026-11-10): draft follow-up. Startup and terminal-handoff repairs,
 shared graphics-buffer comparison/copy corrections, and a CSS-sized Cage
-display are implemented. Cage now uses one guest pixel per CSS pixel instead
-of the earlier fixed 1280×720 cap. A frozen partial development image passes
-15/15 Cage checks across Chromium, Firefox and WebKit, including density 1/2
-and six live restarts per engine. Actual Steel Sky rendering and a visible
-game-menu response pass in both Cage and Sway on Chromium.
+display are implemented. Cage uses one guest pixel per CSS pixel instead
+of the earlier fixed 1280×720 cap. The frozen host-adapter-5 canonical build
+passes 15/15 Cage checks across Chromium, Firefox and WebKit. Actual Steel
+Sky rendering and game-menu input pass under Cage in all three engines;
+the corrected Sway check passes Chromium and Firefox but fails WebKit with
+a visibly corrupted terminal before the game appears.
 
-The final canonical builds, destination-main comparison, broad Node/browser
-benchmarks and complete memory gate remain in progress. These partial-image
-results are not canonical-product or native-feel acceptance. The earlier
+The current source integrates pinned main
+`8161769ed9d2394e7793bfd82be08cbf890e7145`, inheriting its published host
+adapter 6 and program ABI 56. Its source ownership/lifecycle selection
+passes 267/267 and source graphics selection passes 2,353/2,353. Normal
+product preparation, combined browser/memory checks and all nine enabled
+Node/browser benchmark comparisons remain in progress. The frozen preview
+and its browser results belong to host adapter 5, not this integration.
+Neither constitutes native-feel acceptance. The earlier
 cap-only same-origin-relay memory result was 18/18; its default-relay 15/18,
 direct-public-relay 12/18, broader graphics 32/36 and corrected affected
 12/12 results below remain separate historical observations. Earlier
@@ -1128,3 +1134,56 @@ screenshots are retained under `.context/cage-coherence-20261109/`. Canonical
 product checks, all nine enabled benchmark suites on both hosts, full current
 memory/lifecycle validation and the remaining R1 acceptance work are pending.
 B2–B6/C1–C3 remain paused; this does not close V1/P1 or establish native feel.
+
+## Canonical preview and current-main integration — 2026-11-10
+
+The normal shell prepared at `5cec616c9f` is preserved with its source,
+kernel, package projections and SDK inputs in an immutable preview checkout.
+Its compressed image is 1,069,839 bytes, SHA-256
+`a79f93bbba4272b3c1354189ba052d044738c2b70790b09bfee8c17001944679`.
+The live HTTP body matches. The Cage URL is
+`http://127.0.0.1:56514/?vfs=%2F__kandelo_source_only_assets__%2Fa79f93bbba4272b3c1354189ba052d044738c2b70790b09bfee8c17001944679%2Fshell.vfs.zst&profile=cage`;
+changing `profile=cage` to `profile=sway` uses the same image. The ordinary
+terminal command is `scummvm-play steel-sky`.
+
+That host-adapter-5 canonical build passes 15/15 tracked Cage cases across
+the three engines, with no retries or skips. A separate Chromium check of
+the frozen URL after the source integration verifies visible shell pixels,
+trusted typing/repaint and `WLTERM_EXIT code=0`, 1/1 pass.
+
+The first six-case canonical Steel Sky check passes Cage 3/3 and fails Sway
+3/3. Its Chromium/Firefox focus observer mistakes Foot's title bar for game
+pixels and then fullscreens Foot; those outcomes do not establish a game
+rendering failure. The corrected observer excludes title/bottom bars,
+requires colored interior pixels and a new tiled window, and keeps Sway's
+ordinary tile. It passes Chromium and Firefox, 2/3 overall. WebKit fails
+after six minutes waiting for game pixels. Inspected trace frames show a
+normal Foot/curl scene around ten seconds and severe stretched/vertical
+terminal glyphs around twenty seconds, persisting before the game appears.
+This is an unresolved rendered-output failure, not an established browser,
+network or memory-exhaustion diagnosis. A separate ordinary WebKit Sway
+input/workspace case passes 1/1; it does not repair the download-time case.
+
+A separate native comparison stress test passes 3/3, one per browser: six
+independent 7,464,963-byte baselines, two shared 64 MiB source memories,
+different offsets and forty alternating equal/dirty rounds, checking every
+result byte. This bounds the tested primitive behavior, not the whole
+renderer. Reports and the failed WebKit media remain retained under
+`.context/cage-coherence-20261109/`.
+
+The latest source at `aa56428b8f` normally merges pinned main
+`8161769ed9d2394e7793bfd82be08cbf890e7145`; the destination's host adapter 6
+is inherited without a private ABI bump. Current-source checks in the dev
+shell pass 17 files / 267 ownership and lifecycle cases and 93 files /
+2,353 graphics cases, with no skips. These are source checks. Canonical
+products, the actual `./run.sh browser` entry, combined browser/memory
+checks, frozen-program compatibility and the complete before/after benchmark
+comparison still need current-integration evidence. Results from the frozen
+host-adapter-5 preview are not carried forward as combined validation.
+
+The older canonical preparation completed bootstrap, SDK/program fixtures,
+MariaDB images and WordPress inputs but its default ABI check failed because
+`origin/main` had advanced to host adapter 6 while that source was adapter 5.
+Its explicit comparison with pinned `e053470fd8` passes, as does the evidence
+registry check; neither is validation against adapter 6. The new destination
+is now pinned for the remaining preparation and comparison.
