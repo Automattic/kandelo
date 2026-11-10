@@ -430,23 +430,11 @@ evidence definitions. Their generated catalog is a canonical projection, not
 a second place to edit product intent.
 
 Pages and tests select products through registries owned by those consumers.
-Ordinary
-software recipes in `packages/registry/` continue to own portable source,
-license, dependency, output, and build facts. Obsolete package entries whose
-primary product is a VFS wrapper are checked transitional adapters only: they
-remain usable during rollout, cannot independently add software inputs, and
-are listed for eventual removal in `abi/staging/legacy-retirement.toml`.
-
-The staging builder boundary resolves every permitted software input before a
-builder starts. A builder can request inputs only by declared stable ID and
-must report every consumed digest, byte count, role, and placement. Missing,
-extra, mismatched, or incompletely captured inputs fail closed. A declared
-lazy product or package layer may stay lazy; resolving an input does not imply
-embedding it.
-
-This is currently a checked-in authority and local validation foundation. It
-does not yet issue remote requests, publish candidates, or verify hosted
-artifacts.
+Software recipes in `packages/registry/` own portable source, license,
+dependency, output, and build facts, including the image packages built
+through the normal resolver. Product manifests and consumer registries do
+not by themselves establish a hosted publication workflow; see
+[repository organization](repository-organization.md#github-pages-publication).
 
 ### Reproducible VFS image packages
 

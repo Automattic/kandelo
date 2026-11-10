@@ -23,7 +23,8 @@ Many registry scripts predate the resolver contract (e.g. `bzip2` writes into it
 | cmake program | `packages/registry/espeak-ng/` |
 | multi-output program | `packages/registry/diffutils/` |
 | runtime files as a lazy archive | vim, per `docs/porting-guide.md` "Reference implementation" |
-| copy/template/ZIP man-page archive, no SDK | `packages/registry/xz-docs/`, `packages/registry/lsof-docs/` |
+| upstream man-page archive, no SDK | `scripts/install-package-man-pages.sh` (source staging and archive installation) |
+| template man-page archive, no SDK | `packages/registry/lsof-docs/` |
 | man pages generated from real guest programs | `packages/registry/coreutils-docs/`; retain its guest-program dependencies and default SDK setting |
 
 Choose `[build].toolchain` before adapting a recipe. Use `"none"` when the

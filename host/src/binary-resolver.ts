@@ -1,17 +1,17 @@
 /**
  * Resolve a packaged artifact (Wasm executable/side module, VFS image,
  * archive, or declared runtime data file) from the repo's
- * `local-binaries/` or `binaries/` tree.
+ * selected artifact roots.
  *
- * Priority:
- *   1. `<repo>/local-binaries/<relPath>` — user-built override, unless it is
- *      a legacy fork artifact and a fresher fetched/package candidate exists.
- *   2. `<repo>/binaries/<relPath>` — populated by `scripts/fetch-binaries.sh`.
+ * The source-only policy requires its authenticated projection. The default
+ * policy checks an existing source-only generation first, then local overrides,
+ * the binary cache and installed package artifacts. Package closures retain
+ * one provenance identity rather than mixing files from different roots.
  *
- * Throws if neither exists. Callers that want to tolerate a missing binary
- * should catch and fall back themselves.
+ * Throws on missing or invalid artifacts. Use the tryResolve helpers when
+ * absence is optional; invalid artifact state must still surface.
  *
- * See `docs/binary-releases.md` for the layout.
+ * See `docs/package-management.md` for the layout and build workflow.
  */
 
 import {
@@ -3657,7 +3657,7 @@ function resolveBinaryInFreshProgramContext(relPath: string): string {
   throw new BinaryNotFoundError(
     `Binary not found: ${relPath}\n` +
       checked.map((p) => `  checked: ${p}`).join("\n") +
-      `\n  Run scripts/fetch-binaries.sh, place a file at local-binaries/${adjusted}, or install a package that includes wasm/${relPath}.`
+      `\n  Run ./run.sh setup, build example/test fixtures with scripts/dev-shell.sh bash scripts/build-programs.sh, or install a package that includes wasm/${relPath}.`
   );
 }
 

@@ -13,6 +13,7 @@ use wasm_posix_shared::{Errno, WasmStat};
 
 /// Sentinel host_handle for devfs directory OFDs.
 pub const DEVFS_DIR_HANDLE: i64 = -160;
+pub(crate) const DEVFS_DEV: u64 = 5;
 
 const DT_DIR: u8 = 4;
 const DT_CHR: u8 = 2;
@@ -122,7 +123,7 @@ pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
 pub fn match_devfs_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
     if let Some(_entry) = match_devfs_dir(path) {
         return Some(WasmStat {
-            st_dev: 5,
+            st_dev: DEVFS_DEV,
             st_ino: devfs_ino(path),
             st_mode: S_IFDIR | 0o755,
             st_nlink: 2,
@@ -172,7 +173,7 @@ pub fn match_devfs_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
 /// entries, so repeated lstat calls and getdents report the same identity.
 pub fn devfs_symlink_stat(path: &[u8], target_len: usize, uid: u32, gid: u32) -> WasmStat {
     WasmStat {
-        st_dev: 5,
+        st_dev: DEVFS_DEV,
         st_ino: devfs_ino(path),
         st_mode: S_IFLNK | 0o777,
         st_nlink: 1,

@@ -37,6 +37,39 @@ assert_not_matches() {
   fi
 }
 
+# Package source inputs stage archives; their tests and documentation do not.
+for path in \
+  packages/registry/wordpress/setup.sh \
+  packages/registry/nethack/patches/local.patch \
+  crates/kandelo-cc/src/flags.rs \
+  sdk/src/kandelo-cc.sh \
+  sdk/bin/wasm32posix-cc \
+  tools/mkrootfs/src/builder.ts \
+  crates/fork-instrument/src/main.rs \
+  scripts/run-wasm-fork-instrument.sh \
+  .github/actions/download-run-artifacts/action.yml \
+  .github/scripts/download-dependency-artifacts.sh; do
+  assert_matches package_archive_changed_files "$path" "$path"
+done
+
+for path in \
+  packages/registry/nginx/demo/run.sh \
+  packages/sets/ci.toml \
+  sdk/test/integration.test.ts \
+  crates/kandelo-cc/tests/driver.rs \
+  tools/xtask/src/dump_abi.rs \
+  tools/xtask/README.md \
+  tools/mkrootfs/test/builder.test.ts \
+  scripts/index-current-entry-built-by.sh; do
+  assert_not_matches package_archive_changed_files "$path" "$path"
+done
+
+# Declared recipe inputs override conventional test/metadata exclusions.
+assert_matches package_archive_changed_files "abi/snapshot.json" "abi/snapshot.json"
+assert_matches package_archive_changed_files \
+  "crates/fork-instrument/tests/instrument.rs" \
+  "crates/fork-instrument/tests/instrument.rs"
+
 assert_matches package_archive_changed_files \
   "tools/xtask/src/build_deps.rs" \
   "tools/xtask/src/build_deps.rs"

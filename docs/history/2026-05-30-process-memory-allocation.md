@@ -1,5 +1,11 @@
 # Unified process memory allocator plan
 
+> **Historical reference.** This is the original May 30, 2026 design record. Its status, alternatives, proposed phases and validation targets describe that period, not current support. See [the current memory layout](../architecture.md#memory-layout) for the implemented contract.
+
+Retained from [docs/plans/2026-05-30-unified-process-memory-allocator-plan.md](https://github.com/Automattic/kandelo/blob/e9b878876750dbd9b2d966463579787319c555f3/docs/plans/2026-05-30-unified-process-memory-allocator-plan.md). This is the source tree used to retain the record, not evidence that its tests ran at that commit.
+
+---
+
 **Date:** 2026-05-30
 **Status:** Implemented in PR #595 with follow-up linker ABI work deferred
 **Objective:** Move Kandelo process memory to a single coordinated address-space allocator, with host control memory reserved before the guest heap, so processes start small, grow densely, and avoid brk/mmap/control-region collisions without fixed high address floors.

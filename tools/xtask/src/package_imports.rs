@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use wasm_posix_shared::abi;
 use wasm_posix_shared::program_extensions::{
-    is_extension_import_name, RESERVED_MODULE_PREFIX, stack_v1,
+    is_extension_import_name, RESERVED_MODULE_PREFIX,
 };
 use wasmparser::{FuncType, Parser, Payload, TypeRef};
 
@@ -317,6 +317,7 @@ fn startup_failures(facts: &Imports) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_posix_shared::program_extensions::stack_v1;
 
     #[test]
     fn published_programs_use_the_same_versioned_extension_policy_as_runtime_loading() {

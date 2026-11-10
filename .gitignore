@@ -17,16 +17,12 @@ host/dist/
 host/docs/
 host/wasm/
 
-# Fetched / locally-built binaries. `binaries/` is populated by
-# scripts/fetch-binaries.sh; `local-binaries/` is a user-managed
-# override tree that takes priority. Neither is tracked.
+# Local binary mirrors and build outputs. See docs/package-management.md.
 /binaries/
 /local-binaries/
 /.ci-test-binary-cache/
 
-# PR-build overlay file. Created by scripts/fetch-binaries.sh when
-# checked out on a PR branch with a corresponding pr-<NNN>-staging
-# pre-release. Never committed; see docs/binary-releases.md.
+# Legacy PR-build overlay files are local state, never source.
 binaries.lock.pr
 
 # Dependencies
@@ -40,6 +36,12 @@ node_modules/
 /.context/
 /.scratch/
 test-results/
+# SQLite runners write raw databases, logs and per-run summaries here.
+/test-runs/
+# Legacy Playwright result metadata.
+/tests/results/
+# Private agent task ledgers and scratch notes.
+/.superpowers/
 
 # Claude Code worktree config (added when an agent runs `claude` inside
 # a worktree — never tracked).
