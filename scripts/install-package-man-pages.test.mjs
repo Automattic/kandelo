@@ -28,7 +28,7 @@ source "${helper}"
 ${fn} "$@"
 `;
   try {
-    execFileSync("bash", ["-c", script, "_", ...args], {
+    const stdout = execFileSync("bash", ["-c", script, "_", ...args], {
       env: {
         ...process.env,
         WASM_POSIX_DEP_WORK_DIR: work,
@@ -36,8 +36,9 @@ ${fn} "$@"
         WASM_POSIX_DEP_TARGET_ARCH: "wasm32",
       },
       stdio: "pipe",
+      encoding: "utf8",
     });
-    return { status: 0, stderr: "", out, root };
+    return { status: 0, stdout, stderr: "", out, root };
   } catch (error) {
     return { status: error.status ?? 1, stderr: String(error.stderr), out, root };
   }
@@ -200,5 +201,27 @@ describe("kandelo_man_pages_substitute", () => {
     ]);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/has no '@VERSION@'/);
+  });
+});
+
+describe("kandelo_man_pages_release_date", () => {
+  const dates = ["1.11=2025-01-02", "1.12=2026-05-25"];
+
+  it("prints the date recorded for the version", () => {
+    const result = run("kandelo_man_pages_release_date", ["1.12", ...dates]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("2026-05-25\n");
+  });
+
+  it("fails when the version has no recorded date", () => {
+    const result = run("kandelo_man_pages_release_date", ["1.13", ...dates]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/no release date recorded for version 1\.13/);
+  });
+
+  it("rejects a date that is not YYYY-MM-DD", () => {
+    const result = run("kandelo_man_pages_release_date", ["1.12", "1.12=May 25"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/is not YYYY-MM-DD/);
   });
 });
