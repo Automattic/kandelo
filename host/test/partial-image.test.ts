@@ -45,19 +45,17 @@ const PROBES: Record<string, string> = {
   // Reads the kernel's own message ring and writes to the system log. `-r`
   // keeps the <pri> prefix, which is the part only the kernel can supply: the
   // ring always holds the boot records written when / was loaded, so a
-  // machine that reaches this point has something to print. `logger -s` also
-  // writes to standard error, which is the only way to observe the message
-  // on an image with no daemon -- syslog(3) returns void, so nothing else
-  // can report where it went.
-  // This exact order is a regression guard. It used to hang: a `/dev/kmsg`
-  // reader ended early by `head`, followed by a process opening an AF_UNIX
-  // datagram socket, never completed. It was measured as fixed over five
-  // consecutive runs under these same conditions, so if it ever comes back
-  // this probe is where it surfaces. `dmesg -r` keeps the `<pri>` prefix,
-  // which only the kernel can supply, and `logger -s` also writes to standard
-  // error -- the only way to observe the message on an image with no daemon,
-  // since syslog(3) returns void.
-  toybox: "dmesg -r | head -n 1; logger -s -t probe hello 2>&1",
+  // machine that reaches this point has something to print. `dmesg -S` reads
+  // the same ring through klogctl(), which is the kandelo.klog.v1 program
+  // extension, so it proves the import, the worker's forwarding and the
+  // kernel request end to end. `logger -s` also writes to standard error,
+  // the only way to observe the message on an image with no daemon, since
+  // syslog(3) returns void.
+  // The `dmesg -r | head -n 1; logger` order is a regression guard. It used to
+  // hang: a `/dev/kmsg` reader ended early by `head`, followed by a process
+  // opening an AF_UNIX datagram socket, never completed. It was measured as
+  // fixed over five consecutive runs, so if it comes back it surfaces here.
+  toybox: "dmesg -r | head -n 1; dmesg -S | head -n 1 | sed 's/^/klog: /'; logger -s -t probe hello 2>&1",
 };
 
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -127,6 +125,9 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
       if (manifest!.packages.includes("toybox")) {
         // A record the kernel wrote, carrying the priority it assigned.
         expect(stdout).toMatch(/<\d+>/);
+        // The same ring through klogctl(): a `[seconds.microseconds]` stamp
+        // that toybox only prints when it parsed the kernel's rendering.
+        expect(stdout).toMatch(/klog: \[\s*\d+\.\d{6}\] \S/);
         expect(stdout).toContain("probe: hello");
       }
       if (manifest!.packages.includes("cargo")) expect(stdout).toContain("cargo 1.97.0-nightly");
