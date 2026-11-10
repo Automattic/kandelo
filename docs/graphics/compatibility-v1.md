@@ -28293,7 +28293,24 @@ The default development-relay memory gate passes source 7, ownership 253,
 Node 3 and Bun 7, but only 15/18 browser cases. All three mixed cases stop
 at the required Keen ZIP download: the relay returns 502/ETIMEDOUT. Direct
 and documented production-proxy downloads match the required 153,012 bytes
-and manifest hash. A separate complete gate with that existing supported
-production proxy setting is pending; the default-relay failure remains
-unresolved. See the R1 report for the exact two configurations and retained
+and manifest hash. The direct public-proxy full gate passes 12/18 and
+fails browser boot-data fetches. A same-origin relay preflight passes 6/6
+with actual Doom and Keen frames and running audio. Its full gate then
+passes 18/18, with four complete mixed cycles per engine and source 7,
+ownership 253, Node 3 and Bun 7 passing. Each configuration retains its
+separate verdict, and the default-relay failure remains unresolved. See the R1 report for the exact two configurations and retained
 screenshots, original four graphical failures and corrected case reports.
+
+
+The completed same-origin relay gate is job
+cage-modest-memory-chained-relay-1109-205138-5b94, exit 0 after 34m11s, run
+e4971157-b89f-443f-82ed-7766ccb57fc0. It uses the existing configured proxy
+prefix; proxy/runtime code, original data URLs and manifest hashes, memory
+limits and ownership fences are unchanged. There are zero skips, retries
+or flaky outcomes. All 50 normal source/product/original-fixture identities
+match before and after validation, and both preview HTTP image hashes match.
+This is scoped memory/lifecycle acceptance for that explicit configuration;
+the default 15/18 and direct-public 12/18 remain failures, and the earlier
+unexplained PCM retirement and intermittent Sway findings remain open. PR #1678
+stays a draft. The requested modest Cage preview is available separately
+from broader graphics, native Safari and combined-latest-main acceptance.

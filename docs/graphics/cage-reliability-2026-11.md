@@ -9,8 +9,11 @@ they do not establish a same-resolution renderer speedup. The underlying
 high-resolution whole-buffer coherence cost and the earlier intermittent
 WebKit audio-retirement finding remain open. The default development-relay
 memory gate now passes 15/18; all three mixed cases stop at a required DOS
-archive fetch returning HTTP 502. A separate full run using the documented
-production proxy configuration is pending. The original broader graphical
+archive fetch returning HTTP 502. A direct production-proxy run passes 12/18
+and fails browser boot-data fetches. The verified same-origin relay
+configuration passes the complete 18/18 browser memory gate, with all
+source/ownership/Node/Bun checks green. Each transport retains its separate
+verdict. The original broader graphical
 run is retained at 32/36; corrected affected cases pass 12/12.
 
 This delivery investigates work package R1 after #1594. It does not activate
@@ -891,6 +894,85 @@ inside the shell so nested environment filtering cannot discard it.
 It still prepares normal products and runs every source/host/Node/Bun check
 and all eighteen browser cases. No local archive response is mocked, and
 there is no skip, replacement guest payload, new browser context between
-cycles, relaxed ownership fence or memory-ceiling change. Its result remains
-pending. The original default-relay failure remains visible and is not
-waived by using the separate supported proxy configuration.
+cycles, relaxed ownership fence or memory-ceiling change. That direct-proxy run completes at 12/18, described below. The original
+default-relay failure remains visible as a separate configuration result.
+
+### Direct public proxy result and same-origin data preflight
+
+The direct production-proxy full gate exits 1 after 31m35s, job
+cage-modest-memory-production-proxy-1109-201037-ccee, run
+96c4ef06-f9d5-4d44-b7bb-eb55c96a02b8. Source 7, ownership 253, Node 3 and
+Bun 7 pass, but browser results are **12/18**, with six failures and no skips
+or retries. The three mixed cases and three gesture-activation cases fail
+before Doom starts: browser boot-data fetches of doom1.wad fail through the
+cross-origin public endpoint. The inspected Chromium screenshot shows the
+normal image loaded, then the configured WAD staging error. The HTTP-only
+archive check did not establish browser-compatible cross-origin fetch.
+This run provides no successful repeated-machine memory acceptance.
+
+A third test configuration retains a same-origin browser request and uses
+the existing reviewed relay to retrieve the public proxy's response. Its
+supported configured prefix is:
+
+    /__kandelo_cors_proxy?url=https%3A%2F%2Fwordpress-playground-cors-proxy.net%2F%3F
+
+Both original input URLs and their manifest hashes remain unchanged. The
+same-origin relay preserves the normal fetch and guest execution path,
+header policy, ownership fences and resource bounds. No proxy or runtime
+implementation changes were made. HTTP preflight returns the exact Keen
+archive above and Doom WAD: 4,196,020 bytes, SHA-256
+1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771.
+
+Real browser preflight then passes **6/6**: normal Doom and DOS games on
+Chromium, Firefox and WebKit. Both software consumers render more than
+eight actual framebuffer colors and reach running audio after trusted input.
+These are asset/bootstrap checks in separate test contexts, not a substitute
+for repeated switching in one page realm. The temporary normal-product
+preflight server on 56508 was intentionally retired after verifying its
+owned PID and cwd; user previews were preserved.
+
+The complete unchanged gate implementation is now running with that
+configuration, job cage-modest-memory-chained-relay-1109-205138-5b94,
+run e4971157-b89f-443f-82ed-7766ccb57fc0, on its own port 56506. Its actual
+served module was checked for the configured prefix. Its result is recorded
+below. Each configuration has a separate verdict; the default 15/18 and
+direct-public 12/18 remain adverse observations.
+
+### Completed same-origin relay memory gate
+
+Job cage-modest-memory-chained-relay-1109-205138-5b94 succeeds after
+**34m11s**, exit 0. All **18/18 browser cases** pass, six per engine, with
+four complete mixed-switch cycles in each persistent page/audio realm.
+Source 7, ownership 253, Node 3 and Bun 7 all pass. There are no skips,
+runner retries or flaky outcomes. The canonical JSON-completeness guard
+accepts the result; its temporary raw JSON is removed by the normal trap.
+The retained console and final-validation-receipt.json preserve every
+actual case outcome, run e4971157-b89f-443f-82ed-7766ccb57fc0, command,
+configuration and guarded exit. The six data-readiness preflights remain
+separate checks and are not counted as memory cycles.
+
+| Browser-memory configuration | Browser result | Status |
+| --- | ---: | --- |
+| Default development relay | 15/18 | Required Keen fetch returns 502/ETIMEDOUT; four-cycle acceptance not reached |
+| Direct public production proxy | 12/18 | Browser Doom boot-data fetch fails; repeated-switch acceptance not reached |
+| Verified same-origin relay through the existing public backend | 18/18 | Four complete cycles per engine, all source/host/engine checks pass |
+
+This passing configuration-specific gate validates the new modest display's
+memory/lifecycle path without changing the proxy implementation, package
+payloads or resource limits. The default relay timeout and direct-public
+browser-fetch failure remain unresolved transport findings. The earlier
+unexplained WebKit audio-retirement failure and intermittent Sway observations
+also remain open; a clean execution is not their owner repair.
+
+The final 50-entry normal product/source/original-fixture receipt matches
+every entry from before browser validation. The runtime inputs in the
+feature receipt remain identical; only the documented test fixtures and
+evidence changed afterward. Both original v55/v56 cohorts remain manifest
+bound, and program 56 / host 4 / GL 17 / fork 21 are preserved. HTTP downloads
+from the new 56507 preview and the preserved 56501 control still match their
+respective exact image hashes. The requested modest Cage demo is available;
+the PR remains a draft with the larger recorded findings open. This frozen
+candidate is based on a3490ca0; the later main updates fetched at e9b8788767
+were inspected for workflow guidance and were not merged into this runtime.
+No combined-latest-main, full API-conformance, performance-suite or native
+Safari acceptance is claimed. B2–B6/C1–C3 remain paused.
