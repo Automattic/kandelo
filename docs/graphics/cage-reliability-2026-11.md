@@ -7,8 +7,11 @@ image passes rendering/input/resize/exit checks at browser densities 1 and 2
 in all three engines. Cursor observations support this pixel-quality tradeoff;
 they do not establish a same-resolution renderer speedup. The underlying
 high-resolution whole-buffer coherence cost and the earlier intermittent
-WebKit audio-retirement finding remain open. The previous full memory gate
-passed 18/18; the new resolution candidate's full gate is still pending.
+WebKit audio-retirement finding remain open. The default development-relay
+memory gate now passes 15/18; all three mixed cases stop at a required DOS
+archive fetch returning HTTP 502. A separate full run using the documented
+production proxy configuration is pending. The original broader graphical
+run is retained at 32/36; corrected affected cases pass 12/12.
 
 This delivery investigates work package R1 after #1594. It does not activate
 B2–B6/C1–C3 or claim full graphics/native-feel acceptance.
@@ -797,5 +800,97 @@ Current evidence is Sydney `.context/cage-resolution-20261109/`: normal build
 and ABI logs, source/product receipts, image HTTP verification, cap results,
 light-observer sources/results/review, and inspected visible screenshots.
 Bulk original test traces remain under their registered run directories.
-The broader selected graphical, prepared-product, host and full memory checks
-for this new normal image are pending and will be recorded separately.
+Prepared-product/session units pass 333/333 across three files, including the
+208 source-only cases; host sessions/PTYs pass 15/15 across eight files.
+Final TypeScript inventory remains 144 browser roots and 46 Node unit roots.
+The larger graphical and default-relay memory failures below remain adverse;
+passing focused checks are not substituted for those original outcomes.
+
+### Follow-up checks and retained failures
+
+The first 36-case matrix completed with **32 passes and four failures**,
+zero skips/retries/flaky outcomes, job
+cage-modest-selected-1109-191920-70a5 (32m16s), run
+a49e0c6f-966e-41c4-b8ce-9fdd50f2328e. It exercised twelve cases per engine.
+Two failures exposed test observations that needed correction:
+
+- Firefox's repeated Cage case rejected a valid 1000×612 frame because its
+  PNG compressed to 7,801 bytes, below an 8,000-byte heuristic. The inspected
+  screenshot shows the actual shell prompt. The tests now use their existing
+  shell-pixel proof instead, including the memory sequence; no resource
+  ceiling or required rendering/input/exit condition was relaxed.
+- Chromium's Sway Activity case saw two actual Foot processes, PIDs 108 and
+  120, but collected an empty PID list between asynchronous DOM reads while
+  the Inspector refreshed. The raw before/after attachments and inspected
+  screenshot prove the discrepancy. The helper now reads row count, PID
+  cells and row text in one synchronous snapshot, preserving exact process
+  counts, the new unique PID, retained old PID, compositor owner and real exit.
+
+The two other failures remain observations to investigate: Firefox's Sway
+workspace query left the inspected IPC file empty, and its Activity case
+showed three tiled terminals after one Alt+Enter. Neither is explained by
+the PID-collection fix. A before-cap Firefox Sway control passes the Activity
+case but fails the main Sway case later, waiting for the workspace-two client
+to close after Alt+Shift+Q. That is a different failing step, not a reproduction
+of the exact empty-file failure. A separate candidate Firefox main-Sway case
+then passes 1/1 (113s). These mixed outcomes do not establish an input repair,
+a browser defect or native feel; D1/V1/P1 retain the findings.
+
+After the test corrections, the affected selection passes **12/12**, four per
+engine: six density/cap cases, three repeated Cage lifecycle cases and three
+Sway Activity cases. These are fresh reports, not retries or overwritten
+results. The original full 32/36 matrix remains recorded; the full 36-case
+selection was not rerun after changes confined to the affected test fixtures.
+
+The strengthened density cases also measure the independent native pixel
+box. Chromium and Firefox launch at actual native scale 2, measuring native
+width 3840 for CSS width 1920 while the guest remains 1280×648. Both also
+pass at scale 1. WebKit uses its documented CSS/DPR fallback at densities
+1 and 2. This is stronger than the initial context-DPR emulation alone.
+A separate Chromium native-scale-2 cursor probe measures CSS width 3840,
+native width 7680 and the same 1280×684 guest mode. It records 21 cursor
+paints during a 1.021s sweep plus drain, with the first changed paint 34ms
+after the first moving event. Readiness takes 9.758s in that fresh run.
+The actual Retina-scaled screenshot was inspected. This remains one scoped
+worker-paint observation with background build preparation, not physical
+display latency. The earlier eight-observation table retains its original
+context-DPR inputs; its density-2 rows do not retroactively prove a native
+device-pixel box.
+
+### New default-relay memory run and required data fetch
+
+The exact ./run.sh test browser-memory gate completes **15/18 browser cases**,
+five per engine, zero skips/retries; source 7, ownership 253, Node 3 and Bun 7
+all pass. Job cage-modest-memory-1109-192229-fa8a exits 1 after 37m29s.
+The actual registered run is 30d259d9-338b-44ec-8e4f-51ac21758094; the wrapper's
+suggested UUID was stripped by a nested dev-shell entry. Reviewed console
+outcomes preserve all eighteen cases. The canonical temporary raw JSON was
+deleted by its normal trap; it is not claimed as retained.
+
+All three mixed-switch cases get through Cage, Sway, labwc and tmux in their
+first cycle, then stop before DOSBox renders. The inspected terminal
+screenshots show dos-play keen1 failing its normal download retries with
+HTTP 502. The development relay reports
+Bad Gateway: ETIMEDOUT (https://downloads.sourceforge.net).
+This is a real failed data fetch, not a Cage crash, successful four-cycle
+memory acceptance, or a new out-of-memory diagnosis.
+
+The normal games.tsv requires 153,012 bytes with SHA-256
+3d0730f7e4b7c10967609faf5290768eae40b9b6f685060a0ac17c258521a364.
+Direct downloads through three official SourceForge URLs match those exact
+bytes. A standalone native fetch reaches the first redirect; that does not
+establish that the development relay can complete the download. The existing
+production default proxy, https://wordpress-playground-cors-proxy.net/?,
+returns HTTP 200 and the same manifest-bound bytes.
+
+A separate full gate is running through the exact gate implementation in
+the canonical dev shell with that supported production proxy setting:
+VITE_CORS_PROXY_URL=https://wordpress-playground-cors-proxy.net/?
+and bash scripts/check-browser-memory.sh. This places the configuration
+inside the shell so nested environment filtering cannot discard it.
+It still prepares normal products and runs every source/host/Node/Bun check
+and all eighteen browser cases. No local archive response is mocked, and
+there is no skip, replacement guest payload, new browser context between
+cycles, relaxed ownership fence or memory-ceiling change. Its result remains
+pending. The original default-relay failure remains visible and is not
+waived by using the separate supported proxy configuration.

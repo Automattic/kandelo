@@ -28278,3 +28278,22 @@ The old preview remains preserved separately, the earlier unexplained
 WebKit audio retirement stays open, and the PR remains a draft. Full new
 memory/selected-graphical acceptance is pending; broader campaign work stays
 paused.
+
+
+The follow-up matrix on the modest-display image is retained at 32/36,
+with two corrected fixture observations (compressed PNG size and a
+non-atomic process-row read) and two unresolved Firefox Sway observations.
+The affected cases subsequently pass 12/12, including actual native pixel
+box checks at scale 2 on Chromium and Firefox; a separate Firefox main-Sway
+case passes 1/1. These results are not a clean full-matrix rerun or a repair
+of the intermittent Sway behavior. The normal prepared-product/session
+selection passes 333/333, host sessions/PTYs 15/15, and TypeScript checks pass.
+
+The default development-relay memory gate passes source 7, ownership 253,
+Node 3 and Bun 7, but only 15/18 browser cases. All three mixed cases stop
+at the required Keen ZIP download: the relay returns 502/ETIMEDOUT. Direct
+and documented production-proxy downloads match the required 153,012 bytes
+and manifest hash. A separate complete gate with that existing supported
+production proxy setting is pending; the default-relay failure remains
+unresolved. See the R1 report for the exact two configurations and retained
+screenshots, original four graphical failures and corrected case reports.
