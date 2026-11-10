@@ -98,6 +98,10 @@ remove them.
 
 ## Make a change
 
+Open change PRs against `develop`; `main` receives only daily-tested batches.
+See [Development and daily promotion](docs/development-workflow.md) for PR
+commands, promotion requirements, and the CI transition status.
+
 - Read the reference guide for the area you are changing.
 - Fix platform problems in the layer that owns them. A missing system call
   is a kernel gap to fix, rather than a reason to hide the failure in a demo.
