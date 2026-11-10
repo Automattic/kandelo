@@ -294,6 +294,13 @@ revision 16 and regressions; the published 56514 rendering preview predates
 this additional input fix. The separate WebKit game-download corruption is
 still unresolved, and no performance/native-feel acceptance is inferred.
 
+The maintainer tried the frozen rendering preview in Firefox: responsiveness
+feels decent, `scummvm-play steel-sky` works much better, and performance
+feels similar to Sway. Cage still appears blurrier. The maintainer favors
+landing the current improvement and iterating on sharpness afterward;
+record sharpness as follow-up work. This feedback does not waive the
+remaining correctness, memory, integration or benchmark checks.
+
 ## M1/M2: measurement and frozen consumer workloads
 
 - [ ] Qualify selected-display recording: exact owned window/display,
