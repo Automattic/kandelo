@@ -990,6 +990,14 @@ The Wayland desktop machine (launched from the gallery, or directly with
 - **wlpaint** — a pointer-driven painting canvas.
 - **wlterm** — a libkwl VT100 terminal running a forkpty'd `sh` (bash, as in every Kandelo image).
 
+wlterm's key translator keeps XKB function/modifier keysyms separate from
+text. Shift, Control, Alt and lock-key presses write no PTY bytes; supported
+navigation/control keys retain their explicit terminal sequences. This keeps
+physical Shift transitions from inserting invisible characters into shell
+commands. The VT100 core's native regression covers that distinction, and
+the Cage browser check requires a command containing uppercase letters and
+shifted punctuation to parse and exit successfully.
+
 The Modeset pane bridges card0 to an OffscreenCanvas.
 
 **GPU compositing (default in the browser).** At boot wlcompositor

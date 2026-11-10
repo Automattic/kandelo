@@ -164,8 +164,10 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
     )
     .toBe(false);
 
-  // Gate 5.
-  await page.keyboard.type("exit\n", { delay: 40 });
+  // Gate 5. Physical Shift transitions must not write modifier keysyms as
+  // invisible text. A zero exit proves the shell parsed the actual uppercase
+  // and shifted punctuation, beyond merely repainting the typed command.
+  await typePhysicalText(page, 'test "CAGE" = "CAGE" && test "$((5+7))" -eq 12; exit $?\n', { delay: 40 });
   await expectTerminal(page, /WLTERM_EXIT code=0/, 60_000);
 });
 

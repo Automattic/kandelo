@@ -1187,3 +1187,31 @@ MariaDB images and WordPress inputs but its default ABI check failed because
 Its explicit comparison with pinned `e053470fd8` passes, as does the evidence
 registry check; neither is validation against adapter 6. The new destination
 is now pinned for the remaining preparation and comparison.
+
+### Modifier keys entering Cage's terminal as text
+
+A smaller rapid-output diagnostic passes under WebKit's Sway/Foot tile,
+including 2,000 carriage-return progress writes and an exact final rendered
+grid comparison with a changed-grid negative control. Its Cage counterpart
+fails before the output workload: inspected screenshots contain shell syntax
+errors and invisible characters surrounding shifted punctuation. The earlier
+Bash arithmetic-loop version fails both compositors; the POSIX-loop version
+isolates the Cage input failure. Those fixture outcomes remain retained and
+do not replace the original WebKit game-download corruption.
+
+The owner is wlterm's in-tree VT100 key translator. It treats every keysym
+between `0x20` and `0x10ffff` as a Unicode character, so XKB's Shift_L
+`0xffe1` becomes three UTF-8 bytes for U+FFE1 before the intended shifted
+character. XKB function keysyms are not character codepoints. The repair
+rejects those function-key sets after the explicit navigation/control-key
+mappings. It does not patch Cage, wlroots, libinput or the guest shell.
+
+The native C regression reproduces twelve unwanted three-byte emissions
+before the repair and passes afterward under UBSan through the existing
+VT100 unit test (1/1 Vitest case). It also checks that shifted printable
+characters, Ctrl+A, Return and Left retain their bytes. The tracked Cage
+browser check now physically types uppercase letters and shifted punctuation,
+then requires the shell's arithmetic/string checks and clean compositor exit.
+The `wayland-demo` package revision advances from 15 to 16 for the changed
+terminal bytes. Rebuilt-browser validation remains pending; the frozen
+56514 rendering preview predates this additional input repair.

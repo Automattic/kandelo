@@ -534,7 +534,11 @@ size_t vt100_input_key(uint32_t keysym, uint32_t mods, char *out, size_t out_cap
     case XKB_KEY_Delete:    return emit(out, out_cap, "\x1b[3~", 4);
     default: break;
     }
-    /* Printable keysym → its UTF-8 encoding (xkb returns the codepoint). */
+    /* XKB's function-key sets are not Unicode: Shift_L (0xffe1), for
+     * example, must not inject U+FFE1 before every shifted character. The
+     * navigation/control cases above retain their explicit byte sequences. */
+    if (keysym >= 0xfd00 && keysym <= 0xffff) return 0;
+    /* Printable character → its UTF-8 encoding. */
     if (keysym >= 0x20 && keysym <= 0x10ffff) {
         char buf[4];
         int n = encode_utf8(keysym, buf);
