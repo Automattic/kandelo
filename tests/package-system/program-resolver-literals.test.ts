@@ -72,7 +72,6 @@ const sourceRoots = [
 
 const topLevelSources = [
   "README.md",
-  "TODO-kernel-refactoring.md",
   "build.sh",
   "flake.nix",
   "package.json",

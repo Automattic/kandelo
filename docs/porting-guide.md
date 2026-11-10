@@ -1422,7 +1422,9 @@ directories. Staging does not publish that image.
 SQLite's upstream `test/testrunner.tcl` permutations can be run through
 Kandelo with `scripts/run-sqlite-project-unit-tests.sh`. The wrapper runs the
 existing official test runner on the Node host, the browser host, or both, and
-writes per-host artifacts plus `combined-summary.md` under `test-runs/`.
+writes per-host artifacts plus `combined-summary.md` under the ignored
+`test-runs/` directory. Copy selected evidence to retained storage when needed;
+do not commit raw runner databases or logs.
 
 Build the Tcl and SQLite testfixture prerequisites first:
 

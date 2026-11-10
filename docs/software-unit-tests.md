@@ -30,7 +30,9 @@ results and inventory totals below remain historical **8.3.15** evidence.
 | SpiderMonkey official | Mozilla `jstests.py` and `jit_test.py` harnesses using `js.wasm` through a Kandelo shell wrapper | Paused until the process-memory architecture bug is fixed, so Node/browser results stay comparable | Paused until the browser process-memory architecture bug is fixed |
 | Node.js library | Upstream Node.js `test/parallel/test-*.js` and `test/sequential/test-*.js` through the SpiderMonkey-backed Node-compatible runtime | Completed 3925 tests: 336 PASS, 3264 FAIL, 325 TIME | Completed 3925 tests: 339 PASS, 3564 FAIL, 22 TIME |
 
-Logs from the 2026-05-28 full runs are under `test-runs/software-unit-tests/`.
+Paths under `test-runs/` in this document identify historical local output,
+not checked-in fixtures. Raw runner output is ignored; older committed
+snapshots remain available in Git history.
 
 ## 2026-10-22 Libevent epoll integration
 

@@ -24,14 +24,9 @@ Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes ar
 | `images/vfs/products/` | Canonical VFS product manifests and generated catalog | Pages/test placement and software recipe facts |
 | `apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml` | Pages-owned VFS product selection | VFS product definitions |
 | `tests/vfs-products.toml` | Test-owned VFS product selection and applicability | VFS product definitions |
-| `abi/staging/` | ABI staging request/guard policy, activation, and transition ledgers | Hosted artifact storage or mutable current state |
 | `tools/` | Repo automation such as `xtask` and `mkrootfs` | Product runtime code |
 | `sdk/` | Cross-compilation wrapper CLI and SDK support code | Runtime host implementation |
 | `libc/` | musl submodule, musl overlay, syscall glue | General package registry |
-
-Hosted ABI staging is not operational in this foundation. The paths above
-define local product, policy, and validation authority only until protected
-workflows and hosted evidence prove the corresponding remote capabilities.
 
 ## Host Runtime Layout
 
@@ -93,11 +88,19 @@ Package behavior tests live with the package so future CI can map changes to rel
 | `.context/` | Retained notes, checkpoints, attachments, integration records, and the small validation ownership marker. Conductor preserves this directory when archiving a workspace. |
 | `.scratch/` | Disposable bulk data: job logs/scratch, Playwright temporary profiles and storage, temporary worktrees, source/build experiments, fuzz results, and deployment bundles. Removed with the workspace; Conductor does not preserve it as archived context. |
 | `test-results/<run-id>/` | Playwright screenshots, traces, attachments, and reports, beside each suite's config. Removed with the workspace; explicit output/reporter overrides remain caller-owned. |
+| `test-runs/` | Ignored raw SQLite runner databases, logs and per-run summaries. Select evidence for retention explicitly; do not commit this output tree. |
 
 Use a unique directory per run under `.scratch/`, or the job-provided
 `$KANDELO_AGENT_SCRATCH_DIR`. Never nest scratch checkouts or bulk generated
 output in `.context/`. Copy a concise result and any selected evidence that
 must survive archival into `.context/` or another durable destination.
+
+Keep private agent progress ledgers and handoffs in `.context/`, not in
+tracked tool-specific directories. Keep reusable design rationale in `docs/`
+and current behavior in its authoritative reference. Remove superseded,
+unreferenced implementation checklists rather than leaving old task commands
+beside current guidance; Git history retains them. Dated measurements and
+`tests/baselines/` remain evidence, not current readiness claims.
 
 Registered validation evidence remains until reviewed and explicitly
 released, or the workspace is removed. Use the
@@ -138,51 +141,16 @@ The layout is designed so later CI path filters can make conservative, explainab
 | `apps/browser-demos/**`, `web-libs/**` | Browser app build/tests and relevant package browser specs |
 | `images/**`, `tools/mkrootfs/**` | Rootfs/VFS image checks and consumers of those images |
 
-The canonical VFS catalog and both consumer registries support checked-in
-validation and a deterministic local transition miniature. The protected
-request workflow is owned by
-`.github/workflows/abi-staging-request-feed.yml`; its source policy and
-activation are owned by `abi/staging/request-policy.toml` and
-`abi/staging/request-feed-activation.toml`. Active mode publishes each exact,
-non-endorsing request in its own content-addressed prerelease for protected
-tap-side reconciliation. The publisher uploads only while the prerelease is a
-draft, then makes it public and requires GitHub immutable-release protection
-plus an anonymous byte-for-byte readback before reporting success. Historical
-requests remain separate immutable records; a later head or policy creates a
-new prerelease instead of appending to an existing public release. The
-companion tap workflow remains read-only until its separately reviewed
-activation changes.
+## GitHub Pages Publication
 
-Candidate execution and publication, enforced GitHub Check updates,
-promotion, protected ABI-history mutation, and production Pages deployment
-remain separately guarded staging layers. In particular, active request
-publication does not authorize candidate package writes or promotion.
+There is no active GitHub Pages publisher in this checkout. The browser app
+and documentation are built and checked by
+`.github/workflows/browser-demos-ci.yml`; those checks do not publish a site.
+Package-candidate activation does not dispatch a browser deployment.
 
-The change-scope classifier implements these categories conservatively. VFS
-authority and staging-contract paths reach the non-package runtime gate;
-product manifests also retain their existing VFS/package-image route. They do
-not opt into an existing credentialed package publisher by special case.
-
-## Disabled GitHub Pages Publication
-
-Hosted browser, guide, and generated API publication is currently dormant.
-The retained implementation lives at
-`.github/disabled-workflows/browser-demos-pages.yml`, outside GitHub's workflow
-discovery directory. No active workflow may invoke it, and package-candidate
-activation does not inspect or update a hosted browser deployment.
-
-Pull-request continuous integration still builds and tests the browser app and
-documentation from repository-owned inputs. Those checks validate the current
-source tree; they do not publish it or make an existing `gh-pages` branch a
-current product artifact. Any content already hosted from that branch may be
-historical and must not be treated as an authenticated view of `main`.
-
-Before disablement, the retained workflow assembled the browser demo at the
-branch root, the guide under `guide/`, and API documentation under `api/`. It
-bound a deployment to one source commit and canonical package index, enforced
-a 1,000,000,000-byte logical-size cap, rejected symbolic links, and replaced
-the branch with a fresh orphan commit so content-addressed Vite assets could
-not accumulate indefinitely. Those controls remain dormant reference code,
-not an active publication promise. Re-enabling hosted publication requires a
-separate reviewed change that restores a trigger and current package-backed
+The VFS product catalog and consumer registries remain inputs to local builds
+and validation. Their presence does not establish hosted publication. Older
+hosted content and retired workflow implementations in Git history are
+historical, not authenticated views of the current source. Restoring hosted
+publication requires a reviewed implementation and current package-backed
 deployment evidence.

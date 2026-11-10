@@ -88,56 +88,21 @@ reboot a test's journal or establish full persistent POSIX conformance.
 | [test-pthread.c](test-pthread.c) | Thread creation via clone() |
 | [sysv_ipc_test.c](sysv_ipc_test.c) | SysV IPC (message queues, semaphores) |
 
-### Browser Demos
+### Browser and package examples
 
-The `apps/browser-demos/` app contains interactive demos running real software
-in the browser via Vite:
+The [browser app](../apps/README.md) consumes the same host runtime as these
+examples. Use `./run.sh browser` from the repository root to build and launch
+it; see [Contributing](../CONTRIBUTING.md) for setup and supported commands.
 
-```bash
-cd apps/browser-demos
-npm install
-npx vite --port 5198
-```
+Ported software, package-owned demos and integration tests live in
+[`packages/registry/`](../packages/registry/). See the
+[package overview](../packages/README.md) for examples and each package's
+`package.toml` for its version and outputs. The
+[porting guide](../docs/porting-guide.md) explains how to add a package.
 
-| Demo | URL path | Software |
-|------|----------|----------|
-| Simple Programs | `/` | C example programs |
-| Shell | `/pages/shell/` | dash + GNU coreutils |
-| Python | `/pages/python/` | CPython 3.13 REPL |
-| PHP CLI | `/pages/php/` | PHP 8.4 scripts |
-| nginx | `/pages/nginx/` | Static file serving |
-| nginx + PHP-FPM | `/pages/nginx-php/` | FastCGI integration |
-| MariaDB | `/pages/mariadb/` | SQL database (5 threads) |
-| Redis | `/pages/redis/` | In-memory store (3 threads) |
-| WordPress | `/pages/wordpress/` | nginx + PHP-FPM + SQLite |
-| LAMP | `/pages/lamp/` | MariaDB + nginx + PHP-FPM + WordPress |
+## Built binaries
 
-Live at: [Kandelo browser demos](https://automattic.github.io/kandelo/)
-
-See [docs/porting-guide.md](../docs/porting-guide.md) for how to create new demos.
-
-### Ported Software
-
-Build scripts for real-world software are in `packages/registry/`. Runnable
-package demos live in `packages/registry/<name>/demo/`, and package integration
-test harnesses live in `packages/registry/<name>/test/`.
-
-| Software | Build script | Binary output |
-|----------|-------------|---------------|
-| dash 0.5.12 | `packages/registry/dash/build-dash.sh` | `packages/registry/dash/bin/dash.wasm` |
-| GNU coreutils 9.6 | `packages/registry/coreutils/build-coreutils.sh` | `packages/registry/coreutils/bin/coreutils.wasm` |
-| GNU grep 3.11 | `packages/registry/grep/build-grep.sh` | `packages/registry/grep/bin/grep.wasm` |
-| GNU sed 4.9 | `packages/registry/sed/build-sed.sh` | `packages/registry/sed/bin/sed.wasm` |
-| PHP 8.4 | `packages/registry/php/build-php.sh` | `packages/registry/php/bin/php.wasm`, `php-fpm.wasm` |
-| MariaDB 10.5 | `packages/registry/mariadb/build-mariadb.sh` | `packages/registry/mariadb/bin/mariadbd.wasm` |
-| Redis 7.2 | `packages/registry/redis/build-redis.sh` | `packages/registry/redis/bin/redis-server.wasm` |
-| CPython 3.13 | `packages/registry/cpython/build-cpython.sh` | `packages/registry/cpython/bin/python.wasm` |
-| nginx 1.24 | `packages/registry/nginx/build-nginx.sh` | `packages/registry/nginx/bin/nginx.wasm` |
-| SQLite | `packages/registry/sqlite/build-sqlite.sh` | (library, linked into PHP) |
-| zlib | `packages/registry/zlib/build-zlib.sh` | (library, linked into PHP) |
-| libxml2 | `packages/registry/libxml2/build-libxml2.sh` | (library, linked into PHP) |
-| OpenSSL | `packages/registry/openssl/build-openssl.sh` | (library, linked into PHP) |
-
-## Pre-compiled Binaries
-
-Most examples include pre-compiled `.wasm` files so you can run them without the SDK installed.
+Wasm binaries are generated locally and are not checked in. Follow
+[the test setup instructions](../CONTRIBUTING.md#prepare-to-run-tests), then
+run `scripts/dev-shell.sh bash scripts/build-programs.sh` to build the
+example and test fixtures used by the runners.
