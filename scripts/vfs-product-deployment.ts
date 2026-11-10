@@ -610,6 +610,7 @@ function repositoryAuthorityPaths(sourceRoot: string) {
         join(sourceRoot, "apps/browser-demos/vite.config.ts"),
         join(sourceRoot, "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts"),
         join(sourceRoot, "apps/browser-demos/pages/kandelo/kernel-host/optional-demo-vfs.ts"),
+        join(sourceRoot, "apps/browser-demos/pages/kandelo/kernel-host/canonical-shell-image.ts"),
       ],
       catalogPath,
       galleryPath,
