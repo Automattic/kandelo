@@ -6765,11 +6765,19 @@ journal that would retry a refused deletion before later GL work, which
 nothing guarantees will ever come.
 
 The browser's optional image-owned `presentation.displayScale` advertises
-a readable virtual monitor for bitmap interfaces. The guest mode, 96-DPI
-reference dimensions, scanout, input range, and cursor use one grid. Without
-that setting, the existing native-device-pixel and physical-size path is
-preserved for compositors. See [display presentation](browser-support.md)
-for its bounds and resampling limitations.
+a readable virtual monitor for bitmap interfaces. `displayMaxSize` selects
+a CSS-reference grid without HiDPI supersampling and bounds its preferred
+pixel dimensions, preserving aspect within connector bounds. An explicit
+scale applies before this maximum. The guest mode, 96-DPI reference size,
+scanout, input range and cursor use one grid; this bounds real guest
+framebuffers rather than only enlarging their CSS presentation. Cage's
+profile opts into a 1280×720 maximum for demo responsiveness. Removing or
+changing the preference invalidates a preserved pane's size report before
+another client starts. Other images retain the native-device-pixel and
+physical-size path when neither setting is declared. Higher standard guest
+modes remain available, and this does not add live mode-switch notifications.
+See [display presentation](browser-support.md) for bounds and resampling
+limitations.
 
 KMS display stats distinguish scene presentations from page flips. Cursor-plane updates do not increment scene presentation counters. Slot 0 counts
 canvas presentations from the CPU/scanout presenters and successful direct

@@ -3253,6 +3253,86 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     });
   });
 
+  it.each([1, 2, 3])("bounds real guest pixels at browser density %s", (density) => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost(), kernel = makeKmsKernel();
+      host.setPresentation({ ...host.getPresentation(), displayMaxSize: { width: 1280, height: 720 } });
+      host.attachKernel(kernel as any); host.attachKmsDisplay(makeCanvas());
+      FakeResizeObserver.instances[0].cb([{
+        devicePixelContentBoxSize: [{ inlineSize: 3840 * density, blockSize: 2160 * density }],
+        contentRect: { width: 3840, height: 2160 },
+      }]);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 1280, height: 720 });
+      expect(kernel.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1280, 720, mmFor(1280, 720));
+    });
+  });
+
+  it("does not supersample a smaller bounded display on a HiDPI screen", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost(); host.attachKernel(makeKmsKernel() as any);
+      host.setPresentation({ ...host.getPresentation(), displayMaxSize: { width: 1280, height: 720 } });
+      host.attachKmsDisplay(makeCanvas());
+      FakeResizeObserver.instances[0].cb([{
+        devicePixelContentBoxSize: [{ inlineSize: 1600, blockSize: 1200 }],
+        contentRect: { width: 800, height: 600 },
+      }]);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 800, height: 600 });
+    });
+  });
+
+  it.each([
+    [3840, 2052, 1280, 684],
+    [2560, 1332, 1280, 666],
+    [800, 600, 800, 600],
+    [480, 320, 640, 480],
+  ])("fits the maximum and connector minimum for %sx%s", (w, h, width, height) => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost(); host.attachKernel(makeKmsKernel() as any);
+      host.setPresentation({ ...host.getPresentation(), displayMaxSize: { width: 1280, height: 720 } });
+      host.attachKmsDisplay(makeCanvas()); fireResize(FakeResizeObserver.instances[0], w, h);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width, height });
+    });
+  });
+
+  it("remeasures a preserved display when its image-owned limit changes or is removed", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost(); host.attachKernel(makeKmsKernel() as any);
+      const canvas = makeCanvas(); host.attachKmsDisplay(canvas);
+      const ro = FakeResizeObserver.instances[0]; fireResize(ro, 3840, 2160);
+      const maximum = { width: 1280, height: 720 };
+      host.setPresentation({ ...host.getPresentation(), displayMaxSize: maximum });
+      expect(host.getKmsDisplaySize(1)).toBeUndefined(); expect(ro.target).toBe(canvas);
+      maximum.width = 1920;
+      fireResize(ro, 3840, 2160);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 1280, height: 720 });
+      const reported = host.getPresentation(); reported.displayMaxSize!.width = 1920;
+      expect(host.getPresentation().displayMaxSize).toEqual({ width: 1280, height: 720 });
+      host.setPresentation(host.getPresentation());
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 1280, height: 720 });
+      const native = host.getPresentation(); delete native.displayMaxSize;
+      host.setPresentation(native); expect(host.getKmsDisplaySize(1)).toBeUndefined();
+      fireResize(ro, 3840, 2160);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 3840, height: 2160 });
+    });
+  });
+
+  it("validates and preserves an image-owned display pixel limit", () => {
+    const config = { version: 1, profiles: { limited: { presentation: {
+      bootPrimary: "syslog", runningPrimary: ["kms"], terminalAccess: "drawer", internalsAccess: "drawer",
+      displayMaxSize: { width: 1280, height: 720 },
+    } } } } as any;
+    validateKandeloDemoConfig(config);
+    expect(resolveDemoPresentation(config, "limited")?.displayMaxSize).toEqual({ width: 1280, height: 720 });
+    for (const displayMaxSize of [null, [], {}, {width:1280}, {width:"1280",height:720},
+      {width:639,height:720}, {width:3841,height:720}, {width:1280,height:479},
+      {width:1280,height:2161}, {width:1280.5,height:720}, {width:Infinity,height:720},
+      {width:1280,height:NaN}, {width:1280,height:720,extra:true}]) {
+      expect(() => validateKandeloDemoConfig({ ...config, profiles: { limited: { presentation: {
+        ...config.profiles.limited.presentation, displayMaxSize,
+      } } } })).toThrow("presentation.displayMaxSize");
+    }
+  });
+
   it("keeps native device resolution for a compositor without displayScale", () => {
     withFakeResizeObserver(() => {
       const host = new LiveKernelHost();

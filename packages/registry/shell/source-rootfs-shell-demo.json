@@ -223,7 +223,8 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer"
+        "internalsAccess": "drawer",
+        "displayMaxSize": { "width": 1280, "height": 720 }
       }
     },
     "labwc": {

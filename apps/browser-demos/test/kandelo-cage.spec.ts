@@ -245,3 +245,39 @@ test("Cage resizes, releases its display on exit and survives repeated live rest
   expect(await memoryBoundaryFailures(page)).toEqual([]);
   expect(failures).toEqual([]);
 });
+
+
+for (const density of [1, 2]) {
+  test.describe(`Cage modest display at browser density ${density}`, () => {
+    test.use({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: density });
+    test(`Cage keeps a modest guest display at browser density ${density}`, async ({ page }) => {
+      test.setTimeout(240_000);
+      await gotoMachine(page, "cage");
+      await expectTerminal(page, /WLTERM_READY/, 120_000);
+      await openSurface(page, "Graphics");
+      const canvas = canvasLocator(page);
+      await expect.poll(() => chipText(page), { timeout: 120_000 }).toMatch(/webgl2-gl/i);
+      const mode = (await chipText(page)).match(/([0-9]+)×([0-9]+)/)!;
+      const output = { width: Number(mode[1]), height: Number(mode[2]) };
+      expect(output.width).toBeLessThanOrEqual(1280);
+      expect(output.height).toBeLessThanOrEqual(720);
+      await expect.poll(async () => cageShellTextColumns(page, await canvas.screenshot(), output),
+        { timeout: 60_000 }).toBeGreaterThan(24);
+      await expect(page.getByRole("complementary", { name: "Download status" }))
+        .toBeHidden({ timeout: 60_000 });
+      const width = (await canvas.boundingBox())!.width;
+      await page.setViewportSize({ width: 2560, height: 1440 });
+      await expect.poll(async () => (await canvas.boundingBox())!.width).not.toBe(width);
+      // Host layout fits the active mode; changing the browser size must not
+      // silently replace this live compositor's framebuffer or input grid.
+      expect((await chipText(page)).match(/([0-9]+)×([0-9]+)/)![0]).toBe(mode[0]);
+      await canvas.focus(); await expect(canvas).toBeFocused();
+      const before = await canvas.screenshot();
+      await page.keyboard.type("echo CAGE_MODE_CAP_OK\n", { delay: 40 });
+      await expect.poll(async () => (await screenshotPixelDelta(page, before, await canvas.screenshot())).same,
+        { timeout: 60_000 }).toBe(false);
+      await page.keyboard.type("exit\n", { delay: 40 });
+      await expectTerminal(page, /WLTERM_EXIT code=0/, 60_000);
+    });
+  });
+}

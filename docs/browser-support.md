@@ -3586,10 +3586,30 @@ can change their selected resolution through those options. A live UI
 scaling control needs application-supported relayout or a working display
 resize notification path before it can offer a reliable size change.
 
-Omitting `displayScale` preserves native device-pixel output and CSS-derived
-physical size, so Wayland compositors and DPI-aware applications retain
-ownership of their scaling. This setting belongs to image presentation
-metadata, not application font, theme, or coordinate patches.
+An image can declare `presentation.displayMaxSize`, for example
+`{ "width": 1280, "height": 720 }`, to prefer a modest virtual monitor.
+This uses the CSS-reference grid without HiDPI supersampling, then fits
+that grid within the declared maximum while preserving aspect ratio within
+the connector's bounds. Width must be a whole number from 640 through
+3840 and height from 480 through 2160. A smaller pane keeps its reference
+size unless the 640×480 connector minimum applies. If `displayScale` is
+also declared, that scale is applied before the maximum. The bounded
+monitor reports 96 reference DPI, and the chosen scanout, cursor and input
+coordinates all use the actual guest grid. Cage's normal shell profile
+prefers a maximum of 1280×720 for demo responsiveness; this deliberately
+trades native-density sharpness for smaller graphics buffers.
+
+The maximum constrains the preferred monitor size, rather than removing
+higher standard modes from the virtual connector. A guest can explicitly
+choose another supported mode. The browser fits that actual scanout; this
+setting does not force a live compositor to switch modes after a resize.
+Apply it before launching the graphical client.
+
+Omitting both `displayScale` and `displayMaxSize` preserves native
+device-pixel output and CSS-derived physical size, so compositors and
+DPI-aware applications can retain ownership of their scaling. These
+settings belong to image presentation metadata, not application font,
+theme, or coordinate patches.
 
 Pointer input waits for the first published scanout size; the canvas's
 initial allocation is not an input coordinate space. Absolute positions
