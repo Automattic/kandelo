@@ -1352,8 +1352,8 @@ That record is evidence, not a test allowance.
 
 Two fixed-inventory WebKit Sway/Steel Sky controls against unchanged pinned
 main (`cage-main-copy-stack-control-1110-164508-fe07`) both failed the
-six-minute visible-game assertion (0/2, exit 1 after 12m34s). The first
-has no captured allocation error. The second records `RangeError: Out of
+six-minute visible-game assertion (0/2, exit 1 after 12m34s). The first records an allocation OOM in a process worker
+while recording a fork replay commit. The second records `RangeError: Out of
 memory` at the detached `Uint8Array` allocation in `kernel-scratch.copyOut`,
 this time while resolving epoll readiness, followed by a fatal kernel
 entry diagnostic. Candidate failures reached the same allocation in read
