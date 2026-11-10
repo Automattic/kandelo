@@ -29,7 +29,11 @@ import {
 
 const MAX_MAP_BYTES = 1024 * 1024;
 const MAX_PRODUCT_BYTES = 256 * 1024 * 1024;
-const MAX_SITE_BYTES = 1_000_000_000;
+// A sanity bound on the deployed tree, not a host limit. It began as GitHub
+// Pages' 1 GB site cap; that pipeline is gone. Lazy shell assets (the Rust
+// toolchain alone is ~600 MB) are fetched only when used and, with OPFS-backed
+// browser VFSes, are not held in memory, so the deployment may exceed 1 GB.
+const MAX_SITE_BYTES = 2_000_000_000;
 const MAX_SITE_FILES = 65_536;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const STABLE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
