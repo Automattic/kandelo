@@ -70,6 +70,49 @@ its history into `main`: the next run must be able to distinguish already
 promoted commits from new work. When a daily run fails, leave `main` in place
 and continue integrating fixes into `develop`.
 
+## Manual promotion first
+
+Daily validation will be read-only: report the tested develop SHA, captured
+main SHA, required job results and evidence URL. After inspecting that
+report, `brandonpayton` performs the promotion. No App installation, personal
+automation token or deploy key is needed for this phase. The current main
+update restriction gives this account an explicit bypass; daily validation
+is not yet implemented or enabled.
+
+After every required daily check succeeds, use the following in Bash from
+a Kandelo checkout authenticated as `brandonpayton`. Replace the two SHA
+values with those from the passing report, not today's branch heads:
+
+```bash
+set -euo pipefail
+tested_sha='<full-tested-develop-sha>'
+expected_main_sha='<full-main-sha-captured-by-validation>'
+[[ "$tested_sha" =~ ^[0-9a-f]{40}$ ]]
+[[ "$expected_main_sha" =~ ^[0-9a-f]{40}$ ]]
+git fetch origin refs/heads/main:refs/remotes/origin/main \
+  refs/heads/develop:refs/remotes/origin/develop
+test "$(git rev-parse refs/remotes/origin/main)" = "$expected_main_sha"
+git merge-base --is-ancestor "$expected_main_sha" "$tested_sha"
+git merge-base --is-ancestor "$tested_sha" refs/remotes/origin/develop
+git push --force-with-lease="refs/heads/main:$expected_main_sha" \
+  origin "$tested_sha:refs/heads/main"
+```
+
+The ancestry checks require a fast-forward; the explicit lease rejects a
+concurrent main update. Do not remove a failed guard or retry with new SHA
+values without new matching validation. The command checks Git state, not
+test evidence: the operator must verify the complete successful report.
+Record the report URL and promoted SHA in the promotion log or tracking PR.
+A GitHub squash/rebase merge of develop is not equivalent: it changes commit
+identities. Keep the existing deletion/history protections enabled.
+
+`brandonpayton` retains an emergency PR-merge bypass. An emergency override
+is separate from a daily-tested promotion; record the reason and skipped
+checks, then reconcile main back into develop before the next daily run.
+If automatic promotion is wanted later, evaluate a repository-scoped write
+deploy key and its ruleset/classic-protection permissions as a separate
+change. No automation credential is created by this policy.
+
 ## Transition order and current limits
 
 1. Ship this policy as a bootstrap PR to `main`, before normal development
@@ -91,4 +134,6 @@ The legacy YAML is not an implementation of this policy. Until replacement
 CI is validated and enabled, there is no automatic daily promotion and no
 basis to treat a change on `develop` as fully tested. Do not promote an
 untested batch to `main`. Existing branch rules must be reviewed separately;
-this document does not enforce a GitHub merge restriction.
+the active main update restriction permits only the named human account
+until another promotion identity is deliberately configured. This rule
+restricts writers; it does not verify test evidence or the source branch.
