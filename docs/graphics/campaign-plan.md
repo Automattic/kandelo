@@ -228,6 +228,43 @@ code or resource-limit change was used. The earlier unexplained WebKit audio
 retirement remains open, so the PR remains a draft. This does not resume the
 broader campaign.
 
+### Maintainer-requested shared-buffer repair, 2026-11-10
+
+The maintainer requested a correction to the measured coherence bottleneck
+after comparing Cage with Sway and launching `scummvm-play steel-sky` inside
+their terminals. The current implementation reuses only authenticated,
+quiescent mapping observations and current reader revisions. Large mappings
+use bounded native read-only comparisons; changed runs still publish exact
+bytes, and reader/device imports advance their baseline from stable canonical
+storage so concurrent guest stores remain visible. Unknown memory provenance
+or unavailable native comparison keeps the existing byte-comparison path.
+No ABI, guest software, memory ceiling or syscall dispatch change is involved.
+
+Cage now requests one guest pixel per CSS pixel of its pane, removing the
+temporary 1280×720 cap and Retina supersampling. A frozen partial development
+preview at runtime source `b5727e7cdbca` is available while normal validation
+continues. Its tracked Cage matrix passes 15/15 across Chromium, Firefox and
+WebKit, including input, resize, exit, repeated restart and density checks.
+Two Chromium checks launch the actual Steel Sky engine and open its game
+menu under Cage and Sway. These checks do not establish gameplay cadence,
+physical display latency or native feel. The report retains failed observer
+attempts and the older unexplained unpack/retirement outcomes separately.
+
+Source regressions cover exact writes, concurrent stores, split mappings,
+native 32/64-bit comparison and the unavailable-capability fallback. Node
+passes 14 focused cases; Bun passes the nine coherence/fallback cases.
+Additional strict-native checks fail on pinned Bun 1.3.3's unavailable
+multi-memory/Memory64 capabilities; standalone probes retain that boundary
+without a product workaround. The complete source/memory gate is pending.
+
+Pinned main `e053470fd8140073d811b64eaa6f62cf90978a5c` has completed its own
+normal SDK/program/image preparation. The candidate's full preparation,
+canonical preview, paired application benchmarks, normal desktop checks
+and complete three-engine memory gate remain in progress. PR #1678 stays
+a draft. See its current `docs/graphics/cage-reliability-2026-11.md` for
+artifact identities, original failures and exact evidence scopes. The
+broader B2–B6/C1–C3 campaign and full native acceptance remain paused/open.
+
 ## M1/M2: measurement and frozen consumer workloads
 
 - [ ] Qualify selected-display recording: exact owned window/display,
@@ -507,11 +544,11 @@ assertion or overrule maintainer decisions.
 
 | Field | Current value |
 | --- | --- |
-| Selected next work | Requested modest Cage display implemented and validated; retain high-resolution coherence, transport, Sway and PCM retirement findings |
-| Implementation/release scope | Browser storage diagnostics, terminal visibility/fit, image-owned modest Cage display and regressions; preserve ABI 56/4/17/21 |
+| Selected next work | Validate shared-buffer coherence repair and CSS-sized Cage output; retain transport, Sway, unpack and PCM retirement findings |
+| Implementation/release scope | Browser storage diagnostics, terminal visibility/fit, shared-buffer synchronization and image-owned Cage display policy; preserve ABI 56/4/17/21 |
 | Research inputs | Preserved shipment controls, current-main-based normal reproduction, standalone OPFS/xterm controls and frozen Cage copy/native-call profiles |
 | Main risk | Startup failure and reported runtime crashes/slowness may have different causes |
-| Exit from investigation | Focused repairs and modest display validated; configured four-cycle memory gate passes, while default transport, Sway, PCM, unclassified Cage reports and M1/M2, D1/D2, L1 and V1/P1 remain open |
+| Exit from investigation | Current partial rendering/input checks pass; canonical preparation, paired performance and full memory validation remain pending. Historical configured memory passes do not validate this revision. Default transport, Sway, unpack, PCM, M1/M2, D1/D2, L1 and V1/P1 remain open |
 | Broader campaign state | Paused pending intentional delivery selection; no blanket activation by this plan |
 
 Completion of the baseline campaign requires Q/D/L closure, accepted B/C
