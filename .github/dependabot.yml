@@ -6,6 +6,7 @@ updates:
     directories:
       - "/"
       - "/.github/actions/**"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -24,10 +25,6 @@ updates:
           - "*"
         update-types:
           - "major"
-      actions-security:
-        applies-to: security-updates
-        patterns:
-          - "*"
     cooldown:
       default-days: 7
 
@@ -43,6 +40,7 @@ updates:
       - "/packages/registry/zlib"
       - "/sdk"
       - "/tools/mkrootfs"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -61,9 +59,41 @@ updates:
           - "*"
         update-types:
           - "major"
+    cooldown:
+      default-days: 7
+
+  # Security updates always target main; preserve their existing grouping.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/**"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Security updates always target main; preserve their existing grouping.
+  - package-ecosystem: "npm"
+    directories:
+      - "/"
+      - "/apps/browser-demos"
+      - "/host"
+      - "/packages/registry/libxml2"
+      - "/packages/registry/openssl"
+      - "/packages/registry/sqlite"
+      - "/packages/registry/wordpress/demo"
+      - "/packages/registry/zlib"
+      - "/sdk"
+      - "/tools/mkrootfs"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
       npm-security:
         applies-to: security-updates
         patterns:
           - "*"
-    cooldown:
-      default-days: 7
