@@ -61,6 +61,38 @@ describe("PTY signals versus kernel-owned sleeps", () => {
     rootfsImage = await image.saveImage();
   }, 120_000);
 
+  it("runs external commands after repeated Ctrl-C at the Bash prompt", async () => {
+    let output = "";
+    const diagnostics: string[] = [];
+    const host = new NodeKernelHost({
+      rootfsImage,
+      onPtyOutput: (_pid, data) => { output += new TextDecoder().decode(data); },
+      onHostDiagnostic: (event) => diagnostics.push(event.message),
+    });
+    await host.init();
+    try {
+      const shell = await host.spawnFromVfs("/bin/bash", ["bash", "--noprofile", "--norc", "-i"], {
+        pty: true,
+        env: ["PATH=/bin", "HOME=/", "PS1=RECOVERY_PROMPT> ", "TERM=dumb"],
+      });
+      await expect.poll(() => output).toContain("RECOVERY_PROMPT> ");
+      for (let attempt = 0; attempt < 3; attempt++) {
+        output = "";
+        host.ptyWrite(shell.pid, new Uint8Array([3]));
+        await expect.poll(() => output).toContain("RECOVERY_PROMPT> ");
+        output = "";
+        host.ptyWrite(shell.pid, new TextEncoder().encode(`sleep 0; printf 'RECOVERED_%s:%s\\n' ${attempt} "$?"\n`));
+        await expect.poll(() => output).toContain(`RECOVERED_${attempt}:0`);
+        await expect.poll(() => output).toContain("RECOVERY_PROMPT> ");
+      }
+      host.ptyWrite(shell.pid, new TextEncoder().encode("exit\n"));
+      await shell.exit;
+      expect(diagnostics).toEqual([]);
+    } finally {
+      await host.destroy();
+    }
+  }, 30_000);
+
   it("interrupts a foreground sleep and returns status 130 to the interactive shell", async () => {
     let output = "";
     let sleepingPid: number | undefined;

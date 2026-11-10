@@ -551,6 +551,14 @@ from user handlers. Replay reconstructs the selected catch inside its original
 try; normal results bypass all capture tails. The dispatcher tracks these
 added labels when remapping source branches and handler destinations.
 
+A catch selection belongs to one dynamic entry of its try. Re-entering that
+try during ordinary execution retires its previous selector and retained
+exception recipe; entering a different try preserves the current selection.
+This matters for input loops using `setjmp`/`longjmp`: a later fork must resume
+the current loop iteration rather than repeatedly replaying an earlier jump.
+The frame format and program ABI are unchanged. Rebuild affected prepared
+programs with the corrected instrumenter through the normal package build.
+
 Node component fixtures execute scalar `catch` and `catch_ref` ownership on
 both pointer widths, with shared and inline frame codecs, empty or multi-value
 try inputs, normal try results, and forks inside the try or after its handlers.
