@@ -3,8 +3,11 @@
 Status (2026-11-10): draft follow-up. Startup and terminal-handoff repairs,
 shared graphics-buffer comparison/copy corrections, and a CSS-sized Cage
 display are implemented. Cage uses one guest pixel per CSS pixel instead
-of the earlier fixed 1280×720 cap. The frozen host-adapter-5 canonical build
-passes 15/15 Cage checks across Chromium, Firefox and WebKit. Actual Steel
+of the earlier fixed 1280×720 cap. The original rendering/resize/restart
+matrix passes 15/15 on the frozen host-adapter-5 canonical build across
+Chromium, Firefox and WebKit. The later shifted-command check fails that
+old terminal; its additional input repair awaits rebuilt-browser validation.
+Actual Steel
 Sky rendering and game-menu input pass under Cage in all three engines;
 the corrected Sway check passes Chromium and Firefox but fails WebKit with
 a visibly corrupted terminal before the game appears.
@@ -1202,7 +1205,8 @@ do not replace the original WebKit game-download corruption.
 The owner is wlterm's in-tree VT100 key translator. It treats every keysym
 between `0x20` and `0x10ffff` as a Unicode character, so XKB's Shift_L
 `0xffe1` becomes three UTF-8 bytes for U+FFE1 before the intended shifted
-character. XKB function keysyms are not character codepoints. The repair
+character. [XKB function keysyms](https://xkbcommon.org/doc/1.14.0/group__keysym-encoding.html)
+are not character codepoints. The repair
 rejects those function-key sets after the explicit navigation/control-key
 mappings. It does not patch Cage, wlroots, libinput or the guest shell.
 
@@ -1212,6 +1216,10 @@ VT100 unit test (1/1 Vitest case). It also checks that shifted printable
 characters, Ctrl+A, Return and Left retain their bytes. The tracked Cage
 browser check now physically types uppercase letters and shifted punctuation,
 then requires the shell's arithmetic/string checks and clean compositor exit.
+That strengthened case fails the frozen old terminal on Chromium with
+`WLTERM_EXIT code=2` rather than zero, 0/1 pass. The Node terminal smoke
+also adds shifted-A alongside plain-A input under both Cage and Sway;
+those rebuilt guest checks remain pending.
 The `wayland-demo` package revision advances from 15 to 16 for the changed
 terminal bytes. Rebuilt-browser validation remains pending; the frozen
 56514 rendering preview predates this additional input repair.
