@@ -32,7 +32,9 @@ results and inventory totals below remain historical **8.3.15** evidence.
 
 Paths under `test-runs/` in this document identify historical local output,
 not checked-in fixtures. Raw runner output is ignored; older committed
-snapshots remain available in Git history.
+snapshots remain available in Git history. Selected
+[SQLite full-run failure analyses](history/sqlite-full-run-failures.md)
+are retained with their historical scope and source records.
 
 ## 2026-10-22 Libevent epoll integration
 

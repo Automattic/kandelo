@@ -2410,6 +2410,9 @@ Processes may export `__wasm_posix_thread_slots` to declare their maximum concur
 
 `mmap` remains coherent because the kernel has one per-process address-space model for brk, mmap, and host-reserved dynamic control ranges. Automatic `mmap` starts at the process's `mmap_base`, not at the legacy fixed 64MB floor. A usable non-fixed address hint is preferred after rounding it down to the 64KB Wasm page boundary; an occupied or invalid hint falls back to the ordinary first-fit search. `brk` growth succeeds only when the adjacent range is free; if an mmap region or host-reserved pthread slot occupies the next pages, `brk` fails by returning the old break. `MAP_FIXED`, `munmap`, and `mremap` growth are rejected when they would overlap the reserved prefix, legacy host-control range, or a host-reserved pthread slot. `munmap` rounds its length up to a Wasm page before updating both kernel mappings and host-owned bindings. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls and after dynamic pthread-slot reservations so returned guest addresses are backed before user code touches them.
 
+For the earlier allocator tradeoffs and deferred linker/compaction proposals,
+see the [May 2026 design record](history/2026-05-30-process-memory-allocation.md).
+
 ### Shared mapping coherence
 
 `/proc/kandelo/shared_mapping_failures` retains the first eight failed

@@ -97,9 +97,10 @@ must survive archival into `.context/` or another durable destination.
 
 Keep private agent progress ledgers and handoffs in `.context/`, not in
 tracked tool-specific directories. Keep reusable design rationale in `docs/`
-and current behavior in its authoritative reference. Remove superseded,
-unreferenced implementation checklists rather than leaving old task commands
-beside current guidance; Git history retains them. Dated measurements and
+and current behavior in its authoritative reference. Before removing old plans
+or bulk output, preserve useful decisions and failure analyses in
+[historical reference material](history/README.md). A lack of inbound links
+alone does not establish that a record is obsolete. Dated measurements and
 `tests/baselines/` remain evidence, not current readiness claims.
 
 Registered validation evidence remains until reviewed and explicitly
