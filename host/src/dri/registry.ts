@@ -673,7 +673,9 @@ export class GbmBoRegistry {
       e.writes++;
       for (const {pid, view, source, snapshot} of targets) {
         view.set(source);
-        snapshot.set(view);
+        // The guest can store immediately after its copy; baseline only the
+        // stable canonical bytes so that store remains a pending publication.
+        snapshot.set(source);
         e.pendingReaders.delete(pid);
       }
       for (const binding of this.bindings(e)) if (binding.primed) {

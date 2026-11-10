@@ -94,6 +94,28 @@ describe("GBM coherence without redundant full-buffer work", () => {
     expect(h.registry.readPixelView(1)![10]).toBe(73);
   });
 
+  it("retains a guest store made while importing a device write", () => {
+    const h = harness();
+    h.running.add(100);
+    const pixels = new Uint8Array(SIZE); pixels[17] = 91;
+    const set = Uint8Array.prototype.set;
+    let injected = false;
+    const copy = vi.spyOn(Uint8Array.prototype, "set").mockImplementation(function (
+      this: Uint8Array, source: ArrayLike<number>, offset = 0,
+    ) {
+      set.call(this, source, offset);
+      if (this.buffer === h.memories.get(100)!.buffer && !injected) {
+        injected = true; h.bytes(100)[17] = 92;
+      }
+    });
+    try { expect(h.registry.publishDevicePixels(1, pixels)).toBe(true); }
+    finally { copy.mockRestore(); }
+    expect(injected).toBe(true);
+    expect(h.registry.readPixelView(1)![17]).toBe(91);
+    h.registry.syncToSab(1);
+    expect(h.registry.readPixelView(1)![17]).toBe(92);
+  });
+
   it("invalidates host-write epochs and still observes unrestricted canonical views", () => {
     const h = harness();
     const before = h.epochs.get(200)!;
