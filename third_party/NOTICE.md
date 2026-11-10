@@ -56,3 +56,12 @@ one translation unit that defines `STB_TRUETYPE_IMPLEMENTATION`, and
 `gen/wpk_font_ttf.h` in its build directory (`BUILD_DIR`: the package
 build's work dir, or the git-ignored `examples/libs/wpkdraw/build/` for a
 local build) whenever this `.ttf` is newer.
+
+
+## Node.js core JavaScript library
+
+`nodejs/upstream/` contains unchanged Node.js 26.13.0 library and bundled
+JavaScript dependency sources, plus original licensing and selected build/
+embedding provenance. See `nodejs/README.md`, `nodejs/sources.json` and the
+original `nodejs/upstream/LICENSE` for exact file identities and notices.
+This inactive source import does not establish runtime compatibility.
