@@ -75,6 +75,8 @@ inputs = [
   "host/src/vfs/overlay-seal-codec.ts",
   "host/src/vfs/storage-memory-budget.ts",
   "images/vfs/lib/positioned-image-targets.ts",
+  "host/src/generated/program-extensions.ts",
+  "host/src/program-extensions.ts",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
