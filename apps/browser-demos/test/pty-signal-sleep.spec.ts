@@ -114,6 +114,7 @@ test("PTY Ctrl-C interrupts a foreground kernel sleep with status 130", async ({
       kernel.ptyWrite(shell.pid, new TextEncoder().encode("sleep 30\n"));
       // The trace arrives after dispatch, so this observes a parked sleep.
       await waitUntil(() => sleepingPid !== undefined);
+      const interruptedPid = sleepingPid!;
       const started = performance.now();
       kernel.ptyWrite(shell.pid, new Uint8Array([3]));
       await waitUntil(() => output.includes("INTERRUPT_PROMPT> "), 1_000);
@@ -122,11 +123,13 @@ test("PTY Ctrl-C interrupts a foreground kernel sleep with status 130", async ({
       output = "";
       kernel.ptyWrite(shell.pid, new TextEncoder().encode("printf 'INTERRUPT_%s:%s\\n' STATUS \"$?\"\n"));
       await waitUntil(() => output.includes("INTERRUPT_STATUS:130"));
+      kernel.ptyWrite(shell.pid, new TextEncoder().encode("sleep 0; printf 'AFTER_INTERRUPT_%s:%s\\n' RECOVERED \"$?\"\n"));
+      await waitUntil(() => output.includes("AFTER_INTERRUPT_RECOVERED:0"));
       const transcript = output;
       kernel.ptyWrite(shell.pid, new TextEncoder().encode("exit\n"));
       await shell.exit;
       unsubscribe();
-      return { elapsedMs, exitStatus: exits.get(sleepingPid!), transcript, diagnostics };
+      return { elapsedMs, exitStatus: exits.get(interruptedPid), transcript, diagnostics };
     } finally {
       await kernel.destroy();
     }
@@ -138,6 +141,7 @@ test("PTY Ctrl-C interrupts a foreground kernel sleep with status 130", async ({
   expect(result.elapsedMs).toBeLessThan(1_000);
   expect(result.exitStatus).toBe(130);
   expect(result.transcript).toContain("INTERRUPT_STATUS:130");
+  expect(result.transcript).toContain("AFTER_INTERRUPT_RECOVERED:0");
   expect(result.diagnostics).toEqual([]);
 });
 

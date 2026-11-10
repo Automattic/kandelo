@@ -130,6 +130,8 @@ describe("PTY signals versus kernel-owned sleeps", () => {
       output = "";
       host.ptyWrite(shell.pid, new TextEncoder().encode("printf 'INTERRUPT_%s:%s\\n' STATUS \"$?\"\n"));
       await expect.poll(() => output).toContain("INTERRUPT_STATUS:130");
+      host.ptyWrite(shell.pid, new TextEncoder().encode("sleep 0; printf 'AFTER_INTERRUPT_%s:%s\\n' RECOVERED \"$?\"\n"));
+      await expect.poll(() => output).toContain("AFTER_INTERRUPT_RECOVERED:0");
       host.ptyWrite(shell.pid, new TextEncoder().encode("exit\n"));
       await shell.exit;
       expect(diagnostics).toEqual([]);
