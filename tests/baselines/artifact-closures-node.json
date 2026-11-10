@@ -2,6 +2,7 @@
   "suite": "artifact-closures",
   "host": "node",
   "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+  "base_commit": "a3490ca0f48d7c249592925cb7b4ac1ab74b9c2a",
   "runtime_commit": "a3490ca0f48d7c249592925cb7b4ac1ab74b9c2a",
   "repo_root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree",
   "command": "scripts/dev-shell.sh env WASM_POSIX_XTASK_BIN=\"$PWD/.context/tools/xtask\" npx tsx scripts/check-artifact-closures.ts",
@@ -14,6 +15,6 @@
     4,
     5
   ],
-  "excerpt": "artifact-closures-node-20261109T161420Z.log",
+  "excerpt": "artifact-closures-node.log",
   "note": "Runtime unchanged from origin/main; baseline has only the canonical-shell eager-budget refresh and a case-insensitive Sortix submodule checkout. Identical less/wasm32 mismatch on candidate; candidate strict SourceOnly check passes all164builtclosures. No cache or runtime workaround applied."
 }

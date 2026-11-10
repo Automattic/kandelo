@@ -1,23 +1,66 @@
 # Failure evidence
 
-Keep failures and anomalies here as separate observations of each run. These are
-observations to investigate, not allowances that make a failing run green.
-The conformance runners' expectation lists remain authoritative.
+This directory holds the failures and anomalies most recently observed on
+main, one record per suite, host and selection. They are observations to
+investigate, not allowances that make a failing run green. The conformance
+runners' expectation lists remain authoritative.
 
-## Historical evidence
+## Layout
 
-The `.log` files contain real excerpts from main at
+Each record is a JSON file named for what was run:
+
+- `<suite>-<host>.json`: a full run of the suite on that host.
+- `<suite>-<host>-<selection>.json`: a shard or targeted selection, such as
+  `vitest-node-shard-1-of-2` or `sortix-node-dlfcn-tcgetwinsize`. Name the
+  selection after the tests it ran, so a rerun of the same tests gets the
+  same name.
+
+Hosts are `node`, `chromium`, `firefox` and `webkit`; use `build` for build
+and native test runs that have no guest host. A `.log` file with the same
+stem holds the console excerpt when the JSON leaves out a diagnostic.
+
+There are no per-commit directories. The commit is a field in each record,
+and git history keeps every earlier record, so replacing a file loses
+nothing.
+
+## Replacing and retiring records
+
+Records describe main as last observed, so the directory does not grow with
+each PR:
+
+- A newer main run with the same name replaces the record and its `.log`.
+  If that run is clean, delete them instead; clean runs are not committed.
+- A full run covers the shard and selection records for the same suite and
+  host. Delete those when you commit the full run's record, or when the
+  full run is clean.
+- A PR that fixes every case in a record deletes the record and says so in
+  its description. If it fixes only some cases, leave the record for the
+  next run of that selection to replace; do not edit outcomes by hand.
+- Never replace a record with a run of a different selection or shard:
+  absence from a partial report does not show that a test passed.
+
+## Which commit to record
+
+Run the suite on main and record that commit as `commit`. If main needs a
+build-only fix before the suite can run, record the commit you actually ran
+as `commit`, the main commit it was based on as `base_commit`, and what
+differed in `note`. The run commit usually disappears once its PR is
+squash-merged; `base_commit` stays reachable.
+
+## Records from 2026-10-30
+
+The `vitest-node`, `sortix-node`, `sortix-chromium`, `posix-chromium`,
+`libc-chromium` and `playwright-*-pr1600` records are excerpts from main at
 `e4bca8639e4b6853080ca7f3a09b0e95488c9d50`, run on 2026-10-30 for
-[PR #1600](https://github.com/Automattic/kandelo/pull/1600).
-[sources.json](sources.json) records the original commands, exit codes,
-full-log SHA-256 hashes and selected one-based source line numbers.
-ANSI escapes and trailing whitespace were removed; lines retain source order.
-Ordinary passes and success counters are omitted.
+[PR #1600](https://github.com/Automattic/kandelo/pull/1600), before the
+JSON importer existed. Each JSON gives the original command, exit code,
+full-log SHA-256 hash and one-based source line numbers. ANSI escapes and
+trailing whitespace were removed; lines keep source order. Ordinary passes
+and success counters are omitted. These `.log` excerpts are not inputs to
+the Vitest/Playwright JSON importer.
 
-The original `columbia` workspace is gone. The complete raw logs survive at
-`/Users/brandon/conductor/archived-contexts/kandelo/batched-follow-ups-for-main-correctness/`,
-including `main-validation-v1/`, `validation-v1/` and `validation-v1b/`.
-The committed excerpts remain readable without that local archive.
+The full raw logs named in `source_log` survive only in a local archive on
+the recording machine. The committed excerpts are readable without it.
 
 - Node Sortix: **one runner incident**, with 1,357 timeouts and 19
   XFAIL-MISMATCH results. PR #1600 diagnosed stale per-test xtask checker
@@ -30,9 +73,12 @@ The committed excerpts remain readable without that local archive.
   clock test was an expected failure in this run, not an unexpected failure.
 
 Exact recording times, artifact identities and OS/runtime/browser versions
-were not retained. Load is known only for Vitest (see the manifest).
+were not retained. Load is known only for Vitest (see its `note`).
 There are no seeds for main's Node libc/POSIX or Firefox runs.
-These are historical observations, not claims about today's main.
+
+xtask's importer tests use frozen copies of the two Sortix excerpts in
+`tools/xtask/tests/fixtures/test-failures/`, so replacing these records
+does not change those tests.
 
 ## Recording a new run
 
@@ -95,22 +141,16 @@ Keep the console log to investigate it. Successful importing never means
 the tests passed. Duplicate nonpassing IDs are rejected rather than
 silently merged; retain the raw report or rerun distinct selections.
 
-## Keeping evidence across PRs
+## Committing a record
 
-Review new anomalies before committing them. Keep each main observation
-under `tests/baselines/<recorded-commit>/<suite>-<host>-<run-id>.json`, using
-the unique run directory name as the run ID. Keep branch reports separate
-in `.scratch/`; use main-run evidence to establish pre-existing failures.
-Never overwrite an earlier record with a targeted rerun or another shard:
-absence from a partial report does not establish that a test passed. A
-rerun adds an observation and does not refresh the rest of the inventory.
-Do not commit ordinary clean runs or edit generated outcomes by hand.
+Review new anomalies before committing them. Keep branch reports in
+`.scratch/`; only main runs go here, and they establish which failures
+already existed before a PR. Copy the importer output to the record's name
+in this directory and apply the replacement rules above.
 If JSON omits the diagnostic or retry history, commit the relevant raw
 console failure/anomaly excerpt beside it as a `.log` file. This includes
 Vitest unhandled errors: the local `context.console_log` path alone is not
 durable evidence. Omit routine passing output from committed excerpts.
-The initial `.log` excerpts remain historical records; they are not inputs
-to the Vitest/Playwright JSON importer.
 
 Playwright retry statuses are preserved in `observed`; mixed outcomes are
 intermittent. Terminal outcomes use the final attempt's diagnostic;

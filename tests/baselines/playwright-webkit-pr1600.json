@@ -1,0 +1,18 @@
+{
+  "suite": "playwright",
+  "host": "webkit",
+  "commit": "e4bca8639e4b6853080ca7f3a09b0e95488c9d50",
+  "date": "2026-10-30",
+  "command": [
+    "scripts/dev-shell.sh",
+    "bash",
+    "-c",
+    "export KANDELO_PLAYWRIGHT_PORT=5613; cd apps/browser-demos; npx playwright test test/dock-action-dispatch.spec.ts test/dri-egl-resize.spec.ts test/kandelo-ffmpeg.spec.ts:224 test/kandelo-kms-context-loss.spec.ts test/kandelo-network-session.spec.ts test/kandelo-omarchy.spec.ts test/kandelo-wayland.spec.ts test/kandelo-wordpress.spec.ts:251 test/network-session-dialogs.spec.ts test/pty-signal-sleep.spec.ts test/theme-contrast.spec.ts test/terminal-links.spec.ts test/terminal-autofocus.spec.ts test/terminal-repaint.spec.ts --project=webkit --workers=1 --retries=0 --reporter=list"
+  ],
+  "exit_code": 1,
+  "source_log": "/Users/brandon/conductor/archived-contexts/kandelo/batched-follow-ups-for-main-correctness/main-validation-v1/playwright-webkit.log",
+  "source_log_sha256": "6781f4b7df1cbf37e20315b5fea7f602d05970bf6b1750bf847ce65e1413276b",
+  "source_lines": [41, 42, 43, 44, 45, 47, 49, 50, 51, 53, 54, 55, 61, 62, 68, 92, 94, 113, 115, 152, 154, 171, 173, 201, 203, 241, 243, 281, 283, 321, 323, 361, 363, 400, 402, 421, 423, 441, 443, 461, 463, 481, 483, 501, 503, 526, 528, 551, 553, 576, 578, 601, 603, 626, 628, 651, 653],
+  "excerpt": "playwright-webkit-pr1600.log",
+  "note": "Selected specs only, not the complete suite; retries disabled."
+}

@@ -119,10 +119,11 @@ the order of repeated values.
 `tests/baselines/` keeps failure evidence, not test allowances. See its
 [recording workflow](../../tests/baselines/README.md). Record failures,
 expected failures, unexpected passes, skips, timeouts, runner errors and
-intermittent results; omit ordinary passes and success counters. Store each
-main run or targeted rerun separately; never replace unrelated evidence
-with a partial report. Existing conformance expectation lists still own
-accepted failures and reasons.
+intermittent results; omit ordinary passes and success counters. Keep one
+record per suite, host and selection. A newer main run with the same name
+replaces it, and a PR that fixes every case in a record deletes it; never
+replace a record with a different selection or shard. Existing conformance
+expectation lists still own accepted failures and reasons.
 
 Consult recorded failures before repeating an expensive main run. Compare
 names, reasons, host, command and recorded commit; a known name alone does

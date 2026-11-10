@@ -13,6 +13,8 @@
       "basic"
     ],
     "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+    "base_commit": "a3490ca0f48d7c249592925cb7b4ac1ab74b9c2a",
+    "note": "commit is base_commit plus only a refreshed packages/registry/shell/eager-budget.json, needed to build the image; runtime unchanged.",
     "date": "2026-11-09T17:32:57.358756+00:00",
     "excerpt_source_lines": [
       421,
