@@ -1365,7 +1365,77 @@ remain mixed outcomes. Both complete traces and worker errors are retained.
 A separate candidate control using ordinary owned-array graphics baselines
 also fails in `copyOut`; the added nonshared Wasm baselines are therefore
 not necessary for the failure. A synthetic short-copy experiment removes
-millions of temporary views, but direct instrumentation finds that its
-source-copy mode is unused in the actual game workload. Neither experiment
+millions of temporary views, but direct instrumentation did not observe calls to its
+proposed source-copy path in the actual game run. That supplies no evidence
+to ship the additional optimization. Neither experiment
 is included as a speculative production fix. No ceiling, lifecycle assertion,
 error classification or test deadline was relaxed.
+
+
+## Current shutdown candidate preview — 2026-11-10
+
+The normal `./run.sh browser` preparation completed without omitting a
+supported product. Its first SourceOnly finalization spent about 25 minutes
+in the debug build of the native orchestrator calculating package/ABI
+identities; a read-only process sample confirms active hashing and metadata
+processing. The subsequent fully cached preparation completed that stage
+in 8.6 seconds. This build-time observation is separate from Cage rendering.
+The actual current normal-entry shifted-input/repaint/exit check passes 1/1
+in Chromium (10.1 seconds), with its screenshot inspected and no page errors.
+
+The current local preview is:
+
+`http://127.0.0.1:56519/?vfs=%2F__kandelo_source_only_assets__%2F9a218e0ad974b567888dc4b3648f4e75f1c2f4539bb59b0860ec1b54f4863cec%2Fshell.vfs.zst&profile=cage`
+
+At source `15c46443f20a`, HTTP bytes match the normal published assets:
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| Shell image | 1,069,801 | `9a218e0ad974b567888dc4b3648f4e75f1c2f4539bb59b0860ec1b54f4863cec` |
+| Kernel | 2,959,451 | `20f8ba1c1c6ced1a11bed01ceb662bc542eaa1fb7769cddc93c80bc69a00c904` |
+
+The previous host-adapter-6 preview on port 56517 now serves the frozen
+`e4451d3284` sources/products through a separate backend on 56518. Its
+normal input/exit smoke passed before handoff; its original source/product
+files and served hashes were verified. The older host-adapter-5 preview on
+56514 remains separate. The current image hash is not substituted into
+those preserved previews.
+
+Fresh offline frozen-program compatibility passes 6/6 across all three
+engines, for both memory and OPFS storage. The runner exits zero; its
+Firefox staging-directory cleanup reports EACCES and retains that directory.
+All 18 preserved v55/v56 fixture identities still match. The ABI check against
+pinned `8161769ed9d2` passes, and the ordinary Node rootfs is refreshed through
+the normal builder. The new complete memory and desktop verdicts remain
+pending; the original 17/18 and 104/120 results remain separate.
+
+A loaded Chromium cursor-observer qualification passes: 61 trusted events,
+60 cursor callbacks at distinct horizontal positions, and no page errors.
+The requested 60 moves take 2,332 milliseconds under concurrent functional
+load. This qualifies the observer; it is not a quiet paired timing result.
+
+### Resource and comparison-helper diagnostics
+
+The existing explicit `memoryProfile=constrained` setting passes actual
+WebKit Sway/Steel Sky rendering and game-menu input on main and the frozen
+candidate (2/2, 34.6 and 40.8 seconds). Default settings are unchanged, and
+those observations do not repair the retained default-profile failures.
+A separate page/worker containing no Kandelo runtime holds 38 shared memories
+with 1 GiB maxima before construction fails, despite only 2.375 MiB of current
+pages; with 256 MiB maxima it holds 127 memories before failure, with 7.9375
+MiB of current pages. All tiny allocations before each constructor failure
+succeed. This demonstrates a reservation budget in the measured Playwright
+WebKit 26.6 environment, but does not reproduce the application's tiny-array
+failure or identify its retained resource owner.
+
+Review also checked the new comparison helper against the existing registered
+shared-memory-growth/instance-cleanup defect. An initial private fixture
+blocks nested-worker startup and times out; its trace is retained. After
+waiting asynchronously for the grower's actual startup message, the exact
+helper completes 100,000 temporary comparisons alongside 2,240 real sibling
+memory grows in WebKit (1/1, 7.7 seconds). No forced GC, retained-instance
+cache or production workaround is introduced. This did not reproduce that
+registered crash in the helper; it does not establish universal absence.
+The optional registry check separately fails on an unchanged main entry
+referencing removed `host/src/webgl/main-forward.ts`. That stale metadata
+and the renderer's behavior are distinct observations.
