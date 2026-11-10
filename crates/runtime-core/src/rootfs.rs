@@ -110,7 +110,7 @@ pub const ROOTFS_DIR_SENTINEL: i64 = -180;
 
 /// `st_dev` for the rootfs overlay (one filesystem identity). Distinct from the
 /// per-scratch-mount tmpfs devs (`0x7400_0000`+).
-const ROOTFS_DEV: u64 = 0x7300_0000;
+pub(crate) const ROOTFS_DEV: u64 = 0x7300_0000;
 
 /// An inode in the rootfs overlay: base (immutable) kinds placed by a loader,
 /// plus the mutable overlay kinds (`Regular(Vec<u8>)` for copied-on-write or
@@ -12332,6 +12332,9 @@ mod tests {
 
         set_nosuid(false);
         let permissive = statfs(b"/").expect("statfs");
+        assert!(crate::procfs::generate_mounts(false).unwrap()
+            .windows(b"kandelo-root / kandelo-vfs rw 0 0\n".len())
+            .any(|line| line == b"kandelo-root / kandelo-vfs rw 0 0\n"));
         assert_eq!(
             permissive.f_flags & wasm_posix_shared::statfs_flags::ST_NOSUID,
             0,
@@ -12340,6 +12343,9 @@ mod tests {
 
         set_nosuid(true);
         let restricted = statfs(b"/").expect("statfs");
+        assert!(crate::procfs::generate_mounts(false).unwrap()
+            .windows(b"kandelo-root / kandelo-vfs rw,nosuid 0 0\n".len())
+            .any(|line| line == b"kandelo-root / kandelo-vfs rw,nosuid 0 0\n"));
         assert_eq!(
             restricted.f_flags & wasm_posix_shared::statfs_flags::ST_NOSUID,
             wasm_posix_shared::statfs_flags::ST_NOSUID,

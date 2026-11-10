@@ -24,7 +24,7 @@ use crate::process::Process;
 /// Sentinel host_handle for sysfs directory OFDs.
 pub const SYSFS_DIR_HANDLE: i64 = -190;
 
-const ST_DEV: u64 = 0x52;
+pub(crate) const ST_DEV: u64 = 0x52;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SysfsKind {

@@ -87,6 +87,8 @@ struct ScratchMount {
     st_dev: u64,
     /// `statfs` `f_type`.
     magic: u32,
+    /// Guest filesystem driver name exposed through the mount listings.
+    fs_type: &'static str,
     /// Nodes created with the mount root, in order (parents first). Empty for
     /// ordinary scratch mounts, which start empty.
     layout: &'static [LayoutNode],
@@ -113,10 +115,10 @@ const NO_LAYOUT: &[LayoutNode] = &[];
 /// Mirror of the `scratch` entries in `host/src/vfs/default-mounts.ts`, plus
 /// the kernel-owned exchange mount, which has no host counterpart.
 const SCRATCH_MOUNTS: &[ScratchMount] = &[
-    ScratchMount { prefix: b"/tmp", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/tmp", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE, magic: TMPFS_MAGIC, fs_type: "tmpfs", layout: NO_LAYOUT, byte_limit: None },
     // /var/log and /var/tmp belong to the persistent root filesystem. /run
     // starts with directory metadata supplied by the image, never its files.
-    ScratchMount { prefix: b"/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, fs_type: "tmpfs", layout: NO_LAYOUT, byte_limit: None },
     // POSIX shared memory. Sticky and world-writable like `/tmp`, and served
     // here for the same reason: the kernel owns `/` and every other scratch
     // prefix, so `/dev/shm` is tmpfs like the rest. `MAP_SHARED` mappings of
@@ -124,7 +126,7 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
     // coherent by the kernel's shared-mapping table
     // (`memory::SharedMappingTable`), which pins the inode (`pin_mapping`) and
     // watches its content generation (`content_generation`).
-    ScratchMount { prefix: b"/dev/shm", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 4, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/dev/shm", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 4, magic: TMPFS_MAGIC, fs_type: "tmpfs", layout: NO_LAYOUT, byte_limit: None },
     // Kandelo exchange (`crate::exchange`): files moving into and out of the
     // machine. Kernel-owned; the host mounts nothing here.
     ScratchMount {
@@ -134,10 +136,16 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
         gid: 0,
         st_dev: TMPFS_DEV_BASE + 5,
         magic: crate::exchange::FS_MAGIC,
+        fs_type: "kandelo-exchange",
         layout: EXCHANGE_LAYOUT,
         byte_limit: Some(crate::exchange::DEFAULT_BYTE_LIMIT),
     },
 ];
+
+/// Mount descriptions for procfs, derived from the routing registry.
+pub(crate) fn mounts() -> impl Iterator<Item = (&'static [u8], u64, &'static str)> {
+    SCRATCH_MOUNTS.iter().map(|mount| (mount.prefix, mount.st_dev, mount.fs_type))
+}
 
 const EXCHANGE_LAYOUT: &[LayoutNode] = {
     use crate::exchange::EXCHANGE_GID as G;
