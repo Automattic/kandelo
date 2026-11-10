@@ -47,6 +47,13 @@ shows old rows. For graphical Quit checks, verify automatic terminal
 handoff, the launching foreground job's exit status, and process cleanup;
 a prompt alone does not establish that contract.
 
+Read terminal history through the terminal's actual scrolling UI. With
+xterm 6, the retained `.xterm-viewport` element has no scrolling range;
+assigning its `scrollTop` does not move the rendered rows. The browser
+fixtures use Shift+PageUp/Down, observe each repaint and restore the live
+bottom. Preserve missing-marker and no-guest-input controls when changing
+that history reader.
+
 A fixture that tests a particular resolution policy must select that policy
 explicitly and restore every changed environment setting in `finally`.
 Run it under the normal suite environment as well as in isolation. A legacy
@@ -70,6 +77,15 @@ run. For a lazy artifact size mismatch, check the selected image and
 executable identities and repair stale inputs. Do not relax size checks
 or substitute unrelated executable bytes.
 
+Conformance wrappers must reject an empty selected test inventory. A missing
+upstream checkout is provisioning work, never a successful zero-test run.
+Browser exec fixtures must use Bash for `/bin/sh`, matching the normal Node
+rootfs. Required-tool HTTP or body failures must stop fixture readiness;
+missing tools are not a partially working conformance environment.
+Retain host diagnostics separately from guest stdout/stderr in runner output.
+Probe failing development modules on an isolated server: Vite can broadcast
+an import-error overlay into every connected preview page.
+
 A spec must not skip because a binary or image the supported build produces
 is missing. Missing supported output is a build defect: fail with the reason,
 as `gotoMachineOrSkip` and `gotoApp` in
@@ -81,6 +97,10 @@ The kernel-memory ownership audit excludes the fork instrumenter's offline
 JavaScript fixtures and `scripts/check-fork-memory-artifact.ts`: they create
 private synthetic module memories, never views into a live kernel. Production
 host sources, other scripts, and browser runtime fixtures remain in scope.
+The import-free GLib/GTK callback source fixtures remain audited with exact
+private-memory origin classifications. A direct awaited instantiate result
+may bind only one static `instance` property (optionally renamed); unknown
+or unstable bindings must still fail rather than lose authority tracking.
 
 Keep authored-source audits separate from generated reports and private
 worktrees. Exclude those evidence directories explicitly while retaining
@@ -99,10 +119,11 @@ the order of repeated values.
 `tests/baselines/` keeps failure evidence, not test allowances. See its
 [recording workflow](../../tests/baselines/README.md). Record failures,
 expected failures, unexpected passes, skips, timeouts, runner errors and
-intermittent results; omit ordinary passes and success counters. Store each
-main run or targeted rerun separately; never replace unrelated evidence
-with a partial report. Existing conformance expectation lists still own
-accepted failures and reasons.
+intermittent results; omit ordinary passes and success counters. Keep one
+record per suite, host and selection. A newer main run with the same name
+replaces it, and a PR that fixes every case in a record deletes it; never
+replace a record with a different selection or shard. Existing conformance
+expectation lists still own accepted failures and reasons.
 
 Consult recorded failures before repeating an expensive main run. Compare
 names, reasons, host, command and recorded commit; a known name alone does
@@ -213,7 +234,8 @@ builds the host, and runs:
 - The host memory-authority audit, memory budgets, bounded device buffers,
   futex retirement, exit-trap, generation, and teardown regressions;
   blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
-- Four Doom → Quake → Freeciv → LÖVE → tmux + DOS → WordPress cycles in each of
+- Four Doom → Quake → Freeciv → LÖVE → cage → sway → tmux + DOS → WordPress
+  cycles in each of
   Chromium, Firefox, and WebKit, in one page per engine with the constrained
   memory profile. Games must render and reach running audio through trusted
   activation. Tmux must run two pane shells and leave a detached server
@@ -291,6 +313,31 @@ the measurement window or limits. The Node spawn-churn test uses 256
 children with unchanged 2 MiB-per-child and 64 MiB late-growth limits.
 See [the window calibration](../measurements/2026-10-20-process-memory-rss-window.md).
 
+## Native build tools copied between checkouts
+
+A copied `xtask` retains its compile-time repository root. Its authenticated
+program-index source-context commands accept `--source-repo-root` and are
+portable; ordinary package resolve/path/output-path and bootstrap commands
+still use the compiled root. Before those build operations, compile the
+current checkout's release tool with `cargo build --release -p xtask --target
+<host-target>`, or use `run.sh`'s normal tool-freshening path. If native Cargo
+target artifacts were copied too, first run `cargo clean --release -p xtask
+--target <host-target>` in the destination checkout: Cargo can report that
+copied executable as fresh while it still embeds the previous manifest root.
+Verify the resolved package identity against the intended source before
+bootstrapping. Merely setting `WASM_POSIX_XTASK_BIN` to a copied binary does
+not select the current checkout.
+
+Vitest fixture setup and SDK-fixture stamping honor the runner's prepared
+`WASM_POSIX_XTASK_BIN` for index generation and ABI-contract stamping. Prepare
+that tool through the current checkout's normal Cargo path before setting it.
+An explicitly configured missing tool fails; it does not silently rebuild or
+fall back to another executable. Without the override, fixture setup retains
+its ordinary host-target Cargo invocation.
+Prepare that tool before a browser test's clock starts. Preserve the SDK's
+`sdk/.build` cache together with its copied sysroots, then run the normal SDK
+ensures; otherwise preparing a new tool can re-key or replace core outputs.
+
 ## Playwright storage on macOS
 
 The browser-demos Playwright configuration gives WebKit a
@@ -300,7 +347,10 @@ profile passed to `launchPersistentContext`. Removing that profile alone
 does not reclaim those bytes. The run-owned home stays stable across browser
 restarts in the same run and is removed after normal suite teardown.
 Use owned persistent contexts for OPFS tests and inherit the project's launch
-environment, as the existing persistence suites do. In the pinned macOS
+environment, as the existing persistence suites do. Machine boot also opens
+the OPFS-backed computer library: use `test/support/persistent-page.ts`
+for those page fixtures, preserving resolved viewport, density and launch
+options. An ephemeral storage failure is not evidence about guest graphics. In the pinned macOS
 WebKit runner, a new nonpersistent context can reject even
 `navigator.storage.getDirectory()` with an `UnknownError`; a subsequent
 cleanup request can then stall. Diagnose the fixture's storage access before
@@ -335,10 +385,12 @@ store to reclaim test space. This housekeeping does not change Kandelo's
 persistence, durability or crash-recovery semantics.
 
 Run-owned homes and browser temporary profiles now live below
-`.context/validation-scratch/<run-uuid>/tmp` in the Git worktree. A runner
+`.scratch/validation-scratch/<run-uuid>/tmp` in the Git worktree. A runner
 changes only its own `TMPDIR`. Retained local roots can be explicitly
 released with `scripts/agent-job release <run-uuid>` after the runner exits;
 removing the worktree removes these roots even if teardown was skipped.
+Conductor preserves `.context/` on archive, so browser storage belongs in
+`.scratch/`. Existing registered roots under `.context/` remain releasable.
 This does not redirect Darwin-managed staging files described above.
 
 `npm run test:unit` includes the cleanup safety tests. On macOS, run
@@ -362,7 +414,7 @@ itself and never returned, and started second runs that broke the first.
 
 A run that fits in one Bash call, under the tool's 10-minute limit, needs
 none of this. Run it in the foreground with output to a log file
-(`cmd > .context/x.log 2>&1; echo exit=$?`): that is one call and no waiting
+(`cmd > .scratch/x.log 2>&1; echo exit=$?`): that is one call and no waiting
 turns. For anything longer:
 
 ```bash
@@ -444,13 +496,13 @@ run used the wrong config and toolchain, and its results are invalid.
   inside the job with `> "$KANDELO_AGENT_SCRATCH_DIR/integ.log" 2>&1`.
   Every nested `agent-job start` gets a new directory, even if it inherits
   its parent's scratch variable. For short foreground runs, first allocate
-  a fresh directory with `mktemp -d` and keep the returned path when reading
-  the results. Never use fixed host paths such as `/tmp/integ.log`, or a
-  shared `.context/check.log`, for concurrent runs. The job's own stdout
+  a fresh directory under `.scratch/` with `mktemp -d` and keep the returned
+  path when reading the results. Never use fixed host paths such as `/tmp/integ.log`, or a
+  shared `.scratch/check.log`, for concurrent runs. The job's own stdout
   and stderr are already retained in its `output.log`.
 - **Evidence lifecycle:** keep evidence until it has been reviewed, then use
   `scripts/agent-job release <job-id|playwright-run-uuid>`. Bulk job output
-  lives in `.context/agent-jobs/<job-id>`; Playwright scratch and reports also
+  lives in `.scratch/agent-jobs/<job-id>`; Playwright scratch and reports also
   stay in the worktree. `cleanup` closes the current tree to new runs and
   refuses active writers. Use `reopen` if work will continue after cleanup.
   `gc --dry-run` previews reconciliation of removed worktrees and recovery
@@ -516,8 +568,12 @@ run used the wrong config and toolchain, and its results are invalid.
 - **Every Vitest run** ends with a `[suite-health]` line. When many files
   fail to load, it groups them by the missing thing, so one line replaces
   scrolling hundreds of failure blocks. `WARN` means part of the suite did
-  not run (a load error or zero tests). Check discovered/run/skipped
-  counts: zero tests or load failures cannot support a passing-suite claim.
+  not run (a load error, unfinished worker, or zero tests). Unhandled errors
+  and unfinished selected files make its verdict failed even if Vitest's
+  callback reason says passed. Completed test and skip counts stay separate
+  from pending work; intentional cancellation remains interrupted. Check
+  discovered/run/skipped counts: zero tests or load failures cannot support
+  a passing-suite claim.
 - **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
   patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
   `pgrep -f` waiters, and subagents running whole-tree builds or full
@@ -668,19 +724,62 @@ scripts/dev-shell.sh env KANDELO_SORTIX_SOURCE_ROOT=/absolute/os-test \
 
 The runner keeps its build directory below the selected source root;
 SDK, kernel, overrides, and runtime still come from the current worktree.
+The browser wrapper uses the same override:
+
+```bash
+scripts/dev-shell.sh env KANDELO_SORTIX_SOURCE_ROOT=/absolute/os-test \
+  bash scripts/run-browser-sortix-tests.sh --all
+```
+
+Both wrappers fail when a requested suite discovers no tests. After changing
+source selection or accounting, run:
+
+```bash
+scripts/dev-shell.sh bash scripts/test-sortix-source-root.sh
+```
+
+It exercises both real wrappers with the current SDK, a source path containing
+spaces, a refused compilation, and empty include/runtime suites. These controls
+do not replace upstream conformance.
 
 Before blaming a suite failure on your change, confirm it actually is your
 change: a few package/demo tests (e.g. the Erlang `ring` benchmark) can fail for
 environment or artifact reasons unrelated to a given diff. Reproduce the failure
-on a pristine `origin/main` build of the same artifact before attributing it —
-rebuild just the kernel wasm (`cargo build --release -p kandelo -Z
-build-std=core,alloc && cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm
-local-binaries/kernel.wasm`) at `origin/main` and re-run the one test. Report a
-pre-existing failure as pre-existing, not as your regression.
+on a pristine `origin/main` build of the same artifact before attributing it,
+for example in a second worktree at `origin/main` provisioned with its own
+artifacts, and re-run the one test there. Report a pre-existing failure as
+pre-existing, not as your regression.
 
-After editing kernel Rust, rebuild the kernel wasm (`./run.sh setup`) before the
-Vitest/conformance suites — they load `local-binaries/kernel.wasm`, so a stale
-wasm silently runs your OLD kernel code. Setup also checks musl freshness;
+After editing kernel Rust, rebuild the kernel before the Vitest/conformance
+suites. They resolve `kernel.wasm` through the binary resolver, whose first
+tier is the SourceOnly projection, `local-binaries/source-only-v1/kernel.wasm`
+(not `local-binaries/kernel.wasm`), so a stale projection silently runs your
+OLD kernel code. The supported paths:
+
+- `./run.sh setup` rebuilds everything the change makes stale. This is the
+  path for a merge-candidate tree.
+- `./run.sh build kernel` rebuilds only the kernel package and re-pins it in
+  the projection (about four minutes). Kernel cache keys feed other packages'
+  keys, so it also drops every product built against the previous kernel
+  from the projection (`rootfs`, `shell`, the desktop and SDK images, and
+  the images built inside a Kandelo machine such as `nethack`, `lamp` and
+  `wordpress`; it lists each "dropping ... from the published projection").
+  Node Vitest and the conformance runners, which need only the kernel,
+  programs, test fixtures and `host/wasm/rootfs.vfs.zst`, run immediately;
+  browser specs and demos need `./run.sh prepare-browser` (or setup) first.
+  Pass `KANDELO_CACHE_GC_AUTO=0` if the shared cache must not be collected
+  during the build. If its musl freshness check rebuilds a sysroot, rerun
+  `scripts/build-dri-stubs.sh` (and with `--arch wasm64posix`) so `-lgbm`
+  and `-ldrm` resolve again.
+
+Copying a `cargo build` output over the projection's `kernel.wasm` does not
+re-pin it. Under `WASM_POSIX_RESOLUTION_POLICY=source-only-v1` (the browser
+and SourceOnly runs) the projection authority's size and digest check
+rejects the swapped file. The default Node policy resolves it without that
+check, which is enough for a diagnostic kernel (for example one built with a
+cargo feature) in a Node-only experiment; restore the pinned bytes
+afterwards and never use such a run as evidence for the browser or for the
+shipped kernel. Setup also checks musl freshness;
 after editing libc inputs, rebuild linked programs and fixtures through the
 normal setup/program paths. (`bash build.sh` still works as a deprecated
 delegator to `./run.sh setup`.)

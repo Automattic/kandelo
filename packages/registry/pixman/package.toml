@@ -4,20 +4,30 @@
 kind = "library"
 
 name = "pixman"
-# 0.42.2 is the last autotools release — 0.43+ is meson-only, and this
-# repo drives autotools cross-builds natively (no meson in flake.nix).
-version = "0.42.2"
+# pixman is meson-only since 0.43, so the port builds through upstream's
+# meson build with the SDK cross file (sdk/meson/wasm32posix.ini).
+version = "0.46.4"
 kernel_abi = 17
 depends_on = []
 
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.4.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
 [source]
-url = "https://www.cairographics.org/releases/pixman-0.42.2.tar.gz"
-sha256 = "ea1480efada2fd948bc75366f7c349e1c96d3297d09a3fe62626e38e234a625e"
+url = "https://www.cairographics.org/releases/pixman-0.46.4.tar.gz"
+sha256 = "d09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c"
 provider = "archive"
 
 [license]
 spdx = "MIT"
-url = "https://gitlab.freedesktop.org/pixman/pixman/-/blob/pixman-0.42.2/COPYING"
+url = "https://gitlab.freedesktop.org/pixman/pixman/-/blob/pixman-0.46.4/COPYING"
 
 [build]
 script_path = "packages/registry/pixman/build-pixman.sh"

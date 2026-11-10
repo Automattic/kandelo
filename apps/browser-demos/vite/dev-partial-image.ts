@@ -20,8 +20,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Plugin } from "vite";
+import { browserPartialImageModuleSpecifier } from "../browser-module-contract.mjs";
 
-export const PARTIAL_IMAGE_VIRTUAL_MODULE = "virtual:kandelo-partial-image";
+export const PARTIAL_IMAGE_VIRTUAL_MODULE = browserPartialImageModuleSpecifier;
 const RESOLVED_VIRTUAL_MODULE = `\0${PARTIAL_IMAGE_VIRTUAL_MODULE}`;
 /** The dev-server route, relative to the deployment base. */
 export const PARTIAL_IMAGE_ROUTE = "@kandelo-partial/";

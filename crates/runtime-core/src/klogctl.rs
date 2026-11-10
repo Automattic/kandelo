@@ -1,4 +1,4 @@
-//! `klogctl` (`SYS_SYSLOG`, Kandelo syscall 304): the syscall surface over the
+//! `klogctl` (the `kandelo.klog.v1` program extension): the read surface over the
 //! kernel message ring in [`crate::kmsg`].
 //!
 //! The ring's storage lives in `kmsg.rs`; this module owns the action table,
@@ -11,7 +11,7 @@ use wasm_posix_shared::Errno;
 use crate::kmsg::{KmsgRecordRef, KmsgRing};
 
 // ---------------------------------------------------------------------------
-// klogctl (`SYS_SYSLOG`, Kandelo syscall 304)
+// klogctl (`kandelo.klog.v1`; raw syscall 304 is not served)
 //
 // Kandelo is not Linux and intends no Linux compatibility. Neither `dmesg`
 // nor `klogctl` is POSIX, so there is no conformance target here, only a

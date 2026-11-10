@@ -1,7 +1,7 @@
 script_path = "packages/registry/atk/build-atk.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "cf81d0f7c"
-revision    = 1
+revision    = 2
 
 # The source and build trees live under the resolver work root; the
 # resolver hashes these tracked inputs on a clean checkout.
@@ -9,4 +9,5 @@ inputs = [
   "packages/registry/atk/build-atk.sh",
   "scripts/package-build-roots.sh",
   "packages/registry/atk/src/wasm-callback-arity.patch",
+  "packages/registry/atk/src/wasm-interface-init-contract.patch",
 ]

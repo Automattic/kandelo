@@ -193,11 +193,158 @@
         "category": "demos"
       }
     },
+    "cage": {
+      "requires": ["cage", "wayland-demo", "bibata-cursor-theme"],
+      "identity": {
+        "title": "cage kiosk",
+        "summary": "Upstream cage, a wlroots kiosk compositor, on /dev/dri/card0: wlroots' GLES2 renderer draws through the host's WebGL2 bridge into gbm scanout buffers, and cage shows one application full screen — wlterm, a VT100 terminal running a shell. Exiting the shell ends the session.",
+        "accent": "#5b8c3a",
+        "glyph": "C",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp /usr/bin/cage -- /usr/bin/wlterm"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
+    "labwc": {
+      "requires": ["labwc", "foot", "sfwbar", "wayland-demo", "bibata-cursor-theme"],
+      "identity": {
+        "title": "labwc stacking desktop",
+        "summary": "A lightweight Wayland stacking desktop with decorated Foot windows and an SFWBar panel. Right-click the desktop for its native menu. Alt (Option on Mac)+Return opens a terminal, Alt+J/K cycles windows, Alt+Shift+Q closes a window, and Alt+Shift+E exits the session.",
+        "accent": "#497a6c",
+        "glyph": "Lw",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/labwc -s '/bin/sh -c \"sfwbar -f /etc/xdg/sfwbar/sfwbar.config & exec foot --config=/etc/xdg/labwc/foot.ini\"'"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "Labwc desktop keys",
+        "summary": "Alt is Option on Mac. Alt+Return opens Foot, Alt+J/K cycles forward/back through windows, Alt+Shift+Q closes the focused window and Alt+Shift+E exits the compositor. The real root menu and SFWBar task list remain available by mouse. Control stays with applications; host Alt+Tab/F4 are not used as guest shortcuts. Some browser and OS shortcuts remain reserved.",
+        "groups": []
+      }
+    },
+    "sway": {
+      "requires": ["sway", "swaybg", "foot", "wayland-demo", "bibata-cursor-theme"],
+      "identity": {
+        "title": "sway tiling desktop",
+        "summary": "Upstream Sway with its native workspace bar and readable Foot terminals. Alt (Option on Mac) + 1–0 switches workspaces; Shift moves a window. Alt+Return opens a terminal; Alt+M, release Alt, then Q asks to exit. The Desktop command mode also controls layout, fullscreen and resize.",
+        "accent": "#4a6fa5",
+        "glyph": "S",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/sway -c /usr/share/kandelo/sway/config"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "Sway desktop keys",
+        "summary": "Alt is Option on Mac. Use Alt+Return for a terminal; Alt+1–0 for workspaces; Alt+Shift+1–0 to move windows; Alt+H/J/K/L to focus. Click the native bar to switch workspaces. Alt+M enters Desktop commands: release Alt, then Return opens a terminal, W/S/E changes layout, F toggles fullscreen, V toggles floating, Space changes focus mode, R resizes with H/J/K/L, C reloads and Q asks to exit. Escape leaves a command/resize mode. Applications run from the terminal. Some browser and OS shortcuts remain reserved. Use an ordinary custom Sway config for advanced bindings.",
+        "groups": []
+      }
+    },
+    "sway-sfwbar": {
+      "requires": ["sway", "swaybg", "foot", "wayland-demo", "bibata-cursor-theme", "sfwbar"],
+      "identity": {
+        "title": "Sway with SFWBar",
+        "summary": "An explicit Sway preset with SFWBar Start, task list and clock. The compositor uses the same Alt/Option desktop bindings as plain Sway; this preset keeps the GTK panel separate from the native Swaybar demo.",
+        "accent": "#4a6fa5",
+        "glyph": "S",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/bin/sway -c /etc/xdg/sfwbar/sway.config"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "Sway with SFWBar desktop keys",
+        "summary": "Alt is Option on Mac. Use Alt+Return for a terminal; Alt+1–0 for workspaces; Alt+Shift+1–0 to move windows; Alt+H/J/K/L to focus. Use the real SFWBar Start, task list and pager controls. Alt+M enters Desktop commands: release Alt, then Return opens a terminal, W/S/E changes layout, F toggles fullscreen, V toggles floating, Space changes focus mode, R resizes with H/J/K/L, C reloads and Q asks to exit. Escape leaves a command/resize mode. Launch applications from Start or the terminal. Some browser and OS shortcuts remain reserved. Use an ordinary custom Sway config for advanced bindings.",
+        "groups": []
+      }
+    },
     "omarchy": {
       "requires": ["wayland-demo", "quickshell", "dbus", "foot"],
       "identity": {
         "title": "Omarchy-style desktop",
-        "summary": "An Omarchy-style shell on Kandelo's Hyprland-compatible compositor. One Quickshell process draws the wallpaper, bar, launcher (CTRL+Space), menu (CTRL+ALT+Space), notifications, on-screen display and lock screen (CTRL+Escape). Six live colour themes also style the Qt Theme Gallery. The desktop starts bare: open clients from the launcher, CTRL+Return (terminal), or CTRL+K (clock).",
+        "summary": "An Omarchy-style shell on Kandelo's Hyprland-compatible compositor. One Quickshell process draws the wallpaper, bar, launcher (Alt+G), menu (Alt+M), notifications, on-screen display and lock screen (Alt+X). Alt+Shift+Y cycles six live colour themes. The desktop starts bare: open clients from the launcher, Alt+Return (terminal), Alt+C (clock) or Alt+P (paint); Alt+J/K changes focus and Alt+Shift+Q closes a window. Alt is Option on Mac.",
         "accent": "#7aa2f7",
         "glyph": "O",
         "packages": [

@@ -1,6 +1,9 @@
-import { setInternalsOpen } from "./support/dock";
 import { expect, test, type Page } from "../playwright-test";
-import { gotoApp } from "./support/kandelo-machine";
+import { gotoApp, waitForMachineBootInput } from "./support/kandelo-machine";
+import { footFrame } from "./support/labwc-frame";
+import { typePhysicalText } from "./support/physical-typing";
+import { terminalHistoryMatching } from "./support/terminal-history";
+import { setInternalsOpen } from "./support/dock";
 import { configureNewComputer } from "./support/computer-library";
 
 
@@ -21,6 +24,7 @@ async function launchOmarchy(page: Page) {
  * or the terminal means closing it and selecting that view.
  */
 async function openSurface(page: Page, label: "Internals" | "Graphics" | "Terminal") {
+  if (label === "Internals") await waitForMachineBootInput(page);
   await setInternalsOpen(page, label === "Internals");
   if (label !== "Internals") {
     const view = page
@@ -60,43 +64,87 @@ async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
   }, { timeout }).toMatch(pattern);
 }
 
-/** A theme reload can scroll its initiating command off screen before the
- * terminal view mounts. Read it through the terminal's ordinary scrollback. */
-async function expectTerminalHistory(page: Page, pattern: RegExp) {
-  await openSurface(page, "Terminal");
-  await expect.poll(() => terminalText(page)).not.toBe("");
-  await page.locator(".xterm-screen").hover();
-  let text = "";
-  for (let i = 0; i < 12 && !pattern.test(text); i++) {
-    text = await terminalText(page);
-    if (pattern.test(text)) break;
-    await page.mouse.wheel(0, -200);
-    await page.waitForTimeout(100);
-  }
-  expect(text).toMatch(pattern);
-  await page.mouse.wheel(0, 10_000);
+/** Read rendered rows across the terminal's ordinary DOM scrollback.
+ * Start at the bottom: view handoff preserves an older scroll position, so
+ * scanning upward from that position can miss a newer notification entirely. */
+async function expectTerminalHistory(page: Page, pattern: RegExp, timeout = 60_000) {
+  await expect.poll(async () => {
+    await openSurface(page, "Terminal");
+    return terminalHistoryMatching(page.locator(".xterm:visible").first(), pattern);
+  }, { timeout }).toMatch(pattern);
 }
 
-/** Press a CTRL combo on the desktop. A browser reserves SUPER (Cmd/Win), so
- *  the demo binds every action on CTRL too — the path users actually press.
- *  Focus off the canvas placeholder first (BrowserInputSource listens on
- *  window). */
-async function pressCtrl(page: Page, key: string, shift = false, alt = false) {
+/** A mapped Foot first presents a blank cursor before its shell is ready.
+ * Require text across several columns of the real client, excluding a lone
+ * cursor cell; typing into the initial PTY can race the shell's tty setup. */
+async function expectFootPrompt(page: Page) {
   await openSurface(page, "Graphics");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  // Locator screenshots include page overlays above the guest canvas.
+  await expect(page.getByRole("complementary", {name: "Download status"}))
+    .toBeHidden({timeout: 60_000});
+  await expect.poll(async () => {
+    const frame = await footFrame(page);
+    if (!frame.foot) return 0;
+    const png = await page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first().screenshot();
+    return page.evaluate(async ([base64, rect]) => {
+      const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], {type: "image/png"}));
+      const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+      ctx.drawImage(bitmap, 0, 0);
+      const image = ctx.getImageData(rect.x, rect.y, rect.width, Math.min(rect.height, 60));
+      bitmap.close();
+      let columns = 0;
+      for (let x = 0; x < image.width; x++) {
+        for (let y = 0; y < image.height; y++) {
+          const at = (y * image.width + x) * 4;
+          if (Math.min(image.data[at], image.data[at + 1], image.data[at + 2]) > 150) {
+            columns++; break;
+          }
+        }
+      }
+      return columns;
+    }, [png.toString("base64"), frame.foot] as const);
+  }, {timeout: 60_000}).toBeGreaterThan(24);
+}
+
+/** Return browser keyboard capture without changing the guest pointer seat. */
+async function focusDemo(page: Page) {
+  await openSurface(page, "Graphics");
+  const canvas = page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas").first();
+  await expect(canvas).toBeVisible();
+  // The desktop fills (5,5): clicking there opens its exclusive menu and
+  // steals the focus this test is checking. DOM focus sends no guest click.
+  await canvas.focus();
+  await expect(canvas).toBeFocused();
+}
+
+/** Exercise the image's real Alt/Option desktop modifier, without a host
+ * remap. Ctrl shortcuts below remain application input, including copy/paste. */
+async function pressDesktop(page: Page, key: string, shift = false) {
+  await focusDemo(page);
+  await page.keyboard.down("Alt");
+  try {
+    if (shift) await page.keyboard.down("Shift");
+    await page.keyboard.press(key);
+  } finally {
+    if (shift) await page.keyboard.up("Shift");
+    await page.keyboard.up("Alt");
+  }
+}
+
+/** Send an application Ctrl chord with the guest display focused. */
+async function pressCtrl(page: Page, key: string, shift = false) {
+  await focusDemo(page);
   await page.keyboard.down("Control");
   if (shift) await page.keyboard.down("Shift");
-  if (alt) await page.keyboard.down("Alt");
   await page.keyboard.press(key);
-  if (alt) await page.keyboard.up("Alt");
   if (shift) await page.keyboard.up("Shift");
   await page.keyboard.up("Control");
 }
 
 /** Press bare keys with the Demo surface focused. */
 async function pressKeys(page: Page, keys: string[]) {
-  await openSurface(page, "Graphics");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   for (const key of keys) await page.keyboard.press(key);
 }
 
@@ -131,7 +179,7 @@ const OPEN_LAUNCHER = /KBD_FOCUS layer=launcher(?![\s\S]*LAUNCHER_EXIT)/;
 /**
  * The Omarchy machine boots the tiling compositor with the desktop shell
  * Omarchy v4 is made of — one Quickshell process drawing the wallpaper, a
- * layer-shell status bar reserving the top strip, a launcher on CTRL+Space,
+ * layer-shell status bar reserving the top strip, a launcher on Alt/Option+G,
  * notifications, an on-screen display, and a lock screen, over switchable
  * themes — and every piece is driven from the keyboard. Fails (via
  * gotoApp) when the binaries aren't published.
@@ -190,15 +238,15 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
     .not.toMatch(/TILE n=/);
 
   // Open the three clients the way a user does, through the binds the
-  // compositor loaded from its own config: CTRL+K for the clock, CTRL+Return
+  // compositor loaded from its own config: Alt/Option+C for the clock, Alt/Option+Return
   // for each terminal. Each one is awaited before the next, so a missed key
   // shows up here rather than as a wrong count three gates later. The tile
   // count is the window count: every window the compositor maps is tiled.
-  await pressCtrl(page, "KeyK");
+  await pressDesktop(page, "KeyC");
   await expectTerminal(page, /TILE n=1 i=0 [\s\S]*KBD_FOCUS app_id=wlclock|KBD_FOCUS app_id=wlclock[\s\S]*TILE n=1 i=0 /, 60_000);
-  await pressCtrl(page, "Enter");
+  await pressDesktop(page, "Enter");
   await expectTerminal(page, /TILE n=2 i=1 /, 60_000);
-  await pressCtrl(page, "Enter");
+  await pressDesktop(page, "Enter");
   await expectTerminal(page, /TILE n=3 i=2 /, 60_000);
   await expectTerminal(page, /TILE n=3 i=2 [^\n]*[\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=3 i=2 /, 30_000);
 
@@ -244,11 +292,11 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   expect(await terminalText(page), "GPU compositing was torn down")
     .not.toMatch(/GPU compositing failed/);
 
-  // Gate 5: CTRL+Space fires the shortcut Quickshell registered, and the
+  // Gate 5: Alt/Option+G fires the shortcut Quickshell registered, and the
   // launcher opens: an overlay layer surface that takes the keyboard away
   // from the focused terminal, so the keys that follow filter its list
   // instead of being typed into the shell.
-  await pressCtrl(page, "Space");
+  await pressDesktop(page, "KeyG");
   await expectTerminal(page, /SHORTCUT_PRESSED app=quickshell id=launcher/, 60_000);
   await expectTerminal(page, /LAYER ns=launcher layer=3 /, 60_000);
   await expectTerminal(page, /LAUNCHER_READY n=14/, 60_000);
@@ -274,16 +322,16 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
     .not.toMatch(/ABI version mismatch/);
   // GLDRAW is the compositor's proof that it drew this window's texture.
   // Every marker above is protocol — map, focus, tile — and all of them
-  // fire for a window whose wl_shm pool the GPU cannot import (a memfd
-  // pool instead of a gbm prime fd). foot carries the gbm-pool patch that
-  // keeps its pools importable; this is the gate that notices if it stops.
+  // fire for a window even if its wl_shm pixels never reach the GPU.
+  // Foot uses upstream shared-memory pools; this gate requires the mapped
+  // buffer to reach the compositor's actual texture draw.
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
 
   // Gate 5b: a real application through the same path. "vi" narrows to Vim;
   // its entry runs unmodified vim inside foot, fetched lazily from
   // vim.zip on first exec — the fifth tile only appears if the whole chain
   // (launcher → kwlctl exec → foot → lazy fetch → vim) held.
-  await pressCtrl(page, "Space");
+  await pressDesktop(page, "KeyG");
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyV", "KeyI", "Enter"]);
   await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/bin\/foot [^\n]*\/usr\/bin\/vim/, 60_000);
@@ -297,7 +345,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   // through wl_shm, fontconfig resolving "sans-serif" through the image's
   // fonts.conf — and the sixth tile only appears once Qt maps its first
   // frame. The gallery reads the same six themes the compositor scanned.
-  await pressCtrl(page, "Space");
+  await pressDesktop(page, "KeyG");
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyG", "KeyA", "Enter"]);
   await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/bin\/qtgallery/, 60_000);
@@ -306,10 +354,9 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   await expectTerminal(page, /TILE n=6 i=5 /, 120_000);
   expect(await syslogText(page), "qtgallery binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
-  // The invisible-window gate. Qt's stock backing store allocates memfd
-  // pools; the GL renderer cannot import those, skips the surface, and
-  // every gate above still passes. Qt carries the same gbm-pool patch as
-  // foot and GTK, and GLDRAW only fires once the window's texture was drawn.
+  // The invisible-window gate. Qt's upstream backing store allocates
+  // shared-memory pools. Mapping and focus alone do not prove their pixels
+  // reached the renderer; GLDRAW requires the window's texture to be drawn.
   // The card→dispatch→theme-switch loop is proven by the Node smoke
   // (host/test/qtgallery-smoke.test.ts); this gate proves the browser half.
   await expectTerminal(page, /GLDRAW app_id=qtgallery/, 60_000);
@@ -317,12 +364,12 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   // Hyprland IPC event socket.
   await expectTerminal(page, /BAR_WINDOW title=Theme Gallery/, 60_000);
 
-  // Gate 6: CTRL+SHIFT+Space cycles the theme. One palette file repaints the
+  // Gate 6: Alt/Option+Shift+Y cycles the theme. One palette file repaints the
   // whole desktop — the compositor's borders, gaps and wallpaper, and the
   // shell's: the compositor emits `theme>>` on its event socket, and the
   // shell re-reads the new theme.conf for its bar, wallpaper and launcher,
   // and shows the switch on its on-screen display.
-  await pressCtrl(page, "Space", true);
+  await pressDesktop(page, "KeyY", true);
   await expectTerminal(page, /THEME (catppuccin|everforest|gruvbox|nord|rose-pine)/, 60_000);
   await expectTerminal(page, /SHELL_THEME name=(catppuccin|everforest|gruvbox|nord|rose-pine)/, 60_000);
   await expectTerminal(page, /LAYER ns=osd /, 60_000);
@@ -330,36 +377,38 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   // real org.freedesktop.Notifications.Notify over the dbus-daemon session
   // bus, the shell's notification server answers with the assigned id and
   // maps the card as a layer-shell surface.
-  await expectTerminal(page, /NOTIFY_ID id=\d+/, 60_000);
-  await expectTerminal(page, /NOTIFICATION id=\d+ summary=Theme/, 60_000);
-  await expectTerminal(page, /LAYER ns=notifications /, 60_000);
+  await expectTerminalHistory(page, /NOTIFY_ID id=\d+/);
+  await expectTerminalHistory(page, /NOTIFICATION id=\d+ summary=Theme/);
+  await expectTerminalHistory(page, /LAYER ns=notifications /);
 
-  // Gate 6b: CTRL+ALT+Space opens the Omarchy menu — the same launcher at
+  // Gate 6b: Alt/Option+M opens the Omarchy menu — the same launcher at
   // its root level. Down+Enter descends into the theme list, and Enter on
   // an entry dispatches the switch through the Hyprland IPC.
-  await pressCtrl(page, "Space", false, true);
+  await pressDesktop(page, "KeyM");
   await expectTerminal(page, /LAUNCHER_LEVEL root/, 60_000);
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["ArrowDown", "Enter"]);
   await expectTerminal(page, /LAUNCHER_LEVEL themes/, 60_000);
   await pressKeys(page, ["Enter"]);
-  await expectTerminal(page, /LAUNCHER_THEME name=[a-z-]+/, 60_000);
+  // Theme/notifier retiling can scroll this real milestone past the live rows
+  // between polls. Read painted history, preserving the same marker and bound.
+  await expectTerminalHistory(page, /LAUNCHER_THEME name=[a-z-]+/, 60_000);
 
-  // Gate 7: the bar tracks the desktop. CTRL+2 switches workspace, and the
+  // Gate 7: the bar tracks the desktop. Alt/Option+2 switches workspace, and the
   // shell's Hyprland module reads the switch off the Hyprland IPC event
   // socket — which is what moves its active workspace. The bar prints the
   // workspace it now shows, so its own line is the proof the feed arrived;
   // the compositor's WORKSPACE marker only proves it was sent.
-  await pressCtrl(page, "2");
+  await pressDesktop(page, "2");
   await expectTerminal(page, /WORKSPACE active=2/, 60_000);
   await expectTerminal(page, /BAR_WORKSPACE active=2/, 60_000);
 
-  // Gate 8: CTRL+Escape locks the session through ext-session-lock. The
+  // Gate 8: Alt/Option+X locks the session through ext-session-lock. The
   // compositor blanks the output, gives the lock surface the keyboard, and
   // sends `locked` only once a blanked frame has flipped. Typing the wrong
   // password keeps it locked; the image's own credential check (login -c)
   // accepts the demo user's password and the session unlocks.
-  await pressCtrl(page, "Escape");
+  await pressDesktop(page, "KeyX");
   await expectTerminal(page, /SHORTCUT_PRESSED app=quickshell id=lock/, 60_000);
   await expectTerminal(page, /LOCK_ENGAGED/, 60_000);
   await expectTerminal(page, /SESSION_LOCKED/, 60_000);
@@ -407,15 +456,17 @@ test("Kandelo omarchy survives a rapid 8-window launch storm without SCM_RIGHTS 
   await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
 
   // An empty workspace, so the storm's window count is unambiguous.
-  await pressCtrl(page, "2");
+  await pressDesktop(page, "2");
   await expectTerminal(page, /WORKSPACE active=2/, 30_000);
 
-  // Eight wlclock launches back-to-back (CTRL+K, no delay).
-  await openSurface(page, "Graphics");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
-  await page.keyboard.down("Control");
-  for (let i = 0; i < 8; i++) await page.keyboard.press("KeyK", { delay: 0 });
-  await page.keyboard.up("Control");
+  // Eight wlclock launches back-to-back (Alt/Option+C, no delay).
+  await focusDemo(page);
+  await page.keyboard.down("Alt");
+  try {
+    for (let i = 0; i < 8; i++) await page.keyboard.press("KeyC", { delay: 0 });
+  } finally {
+    await page.keyboard.up("Alt");
+  }
 
   // All eight must map and tile. Pre-fix this stalled at five while the
   // connection count kept climbing — connected but killed before mapping.
@@ -429,7 +480,7 @@ test("Kandelo omarchy survives a rapid 8-window launch storm without SCM_RIGHTS 
   // floods `gbm_bo_map failed` — a flood fills the screen, so it cannot
   // scroll out of view.
   for (let i = 0; i < 2; i++) {
-    await pressCtrl(page, "KeyW");
+    await pressDesktop(page, "KeyQ", true);
     await page.waitForTimeout(600);
   }
   await expectTerminal(page, /TILE n=6 /, 30_000);
@@ -466,7 +517,7 @@ test("Kandelo omarchy runs ScummVM as a GL window that takes its tile's size", a
 
   // Launch it the way a user does: the launcher's entry runs the image's
   // wrapper, which execs the lazy engine.
-  await pressCtrl(page, "Space");
+  await pressDesktop(page, "KeyG");
   await expectTerminal(page, OPEN_LAUNCHER, 60_000);
   await pressKeys(page, ["KeyS", "KeyC", "KeyU", "Enter"]);
   await expectTerminal(page, /LAUNCHER_EXEC cmd=\/usr\/bin\/scummvm/, 60_000);
@@ -526,7 +577,7 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
   }
 
   for (const game of ["pong", "snake", "breakout", "asteroids", "bytepath", "snkrx"]) {
-    await pressCtrl(page, "Space");
+    await pressDesktop(page, "KeyG");
     await expectTerminal(page, OPEN_LAUNCHER, 60_000);
     await pressKeys(page, []);
     await page.keyboard.type(game, { delay: 80 });
@@ -542,7 +593,7 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
     // the clock, then close the game through xdg-shell, including the games
     // with their own love.run loops. The desktop must remain alive throughout.
     if (game === "pong" || game === "bytepath" || game === "snkrx") {
-      await pressCtrl(page, "KeyK");
+      await pressDesktop(page, "KeyC");
       await expectTerminal(page, /TILE n=2 i=1 /, 60_000);
       await expectGameBuffer(2);
       if (game === "snkrx") {
@@ -575,13 +626,23 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
         const menuBytes = (await page.screenshot({ clip })).byteLength;
         await page.mouse.move(x(55), y(125));
         await page.waitForTimeout(250); // upstream button hover state
-        await page.mouse.click(x(55), y(125), { delay: 120 });
-        await expect.poll(async () => (await page.screenshot({ clip })).byteLength, {
-          timeout: 15_000,
-        }).toBeGreaterThan(menuBytes + 1_000);
-        await pressCtrl(page, "KeyJ"); // focus the clock again before closing it
+        // SNKRX drains mousepressed/mousereleased into one button state
+        // before Input:update derives its pressed edge (engine/init.lua,
+        // engine/game/input.lua). A complete click within one slow frame
+        // disappears upstream even when Wayland delivers both events.
+        // Hold the ordinary press through the resulting painted action,
+        // then release it, including on assertion failure.
+        await page.mouse.down();
+        try {
+          await expect.poll(async () => (await page.screenshot({ clip })).byteLength, {
+            timeout: 15_000,
+          }).toBeGreaterThan(menuBytes + 1_000);
+        } finally {
+          await page.mouse.up();
+        }
+        await pressDesktop(page, "KeyJ"); // focus the clock again before closing it
       }
-      await pressCtrl(page, "KeyW");
+      await pressDesktop(page, "KeyQ", true);
       await expectGameBuffer(1);
     }
     if (game === "bytepath") {
@@ -591,11 +652,11 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
       await page.keyboard.press("Enter", { delay: 120 });
       await page.waitForTimeout(2_000);
     }
-    await pressCtrl(page, "KeyW");
+    await pressDesktop(page, "KeyQ", true);
     const previousClockPid = [...(await terminalText(page)).matchAll(
       /KWLCTL_EXEC "\/usr\/bin\/wlclock" pid=(\d+)/g,
     )].at(-1)?.[1];
-    await pressCtrl(page, "KeyK");
+    await pressDesktop(page, "KeyC");
     await openSurface(page, "Terminal");
     let cleanupClockPid: string | undefined;
     await expect.poll(async () => {
@@ -613,7 +674,7 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
       cleanupClockPid = clock[1];
       return true;
     }, { timeout: 60_000 }).toBe(true);
-    await pressCtrl(page, "KeyW");
+    await pressDesktop(page, "KeyQ", true);
     await expectTerminal(page, new RegExp(
       `KWLCTL_EXEC "/usr/bin/wlclock" pid=${cleanupClockPid}\\s[\\s\\S]*WLCLOCK_EXIT`,
     ), 60_000);
@@ -646,17 +707,21 @@ test("Kandelo omarchy copies and pastes between foot windows through the Wayland
   await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
 
   // An empty workspace, so the two terminals are the only windows.
-  await pressCtrl(page, "3");
+  await pressDesktop(page, "3");
   await expectTerminal(page, /WORKSPACE active=3/, 30_000);
 
   // foot A prints the command. Its own echo line and its output both contain
   // the text, so the search below lands on exactly these bytes either way.
-  await pressCtrl(page, "Enter");
+  await pressDesktop(page, "Enter");
   await expectTerminal(page, /TILE n=1 i=0 [\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=1 i=0 /, 60_000);
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
-  await openSurface(page, "Graphics");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
-  await page.keyboard.type("echo notify-send clip-ok\n", { delay: 20 });
+  await focusDemo(page);
+  await expectFootPrompt(page);
+  await focusDemo(page);
+  await typePhysicalText(page, "echo notify-send clip-ok; "
+    + "printf '\\033[48;2;30;180;60mCLIPBOARD_SOURCE_READY\\033[0m\\n'\n", {delay: 20});
+  // Observe the executed output before starting Foot's scrollback search.
+  await expect.poll(async () => (await footFrame(page)).green, {timeout: 60_000}).toBeGreaterThan(200);
 
   // Select it from the keyboard (foot's scrollback search, committed with
   // Enter), then copy with SUPER+C.
@@ -671,7 +736,7 @@ test("Kandelo omarchy copies and pastes between foot windows through the Wayland
 
   // foot B takes focus and pastes with Ctrl+V; the paste reaches it as
   // Ctrl+Shift+V and foot B asks the compositor for the text.
-  await pressCtrl(page, "Enter");
+  await pressDesktop(page, "Enter");
   await expectTerminal(page, /TILE n=2 i=1 [\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=2 i=1 /, 60_000);
   await page.waitForTimeout(3_000); // let foot B's shell reach its prompt
   await pressCtrl(page, "KeyV");
@@ -710,16 +775,15 @@ test("Kandelo omarchy pastes text from the host clipboard into foot", async ({ p
   await expectTerminal(page, /KCLIPD_READY/, 180_000);
   await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
 
-  await pressCtrl(page, "4");
+  await pressDesktop(page, "4");
   await expectTerminal(page, /WORKSPACE active=4/, 30_000);
-  await pressCtrl(page, "Enter");
+  await pressDesktop(page, "Enter");
   await expectTerminal(page, /TILE n=1 i=0 [\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=1 i=0 /, 60_000);
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
   await page.waitForTimeout(3_000); // let foot's shell reach its prompt
 
   // The host clipboard holds a command; paste it with the platform chord.
-  await openSurface(page, "Graphics");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   await page.evaluate(() => navigator.clipboard.writeText("notify-send host-paste-ok"));
   await page.keyboard.press("ControlOrMeta+KeyV");
   await expectTerminal(page, /SELECTION_SET via=ext-data-control mimes=4/, 30_000);
@@ -739,8 +803,7 @@ test("Kandelo omarchy pastes text from the host clipboard into foot", async ({ p
   await page.waitForTimeout(2_000);
   await page.evaluate(() => navigator.clipboard.writeText("echo should-not-arrive"));
   const receivesBefore = ((await terminalText(page)).match(/SELECTION_RECEIVE/g) ?? []).length;
-  await openSurface(page, "Graphics");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   await page.keyboard.press("ControlOrMeta+KeyV");
   await expect(page.getByTestId("kms-paste-error")).toContainText(
     "Paste failed: the clipboard agent is not running in this machine",
@@ -780,14 +843,13 @@ test("Kandelo omarchy copies foot's selection to the host clipboard", async ({ p
   await expectTerminal(page, /KCLIPD_READY/, 180_000);
   await expectTerminal(page, /HYPR_LISTENER slot=\d+/, 180_000);
 
-  await pressCtrl(page, "5");
+  await pressDesktop(page, "5");
   await expectTerminal(page, /WORKSPACE active=5/, 30_000);
-  await pressCtrl(page, "Enter");
+  await pressDesktop(page, "Enter");
   await expectTerminal(page, /TILE n=1 i=0 [\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=1 i=0 /, 60_000);
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
   await page.waitForTimeout(3_000); // let foot's shell reach its prompt
-  await openSurface(page, "Graphics");
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await focusDemo(page);
   await page.keyboard.type("echo copyout-first; echo copyout-second\n", { delay: 20 });
   await page.evaluate(() => navigator.clipboard.writeText("host-before"));
 

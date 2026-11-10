@@ -178,9 +178,18 @@ for entry in "$NIX_LIBCXX_SOURCE/runtimes"/*; do
     [ -e "$entry" ] || continue
     ln -s "$entry" "$LLVM_SRC_DIR/runtimes/$(basename "$entry")"
 done
-ln -s "$NIX_LIBUNWIND_SOURCE/libunwind" "$LLVM_SRC_DIR/libunwind"
+# This source receives the target-selection patch below. Dereference it into
+# writable private files rather than patching the immutable Nix derivation.
+cp -RL "$NIX_LIBUNWIND_SOURCE/libunwind" "$LLVM_SRC_DIR/libunwind"
+chmod -R u+w "$LLVM_SRC_DIR/libunwind"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+
+# Select the VM unwinder backend without native register assembly. Patch only
+# the private source copy; source derivations and the checkout stay immutable.
+for patch_file in "$SCRIPT_DIR"/patches/*.patch; do
+    patch --fuzz=0 -p1 -d "$LLVM_SRC_DIR" < "$patch_file"
+done
 
 # Configure + build libc++/libc++abi/libunwind into <build_dir> with the given
 # compile-flags string (plus any extra cmake args). Factored so the default
@@ -195,6 +204,36 @@ NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 CALLTYPES_PLUGIN="$(bash "$REPO_ROOT/scripts/calltypes-plugin.sh" "$LLVM_CLANG")"
 CALLTYPES_FLAGS="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $CALLTYPES_PLUGIN -Xclang -add-plugin -Xclang kandelo-fncasts -fpass-plugin=$CALLTYPES_PLUGIN"
 
+# Every emitted object must target this archive's Wasm address width.
+# Checking the container alone misses native assembly members that wasm-ld
+# warns about and ignores, leaving a contaminated archive looking usable.
+check_libcxx_archive() {
+    local archive="$1" expected_arch="$2" report="$3"
+    if ! "$LLVM_PREFIX/bin/llvm-readobj" --file-headers "$archive" > "$report" 2>&1; then
+        echo "ERROR: cannot inspect libc++ archive: $archive" >&2
+        cat "$report" >&2
+        return 1
+    fi
+    awk -v expected_arch="$expected_arch" '
+        /^File: / { member = $0 }
+        /^Format: / {
+            objects++
+            if ($0 != "Format: WASM") {
+                print member ": expected Wasm object, found " $0 > "/dev/stderr"
+                invalid = 1
+            }
+        }
+        /^Arch: / {
+            architectures++
+            if ($0 != "Arch: " expected_arch) {
+                print member ": expected " expected_arch ", found " $0 > "/dev/stderr"
+                invalid = 1
+            }
+        }
+        END { exit (!objects || objects != architectures || invalid) }
+    ' "$report"
+}
+
 # LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF: with
 # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY, CMake's check_library_exists
 # only compiles, never links, so it reports every function present. musl has
@@ -202,6 +241,7 @@ CALLTYPES_FLAGS="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall 
 # implementation of __cxa_thread_atexit (the answer is seeded, not probed).
 build_libcxx_variant() {
     local variant_build_dir="$1"; shift
+    local variant_asm_flags="$1"
     local variant_c_flags="$1 $CALLTYPES_FLAGS"; shift
     rm -rf "$variant_build_dir"
     mkdir -p "$variant_build_dir"
@@ -213,13 +253,16 @@ build_libcxx_variant() {
         -DCMAKE_SYSTEM_PROCESSOR="${ARCH}" \
         -DCMAKE_C_COMPILER="$LLVM_CLANG" \
         -DCMAKE_CXX_COMPILER="$LLVM_CLANG" \
+        -DCMAKE_ASM_COMPILER="$LLVM_CLANG" \
         -DCMAKE_AR="$LLVM_AR" \
         -DCMAKE_RANLIB="$LLVM_RANLIB" \
         -DCMAKE_NM="$LLVM_NM" \
         -DCMAKE_C_COMPILER_TARGET="${WASM_TARGET}" \
         -DCMAKE_CXX_COMPILER_TARGET="${WASM_TARGET}" \
+        -DCMAKE_ASM_COMPILER_TARGET="${WASM_TARGET}" \
         -DCMAKE_C_FLAGS="${variant_c_flags}" \
         -DCMAKE_CXX_FLAGS="${variant_c_flags}" \
+        -DCMAKE_ASM_FLAGS="${variant_asm_flags}" \
         -DCMAKE_SYSROOT="${SYSROOT}" \
         -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
         \
@@ -262,7 +305,13 @@ build_libcxx_variant() {
         2>&1 | tail -20
 
       echo "==> Compiling (this may take a few minutes)..."
-      make -j"$NPROC" cxx cxxabi unwind 2>&1 | tail -10 )
+      if ! make -j"$NPROC" cxx cxxabi unwind > "$variant_build_dir/build.log" 2>&1; then
+          echo "ERROR: libc++ compile failed; first diagnostics:" >&2
+          grep -n -m20 -E 'error:|fatal error:|Error [0-9]|FAILED:' "$variant_build_dir/build.log" >&2 || true
+          tail -40 "$variant_build_dir/build.log" >&2
+          exit 1
+      fi
+      tail -10 "$variant_build_dir/build.log" )
 }
 
 echo "==> Building default (static, non-PIC) libc++/libc++abi for ${ARCH}..."
@@ -370,6 +419,11 @@ if [ -z "$LIBCXX_PIC_A" ] || [ -z "$LIBCXXABI_PIC_A" ]; then
 fi
 cp "$LIBCXX_PIC_A" "$INSTALL_DIR/lib/libc++-pic.a"
 cp "$LIBCXXABI_PIC_A" "$INSTALL_DIR/lib/libc++abi-pic.a"
+
+echo "==> Verifying every libc++ archive member targets ${ARCH}..."
+for archive in libc++.a libc++abi.a libc++-pic.a libc++abi-pic.a; do
+    check_libcxx_archive "$INSTALL_DIR/lib/$archive" "$ARCH" "$WORK_DIR/$archive.headers.log"
+done
 
 echo "==> Done!"
 echo "  libc++.a:        $(wc -c < "$INSTALL_DIR/lib/libc++.a" | tr -d ' ') bytes"

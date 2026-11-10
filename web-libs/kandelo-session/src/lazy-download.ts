@@ -27,6 +27,19 @@ export function activeLazyDownloadSummaries(
     .sort((a, b) => b.t - a.t);
 }
 
+/** Unfinished transfers and unresolved failures, with failures first. */
+export function visibleLazyDownloadSummaries(
+  summaries: Iterable<LazyDownloadSummary>,
+): LazyDownloadSummary[] {
+  // WHY: libraries can recover from EIO by omitting fonts or other data.
+  // Completing the transfer or unmounting a pane cannot acknowledge its
+  // later integrity failure; keep that failure visible until explicit dismissal
+  // or a new attempt updates its authoritative summary.
+  return Array.from(summaries)
+    .filter(({ status }) => status !== "complete")
+    .sort((a, b) => Number(b.status === "error") - Number(a.status === "error") || b.t - a.t);
+}
+
 /**
  * Human-readable identity for one lazy download. Archive and tree events
  * describe a whole transport payload, so their immutable URL is more useful

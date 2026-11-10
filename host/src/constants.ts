@@ -1,6 +1,7 @@
+import { describeProgramExtensionFailures, isProgramExtensionImportName } from "./program-extensions";
+import { RESERVED_MODULE_PREFIX } from "./generated/program-extensions";
 import {
   ABI_VERSION,
-  ACCEPTED_PROGRAM_CONTRACT_DIGESTS,
   PROCESS_MEMORY_DEFAULT_MAX_PAGES,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
@@ -763,13 +764,14 @@ function forkGlobalRecipeTypeCode(
 }
 
 function appendSignature(
-  signatures: Map<string, WasmFunctionSignature[]>,
+  signatures: Map<string, WasmFunctionSignature[]> | undefined,
   identity: string,
   signature: WasmFunctionSignature | undefined,
 ): void {
   if (!signature) {
     throw new Error(`function ${identity} refers to an unknown type`);
   }
+  if (!signatures) return;
   const values = signatures.get(identity) ?? [];
   values.push(signature);
   signatures.set(identity, values);
@@ -815,7 +817,10 @@ function readLimits(
  * i32/i64 pointers. Release and resolver acceptance must validate the actual
  * memory architecture, descriptor, and function types as one atomic contract.
  */
-function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactFacts {
+function readWasmForkArtifactFacts(
+  programBytes: ArrayBuffer,
+  retainExportFacts = true,
+): WasmForkArtifactFacts {
   const src = new Uint8Array(programBytes);
   if (!hasWasmMagic(src)) throw new Error("not a wasm binary");
 
@@ -1043,12 +1048,14 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
         const kind = src[pos++];
         const [index, indexBytes] = readULEB128(src, pos);
         pos += indexBytes;
-        appendImportType(facts.exports, name, { kind, index });
+        if (retainExportFacts) {
+          appendImportType(facts.exports, name, { kind, index });
+        }
         if (kind === 0) {
           pendingFunctionExports.push({ name, index });
-        } else if (kind === 3) {
+        } else if (retainExportFacts && kind === 3) {
           appendImportType(facts.globalExports, name, index);
-        } else if (kind === 1) {
+        } else if (retainExportFacts && kind === 1) {
           appendImportType(facts.tableExports, name, index);
         }
       }
@@ -1067,7 +1074,11 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
 
   for (const { name, index } of pendingFunctionExports) {
     const typeIndex = functionTypeIndices[index];
-    appendSignature(facts.functionExports, name, functionTypes[typeIndex]);
+    appendSignature(
+      retainExportFacts ? facts.functionExports : undefined,
+      name,
+      functionTypes[typeIndex],
+    );
   }
   return facts;
 }
@@ -2200,7 +2211,7 @@ export function readWasmFunctionImports(
   programBytes: ArrayBuffer,
 ): readonly WasmFunctionImportType[] {
   return Object.freeze(
-    readWasmForkArtifactFacts(programBytes).functionImportEntries.map(
+    readWasmForkArtifactFacts(programBytes, false).functionImportEntries.map(
       (entry) =>
         Object.freeze({
           ...entry,
@@ -2464,49 +2475,6 @@ function abiContractDigestsEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
- * The affirmed prior program contracts this epoch admits beside the running
- * kernel's own digest.
- *
- * WHY a set rather than one digest: the contract digest is a single hash over
- * `ABI_VERSION` plus the whole program surface, so admission can only compare
- * it for equality — a program built one additive field ago differs from the
- * current contract exactly as much as one built against a contradictory
- * contract. The strictness is in the stamp, not in the comparison.
- *
- * WHY these members are not an exemption list. Every one is re-derived by
- * `cargo xtask check-program-baseline` on every build, from two independent
- * conditions that must BOTH hold: the snapshot classifier, run over exactly
- * the data the digest hashes, finds only additions since that contract; and a
- * named author has recorded in `abi/accepted-program-digests.json` why the
- * addition is behaviorally safe for programs that predate it — a judgement no
- * classifier can make, because a change can be additive in schema and
- * breaking in behavior. The digest itself is recomputed from a stored copy of
- * the snapshot that produced it, so a hand-written digest resolves to no
- * snapshot and an edited snapshot no longer hashes to its digest. See
- * `tools/xtask/src/accepted_program_digests.rs`.
- *
- * An `ABI_VERSION` bump empties this set: a digest binds the epoch, and a
- * bump declares that every program is rebuilt. The epoch is checked
- * separately by `expectedAbi` below and is not relaxed here.
- *
- * Deliberately not a parameter of `describeWasmArtifactPolicyFailures`: what
- * this epoch admits is decided by the record and the generator, so a test that
- * needs a different set compiles against a different generated module rather
- * than asking admission to accept one.
- */
-const AFFIRMED_PRIOR_ABI_CONTRACT_DIGESTS: readonly Uint8Array[] =
-  ACCEPTED_PROGRAM_CONTRACT_DIGESTS.map((hex) => {
-    const pairs = hex.match(/../g);
-    if (pairs === null || !/^[0-9a-f]{64}$/.test(hex)) {
-      throw new Error(
-        `generated ACCEPTED_PROGRAM_CONTRACT_DIGESTS entry is not a 32-byte ` +
-          `lowercase hex digest: ${hex}`,
-      );
-    }
-    return new Uint8Array(pairs.map((pair) => Number.parseInt(pair, 16)));
-  });
-
-/**
  * Asyncify-instrumented means exporting the transform's entry points. A byte
  * scan would also match a mere mention, and the kernel itself carries the
  * word in the artifact checker it links.
@@ -2595,19 +2563,11 @@ export function describeWasmArtifactPolicyFailures(
             "See docs/abi-versioning.md.",
         );
       }
-    } else {
-      // The affirmed set is platform policy, not a per-call option: a caller
-      // cannot widen what this epoch admits.
-      const admitted = abiContractDigestsEqual(guestDigest, options.expectedAbiContractDigest) ||
-        AFFIRMED_PRIOR_ABI_CONTRACT_DIGESTS.some((prior) =>
-          abiContractDigestsEqual(guestDigest, prior)
-        );
-      if (!admitted) {
-        failures.push(
-          "ABI contract digest mismatch — guest built against a different ABI " +
-            "snapshot than the running kernel; rebuild the guest",
-        );
-      }
+    } else if (!abiContractDigestsEqual(guestDigest, options.expectedAbiContractDigest)) {
+      failures.push(
+        "ABI contract digest mismatch — guest built against a different ABI " +
+          "snapshot than the running kernel; rebuild the guest",
+      );
     }
   }
 
@@ -2627,6 +2587,17 @@ export function describeWasmArtifactPolicyFailures(
 
   const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exports.has(name));
   const importNames = readWasmImportNames(programBytes);
+  if (importNames.some(name => name.startsWith(RESERVED_MODULE_PREFIX) || isProgramExtensionImportName(name.slice(name.lastIndexOf(".") + 1)))) {
+    try {
+      const facts = readWasmForkArtifactFacts(programBytes);
+      failures.push(...describeProgramExtensionFailures(
+        readWasmImportDescriptors(programBytes), facts.functionImportEntries,
+        facts.memoryPointerWidths,
+      ));
+    } catch (error) {
+      failures.push(`cannot validate required program extensions: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const customSections = readWasmCustomSectionNames(programBytes);
   const presentWpkImports = WPK_FORK_REQUIRED_IMPORTS.filter(({ module, name }) =>
     importNames.includes(`${module}.${name}`)

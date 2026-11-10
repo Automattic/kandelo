@@ -59,6 +59,7 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  EXTENSION_REQUEST_KLOG_V1,
   HOST_INTERCEPTED_SYSCALLS,
   POSIX_ARG_MAX_BYTES,
   PROCESS_FORK_MODE_FORK,
@@ -143,6 +144,15 @@ import {
 import { ForkHostImportWorkerRuntime } from "./fork-host-import-runtime";
 import { trapProcessWorker } from "./fork-worker-import-exceptions";
 import { createHeapSafepointImport } from "./heap-safepoint";
+import { createStackCaptureImport } from "./wasm-stack-capture";
+import {
+  KLOG_IMPORT,
+  KLOG_INVALID_ARGUMENT,
+  KLOG_MODULE,
+  STACK_IMPORT,
+  STACK_MODULE,
+} from "./generated/program-extensions";
+import { waitForChannelCompletion } from "./channel-completion-wait";
 import {
   ForkImportedGlobalCapture,
   ForkImportedGlobalPlanner,
@@ -284,11 +294,7 @@ function continuationMmap(
   let i32 = new Int32Array(memory.buffer);
   Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
   Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-  while (
-    Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok"
-  ) {
-    /* */
-  }
+  waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
 
   view = new DataView(memory.buffer);
   i32 = new Int32Array(memory.buffer);
@@ -326,11 +332,7 @@ function continuationMunmap(
   const i32 = new Int32Array(memory.buffer);
   Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
   Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-  while (
-    Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok"
-  ) {
-    /* */
-  }
+  waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
   const resultView = new DataView(memory.buffer);
   const resultI32 = new Int32Array(memory.buffer);
   const result = Number(resultView.getBigInt64(base + CH_RETURN, true));
@@ -547,17 +549,16 @@ function buildKernelImports(
       }
       view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
       view.setBigInt64(base + CH_ARGS, BigInt(status), true);
+      // Teardown can wake a request before dispatch consumes its flags.
+      // Exit is a fresh raw request, never that prior opaque record or
+      // cancellation point; inheriting those flags can reject the exit.
+      view.setUint32(base + CH_REQUEST_FLAGS, 0, true);
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait until the reusable kernel transaction returns and the host has
       // committed the exit before terminating this disposable process Worker.
-      while (
-        Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
-        "ok"
-      ) {
-        /* */
-      }
+      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
       onKernelExit?.(status);
       // Execute unreachable inside Wasm: a RuntimeError thrown by JavaScript
       // is catchable by guest noexcept handlers, which can issue writev on
@@ -600,12 +601,7 @@ function buildKernelImports(
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      while (
-        Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
-        "ok"
-      ) {
-        /* */
-      }
+      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
@@ -634,12 +630,7 @@ function buildKernelImports(
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      while (
-        Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
-        "ok"
-      ) {
-        /* */
-      }
+      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
@@ -673,6 +664,7 @@ export function buildKernelImportsForTest(
 
 export interface DlopenSupport {
   imports: Record<string, WebAssembly.ExportValue>;
+  readonly extensionImports: WebAssembly.Imports;
   /** Validate and return the compact copied live-module closure. */
   readForkState: () => DylinkForkState;
   /** Recreate the parent's live module and handle state from linear memory. */
@@ -1167,6 +1159,7 @@ export function buildDlopenImports(
   workerIdentity = 1,
   memoryOwnership: "copied" | "borrowed" = "copied",
   forkSideModuleContract?: ForkSideModuleContract,
+  stackProgramBytes?: ArrayBuffer | (() => ArrayBuffer),
 ): DlopenSupport {
   if (
     !Number.isInteger(workerIdentity) ||
@@ -1179,6 +1172,29 @@ export function buildDlopenImports(
   }
   let linker: DynamicLinker | null = null;
   const loadedLibraries = new Map<string, LoadedSharedLibrary>();
+  let instantiatingModules = 0;
+  // `kandelo.klog.v1`: the kernel owns the message ring, so the import is a
+  // request on this worker's own channel rather than host logic. The kernel
+  // stages `buffer` with the request's kernel-host descriptor exactly as it
+  // stages a syscall's, so no bytes pass through here.
+  const klogImport = (buffer: number | bigint, capacity: number, action: number): number => {
+    if (capacity < 0) return KLOG_INVALID_ARGUMENT;
+    const { result, errno } = invokeChannelSyscall(EXTENSION_REQUEST_KLOG_V1, [
+      action,
+      buffer,
+      capacity,
+    ]);
+    return errno !== 0 ? -errno : result;
+  };
+  const extensionImports: WebAssembly.Imports = {
+    [KLOG_MODULE]: { [KLOG_IMPORT]: klogImport },
+    ...(stackProgramBytes === undefined ? {} : {
+      [STACK_MODULE]: {
+        [STACK_IMPORT]: createStackCaptureImport(memory, ptrWidth, stackProgramBytes,
+          () => loadedLibraries.size === 0 && instantiatingModules === 0),
+      },
+    }),
+  };
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number =>
@@ -1488,11 +1504,7 @@ export function buildDlopenImports(
     const i32 = new Int32Array(memory.buffer);
     Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
     Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-    while (
-      Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok"
-    ) {
-      /* wait for the kernel Worker */
-    }
+    waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const errno = view.getUint32(base + CH_ERRNO, true);
     clearDeferredSignalDelivery(view, base);
@@ -1527,11 +1539,7 @@ export function buildDlopenImports(
     const i32 = new Int32Array(memory.buffer);
     Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
     Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-    while (
-      Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok"
-    ) {
-      /* wait for mmap */
-    }
+    waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
 
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const err = view.getUint32(base + CH_ERRNO, true);
@@ -1584,11 +1592,7 @@ export function buildDlopenImports(
     const i32 = new Int32Array(memory.buffer);
     Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
     Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-    while (
-      Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok"
-    ) {
-      /* wait */
-    }
+    waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
 
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const err = view.getUint32(base + CH_ERRNO, true);
@@ -1901,6 +1905,11 @@ export function buildDlopenImports(
       globalSymbolOwners,
       got: new Map(),
       loadedLibraries,
+      programExtensionImports: extensionImports,
+      withModuleInstantiation: <T>(operation: () => T): T => {
+        instantiatingModules++;
+        try { return operation(); } finally { instantiatingModules--; }
+      },
       resolveLibrarySync,
       longjmpTag: canonicalLongjmpTag,
       cppExceptionTag: canonicalCppExceptionTag,
@@ -2345,6 +2354,7 @@ export function buildDlopenImports(
 
   return {
     imports,
+    extensionImports,
     readForkState,
     replayDlopens,
     resetForkChildLock,
@@ -2417,6 +2427,7 @@ function buildImportObject(
     seconds: number,
   ) => void,
   forkEnvImports?: Record<string, WebAssembly.ImportValue>,
+  programExtensionImports?: WebAssembly.Imports,
 ): WebAssembly.Imports {
   assertSupportedKernelFunctionImports(module, kernelImports);
   // Refuse, before instantiation, a program that imports from env anything
@@ -2581,7 +2592,7 @@ function buildImportObject(
     };
   }
 
-  const importObject: WebAssembly.Imports = { env: envImports };
+  const importObject: WebAssembly.Imports = { ...programExtensionImports, env: envImports };
   if (Object.keys(kernelImports).length > 0) {
     importObject.kernel = kernelImports;
   }
@@ -3035,6 +3046,12 @@ export async function centralizedWorkerMain(
   let kernelExitStatus: number | null = null;
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
+    // WHY: the kernel keeps its own copy of the program bytes, and a running
+    // process never reads them again. Detaching frees them at once: an idle
+    // process worker waits in Atomics.wait and rarely collects garbage.
+    const releaseProgramBytes = () => {
+      programBytes.transfer(0);
+    };
     const ptrWidth = initData.ptrWidth ?? 4;
     const artifactFailures = describeWasmArtifactPolicyFailures(programBytes, {
       expectedAbi: initData.kernelAbiVersion,
@@ -3105,6 +3122,7 @@ export async function centralizedWorkerMain(
       wasiShim.init();
 
       // Signal ready
+      releaseProgramBytes();
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
       // Run _start
@@ -3775,6 +3793,7 @@ export async function centralizedWorkerMain(
         pid,
         forkMemoryOwnership,
         readForkSideModuleContract(module),
+        programBytes,
       );
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
@@ -3958,6 +3977,7 @@ export async function centralizedWorkerMain(
           } satisfies WorkerToHostMessage);
         },
         forkEnvImports,
+        dlopenSupport.extensionImports,
       );
       const routedImportObject = processHostImportRuntime.routeImportObject(
         programBytes,
@@ -4143,6 +4163,7 @@ export async function centralizedWorkerMain(
       }
 
       // Signal ready
+      releaseProgramBytes();
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
       // Run with wpk_fork_* instrumentation
@@ -4328,6 +4349,7 @@ export async function centralizedWorkerMain(
         pid,
         undefined,
         readForkSideModuleContract(module),
+        programBytes,
       );
       const importObject = buildImportObject(
         module,
@@ -4348,6 +4370,8 @@ export async function centralizedWorkerMain(
             seconds,
           } satisfies WorkerToHostMessage);
         },
+        undefined,
+        dlopenSupport.extensionImports,
       );
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
@@ -4362,6 +4386,7 @@ export async function centralizedWorkerMain(
         ptrWidth,
       );
 
+      releaseProgramBytes();
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
       let exitCode = 0;
@@ -4777,15 +4802,7 @@ function sendForkSyscall(
   const i32 = new Int32Array(memory.buffer);
   Atomics.store(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
   Atomics.notify(i32, (channelOffset + CH_STATUS) / 4, 1);
-  while (
-    Atomics.wait(
-      i32,
-      (channelOffset + CH_STATUS) / 4,
-      CHANNEL_STATUS_PENDING,
-    ) === "ok"
-  ) {
-    /* */
-  }
+  waitForChannelCompletion(i32, (channelOffset + CH_STATUS) / 4);
 
   const result = Number(view.getBigInt64(channelOffset + CH_RETURN, true));
   const err = view.getUint32(channelOffset + CH_ERRNO, true);
@@ -5763,6 +5780,7 @@ export async function centralizedThreadWorkerMain(
       tid,
       undefined,
       readForkSideModuleContract(module),
+      () => programBytes ?? patchWasmForThread(initData.programBytes),
     );
     if (threadActivationRegistry) {
       threadTableReplication = createProcessTableReplicationOwner({
@@ -5836,6 +5854,7 @@ export async function centralizedThreadWorkerMain(
         } satisfies WorkerToHostMessage);
       },
       threadForkEnvImports,
+      threadDlopenSupport.extensionImports,
     );
     const routedThreadImportObject = threadHostImportRuntime
       ? threadHostImportRuntime.routeImportObject(
@@ -6055,12 +6074,7 @@ export async function centralizedThreadWorkerMain(
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait for kernel to process the exit. The kernel completes the channel
       // (CH_STATUS -> COMPLETE), which returns this Atomics.wait.
-      while (
-        Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
-        "ok"
-      ) {
-        /* */
-      }
+      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
       // Intentionally do NOT reset CH_STATUS back to IDLE here. A normal syscall
       // resets to IDLE so the next syscall can set PENDING, but an exiting thread
       // issues no further syscalls — the channel is torn down and the slot is

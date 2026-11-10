@@ -51,7 +51,7 @@ test("dock launches and replaces local activities without signalling or changing
   expect(Math.abs(bounds[1].x - bounds[0].x)).toBeLessThan(1);
   await expect(panel.getByRole("button", { name: "All", exact: true })).toHaveCount(0);
   await expect(panel.getByRole("button", { name: "Set up a network session", exact: true })).toHaveCount(0);
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/compact-activities-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/compact-activities-${testInfo.project.name}.png`) });
   await panel.getByLabel("Find activities", { exact: true }).fill("no such app");
   await expect(panel).toContainText("No activities match.");
   await panel.getByLabel("Find activities", { exact: true }).fill("");
@@ -66,7 +66,7 @@ test("dock launches and replaces local activities without signalling or changing
   await network.getByRole("button", { name: "Close", exact: true }).click();
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/compact-activities-mobile-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/compact-activities-mobile-${testInfo.project.name}.png`) });
   await page.setViewportSize({ width: 1280, height: 900 });
   await expect(panel.getByRole("button", { name: "Start locally", exact: true })).toHaveCount(0);
   await panel.getByRole("button", { name: "Apps & Tools", exact: true }).click();
@@ -131,7 +131,7 @@ test("ScummVM can replace its game and hand graphics to Freeciv on the same comp
   await expect(display).not.toHaveAttribute("data-kms-owner-pid", "0");
   expect(page.url()).toBe(originalUrl);
   expect(errors).toEqual([]);
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/scummvm-freeciv-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/scummvm-freeciv-${testInfo.project.name}.png`) });
 });
 
 test("image workspaces start without restarting or changing the saved computer's boot selection", async ({ page }) => {
@@ -262,7 +262,7 @@ test("graphical image activities switch between KMS and framebuffer without rebo
     expect(page.url()).toBe(originalUrl);
     expect(await currentComputerMetadata(page)).toMatchObject(original);
   }
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/dynamic-activities-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/dynamic-activities-${testInfo.project.name}.png`) });
   await page.getByRole("button", { name: "Activities", exact: true }).click();
   await expect(panel.getByRole("heading", { name: "Open activities", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Activities", exact: true }).click();

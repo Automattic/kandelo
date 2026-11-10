@@ -203,7 +203,7 @@ export function observeForkReplayWorker(
         protocolFailure(
           `Worker failed before replay readiness: ${message.message ?? "unknown error"}`,
         );
-      } else {
+      } else if (message.type === "exit") {
         protocolFailure(
           `Worker exited before replay readiness (status=${String(message.status)})`,
         );

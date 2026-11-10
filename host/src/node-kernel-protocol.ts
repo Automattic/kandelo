@@ -1,3 +1,4 @@
+import type { ProcessGenerationEventMessage } from "./kernel-protocol-shared";
 import type {
   ExchangeNotificationsMessage,
   ExchangeRangeMessage,
@@ -5,6 +6,7 @@ import type {
   ExchangeRequestMessage,
 } from "./exchange-host";
 import type { RemoteSegmentInit } from "./networking/remote-segment-port";
+import type { ForkAddressSpaceCopy } from "./process-memory";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
@@ -131,6 +133,8 @@ export type { HostDiagnostic } from "./host-diagnostic";
 
 export interface InitMessage {
   type: "init";
+  /** Optional process-image scalar observation, selected before any spawn. */
+  observeProcessGenerations?: boolean;
   /** Native port ownership passes to this kernel worker during init. */
   remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
@@ -145,6 +149,8 @@ export interface InitMessage {
      * cross it until the next allocation observes current byte lengths.
      */
     maxProcessMemoryBytes: number;
+    /** Fork address-space copy mode; the allocator defaults to `"sparse"`. */
+    forkCopy?: ForkAddressSpaceCopy;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
     dataBufferSize?: number;
@@ -425,6 +431,7 @@ export interface DestroyProgressMessage {
 }
 
 export type KernelToMainMessage =
+  | ProcessGenerationEventMessage
   | ReadyMessage
   | ExchangeRangeRequestMessage
   | ExchangeNotificationsMessage

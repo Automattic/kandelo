@@ -1,0 +1,27 @@
+kind = "program"
+name = "elinks-docs"
+version = "0.20.0"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `elinks` package (elinks).
+# The source, SHA-256 and version are the `elinks` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/rkd77/elinks/releases/download/v0.20.0/elinks-0.20.0.tar.xz"
+sha256 = "75af7ba88af99ff5069ec7b4b7a3241d5920f4089764c7297cff3c8484a9e33f"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-only"
+url = "https://github.com/rkd77/elinks/blob/v0.20.0/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/elinks-docs/build-elinks-docs.sh"
+
+[[outputs]]
+name = "elinks-docs"
+wasm = "elinks-docs.zip"
+fork_instrumentation = "disabled"

@@ -74,7 +74,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
-mod accepted_program_digests;
 mod vfs_image_describe;
 mod vfs_products;
 mod archive_extract_member;
@@ -89,6 +88,7 @@ mod dump_abi;
 mod host_tool_probe;
 mod local_abi_identity;
 mod local_build;
+mod local_build_disk_guard;
 mod local_build_executor;
 mod local_build_timing;
 mod package_archive_limits;
@@ -96,6 +96,7 @@ mod package_matrix;
 mod partial_image;
 mod pkg_manifest;
 mod program_env_imports;
+mod program_extensions;
 mod package_imports;
 mod recipe_tree_guard;
 mod remote_fetch;
@@ -133,30 +134,9 @@ fn main() -> ExitCode {
             | "vfs"
             | "vfs-image"
     ) {
-        match supported_program_baseline::check(&repo_root()) {
-            // WHY the gate says this out loud: admitting a prior program
-            // contract beside the current one is the kind of thing a build
-            // must never do silently, and until now only a direct
-            // `check-program-baseline` reported it.
-            //
-            // WHY only the ACCEPTED ones: a superseded entry admits nothing —
-            // it is the strict state, so saying so on every build would
-            // announce a widening that is not happening.
-            // `check-program-baseline` still reports every verdict.
-            //
-            // WHY not on a value query: see `announces_admission`.
-            Ok(verdicts) if announces_admission(&sub, &rest) => {
-                for verdict in &verdicts {
-                    if verdict.widens_admission() {
-                        eprintln!("{}", verdict.describe());
-                    }
-                }
-            }
-            Ok(_) => {}
-            Err(error) => {
-                eprintln!("xtask: {error}");
-                return ExitCode::from(1);
-            }
+        if let Err(error) = supported_program_baseline::check(&repo_root()) {
+            eprintln!("xtask: {error}");
+            return ExitCode::from(1);
         }
     }
     if sub == "vfs" {
@@ -166,6 +146,7 @@ fn main() -> ExitCode {
         "vfs-image" => vfs_image_describe::run(&rest),
         "dump-abi" => dump_abi::run(rest),
         "check-program-env-imports" => program_env_imports::run(rest),
+        "program-extensions" => program_extensions::run(rest),
         "check-package-imports" => package_imports::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),
@@ -201,31 +182,6 @@ fn main() -> ExitCode {
             ExitCode::from(1)
         }
     }
-}
-
-/// Whether a gated invocation should announce an admitted prior program
-/// contract on stderr.
-///
-/// Every gated subcommand *enforces* the supported program baseline; this
-/// decides only which of them talk about it. A build that quietly starts
-/// admitting a second program contract is the thing the announcement exists to
-/// prevent, and all of `bootstrap`, `local-build`, `bundle-program`,
-/// `stamp-abi-contract`, `vfs` and `vfs-image` either build or stamp.
-///
-/// `build-deps` is the one gated subcommand that is also a query surface.
-/// `build-deps cache-root`, `path`, `sha` and their siblings exist to print
-/// one machine-readable value a caller captures with `$(...)`; their contract
-/// is that output and nothing else. A diagnostic line on stderr is noise there
-/// at best, and for any consumer that merges the two streams it corrupts the
-/// answer — `tools/xtask/tests/build_deps_cache_root.rs` pins `cache-root` to
-/// write no stderr at all for exactly that reason. So the notice is suppressed
-/// for those, and `build-deps resolve`, `install-local-artifact` and the index
-/// writers — the arms that actually build or write — still carry it.
-///
-/// Which argument names the subcommand is answered by `build_deps` itself,
-/// which owns the flag grammar; see [`build_deps::selects_value_query`].
-fn announces_admission(sub: &str, rest: &[String]) -> bool {
-    !(sub == "build-deps" && build_deps::selects_value_query(rest))
 }
 
 thread_local! {
@@ -277,99 +233,3 @@ pub fn repo_root() -> PathBuf {
 }
 
 pub type JsonMap = BTreeMap<String, serde_json::Value>;
-
-#[cfg(test)]
-mod tests {
-    use super::announces_admission;
-
-    fn args(words: &str) -> Vec<String> {
-        words.split_whitespace().map(ToOwned::to_owned).collect()
-    }
-
-    /// The gated subcommands that build or stamp all announce, and so do the
-    /// `build-deps` arms that build or write.
-    #[test]
-    fn a_build_announces_what_it_admits() {
-        for (sub, rest) in [
-            ("bootstrap", ""),
-            ("local-build", "run --set supported.json"),
-            ("bundle-program", "coreutils"),
-            ("stamp-abi-contract", "program.wasm"),
-            ("vfs", "build shell"),
-            ("vfs-image", "describe image.vfsi"),
-            ("build-deps", "resolve zlib"),
-            ("build-deps", "--arch=wasm64 resolve zlib"),
-            ("build-deps", "install-local-artifact zlib libz.a"),
-            ("build-deps", "program-index registry index.json"),
-            ("build-deps", "program-index-context-ensure"),
-            ("build-deps", "check"),
-        ] {
-            assert!(
-                announces_admission(sub, &args(rest)),
-                "xtask {sub} {rest} must announce an admitted prior contract"
-            );
-        }
-    }
-
-    /// A value query's whole contract is its stdout. Announcing on stderr is
-    /// noise there, and corrupts the answer for a consumer that merges the
-    /// streams.
-    #[test]
-    fn a_value_query_stays_quiet() {
-        for rest in [
-            "cache-root",
-            "toolchain-inputs",
-            "parse zlib",
-            "path zlib",
-            "sha zlib",
-            "output-path zlib libz",
-            "output-metadata zlib libz.a",
-            "runtime-file-path ncurses terminfo",
-            "runtime-file-metadata ncurses terminfo",
-            "output-fork-instrumentation bash bash",
-            "output-fork-instrumentation-for-rel programs/bash/bash.wasm",
-        ] {
-            assert!(
-                !announces_admission("build-deps", &args(rest)),
-                "xtask build-deps {rest} prints one captured value and must stay quiet"
-            );
-        }
-    }
-
-    /// `build-deps` takes its global flags in any position, so the quiet set
-    /// must be recognised through them rather than at a fixed argv index.
-    #[test]
-    fn a_value_query_stays_quiet_behind_flags_in_any_position() {
-        for rest in [
-            "--arch=wasm64 path zlib",
-            "--arch wasm64 path zlib",
-            "path zlib --arch=wasm64",
-            "path --arch wasm64 zlib",
-            "--source-repo-root=/reviewed/kandelo sha zlib",
-            "--source-repo-root /reviewed/kandelo sha zlib",
-            "--source-only cache-root",
-            "--force-source-build sha zlib",
-            "--binaries-dir=/tmp/bin path zlib",
-            "--binaries-dir /tmp/bin path zlib",
-        ] {
-            assert!(
-                !announces_admission("build-deps", &args(rest)),
-                "xtask build-deps {rest} names a value query and must stay quiet"
-            );
-        }
-    }
-
-    /// An unparseable or empty `build-deps` invocation is about to fail in its
-    /// own argument parsing. It is not a value query, so the gate keeps
-    /// speaking: suppressing there would hide an admission widening behind a
-    /// typo.
-    #[test]
-    fn a_malformed_build_deps_invocation_still_announces() {
-        for rest in ["", "--arch", "--arch=sparc path zlib", "not-a-subcommand"] {
-            assert!(
-                announces_admission("build-deps", &args(rest)),
-                "xtask build-deps {rest:?} is not a value query"
-            );
-        }
-    }
-}

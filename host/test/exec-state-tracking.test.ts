@@ -2373,6 +2373,11 @@ function createWorker(overrides: Record<string, unknown>): any {
       kernelExports: exports,
       kernelExportNames: [
         "kernel_take_process_timer_cleanup",
+        // registerProcess reads the mandatory image generation under its
+        // kernel entry. Listing the export without an implementation binds
+        // the scratch fixture's neutral fresh-process generation; a test
+        // that models exec supplies its own through kernelInstance.exports.
+        "kernel_get_process_exec_generation",
         ...Object.entries(exports)
           .filter(([, value]) => typeof value === "function")
           .map(([name]) => name),

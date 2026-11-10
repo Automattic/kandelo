@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createWasmPosixKernelTestHarness,
   WasmPosixKernel,
+  type KernelCallbacks,
 } from "../src/kernel";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
@@ -30,10 +31,12 @@ function writeUri(memory: WebAssembly.Memory, uri: string, at = 256): [number, n
 function kernelHarness(
   exports: Record<string, unknown> = {},
   pointerWidth: 4 | 8 = 4,
+  callbacks: KernelCallbacks = {},
 ): { kernel: WasmPosixKernel & Record<string, any>; memory: WebAssembly.Memory } {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   const kernel = createWasmPosixKernelTestHarness({
     memory,
+    callbacks,
     pointerWidth,
     instance: createKernelScratchTestInstance(
       pointerWidth,
@@ -321,4 +324,18 @@ describe("host_fetch_deferred provider seam", () => {
     expect(new Uint8Array(memory.buffer, 4096, 8))
       .toEqual(new Uint8Array(8).fill(0xa5));
   });
+});
+
+it("reports native lazy-asset integrity rejection independently of a guest fallback", () => {
+  const onHostDiagnostic = vi.fn();
+  const { kernel, memory } = kernelHarness({}, 4, { onHostDiagnostic });
+  const discarded = vi.fn();
+  kernel.setRootfsDeferredInvalidator(discarded);
+  const uri = "https://fixture.invalid/font.ttf?private-token=secret";
+  const [ptr, len] = writeUri(memory, uri);
+  importsOf(kernel, memory).env.host_discard_deferred(ptr, len);
+  expect(discarded).toHaveBeenCalledWith(uri);
+  expect(onHostDiagnostic).toHaveBeenCalledWith({ pid: 0, source: "vfs-integrity",
+    message: expect.stringMatching(/size or SHA-256 mismatch.*font.ttf;.*EIO/) });
+  expect(onHostDiagnostic.mock.calls[0][0].message).not.toContain("secret");
 });

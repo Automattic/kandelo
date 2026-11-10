@@ -1,0 +1,3 @@
+artifact closures: 163 ok, 0 incomplete, 1 failed, 8 not built (12.7s; 0 unchanged since the last check)
+  less/wasm32: Direct dependency "less" does not name its selected immutable package generation: fetched mirror targets are not one canonical program-cache generation
+Tests that load these packages will fail with the same error. Rebuild the whole closure with `./run.sh setup` (a targeted rebuild moves cache keys and can leave the rest of the tier behind).

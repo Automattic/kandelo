@@ -1,0 +1,353 @@
+import {createWasmPosixKernelTestHarness} from "../../../../host/src/kernel";
+import {createKernelScratchTestInstance} from "../../../../host/test/support/kernel-scratch-instance";
+import * as O from "../../../../host/src/webgl/ops";
+
+const commandCapacity=1<<20;
+const CHECKED_QUERY_TRACE=0x100;
+
+// Replay accepted public-C operations. This adapter supplies the kernel's
+// dispatch/identity role; real Rust guest marshalling remains a separate gate.
+self.onmessage = async ({data}) => {
+  try {
+    const sizes=new Map<number,{width:number;height:number}>();
+    let currentSession:number|null=null;
+    let gl:WebGL2RenderingContext|null=null;
+    let native:ReturnType<typeof createWasmPosixKernelTestHarness>|null=null;
+    let memory:WebAssembly.Memory|null=null;
+    let imports:Record<string,(...args:any[])=>any>|null=null;
+    const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
+    let nativeFinishes=0;
+    {
+      const canvas=data.canvas as OffscreenCanvas;
+      gl=canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true});
+      if(!gl)throw new Error("native worker WebGL2 unavailable");
+      if(data.completion) {
+        const finish=gl.finish.bind(gl);
+        gl.finish=()=>{nativeFinishes++;finish();};
+      }
+      for(const [createName,deleteName,isName] of [
+        ["createFramebuffer","deleteFramebuffer","isFramebuffer"],
+        ["createTexture","deleteTexture","isTexture"],
+        ["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],
+        ["fenceSync","deleteSync","isSync"],
+        ...(data.peerDelete?[["createBuffer","deleteBuffer","isBuffer"],["createVertexArray","deleteVertexArray","isVertexArray"]]:[]),
+      ]) {
+        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
+        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));}return value;};
+        api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
+      }
+      if(data.pbuffer) { gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT); }
+      // A legal u16 payload plus its TLV header already exceeds 64 KiB.
+      // Match the C encoder's bounded command capacity and include its base.
+      const pages=Math.ceil((4096+commandCapacity)/65536);
+      memory=new WebAssembly.Memory({initial:pages,maximum:pages});
+      native=createWasmPosixKernelTestHarness({io:{} as any,callbacks:{getProcessMemory:()=>memory!},memory,pointerWidth:4,
+        instance:createKernelScratchTestInstance(4,memory,()=>({}),()=>4096)});
+      imports=(native.testAuthority.buildImportObject(memory) as {env:typeof imports}).env;
+      native.gl.attachCanvas(7,canvas);
+    }
+    const requireZero=(rc:number,label:string)=>{if(rc!==0)throw new Error(`${label}: ${rc}`);};
+    const pixels=(fd:number)=>{
+      const input=new Uint8Array(24),view=new DataView(input.buffer);
+      [0,0,1,1,0x1908,0x1401].forEach((word,i)=>view.setUint32(i*4,word,true));
+      new Uint8Array(memory!.buffer,64,24).set(input);
+      const rc=imports!.host_gl_query(7,O.QOP_READ_PIXELS,64,24,128,4,fd);
+      if(rc!==4)throw new Error(`native pixel read: ${rc}`);
+      return [...new Uint8Array(memory!.buffer,128,4)];
+    };
+    const submit=(fd:number,bytes:Uint8Array)=>{
+      {new Uint8Array(memory!.buffer,4096,bytes.length).set(bytes);requireZero(imports!.host_gl_submit(7,0,bytes.length,fd),"submit");}
+    };
+    const send=(fd:number,op:number,words:number[],tail=new Uint8Array())=>{
+      const bytes=new Uint8Array(4+words.length*4+tail.length),v=new DataView(bytes.buffer);
+      v.setUint16(0,op,true);v.setUint16(2,words.length*4+tail.length,true);
+      words.forEach((word,i)=>v.setUint32(4+i*4,word,true));bytes.set(tail,4+words.length*4);submit(fd,bytes);
+    };
+    let sourceContext=0,sourceDraw=0,sourceRead=0,captured=false,injected=false;
+    const contextSessions=new Map<number,number>();
+    const peer=90;
+    const make=(fd:number,id:number,draw:number,read:number)=>{
+      const size=sizes.get(draw)??{width:0,height:0};
+      requireZero(imports!.host_gl_make_current(7,id,draw,read,fd),"driver current");
+    };
+    const prepareProgram=(fd:number)=>{
+      for(const [name,type,text] of [[901,0x8b31,"attribute vec4 color; attribute vec2 position; varying vec4 c; void main(){c=color;gl_Position=vec4(position,0.,1.);gl_PointSize=1.;}"],
+        [902,0x8b30,"precision mediump float; varying vec4 c; void main(){gl_FragColor=c;}"]] as [number,number,string][]) {
+        const bytes=new TextEncoder().encode(text);send(fd,O.OP_CREATE_SHADER,[type,name]);
+        send(fd,O.OP_SHADER_SOURCE,[name,bytes.length],bytes);send(fd,O.OP_COMPILE_SHADER,[name]);
+      }
+      send(fd,O.OP_CREATE_PROGRAM,[903]);send(fd,O.OP_ATTACH_SHADER,[903,901]);send(fd,O.OP_ATTACH_SHADER,[903,902]);
+      send(fd,O.OP_BIND_ATTRIB_LOCATION,[903,0,5],new TextEncoder().encode("color"));
+      send(fd,O.OP_BIND_ATTRIB_LOCATION,[903,1,8],new TextEncoder().encode("position"));
+      send(fd,O.OP_LINK_PROGRAM,[903]);send(fd,O.OP_USE_PROGRAM,[903]);
+    };
+    const injectPeer=(fd:number)=> {
+              make(peer,900,0,0);send(peer,O.OP_DELETE_BUFFERS,[1,17]);
+              send(peer,O.OP_BIND_BUFFER,[0x8892,17]);
+              const blue=new Uint8Array(new Float32Array([0,0,1,1]).buffer);
+              send(peer,O.OP_BUFFER_DATA,[0x8892,16,0x88e4]);send(peer,O.OP_BUFFER_SUB_DATA,[0x8892,0,16],blue);
+              make(fd,sourceContext,sourceDraw,sourceRead);
+              requireZero(imports!.host_gl_make_current(7,0,0,0,peer),"release peer");
+              injected=true;
+    };
+    const frames=new Uint8Array(data.trace),view=new DataView(frames.buffer),observed:number[][]=[];
+    const retiredContexts:number[]=[],retiredSurfaces:number[]=[];
+    const rawBos=new Set<number>();
+    const gemBos=new Map<string,number>();
+    const limits:number[][]=[];
+    let completionRead=false;
+    for(let offset=0;offset<frames.length;) {
+      if(offset+12>frames.length)throw new Error("truncated trace header");
+      const kind=view.getUint32(offset,true),fd=view.getUint32(offset+4,true),length=view.getUint32(offset+8,true);
+      offset+=12;if(offset+length>frames.length)throw new Error("truncated trace payload");
+      const bytes=frames.slice(offset,offset+length),words=new DataView(bytes.buffer);offset+=length;
+      if(kind===1) {
+        // This source replay models one native DRM file. Session identities
+        // differ; its synthetic stable file identity is shared by all of them.
+        imports!.host_gl_bind(7,4096,commandCapacity,fd,1n);
+      } else if(kind===2) {
+        const id=words.getUint32(12,true);
+        const sharedId=words.getUint32(4,true);
+        const sourceSession=sharedId?contextSessions.get(sharedId):undefined;
+        if(sharedId && sourceSession===undefined)throw new Error("unknown C share context");
+        {
+          words.setUint32(12,0,true);new Uint8Array(memory!.buffer,64,16).set(bytes);
+          requireZero(imports!.host_gl_create_context(7,id,64,16,fd),"create context");
+        }
+        contextSessions.set(id,fd);
+        if(data.peerDelete) {
+          sourceContext=id;
+          {
+            imports!.host_gl_bind(7,4096,commandCapacity,peer,1n);new Uint32Array(memory!.buffer,64,4).set([2,id,0,0]);
+            requireZero(imports!.host_gl_create_context(7,900,64,16,peer),"create peer");
+          }
+          prepareProgram(fd);
+        }
+      } else if(kind===20) {
+        // The native C double records accepted storage and per-file names.
+        // Provision independent native pixels and replay the kernel's name
+        // translation; never infer a valid allocation from a surface request.
+        const name=words.getUint32(0,true),bo=words.getUint32(4,true);
+        const width=words.getUint32(8,true),height=words.getUint32(12,true);
+        if(native!.gl.createGpuBo(bo,gl!,width,height)===null)throw new Error("window canonical storage");
+        rawBos.add(bo);gemBos.set(`${fd}:${name}`,bo);
+      } else if(kind===3) {
+        const surfaceId=words.getUint32(32,true),width=words.getUint32(4,true),height=words.getUint32(8,true);
+        sizes.set(surfaceId,{width,height});
+        {
+          const name=words.getUint32(16,true);
+          if(name) {
+            const bo=gemBos.get(`${fd}:${name}`);
+            if(bo===undefined)throw new Error("unregistered window GEM name");
+            words.setUint32(16,bo,true);
+          }
+          // The Rust kernel supplies the fresh identity separately and keeps
+          // the output field zero in the host's private request copy.
+          words.setUint32(32,0,true);new Uint8Array(memory!.buffer,64,bytes.length).set(bytes);
+          requireZero(imports!.host_gl_create_surface(7,surfaceId,64,36,fd),"create surface");
+        }
+      } else if(kind===4) {
+        const context=words.getUint32(0,true),draw=words.getUint32(4,true),read=words.getUint32(8,true);
+        if(data.peerDelete && context){sourceDraw=draw;sourceRead=read;}
+        if(!context) {
+          requireZero(imports!.host_gl_make_current(7,0,0,0,fd),"release");
+          currentSession=null;
+        } else {
+          const size=sizes.get(draw)??{width:0,height:0};
+          requireZero(imports!.host_gl_make_current(7,context,draw,read,fd),"make current");
+          // As in the kernel, displace the old binding only after acceptance.
+          if(currentSession!==null && currentSession!==fd)
+            requireZero(imports!.host_gl_make_current(7,0,0,0,currentSession),"release previous");
+          currentSession=fd;
+        }
+      } else if(kind===5) {
+        if(data.peerDelete) {
+          // Explicit renderer peer actions interrupt actual C TLVs. They do
+          // not stand in for public C shared-context creation or guest marshalling.
+          for(let at=0;at<bytes.length;) {
+            const op=words.getUint16(at,true),size=words.getUint16(at+2,true),end=at+4+size;
+            // The owned record has no public staging interval to interrupt.
+            // Delete/reuse from the peer before admission, retaining the same
+            // original-buffer identity and green/red pixel assertions.
+            if(op===O.OP_DRAW_CLIENT_ARRAYS && !injected)injectPeer(fd);
+            submit(fd,bytes.slice(at,end));
+            if(op===O.OP_BEGIN_CLIENT_ARRAY)captured=true;
+            if(op===O.OP_END_CLIENT_ARRAY)captured=false;
+            if(captured && !injected && op===O.OP_BIND_BUFFER && words.getUint32(at+4,true)===0x8892) {
+              injectPeer(fd);
+            }
+            if(op===O.OP_DRAW_ARRAYS || op===O.OP_DRAW_CLIENT_ARRAYS)observed.push(pixels(fd));
+            at=end;
+          }
+        } else {
+          submit(fd,bytes);
+          let clear=false;
+          for(let at=0;at<bytes.length;) {
+            const op=words.getUint16(at,true),size=words.getUint16(at+2,true);at+=4+size;
+            if(op===O.OP_CLEAR || (data.captureUpload && op===O.OP_TEX_SUB_IMAGE_2D))clear=true;
+          }
+          // Exercise the raw presentation route too: a pbuffer must not post
+          // even when a consumer calls GLIO_PRESENT rather than C's swap.
+          if(data.pbuffer) requireZero(imports!.host_gl_present(7,fd),"pbuffer present");
+          if(clear && !data.zeroSurface) {
+            if(data.completion)completionRead=true;
+            else observed.push(pixels(fd));
+          }
+        }
+      } else if(kind===18) {
+        requireZero(imports!.host_gl_query(7,O.QOP_FLUSH,0,0,0,0,fd),"native flush");
+      } else if(kind===19) {
+        const op=words.getUint32(0,true),token=words.getUint32(4,true),requireSignaled=words.getUint32(8,true)!==0;
+        const input=new Uint8Array(4);new DataView(input.buffer).setUint32(0,token,true);
+        const deadline=performance.now()+5000;
+        for(;;) {
+          let rc:number,reply:Uint8Array;
+          {
+            new Uint8Array(memory!.buffer,64,4).set(input);
+            rc=imports!.host_gl_query(7,op,64,4,128,16,fd);
+            reply=new Uint8Array(memory!.buffer,128,16).slice();
+          }
+          const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
+          if(rc!==16||output.getUint32(0,true)!==0||output.getUint32(4,true)!==token||
+              output.getUint32(12,true)!==0x47514c33||output.getUint32(8,true)>1)
+            throw new Error("C retained fence query acknowledgement");
+          if(op!==O.QOP_FENCE_STATUS || !requireSignaled || output.getUint32(8,true)===1)break;
+          if(performance.now()>=deadline)throw new Error("C retained fence did not signal");
+          // A driver completion assertion requires actual native completion.
+          // A zero-timeout unsignaled observation may complete sooner here.
+          // Yield rather than copying the device double's signaled status.
+          await new Promise(resolve=>setTimeout(resolve,1));
+        }
+      } else if(kind===15) {
+        requireZero(imports!.host_gl_query(7,O.QOP_FINISH,0,0,0,0,fd),"completion");
+        if(completionRead) {observed.push(pixels(fd));completionRead=false;}
+      } else if(kind===14) {
+        const state=()=>gl ? [gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING),gl.getParameter(gl.READ_FRAMEBUFFER_BINDING),
+          gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),gl.getParameter(gl.RENDERBUFFER_BINDING)] : [];
+        const before=state(); let reply:Uint8Array,rc:number;
+        {
+          rc=imports!.host_gl_query(7,O.QOP_SURFACE_CAPABILITIES,64,0,128,16,fd);
+          reply=new Uint8Array(memory!.buffer,128,16).slice();
+        }
+        const values=[...new Uint32Array(reply.buffer,reply.byteOffset,4)];
+        if(rc!==16 || values[0]<=0 || values[0]!==values[1] || values[2]!==Math.min(values[0]*values[1],0x7fffffff) || values[3]!==0x47514c33)
+          throw new Error("invalid renderer surface limits");
+        if(gl && (values[0]!==Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)) ||
+          before.some((value,index)=>value!==state()[index])))throw new Error("surface limits changed native owner state");
+        limits.push(values);
+      } else if(kind===16) {
+        const bo=words.getUint32(0,true),target=words.getUint32(4,true),context=words.getUint32(8,true),expected=words.getUint32(12,true);
+        if(!rawBos.has(bo)) {
+          if(native!.gl.createGpuBo(bo,gl!,64,64)===null)throw new Error("image canonical storage");
+          rawBos.add(bo);
+        }
+        if(imports!.host_gl_bind_foreign_texture(7,context,bo,target)!==expected)throw new Error("C image source mismatch");
+      } else if(kind===17) {
+        const op=words.getUint32(0,true),input=bytes.slice(16);
+        let reply:Uint8Array,rc:number;
+        {
+          new Uint8Array(memory!.buffer,64,input.length).set(input);
+          rc=imports!.host_gl_query(7,op,64,input.length,128,12,fd);
+          reply=new Uint8Array(memory!.buffer,128,12).slice();
+        }
+        const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
+        if(rc!==12||[0,1,2].some(i=>output.getUint32(i*4,true)!==words.getUint32(4+i*4,true)))
+          throw new Error("C image source query mismatch");
+      } else if(kind===13) {
+        if(!data.rawCandidate)throw new Error("raw BO replay requires native source registration");
+        const bo=words.getUint32(0,true),target=words.getUint32(4,true),context=words.getUint32(8,true),expected=words.getUint32(12,true);
+        if(!rawBos.has(bo)) {
+          if(native!.gl.createGpuBo(bo,gl!,1,1)===null)throw new Error("raw candidate canonical storage");
+          rawBos.add(bo);
+        }
+        if(imports!.host_gl_bind_foreign_texture(7,context,bo,target)!==expected)throw new Error("C raw candidate name mismatch");
+      } else if(kind===12) {
+        const op=words.getUint32(0,true),expected=[words.getUint32(4,true),words.getUint32(8,true),words.getUint32(12,true),0x47514c33],input=bytes.slice(16);
+        let reply:Uint8Array,rc:number;
+        {
+          new Uint8Array(memory!.buffer,64,input.length).set(input);
+          rc=imports!.host_gl_query(7,op,64,input.length,128,16,fd);
+          reply=new Uint8Array(memory!.buffer,128,16).slice();
+        }
+        const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
+        if(rc!==16||expected.some((value,index)=>output.getUint32(index*4,true)!==value))throw new Error("C bound image source/revision mismatch");
+      } else if(kind===11 || kind===CHECKED_QUERY_TRACE) {
+        const op=words.getUint32(0,true),size=words.getUint32(4,true);
+        const expectedReply=kind===CHECKED_QUERY_TRACE?bytes.slice(12,12+size):null;
+        if(kind===CHECKED_QUERY_TRACE && bytes.length!==12+size+words.getUint32(8,true))throw new Error("C image receipt trace length mismatch");
+        const expected=expectedReply?new DataView(expectedReply.buffer).getUint32(0,true):words.getUint32(8,true);
+        const input=bytes.slice(kind===CHECKED_QUERY_TRACE?12+size:12);
+        let restore:(()=>void)|null=null;
+        if(data.rawCandidate && expected && op===O.QOP_IMAGE_OBJECT_DELETE) {
+          const owner=native!.gl.get(7,fd)!,set=owner.retiredTextures.set;
+          owner.retiredTextures.set=()=>{throw new RangeError("candidate retirement metadata rejected");};
+          restore=()=>{owner.retiredTextures.set=set;};
+        }
+        let reply:Uint8Array,rc:number;
+        try {
+          {
+            new Uint8Array(memory!.buffer,64,input.length).set(input);
+            rc=imports!.host_gl_query(7,op,64,input.length,128,size,fd);
+            reply=new Uint8Array(memory!.buffer,128,size).slice();
+          }
+        } finally {restore?.();}
+        const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
+        if(rc!==size||output.getUint32(0,true)!==expected||(kind===11&&output.getUint32(4,true)!==(expected?0:1))
+            ||output.getUint32(size-4,true)!==0x47514c33
+            ||(expectedReply&&expectedReply.some((value,index)=>reply[index]!==value)))
+          throw new Error(`C image mutation acceptance mismatch: op=${op} rc=${rc} expected=${expected} reply=${[...new Uint32Array(reply.buffer)]}`);
+        if(restore) {
+          if(imports!.host_gl_query(7,O.QOP_GET_ERROR,64,0,128,4,fd)!==4 || new DataView(memory!.buffer).getUint32(128,true)!==0x505)
+            throw new Error("missing rejected raw cleanup error");
+        }
+        if(data.peerDelete && captured && !injected && op===O.QOP_BIND_BUFFER && new DataView(input.buffer).getUint32(0,true)===0x8892)
+          injectPeer(fd);
+      } else if(kind===10) {
+        const expected=words.getUint32(12,true), input=bytes.slice(0,12);
+        let restore:(()=>void)|null=null;
+        if(expected && data.bindFailure) {
+          const target=gl as any;
+          if(target) {const create=target.createTexture;target.createTexture=()=>null;restore=()=>{target.createTexture=create;};}
+          else postMessage({type:"egl_record_fail_texture_create"});
+        }
+        try {
+          let reply:Uint8Array, rc:number;
+          {
+            new Uint8Array(memory!.buffer,64,12).set(input);
+            rc=imports!.host_gl_query(7,O.QOP_BIND_IMAGE_OBJECT,64,12,128,12,fd);
+            reply=new Uint8Array(memory!.buffer,128,12).slice();
+          }
+          const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
+          if(rc!==12 || output.getUint32(0,true)!==expected || output.getUint32(4,true)!==(expected?0:1)
+              || output.getUint32(8,true)!==0x47514c33)throw new Error("C bind acceptance mismatch");
+          if(expected) {
+            let error:number;
+            {if(imports!.host_gl_query(7,O.QOP_GET_ERROR,64,0,128,4,fd)!==4)throw new Error("error query failed");error=new DataView(memory!.buffer).getUint32(128,true);}
+            if(error!==0x505)throw new Error(`missing injected allocation error: ${error}`);
+          }
+        } finally {restore?.();}
+      } else if(kind===6) {
+        const id=words.getUint32(0,true);retiredContexts.push(id);
+        imports!.host_gl_destroy_context(7,id);
+      } else if(kind===7) {
+        const id=words.getUint32(0,true);retiredSurfaces.push(id);
+        imports!.host_gl_destroy_surface(7,id,fd);
+      } else if(kind===8)requireZero(imports!.host_gl_present(7,fd),"present");
+      else if(kind===9) {
+        imports!.host_gl_unbind(7,fd);
+      } else throw new Error(`unknown trace operation ${kind}`);
+    }
+    if(data.peerDelete) {
+      imports!.host_gl_unbind(7,peer);
+    }
+    for(const bo of rawBos) if(!native!.gl.retireForeignBo(bo))throw new Error("raw candidate BO cleanup refused");
+    const clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
+    let pbufferState = {};
+    if(data.pbuffer && gl) {
+      const prior = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING), pixel = new Uint8Array(4);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel); gl.bindFramebuffer(gl.READ_FRAMEBUFFER,prior);
+      pbufferState = {canvasPixel:[...pixel],viewport:[...gl.getParameter(gl.VIEWPORT)]};
+    }
+    postMessage({type:"egl_record_result",...pbufferState,observed,retiredContexts,retiredSurfaces,clean,...(data.peerDelete?{injected}:{}),...(data.capabilities?{limits}:{}),...(data.completion?{finishes:nativeFinishes}:{}),error:gl!.getError()});
+  } catch(error) {postMessage({type:"egl_record_failed",error:String(error)});}
+};

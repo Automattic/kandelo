@@ -62,6 +62,7 @@ if [ ! -d "$SRC_DIR" ]; then
     # as GFunc/GCopyFunc) through correctly typed wrappers. Native ABIs
     # tolerate the extra argument; wasm's typed call_indirect traps on it.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-callback-arity.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-interface-init-contract.patch"
 fi
 
 # Fresh build dir each run — meson bakes --prefix into the build tree.

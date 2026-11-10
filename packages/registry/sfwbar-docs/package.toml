@@ -1,0 +1,27 @@
+kind = "program"
+name = "sfwbar-docs"
+version = "1.0_beta17"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `sfwbar` package (sfwbar and its appmenu module).
+# The source, SHA-256 and version are the `sfwbar` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/LBCrion/sfwbar/archive/refs/tags/v1.0_beta17.tar.gz"
+sha256 = "a4915bc7dd0873c45d0d6b01b070e39a91fd16cfadf730d6a9e48db68a8cd09e"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-only"
+url = "https://github.com/LBCrion/sfwbar/blob/v1.0_beta17/LICENSE"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/sfwbar-docs/build-sfwbar-docs.sh"
+
+[[outputs]]
+name = "sfwbar-docs"
+wasm = "sfwbar-docs.zip"
+fork_instrumentation = "disabled"

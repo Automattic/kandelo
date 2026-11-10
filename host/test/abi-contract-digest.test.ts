@@ -1,10 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   ABI_CONTRACT_SECTION,
   describeWasmArtifactPolicyFailures,
   readWasmCustomSectionPayload,
 } from "../src/constants";
-import { ACCEPTED_PROGRAM_CONTRACT_DIGESTS } from "../src/generated/abi";
 
 // ---------------------------------------------------------------------------
 // Minimal wasm builder: a module exporting `__abi_version` returning `abi`,
@@ -140,145 +139,5 @@ describe("describeWasmArtifactPolicyFailures ABI-contract-digest gate", () => {
     const wasm = buildAbiModule({ abi: 44, contractDigest: digestOf(0x99) });
     const failures = describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 44 });
     expect(failures).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Affirmed prior contracts. The digest is one hash over the whole program
-// surface, so admission cannot partially match it; a program built one
-// additive field ago differs exactly as much as one built against a
-// contradictory contract. The accepted set carries the difference the digest
-// cannot: prior contracts that `cargo xtask check-program-baseline` has
-// re-derived as additive predecessors of the current surface AND that a named
-// author has affirmed are behaviorally safe. See
-// abi/accepted-program-digests.json and tools/xtask/src/
-// accepted_program_digests.rs.
-// ---------------------------------------------------------------------------
-
-const hexOf = (fill: number): string => fill.toString(16).padStart(2, "0").repeat(32);
-
-/**
- * Admission compiled against a chosen generated accepted set.
- *
- * WHY a module mock rather than an argument: the set is platform policy
- * decided by `abi/accepted-program-digests.json` and the generator, not
- * something a caller supplies. Giving admission a parameter so tests could
- * vary it would widen a security-adjacent signature for test convenience; a
- * different generated module gives the same coverage and keeps admission's
- * only input the one the platform controls.
- */
-async function admissionWithAcceptedSet(
-  hexDigests: readonly string[],
-): Promise<typeof describeWasmArtifactPolicyFailures> {
-  vi.resetModules();
-  vi.doMock("../src/generated/abi", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("../src/generated/abi")>()),
-    ACCEPTED_PROGRAM_CONTRACT_DIGESTS: hexDigests,
-  }));
-  return (await import("../src/constants")).describeWasmArtifactPolicyFailures;
-}
-
-describe("describeWasmArtifactPolicyFailures affirmed prior contracts", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  afterEach(() => {
-    vi.doUnmock("../src/generated/abi");
-    vi.resetModules();
-  });
-
-  it("admits a stamped guest whose digest is in the accepted set", async () => {
-    const admit = await admissionWithAcceptedSet([hexOf(0x22)]);
-    const wasm = buildAbiModule({ abi: 44, contractDigest: digestOf(0x22) });
-    expect(
-      admit(wasm, {
-        expectedAbi: 44,
-        expectedAbiContractDigest: digestOf(0x11),
-      }),
-    ).toEqual([]);
-  });
-
-  it("still fails hard for a stamped guest outside the accepted set", async () => {
-    // A non-empty set, so this is membership failing rather than an absent
-    // mechanism.
-    const admit = await admissionWithAcceptedSet([hexOf(0x33), hexOf(0x44)]);
-    const wasm = buildAbiModule({ abi: 44, contractDigest: digestOf(0x22) });
-    expect(
-      admit(wasm, {
-        expectedAbi: 44,
-        expectedAbiContractDigest: digestOf(0x11),
-      }).some((f) => f.includes("ABI contract digest mismatch")),
-    ).toBe(true);
-  });
-
-  it("still warns once and passes for an unstamped legacy guest", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const admit = await admissionWithAcceptedSet([hexOf(0x22)]);
-    const wasm = buildAbiModule({ abi: 44 }); // no contract section
-    expect(
-      admit(wasm, {
-        expectedAbi: 44,
-        expectedAbiContractDigest: digestOf(0x11),
-      }),
-    ).toEqual([]);
-    // Warn-once is per module instance, and this is a fresh one, so the line
-    // fires here.
-    expect(warn.mock.calls.length).toBe(1);
-    expect(String(warn.mock.calls[0]?.[0])).toContain("kandelo.abi.contract");
-  });
-
-  it("does not accept a prior contract whose ABI epoch differs", async () => {
-    // The accepted set relaxes digest equality within one epoch. The epoch
-    // itself is checked separately and is not relaxed: a digest binds
-    // ABI_VERSION, and a bump declares every program must be rebuilt. The
-    // digest mismatch is absent from the failures, so the set DID admit the
-    // digest and the epoch refused it on its own.
-    const admit = await admissionWithAcceptedSet([hexOf(0x22)]);
-    const wasm = buildAbiModule({ abi: 43, contractDigest: digestOf(0x22) });
-    expect(
-      admit(wasm, {
-        expectedAbi: 44,
-        expectedAbiContractDigest: digestOf(0x11),
-      }),
-    ).toEqual(["ABI 43, expected 44"]);
-  });
-
-  it("accepts nothing beyond the current digest when the set is empty", async () => {
-    const admit = await admissionWithAcceptedSet([]);
-    const wasm = buildAbiModule({ abi: 44, contractDigest: digestOf(0x22) });
-    expect(
-      admit(wasm, {
-        expectedAbi: 44,
-        expectedAbiContractDigest: digestOf(0x11),
-      }).some((f) => f.includes("ABI contract digest mismatch")),
-    ).toBe(true);
-  });
-
-  it("refuses a generated set entry that is not a 32-byte lowercase hex digest", async () => {
-    // The constant is generated, so a malformed entry is a generator bug.
-    // Failing loudly beats silently dropping an affirmed contract.
-    await expect(admissionWithAcceptedSet(["not-a-digest"])).rejects.toThrow(
-      /ACCEPTED_PROGRAM_CONTRACT_DIGESTS/,
-    );
-  });
-
-  it("admits every digest the real generated accepted set carries", () => {
-    // Vacuous while this epoch accepts none, and load-bearing as soon as one
-    // is affirmed. Uses the statically imported admission, so this is the real
-    // generated constant rather than a mocked one.
-    for (const hex of ACCEPTED_PROGRAM_CONTRACT_DIGESTS) {
-      expect(hex).toMatch(/^[0-9a-f]{64}$/);
-      const digest = new Uint8Array(
-        hex.match(/../g)!.map((pair) => Number.parseInt(pair, 16)),
-      );
-      const wasm = buildAbiModule({ abi: 44, contractDigest: digest });
-      expect(
-        describeWasmArtifactPolicyFailures(wasm, {
-          expectedAbi: 44,
-          expectedAbiContractDigest: digestOf(0x11),
-        }),
-      ).toEqual([]);
-    }
   });
 });

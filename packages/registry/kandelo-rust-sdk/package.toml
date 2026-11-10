@@ -1,0 +1,23 @@
+kind = "program"
+name = "kandelo-rust-sdk"
+version = "1.97.0-nightly-2026-04-27"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = ["rustc@1.97.0-nightly-2026-04-27", "cargo@1.97.0-nightly-2026-04-27", "kandelo-rustc@0.1.0", "wasm-fork-instrument@0.1.0", "kandelo-sdk-browser-bundle@21.1.7", "rust-profiler-runtime-bundle@1.97.0-nightly-2026-04-27", "rust-coverage-tools@22.1.2"]
+
+[source]
+provider = "repository"
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT AND Apache-2.0 WITH LLVM-exception AND GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo"
+
+[build]
+script_path = "packages/registry/kandelo-rust-sdk/build.sh"
+
+[[outputs]]
+name = "kandelo-rust-sdk"
+wasm = "kandelo-rust-sdk.zip"
+fork_instrumentation = "disabled"

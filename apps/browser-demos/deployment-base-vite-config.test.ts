@@ -35,17 +35,23 @@ function loadedPlugins(value: unknown): Plugin[] {
   return (config.config?.plugins ?? []).flat(Infinity) as Plugin[];
 }
 
-async function invokePluginHook(
+async function invokePluginHook<K extends "configResolved" | "resolveId" | "transformIndexHtml">(
   plugin: Plugin,
-  name: "configResolved" | "resolveId" | "transformIndexHtml",
+  name: K,
   ...arguments_: unknown[]
 ): Promise<unknown> {
-  const hook = plugin[name];
-  if (typeof hook === "function") {
-    return await hook.apply({} as never, arguments_ as never);
-  }
-  if (hook !== undefined && typeof hook === "object" && "handler" in hook) {
-    return await hook.handler.apply({} as never, arguments_ as never);
+  if (name === "transformIndexHtml") {
+    const hook = plugin.transformIndexHtml;
+    const handler = typeof hook === "function" ? hook : hook?.handler;
+    if (handler) return await handler.apply({} as never, arguments_ as never);
+  } else if (name === "resolveId") {
+    const hook = plugin.resolveId;
+    const handler = typeof hook === "function" ? hook : hook?.handler;
+    if (handler) return await handler.apply({} as never, arguments_ as never);
+  } else {
+    const hook = plugin.configResolved;
+    const handler = typeof hook === "function" ? hook : hook?.handler;
+    if (handler) return await handler.apply({} as never, arguments_ as never);
   }
   throw new Error(`plugin ${plugin.name} lacks ${name}`);
 }

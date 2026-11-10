@@ -268,13 +268,18 @@ fn queued_rights_survive_sender_exit_and_transfer_the_same_cursor() {
     let sender = table.get_mut(sender_pid).unwrap();
     let (source_fd, image_fd, handle) = tmp_pair(sender, b"transfer");
     let fd = install(sender, handle, O_RDONLY, b"/tmp/executable-transfer");
+    // WHY: reserved stdio0..2 has no native-close lifetime. Keep an unrelated
+    // native-file owner so sender retirement still proves exact close effects
+    // while the queued executable pair and its shared cursor stay live.
+    const UNRELATED_NATIVE_HANDLE: i64 = 81_003;
+    install(sender, UNRELATED_NATIVE_HANDLE, O_RDONLY, b"/native-unrelated");
     let mut queued = snapshot_scm_rights_fd(sender, fd).unwrap();
     queued.retain_reference().unwrap();
     sys_lseek(sender, &mut NoopHost, fd, 8, 0).unwrap();
     close_raw_pair(sender, source_fd, image_fd);
     assert_eq!(
         table.remove_process(sender_pid).unwrap().host_closes,
-        vec![0, 1, 2]
+        vec![UNRELATED_NATIVE_HANDLE]
     );
     assert!(is_live(handle));
     let mut receiver = Process::new(200);

@@ -1,6 +1,6 @@
-import { setInternalsOpen } from "./support/dock";
 import { expect, test, type Page } from "../playwright-test";
-import { gotoApp } from "./support/kandelo-machine";
+import { gotoApp, waitForMachineBootInput } from "./support/kandelo-machine";
+import { setInternalsOpen } from "./support/dock";
 
 
 /**
@@ -11,6 +11,7 @@ import { gotoApp } from "./support/kandelo-machine";
  * over the pane and intercept pointer events — and selecting that view.
  */
 async function openSurface(page: Page, label: "Internals" | "Graphics" | "Terminal") {
+  if (label === "Internals") await waitForMachineBootInput(page);
   await setInternalsOpen(page, label === "Internals");
   if (label !== "Internals") {
     const view = page

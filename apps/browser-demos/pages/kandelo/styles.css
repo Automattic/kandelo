@@ -744,6 +744,9 @@
   flex: 0 0 auto;
 }
 
+/* Match the 34px demo-controls row: terminal tabs are 26px high plus
+   padding and borders. A taller row would resize the guest monitor merely
+   when switching views, including between a mode query and its first flip. */
 .kdock-view-tabs {
   width: 100%;
   min-height: 34px;
@@ -751,7 +754,7 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 4px;
+  padding: 3px 4px;
   border: 1px solid var(--kdock-border);
   border-radius: 10px;
   background: var(--kdock-bg-sunk);
@@ -1503,7 +1506,8 @@
 
 .kdownload-toast-error {
   border-color: color-mix(in oklch, var(--k-err) 52%, var(--k-border));
-  animation: kdownload-toast-fade-error 5s ease-out forwards;
+  /* An unresolved VFS/transport failure needs acknowledgement or recovery;
+     fading it independently would hide the retained error state. */
 }
 
 .kpcm-audio-status {
@@ -1606,6 +1610,9 @@
 
 .kdownload-toast-error .kdownload-toast-detail {
   color: var(--k-err-ink);
+  /* The attributed failure must be readable without discovering a tooltip. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .kdownload-toast-bar {
@@ -1648,16 +1655,6 @@
   }
 }
 
-@keyframes kdownload-toast-fade-error {
-  0%, 72% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-}
 
 .kdock-icon {
   width: 18px;
@@ -2342,6 +2339,13 @@
   inset: 0;
   visibility: hidden;
   pointer-events: none;
+}
+/* The terminal view gives the full-width dock's reserved space to the
+   terminal, while the demo view keeps it out of the surface. Keep it out
+   here too, so the size reported while the terminal shows is the size the
+   demo view shows. */
+.kdocked-app.is-terminal-view.is-dock-full-width .kmachine-primary-slot.is-hidden.is-measured {
+  bottom: var(--kdock-height, 0px);
 }
 .kmachine-primary-slot > * {
   flex: 1;
@@ -4121,6 +4125,50 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--k-text-faint);
+}
+
+/* ── Credits dialog (uses the About dialog's frame) ─────────────────────── */
+
+.kcredits h3 {
+  margin: 22px 0 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--k-border);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  color: var(--k-text);
+}
+.kcredits section > p {
+  margin: 0 0 8px;
+  color: var(--k-text-muted);
+}
+.kcredits-list {
+  margin: 0;
+}
+.kcredits-list dt {
+  margin-top: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.kcredits-list dt:first-child {
+  margin-top: 0;
+}
+.kcredits-list dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--k-text-muted);
+}
+.kcredits-by {
+  font-weight: 400;
+  color: var(--k-text-faint);
+}
+.kcredits a {
+  color: var(--k-accent);
+  text-decoration: none;
+}
+.kcredits a:hover {
+  text-decoration: underline;
 }
 .kshare-url {
   padding: 10px 12px;

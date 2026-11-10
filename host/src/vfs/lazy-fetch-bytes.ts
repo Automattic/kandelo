@@ -127,6 +127,8 @@ export type LazyPrepare = (address: string, signal: AbortSignal) => Promise<void
  * than keep a clock of their own.
  */
 export interface LazyTransferOptions {
+  /** A kernel integrity refusal must bypass the rejected HTTP cache entry. */
+  cache?: RequestCache;
   prepare?: LazyPrepare;
   /** Cancels the fetch for its owner (for example, a closing spool). */
   signal?: AbortSignal;
@@ -251,7 +253,7 @@ async function withLazyResponse<Result>(
       try {
         if (signal.aborted) throw signal.reason;
         response = await abortable(
-          fetcher(url, { signal }),
+          fetcher(url, { signal, ...(options.cache === undefined ? {} : { cache: options.cache }) }),
           signal,
           value => discardResponse(value, signal.reason),
         );

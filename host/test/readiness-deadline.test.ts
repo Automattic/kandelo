@@ -6,6 +6,7 @@ import {
   CH_ARGS,
   CH_ARGS_COUNT,
   CH_ARG_SIZE,
+  CH_DATA,
   CH_ERRNO,
   CH_RETURN,
   CH_SIG_BASE,
@@ -48,6 +49,7 @@ interface TestChannel {
   readonly i32View: Int32Array;
   waitHandle?: bigint;
   readinessFinalCheck?: boolean;
+  epollWaitToken?: bigint;
 }
 
 interface ReadinessState {
@@ -59,13 +61,9 @@ interface ReadinessState {
     };
   }>;
   readonly hostReaped: Set<number>;
-  readonly pendingPollRetries: Map<TestChannel, {
-    readonly deadlineHintMs: number;
-  }>;
-  readonly pendingSelectRetries: Map<TestChannel, {
-    readonly deadlineHintMs: number;
-    readonly needsSignalSafeWake: boolean;
-  }>;
+  readonly pendingCancels: Set<TestChannel>;
+  readonly pendingPollRetries: Map<TestChannel, unknown>;
+  readonly pendingSelectRetries: Map<TestChannel, unknown>;
 }
 
 interface KernelResult {
@@ -138,6 +136,7 @@ function createHarness(
     return { retVal: 0, errVal: 0 };
   },
   pointerWidth: 4 | 8 = 4,
+  retryProbe?: () => number,
 ) {
   const kernelMemory = createSharedMemory();
   const processMemory = createSharedMemory();
@@ -190,16 +189,31 @@ function createHarness(
   const setCurrentTid = vi.fn(() => 0);
   const blockingRetryRelease = vi.fn(() => 0);
   const blockingRetryToken = vi.fn(() => 0n);
+  const epollRetryState = retryProbe ? vi.fn(retryProbe) : undefined;
+  const synchronizeSharedMemory = vi.fn();
+  const epollWakeIndices = vi.fn((
+    _pid: number, _epfd: number, _kind: number,
+    _pointer: number | bigint, _capacity: number,
+  ) => 0);
   const implementations: Record<string, unknown> = {
     kernel_blocking_retry_release: blockingRetryRelease,
     kernel_blocking_retry_token: blockingRetryToken,
     kernel_dequeue_signal: dequeueSignal,
     kernel_drain_wakeup_events: drainWakeupEvents,
     kernel_get_parent_pid: vi.fn(() => 0),
+    // Process registration binds to the Rust image generation (b746c31c64).
+    kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+      new DataView(kernelMemory.buffer).setBigUint64(Number(pointer), 1n, true);
+      return 8;
+    },
     kernel_get_process_exit_signal: vi.fn(() => exitSignal),
     kernel_get_fd_pipe_idx: vi.fn((_pid: number, fd: number) =>
       fd === 7 ? 99 : -1
     ),
+    ...(epollRetryState ? { kernel_epoll_wait_retry_state: epollRetryState } : {}),
+    kernel_epoll_wait_token: vi.fn(() => 19n),
+    kernel_epoll_wait_finish: vi.fn(() => 0),
+    kernel_epoll_wake_indices: epollWakeIndices,
     kernel_handle_channel: handleChannel,
     kernel_set_current_tid: setCurrentTid,
     kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
@@ -218,8 +232,13 @@ function createHarness(
         "kernel_dequeue_signal",
         "kernel_drain_wakeup_events",
         "kernel_get_parent_pid",
+        "kernel_get_process_exec_generation",
         "kernel_get_process_exit_signal",
         "kernel_get_fd_pipe_idx",
+        ...(epollRetryState ? ["kernel_epoll_wait_retry_state"] : []),
+        "kernel_epoll_wait_token",
+        "kernel_epoll_wait_finish",
+        "kernel_epoll_wake_indices",
         "kernel_handle_channel",
         "kernel_set_current_tid",
         "kernel_take_process_timer_cleanup",
@@ -260,6 +279,7 @@ function createHarness(
       );
     },
     relistenChannel,
+    synchronizeSharedMemoryForBoundary: synchronizeSharedMemory,
   });
   const [registeredChannel] =
     worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
@@ -278,8 +298,13 @@ function createHarness(
     dequeueSignal,
     drainWakeupEvents,
     handleChannel,
+    epollRetryState,
+    epollWakeIndices,
+    gate,
+    synchronizeSharedMemory,
     onExit,
     processMemory,
+    kernelMemory,
     queueReadableWake(): void {
       readableWakeQueued = true;
     },
@@ -423,12 +448,9 @@ describe("finite readiness deadlines", () => {
     const args = syscallArgs(0, 0, 30);
 
     dispatchSyscall(harness, ABI_SYSCALLS.Poll, args);
-    // The absolute deadline is kernel state; the host keeps a monotonic hint
-    // for sizing its safety timer. Either way the point is that a broad wake
-    // must not push the expiry out, so assert the value does not move.
-    const hint = harness.state.pendingPollRetries
-      .get(harness.channel)?.deadlineHintMs;
-    expect(hint).toBeTypeOf("number");
+    // The absolute deadline is kernel state, named by the wait handle. A
+    // broad wake must not push the expiry out, so the handle must not move.
+    expect(harness.state.pendingPollRetries.has(harness.channel)).toBe(true);
     expect(harness.channel.waitHandle).toBeTypeOf("bigint");
     const waitHandle = harness.channel.waitHandle;
 
@@ -436,16 +458,14 @@ describe("finite readiness deadlines", () => {
     harness.queueReadableWake();
     harness.worker.testAuthority.drainWakeupEventsForTest();
     await vi.advanceTimersByTimeAsync(0);
-    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadlineHintMs)
-      .toBe(hint);
+    expect(harness.state.pendingPollRetries.has(harness.channel)).toBe(true);
     expect(harness.channel.waitHandle).toBe(waitHandle);
 
     await vi.advanceTimersByTimeAsync(7);
     harness.queueReadableWake();
     harness.worker.testAuthority.drainWakeupEventsForTest();
     await vi.advanceTimersByTimeAsync(0);
-    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadlineHintMs)
-      .toBe(hint);
+    expect(harness.state.pendingPollRetries.has(harness.channel)).toBe(true);
     expect(harness.channel.waitHandle).toBe(waitHandle);
 
     await vi.advanceTimersByTimeAsync(17);
@@ -481,8 +501,7 @@ describe("finite readiness deadlines", () => {
     const args = syscallArgs(pollPointer, 1, 40);
 
     dispatchSyscall(harness, ABI_SYSCALLS.Poll, args);
-    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadlineHintMs)
-      .toBeTypeOf("number");
+    expect(harness.state.pendingPollRetries.has(harness.channel)).toBe(true);
     expect(harness.channel.waitHandle).toBeTypeOf("bigint");
 
     await vi.advanceTimersByTimeAsync(7);
@@ -571,17 +590,58 @@ describe("finite readiness deadlines", () => {
     expect(retainedSnapshot?.dispatch.readinessTimeoutMs).toBe(10);
   });
 
-  it("postpones a signal-safe pselect fallback until the deferred wake", async () => {
+  // A ppoll/pselect6 that installs a temporary signal mask is woken by
+  // readiness exactly like an unmasked wait. These used to be held back
+  // 50 ms after every readiness event; POSIX asks only that the mask swap
+  // and the wait be atomic, which the kernel's per-task wait context keeps.
+  // Neither test advances a timer before the retry, so a grace period of any
+  // length fails them.
+  it("retries a masked ppoll as soon as its pipe becomes readable", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(2_000);
 
-    const harness = createHarness(() => ({
-      retVal: -1,
-      errVal: EAGAIN,
-    }));
-    const retrySyscall = vi.fn();
-    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
-      retrySyscall,
+    let attempts = 0;
+    const harness = createHarness((syscallNr) => {
+      expect(syscallNr).toBe(ABI_SYSCALLS.Ppoll);
+      attempts++;
+      return attempts === 1
+        ? { retVal: -1, errVal: EAGAIN }
+        : { retVal: 1, errVal: 0 };
+    });
+    const pollPointer = 1024;
+    const maskPointer = 3072;
+    const processView = new DataView(harness.processMemory.buffer);
+    processView.setInt32(pollPointer, 7, true);
+    processView.setInt16(pollPointer + 4, 0x001, true);
+    processView.setBigUint64(maskPointer, 0n, true);
+    // No timeout: only a wake or the safety timer can retry this wait.
+    const args = syscallArgs(pollPointer, 1, 0, maskPointer, SIGNAL_MASK_BYTES);
+
+    dispatchSyscall(harness, ABI_SYSCALLS.Ppoll, args);
+    expect(attempts).toBe(1);
+    expect(harness.state.pendingPollRetries.has(harness.channel)).toBe(true);
+
+    harness.queueReadableWake();
+    harness.worker.testAuthority.drainWakeupEventsForTest();
+    await Promise.resolve();
+
+    expect(attempts).toBe(2);
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+    expect(harness.completeChannel.mock.calls[0]!.slice(4, 6)).toEqual([1, 0]);
+    expect(harness.state.pendingPollRetries.size).toBe(0);
+  });
+
+  it("retries a masked pselect on the next turn after readiness", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+
+    let attempts = 0;
+    const harness = createHarness((syscallNr) => {
+      expect(syscallNr).toBe(ABI_SYSCALLS.Pselect6);
+      attempts++;
+      return attempts === 1
+        ? { retVal: -1, errVal: EAGAIN }
+        : { retVal: 1, errVal: 0 };
     });
     const readfdsPointer = 1024;
     const timespecPointer = 2048;
@@ -607,33 +667,21 @@ describe("finite readiness deadlines", () => {
     );
 
     dispatchSyscall(harness, ABI_SYSCALLS.Pselect6, args);
+    expect(attempts).toBe(1);
+    expect(harness.state.pendingSelectRetries.has(harness.channel)).toBe(true);
 
-    const initialEntry = harness.state.pendingSelectRetries.get(
-      harness.channel,
-    );
-    expect(initialEntry).toMatchObject({ needsSignalSafeWake: true });
-    expect(initialEntry?.deadlineHintMs).toBeTypeOf("number");
-    const initialHint = initialEntry?.deadlineHintMs;
     await vi.advanceTimersByTimeAsync(20);
+    expect(attempts).toBe(1);
     harness.queueReadableWake();
     harness.worker.testAuthority.drainWakeupEventsForTest();
+    // select has no pipe identity to target, so readiness reaches it through
+    // the broad wake, which runs on the next immediate -- not after a delay.
+    await vi.advanceTimersByTimeAsync(0);
 
-    expect(
-      harness.state.pendingSelectRetries.get(harness.channel),
-    ).toBe(initialEntry);
-    expect(initialEntry?.deadlineHintMs).toBe(initialHint);
-    await vi.advanceTimersByTimeAsync(30);
-    expect(retrySyscall).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(19);
-    expect(retrySyscall).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(1);
-    expect(retrySyscall).toHaveBeenCalledOnce();
-    expect(retrySyscall).toHaveBeenCalledWith(harness.channel);
+    expect(attempts).toBe(2);
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+    expect(harness.completeChannel.mock.calls[0]!.slice(4, 6)).toEqual([1, 0]);
     expect(harness.state.pendingSelectRetries.has(harness.channel)).toBe(false);
-    expect(harness.handleChannel).toHaveBeenCalledOnce();
-    expect(harness.drainWakeupEvents).toHaveBeenCalledOnce();
   });
 
 });
@@ -689,4 +737,178 @@ describe("host-emulated epoll signal delivery", () => {
     expect(new DataView(harness.processMemory.buffer).getUint32(CH_SIG_SI_CODE, true))
       .toBe(EXIT_RETIRE_SIGNAL_CODE);
   });
+});
+
+
+describe("retained epoll fallback probe", () => {
+  for (const width of [4, 8] as const) {
+    it(`keeps blocked ${width * 8}-bit timer retries off syscall/coherence replay`, async () => {
+      vi.useFakeTimers();
+      let probeResult = 1;
+      let ready = false;
+      const harness = createHarness((nr) => nr === ABI_SYSCALLS.EpollPwait
+        ? { retVal: ready ? 0 : -1, errVal: ready ? 0 : EAGAIN }
+        : { retVal: 7, errVal: 0 }, width, () => probeResult);
+      initializeEpoll(harness, false);
+      harness.synchronizeSharedMemory.mockClear();
+      dispatchSyscall(harness, ABI_SYSCALLS.EpollPwait,
+        syscallArgs(7, 4096, 1, -1, 0, SIGNAL_MASK_BYTES));
+      expect(harness.handleChannel).toHaveBeenCalledOnce();
+      expect(harness.synchronizeSharedMemory).toHaveBeenCalledOnce();
+      const token = harness.channel.epollWaitToken;
+      expect(token).toBeTypeOf("bigint");
+      await vi.advanceTimersByTimeAsync(30);
+      expect(harness.epollRetryState).toHaveBeenCalledTimes(3);
+      expect(harness.epollRetryState).toHaveBeenLastCalledWith(PID, PID, token, 0n);
+      expect(harness.handleChannel).toHaveBeenCalledOnce();
+      expect(harness.synchronizeSharedMemory).toHaveBeenCalledOnce();
+      expect(harness.state.pendingPollRetries.size).toBe(1);
+      expect(readRawCompletion(harness.channel).status).toBe(CHANNEL_STATUS_PENDING);
+      probeResult = 0;
+      ready = true;
+      // The kernel mock's zero result is a final nonblocking result only for
+      // timeout=0. Use a real error to finish this infinite wait instead.
+      harness.setHandlerSignal(15);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(harness.handleChannel).toHaveBeenCalledTimes(2);
+      expect(harness.synchronizeSharedMemory.mock.calls.length).toBeGreaterThan(1);
+      expect(readRawCompletion(harness.channel).status).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(harness.state.pendingPollRetries.size).toBe(0);
+    });
+  }
+
+  for (const result of [undefined, 0, -5, 2]) {
+    it(`falls back to full replay for unavailable/unknown/error proof ${result}`, async () => {
+      vi.useFakeTimers();
+      const harness = createHarness(() => ({ retVal: -1, errVal: EAGAIN }),
+        4, result === undefined ? undefined : () => result);
+      dispatchSyscall(harness, ABI_SYSCALLS.EpollPwait, syscallArgs(7, 4096, 1, -1));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(harness.handleChannel).toHaveBeenCalledTimes(2);
+      expect(harness.synchronizeSharedMemory).toHaveBeenCalledTimes(2);
+      expect(harness.state.pendingPollRetries.size).toBe(1);
+    });
+  }
+
+  it("keeps the same finite deadline and replays at its expiry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const harness = createHarness((_, scratch) => {
+      const timeout = Number(scratch.getBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, true));
+      return timeout === 0 ? { retVal: 0, errVal: 0 } : { retVal: -1, errVal: EAGAIN };
+    }, 8, () => 1);
+    dispatchSyscall(harness, ABI_SYSCALLS.EpollPwait, syscallArgs(7, 4096, 1, 25));
+    const handle = harness.channel.waitHandle;
+    await vi.advanceTimersByTimeAsync(24);
+    expect(harness.handleChannel).toHaveBeenCalledOnce();
+    expect(harness.epollRetryState).toHaveBeenLastCalledWith(PID, PID, 19n, handle);
+    expect(harness.channel.waitHandle).toBe(handle);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(harness.handleChannel).toHaveBeenCalledTimes(2);
+    expect(readRawCompletion(harness.channel)).toEqual({ retVal: 0, errVal: 0,
+      status: CHANNEL_STATUS_COMPLETE });
+    expect(harness.channel.waitHandle).toBeUndefined();
+    expect(harness.state.pendingPollRetries.size).toBe(0);
+  });
+
+  for (const mutation of ["cancel", "argument", "header", "token", "deadline"] as const) {
+    it(`does not accept a negative proof after ${mutation} changes`, async () => {
+      vi.useFakeTimers();
+      const harness = createHarness(() => ({ retVal: -1, errVal: EAGAIN }), 4, () => 1);
+      dispatchSyscall(harness, ABI_SYSCALLS.EpollPwait, syscallArgs(7, 4096, 1, -1));
+      const view = new DataView(harness.processMemory.buffer);
+      if (mutation === "cancel") harness.state.pendingCancels.add(harness.channel);
+      if (mutation === "argument") view.setBigInt64(CH_ARGS + CH_ARG_SIZE, 8192n, true);
+      if (mutation === "header") view.setUint32(CH_SYSCALL, ABI_SYSCALLS.EpollWait, true);
+      if (mutation === "token") harness.channel.epollWaitToken = 20n;
+      if (mutation === "deadline") harness.channel.waitHandle = 20n;
+      await vi.advanceTimersByTimeAsync(10);
+      expect(harness.epollRetryState).not.toHaveBeenCalled();
+      expect(harness.handleChannel).toHaveBeenCalledTimes(2);
+      expect(harness.synchronizeSharedMemory).toHaveBeenCalledTimes(2);
+    });
+  }
+
+  it("lets targeted readiness bypass the fallback probe and copy events once", async () => {
+    vi.useFakeTimers();
+    let ready = false;
+    const harness = createHarness((_, scratch) => {
+      if (!ready) return { retVal: -1, errVal: EAGAIN };
+      // The real host scratch copyout path, not a test completion hook.
+      scratch.setUint32(CH_DATA + WASM_EPOLL_EVENT_EVENTS_OFFSET, 1, true);
+      scratch.setBigUint64(CH_DATA + WASM_EPOLL_EVENT_DATA_OFFSET, 81n, true);
+      return { retVal: 1, errVal: 0 };
+    }, 4, () => 1);
+    harness.epollWakeIndices.mockImplementation((_pid, _epfd, kind, pointer) => {
+      if (kind !== 0) return 0; // EPOLL_WAKE_KIND_PIPE
+      new DataView(harness.kernelMemory.buffer, Number(pointer), 4).setUint32(0, 99, true);
+      return 1;
+    });
+    dispatchSyscall(harness, ABI_SYSCALLS.EpollPwait, syscallArgs(7, 4096, 1, -1));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(harness.epollRetryState).toHaveBeenCalledOnce();
+    ready = true;
+    harness.worker.notifyPipeReadable(99);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.handleChannel).toHaveBeenCalledTimes(2);
+    expect(harness.epollRetryState).toHaveBeenCalledOnce();
+    expect(readRawCompletion(harness.channel).retVal).toBe(1);
+    expect(harness.state.pendingPollRetries.size).toBe(0);
+    const events = new DataView(harness.processMemory.buffer, 4096);
+    expect(events.getUint32(WASM_EPOLL_EVENT_EVENTS_OFFSET, true)).toBe(1);
+    expect(events.getBigUint64(WASM_EPOLL_EVENT_DATA_OFFSET, true)).toBe(81n);
+    await vi.advanceTimersByTimeAsync(30);
+    expect(harness.handleChannel).toHaveBeenCalledTimes(2);
+  });
+
+  for (const notificationFirst of [true, false]) {
+    it(`keeps the queued wake when notificationFirst=${notificationFirst}`, async () => {
+      vi.useFakeTimers();
+      let ready = false;
+      const harness = createHarness(() => ready
+        ? { retVal: -1, errVal: 5 } : { retVal: -1, errVal: EAGAIN }, 4, () => 1);
+      harness.epollWakeIndices.mockImplementation((_pid, _epfd, kind, pointer) => {
+        if (kind !== 0) return 0;
+        new DataView(harness.kernelMemory.buffer, Number(pointer), 4).setUint32(0, 99, true);
+        return 1;
+      });
+      dispatchSyscall(harness, ABI_SYSCALLS.EpollPwait, syscallArgs(7, 4096, 1, -1));
+      harness.gate.runImmediateVoidIngress("another selected kernel operation", () => {
+        ready = true;
+        if (notificationFirst) harness.worker.notifyPipeReadable(99);
+        vi.advanceTimersByTime(10); // timer also waits behind the same scope
+        if (!notificationFirst) harness.worker.notifyPipeReadable(99);
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.handleChannel).toHaveBeenCalledTimes(2);
+      expect(harness.state.pendingPollRetries.size).toBe(0);
+      expect(readRawCompletion(harness.channel).status).toBe(CHANNEL_STATUS_COMPLETE);
+      await vi.advanceTimersByTimeAsync(30);
+      expect(harness.handleChannel).toHaveBeenCalledTimes(2);
+    });
+  }
+
+  it("cannot replay or rearm a replaced process registration", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness(() => ({ retVal: -1, errVal: EAGAIN }), 4, () => 1);
+    dispatchSyscall(harness, ABI_SYSCALLS.EpollPwait, syscallArgs(7, 4096, 1, -1));
+    harness.worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid: PID, memory: harness.processMemory, channelOffsets: [0], pointerWidth: 4,
+    });
+    await vi.advanceTimersByTimeAsync(30);
+    expect(harness.epollRetryState).not.toHaveBeenCalled();
+    expect(harness.handleChannel).toHaveBeenCalledOnce();
+  });
+
+  it("preserves fatal export failures instead of accepting a blocked proof", async () => {
+    vi.useFakeTimers();
+    const fault = new Error("probe export failed");
+    const harness = createHarness(() => ({ retVal: -1, errVal: EAGAIN }), 4,
+      () => { throw fault; });
+    dispatchSyscall(harness, ABI_SYSCALLS.EpollPwait, syscallArgs(7, 4096, 1, -1));
+    await expect(vi.advanceTimersByTimeAsync(10)).rejects.toThrow();
+    expect(harness.handleChannel).toHaveBeenCalledOnce();
+    expect(readRawCompletion(harness.channel).status).toBe(CHANNEL_STATUS_PENDING);
+  });
+
 });

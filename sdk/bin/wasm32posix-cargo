@@ -4,7 +4,7 @@ set -euo pipefail
 # wasm32posix-cargo — Build Rust programs for wasm32-unknown-kandelo with
 # one command. Wraps `cargo` with the target, the private-sysroot `rustc`
 # wrapper (which carries the prebuilt Kandelo std), and the musl-time64 env
-# var, then fork-instruments any output that uses fork (std::process, etc.).
+# var, then prepares linked outputs for fork and source-level backtraces.
 #
 # Usage (inside scripts/dev-shell.sh), from a Rust package directory:
 #   wasm32posix-cargo build [--release] [cargo args...]
@@ -66,9 +66,10 @@ fi
 mkdir -p "$TARGET_OUT"
 echo "$SYSROOT_DIGEST" > "$TARGET_OUT/.kandelo-sysroot"
 
-# Fork-instrument every fork-using output wasm (the kernel refuses an
-# uninstrumented artifact at guest-initiated exec). Non-fork programs are
-# left as-is. Returns the list of top-level output wasms via stdout.
+# Prepare every linked output, retaining names and available DWARF locations.
+# Keep immutable original linker outputs so a repeated Cargo build can
+# prepare the current artifact again without instrumenting generated code.
+# Returns the list of top-level output wasms via stdout.
 # Locate a prebuilt host xtask binary for the abi.contract stamp (built by
 # ./run.sh setup). We do not build it here to avoid a surprise long compile.
 host_xtask() {
@@ -85,14 +86,18 @@ instrument_outputs() {
   [ -d "$dir" ] || return 0
   local xtask
   xtask="$(host_xtask || true)"
-  local w
+  local original_store="${WASM_POSIX_BUILD_ORIGINAL_STORE:-$TARGET_OUT/.kandelo-originals}"
+  local w reference
+  local prepare_args
   for w in "$dir"/*.wasm; do
     [ -e "$w" ] || continue
-    if grep -qa "kernel_fork" "$w"; then
-      echo "==> fork-instrumenting $(basename "$w")" >&2
-      bash "$FORK_INSTRUMENT" "$w" -o "$w.inst" >&2
-      mv "$w.inst" "$w"
+    reference="$(bash "$FORK_INSTRUMENT" "$w" --original-reference)" || return
+    prepare_args=(--original-store "$original_store" --keep-names --debug-map-if-present)
+    if [ "$reference" != none ]; then
+      prepare_args+=(--reprepare-from-original)
     fi
+    echo "==> preparing $(basename "$w")" >&2
+    bash "$FORK_INSTRUMENT" "$w" -o "$w" "${prepare_args[@]}" >&2 || return
     # Stamp the abi.contract section so the host accepts the program at exec
     # without the "legacy binary" warning. Non-fatal: a re-run without a
     # rebuild finds it already stamped.

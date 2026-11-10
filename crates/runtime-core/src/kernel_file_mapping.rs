@@ -218,14 +218,22 @@ pub fn pin(handle: i64) -> Result<(), Errno> {
     }
 }
 
-/// Drop a [`pin`].
+/// Drop a [`pin`]. Every unpin pairs with a pin the shared-mapping table
+/// took; one with no pin behind it is a fatal kernel fault
+/// ([`crate::writeback_loss::shared_mapping_fault`]), because ignoring it
+/// would free the object under another live mapping or leak it.
 pub fn unpin(handle: i64) {
-    match decode(handle) {
+    let held = match decode(handle) {
         Ok(Object::Executable(_)) => panic!("paired executable mappings require an IO-aware unpin"),
         Ok(Object::Rootfs(h)) => crate::rootfs::unpin_mapping(h),
         Ok(Object::Tmpfs(h)) => crate::tmpfs::unpin_mapping(h),
         Ok(Object::MemFd(index)) => with_memfds(|table| table.unpin(index)),
-        Err(_) => {}
+        Err(_) => false,
+    };
+    if !held {
+        crate::writeback_loss::shared_mapping_fault(format_args!(
+            "released mapping handle {handle:#x}, which no backing held"
+        ));
     }
 }
 
@@ -310,6 +318,31 @@ mod tests {
             content_generation(handle).is_none(),
             "the last pin frees the memfd"
         );
+    }
+
+    /// Every unpin pairs with a pin the shared-mapping table took. One with no
+    /// pin left behind it can only come from broken kernel bookkeeping, and
+    /// ignoring it would let the object be freed under a live mapping or
+    /// leak it; the kernel stops instead.
+    #[test]
+    #[should_panic(expected = "fatal shared-mapping fault: released mapping handle")]
+    fn an_unpin_with_no_pin_is_a_fatal_fault() {
+        let index = with_memfds(|table| {
+            let mut backing = crate::descriptor_backing::MemFdBacking::new();
+            backing.data = crate::IoBuffer::copy_from(b"abc").unwrap();
+            table.alloc(backing)
+        });
+        let handle = mapping_handle_for(FileType::MemFd, -((index as i64) + 1)).unwrap();
+        pin(handle).unwrap();
+        unpin(handle);
+        unpin(handle);
+    }
+
+    #[test]
+    #[should_panic(expected = "fatal shared-mapping fault: released mapping handle")]
+    fn an_unpin_of_an_unknown_object_is_a_fatal_fault() {
+        let handle = mapping_handle_for(FileType::MemFd, -900_001).unwrap();
+        unpin(handle);
     }
 
     #[test]

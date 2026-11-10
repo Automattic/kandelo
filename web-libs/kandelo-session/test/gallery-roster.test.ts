@@ -136,6 +136,10 @@ describe("parseGalleryRoster", () => {
       "sdl2",
       "scummvm",
       "love",
+      "cage",
+      "sway",
+      "sway-sfwbar",
+      "labwc",
       "omarchy",
       "redis",
     ]);

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$here/../../.." && pwd)"
+source "$repo/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$here" wasm32
+work="$KANDELO_PACKAGE_WORK_DIR"
+stage="$work/stage"
+mkdir -p "$stage/bin" "$stage/libexec"
+unzip -q "${WASM_POSIX_DEP_KANDELO_SDK_BROWSER_BUNDLE_DIR:?missing C SDK}/kandelo-sdk.zip" -d "$stage"
+unzip -q "${WASM_POSIX_DEP_RUSTC_DIR:?missing compiler}/rust-std.zip" -d "$stage"
+unzip -q "${WASM_POSIX_DEP_RUST_PROFILER_RUNTIME_BUNDLE_DIR:?missing matching profiler runtime}/rust-profiler-runtime.zip" -d "$stage"
+for tool in llvm-cov llvm-profdata; do
+  install -m755 "${WASM_POSIX_DEP_RUST_COVERAGE_TOOLS_DIR:?missing matching coverage tools}/$tool.wasm" "$stage/bin/$tool"
+done
+install -m755 "$WASM_POSIX_DEP_RUSTC_DIR/rustc.wasm" "$stage/libexec/rustc"
+install -m755 "$WASM_POSIX_DEP_RUSTC_DIR/rustdoc.wasm" "$stage/libexec/rustdoc"
+install -m755 "$WASM_POSIX_DEP_RUSTC_DIR/clippy-driver.wasm" "$stage/libexec/clippy-driver"
+for tool in rustfmt cargo-fmt cargo-clippy; do
+  install -m755 "$WASM_POSIX_DEP_RUSTC_DIR/$tool.wasm" "$stage/bin/$tool"
+done
+# Cargo discovers external subcommands with the host target's EXE_SUFFIX.
+# Kandelo's Rust target uses .wasm, while direct Unix command names stay usable.
+ln -s cargo-fmt "$stage/bin/cargo-fmt.wasm"
+ln -s cargo-clippy "$stage/bin/cargo-clippy.wasm"
+install -m755 "${WASM_POSIX_DEP_CARGO_DIR:?missing Cargo}/cargo.wasm" "$stage/libexec/cargo"
+install -m755 "${WASM_POSIX_DEP_KANDELO_RUSTC_DIR:?missing compiler entry point}/kandelo-rustc.wasm" "$stage/bin/kandelo-rustc"
+install -m755 "${WASM_POSIX_DEP_WASM_FORK_INSTRUMENT_DIR:?missing fork instrumenter}/wasm-fork-instrument.wasm" "$stage/bin/wasm-fork-instrument"
+ln -s kandelo-rustc "$stage/bin/rustc"
+ln -s kandelo-rustc "$stage/bin/wasm32posix-rustc"
+ln -s kandelo-rustc "$stage/bin/rustdoc"
+ln -s kandelo-rustc "$stage/bin/clippy-driver"
+ln -s kandelo-rustc "$stage/bin/cargo"
+manifest_args=(
+  --component cargo "$stage/libexec/cargo"
+  --component kandelo-rustc "$stage/bin/kandelo-rustc"
+  --component rustc "$stage/libexec/rustc"
+  --component rustdoc "$stage/libexec/rustdoc"
+  --component clippy-driver "$stage/libexec/clippy-driver"
+  --component rustfmt "$stage/bin/rustfmt"
+  --component cargo-fmt "$stage/bin/cargo-fmt"
+  --component cargo-clippy "$stage/bin/cargo-clippy"
+  --component rust-std "$WASM_POSIX_DEP_RUSTC_DIR/rust-std.zip"
+  --component kandelo-sdk "$WASM_POSIX_DEP_KANDELO_SDK_BROWSER_BUNDLE_DIR/kandelo-sdk.zip"
+  --component wasm-fork-instrument "$stage/bin/wasm-fork-instrument"
+)
+if [ -n "${WASM_POSIX_DEP_RUST_PROFILER_RUNTIME_BUNDLE_DIR:-}" ]; then
+  manifest_args+=(--component rust-profiler-runtime "$WASM_POSIX_DEP_RUST_PROFILER_RUNTIME_BUNDLE_DIR/rust-profiler-runtime.zip")
+fi
+mkdir -p "$stage/share/kandelo/rust-sdk"
+python3 "$repo/images/vfs/scripts/rust-sdk-manifest.py" "${manifest_args[@]}" > "$stage/share/kandelo/rust-sdk/manifest.json"
+mkdir -p "$stage/share/licenses/rust-cargo"
+cp "$repo/sdk/guest-rust/licenses/"* "$stage/share/licenses/rust-cargo/"
+bash "$repo/images/vfs/scripts/create-deterministic-zip.sh" "$stage" "$work/kandelo-rust-sdk.zip"
+export WASM_POSIX_INSTALL_LOCAL_MIRROR=0 WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
+source "$repo/scripts/install-local-binary.sh"
+install_local_binary kandelo-rust-sdk "$work/kandelo-rust-sdk.zip" kandelo-rust-sdk.zip

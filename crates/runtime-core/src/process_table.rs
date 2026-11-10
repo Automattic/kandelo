@@ -285,14 +285,13 @@ impl ProcessRemovalResources {
             if released.final_ofd_reference { lock_state_changed |= locks.remove_ofd(released.ofd_id).changed; }
             if let Some(handle) = released.host_close { io.close_file(handle); }
             if let Some(handle) = released.secondary_host_close { io.close_file(handle); }
-            if let Some(bo_id) = released.prime_bo_id {
-                if crate::dri::with_registry(|registry| registry.decref(bo_id)) == Some(0) { io.destroy_bo(bo_id); }
-            }
+            // The deferred receiver already owns ordered PRIME/DRI retirement;
+            // a second numeric BO decref here would consume a successor hold.
+            for effect in released.dri_effects { io.release_dri_effect(pid, effect); }
         }
         if lock_state_changed { crate::wakeup::push_advisory_lock(); }
         if had_framebuffer_binding { io.unbind_framebuffer(pid); }
-        let _ = FB0_OWNER.compare_exchange(pid as i32, -1,
-            core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::SeqCst);
+        crate::framebuffer::release_owner(pid);
         for socket_index in 0..self.sockets.len() {
             let named = self.ofds.iter().any(|(_, ofd)| ofd.file_type == FileType::Socket
                 && ofd.host_handle < 0 && (-(ofd.host_handle + 1)) as usize == socket_index);
@@ -544,8 +543,14 @@ pub fn bump_inherited_resource_refcounts(
     Ok(())
 }
 
-/// Acquire graphics-buffer references only after fallible inheritance
-/// preparation succeeds. Deserialization itself acquires no backing owners.
+/// Incref every DRI bo referenced by the child's inherited card0 / renderD128
+/// / prime-fd OFDs — GEM-handle maps and prime-bo bindings. KMS framebuffers
+/// are not per-copy: the clone shares the parent's `SharedKmsFbs`.
+///
+/// Spawn clones the live GEM and framebuffer namespaces; those table entries
+/// already own their BO references. Only copied cursor and PRIME sidecars need
+/// another reference. Fork obtains those references while deserializing, then
+/// settles temporary GEM snapshot references when relinking the live namespace.
 pub(crate) fn bump_inherited_dri_bos(child: &Process) {
     for (_idx, ofd) in child.ofd_table.iter() {
         let Some(dri_state) = ofd.dri_state.as_deref() else {
@@ -555,22 +560,42 @@ pub(crate) fn bump_inherited_dri_bos(child: &Process) {
             crate::ofd::DriOfdState::PrimeBo(p) => {
                 reg.incref(p.bo_id);
             }
-            crate::ofd::DriOfdState::RenderNode(dri) => {
-                for bo_id in dri.handles.values() {
-                    reg.incref(*bo_id);
-                }
+            crate::ofd::DriOfdState::RenderNode(_) => {}
+            crate::ofd::DriOfdState::Card { .. } => {}
+            // Shared kernel objects: the cloned sidecar is the reference.
+            crate::ofd::DriOfdState::SyncFile(_) | crate::ofd::DriOfdState::Syncobj(_) => {}
+        });
+    }
+}
+
+/// A fallible fork preparation owns CPU mapping references until the child
+/// record adopts them. Parent mappings retain a reference during rollback,
+/// so this guard never needs an external final-destruction notification.
+struct DriMappingInheritance(crate::IoBuffer<crate::process::DriBoBinding>);
+impl DriMappingInheritance {
+    fn acquire(parent: &Process) -> Result<Self, Errno> {
+        let bindings = crate::IoBuffer::copy_from(&parent.dri_bindings)?;
+        crate::dri::with_registry(|registry| {
+            for (index, binding) in bindings.iter().enumerate() {
+                if bindings[..index].iter().any(|old| old.bo_id == binding.bo_id) { continue; }
+                let count = u32::try_from(bindings.iter().filter(|other| other.bo_id == binding.bo_id).count())
+                    .map_err(|_| Errno::EOVERFLOW)?;
+                registry.get(binding.bo_id).ok_or(Errno::EINVAL)?.refcount.checked_add(count).ok_or(Errno::EOVERFLOW)?;
             }
-            crate::ofd::DriOfdState::Card { dri, kms } => {
-                for bo_id in dri.handles.values() {
-                    reg.incref(*bo_id);
-                }
-                for fb in kms.fbs.values() {
-                    reg.incref(fb.bo_id);
-                }
-                if let Some(bo) = kms.cursor_bo {
-                    reg.incref(bo);
-                }
+            for binding in &bindings {
+                assert!(registry.incref(binding.bo_id).is_some(), "preflighted CPU mapping fork reference");
             }
+            Ok(())
+        })?;
+        Ok(Self(bindings))
+    }
+    fn take(&mut self) -> crate::IoBuffer<crate::process::DriBoBinding> { core::mem::take(&mut self.0) }
+}
+impl Drop for DriMappingInheritance {
+    fn drop(&mut self) {
+        crate::dri::with_registry(|registry| for binding in &self.0 {
+            let count = registry.decref(binding.bo_id).expect("prepared CPU mapping reference");
+            assert!(count > 0, "live parent retains the mapping during fork rollback");
         });
     }
 }
@@ -869,6 +894,11 @@ impl ProcessTable {
         if pid == SYNTHETIC_INIT_PID {
             return None;
         }
+        if self.processes.get(&pid)?.prepared_exec_targets.has_retiring() {
+            // No HostIO exists here. Keep the actual process/OFD owner until
+            // the uncertain executable close resolves; IDs are not custody.
+            return None;
+        }
         let mut removed = self.processes.remove_entry(&pid)?;
         let mut proc = removed.value_mut();
         crate::wait_park::retire_process(pid);
@@ -880,6 +910,25 @@ impl ProcessTable {
         // deferred ancillary cleanup boundary.
         crate::syscalls::discard_blocking_retry_bindings_for_process_removal(&mut proc);
         unsafe { crate::pipe::global_pipe_table() }.cancel_fifo_opens_for_process(pid, |_| {});
+        // A trapped process or failed launch may never execute close().
+        // Retire the same kernel references as close, before discarding OFDs.
+        crate::syscalls::rollback_owned_mapping_plans(&mut proc);
+        let mut dri_effects = crate::syscalls::collect_dri_mapping_releases(core::mem::take(&mut proc.dri_bindings));
+        dri_effects.extend(crate::syscalls::collect_process_gl_image_release_effects(&mut proc));
+        dri_effects.extend(crate::syscalls::collect_owned_resource_removal_effects(&mut proc));
+        let dri_ofds: Vec<_> = proc.ofd_table.iter()
+            .filter_map(|(idx, ofd)| ofd.dri_state.as_ref().map(|_| idx)).collect();
+        for idx in dri_ofds {
+            let mut state = proc.ofd_table.get_mut(idx).unwrap().dri_state.take();
+            if let Some(state) = state.as_deref_mut() {
+                dri_effects.extend(crate::syscalls::collect_owned_gl_image_release_effects(
+                    pid as i32, state,
+                ));
+            }
+            dri_effects.extend(crate::syscalls::collect_dri_release_effects(pid as i32, idx, state));
+        }
+
+        for effect in dri_effects { io.release_dri_effect(pid, effect); }
 
         // Keep the global pipe-table borrow in a strict lexical scope. Closing
         // a final read end can drop queued SCM_RIGHTS entries, whose Drop impl
@@ -1294,6 +1343,102 @@ impl ProcessTable {
         self.processes.get_mut(&pid)
     }
 
+    /// Apply an ioctl for the bound task. All cross-process effects are
+    /// consumed under table ownership after the caller borrow has ended.
+    pub fn ioctl(
+        &mut self,
+        host: &mut dyn crate::process::HostIO,
+        fd: i32,
+        request: u32,
+        buf: &mut [u8],
+    ) -> Result<(), Errno> {
+        let mut effects = crate::syscalls::IoctlEffects::default();
+        let result = {
+            let (proc, locks) = self
+                .current_process_and_advisory_locks()
+                .ok_or(Errno::ESRCH)?;
+            if request==wasm_posix_shared::dri_owned::REQUEST {
+                crate::owned_resource::ioctl(proc,locks,host,fd,buf)
+            } else {crate::syscalls::sys_ioctl_local(proc, host, fd, request, buf, &mut effects)}
+        };
+        if let Some(resize) = effects.terminal_resize {
+            self.apply_terminal_resize(resize, host);
+        }
+        let (proc, locks) = self
+            .current_process_and_advisory_locks()
+            .ok_or(Errno::ESRCH)?;
+        crate::signal::deliver_pending_signals_with_locks(proc, locks, host);
+        result
+    }
+
+    /// Complete only an exact host-owned mapping constructor for a live task.
+    pub fn finish_owned_mapping(&mut self,host:&mut dyn crate::process::HostIO,pid:u32,tid:u32,
+        token:u32,transaction:u64,errno:u32)->Result<(),Errno> {
+        self.validate_task(pid,tid)?;
+        let (proc,locks)=self.task_and_advisory_locks(pid,tid).ok_or(Errno::ESRCH)?;
+        crate::owned_resource::finish_mapping(proc,locks,host,tid,token,transaction,errno)
+    }
+
+    /// Host terminal resize uses the same storage and group routing as ioctl.
+    /// The host's rows/cols-only interface historically clears pixel sizes but
+    /// signals only when the cell dimensions change; retain that contract.
+    pub fn set_pty_winsize(
+        &mut self,
+        pty_idx: usize,
+        rows: u16,
+        cols: u16,
+        host: &mut dyn crate::process::HostIO,
+    ) -> Result<(), Errno> {
+        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::ENOENT)?;
+        let effect = pty.terminal.replace_winsize(crate::terminal::WinSize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        });
+        if let Some(effect) = effect.filter(|effect| effect.cell_dimensions_changed) {
+            self.apply_terminal_resize(effect, host);
+        }
+        Ok(())
+    }
+
+    fn apply_terminal_resize(
+        &mut self,
+        effect: crate::terminal::TerminalResizeEffect,
+        host: &mut dyn crate::process::HostIO,
+    ) {
+        // An unclaimed terminal has no authoritative controlling session.
+        // In particular, never substitute the outside ioctl setter's session.
+        if effect.foreground_pgid <= 0 || effect.session_id <= 0 {
+            return;
+        }
+        let mut generated = false;
+        let mut previous = 0;
+        while let Some(pid) = self.next_pid_in_group(effect.foreground_pgid as u32, previous) {
+            previous = pid;
+            let Some((proc, locks)) = self.process_and_advisory_locks(pid) else {
+                continue;
+            };
+            if !proc.is_live_explicit_tid(proc.pid) || proc.sid != effect.session_id as u32 {
+                continue;
+            }
+            let signum = wasm_posix_shared::signal::SIGWINCH;
+            proc.raise_signal(signum);
+            generated = true;
+            if let Some(tid) = proc.pick_thread_for_shared_signal(signum) {
+                let _ = crate::signal::deliver_pending_signals_for_tid_with_locks(
+                    proc, locks, host, tid,
+                );
+            }
+        }
+        if generated {
+            // A caught resize can interrupt a host-owned PTY read/poll even
+            // without any new input bytes. Reuse the retained terminal
+            // readiness notification; hosts recheck actual kernel signals.
+            crate::wakeup::push_pty_readiness();
+        }
+    }
+
     /// Borrow the current process and machine-wide lock manager together.
     /// These references are safe and disjoint because they originate from
     /// separate `ProcessTable` fields.
@@ -1464,8 +1609,12 @@ impl ProcessTable {
         caller_tid: u32,
         mode: wasm_posix_shared::fork_contract::Mode,
     ) -> Result<u32, Errno> {
-        let (serialized_parent, caller_blocked) = {
+        let (serialized_parent, caller_blocked, mut dri_mappings) = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            if parent.prepared_exec_targets.has_retiring() {
+                return Err(Errno::EBUSY);
+            }
+            if crate::owned_resource::has_pending_mapping(parent) {return Err(Errno::EBUSY);}
             if matches!(
                 parent.state,
                 crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
@@ -1484,9 +1633,11 @@ impl ProcessTable {
             if parent.vfork_child && mode == wasm_posix_shared::fork_contract::Mode::Vfork {
                 return Err(Errno::EAGAIN);
             }
+            let mappings = DriMappingInheritance::acquire(parent)?;
             (
                 serialize_fork_state_with_growing_buffer(parent)?,
                 parent.blocked_for(caller_tid),
+                mappings,
             )
         };
 
@@ -1507,22 +1658,42 @@ impl ProcessTable {
                 .get(&parent_pid)
                 .ok_or(Errno::ESRCH)?
                 .ofd_table,
+            |bo| crate::dri::with_registry(|registry| {
+                // The matching live parent handle still owns a reference.
+                let before = registry.get(bo).expect("live parent GEM BO").refcount;
+                assert!(before >= 2, "fork snapshot must own a duplicate GEM reference");
+                assert_eq!(registry.decref(bo), Some(before - 1));
+            }),
         )?;
+        // Fork state carries the address layout only; each mapping's backing
+        // object (what /proc/<pid>/maps names) is shared with the parent.
+        child.memory.inherit_mapping_files(
+            self.processes
+                .get(&parent_pid)
+                .ok_or(Errno::ESRCH)?
+                .memory
+                .mappings(),
+        );
+        // Mapping authority is Rust-owned metadata, not a new fork wire field.
+        // Copy its full allocator state even when every old mapping has retired.
+        child.memory.inherit_exact_mapping_ids(
+            &self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?.memory,
+        );
         // POSIX fork leaves one thread in the child, and that thread inherits
         // the mask of the task that called fork rather than the process
         // leader's mask.
         child.signals.blocked = caller_blocked;
         child.vfork_child = mode == wasm_posix_shared::fork_contract::Mode::Vfork;
 
-        // Build fork-only `fork_pipe_replay` (fork replay needs it to
-        // return the same fds as the parent did when re-running
-        // pre-fork code). Spawn doesn't replay, so this stays fork-local.
+        // Prepare exact B1 resources before fallible publication. Keep both
+        // guards armed until the admitted process entry owns every reference.
+        let owned = crate::owned_resource::prepare_fork(
+            self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?, &mut child)?;
         child.fork_pipe_replay = build_fork_pipe_replay(&child)?;
-        // Bump cross-process refcounts on inherited fd state (host handles,
-        // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
-        // factored out into a free helper.
-        let entry = slot.finish(child_pid, child)?;
+        let mut entry = slot.finish(child_pid, child)?;
         bump_inherited_resource_refcounts(parent_pid, entry.value())?;
+        entry.value_mut().owned_resources = owned.commit();
+        entry.value_mut().dri_bindings = dri_mappings.take();
 
         self.processes.publish_io(entry);
 
@@ -1550,6 +1721,9 @@ impl ProcessTable {
         // Snapshot inheritable parent state under an immutable borrow.
         let inherit = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            if parent.prepared_exec_targets.has_retiring() {
+                return Err(Errno::EBUSY);
+            }
             if matches!(
                 parent.state,
                 crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
@@ -1857,6 +2031,17 @@ impl ProcessTable {
     /// Get a reference to a process by pid.
     pub fn get(&self, pid: u32) -> Option<&Process> {
         self.processes.get(&pid)
+    }
+
+    /// Identify the exact image a host registration is about to publish.
+    /// Pending spawn children must register before publication, while a limbo
+    /// group identity no longer owns any executable image or host registration.
+    pub fn exec_generation(&self, pid: u32) -> Result<u64, Errno> {
+        self.processes
+            .get(&pid)
+            .filter(|process| process.state != ProcessState::Limbo)
+            .map(|process| process.exec_generation)
+            .ok_or(Errno::ESRCH)
     }
 
     /// Iterate live, ordinary processes from newest to oldest identity.
@@ -2926,6 +3111,32 @@ mod wait_tests {
     }
 
     #[test]
+    fn fork_inherits_cpu_mapping_ownership_without_any_open_descriptor() {
+        use wasm_posix_shared::fork_contract::Mode;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for mode in [Mode::Fork, Mode::Vfork] {
+            crate::dri::bo::reset_registry();
+            let mut table = ProcessTable::new();
+            let parent_pid = table.create_process().unwrap();
+            let bo = crate::dri::with_registry(|registry| registry.try_alloc(4,4,32).unwrap().id);
+            // Publication into an owned IoBuffer requires admitted capacity,
+            // even in a fixture whose BO has no descriptor owner.
+            table.get_mut(parent_pid).unwrap().dri_bindings.try_push(crate::process::DriBoBinding {addr:65536,len:65536,bo_id:bo,bo_offset:0}).unwrap();
+            let child_pid = table.fork_process_for_caller_with_mode(parent_pid,parent_pid,mode).unwrap();
+            let bindings = &table.get(child_pid).unwrap().dri_bindings;
+            assert_eq!(bindings.len(),1); assert_eq!((bindings[0].addr,bindings[0].len,bindings[0].bo_id),(65536,65536,bo));
+            assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).unwrap().refcount),2);
+            let parent = table.remove_process(parent_pid).unwrap();
+            assert!(parent.dri_effects.contains(&crate::syscalls::DriReleaseEffect::UnbindBo {bo_id:bo,addr:65536,len:65536}));
+            assert!(!parent.dri_effects.contains(&crate::syscalls::DriReleaseEffect::DestroyBo(bo)));
+            assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).unwrap().refcount),1);
+            let child = table.remove_process(child_pid).unwrap();
+            assert!(child.dri_effects.contains(&crate::syscalls::DriReleaseEffect::DestroyBo(bo)));
+            assert!(crate::dri::with_registry(|registry| registry.get(bo).is_none()));
+        }
+    }
+
+    #[test]
     fn vfork_child_may_fork_and_spawn_but_not_vfork() {
         use crate::process::test_host::NoopHost;
         use crate::spawn::SpawnAttrs;
@@ -3158,6 +3369,37 @@ mod wait_tests {
     }
 
     #[test]
+    fn reserved_stdio_fork_ownership_survives_independent_root_removal() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = ProcessTable::new();
+        let parent = table.create_process().unwrap();
+        let child = table.fork_process_for_caller(parent, parent).unwrap();
+        let descriptions = |table: &ProcessTable, pid| {
+            let process = table.get(pid).unwrap();
+            [0, 1, 2].map(|fd| {
+                let index = process.fd_table.get(fd).unwrap().ofd_ref.0;
+                let ofd = process.ofd_table.get(index).unwrap();
+                (index, ofd.ofd_id, ofd.host_handle, ofd.file_type)
+            })
+        };
+        let parent_descriptions = descriptions(&table, parent);
+        let child_descriptions = descriptions(&table, child);
+        let held = [0, 1, 2].map(crate::ofd::host_handle_ref_count);
+        let fresh = table.create_process().unwrap();
+        table.remove_process(fresh).unwrap();
+        // WHY: fresh roots reuse permanently preopened stdio numbers, not a
+        // native-file lease owned by this existing fork family. Its removal
+        // must not consume their lifetime accounting or descriptor identities.
+        assert_eq!([0, 1, 2].map(crate::ofd::host_handle_ref_count), held);
+        assert_eq!(descriptions(&table, parent), parent_descriptions);
+        assert_eq!(descriptions(&table, child), child_descriptions);
+        table.remove_process(child).unwrap();
+        table.remove_process(parent).unwrap();
+        drop(table);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
     fn process_node_refusal_precedes_identity_and_publishes_only_after_preparation() {
         let baseline = crate::io_buffer::IO_MEMORY.usage().0;
         let mut table = ProcessTable::new();
@@ -3355,6 +3597,24 @@ mod wait_tests {
     }
 
     #[test]
+    fn limbo_leader_reports_no_host_timers_to_take() {
+        let mut table = ProcessTable::new();
+        assert_eq!(table.create_process().unwrap(), 100);
+        assert_eq!(table.fork_process_for_caller(100, 100).unwrap(), 101);
+        assert_eq!(table.fork_process_for_caller(100, 100).unwrap(), 102);
+        table.processes.get_mut(&101).unwrap().pgid = 101;
+        table.processes.get_mut(&102).unwrap().pgid = 101;
+        table.processes.get_mut(&101).unwrap().state = ProcessState::Exited;
+
+        table.reap_process(101).expect("reap group leader");
+
+        assert_eq!(
+            table.get_mut(101).unwrap().take_host_timer_cleanup(1),
+            Err(Errno::ESRCH),
+        );
+    }
+
+    #[test]
     fn remove_process_does_not_create_limbo_record() {
         let mut table = ProcessTable::new();
         assert_eq!(table.create_process().unwrap(), 100);
@@ -3400,6 +3660,486 @@ pub fn current_pid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exec_generation_preserves_unsigned_image_identity_and_pending_children() {
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        for generation in [0, 1, i64::MAX as u64, (i64::MAX as u64) + 1, u64::MAX] {
+            table.get_mut(pid).unwrap().exec_generation = generation;
+            for state in [ProcessState::Running, ProcessState::Stopped, ProcessState::Exited] {
+                let process = table.get_mut(pid).unwrap();
+                process.state = state;
+                process.spawn_publication_pending = true;
+                assert_eq!(table.exec_generation(pid), Ok(generation));
+                assert_eq!(table.get(pid).unwrap().exec_generation, generation);
+            }
+        }
+    }
+
+    #[test]
+    fn exec_generation_refuses_missing_and_reaped_group_identities() {
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.get_mut(pid).unwrap().exec_generation = u64::MAX;
+        table.get_mut(pid).unwrap().state = ProcessState::Limbo;
+        assert_eq!(table.exec_generation(pid), Err(Errno::ESRCH));
+        assert_eq!(table.exec_generation(u32::MAX), Err(Errno::ESRCH));
+        assert_eq!(table.get(pid).unwrap().exec_generation, u64::MAX);
+    }
+
+    struct ResizeFixture {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        table: ProcessTable,
+        pty: usize,
+        pids: [u32; 4],
+        fds: [i32; 4],
+    }
+    impl ResizeFixture {
+        fn new() -> Self {
+            use crate::signal::{SignalAction, SignalHandler};
+            use wasm_posix_shared::signal::SIGWINCH;
+            let guard = crate::pty::test_table_lock();
+            let _ = crate::wakeup::take_pty_readiness_changed();
+            let mut table = ProcessTable::new();
+            let pids = core::array::from_fn(|_| table.create_process().unwrap());
+            let pty = crate::pty::alloc_pty(0, 0).unwrap();
+            let pair = crate::pty::get_pty(pty).unwrap();
+            pair.locked = false;
+            pair.master_refs = 1;
+            pair.slave_refs = 3;
+            pair.terminal.foreground_pgid = pids[1] as i32;
+            pair.terminal.session_id = pids[1] as i32;
+            let fds = core::array::from_fn(|index| {
+                let proc = table.get_mut(pids[index]).unwrap();
+                proc.sid = if index == 0 { pids[0] } else { pids[1] };
+                proc.pgid = if index == 2 { pids[1] } else { pids[index] };
+                proc.signals
+                    .set_action(
+                        SIGWINCH,
+                        SignalAction {
+                            handler: SignalHandler::Handler(1),
+                            flags: 0,
+                            mask: 0,
+                        },
+                    )
+                    .unwrap();
+                let kind = if index == 0 {
+                    FileType::PtyMaster
+                } else {
+                    FileType::PtySlave
+                };
+                let ofd = proc.ofd_table.create(
+                    kind,
+                    wasm_posix_shared::flags::O_RDWR,
+                    pty as i64,
+                    b"/dev/resize-test".to_vec(),
+                );
+                proc.fd_table
+                    .alloc(crate::fd::OpenFileDescRef(ofd), 0)
+                    .unwrap()
+            });
+            Self {
+                _guard: guard,
+                table,
+                pty,
+                pids,
+                fds,
+            }
+        }
+        fn ioctl(&mut self, index: usize, request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+            self.table
+                .bind_current_tid(self.pids[index], self.pids[index])
+                .unwrap();
+            self.table.ioctl(
+                &mut crate::process::test_host::NoopHost,
+                self.fds[index],
+                request,
+                buf,
+            )
+        }
+        fn size(rows: u16, cols: u16, x: u16, y: u16) -> [u8; 8] {
+            let mut bytes = [0; 8];
+            for (at, value) in [rows, cols, x, y].into_iter().enumerate() {
+                bytes[at * 2..at * 2 + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            bytes
+        }
+        fn pending(&self) -> [bool; 4] {
+            self.pids.map(|pid| {
+                self.table
+                    .get(pid)
+                    .unwrap()
+                    .signal_pending_anywhere(wasm_posix_shared::signal::SIGWINCH)
+            })
+        }
+        fn clear(&mut self) {
+            for pid in self.pids {
+                self.table
+                    .get_mut(pid)
+                    .unwrap()
+                    .discard_pending_signal(wasm_posix_shared::signal::SIGWINCH);
+            }
+            let _ = crate::wakeup::take_pty_readiness_changed();
+        }
+    }
+    impl Drop for ResizeFixture {
+        fn drop(&mut self) {
+            crate::pty::free_pty(self.pty);
+        }
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_signals_foreground_group_not_master_caller() {
+        let mut f = ResizeFixture::new();
+        let mut size = ResizeFixture::size(40, 120, 1200, 800);
+        f.ioctl(0, crate::terminal::TIOCSWINSZ, &mut size).unwrap();
+        assert_eq!(
+            f.pending(),
+            [false, true, true, false],
+            "master setter outside foreground group must not replace either foreground recipient"
+        );
+        for index in 0..4 {
+            let mut got = [0; 8];
+            f.ioctl(index, crate::terminal::TIOCGWINSZ, &mut got)
+                .unwrap();
+            assert_eq!(got, size, "both PTY endpoints share the same full winsize");
+        }
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_identical_dimensions_do_not_signal() {
+        let mut f = ResizeFixture::new();
+        let mut size = ResizeFixture::size(24, 80, 0, 0);
+        f.ioctl(0, crate::terminal::TIOCSWINSZ, &mut size).unwrap();
+        assert_eq!(
+            f.pending(),
+            [false; 4],
+            "a no-op resize must generate no SIGWINCH"
+        );
+        assert!(!crate::wakeup::take_pty_readiness_changed());
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_slave_setter_and_foreground_caller_are_group_scoped() {
+        let mut f = ResizeFixture::new();
+        for setter in [3, 1] {
+            let mut size = ResizeFixture::size(30 + setter as u16, 50, 500, 300);
+            f.ioctl(setter, crate::terminal::TIOCSWINSZ, &mut size)
+                .unwrap();
+            assert_eq!(f.pending(), [false, true, true, false]);
+            assert!(crate::wakeup::take_pty_readiness_changed());
+            f.clear();
+        }
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_full_size_and_host_cell_noops_remain_distinct() {
+        let mut f = ResizeFixture::new();
+        let mut size = ResizeFixture::size(24, 80, 800, 480);
+        f.ioctl(0, crate::terminal::TIOCSWINSZ, &mut size).unwrap();
+        assert_eq!(
+            f.pending(),
+            [false, true, true, false],
+            "guest pixel-only changes are real winsize changes"
+        );
+        f.clear();
+        f.ioctl(0, crate::terminal::TIOCSWINSZ, &mut size).unwrap();
+        assert_eq!(f.pending(), [false; 4]);
+        assert!(!crate::wakeup::take_pty_readiness_changed());
+        f.table
+            .set_pty_winsize(f.pty, 24, 80, &mut crate::process::test_host::NoopHost)
+            .unwrap();
+        assert_eq!(
+            f.pending(),
+            [false; 4],
+            "host cell no-op retains its rows/cols-only signal contract"
+        );
+        let mut got = [0; 8];
+        f.ioctl(1, crate::terminal::TIOCGWINSZ, &mut got).unwrap();
+        assert_eq!(got, ResizeFixture::size(24, 80, 0, 0));
+        assert!(!crate::wakeup::take_pty_readiness_changed());
+        f.table
+            .set_pty_winsize(f.pty, 30, 50, &mut crate::process::test_host::NoopHost)
+            .unwrap();
+        assert_eq!(f.pending(), [false, true, true, false]);
+        assert!(crate::wakeup::take_pty_readiness_changed());
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_rejections_do_not_mutate_or_generate_effects() {
+        let mut f = ResizeFixture::new();
+        assert_eq!(
+            f.ioctl(0, crate::terminal::TIOCSWINSZ, &mut [0; 7]),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            f.table.ioctl(
+                &mut crate::process::test_host::NoopHost,
+                999,
+                crate::terminal::TIOCSWINSZ,
+                &mut [0; 8]
+            ),
+            Err(Errno::EBADF)
+        );
+        let (pipe, _) = crate::syscalls::sys_pipe2(f.table.get_mut(f.pids[0]).unwrap(), 0).unwrap();
+        assert_eq!(
+            f.table.ioctl(
+                &mut crate::process::test_host::NoopHost,
+                pipe,
+                crate::terminal::TIOCSWINSZ,
+                &mut [0; 8]
+            ),
+            Err(Errno::ENOTTY)
+        );
+        f.table.clear_current_tid_binding();
+        assert_eq!(
+            f.table.ioctl(
+                &mut crate::process::test_host::NoopHost,
+                f.fds[0],
+                crate::terminal::TIOCSWINSZ,
+                &mut [0; 8]
+            ),
+            Err(Errno::ESRCH)
+        );
+        let mut got = [0; 8];
+        f.ioctl(1, crate::terminal::TIOCGWINSZ, &mut got).unwrap();
+        assert_eq!(got, ResizeFixture::size(24, 80, 0, 0));
+        assert_eq!(f.pending(), [false; 4]);
+        assert!(!crate::wakeup::take_pty_readiness_changed());
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_no_foreground_or_nonlive_member_gets_no_signal() {
+        let mut f = ResizeFixture::new();
+        crate::pty::get_pty(f.pty).unwrap().terminal.foreground_pgid = 0;
+        f.ioctl(
+            0,
+            crate::terminal::TIOCSWINSZ,
+            &mut ResizeFixture::size(40, 60, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(f.pending(), [false; 4]);
+        assert!(!crate::wakeup::take_pty_readiness_changed());
+        crate::pty::get_pty(f.pty).unwrap().terminal.foreground_pgid = f.pids[1] as i32;
+        f.table.get_mut(f.pids[2]).unwrap().state = ProcessState::Exited;
+        f.ioctl(
+            0,
+            crate::terminal::TIOCSWINSZ,
+            &mut ResizeFixture::size(45, 65, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(f.pending(), [false, true, false, false]);
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_blocked_and_ignored_target_signals_use_own_task() {
+        use wasm_posix_shared::signal::SIGWINCH;
+        let mut f = ResizeFixture::new();
+        assert!(
+            f.table
+                .get_mut(f.pids[1])
+                .unwrap()
+                .set_blocked_for(f.pids[1], crate::signal::sig_bit(SIGWINCH))
+        );
+        f.table
+            .get_mut(f.pids[2])
+            .unwrap()
+            .signals
+            .set_action(
+                SIGWINCH,
+                crate::signal::SignalAction {
+                    handler: crate::signal::SignalHandler::Ignore,
+                    flags: 0,
+                    mask: 0,
+                },
+            )
+            .unwrap();
+        f.ioctl(
+            0,
+            crate::terminal::TIOCSWINSZ,
+            &mut ResizeFixture::size(40, 60, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(f.pending(), [false, true, false, false]);
+        assert_eq!(
+            f.table
+                .get(f.pids[1])
+                .unwrap()
+                .pick_thread_for_shared_signal(SIGWINCH),
+            None
+        );
+        assert!(crate::wakeup::take_pty_readiness_changed());
+        assert!(
+            f.table
+                .get_mut(f.pids[1])
+                .unwrap()
+                .set_blocked_for(f.pids[1], 0)
+        );
+        assert_eq!(
+            f.table
+                .get(f.pids[1])
+                .unwrap()
+                .pick_thread_for_shared_signal(SIGWINCH),
+            Some(f.pids[1])
+        );
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_completes_only_foreground_kernel_parks() {
+        use crate::wait_park::{Parks, Resume};
+        use crate::wait_queue::WaitKind;
+        let mut f = ResizeFixture::new();
+        crate::wait_park::with(|parks| {
+            *parks = Parks::new();
+            for pid in f.pids {
+                parks
+                    .park(
+                        pid,
+                        pid,
+                        WaitKind::Sleep,
+                        Vec::new(),
+                        Some(1_000_000_000),
+                        Resume::Sleep {
+                            remainder: None,
+                            deadline: 1_000_000_000,
+                        },
+                    )
+                    .unwrap();
+            }
+        });
+        f.ioctl(
+            0,
+            crate::terminal::TIOCSWINSZ,
+            &mut ResizeFixture::size(40, 60, 0, 0),
+        )
+        .unwrap();
+        assert!(crate::wait_park::settle(&f.table));
+        crate::wait_park::with(|parks| {
+            let mut completed = parks.take_completions();
+            completed.sort_by_key(|event| event.pid);
+            assert_eq!(
+                completed
+                    .iter()
+                    .map(|event| (event.pid, event.tid, event.value))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (f.pids[1], f.pids[1], -(Errno::EINTR as i32)),
+                    (f.pids[2], f.pids[2], -(Errno::EINTR as i32))
+                ]
+            );
+            assert_eq!(
+                parks.len(),
+                2,
+                "setter and background waits must remain parked"
+            );
+            *parks = Parks::new();
+        });
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_requires_the_terminals_session_not_the_setters() {
+        let mut f = ResizeFixture::new();
+        for session in [0, f.pids[3] as i32] {
+            crate::pty::get_pty(f.pty).unwrap().terminal.session_id = session;
+            f.ioctl(
+                0,
+                crate::terminal::TIOCSWINSZ,
+                &mut ResizeFixture::size(30 + session as u16, 50, 0, 0),
+            )
+            .unwrap();
+            assert_eq!(
+                f.pending(),
+                [false; 4],
+                "uncontrolled/foreign session must not redirect group signals"
+            );
+            assert!(!crate::wakeup::take_pty_readiness_changed());
+        }
+        crate::pty::get_pty(f.pty).unwrap().terminal.session_id = f.pids[1] as i32;
+        f.table.get_mut(f.pids[2]).unwrap().sid = f.pids[3];
+        f.ioctl(
+            0,
+            crate::terminal::TIOCSWINSZ,
+            &mut ResizeFixture::size(60, 80, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(
+            f.pending(),
+            [false, true, false, false],
+            "same numeric PGID in foreign session is not an authorized recipient"
+        );
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_nonpty_terminal_is_uncontrolled_until_claimed() {
+        let mut table = ProcessTable::new();
+        let pid = table
+            .create_process_with_stdio(StdioConfig::terminal())
+            .unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
+        let proc = table.get_mut(pid).unwrap();
+        proc.signals
+            .set_action(
+                wasm_posix_shared::signal::SIGWINCH,
+                crate::signal::SignalAction {
+                    handler: crate::signal::SignalHandler::Handler(1),
+                    flags: 0,
+                    mask: 0,
+                },
+            )
+            .unwrap();
+        let mut size = ResizeFixture::size(30, 50, 0, 0);
+        table
+            .ioctl(
+                &mut crate::process::test_host::NoopHost,
+                0,
+                crate::terminal::TIOCSWINSZ,
+                &mut size,
+            )
+            .unwrap();
+        assert!(
+            !table
+                .get(pid)
+                .unwrap()
+                .signal_pending_anywhere(wasm_posix_shared::signal::SIGWINCH)
+        );
+        let mut got = [0; 8];
+        table
+            .ioctl(
+                &mut crate::process::test_host::NoopHost,
+                0,
+                crate::terminal::TIOCGWINSZ,
+                &mut got,
+            )
+            .unwrap();
+        assert_eq!(
+            got, size,
+            "uncontrolled terminal still stores its actual size"
+        );
+        crate::syscalls::sys_setsid(table.get_mut(pid).unwrap()).unwrap();
+        table
+            .ioctl(
+                &mut crate::process::test_host::NoopHost,
+                0,
+                crate::terminal::TIOCSCTTY,
+                &mut [],
+            )
+            .unwrap();
+        table
+            .ioctl(
+                &mut crate::process::test_host::NoopHost,
+                0,
+                crate::terminal::TIOCSWINSZ,
+                &mut ResizeFixture::size(40, 60, 0, 0),
+            )
+            .unwrap();
+        assert!(
+            table
+                .get(pid)
+                .unwrap()
+                .signal_pending_anywhere(wasm_posix_shared::signal::SIGWINCH)
+        );
+    }
 
     #[test]
     fn fork_plan_admission_failure_does_not_retry_output_or_publish_a_child() {
@@ -3641,28 +4381,31 @@ mod tests {
         use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState, PrimeBoState};
         use crate::fd::OpenFileDescRef;
         let _registry = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for parent_first in [false, true] {
         crate::dri::bo::reset_registry();
         let bos = core::array::from_fn::<_, 4, _>(|_| crate::dri::with_registry(|registry| registry.alloc(32, 32, 32).id));
         let mut table = ProcessTable::new();
         let parent_pid = table.create_process().unwrap();
         let parent = table.get_mut(parent_pid).unwrap();
         crate::syscalls::sys_pipe(parent).unwrap();
-        let mut render = DriFdState::default();
-        render.handles.insert(1, bos[0]);
-        render.handles.insert(2, bos[1]);
-        render.next_handle = 3;
-        let mut kms = KmsFdState::default();
-        kms.fbs.insert(1, KmsFb { bo_id: bos[2], width: 32, height: 32, pixel_format: 0, stride: 128 });
-        kms.next_fb_id = 1;
+        let render = DriFdState::default();
+        render.gem.borrow_mut().handles.insert(1, bos[0]);
+        render.gem.borrow_mut().handles.insert(2, bos[1]);
+        render.gem.borrow_mut().next_handle = 3;
+        let kms = KmsFdState::default();
+        // Framebuffer names are machine-wide; this fixture owns the file's entry.
+        kms.fbs.borrow_mut().insert(1, KmsFb { bo_id: bos[2], width: 32, height: 32, pixel_format: 0, stride: 128, offset: 0, flags: 0 });
+        let mut graphics_indices = Vec::new();
         for state in [
             DriOfdState::RenderNode(render),
-            DriOfdState::Card { dri: DriFdState::default(), kms },
+            DriOfdState::Card { dri: DriFdState::default(), kms: kms.into() },
             DriOfdState::PrimeBo(PrimeBoState { bo_id: bos[3], cookie: 71 }),
         ] {
             let index = parent.ofd_table.create(FileType::CharDevice, 0,
                 crate::ofd::PRIME_FD_HOST_HANDLE, b"/dev/dri/test-inheritance".to_vec());
             parent.ofd_table.get_mut(index).unwrap().dri_state = Some(crate::IoBox::new(state));
             parent.fd_table.alloc(OpenFileDescRef(index), 0).unwrap();
+            graphics_indices.push(index);
         }
         let baseline = crate::io_buffer::IO_MEMORY.usage().0;
         let process_count = table.processes.len();
@@ -3677,20 +4420,57 @@ mod tests {
             for bo in bos { assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(1)); }
         }
         let child_pid = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
-        for bo in bos { assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(2)); }
+        assert_eq!(table.get(parent_pid).unwrap().fork_count(), 1);
+        // GEM names and framebuffer entries belong to one shared DRM file;
+        // fork adds a file alias, not another BO hold per name. PRIME is an
+        // independently copied sidecar and still needs its second hold.
+        for (bo, expected) in bos.into_iter().zip([1, 1, 1, 2]) {
+            assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(expected));
+        }
+        {
+            let parent = table.get(parent_pid).unwrap();
+            let child = table.get(child_pid).unwrap();
+            for &index in &graphics_indices {
+                assert_eq!(parent.ofd_table.get(index).unwrap().ofd_id, child.ofd_table.get(index).unwrap().ofd_id);
+            }
+            let render_index = graphics_indices[0];
+            let source = parent.ofd_table.get(render_index).unwrap().dri().unwrap();
+            let inherited = child.ofd_table.get(render_index).unwrap().dri().unwrap();
+            assert!(core::ptr::eq(&*source.gem.borrow(), &*inherited.gem.borrow()));
+            assert_eq!(inherited.gem.borrow().handles.get(&1), Some(&bos[0]));
+            assert_eq!(inherited.gem.borrow().handles.get(&2), Some(&bos[1]));
+            let kms_index = graphics_indices[1];
+            let source = parent.ofd_table.get(kms_index).unwrap().kms().unwrap();
+            let inherited = child.ofd_table.get(kms_index).unwrap().kms().unwrap();
+            assert!(core::ptr::eq(&*source, &*inherited));
+            assert!(core::ptr::eq(&*source.fbs.borrow(), &*inherited.fbs.borrow()));
+            assert_eq!(inherited.fbs.borrow().get(&1).unwrap().bo_id, bos[2]);
+        }
+        let (first, survivor) = if parent_first { (parent_pid, child_pid) } else { (child_pid, parent_pid) };
         let mut host = crate::process::test_host::NoopHost;
         {
-            let (child, locks) = table.process_and_advisory_locks(child_pid).unwrap();
-            crate::syscalls::sys_exit_with_locks(child, locks, &mut host, 0);
+            let (proc, locks) = table.process_and_advisory_locks(first).unwrap();
+            crate::syscalls::sys_exit_with_locks(proc, locks, &mut host, 0);
         }
-        table.remove_process(child_pid).unwrap();
+        table.remove_process(first).unwrap();
         for bo in bos { assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(1)); }
+        // The remaining real descriptor graph must still name every buffer,
+        // including when the original parent was the process removed first.
         {
-            let (parent, locks) = table.process_and_advisory_locks(parent_pid).unwrap();
-            crate::syscalls::sys_exit_with_locks(parent, locks, &mut host, 0);
+            let survivor = table.get(survivor).unwrap();
+            let render = survivor.ofd_table.get(graphics_indices[0]).unwrap().dri().unwrap();
+            assert_eq!(render.gem.borrow().handles.get(&1), Some(&bos[0]));
+            assert_eq!(render.gem.borrow().handles.get(&2), Some(&bos[1]));
+            assert_eq!(survivor.ofd_table.get(graphics_indices[1]).unwrap().kms().unwrap().fbs.borrow().get(&1).unwrap().bo_id, bos[2]);
+            assert!(matches!(survivor.ofd_table.get(graphics_indices[2]).unwrap().dri_state.as_deref(), Some(DriOfdState::PrimeBo(prime)) if prime.bo_id == bos[3]));
         }
-        table.remove_process(parent_pid).unwrap();
+        {
+            let (proc, locks) = table.process_and_advisory_locks(survivor).unwrap();
+            crate::syscalls::sys_exit_with_locks(proc, locks, &mut host, 0);
+        }
+        table.remove_process(survivor).unwrap();
         for bo in bos { assert!(crate::dri::with_registry(|registry| registry.get(bo).is_none())); }
+        }
     }
 
     #[test]
@@ -5353,6 +6133,8 @@ mod tests {
         process.fb_binding = Some(crate::process::FbBinding {
             addr: 0x04000000, len: 0x10000, w: 1, h: 1, stride: 4, fmt: 0,
         });
+        let _device = crate::framebuffer::lock_device_for_test();
+        crate::framebuffer::set_geometry(1280, 800).unwrap();
         let previous_owner = FB0_OWNER.swap(pid as i32, core::sync::atomic::Ordering::SeqCst);
         add_listening_socket(&mut table, pid, 8080, 10);
         table.get_mut(pid).unwrap().sockets.get_mut(0).unwrap().host_net_handle = Some(9_999_971);
@@ -5370,6 +6152,13 @@ mod tests {
                 Some(RemovalEvent::Network(9_999_971)),
             ]);
             assert_eq!(FB0_OWNER.load(core::sync::atomic::Ordering::SeqCst), -1);
+            assert_eq!(
+                crate::framebuffer::geometry(),
+                crate::framebuffer::Geometry {
+                    width: crate::framebuffer::DEFAULT_WIDTH,
+                    height: crate::framebuffer::DEFAULT_HEIGHT,
+                },
+            );
         }
         FB0_OWNER.store(previous_owner, core::sync::atomic::Ordering::SeqCst);
         drop(table);

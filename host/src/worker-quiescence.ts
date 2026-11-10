@@ -1,3 +1,6 @@
+import { createWorkerAbsence, type WorkerAbsence } from "./deferred-worker-handle";
+import type { WorkerHandle } from "./worker-adapter";
+
 /**
  * Exact worker-owned process-memory retirement fences shared by Node/Bun and
  * browser hosts.
@@ -106,4 +109,79 @@ export async function waitForExecRetirement(
   // exec_retired proves worker-main took the intentional no-SYS_EXIT path;
   // memory_quiescent proves worker-main returned and no longer owns Memory.
   return retirement.settled && quiescence.settled;
+}
+
+/** Retire independent realms together only with exact ownership proof.
+ * Callers accept actual terminal fences or a sealed never-constructed realm;
+ * absence must never settle a memory_quiescent/exec_retired message fence. */
+export async function retireWorkerBatch<T>(options: {
+  workers: readonly T[];
+  mayRetireTogether: boolean;
+  retirementProven: (worker: T) => boolean;
+  terminate: (worker: T) => Promise<void>;
+  release: (worker: T) => void;
+}): Promise<boolean> {
+  const { workers, retirementProven, terminate, release } = options;
+  const retire = async (worker: T): Promise<void> => {
+    await terminate(worker);
+    // A sibling's acknowledgement never authorizes this realm's metadata.
+    release(worker);
+  };
+  if (options.mayRetireTogether && workers.every(retirementProven)) {
+    // WHY: browser termination has an independent settle interval per realm.
+    // Serial waits multiply that interval by thread count and can lose a
+    // cooperative exit to destroy's forced-retirement deadline. Exact terminal
+    // fences prove these guests cannot grow memory while siblings retire.
+    const results = await Promise.allSettled(workers.map(retire));
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+  } else {
+    // Missing fences retain the existing containment order; a timeout is not
+    // evidence that concurrent destruction of live instances is safe.
+    for (const worker of workers) await retire(worker);
+  }
+  // An acknowledgement may arrive while host termination settles. Read exact
+  // ownership proofs again rather than freezing a timed-out observation.
+  return workers.every(retirementProven);
+}
+
+/** Main-realm absence is a different proof from either worker-main ACK. */
+export interface ProcessWorkerRetirement {
+  readonly worker: WorkerHandle;
+  readonly workerQuiescence: WorkerQuiescence;
+  readonly execRetirement: WorkerQuiescence;
+  workerAbsence?: WorkerAbsence;
+}
+
+/** Called once on cold generation admission, before any deferred start. */
+export function prepareProcessWorkerAbsence(
+  generation: ProcessWorkerRetirement,
+  onAbsent: () => void,
+): void {
+  if (generation.workerAbsence !== undefined) return;
+  generation.workerAbsence = createWorkerAbsence(generation.worker, onAbsent);
+}
+
+export function sealProcessWorkerAbsence(generation: ProcessWorkerRetirement): boolean {
+  // WHY: a lifecycle disposition or terminate() result cannot prove absence.
+  // The exact concrete handle must seal its monotonic never-attempted state
+  // before a later continue can construct a realm on a retired backing.
+  return generation.workerAbsence?.seal() ?? false;
+}
+
+export function processWorkerRetirementProven(generation: ProcessWorkerRetirement): boolean {
+  return generation.workerQuiescence.settled || generation.workerAbsence?.proven === true;
+}
+
+export async function waitForProcessWorkerRetirement(
+  generation: ProcessWorkerRetirement,
+  timeoutMs: number,
+  requireExecRetirement = false,
+): Promise<boolean> {
+  if (sealProcessWorkerAbsence(generation)) return true;
+  // Constructor failure, unknown handles and a missing message remain
+  // unproven. Absence never settles either message fence or fabricates an ACK.
+  return requireExecRetirement
+    ? waitForExecRetirement(generation.execRetirement, generation.workerQuiescence, timeoutMs)
+    : waitForWorkerQuiescence(generation.workerQuiescence, timeoutMs);
 }

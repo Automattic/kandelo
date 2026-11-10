@@ -1906,16 +1906,7 @@ static long __do_syscall(long n, long a1, long a2, long a3,
     case SYS_PTRACE:
         return ENOSYS_NEG;
 
-    /* klogctl reaches the kernel message ring over the channel path
-     * (channel_syscall.c's generated marshal table and the `304` arm of
-     * dispatch_channel_syscall in crates/kernel/src/wasm_api.rs). The handler
-     * behind it is a plain Rust function, not a `kernel.*` Wasm export, so
-     * this legacy direct-import glue has nothing to call and says so. It used
-     * to answer -EPERM, which never reached a guest — no build links this
-     * file — but recorded the wrong platform behavior. */
     case SYS_SYSLOG:
-        return ENOSYS_NEG;
-
     case SYS_CAPGET:
     case SYS_CAPSET:
     case SYS_VHANGUP:

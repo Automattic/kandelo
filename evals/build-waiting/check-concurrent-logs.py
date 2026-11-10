@@ -13,8 +13,8 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-(ROOT / '.context').mkdir(exist_ok=True)
-scratch = Path(tempfile.mkdtemp(prefix='concurrent-logs-', dir=ROOT / '.context'))
+(ROOT / '.scratch').mkdir(exist_ok=True)
+scratch = Path(tempfile.mkdtemp(prefix='concurrent-logs-', dir=ROOT / '.scratch'))
 print(f'Evidence: {scratch}', flush=True)
 vitest = ROOT / 'host/node_modules/vitest/vitest.mjs'
 api = ROOT / 'host/node_modules/vitest/dist/index.js'

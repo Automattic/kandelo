@@ -22,6 +22,7 @@ import { createKernelScratchTestInstance } from "./support/kernel-scratch-instan
 const KERNEL_EXPORT_NAMES = [
   "kernel_create_process_with_stdio",
   "kernel_get_process_state",
+  "kernel_get_process_exec_generation",
   "kernel_process_metadata_begin",
   "kernel_process_metadata_cancel",
   "kernel_process_metadata_commit",
@@ -53,6 +54,7 @@ function processMemory(): WebAssembly.Memory {
 function makeHarness(
   implementations: Record<string, unknown>,
   pointerWidth: 4 | 8 = 4,
+  generationExport = true,
 ): ProcessEntryHarness {
   const kernelMemory = new WebAssembly.Memory({
     initial: 4,
@@ -65,7 +67,7 @@ function makeHarness(
     () => implementations,
     () => pointerWidth === 8 ? 4_096n : 4_096,
     4,
-    KERNEL_EXPORT_NAMES,
+    generationExport ? KERNEL_EXPORT_NAMES : KERNEL_EXPORT_NAMES.filter(name => name !== "kernel_get_process_exec_generation"),
   );
   const gatedInstance = createKernelEntryGatedInstance(rawInstance, gate);
   const mainScratch = allocateKernelScratchRegion(
@@ -475,4 +477,138 @@ describe("kernel process registration entry authority", () => {
     expect(cancel).not.toHaveBeenCalled();
     expect(harness.worker.getProcessMemory(64)).toBeUndefined();
   });
+  it.each([4, 8] as const)("captures full unsigned exec generations through actual wasm%s scratch before deferred publication", pointerWidth => {
+    const generation = 0xfedc_ba98_7654_3210n;
+    let harness!: ProcessEntryHarness;
+    const seen: unknown[] = [];
+    const writeGeneration = vi.fn((pid: number, pointer: number | bigint, capacity: number) => {
+      expect(capacity).toBe(8);
+      expect(harness.worker.getProcessMemory(pid)).toBeUndefined();
+      new DataView(harness.kernelMemory.buffer).setBigUint64(Number(pointer), generation, true);
+      return 8;
+    });
+    harness = makeHarness({
+      kernel_get_process_state: () => PROCESS_STATE_RUNNING,
+      kernel_get_process_exec_generation: writeGeneration,
+      kernel_set_max_addr: () => { seen.push(harness.worker.getProcessMemory(71)); return 0; },
+      kernel_set_main_channel_addr: () => 0,
+      kernel_set_process_pointer_width: () => 0,
+    }, pointerWidth);
+    const memory = processMemory();
+    harness.worker.registerProcess(71, memory, [65_536]);
+    const registration = (harness.worker as any).processes.get(71);
+    expect(registration.execGeneration).toBe(generation);
+    expect(harness.worker.getProcessMemory(71)).toBe(memory);
+    expect(seen).toEqual([undefined]);
+    expect(writeGeneration).toHaveBeenCalledTimes(1);
+    expect(Object.getOwnPropertyDescriptor(registration, "execGeneration"))
+      .toMatchObject({value: generation, writable: false, configurable: false});
+    expect(Reflect.set(registration, "execGeneration", 0n)).toBe(false);
+  });
+
+  it.each(["missing", -3, 0, 7, 9, "trap"] as const)("refuses generation getter failure %s before layout/publication", failure => {
+    const layout = vi.fn(() => 0);
+    const getter = vi.fn(() => { if (failure === "trap") throw new Error("generation trap"); return failure; });
+    const harness = makeHarness({kernel_get_process_state: () => PROCESS_STATE_RUNNING,
+      kernel_get_process_exec_generation: getter, kernel_set_max_addr: layout,
+      kernel_set_main_channel_addr: layout, kernel_set_process_pointer_width: layout}, 4, failure !== "missing");
+    expect(() => harness.worker.registerProcess(72, processMemory(), [65_536])).toThrow(/exec generation|exec_generation/);
+    expect(harness.worker.getProcessMemory(72)).toBeUndefined();
+    expect(layout).not.toHaveBeenCalled();
+    if (failure === "missing") expect(getter).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("captures a child's actual generation, borrowed address space=%s", borrowedAddressSpace => {
+    let harness!: ProcessEntryHarness;
+    const generations = new Map([[73, 14n], [74, 0x8000_0000_0000_0021n]]);
+    const getter = vi.fn((pid: number, pointer: number | bigint) => {
+      new DataView(harness.kernelMemory.buffer).setBigUint64(Number(pointer), generations.get(pid)!, true);
+      return 8;
+    });
+    harness = makeHarness({kernel_get_process_state: () => PROCESS_STATE_RUNNING,
+      kernel_get_process_exec_generation: getter, kernel_set_max_addr: () => 0,
+      kernel_set_main_channel_addr: () => 0, kernel_set_process_pointer_width: () => 0});
+    const memory = processMemory();
+    harness.worker.registerProcess(73, memory, [65_536]);
+    const childMemory = borrowedAddressSpace ? memory : processMemory();
+    harness.worker.registerProcess(74, childMemory, [131_072], {borrowedAddressSpace});
+    const records = (harness.worker as any).processes;
+    expect(records.get(73).execGeneration).toBe(14n);
+    expect(records.get(74).execGeneration).toBe(0x8000_0000_0000_0021n);
+    expect(records.get(74).borrowedAddressSpace).toBe(borrowedAddressSpace);
+    expect(records.get(74).memory).toBe(childMemory);
+    expect(getter.mock.calls.map(([pid]) => pid)).toEqual([73,74]);
+  });
+
+  it("replaces exec registration atomically without advancing the retained old record", () => {
+    let generation = 17n;
+    let harness!: ProcessEntryHarness;
+    const getter = (pid: number, pointer: number | bigint) => {
+      new DataView(harness.kernelMemory.buffer).setBigUint64(Number(pointer), generation, true);
+      return 8;
+    };
+    const during: unknown[] = [];
+    harness = makeHarness({kernel_get_process_state: () => PROCESS_STATE_RUNNING,
+      kernel_get_process_exec_generation: getter, kernel_set_max_addr: () => {
+        during.push((harness.worker as any).processes.get(75)); return 0;
+      }, kernel_set_main_channel_addr: () => 0, kernel_set_process_pointer_width: () => 0});
+    harness.worker.registerProcess(75, processMemory(), [65_536]);
+    const original = (harness.worker as any).processes.get(75);
+    original.channels = [];
+    (harness.worker as any).execHandoffPids = new Set([75]);
+    generation = 18n;
+    const replacement = processMemory();
+    harness.worker.registerProcess(75, replacement, [65_536], {preserveProcessState: true});
+    const next = (harness.worker as any).processes.get(75);
+    expect(during).toEqual([undefined, original]);
+    expect(next).not.toBe(original);
+    expect(next.execGeneration).toBe(18n);
+    expect(original.execGeneration).toBe(17n);
+    expect(next.memory).toBe(replacement);
+  });
+
+  it("keeps a controlled getter refusal retryable with no partially published registration", () => {
+    let result = -3;
+    let harness!: ProcessEntryHarness;
+    const layout = vi.fn(() => 0);
+    harness = makeHarness({kernel_get_process_state: () => PROCESS_STATE_RUNNING,
+      kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+        if (result !== 8) return result;
+        new DataView(harness.kernelMemory.buffer).setBigUint64(Number(pointer), 23n, true);
+        return 8;
+      }, kernel_set_max_addr: layout, kernel_set_main_channel_addr: () => 0,
+      kernel_set_process_pointer_width: () => 0});
+    const memory = processMemory();
+    expect(() => harness.worker.registerProcess(76, memory, [65_536])).toThrow("errno 3");
+    expect(layout).not.toHaveBeenCalled();
+    result = 8;
+    harness.worker.registerProcess(76, memory, [65_536]);
+    expect((harness.worker as any).processes.get(76).execGeneration).toBe(23n);
+    expect(layout).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the old lifecycle registration on getter refusal and publishes a complete replacement only after success", () => {
+    let generation = 29n, result = 8;
+    let harness!: ProcessEntryHarness;
+    harness = makeHarness({kernel_get_process_state: () => PROCESS_STATE_RUNNING,
+      kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+        if (result !== 8) return result;
+        new DataView(harness.kernelMemory.buffer).setBigUint64(Number(pointer), generation, true);
+        return 8;
+      }, kernel_set_max_addr: () => 0, kernel_set_main_channel_addr: () => 0,
+      kernel_set_process_pointer_width: () => 0});
+    harness.worker.registerProcess(77, processMemory(), [65_536]);
+    const original = (harness.worker as any).processes.get(77);
+    const replace = () => (harness.worker as any).testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid: 77, memory: processMemory(), channelOffsets: [65_536]});
+    result = -3;
+    expect(replace).toThrow("errno 3");
+    expect((harness.worker as any).processes.get(77)).toBe(original);
+    generation = 30n; result = 8;
+    replace();
+    expect((harness.worker as any).processes.get(77)).not.toBe(original);
+    expect((harness.worker as any).processes.get(77).execGeneration).toBe(30n);
+    expect(original.execGeneration).toBe(29n);
+  });
+
 });

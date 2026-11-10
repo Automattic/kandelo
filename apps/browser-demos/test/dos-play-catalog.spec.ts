@@ -17,7 +17,7 @@ test("dos-play fetches the three freely licensed DOS demos @slow", async ({ page
   await gotoMachineOrSkip(page, "shell");
   await expect(terminal).toBeVisible({ timeout: 180_000 });
   await expect.poll(terminalText, { timeout: 180_000 }).toMatch(prompt);
-  const screenshots = join(findRepoRoot(), ".context/dos-play");
+  const screenshots = join(findRepoRoot(), ".scratch/dos-play");
   mkdirSync(screenshots, { recursive: true });
   for (const id of ["dosdefender", "vitetris", "anarch"]) {
     await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-screen").first().click();

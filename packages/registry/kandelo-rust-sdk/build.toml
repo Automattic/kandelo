@@ -1,0 +1,13 @@
+script_path = "packages/registry/kandelo-rust-sdk/build.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 7
+inputs = [
+  "images/vfs/scripts/rust-sdk-manifest.py",
+  "sdk/guest-rust/src/sdk-components.json",
+  "packages/registry/kandelo-rust-sdk/build.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "sdk/guest-rust/licenses",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+]

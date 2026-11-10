@@ -3,6 +3,9 @@ export interface WorkerHandle {
   on(event: "message", handler: (message: unknown) => void): void;
   on(event: "error", handler: (error: Error) => void): void;
   on(event: "exit", handler: (code: number) => void): void;
+  off(event: "message", handler: (message: unknown) => void): void;
+  off(event: "error", handler: (error: Error) => void): void;
+  off(event: "exit", handler: (code: number) => void): void;
   off(event: string, handler: (...args: unknown[]) => void): void;
   terminate(): Promise<number>;
 }

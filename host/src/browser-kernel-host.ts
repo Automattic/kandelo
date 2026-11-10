@@ -1,3 +1,5 @@
+import { deliverProcessGenerationEvent, type ProcessGenerationEvent } from "./process-generation-observation";
+export type { ProcessGenerationEvent } from "./process-generation-observation";
 import { ExchangeController, exchangeByteLimit } from "./exchange-controller";
 import type { PcmTransportSnapshot } from "./audio/pcm-transport";
 import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
@@ -83,6 +85,7 @@ import {
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import { formatHostErrorDiagnostic } from "./host-diagnostic";
 import type { PcmOutputState } from "./audio/pcm-driver";
+import type { ForkAddressSpaceCopy } from "./process-memory";
 
 // Allow the worker to drain exec retirement (5s), blocked guests (1.5s),
 // framebuffer acknowledgements and PCM (2s each) before terminating its realm.
@@ -143,6 +146,14 @@ export interface BrowserKernelOptions {
    * admission-threshold window before new churn proceeds.
    */
   maxProcessMemoryBytes?: number;
+  /**
+   * How fork copies a parent's address space (default `"sparse"`).
+   * `"sparse"` skips pages that are all zero in the parent, so a large,
+   * mostly empty child commits much less memory; fork is somewhat slower.
+   * `"dense"` writes every byte: faster fork, more committed memory. Both
+   * give the child identical bytes. See `ForkAddressSpaceCopy`.
+   */
+  forkCopy?: ForkAddressSpaceCopy;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
   defaultThreadSlots?: number;
   /** Additional VFS mount points */
@@ -175,6 +186,9 @@ export interface BrowserKernelOptions {
    *  Main-thread root spawns do not carry `ppid`.
    */
   onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
+  /** Selected at normal init; install before boot/spawn. Scalar retirement
+   * observation only, not native Worker closure or GC. */
+  onProcessGenerationEvent?: (event: ProcessGenerationEvent) => void;
   /** Pre-compiled thread module for clone(). Avoids recompiling large wasm for each thread. */
   threadModule?: WebAssembly.Module;
   /** The kernel worker always owns the VFS exclusively: the main thread holds
@@ -186,6 +200,12 @@ export interface BrowserKernelOptions {
   kernelOwnedFs?: boolean;
   /** Debug: log every syscall to the kernel-worker console. Noisy. */
   enableSyscallLog?: boolean;
+  /** Test-only GL native-divergence audit; see KernelConfig.glAudit. When
+   *  absent, a test page may supply it through the dev server's test hook
+   *  `globalThis.__KANDELO_TEST_GL_AUDIT__` (apps/browser-demos vite.config.ts,
+   *  KANDELO_BROWSER_TEST_GL_AUDIT), which also receives every "gl-audit"
+   *  diagnostic. */
+  glAudit?: "record" | "fatal";
   /** Debug: only log syscalls for processes of the given pointer width
    *  (4=wasm32, 8=wasm64). Use 8 to focus on a single wasm64 process in a
    *  mixed-arch demo. */
@@ -348,9 +368,22 @@ function decodeVfsImage(image: Uint8Array): Uint8Array {
   return whole;
 }
 
+/** Test-only hook a development server may install in a test page (see
+ * apps/browser-demos vite.config.ts, KANDELO_BROWSER_TEST_GL_AUDIT). It lets
+ * an unmodified demo page boot its machine with the GL native-divergence
+ * audit (webgl/native-audit.ts) and collect its records. Production pages
+ * never define it. */
+type GlAuditTestHook = { mode?: unknown; report?: (record: string) => void };
+function glAuditTestHook(): GlAuditTestHook | undefined {
+  const hook = (globalThis as { __KANDELO_TEST_GL_AUDIT__?: GlAuditTestHook }).__KANDELO_TEST_GL_AUDIT__;
+  return hook && typeof hook === "object" ? hook : undefined;
+}
+
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
+  /** Monotonic within this host instance; distinct from per-realm image IDs. */
+  private processGenerationRealm = 0;
   private ownedJobLifetime = createOwnedJobLifetime(true);
   private shuttingDown = false;
   private workerStarting = false;
@@ -466,6 +499,13 @@ export class BrowserKernel {
     // included (the in-kernel tmpfs serves `/dev/shm`). The main thread holds
     // no filesystem buffer at all, so nothing accumulates on it across image
     // switches.
+  }
+
+  /** The explicit option wins; otherwise a test page's hook may select it. */
+  private glAuditMode(): "record" | "fatal" | undefined {
+    if (this.options.glAudit !== undefined) return this.options.glAudit;
+    const mode = glAuditTestHook()?.mode;
+    return mode === "record" || mode === "fatal" ? mode : undefined;
   }
 
   /**
@@ -696,6 +736,11 @@ export class BrowserKernel {
     const closedLazyAssets = opts.closedLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
+    // Create the kernel worker
+    if (this.processGenerationRealm === Number.MAX_SAFE_INTEGER) {
+      throw new RangeError("process observation realm space exhausted");
+    }
+    const observationRealm = ++this.processGenerationRealm;
     if (opts.experimentalFixedPersistenceName !== undefined &&
       opts.experimentalResizablePersistenceName !== undefined) {
       throw new Error("browser rootfs persistence modes are mutually exclusive");
@@ -746,7 +791,7 @@ export class BrowserKernel {
 
     worker.onmessage = (e: MessageEvent) => {
       if (!this.workerStarted || this.kernelWorkerHandle !== worker) return;
-      this.handleWorkerMessage(e.data as KernelToMainMessage);
+      this.handleWorkerMessage(e.data as KernelToMainMessage, observationRealm);
     };
     worker.onerror = (e: ErrorEvent) => {
       if (!this.workerStarted || this.kernelWorkerHandle !== worker) return;
@@ -825,6 +870,7 @@ export class BrowserKernel {
         const transferBuf = opts.kernelWasmBytes.slice(0);
         const initMsg: MainToKernelMessage = {
           type: "init",
+          observeProcessGenerations: typeof this.options.onProcessGenerationEvent === "function",
           remoteNetwork: this.options.remoteNetwork,
           kernelWasmBytes: transferBuf,
           vfsImage: opts.vfsImage,
@@ -856,10 +902,12 @@ export class BrowserKernel {
             maxProcessMemoryBytes:
               this.options.maxProcessMemoryBytes
               ?? this.options.maxWorkers * this.maxPages * WASM_PAGE_SIZE,
+            forkCopy: this.options.forkCopy,
             defaultThreadSlots: this.options.defaultThreadSlots,
             env: this.options.env,
             enableSyscallLog: this.options.enableSyscallLog,
             syscallLogPtrWidth: this.options.syscallLogPtrWidth,
+            glAudit: this.glAuditMode(),
             dnsAliases: this.options.dnsAliases,
             corsProxy: this.options.corsProxy,
           },
@@ -2175,7 +2223,7 @@ export class BrowserKernel {
     }
   }
 
-  private handleWorkerMessage(msg: KernelToMainMessage): void {
+  private handleWorkerMessage(msg: KernelToMainMessage, observationRealm = this.processGenerationRealm): void {
     switch (msg.type) {
       case "exchange_range_request":
         this.exchange.handleRangeRequest(msg.source, msg.offset, msg.length);
@@ -2224,6 +2272,11 @@ export class BrowserKernel {
         }
         break;
       }
+      case "process_generation_event": {
+        if (observationRealm <= 0) break;
+        deliverProcessGenerationEvent({ ...msg.event, realmId: observationRealm }, this.options.onProcessGenerationEvent);
+        break;
+      }
       case "exit": {
         // WHY: a crashing process may never run munmap/close and therefore
         // never emit fb_unbind. Drop its display storage
@@ -2270,6 +2323,7 @@ export class BrowserKernel {
         this.options.onProcessStderr?.(msg.pid, msg.data);
         break;
       case "host_diagnostic": {
+        if (msg.source === "gl-audit") glAuditTestHook()?.report?.(msg.message);
         this.options.onHostDiagnostic?.({
           pid: msg.pid,
           source: msg.source,

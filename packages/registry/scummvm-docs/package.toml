@@ -1,0 +1,27 @@
+kind = "program"
+name = "scummvm-docs"
+version = "2026.3.0"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `scummvm` package (scummvm).
+# The source, SHA-256 and version are the `scummvm` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://downloads.scummvm.org/frs/scummvm/2026.3.0/scummvm-2026.3.0.tar.xz"
+sha256 = "b863a81e1598df8bc4aa0c33e3d9b1c8bbede1879d94d91568a4f200057677e7"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://github.com/scummvm/scummvm/blob/master/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/scummvm-docs/build-scummvm-docs.sh"
+
+[[outputs]]
+name = "scummvm-docs"
+wasm = "scummvm-docs.zip"
+fork_instrumentation = "disabled"

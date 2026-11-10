@@ -45,10 +45,13 @@ use crate::process_snapshot_wire::{
 };
 use crate::signal::{
     apply_default_signal_action_with_locks, deliver_pending_signals_for_tid_with_locks,
-    deliver_pending_signals_with_locks, dequeue_signal_for, terminate_process_by_signal_with_locks,
+    deliver_pending_signals_with_locks, dequeue_signal_for,
     DefaultSignalOutcome,
 };
 use crate::syscalls;
+use crate::lifecycle::{
+    self, Completion as LifecycleCompletion, Request as LifecycleRequest,
+};
 
 // ---------------------------------------------------------------------------
 // 1. Host function imports
@@ -329,18 +332,21 @@ unsafe extern "C" {
         format: u32,
         usage: u32,
     ) -> i32;
-    fn host_gbm_bo_destroy(pid: i32, bo_id: u32);
-    fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
-    fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize);
-    fn host_gl_bind(pid: i32, addr: usize, len: usize);
-    fn host_gl_unbind(pid: i32);
-    fn host_gl_create_context(pid: i32, ctx_id: u32, attrs_ptr: *const u8, attrs_len: usize);
+    // DRI/GL cleanup imports answer with a `dri_cleanup_status` outcome;
+    // see `HostIO::gbm_bo_destroy` and `syscalls::apply_dri_release_effect`.
+    fn host_gbm_bo_destroy(pid: i32, bo_id: u32) -> i32;
+    fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32;
+    fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
+    fn host_gl_bind(pid: i32, addr: usize, len: usize, session_id: u32, display_file_id: u64);
+    fn host_gl_unbind(pid: i32, session_id: u32) -> i32;
+    fn host_gl_create_context(pid: i32, ctx_id: u32, attrs_ptr: *const u8, attrs_len: usize, session_id: u32) -> i32;
     fn host_gl_destroy_context(pid: i32, ctx_id: u32);
-    fn host_gl_create_surface(pid: i32, surface_id: u32, attrs_ptr: *const u8, attrs_len: usize);
-    fn host_gl_destroy_surface(pid: i32, surface_id: u32);
-    fn host_gl_make_current(pid: i32, ctx_id: u32, surface_id: u32);
-    fn host_gl_submit(pid: i32, offset: usize, length: usize) -> i32;
-    fn host_gl_present(pid: i32) -> i32;
+    fn host_gl_create_surface(pid: i32, surface_id: u32, attrs_ptr: *mut u8, attrs_len: usize, session_id: u32) -> i32;
+    fn host_gl_update_surface(pid: i32, surface_id: u32, attrs_ptr: *const u8, attrs_len: usize, session_id: u32) -> i32;
+    fn host_gl_destroy_surface(pid: i32, surface_id: u32, session_id: u32);
+    fn host_gl_make_current(pid: i32, ctx_id: u32, draw_surface_id: u32, read_surface_id: u32, session_id: u32) -> i32;
+    fn host_gl_submit(pid: i32, offset: usize, length: usize, session_id: u32) -> i32;
+    fn host_gl_present(pid: i32, session_id: u32) -> i32;
     fn host_gl_query(
         pid: i32,
         op: u32,
@@ -348,10 +354,14 @@ unsafe extern "C" {
         in_len: usize,
         out_ptr: *mut u8,
         out_len: usize,
+        session_id: u32,
     ) -> i32;
     fn host_gl_bind_foreign_texture(pid: i32, ctx_id: u32, bo_id: u32, gl_target: u32) -> i32;
-    fn host_kms_set_master(pid: i32);
-    fn host_kms_drop_master(pid: i32);
+    fn host_gl_import_image(pid: i32, ctx_id: u32, bo_id: u32, width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32;
+    fn host_gl_export_image(pid: i32, ctx_id: u32, bo_id: u32, attrs_ptr: *mut u8, attrs_len: usize) -> i32;
+    fn host_gl_import_planar_image(pid: i32, ctx_id: u32, record_ptr: *const u8, record_len: usize) -> i32;
+    fn host_kms_set_master(pid: i32, file_id: u64, lease_id: u64);
+    fn host_kms_drop_master(pid: i32, file_id: u64, lease_id: u64) -> i32;
     fn host_proc_write_bytes(pid: i32, addr: u64, src_ptr: *const u8, len: u32) -> i32;
     /// Publish a parked request's decided result into the channel at
     /// `channel_addr` of process `pid`: write `ret` and `errno`, store
@@ -363,6 +373,18 @@ unsafe extern "C" {
     /// `publish_transfer_directly`.
     fn host_publish_wait_completion(pid: i32, channel_addr: u64, ret: i64, errno: u32) -> i32;
     fn host_proc_read_bytes(pid: i32, addr: u64, dst_ptr: *mut u8, len: u32) -> i32;
+    /// Compare a complete process range against a live initialized Rust
+    /// snapshot. 0 is equal, 1 differs, and a negative value is an errno.
+    /// The host may read but never mutate or retain the snapshot allocation.
+    fn host_proc_compare_bytes(pid: i32, addr: u64, snapshot_ptr: *const u8, len: u32) -> i32;
+    /// The mutation epoch of process `pid`'s memory if the process is
+    /// provably quiescent now, else -1. Quiescent: every thread channel of
+    /// the process sits at `CH_PENDING` and no other process (a vfork child)
+    /// borrows the memory. The host changes the epoch before any guest code
+    /// of the process can run again and at every host write into its memory
+    /// (a completion's output bytes, `host_proc_write_bytes`). See
+    /// `runtime_core::memory::CleanStamp`.
+    fn host_proc_quiescent_epoch(pid: i32) -> i64;
     fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
     /// Writes the connector's physical size, two u32s (width, height) in
     /// millimetres, to `out_ptr`; zeros when the display's size is unknown.
@@ -375,9 +397,17 @@ unsafe extern "C" {
         height: u32,
         pixel_format: u32,
         pitch: u32,
+        offset: u32,
     ) -> i32;
-    fn host_kms_rmfb(pid: i32, fb_id: u32);
-    fn host_kms_set_fb(pid: i32, crtc_id: u32, fb_id: u32);
+    fn host_kms_rmfb(pid: i32, fb_id: u32) -> i32;
+    /// Latch `fb_id` on `crtc_id`, scanning out the `width` x `height`
+    /// viewport whose top-left pixel is (`x`, `y`) in the framebuffer (the
+    /// CRTC's mode at its panning offset). `fb_id` 0 disables the CRTC.
+    fn host_kms_set_fb(pid: i32, crtc_id: u32, fb_id: u32, x: u32, y: u32, width: u32, height: u32);
+    /// Set the LUT `crtc_id`'s output passes through: `entries` red u16s at
+    /// `lut_ptr` (kernel memory), then as many green and blue. `entries` 0
+    /// clears the LUT (colors pass through unchanged).
+    fn host_kms_set_gamma(crtc_id: u32, lut_ptr: *const u16, entries: u32);
 }
 
 // ---------------------------------------------------------------------------
@@ -1130,55 +1160,59 @@ impl HostIO for WasmHostIO {
         unsafe { host_gbm_gpu_bo_create(pid, bo_id, width, height, format, usage) }
     }
 
-    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {
+    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) -> i32 {
         unsafe { host_gbm_bo_destroy(pid, bo_id) }
     }
 
-    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
-        unsafe { host_gbm_bo_bind(pid, bo_id, addr, len) }
+    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32 {
+        unsafe { host_gbm_bo_bind(pid, bo_id, addr, len, bo_offset) }
     }
 
-    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
+    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
         unsafe { host_gbm_bo_unbind(pid, bo_id, addr, len) }
     }
 
-    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize) {
-        unsafe { host_gl_bind(pid, addr, len) }
+    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize, session_id: u32, display_file_id: u64) {
+        unsafe { host_gl_bind(pid, addr, len, session_id, display_file_id) }
     }
 
-    fn gl_unbind(&mut self, pid: i32) {
-        unsafe { host_gl_unbind(pid) }
+    fn gl_unbind(&mut self, pid: i32, session_id: u32) -> i32 {
+        unsafe { host_gl_unbind(pid, session_id) }
     }
 
-    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) {
-        unsafe { host_gl_create_context(pid, ctx_id, attrs.as_ptr(), attrs.len()) }
+    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8], session_id: u32) -> i32 {
+        unsafe { host_gl_create_context(pid, ctx_id, attrs.as_ptr(), attrs.len(), session_id) }
     }
 
     fn gl_destroy_context(&mut self, pid: i32, ctx_id: u32) {
         unsafe { host_gl_destroy_context(pid, ctx_id) }
     }
 
-    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8]) {
-        unsafe { host_gl_create_surface(pid, surface_id, attrs.as_ptr(), attrs.len()) }
+    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &mut [u8], session_id: u32) -> i32 {
+        unsafe { host_gl_create_surface(pid, surface_id, attrs.as_mut_ptr(), attrs.len(), session_id) }
     }
 
-    fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32) {
-        unsafe { host_gl_destroy_surface(pid, surface_id) }
+    fn gl_update_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8], session_id: u32) -> i32 {
+        unsafe { host_gl_update_surface(pid, surface_id, attrs.as_ptr(), attrs.len(), session_id) }
     }
 
-    fn gl_make_current(&mut self, pid: i32, ctx_id: u32, surface_id: u32) {
-        unsafe { host_gl_make_current(pid, ctx_id, surface_id) }
+    fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32, session_id: u32) {
+        unsafe { host_gl_destroy_surface(pid, surface_id, session_id) }
     }
 
-    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize) -> i32 {
-        unsafe { host_gl_submit(pid, offset, length) }
+    fn gl_make_current(&mut self, pid: i32, ctx_id: u32, draw_surface_id: u32, read_surface_id: u32, session_id: u32) -> i32 {
+        unsafe { host_gl_make_current(pid, ctx_id, draw_surface_id, read_surface_id, session_id) }
     }
 
-    fn gl_present(&mut self, pid: i32) -> i32 {
-        unsafe { host_gl_present(pid) }
+    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize, session_id: u32) -> i32 {
+        unsafe { host_gl_submit(pid, offset, length, session_id) }
     }
 
-    fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8]) -> i32 {
+    fn gl_present(&mut self, pid: i32, session_id: u32) -> i32 {
+        unsafe { host_gl_present(pid, session_id) }
+    }
+
+    fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8], session_id: u32) -> i32 {
         unsafe {
             host_gl_query(
                 pid,
@@ -1187,6 +1221,7 @@ impl HostIO for WasmHostIO {
                 input.len(),
                 out.as_mut_ptr(),
                 out.len(),
+                session_id,
             )
         }
     }
@@ -1201,16 +1236,32 @@ impl HostIO for WasmHostIO {
         unsafe { host_gl_bind_foreign_texture(pid, ctx_id, bo_id, gl_target) }
     }
 
-    fn kms_set_master(&mut self, pid: i32) {
-        unsafe { host_kms_set_master(pid) }
+    fn gl_import_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32,
+        width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32 {
+        unsafe { host_gl_import_image(pid, ctx_id, bo_id, width, height, format, pitch, offset) }
     }
 
-    fn kms_drop_master(&mut self, pid: i32) {
-        CURSOR_TRANSPORT.lock().clear();
-        unsafe { host_kms_drop_master(pid) }
+    fn gl_export_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32, attrs: &mut [u8]) -> i32 {
+        unsafe { host_gl_export_image(pid, ctx_id, bo_id, attrs.as_mut_ptr(), attrs.len()) }
+    }
+
+    fn gl_import_planar_image(&mut self, pid: i32, ctx_id: u32, record: &[u8]) -> i32 {
+        unsafe { host_gl_import_planar_image(pid, ctx_id, record.as_ptr(), record.len()) }
+    }
+
+    fn kms_set_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {
+        unsafe { host_kms_set_master(pid, file_id, lease_id) }
+    }
+
+    fn kms_drop_master(&mut self, pid: i32, file_id: u64, lease_id: u64) -> i32 {
+        unsafe { host_kms_drop_master(pid, file_id, lease_id) }
     }
 
     fn proc_write_bytes(&mut self, pid: i32, addr: u64, src: &[u8]) -> i32 {
+        // Recorded whether or not the import succeeds: a failed write may
+        // still have stored bytes, and the record only ever makes a later
+        // boundary compare a mapping it could otherwise have skipped.
+        crate::memory::note_kernel_process_write(pid as u32, addr, src.len() as u64);
         unsafe { host_proc_write_bytes(pid, addr, src.as_ptr(), src.len() as u32) }
     }
 
@@ -1239,16 +1290,25 @@ impl HostIO for WasmHostIO {
         height: u32,
         pixel_format: u32,
         pitch: u32,
+        offset: u32,
     ) -> i32 {
-        unsafe { host_kms_addfb(pid, fb_id, bo_id, width, height, pixel_format, pitch) }
+        unsafe { host_kms_addfb(pid, fb_id, bo_id, width, height, pixel_format, pitch, offset) }
     }
 
-    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) {
+    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) -> i32 {
         unsafe { host_kms_rmfb(pid, fb_id) }
     }
 
-    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {
-        unsafe { host_kms_set_fb(pid, crtc_id, fb_id) }
+    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32, viewport: [u32; 4]) {
+        let [x, y, width, height] = viewport;
+        unsafe { host_kms_set_fb(pid, crtc_id, fb_id, x, y, width, height) }
+    }
+
+    fn kms_set_gamma(&mut self, crtc_id: u32, lut: Option<&[u16]>) {
+        match lut {
+            Some(lut) => unsafe { host_kms_set_gamma(crtc_id, lut.as_ptr(), (lut.len() / 3) as u32) },
+            None => unsafe { host_kms_set_gamma(crtc_id, core::ptr::null(), 0) },
+        }
     }
 
     fn kms_cursor_supported(&mut self) -> bool {
@@ -1256,12 +1316,10 @@ impl HostIO for WasmHostIO {
     }
 
     fn kms_cursor(
-        &mut self, pid: i32, _crtc_id: u32, flags: u32, bo_id: u32,
-        width: u32, height: u32, x: i32, y: i32, hot_x: i32, hot_y: i32,
+        &mut self, _pid: i32, _crtc_id: u32, flags: u32, bo_id: u32,
+        width: u32, height: u32, x: i32, y: i32, hot_x: i32, hot_y: i32, fb_id: u32,
     ) {
-        CURSOR_TRANSPORT.lock().update(
-            pid, flags, bo_id, width, height, x, y, hot_x, hot_y,
-        );
+        CURSOR_TRANSPORT.lock().update(flags, bo_id, width, height, x, y, hot_x, hot_y, fb_id);
     }
 }
 
@@ -1279,19 +1337,21 @@ impl HostIO for WasmHostIO {
 /// (`host/src/kernel-worker.ts`) and never reach this table, so a host handle
 /// is refused here rather than half-served.
 ///
-/// Only two operations cross to the host, both existing imports:
-/// `host_proc_read_bytes` / `host_proc_write_bytes`, because each process owns
-/// a separate linear memory the kernel cannot address.
+/// Each process owns a separate linear memory the kernel cannot address.
+/// Read/write byte copies cross to the host, and a read-only comparison can
+/// avoid allocating a full copy for an unchanged file-mapping publication.
 struct WasmSharedMappingIo {
     /// pid → committed linear-memory length, for the pids an entry point was
     /// handed a length for. See [`Self::process_memory_len`] for the rest.
     memory_len: Option<(u32, u64)>,
+    epochs: alloc::collections::BTreeMap<u32, Option<u64>>,
 }
 
 impl WasmSharedMappingIo {
     fn new() -> Self {
         Self {
             memory_len: None,
+            epochs: alloc::collections::BTreeMap::new(),
         }
     }
 
@@ -1339,13 +1399,100 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         i32_to_result(result)
     }
 
+    fn read_process_owned(&mut self, pid: u32, addr: u64, len: usize) -> Result<runtime_core::IoBuffer<u8>, Errno> {
+        if len == 0 { return Ok(runtime_core::IoBuffer::new()); }
+        let host_len = checked_host_buffer_len(len)?;
+        // Reserve the incoming I/O budget before lending uninitialized bytes.
+        // Only the trusted synchronous full-write acknowledgement may publish
+        // their length; partial/refused reads never expose those bytes.
+        runtime_core::IoBuffer::allocate(len, false, |bytes| {
+            bytes.try_reserve_exact(len).map_err(|_| Errno::ENOMEM)?;
+            let result = unsafe { host_proc_read_bytes(pid as i32, addr, bytes.as_mut_ptr(), host_len) };
+            i32_to_result(result)?;
+            if result != 0 { return Err(Errno::EIO); }
+            // SAFETY: exact success initialized len bytes within capacity.
+            unsafe { bytes.set_len(len) };
+            Ok(())
+        })
+    }
+
+    fn process_differs_from_snapshot(
+        &mut self, pid: u32, addr: u64, len: usize, snapshot: &[u8],
+    ) -> Result<Option<bool>, Errno> {
+        if len == 0 { return Ok(Some(false)); }
+        if snapshot.len() != len { return Ok(None); }
+        let host_len = checked_host_buffer_len(len)?;
+        // Existing read-only comparator protocol: unavailable is not equality
+        // and must choose bounded reads, never a full replacement allocation.
+        let compared = unsafe { host_proc_compare_bytes(pid as i32, addr, snapshot.as_ptr(), host_len) };
+        match compared {
+            0 => Ok(Some(false)),
+            1 => Ok(Some(true)),
+            2 => Ok(None),
+            other => { i32_to_result(other)?; Err(Errno::EIO) }
+        }
+    }
+
+    fn read_process_if_changed(
+        &mut self,
+        pid: u32,
+        addr: u64,
+        len: usize,
+        snapshot: &[u8],
+    ) -> Result<Option<runtime_core::IoBuffer<u8>>, Errno> {
+        if len == 0 {
+            return Ok(None);
+        }
+        if snapshot.len() != len {
+            return self.read_process_owned(pid, addr, len).map(Some);
+        }
+        let host_len = checked_host_buffer_len(len)?;
+        // SAFETY: snapshot names exactly len initialized bytes owned by the
+        // current Rust allocation. The trusted synchronous host import only
+        // reads that borrow, validates the full process range, and retains no
+        // view or capability. Equal is this observation; only the table's
+        // boundary proof (`BoundaryRecord`) ever carries it forward.
+        let compared = unsafe {
+            host_proc_compare_bytes(pid as i32, addr, snapshot.as_ptr(), host_len)
+        };
+        match compared {
+            0 => Ok(None),
+            // 2 means the host lacks the optional native comparator; it is
+            // not equality. Revalidate and copy through the ordinary path.
+            1 | 2 => self.read_process_owned(pid, addr, len).map(Some),
+            other => {
+                // The compare protocol admits exactly 0/1/2, not every
+                // nonnegative value accepted by other host imports.
+                i32_to_result(other)?;
+                Err(Errno::EIO)
+            }
+        }
+    }
+
     fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno> {
         if src.is_empty() {
             return Ok(());
         }
+        // The host changes the process's epoch for this write.
+        self.epochs.remove(&pid);
         let len = checked_host_buffer_len(src.len())?;
         let result = unsafe { host_proc_write_bytes(pid as i32, addr, src.as_ptr(), len) };
         i32_to_result(result)
+    }
+
+    fn quiescent_epoch(&mut self, pid: u32) -> Option<u64> {
+        *self.epochs.entry(pid).or_insert_with(|| {
+            let epoch = unsafe { host_proc_quiescent_epoch(pid as i32) };
+            u64::try_from(epoch).ok()
+        })
+    }
+
+    fn kernel_write_position(&mut self) -> u64 {
+        crate::memory::with_kernel_process_write_log(|log| log.position())
+    }
+
+    fn kernel_wrote_since(&mut self, pid: u32, since: u64, addr: u64, len: u64) -> Option<bool> {
+        crate::memory::with_kernel_process_write_log(|log| log.wrote_since(pid, since, addr, len))
     }
 
     fn process_memory_len(&mut self, pid: u32) -> Option<u64> {
@@ -1373,12 +1520,7 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
             let table = unsafe { &*PROCESS_TABLE.0.get() };
             table.get(pid).is_some()
         };
-        let log = unsafe {
-            &mut *runtime_core::writeback_loss::GLOBAL_WRITEBACK_LOSS_LOG
-                .0
-                .get()
-        };
-        runtime_core::writeback_loss::resolve_process_memory_len(log, seeded, process_is_live)
+        runtime_core::writeback_loss::resolve_process_memory_len(pid, seeded, process_is_live)
     }
 
     fn pread(&mut self, handle: i64, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
@@ -1451,11 +1593,17 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         Ok(())
     }
 
-    fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str) {
+    fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, file_key: &str, reason: &str) {
         // Recorded as kernel state, readable through the ordinary `read(2)`
         // path at `/proc/kandelo/writeback_losses`, rather than written to a
         // host console where it would scroll away and could not be counted.
         runtime_core::writeback_loss::record_writeback_loss(pid, map_addr, reason);
+        // And reported to the program, as Linux reports a writeback error:
+        // every open description of the file answers EIO once from its next
+        // fsync, fdatasync or close. Reading the process table is safe here;
+        // see the CONTRACT on `process_memory_len`.
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        runtime_core::writeback_loss::note_file_writeback_error(table, file_key);
     }
 }
 
@@ -2155,6 +2303,11 @@ pub extern "C" fn kernel_rootfs_journal_state_memory_pressure() -> u32 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_take_compaction_request() -> u32 {
+    u32::from(crate::rootfs::take_compaction_request())
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_set_io_budget_bytes(limit: u32) -> i32 {
     match crate::rootfs::set_io_budget_bytes(limit as usize) {
         Ok(()) => 0,
@@ -2746,6 +2899,12 @@ pub extern "C" fn kernel_rootfs_read_file(
     buf_ptr: usize,
     buf_len: usize,
 ) -> i32 {
+    // A host read observes stores already made through a mapping; see
+    // `fence_channel_storage`. The path is not resolved here, so every
+    // mapped file is fenced (free when nothing is mapped).
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     if buf_len > i32::MAX as usize {
         return -(Errno::EOVERFLOW as i32);
     }
@@ -2801,6 +2960,12 @@ pub extern "C" fn kernel_rootfs_write_file(
     mode: u32,
     truncate: i32,
 ) -> i32 {
+    // A host write lands after stores already made through a mapping, rather
+    // than being overwritten by them at a later publication; see
+    // `fence_channel_storage`.
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     if buf_len > i32::MAX as usize {
         return -(Errno::EOVERFLOW as i32);
     }
@@ -2985,6 +3150,12 @@ pub extern "C" fn kernel_rootfs_inspect_read_file(
     buf_ptr: *mut u8,
     buf_len: u32,
 ) -> i32 {
+    // A host read observes stores already made through a mapping; see
+    // `fence_channel_storage`. The path is not resolved here, so every
+    // mapped file is fenced (free when nothing is mapped).
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     if path_ptr.is_null() || buf_ptr.is_null() {
         return -(Errno::EFAULT as i32);
     }
@@ -3083,6 +3254,13 @@ pub extern "C" fn kernel_rootfs_export_tree(
     buf_ptr: usize,
     buf_len: usize,
 ) -> i32 {
+    // The exported tree carries stores already made through a mapping. Only
+    // the first chunk serializes the tree, so only it needs the fence.
+    if offset_lo == 0 && offset_hi == 0 {
+        if let Err(error) = fence_all_mapped_files() {
+            return -(error as i32);
+        }
+    }
     if buf_len > i32::MAX as usize {
         return -(Errno::EOVERFLOW as i32);
     }
@@ -3140,6 +3318,13 @@ pub extern "C" fn kernel_rootfs_export_container_read(
     buf_ptr: usize,
     buf_len: usize,
 ) -> i32 {
+    // The exported tree carries stores already made through a mapping. Only
+    // the first chunk serializes the tree, so only it needs the fence.
+    if offset_lo == 0 && offset_hi == 0 {
+        if let Err(error) = fence_all_mapped_files() {
+            return -(error as i32);
+        }
+    }
     if buf_len > i32::MAX as usize {
         return -(Errno::EOVERFLOW as i32);
     }
@@ -3470,27 +3655,51 @@ fn finish_init_reap(reap: crate::process_table::InitReap) {
 
 fn reap_for_init_and_cleanup(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.reap_for_init_with_io(pid, &mut WasmHostIO) {
-        Some(reap) => {
+    if table.get(pid).is_none() {
+        return -(Errno::ECHILD as i32);
+    }
+    match lifecycle::run(
+        table,
+        &mut WasmHostIO,
+        LifecycleRequest::ReapInit { pid },
+    ) {
+        Ok(LifecycleCompletion::InitReaped(reap)) => {
             finish_init_reap(reap);
             0
         }
-        None => -(Errno::ECHILD as i32),
+        Ok(_) => unreachable!("init reap lifecycle completion"),
+        Err(error) => -(error as i32),
     }
 }
 fn remove_process_and_cleanup(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.remove_process_with_io(pid, &mut WasmHostIO) {
-        Some(result) => { finish_removed_process(result); 0 },
-        None => -(Errno::ESRCH as i32),
+    match lifecycle::run(
+        table,
+        &mut WasmHostIO,
+        LifecycleRequest::Remove { pid, reap: false },
+    ) {
+        Ok(LifecycleCompletion::Removed(result)) => {
+            finish_removed_process(result);
+            0
+        }
+        Ok(_) => unreachable!("remove lifecycle completion"),
+        Err(error) => -(error as i32),
     }
 }
 
 fn reap_process_and_cleanup(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.reap_process_with_io(pid, &mut WasmHostIO) {
-        Some(result) => { finish_removed_process(result); 0 },
-        None => -(Errno::ESRCH as i32),
+    match lifecycle::run(
+        table,
+        &mut WasmHostIO,
+        LifecycleRequest::Remove { pid, reap: true },
+    ) {
+        Ok(LifecycleCompletion::Removed(result)) => {
+            finish_removed_process(result);
+            0
+        }
+        Ok(_) => unreachable!("reap lifecycle completion"),
+        Err(error) => -(error as i32),
     }
 }
 
@@ -3562,7 +3771,34 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u3
     };
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.fork_process_for_caller_with_mode(parent_pid, caller_tid, mode) {
-        Ok(child_pid) => child_pid as i32,
+        Ok(child_pid) => {
+            let mut host = WasmHostIO;
+            // Announce exact kernel-owned aliases while they are still
+            // pending. The host primes them only after cloning child Memory.
+            let accepted = table.get(child_pid).unwrap().dri_bindings.iter().all(|binding| {
+                // Inherit the actual mapping extent, including a surviving
+                // padding-only fragment. Host pixel baselines remain clipped
+                // independently to BO storage, never to cleanup authority.
+                host.gbm_bo_bind(child_pid as i32, binding.bo_id, binding.addr, binding.len, binding.bo_offset) >= 0
+            });
+            if !accepted {
+                // The host has not published this child. Use the same checked
+                // lifecycle/IO cleanup as ordinary removal so partially bound
+                // aliases and executable holds retire exactly once. A refused
+                // rollback cannot masquerade as a clean allocation failure.
+                match lifecycle::run(
+                    table,
+                    &mut host,
+                    LifecycleRequest::Remove { pid: child_pid, reap: false },
+                ) {
+                    Ok(LifecycleCompletion::Removed(result)) => finish_removed_process(result),
+                    Ok(_) => unreachable!("fork rollback lifecycle completion"),
+                    Err(error) => panic!("fork binding rollback failed for child {child_pid}: {error:?}"),
+                }
+                return -(Errno::ENOMEM as i32);
+            }
+            child_pid as i32
+        },
         Err(e) => -(e as i32),
     }
 }
@@ -3583,6 +3819,11 @@ pub extern "C" fn kernel_spawn_process(
     blob_addr: u64,
     blob_len: u32,
 ) -> i32 {
+    // The program image is read from the file as mappings last published it;
+    // see `fence_channel_storage`.
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let mut host = WasmHostIO;
     let parsed = {
@@ -3753,6 +3994,33 @@ pub extern "C" fn kernel_get_process_state(pid: u32) -> i32 {
     }
 }
 
+/// Copy the exact unsigned image generation into an owned host scratch lease.
+/// Keep status separate from all 64 generation bits; negative i64 sentinels
+/// would alias valid generations after the high bit becomes set.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_process_exec_generation(
+    pid: u32,
+    out_ptr: *mut u8,
+    out_capacity: u32,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if out_capacity != 8 {
+        return -(Errno::EINVAL as i32);
+    }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.exec_generation(pid) {
+        Ok(generation) => {
+            let output = unsafe { core::slice::from_raw_parts_mut(out_ptr, 8) };
+            output.copy_from_slice(&generation.to_le_bytes());
+            8
+        }
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Pick the next live process/fd that should receive a host-bridged TCP
 /// connection for `port`.
 ///
@@ -3794,7 +4062,7 @@ pub extern "C" fn kernel_pick_tcp_listener_target(
 /// Writes `{ u32 cancel_alarm, u32 posix_count, u32 timer_ids[posix_count] }`
 /// into the caller's exact scratch capacity. The return value is
 /// `posix_count`. If the complete list does not fit, returns `ERANGE` without
-/// consuming any timer state.
+/// consuming any timer state. A reaped limbo group identity returns `ESRCH`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_take_process_timer_cleanup(
     pid: u32,
@@ -3844,13 +4112,14 @@ pub extern "C" fn kernel_take_process_timer_cleanup(
 pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.process_and_advisory_locks(pid) {
-        Some((proc, advisory_locks)) => {
-            let mut host = WasmHostIO;
-            terminate_process_by_signal_with_locks(proc, advisory_locks, &mut host, signum);
-            0
-        }
-        None => -(Errno::ESRCH as i32),
+    match lifecycle::run(
+        table,
+        &mut WasmHostIO,
+        LifecycleRequest::SignalExit { pid, signum },
+    ) {
+        Ok(LifecycleCompletion::Signaled) => 0,
+        Ok(_) => unreachable!("signal exit lifecycle completion"),
+        Err(error) => -(error as i32),
     }
 }
 
@@ -3924,6 +4193,47 @@ pub extern "C" fn kernel_epoll_wait_token(pid: u32, tid: u32) -> u64 {
         .and_then(|proc| proc.epoll_waits.iter().find(|(owner, _)| *owner == tid))
         .map(|(_, lease)| lease.token)
         .unwrap_or(0)
+}
+
+/// A private non-delivering check of one retained epoll wait. Only 1 certifies
+/// StillBlocked; 0/negative means the host must run its ordinary retry. This
+/// is not a guest syscall/coherence boundary and never publishes a result.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_wait_retry_state(
+    pid: u32,
+    tid: u32,
+    token: u64,
+    deadline_handle: u64,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Err(error) = table.bind_current_tid(pid, tid) {
+        return -(error as i32);
+    }
+    let result = (|| {
+        let mut host = WasmHostIO;
+        if deadline_handle != 0 {
+            let now = crate::wait_park::now_ns(&mut host)?;
+            if !crate::wait_queue::global::epoll_deadline_pending(
+                crate::wait_queue::ChannelGeneration(deadline_handle),
+                pid,
+                tid,
+                now,
+            ) {
+                return Ok(false);
+            }
+        }
+        let (proc, mut peers, _) = table
+            .current_process_peers_and_locks()
+            .ok_or(Errno::ESRCH)?;
+        syscalls::epoll_wait_still_blocked(proc, &mut host, tid, token, &mut peers)
+    })();
+    table.clear_current_tid_binding();
+    match result {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(error) => -(error as i32),
+    }
 }
 
 /// Retire only this execution's wait. An old worker's asynchronous retirement
@@ -4366,8 +4676,23 @@ pub extern "C" fn kernel_dequeue_signal(
         let action = proc.signals.get_action(signum);
         match action.handler {
             SignalHandler::Handler(idx) => {
+                // A blocking atomic KMS commit past its point of no return
+                // waits uninterruptibly, as Linux's commit tail does: a
+                // caught signal stays pending until the commit returns.
+                if crate::dri::atomic::waits_uninterruptibly(proc, tid)
+                    // GL parked on a buffer's implicit fences: on Linux the
+                    // call never waits, so it never fails with EINTR.
+                    || crate::dri::implicit_sync::waits_uninterruptibly(proc.pid, tid)
+                {
+                    return 0;
+                }
                 let (_sig, si_value, si_code, siginfo_word_1, siginfo_word_2) =
                     dequeue_signal_for(proc, tid, signum);
+                // The handler interrupts a parked DRM_IOCTL_WAIT_VBLANK
+                // (EINTR); its resolved target must not outlive the call.
+                crate::dri::forget_vblank_waits(proc, tid);
+                // Likewise a parked sync-object wait's fence snapshot.
+                crate::dri::syncobj::forget_task(proc.pid, tid);
                 // ppoll, pselect, and sigsuspend keep their replacement mask
                 // installed until the logical wait finally completes. Form
                 // the handler mask from that current mask and place the same
@@ -4470,6 +4795,11 @@ pub extern "C" fn kernel_exec_target_prepare(
     path_len: usize,
     flags: u32,
 ) -> i32 {
+    // The program image is read from the file as mappings last published it;
+    // see `fence_channel_storage`.
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     let path = match checked_exec_path(path_ptr, path_len) {
         Ok(path) => path,
         Err(error) => return -(error as i32),
@@ -4763,20 +5093,17 @@ pub extern "C" fn kernel_exec_target_cancel(owner_pid: u32, target: u32) -> i32 
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exec_commit(pid: u32, caller_tid: u32, target: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
-        Some(pair) => pair,
-        None => return -(Errno::ESRCH as i32),
-    };
-    let mut host = WasmHostIO;
-    match crate::exec_target::commit_process(
-        proc,
-        advisory_locks,
-        &mut host,
-        pid,
-        caller_tid,
-        target,
+    match lifecycle::run(
+        table,
+        &mut WasmHostIO,
+        LifecycleRequest::Exec {
+            pid,
+            tid: caller_tid,
+            target,
+        },
     ) {
-        Ok(()) => 0,
+        Ok(LifecycleCompletion::Exec) => 0,
+        Ok(_) => unreachable!("exec lifecycle completion"),
         Err(error) => -(error as i32),
     }
 }
@@ -4800,21 +5127,17 @@ pub extern "C" fn kernel_spawn_exec_commit(
     target: u32,
 ) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let parent_exists = table.get(parent_pid).is_some();
-    let (child, advisory_locks) = match table.process_and_advisory_locks(child_pid) {
-        Some(pair) if parent_exists && pair.0.ppid == parent_pid => pair,
-        _ => return -(Errno::ESRCH as i32),
-    };
-    let mut host = WasmHostIO;
-    match crate::exec_target::commit_spawn(
-        child,
-        advisory_locks,
-        &mut host,
-        parent_pid,
-        child_pid,
-        target,
+    match lifecycle::run(
+        table,
+        &mut WasmHostIO,
+        LifecycleRequest::SpawnExec {
+            parent: parent_pid,
+            child: child_pid,
+            target,
+        },
     ) {
-        Ok(()) => 0,
+        Ok(LifecycleCompletion::Exec) => 0,
+        Ok(_) => unreachable!("spawn exec lifecycle completion"),
         Err(error) => -(error as i32),
     }
 }
@@ -4918,7 +5241,8 @@ fn retain_blocking_retry_target(syscall_nr: u32, args: &[i64; 6]) -> Result<(), 
         // retries, so a pin taken now would never be released.
         crate::blocked_retry::BlockingRetryOperation::Fcntl
         | crate::blocked_retry::BlockingRetryOperation::Flock => {}
-        crate::blocked_retry::BlockingRetryOperation::Read
+        crate::blocked_retry::BlockingRetryOperation::FileMetadata
+        | crate::blocked_retry::BlockingRetryOperation::Read
         | crate::blocked_retry::BlockingRetryOperation::Write
         | crate::blocked_retry::BlockingRetryOperation::Pread
         | crate::blocked_retry::BlockingRetryOperation::Pwrite
@@ -5030,6 +5354,11 @@ fn handle_owned_channel_allocation(
     transport: ChannelTransport,
 ) -> i32 {
     use wasm_posix_shared::channel::*;
+
+    // A partial successful transfer (or a privileged host mutation) can leave
+    // a tail request behind. Only this attempt's EAGAIN may ask the host to
+    // compact; otherwise an unrelated pipe/socket EAGAIN could inherit it.
+    let _ = crate::rootfs::take_compaction_request();
 
     if offset == 0 || allocation_capacity < MIN_CHANNEL_SIZE {
         unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
@@ -5155,6 +5484,13 @@ fn handle_owned_channel_allocation(
     } else {
         Err(Errno::ESRCH)
     };
+    // Descriptor fence: before the kernel reads or writes the content of a
+    // file it owns, every `MAP_SHARED` mapping of that file publishes, so the
+    // descriptor operation observes (or lands after) stores already made
+    // through a mapping. Runs before any `&mut Process` borrow, because the
+    // mapping table reads other processes' memory. See
+    // `runtime_core::memory::DescriptorFence`.
+    let activation = activation.and_then(|()| fence_channel_storage(syscall_nr, &args));
     let mut outcome = if let Err(error) = activation {
         ChannelDispatchOutcome::narrow(-(error as i32))
     } else {
@@ -5475,6 +5811,7 @@ fn dispatch_channel_mremap(
     let mut host = WasmHostIO;
     let result = syscalls::sys_mremap(
         proc,
+        &mut host,
         old_address,
         old_length,
         new_length,
@@ -6098,9 +6435,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         74 => kernel_umask(a1 as u32) as i32, // SYS_UMASK
         75 => kernel_uname(channel_mut_ptr!(0, u8), 390), // SYS_UNAME (musl passes 1 arg; struct utsname = 6x65 = 390)
         76 => kernel_sysconf(a1) as i32,                  // SYS_SYSCONF
-        // SYS_SYSLOG: klogctl(action, buf, len). The buffer is nullable: the
-        // size and clear actions pass none.
-        304 => kernel_syslog(a1 as i32, channel_mut_ptr!(1, u8), a3 as i32),
+        // `kandelo.klog.v1` (klogctl(action, buf, len)), issued by the process
+        // worker for a program that imports the extension. The buffer is
+        // nullable: the size and clear actions pass none. Musl's own
+        // SYS_SYSLOG (304) is not a base syscall and reaches the
+        // unimplemented arm, which answers ENOSYS.
+        wasm_posix_shared::extension_requests::KLOG_V1 => {
+            kernel_syslog(a1 as i32, channel_mut_ptr!(1, u8), a3 as i32)
+        }
         120 => kernel_getrandom(channel_mut_ptr!(0, u8), process_size_u32!(1), a3 as u32), // SYS_GETRANDOM
         109 => {
             // SYS_REALPATH: (path, buf, buf_len)
@@ -7581,10 +7923,20 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             }
         }
         278 => {
-            let _address = process_address!(0);
-            let _length = process_size!(1);
-            0
-        } // SYS_MSYNC: no-op (MAP_PRIVATE changes are private, file-backed writes go through write())
+            let address = process_address!(0);
+            let length = process_size!(1);
+            // The host publishes and persists the range after this returns.
+            // A writeback of a kernel-owned mapped file that failed since
+            // these mappings last reported one is answered here, once, as
+            // Linux's msync reports its file's writeback error.
+            let table = unsafe { crate::memory::global_shared_mapping_table() };
+            let pid = crate::process_table::current_pid();
+            if table.take_writeback_error(pid, address as u64, length as u64) {
+                -(Errno::EIO as i32)
+            } else {
+                0
+            }
+        } // SYS_MSYNC
 
         // -- Process stubs --
         // personality(2) is Linux-only and absent from POSIX. Kandelo has no
@@ -8431,6 +8783,25 @@ pub extern "C" fn kernel_blocking_retry_token(pid: u32, tid: u32, syscall_nr: u3
     }
 }
 
+/// Optional for legacy hosts; required when using the additive e7 MMAP.
+/// The host still owns the original entry lease. Sealing success before
+/// growth/zero/initial prime would expose an unconstructed mapping to guests.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_owned_mapping_finish(
+    pid: u32,
+    tid: u32,
+    token: u32,
+    transaction: u64,
+    errno: u32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.finish_owned_mapping(&mut WasmHostIO, pid, tid, token, transaction, errno) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Consume one exact blocked-retry target and its kernel-owned references.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_blocking_retry_release(pid: u32, tid: u32, token: i64) -> i32 {
@@ -8439,12 +8810,13 @@ pub extern "C" fn kernel_blocking_retry_release(pid: u32, tid: u32, token: i64) 
     }
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let Some((proc, locks)) = table.process_and_advisory_locks(pid) else {
-        return -(Errno::ESRCH as i32);
-    };
-    let mut host = WasmHostIO;
-    match syscalls::release_blocking_retry_binding(proc, locks, &mut host, tid, token) {
-        Ok(()) => 0,
+    match lifecycle::run(
+        table,
+        &mut WasmHostIO,
+        LifecycleRequest::ReleaseRetry { pid, tid, token },
+    ) {
+        Ok(LifecycleCompletion::RetryReleased) => 0,
+        Ok(_) => unreachable!("retry lifecycle completion"),
         Err(error) => -(error as i32),
     }
 }
@@ -8729,12 +9101,91 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(
 }
 
 // ---------------------------------------------------------------------------
+// Descriptor fence for kernel-owned mapped files
+// ---------------------------------------------------------------------------
+
+/// The kernel mapping handle behind descriptor `fd` of the calling process,
+/// or `None` when `fd` is not a regular file the kernel owns (a pipe, socket,
+/// host file, or a closed descriptor; the syscall itself reports those).
+fn current_fd_mapping_handle(fd: i32) -> Option<i64> {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = table.get(crate::process_table::current_pid())?;
+    let entry = proc.fd_table.get(fd).ok()?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+    runtime_core::kernel_file_mapping::mapping_handle_for(ofd.file_type, ofd.host_handle)
+}
+
+/// Fence the files one channel syscall is about to read or write; see
+/// [`runtime_core::memory::DescriptorFence`]. Free when nothing maps a
+/// kernel-owned file, and one descriptor lookup per fenced descriptor when
+/// something does.
+fn fence_channel_storage(nr: u32, args: &[i64; 6]) -> Result<(), Errno> {
+    let _gkl = GklGuard::acquire();
+    use runtime_core::memory::DescriptorFence;
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if !table.has_file_backings() {
+        return Ok(());
+    }
+    match runtime_core::memory::descriptor_fence_for(nr, args) {
+        DescriptorFence::None | DescriptorFence::InExport => Ok(()),
+        DescriptorFence::Fds(fds) => {
+            for fd in fds.into_iter().flatten() {
+                let Some(handle) = current_fd_mapping_handle(fd) else {
+                    continue;
+                };
+                if !table.is_fenced_handle(handle) {
+                    continue;
+                }
+                let mut io = WasmSharedMappingIo::for_table(table);
+                table.fence_handle(handle, &mut io)?;
+            }
+            Ok(())
+        }
+        DescriptorFence::AllMappedFiles => fence_all_mapped_files(),
+    }
+}
+
+/// Fence the file behind `fd` of the calling process, for the exports the
+/// host also calls directly (`kernel_fsync`, `kernel_fdatasync`). Must run
+/// before the caller borrows its `Process` mutably.
+fn fence_current_fd(fd: i32) -> Result<(), Errno> {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if !table.has_file_backings() {
+        return Ok(());
+    }
+    let Some(handle) = current_fd_mapping_handle(fd) else {
+        return Ok(());
+    };
+    if !table.is_fenced_handle(handle) {
+        return Ok(());
+    }
+    let mut io = WasmSharedMappingIo::for_table(table);
+    table.fence_handle(handle, &mut io)
+}
+
+/// Fence every mapped kernel-owned file, for an operation that names its
+/// file by path (`truncate`, an `O_TRUNC` open, an exec target, a host
+/// export of the filesystem).
+fn fence_all_mapped_files() -> Result<(), Errno> {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if !table.has_file_backings() {
+        return Ok(());
+    }
+    let mut io = WasmSharedMappingIo::for_table(table);
+    table.fence_all(&mut io)
+}
+
+// ---------------------------------------------------------------------------
 // Kernel-owned shared mappings -- SysV attachments and kernel-file MAP_SHARED
 // ---------------------------------------------------------------------------
 //
 // Each process owns a separate linear memory, so `MAP_SHARED` coherence is a
 // publish/refresh protocol run at syscall boundaries
-// ([`crate::memory::SharedMappingTable`]). The kernel owns that protocol for
+// ([`crate::memory::SharedMappingTable`]); for kernel-owned files a process's
+// stores are pulled when a peer's syscall completes or the file is used
+// through a descriptor, not at every boundary of its own. The kernel owns that protocol for
 // the shared objects whose bytes it owns: SysV segments
 // ([`crate::ipc::IpcTable`]) and regular files in its own filesystem (rootfs,
 // the tmpfs scratch mounts including `/dev/shm`, and memfds). The host keeps
@@ -8751,8 +9202,9 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(
 // And the boundary sync must run before *every* syscall, including the ones
 // the host completes without entering the kernel.
 //
-// No new `env.host_*` import is required: reading and writing a process's
-// memory are the existing `host_proc_read_bytes` / `host_proc_write_bytes`.
+// Process byte transfer uses `host_proc_read_bytes` / `host_proc_write_bytes`.
+// `host_proc_compare_bytes` adds a checked read-only comparison against a
+// Rust-owned snapshot; it changes no boundary or backing-refresh obligation.
 
 /// `SHM_RDONLY`. `crate::ipc`'s copy is private, and fork inheritance is the
 /// only other site that must reproduce a guest's attach flags.
@@ -8780,36 +9232,44 @@ pub extern "C" fn kernel_shared_mapping_process_count(pid: u32) -> i32 {
     i32::try_from(count).unwrap_or(i32::MAX)
 }
 
+/// Diagnostic export of a kernel built with the `shared-mapping-proof-verify`
+/// feature: how many pulls a quiescence proof covered and a comparison then
+/// confirmed (`runtime_core::memory::CleanStamp`). A proof a comparison
+/// contradicts traps the kernel instead. Absent from a shipped kernel.
+#[cfg(feature = "shared-mapping-proof-verify")]
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_proofs_verified() -> i64 {
+    i64::try_from(runtime_core::memory::proofs_verified()).unwrap_or(i64::MAX)
+}
+
 /// Reconcile every kernel-owned shared mapping of one process at a syscall
-/// boundary.
+/// boundary. `force` is one of `runtime_core::memory::sync_force`:
 ///
-/// `force` bypasses the sole-observer skip, for the publication points where a
-/// process must become current even with no live peer: `fork`, the `exec`
-/// address-space preflight, and teardown. A forced sync also persists every
-/// dirty kernel-file page.
+/// - `ENTRY` (3): the entry of a syscall. Kernel-owned files need nothing
+///   here: the descriptor fence publishes a file's mappings before the
+///   syscall touches its content, and completions deliver peers' stores.
+///   SysV attachments still synchronize.
+/// - `COMPLETION` (0), and the retired `LEGACY_UNCHANGED` (2): the
+///   completion of a syscall. Every other mapper of the process's files is
+///   pulled and the process's stale mappings are refreshed before it resumes
+///   ([`crate::memory::SharedMappingTable::sync_file_at_completion`]).
+/// - `FORCED` (1), and any other value: a publication point where the
+///   process must become current with no live peer -- `fork`, the `exec`
+///   address-space preflight, teardown. Its own mappings are published and
+///   every dirty kernel-file page persisted.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_shared_mapping_sync_process(pid: u32, force: i32) -> i32 {
+    use crate::memory::sync_force;
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
     let has_files = table.mappings_for(pid).next().is_some();
-    if table.sysv_mapping_count_for(pid) == 0 && !has_files {
-        return 0;
-    }
+    if table.sysv_mapping_count_for(pid) == 0 && !has_files { return 0; }
     let mut io = WasmSharedMappingIo::for_table(table);
-    let files = if has_files {
-        if force != 0 {
-            table.flush_mappings(pid, 0, u64::MAX, &mut io)
-        } else {
-            table.sync_file_from_process(pid, false, &mut io)
-        }
-    } else {
-        Ok(())
-    };
-    let sysv = if table.sync_sysv_from_process(pid, force != 0, &mut io) {
-        Ok(())
-    } else {
-        Err(Errno::EIO)
-    };
+    let forced = !matches!(force, sync_force::ENTRY | sync_force::COMPLETION | sync_force::LEGACY_UNCHANGED);
+    let files = if !has_files || force == sync_force::ENTRY { Ok(()) }
+        else if forced { table.flush_mappings(pid, 0, u64::MAX, &mut io) }
+        else { table.sync_file_at_completion(pid, &mut io) };
+    let sysv = if table.sync_sysv_from_process(pid, forced, &mut io) { Ok(()) } else { Err(Errno::EIO) };
     shared_mapping_errno(files.and(sysv))
 }
 
@@ -8898,6 +9358,31 @@ pub extern "C" fn kernel_shared_mapping_flush(pid: u32, addr: u64, len: u64) -> 
     }
     let mut io = WasmSharedMappingIo::for_table(table);
     shared_mapping_errno(table.flush_mappings(pid, addr, len, &mut io))
+}
+
+/// The host's shared-mapping layer could not write a mapping's dirty bytes
+/// back to a host-mounted file (identified by its `host_fstat` device and
+/// inode, as the kernel identifies the file's open descriptions). Record the
+/// loss in `/proc/kandelo/writeback_losses` and report it the way a kernel
+/// file's writeback error is reported: every open description of the file
+/// answers `EIO` once from its next `fsync`, `fdatasync` or `close`. `told_fd`
+/// is the descriptor of `pid` whose current syscall already fails with `EIO`
+/// for this failure (or -1); its description is not told twice. The host
+/// reports the failure to the file's mappings (their next `msync`) itself.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_report_host_mapping_writeback_error(
+    pid: u32,
+    map_addr: u64,
+    dev: u64,
+    ino: u64,
+    told_fd: i32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    runtime_core::writeback_loss::record_writeback_loss(pid, map_addr, "write failed");
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let told = (told_fd >= 0).then_some((pid, told_fd));
+    runtime_core::writeback_loss::note_host_file_writeback_error(table, dev, ino, told);
+    0
 }
 
 /// Stop tracking (or trim) every kernel-file mapping overlapping an unmapped
@@ -12041,22 +12526,28 @@ pub fn kernel_mprotect(addr: usize, len: usize, prot: u32) -> i32 {
 fn commit_current_task_exit(status: i32) -> i32 {
     let committed_status;
     {
-        let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-        if unsafe { host_is_thread_worker() } != 0 {
-            // Thread exit: don't destroy shared process state (FDs, pipes, etc.).
-            // Just set exit status and return — the guest import traps after
-            // the host completes its exit-channel handshake.
-            proc.exit_status = status & 0xff;
-            proc.exit_signal = 0;
-        } else {
-            let mut host = WasmHostIO;
-            syscalls::sys_exit_with_locks(proc, advisory_locks, &mut host, status);
-        }
-        committed_status = proc.exit_status;
-    } // _gkl dropped here — GKL released
-    // Consume task authority before deferred descriptor cleanup can invoke a
-    // host callback. Cleanup needs no process identity, and a callback trap
-    // must not leave the exited task available to a later dispatch.
+        let _gkl = GklGuard::acquire();
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        let pid = table.current_pid();
+        let tid = table.current_tid();
+        let thread_worker = unsafe { host_is_thread_worker() } != 0;
+        committed_status = match lifecycle::run(
+            table,
+            &mut WasmHostIO,
+            LifecycleRequest::Exit {
+                pid,
+                tid,
+                status,
+                thread_worker,
+            },
+        ) {
+            Ok(LifecycleCompletion::Exit(status)) => status,
+            Ok(_) => unreachable!("exit lifecycle completion"),
+            Err(_) => panic!("no current task for exit commit"),
+        };
+    }
+    // These effects belong only to a completed exit. A pending/faulting
+    // intent cannot clear the task binding or publish exit as completed.
     unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
     finish_machine_scm_rights_cleanup_if_pending();
     release_orphaned_ofd_locks();
@@ -12412,7 +12903,7 @@ fn cross_process_loopback_connect(
                             s.bind_addr6 == [0; 16]
                                 && s.get_option(IPPROTO_IPV6, IPV6_V6ONLY).unwrap_or(0) == 0
                         }
-                        SocketDomain::Unix => false,
+                        SocketDomain::Unix | SocketDomain::Netlink => false,
                     }
                 {
                     listener_pid = Some(pid);
@@ -13664,60 +14155,77 @@ pub extern "C" fn kernel_ioctl(
     buf_len: u32,
     process_pointer_width: u32,
 ) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if table.current_pid() == 0 {
+        panic!("no current process in table");
+    }
     let mut host = WasmHostIO;
-    let result = match wasm_posix_shared::ioctl_contract::request_contract(request) {
-        Some(contract) => (|| {
-            let pointer_width = u8::try_from(process_pointer_width)
-                .ok()
-                .filter(|width| *width == 4 || *width == 8)
-                .ok_or(Errno::EINVAL)?;
-            let expected_size = contract
-                .size_for_pointer_width(pointer_width)
-                .ok_or(Errno::EOVERFLOW)?;
-            use wasm_posix_shared::ioctl_contract::IoctlArgKind;
-            match contract.arg_kind {
-                IoctlArgKind::None => {
-                    if buf_len != 0 {
-                        Err(Errno::EINVAL)
-                    } else {
-                        syscalls::sys_ioctl(proc, &mut host, fd, request, &mut [])
+    let mut dispatched = false;
+    let result = {
+        let mut ioctl = |buf: &mut [u8]| {
+            dispatched = true;
+            table.ioctl(&mut host, fd, request, buf)
+        };
+        match wasm_posix_shared::ioctl_contract::request_contract(request) {
+            Some(contract) => (|| {
+                let pointer_width = u8::try_from(process_pointer_width)
+                    .ok()
+                    .filter(|width| *width == 4 || *width == 8)
+                    .ok_or(Errno::EINVAL)?;
+                let expected_size = contract
+                    .size_for_pointer_width(pointer_width)
+                    .ok_or(Errno::EOVERFLOW)?;
+                use wasm_posix_shared::ioctl_contract::IoctlArgKind;
+                match contract.arg_kind {
+                    IoctlArgKind::None => {
+                        if buf_len != 0 {
+                            Err(Errno::EINVAL)
+                        } else {
+                            ioctl(&mut [])
+                        }
+                    }
+                    IoctlArgKind::ScalarI32 => {
+                        if buf_len != 0 {
+                            Err(Errno::EINVAL)
+                        } else {
+                            // WHY: scalar ioctl arguments occupy the same channel
+                            // slot as pointers. Decode the value without ever
+                            // treating it as an address.
+                            let mut scalar = (buf_ptr as usize as u32).to_le_bytes();
+                            ioctl(&mut scalar)
+                        }
+                    }
+                    IoctlArgKind::Pointer => {
+                        if buf_len != expected_size {
+                            Err(Errno::EINVAL)
+                        } else if buf_ptr.is_null() {
+                            Err(Errno::EFAULT)
+                        } else {
+                            let buf = unsafe {
+                                core::slice::from_raw_parts_mut(buf_ptr, expected_size as usize)
+                            };
+                            ioctl(buf)
+                        }
                     }
                 }
-                IoctlArgKind::ScalarI32 => {
-                    if buf_len != 0 {
-                        Err(Errno::EINVAL)
-                    } else {
-                        // WHY: scalar ioctl arguments occupy the same channel
-                        // slot as pointers. Decode the value without ever
-                        // treating it as an address.
-                        let mut scalar = (buf_ptr as usize as u32).to_le_bytes();
-                        syscalls::sys_ioctl(proc, &mut host, fd, request, &mut scalar)
-                    }
-                }
-                IoctlArgKind::Pointer => {
-                    if buf_len != expected_size {
-                        Err(Errno::EINVAL)
-                    } else if buf_ptr.is_null() {
-                        Err(Errno::EFAULT)
-                    } else {
-                        let buf = unsafe {
-                            core::slice::from_raw_parts_mut(buf_ptr, expected_size as usize)
-                        };
-                        syscalls::sys_ioctl(proc, &mut host, fd, request, buf)
-                    }
-                }
-            }
-        })(),
-        // Unknown requests stage no caller pointer. Let the fd/device path
-        // choose EBADF/ENOTTY/ENOSYS using an empty slice.
-        None => syscalls::sys_ioctl(proc, &mut host, fd, request, &mut []),
+            })(),
+            // Unknown requests stage no caller pointer. Let the fd/device path
+            // choose EBADF/ENOTTY/ENOSYS using an empty slice.
+            None => ioctl(&mut []),
+        }
     };
+    if !dispatched {
+        // Layout rejection still finishes the caller's existing signal path.
+        let (proc, locks) = table
+            .current_process_and_advisory_locks()
+            .expect("current ioctl caller disappeared");
+        deliver_pending_signals_with_locks(proc, locks, &mut host);
+    }
     let result = match result {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -13842,6 +14350,11 @@ pub extern "C" fn kernel_ftruncate(fd: i32, length: i64) -> i32 {
 /// Synchronize file state to storage. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fsync(fd: i32) -> i32 {
+    // Mapped stores reach the file before it is synchronized; see
+    // `fence_channel_storage`.
+    if let Err(error) = fence_current_fd(fd) {
+        return -(error as i32);
+    }
     let publication = flush_rootfs_file_mappings(fd);
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
@@ -13856,6 +14369,12 @@ pub extern "C" fn kernel_fsync(fd: i32) -> i32 {
 /// Truncate a file to a specified length (path-based). Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_truncate(path_ptr: *const u8, path_len: u32, length: i64) -> i32 {
+    // Mapped stores reach the file before it is truncated, so bytes past the
+    // new size are dropped rather than republished later; see
+    // `fence_channel_storage`.
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -13870,6 +14389,11 @@ pub extern "C" fn kernel_truncate(path_ptr: *const u8, path_len: u32, length: i6
 /// Synchronize file data to storage (alias for fsync). Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fdatasync(fd: i32) -> i32 {
+    // Mapped stores reach the file before it is synchronized; see
+    // `fence_channel_storage`.
+    if let Err(error) = fence_current_fd(fd) {
+        return -(error as i32);
+    }
     let publication = flush_rootfs_file_mappings(fd);
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
@@ -15390,17 +15914,8 @@ pub fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: usize) -> i
 pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32, clear_child_tid: u32) -> i64 {
     let _gkl = GklGuard::acquire();
     let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match kernel_thread_exit_in_table(pt, pid, tid) {
-        Ok(ctid_ptr) => {
-            if clear_child_tid != 0 && ctid_ptr != 0 {
-                let ctid = ctid_ptr as u64;
-                let mut host = WasmHostIO;
-                if host.proc_write_bytes(pid as i32, ctid, &0u32.to_le_bytes()) == 0 {
-                    crate::wait_park::with(|parks| parks.futex_wake(pid, ctid, 1, u32::MAX));
-                }
-            }
-            ctid_ptr as i64
-        }
+    match kernel_thread_exit_in_table(pt, pid, tid, clear_child_tid != 0) {
+        Ok(ctid_ptr) => ctid_ptr as i64,
         Err(e) => -(e as i64),
     }
 }
@@ -15409,11 +15924,9 @@ fn kernel_thread_exit_in_table(
     pt: &mut crate::process_table::ProcessTable,
     pid: u32,
     tid: u32,
+    clear_child_tid: bool,
 ) -> Result<usize, Errno> {
-    let (proc, locks) = pt.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
-    let mut host = WasmHostIO;
-    syscalls::cleanup_exiting_thread_with_state(proc, locks, &mut host, tid)
-        .map(|thread| thread.ctid_ptr)
+    lifecycle::thread_exit(pt, &mut WasmHostIO, pid, tid, clear_child_tid)
 }
 
 #[cfg(test)]
@@ -15428,18 +15941,21 @@ mod thread_exit_tests {
         let tid = pt.create_thread(first, first, 0, 0, 0x2000).unwrap();
 
         assert_eq!(
-            kernel_thread_exit_in_table(&mut pt, second, tid),
+            kernel_thread_exit_in_table(&mut pt, second, tid, false),
             Err(Errno::ESRCH)
         );
         assert!(pt.get(first).unwrap().get_thread(tid).is_some());
-        assert_eq!(kernel_thread_exit_in_table(&mut pt, first, tid), Ok(0x2000));
+        assert_eq!(
+            kernel_thread_exit_in_table(&mut pt, first, tid, false),
+            Ok(0x2000)
+        );
         assert!(pt.get(first).unwrap().get_thread(tid).is_none());
         assert_eq!(
-            kernel_thread_exit_in_table(&mut pt, first, tid),
+            kernel_thread_exit_in_table(&mut pt, first, tid, false),
             Err(Errno::ESRCH)
         );
         assert_eq!(
-            kernel_thread_exit_in_table(&mut pt, 9_999, tid),
+            kernel_thread_exit_in_table(&mut pt, 9_999, tid, false),
             Err(Errno::ESRCH)
         );
     }
@@ -16025,8 +16541,8 @@ fn settle_retry_waits() {
 ///   teardown) has no park, because those paths retire it here first.
 ///   Stopped is the kernel's own process state, which the host mirrors.
 /// - Shared memory. A process with any `MAP_SHARED` mapping or SysV
-///   attachment needs the host's coherence step at the syscall boundary, so
-///   it takes the queued path.
+///   attachment or a mapped DRI buffer needs the host's coherence step at
+///   the syscall boundary, so it takes the queued path.
 /// - A stopped process, a dead or unknown task, or an unregistered channel
 ///   address takes the queued path.
 fn publish_transfer_directly(pid: u32, tid: u32, op: &crate::wait_retry::RetryOp, value: i32) -> u32 {
@@ -16039,6 +16555,7 @@ fn publish_transfer_directly(pid: u32, tid: u32, op: &crate::wait_retry::RetryOp
         || !proc.is_live_explicit_tid(tid)
         || crate::wait_park::signal_targets_task(proc, tid)
         || proc.memory.has_shared_mapping()
+        || !proc.dri_bindings.is_empty()
         || unsafe { crate::memory::global_shared_mapping_table() }.sysv_mapping_count_for(pid) != 0
     {
         return 0;
@@ -17086,41 +17603,12 @@ pub extern "C" fn kernel_pty_master_read(pty_idx: u32, buf_ptr: *mut u8, buf_len
 /// to it (ink/blessed re-render on 'resize'), corrupting cursor accounting.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pty_set_winsize(pty_idx: u32, rows: u32, cols: u32) -> i32 {
-    let pty = match crate::pty::get_pty(pty_idx as usize) {
-        Some(p) => p,
-        None => return -(Errno::ENOENT as i32),
-    };
-
-    let new_rows = rows as u16;
-    let new_cols = cols as u16;
-    let changed =
-        pty.terminal.winsize.ws_row != new_rows || pty.terminal.winsize.ws_col != new_cols;
-
-    pty.terminal.winsize = crate::terminal::WinSize {
-        ws_row: new_rows,
-        ws_col: new_cols,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-
-    if !changed {
-        return 0;
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.set_pty_winsize(pty_idx as usize, rows as u16, cols as u16, &mut WasmHostIO) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
     }
-
-    // Send SIGWINCH to foreground process group
-    let fg_pgid = pty.terminal.foreground_pgid;
-    if fg_pgid > 0 {
-        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-        let mut after = 0;
-        while let Some(pid) = table.next_pid_in_group(fg_pgid as u32, after) {
-            after = pid;
-            if let Some(proc) = table.get_mut(pid) {
-                proc.raise_signal(wasm_posix_shared::signal::SIGWINCH);
-            }
-        }
-    }
-
-    0
 }
 
 // ---------------------------------------------------------------------------
@@ -17278,6 +17766,13 @@ pub extern "C" fn kernel_drain_wait_completions(
     } else {
         None
     };
+    // Timerfds are the other timed kernel state the host's timer serves (see
+    // kernel_wait_next_timeout_ns). Account the due ones now: their epoll
+    // interests are notified here, and the untargeted wake record makes the
+    // host retry the poll/select/epoll/read waits it keeps blocked.
+    if syscalls::timerfd_fire_due(&mut WasmHostIO) {
+        crate::wakeup::push_timer_expired();
+    }
     settle_child_waits();
     settle_signal_waits();
     release_orphaned_ofd_locks();
@@ -17316,24 +17811,41 @@ pub extern "C" fn kernel_drain_wait_completions(
     drained
 }
 
-/// Nanoseconds until the earliest kernel-owned park deadline, `0` if one has
-/// already passed, or `-1` if no park is timed.
+/// Nanoseconds until the earliest kernel-owned park deadline or armed
+/// timerfd expiry, `0` if one has already passed (or, once, if an accounted
+/// expiry's wake record is queued and undrained), or `-1` if nothing is
+/// timed.
 ///
 /// Relative on purpose: a host sleeps this long and re-enters through
 /// [`kernel_drain_wait_completions`], and never computes in the kernel's clock
 /// domain -- which is what lets a deterministic scheduler replace that clock
-/// without touching any host.
+/// without touching any host. A timerfd expiry is included because it is a
+/// readiness event: the drain accounts it and wakes its waiters.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_wait_next_timeout_ns() -> i64 {
-    // No timed park: answer without the clock read (a host call).
-    if !crate::wait_park::with(|parks| parks.has_deadline()) {
-        return -1;
+    // An expiry already accounted, whose wake record the host has not
+    // drained yet, is due now: the host must re-enter to deliver it. Reported
+    // once (see take_unreported_timer_expiry).
+    if crate::wakeup::take_unreported_timer_expiry() {
+        return 0;
     }
-    let now = match crate::wait_park::now_ns(&mut WasmHostIO) {
-        Ok(now) => now,
-        Err(error) => return -(error as i64),
+    let mut host = WasmHostIO;
+    let timer = syscalls::timerfd_next_timeout_ns(&mut host);
+    // No timed park: answer without the clock read (a host call).
+    let park = if crate::wait_park::with(|parks| parks.has_deadline()) {
+        let now = match crate::wait_park::now_ns(&mut host) {
+            Ok(now) => now,
+            Err(error) => return -(error as i64),
+        };
+        crate::wait_park::with(|parks| parks.next_timeout_ns(now))
+    } else {
+        None
     };
-    crate::wait_park::with(|parks| parks.next_timeout_ns(now)).unwrap_or(-1)
+    match (park, timer) {
+        (Some(park), Some(timer)) => park.min(timer),
+        (Some(ns), None) | (None, Some(ns)) => ns,
+        (None, None) => -1,
+    }
 }
 
 /// What the host must do right after a syscall parked (`PARKED_ERRNO`):
@@ -17372,22 +17884,99 @@ pub extern "C" fn kernel_take_pty_readiness_changed() -> u32 {
 // DRI / KMS
 // ---------------------------------------------------------------------------
 
-/// Tick the global vblank sequence counter and return the new value.
-///
-/// The host runs this on a 16.67 ms RAF / setInterval pump in the
-/// kernel worker; user programs that posted `DRM_IOCTL_WAIT_VBLANK`
-/// observe the new sequence on the next syscall round-trip.
+/// Count one vblank of the host's present pump, stamped with the time of the
+/// call, and return the new (low 32 bits of the) sequence. Equivalent to
+/// [`kernel_vblank_elapsed`]`(0)`; kept for hosts that predate it.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_vblank() -> u32 {
-    let seq = crate::dri::vblank_tick();
+    kernel_vblank_elapsed(0)
+}
+
+/// Count one vblank that happened `elapsed_us` microseconds before this call
+/// and return the new (low 32 bits of the) sequence.
+///
+/// The host's vblank pump in the kernel worker calls this once per vblank:
+/// a display frame (`requestAnimationFrame`) in the browser, whose age is
+/// the time since the frame's timestamp, and a timer at the mode's refresh
+/// where there is no display (Node, or a hidden page), whose age is 0. The
+/// tick completes the CRTC's pending page flip, queues
+/// `DRM_EVENT_FLIP_COMPLETE` / `DRM_EVENT_VBLANK` records, signals the
+/// commit's out-fence and releases parked `DRM_IOCTL_WAIT_VBLANK` callers,
+/// all stamped with the vblank's `CLOCK_MONOTONIC` time; the host learns
+/// that it must retry parked callers from [`kernel_kms_take_vblank_wake`].
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_vblank_elapsed(elapsed_us: u32) -> u32 {
     let mut host = WasmHostIO;
-    let (tv_sec, tv_usec) =
-        match host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
-            Ok((sec, nsec)) => (sec as u32, (nsec / 1000) as u32),
-            Err(_) => (0u32, 0u32),
-        };
-    crate::dri::drain_pending_flips(seq, tv_sec, tv_usec);
-    seq
+    let now_us = match host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
+        Ok((sec, nsec)) => (sec as u64) * 1_000_000 + (nsec as u64) / 1000,
+        Err(_) => 0,
+    };
+    let (tv_sec, tv_usec) = crate::dri::vblank_time_elapsed(now_us, elapsed_us);
+    crate::dri::retire_vblank(&mut host, tv_sec, tv_usec) as u32
+}
+
+/// Take the coalesced "a vblank queued a DRM event or released a
+/// `WAIT_VBLANK` waiter" notification: `1` when the host must retry its
+/// parked callers (card0 readers and pollers, `WAIT_VBLANK` ioctls), `0`
+/// otherwise. A tick that retired nothing leaves parked waits alone.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kms_take_vblank_wake() -> u32 {
+    u32::from(crate::dri::take_vblank_wake())
+}
+
+// ---------------------------------------------------------------------------
+// Explicit synchronization: fences (crate::dri::fence)
+// ---------------------------------------------------------------------------
+
+/// Host work for GL fences on separate native contexts: write up to
+/// `out_len / 8` records of `[export_id u32, request u32]` and return the
+/// count (or a negative errno). Request 2 (release): the kernel dropped its
+/// last reference, so the host may delete the native fence it retained.
+/// Request 1 (poll): a waiter is waiting on this pending fence, so the host
+/// must observe its native status and report a signal through
+/// [`kernel_dri_fence_host_signal`]. Fences nobody waits on are never
+/// listed, so a host with no listed fence does no fence work at all. The
+/// kernel announces new work with the `IDX_FENCE_HOST_WORK` wake event; a
+/// host calls this only after seeing it (or while it is still polling).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_dri_fence_host_requests(out_ptr: *mut u8, out_len: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    if out_ptr.is_null() {
+        return -(Errno::EINVAL as i32);
+    }
+    let requests = crate::dri::fence::host_requests();
+    let capacity = (out_len / 8) as usize;
+    if requests.len() > capacity {
+        // The releases were consumed with this call; a short buffer would
+        // lose them. A host must size its buffer for every exported fence.
+        panic!("kernel_dri_fence_host_requests: {} requests exceed the host buffer of {}",
+            requests.len(), capacity);
+    }
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, requests.len() * 8) };
+    for (i, (export_id, request)) in requests.iter().enumerate() {
+        out[i * 8..i * 8 + 4].copy_from_slice(&export_id.to_le_bytes());
+        out[i * 8 + 4..i * 8 + 8].copy_from_slice(&request.to_le_bytes());
+    }
+    requests.len() as i32
+}
+
+/// The host observed GL fence export `export_id` signal (`error` 0, or a
+/// negative errno if its context was lost). Returns 0 when a pending fence
+/// signaled, 1 when the fence was already released, and `-EINVAL` for an id
+/// the kernel never issued (a host fault).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_dri_fence_host_signal(export_id: u32, error: i32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let mut host = WasmHostIO;
+    let now = match crate::dri::sync_file::monotonic_now(&mut host) {
+        Ok(now) => now,
+        Err(errno) => return -(errno as i32),
+    };
+    match crate::dri::fence::host_signaled(export_id, error, now) {
+        Ok(crate::dri::fence::HostSignal::Signaled) => 0,
+        Ok(crate::dri::fence::HostSignal::Released) => 1,
+        Err(errno) => -(errno as i32),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -17852,26 +18441,31 @@ pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
 static CURSOR_TRANSPORT: spin::Mutex<crate::dri::cursor::CursorTransport> =
     spin::Mutex::new(crate::dri::cursor::CursorTransport::new());
 
-/// Negotiate cursor protocol 1. Older hosts never call this and cursor
-/// capability remains disabled. No new host import is needed under ABI 50.
+/// Negotiate cursor protocol 4: device cursor-plane state with framebuffer
+/// identity, independent of the master grant.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kms_cursor_configure(version: u32) -> i32 {
     CURSOR_TRANSPORT.lock().configure(version)
 }
 
 /// Read the latest complete cursor state, coalescing image and motion updates.
-/// Protocol 1: eight little-endian words (pid, BO, width, height, x, y, hot_x,
-/// hot_y). Returns 32 after copying, 0 when unchanged, or negative errno.
+/// Protocol 4: ten LE words (two reserved zero, BO, width, height, x, y,
+/// hot_x, hot_y, actual framebuffer). Returns 40, 0 unchanged, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kms_cursor_read(out_ptr: *mut u8, out_len: u32) -> i32 {
-    if out_ptr.is_null() || out_len < 32 { return -(Errno::EINVAL as i32); }
+    use wasm_posix_shared::kms_cursor as wire;
+    if out_ptr.is_null() || out_len < wire::RECORD_BYTES as u32 { return -(Errno::EINVAL as i32); }
+    // Host entry serialization owns the kernel. Acquire before the transport
+    // mutex: applying pending exits may itself clear this transport.
+    let _gkl = GklGuard::acquire();
+    // The cursor the CRTC shows: none while the CRTC is dark.
+    let (fb, x, y) = crate::dri::kms::presented_cursor();
     let mut transport = CURSOR_TRANSPORT.lock();
-    let Some(words) = transport.take() else { return 0 };
-    let out = unsafe { slice::from_raw_parts_mut(out_ptr, 32) };
-    for (chunk, word) in out.chunks_exact_mut(4).zip(words) {
-        chunk.copy_from_slice(&word.to_le_bytes());
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, wire::RECORD_BYTES) };
+    match transport.read_into(fb, x, y, out) {
+        Ok(count) => count as i32,
+        Err(error) => -(error as i32),
     }
-    32
 }
 
 /// Number of successful page-flip commits on the given crtc.

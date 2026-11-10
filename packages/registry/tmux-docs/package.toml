@@ -1,0 +1,27 @@
+kind = "program"
+name = "tmux-docs"
+version = "3.8"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `tmux` package (tmux).
+# The source, SHA-256 and version are the `tmux` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz"
+sha256 = "e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e"
+provider = "archive"
+
+[license]
+spdx = "ISC"
+url = "https://github.com/tmux/tmux/blob/3.8/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/tmux-docs/build-tmux-docs.sh"
+
+[[outputs]]
+name = "tmux-docs"
+wasm = "tmux-docs.zip"
+fork_instrumentation = "disabled"

@@ -1,0 +1,71 @@
+import {fileURLToPath} from "node:url";
+import {writeFileSync} from "node:fs";
+import {expect,test} from "../playwright-test";
+import {installBrowserMemoryBoundaryProbe,memoryBoundaryFailures} from "./support/browser-memory-boundary";
+const source=fileURLToPath(new URL("../../../host/src/webgl/",import.meta.url));
+test.use({serviceWorkers:"block"});
+for(const audit of [false,true])test(`owned buffer snapshots survive shared replacement and name reuse (${audit?"fatal":"production"})`,async({page,browser})=>{
+  const errors:string[]=[];page.on("pageerror",e=>errors.push(e.message));
+  await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
+  const result=await page.evaluate(async({source,audit})=>{
+    const load=(name:string)=>import(/* @vite-ignore */ `/@fs${source}${name}.ts`);
+    const [{GlContextRegistry},{GlMuxer},{GlProgramJournal},{bindBufferObject,replaceBufferData,updateBufferData},
+      {deleteBufferNames,collectRetiredBuffers},nativeBatch,{configureGlAudit,resetGlAuditForTesting},{nativeGlFault},{runGlQuery},{decodeAndDispatch}]=await Promise.all([
+      load("registry"),load("muxer"),load("program-journal"),load("buffer-storage"),load("buffer-references"),load("native-batch"),load("native-audit"),load("native-recovery"),load("query"),load("bridge")]);
+    const auditRows:any[]=[];
+    if(audit)configureGlAudit({mode:"fatal",sink:(r:unknown)=>auditRows.push(r),fault:(message:string)=>nativeGlFault(message)});
+    const canvas=document.createElement("canvas");canvas.width=16;canvas.height=16;
+    const gl=canvas.getContext("webgl2",{preserveDrawingBuffer:true});if(!gl)throw new Error("WebGL2 unavailable");
+    const ARRAY=0x8892,STATIC=0x88e4,live=new Set<WebGLBuffer>();let created=0,deleted=0,errorReads=0;
+    const create=gl.createBuffer.bind(gl),remove=gl.deleteBuffer.bind(gl),getError=gl.getError.bind(gl);
+    gl.createBuffer=()=>{const object=create();if(object){created++;live.add(object);}return object;};
+    gl.deleteBuffer=object=>{remove(object);if(object&&live.delete(object))deleted++;};
+    gl.getError=()=>{errorReads++;return getError();};
+    const registry=new GlContextRegistry(),muxer=new GlMuxer(gl);
+    const make=(session:number)=>{registry.bind({pid:1,sessionId:session,cmdbufAddr:0,cmdbufLen:128});const b=registry.get(1,session);b.gl=gl;b.contextId=session+1;return b;};
+    const b=make(0),execution=registry.retainContextExecution(1,0,muxer);
+    if(!execution)throw new Error("Execution owner unavailable");
+    const query=(words:number[])=>{const out=new Uint8Array(48);if(runGlQuery(b,0x3b,new Uint8Array(new Uint32Array(words).buffer),out,execution)!==48)throw new Error("Wire query rejected");return [...new Uint32Array(out.buffer)];};
+    const reserved=query([1,1,4]),journal=b.programJournal;
+    if(!journal||reserved[0]||query([10,2,journal.id,2])[4]!==2)throw new Error("Snapshot wire preparation failed");
+    if(!bindBufferObject(b,ARRAY,7))throw new Error("Buffer binding failed");const original=b.buffers.get(7);
+    const triangle=new Float32Array([-1,-1,1,-1,0,1]),bytes=new Uint8Array(triangle.buffer);
+    const before=errorReads;
+    const command=new Uint8Array(4+24+bytes.byteLength),wire=new DataView(command.buffer);
+    wire.setUint16(0,0x107,true);wire.setUint16(2,command.byteLength-4,true);
+    [journal.id,0,1,ARRAY,bytes.byteLength,STATIC].forEach((word,i)=>wire.setUint32(4+i*4,word,true));command.set(bytes,28);b.cmdbufView=command;
+    if(nativeBatch.withNativeBatch(b,"real-snapshot-definition",()=>{if(decodeAndDispatch(b,0,command.byteLength)!==0)throw new Error("Snapshot wire definition rejected");})!==0)throw new Error("Definition reset context");
+    const warmNativeChecks=errorReads-before,copy=journal.resolveBufferSnapshot(0,1,original,bytes.byteLength);
+    if(!copy||copy===original)throw new Error("Snapshot did not own independent storage");
+    const peer=make(12);if(!registry.shareObjects(1,12,0)||!bindBufferObject(peer,ARRAY,7))throw new Error("Shared peer failed");
+    if(!replaceBufferData(peer,ARRAY,new Uint8Array([8,9]),STATIC))throw new Error("Peer replacement failed");
+    updateBufferData(peer,ARRAY,1,new Uint8Array([10]));
+    const ordinary=new Uint8Array(2);gl.getBufferSubData(ARRAY,0,ordinary);
+    const copied=new Uint8Array(bytes.byteLength);gl.bindBuffer(ARRAY,copy);gl.getBufferSubData(ARRAY,0,copied);gl.bindBuffer(ARRAY,peer.shadow.arrayBuffer);
+    // Collect the ordinary object completely, then reuse its public name.
+    if(!bindBufferObject(b,ARRAY,0)||!deleteBufferNames(peer,[7]))throw new Error("Old name release failed");
+    collectRetiredBuffers(peer);const originalDeleted=!gl.isBuffer(original);
+    if(!bindBufferObject(peer,ARRAY,7))throw new Error("Name reuse failed");const replacement=peer.buffers.get(7);
+    const identityRefused=journal.resolveBufferSnapshot(0,1,replacement,bytes.byteLength)===null;
+    const shader=(kind:number,text:string)=>{const s=gl.createShader(kind)!;gl.shaderSource(s,text);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s)??"compile failed");return s;};
+    const v=shader(gl.VERTEX_SHADER,"#version 300 es\nin vec2 position;void main(){gl_Position=vec4(position,0.,1.);}"),
+      f=shader(gl.FRAGMENT_SHADER,"#version 300 es\nprecision mediump float;out vec4 color;void main(){color=vec4(.2,.6,.8,1.);}"),program=gl.createProgram()!;
+    gl.attachShader(program,v);gl.attachShader(program,f);gl.bindAttribLocation(program,0,"position");gl.linkProgram(program);
+    if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program)??"link failed");
+    const vao=gl.createVertexArray();gl.bindVertexArray(vao);gl.bindBuffer(ARRAY,copy);gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);gl.enableVertexAttribArray(0);
+    gl.useProgram(program);gl.viewport(0,0,16,16);gl.clearColor(0,0,0,1);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawArrays(gl.TRIANGLES,0,3);
+    const pixel=new Uint8Array(4);gl.readPixels(8,8,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);
+    gl.useProgram(null);gl.deleteProgram(program);gl.deleteShader(v);gl.deleteShader(f);gl.bindVertexArray(null);gl.deleteVertexArray(vao);gl.bindBuffer(ARRAY,peer.shadow.arrayBuffer);
+    const nativeClean=gl.getError()===0,logicalErrors=[...b.errors,...peer.errors];
+    journal.retire();if(b.programJournal)throw new Error("Journal retirement not acknowledged");execution.release();registry.unbind(1);
+    const finalClean=gl.getError()===0;resetGlAuditForTesting();
+    return {warmNativeChecks,originalBytes:[...bytes],ordinary:[...ordinary],copied:[...copied],originalDeleted,identityRefused,pixel:[...pixel],nativeClean,finalClean,logicalErrors,created,deleted,live:live.size,auditRows};
+  },{source,audit});
+  writeFileSync(test.info().outputPath("snapshot-result.json"),JSON.stringify({engine:test.info().project.name,version:browser.version(),audit,...result},null,2));
+  expect(result.ordinary).toEqual([8,10]);expect(result.copied).toEqual(result.originalBytes);
+  expect(result.originalDeleted).toBe(true);expect(result.identityRefused).toBe(true);expect(result.pixel).toEqual([51,153,204,255]);
+  expect(result.nativeClean&&result.finalClean).toBe(true);expect(result.created).toBeGreaterThan(2);expect(result.deleted).toBe(result.created);expect(result.live).toBe(0);
+  expect(result.logicalErrors).toEqual([]);
+  if(!audit)expect(result.warmNativeChecks).toBe(1);
+  expect(result.auditRows.filter((r:any)=>r.kind==="divergence")).toEqual([]);expect(errors).toEqual([]);expect(await memoryBoundaryFailures(page)).toEqual([]);
+});

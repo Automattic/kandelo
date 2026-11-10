@@ -19,6 +19,7 @@ import { builtinModules } from "node:module";
 import {
   browserRepositoryAliases,
   browserVirtualModuleCapabilities,
+  browserOptionalDataModules,
 } from "./browser-module-contract.mjs";
 
 const modulePath = fileURLToPath(import.meta.url);
@@ -62,6 +63,7 @@ function normalizeBinariesRel(rel) {
  * Babel 8 treats <T> as JSX when JSX is enabled; ordinary .ts generic
  * functions must be parsed without JSX. Never omit a file on parse errors.
  */
+/** @param {string} file @returns {import("@babel/parser").ParserPlugin[]} */
 export function browserSourceParserPlugins(file) {
   const filename = file.split("?", 1)[0];
   return /\.[jt]sx$/.test(filename)
@@ -537,6 +539,14 @@ export function browserRequiredInputs(
           );
         }
         capabilities.add(capability);
+        continue;
+      }
+      if (browserOptionalDataModules.includes(pathPart)) {
+        if (kind === "glob") {
+          throw new Error(
+            `required browser source uses a virtual-module glob: ${file}`,
+          );
+        }
         continue;
       }
 

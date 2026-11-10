@@ -3,12 +3,16 @@
  *
  * klogctl() used to be a lie: the kernel's channel dispatch answered
  * SYS_SYSLOG with a bare 0, so a program asking for the kernel log was told
- * it had succeeded and handed nothing. Kandelo syscall 304 now routes to
- * the kernel message ring, and this program is the end-to-end half of that
- * proof. The handler's action table is unit-tested in Rust
- * (crates/runtime-core/src/syscalls.rs); what can only be shown from a guest
- * is that a real klogctl() against the real libc, channel glue, host staging
- * and kernel dispatch arrives somewhere that knows the ring.
+ * it had succeeded and handed nothing. klogctl() now reaches the kernel
+ * message ring through the kandelo.klog.v1 program extension, and this
+ * program is the end-to-end half of that proof. The handler's action table
+ * is unit-tested in Rust (crates/runtime-core/src/klogctl.rs); what can only
+ * be shown from a guest is that a real klogctl() against the real libc, the
+ * extension import, the worker's forwarding, host staging and kernel
+ * dispatch arrives somewhere that knows the ring.
+ *
+ * Raw syscall 304 (musl's SYS_syslog) is not part of the base program
+ * contract, so it must answer ENOSYS rather than the old fake success.
  *
  * The load-bearing evidence is SIZE_BUFFER: 131072 is a number only the
  * kernel holds (KMSG_CAPACITY_BYTES in crates/runtime-core/src/kmsg.rs).
@@ -26,6 +30,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/klog.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 /* Kandelo's klogctl action numbers. Source of truth: the SYSLOG_ACTION_*
@@ -166,6 +171,12 @@ int main(void)
 		if (klogctl(KLOG_SIZE_UNREAD, NULL, 0) < 0) {
 			fail("SIZE_UNREAD after a refused clear");
 		}
+	}
+
+	/* The base syscall is not served: only the extension reaches the ring. */
+	errno = 0;
+	if (syscall(SYS_syslog, KLOG_SIZE_BUFFER, NULL, 0) != -1 || errno != ENOSYS) {
+		fail("raw SYS_syslog should be ENOSYS");
 	}
 
 	if (failures != 0) {

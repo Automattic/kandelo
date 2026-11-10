@@ -8,7 +8,7 @@
 #
 # We bypass upstream's meson and skip the per-vendor subdirs
 # (libdrm_amdgpu, libdrm_radeon, libdrm_intel, libdrm_nouveau, …) —
-# none of those run on the wasm32 kernel and they pull in
+# none of those run on the Kandelo kernel and they pull in
 # vendor-specific ioctl tables we don't ship.
 
 set -euo pipefail
@@ -29,14 +29,14 @@ SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:?WASM_POSIX_DEP_OUT_DIR must name the resolver staging directory}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
-if [ "$TARGET_ARCH" != "wasm32" ]; then
-    echo "ERROR: libdrm currently supports only wasm32, got $TARGET_ARCH" >&2
-    exit 1
-fi
-
-export WASM_POSIX_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-CC=wasm32posix-cc
-AR=wasm32posix-ar
+case "$TARGET_ARCH" in
+    wasm32) DEFAULT_SYSROOT="$REPO_ROOT/sysroot" ;;
+    wasm64) DEFAULT_SYSROOT="$REPO_ROOT/sysroot64" ;;
+    *) echo "ERROR: unsupported libdrm target architecture: $TARGET_ARCH" >&2; exit 1 ;;
+esac
+export WASM_POSIX_SYSROOT="${WASM_POSIX_SYSROOT:-$DEFAULT_SYSROOT}"
+CC="${TARGET_ARCH}posix-cc"
+AR="${TARGET_ARCH}posix-ar"
 for tool in "$CC" "$AR" curl tar shasum python3; do
     command -v "$tool" >/dev/null || {
         echo "ERROR: required build tool not found: $tool" >&2

@@ -1,0 +1,27 @@
+kind = "program"
+name = "gzip-docs"
+version = "1.13"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `gzip` package (gzip, gunzip, zcat).
+# The source, SHA-256 and version are the `gzip` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/gzip/gzip-1.13.tar.xz"
+sha256 = "7454eb6935db17c6655576c2e1b0fabefd38b4d0936e0f87f48cd062ce91a057"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/gzip.git/tree/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/gzip-docs/build-gzip-docs.sh"
+
+[[outputs]]
+name = "gzip-docs"
+wasm = "gzip-docs.zip"
+fork_instrumentation = "disabled"

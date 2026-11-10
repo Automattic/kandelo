@@ -1,0 +1,27 @@
+kind = "program"
+name = "less-docs"
+version = "668"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `less` package (less).
+# The source, SHA-256 and version are the `less` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://www.greenwoodsoftware.com/less/less-668.tar.gz"
+sha256 = "2819f55564d86d542abbecafd82ff61e819a3eec967faa36cd3e68f1596a44b8"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://www.greenwoodsoftware.com/less/LICENSE"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/less-docs/build-less-docs.sh"
+
+[[outputs]]
+name = "less-docs"
+wasm = "less-docs.zip"
+fork_instrumentation = "disabled"

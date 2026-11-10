@@ -6,8 +6,9 @@ set -euo pipefail
 #   libc:   functional-regression | math
 #   sortix: include | basic | runtime
 # Omitting the group preserves the complete local suite behavior.
-# Set PREPARE_BROWSER_ASSETS=1 when the caller supplied an already-materialized
-# binaries/ artifact but intentionally deferred local browser asset generation.
+# Set PREPARE_BROWSER_ASSETS=1 when the caller deferred browser asset
+# generation: the browser suite then runs `./run.sh prepare-browser`, the
+# supported local SourceOnly build of what the browser app demands.
 # Prepare-merge also sets VERIFY_BROWSER_PRODUCTION_BUILD=1 to compile the
 # ordinary Pages-shaped product before closed test transport is exposed.
 
@@ -784,10 +785,14 @@ case "$suite" in
             [ "${PREPARE_BROWSER_ASSETS:-0}" = "1" ]; then
             # Publication-pending packages are deliberately absent from the
             # prepared release ledger. Materialize their exact PR recipes as
-            # local test generations before the ordinary fetch-only browser
-            # pass proves that every browser dependency is now resolvable.
+            # local test generations in the prepared binaries/ tree.
             bash scripts/materialize-ci-publication-blockers.sh
-            ./run.sh --already-materialized --fetch-only prepare-browser
+            # WHY plain `prepare-browser`: browser commands build the local
+            # SourceOnly graph and reject the retired binary-selection modes.
+            # `--already-materialized` exits 2 there, and run.sh no longer
+            # parses `--fetch-only` at all (it becomes an unknown command),
+            # so the old spelling failed before preparing anything.
+            ./run.sh prepare-browser
             if [ "${VERIFY_BROWSER_PRODUCTION_BUILD:-false}" = "true" ] || \
                 [ "${VERIFY_BROWSER_PRODUCTION_BUILD:-0}" = "1" ]; then
                 run_pages_shaped_browser_build

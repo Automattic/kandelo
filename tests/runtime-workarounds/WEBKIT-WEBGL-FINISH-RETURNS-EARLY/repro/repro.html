@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGL 2 finish() returns before earlier draws complete</title>
+<pre id="result">Running</pre>
+<script src="finish.js"></script>
+<script>
+// Standalone WebGL 2: the page's canvas and an OffscreenCanvas in a worker.
+(async () => {
+  const results = {};
+  try {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 4;
+    const gl = canvas.getContext('webgl2', { antialias: false });
+    if (!gl) throw Error('WebGL2 unavailable');
+    results.page = measureFinish(gl);
+  } catch (error) { results.page = { failure: String(error) }; }
+  results.worker = await new Promise((resolve) => {
+    const worker = new Worker('worker.js');
+    worker.onmessage = (event) => resolve(event.data);
+    worker.onerror = (event) => resolve({ failure: String(event.message) });
+  });
+  const verdicts = [judge(results.page), judge(results.worker)];
+  results.verdicts = { page: verdicts[0], worker: verdicts[1] };
+  const verdict = verdicts.includes('reproduced') ? 'reproduced'
+    : verdicts.every((v) => v === 'not-reproduced') ? 'not-reproduced' : 'inconclusive';
+  window.__reproVerdict = { verdict, details: JSON.stringify(results) };
+  document.querySelector('#result').textContent = JSON.stringify(window.__reproVerdict, null, 2);
+})();
+</script>

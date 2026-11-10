@@ -36,8 +36,9 @@ node_modules/
 # Worktrees
 .worktrees/
 
-# Worktree-owned validation evidence and scratch (all editors and agents).
+# Retained context and disposable worktree scratch (all editors and agents).
 /.context/
+/.scratch/
 test-results/
 
 # Claude Code worktree config (added when an agent runs `claude` inside

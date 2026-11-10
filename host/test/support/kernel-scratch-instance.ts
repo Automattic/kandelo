@@ -64,6 +64,10 @@ function signatures(
       parameters: [pointer, i32, i32],
       result: i32,
     },
+    kernel_dri_fence_host_requests: {
+      parameters: [pointer, i32],
+      result: i32,
+    },
     kernel_take_pty_readiness_changed: {
       parameters: [],
       result: i32,
@@ -120,9 +124,17 @@ function signatures(
       parameters: [i32, i32],
       result: i32,
     },
+    kernel_epoll_wake_indices: {
+      parameters: [i32, i32, i32, pointer, i32],
+      result: i32,
+    },
     kernel_epoll_wait_token: {
       parameters: [i32, i32],
       result: i64,
+    },
+    kernel_epoll_wait_retry_state: {
+      parameters: [i32, i32, i64, i64],
+      result: i32,
     },
     kernel_epoll_wait_finish: {
       parameters: [i32, i32, i64],
@@ -162,6 +174,10 @@ function signatures(
     },
     kernel_rootfs_inspect_directory: {
       parameters: [pointer, i32, i32, pointer, i32],
+      result: i32,
+    },
+    kernel_rootfs_take_compaction_request: {
+      parameters: [],
       result: i32,
     },
     kernel_rootfs_lazy_resource_limits: {
@@ -207,6 +223,10 @@ function signatures(
       parameters: [i32, i32, i32],
       result: i64,
     },
+    kernel_get_process_exec_generation: {
+      parameters: [i32, pointer, i32],
+      result: i32,
+    },
     kernel_get_process_state: {
       parameters: [i32],
       result: i32,
@@ -241,6 +261,10 @@ function signatures(
     },
     kernel_blocking_retry_release: {
       parameters: [i32, i32, i64],
+      result: i32,
+    },
+    kernel_owned_mapping_finish: {
+      parameters: [i32, i32, i32, i64, i32],
       result: i32,
     },
     kernel_inject_datagram: {
@@ -320,6 +344,7 @@ function signatures(
       result: i32,
     },
     kernel_shared_mapping_flush: { parameters: [i32, i64, i64], result: i32 },
+    kernel_report_host_mapping_writeback_error: { parameters: [i32, i64, i64, i64, i32], result: i32 },
     kernel_shared_mapping_unmap: { parameters: [i32, i64, i64], result: i32 },
     kernel_shared_mapping_remap: {
       parameters: [i32, i64, i64, i64],
@@ -650,6 +675,14 @@ function signatures(
       // genuine gated Wasm call.
       result: i32,
     },
+    kernel_kms_take_vblank_wake: {
+      parameters: [],
+      result: i32,
+    },
+    kernel_vblank_elapsed: {
+      parameters: [i32],
+      result: i32,
+    },
     kernel_set_wait_queue_enabled: {
       parameters: [i32],
       result: i32,
@@ -845,6 +878,14 @@ export function createKernelScratchTestInstance(
       // readiness to consume. Explicit mocks still support fault injection.
       if (name === "kernel_take_pty_readiness_changed" && implementation === undefined) {
         return 0;
+      }
+      // Neutral fresh-process generation for fixtures not modeling exec.
+      // Generation/exec tests override this real scratch-writing export;
+      // excluding the export still proves mandatory-export refusal.
+      if (name === "kernel_get_process_exec_generation" && implementation === undefined) {
+        if (Number(args[2]) !== 8) return -22;
+        new DataView(memory.buffer).setBigUint64(Number(args[1]), 0n, true);
+        return 8;
       }
       if (typeof implementation !== "function") {
         throw new Error(`missing test implementation for ${name}`);

@@ -4,7 +4,7 @@
 use crate::Result;
 use crate::arch::{WasmArch, tool_prefix};
 use crate::flags::join;
-use crate::toolchain::{find_sysroot, resolve_toolchain, sdk_config_site};
+use crate::toolchain::{find_llvm_dir, find_sysroot, sdk_config_site};
 use std::process::Command;
 
 /// GNU build-system identity for Kandelo's musl userland.
@@ -31,13 +31,12 @@ fn run_with_env(program: &str, args: &[String], env: &[(String, String)]) -> i32
 
 /// `llvm-ar`, `llvm-ranlib` or `llvm-nm` from the resolved LLVM tree.
 pub fn llvm_passthrough(tool: &str, args: &[String]) -> Result<i32> {
-    // The binutils-style tools are arch-independent; like the SDK always
-    // has, they resolve the wasm32 toolchain.
-    let toolchain = resolve_toolchain(WasmArch::Wasm32)?;
-    Ok(crate::exec::run_passthrough(
-        &join(&toolchain.llvm_dir, tool),
-        args,
-    ))
+    // The binutils-style tools are arch-independent and read no libc, so they
+    // resolve only the LLVM tree. Resolving a whole toolchain would validate
+    // the wasm32 sysroot and make wasm64posix-ar fail in a tree that has only
+    // sysroot64.
+    let llvm_dir = find_llvm_dir()?;
+    Ok(crate::exec::run_passthrough(&join(&llvm_dir, tool), args))
 }
 
 /// The environment `configure` runs under: the SDK's tools and the

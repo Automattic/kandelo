@@ -1,0 +1,27 @@
+kind = "program"
+name = "make-docs"
+version = "4.4.1"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `make` package (make).
+# The source, SHA-256 and version are the `make` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/make/make-4.4.1.tar.gz"
+sha256 = "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/make.git/tree/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/make-docs/build-make-docs.sh"
+
+[[outputs]]
+name = "make-docs"
+wasm = "make-docs.zip"
+fork_instrumentation = "disabled"

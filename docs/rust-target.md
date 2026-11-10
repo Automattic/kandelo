@@ -33,6 +33,425 @@ Verified on the kernel (see `programs/rust/*`):
 | networking | `std::net` TCP | loopback + Node external TCP |
 | processes | `std::process::Command` | fork+exec (see below) |
 
+## Experimental compiler inside Kandelo
+
+The experimental `rustc` package builds the compiler itself for Kandelo,
+separately from host-side `wasm32posix-cargo`. It pins the repository's
+nightly compiler revision, statically links its matching LLVM 22 WebAssembly
+backend through the `rust-llvm` library package, and supplies matching
+prebuilt `std` in `rust-std.zip`. The shell carries these as lazy tools;
+the standalone Rust SDK bundle below is optional. The compiler package
+alone does not include Cargo. Rustup is not included; procedural macro
+loading remains unvalidated.
+
+Build it through the package resolver (this is a substantial cold build):
+
+```bash
+bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh rustc wasm32
+```
+
+A guest image needs `/usr/bin/rustc`, `rust-std.zip` mounted at `/usr`,
+and `kandelo-sdk.zip` mounted at `/usr` for the existing
+`wasm32posix-cc` linker driver, Clang and wasm-ld. Compiler and standard
+library must come from the same pinned revision. Select the installed
+target by name:
+
+```bash
+RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 rustc -Zunstable-options --sysroot /usr \
+  --target wasm32-unknown-kandelo-std hello.rs -o hello.wasm
+./hello.wasm
+```
+
+`--emit=metadata --crate-type=lib` type-checks without invoking the linker;
+`--emit=obj` exercises LLVM code generation without linking. Node and the
+Chromium, Firefox and WebKit desktop test engines compile, link and execute a
+program using `Vec`, iterators and `println!`, then reopen its persistent
+disk and execute the saved program again. The existing process-memory
+limits are unchanged.
+Persistent disks retain sources, standard-library files and build outputs;
+compiler and linker processes still need their own memory.
+
+The compiler inherits the target's abort-only panic strategy. Fatal type
+errors print Rust diagnostics (including error codes) and terminate by
+`SIGABRT` (134), rather than rustc's usual status 1. Compiler panic recovery,
+procedural macros, dynamic backends, arbitrary crates remain unvalidated. Programs reaching `fork` still require normal fork
+instrumentation before guest execution.
+
+The acceptance fixtures are `host/test/rustc-in-guest.test.ts` and
+`apps/browser-demos/test/rustc-in-guest.spec.ts`. Set
+`KANDELO_REQUIRE_GUEST_RUSTC=1` when running them to fail on missing
+experimental artifacts rather than skip. They cover type-checking,
+compilation, execution, diagnostics and reopening the compiled program from
+its persistent root filesystem. The browser fixture uses an OPFS disk.
+
+## Cargo inside Kandelo
+
+To try the toolchain in the browser app, build a partial shell from
+`scripts/dev-shell.sh` and serve it:
+
+```sh
+./run.sh partial shell cargo rustc kandelo-rustc kandelo-sdk-browser-bundle wasm-fork-instrument
+./run.sh browser --partial
+```
+
+This installs the same tools as the standalone SDK below, using separate
+lazy programs and archives. The shell supplies the musl environment flag;
+the project still needs the bounded build profile below. Other shell
+activities are left out when their packages are absent. This development
+image does not establish canonical-shell integration readiness.
+
+The optional `kandelo-rust-sdk` package builds a ZIP mounted at `/usr`.
+It combines the C/C++ SDK and its linker with the pinned guest rustc,
+matching prebuilt standard library and libtest, Cargo, rustdoc, rustfmt,
+Clippy and `wasm-fork-instrument`.
+It is experimental and excluded from the default supported build set.
+Build it through the normal resolver from `scripts/dev-shell.sh`:
+
+```sh
+cargo xtask build-deps resolve kandelo-rust-sdk --arch wasm32
+cargo xtask build-deps output-path kandelo-rust-sdk kandelo-rust-sdk.zip
+```
+
+Register that ZIP as a verified lazy archive at `/usr` on a persistent
+machine, preserving archive symlinks and executable modes. The archive
+installs the public commands in `/usr/bin`; the raw compiler, rustdoc and
+Clippy driver live in `/usr/libexec` behind the SDK entry point. Cargo
+subcommand aliases include the target's `.wasm` executable suffix, so
+`cargo fmt` and `cargo clippy` use ordinary Cargo command discovery. The
+acceptance workspace uses this bounded build profile in its root
+`Cargo.toml`:
+
+```toml
+[profile.dev]
+debug = 0
+codegen-units = 1
+incremental = false
+```
+
+The complete SDK installs a component identity manifest at
+`/usr/share/kandelo/rust-sdk/manifest.json`. Its identity binds the actual
+compiler, standard library, C SDK and related tool bytes. The public Cargo
+entry point selects a compiler link under
+`$CARGO_HOME/kandelo/compilers/<identity>/rustc` (default Cargo home:
+`$HOME/.cargo`). This invalidates Cargo's compiler-information cache after
+an SDK replacement, even when the installed compiler path, size and
+modification time stay the same. A namespaced `kandelo-sdk:` line in
+`rustc -vV` also invalidates crate and build-script fingerprints; upstream
+Rust release, commit and LLVM fields are preserved.
+
+An explicitly selected unrelated compiler keeps its normal `RUSTC`
+selection. Project `build.rustc`, `--config` and `CARGO_BUILD_RUSTC`
+settings retain Cargo's precedence: the default SDK alias is selected
+through `PATH` when `RUSTC` is unset. SDK build commands require a complete, valid manifest and a
+writable Cargo home. Cargo help/version queries do not create compiler
+cache entries. Upstream Cargo itself lives at `/usr/libexec/cargo`;
+invoking it directly bypasses the SDK compiler-cache selection.
+
+The identity describes the SDK actually installed in the guest. Replacing
+an image served by the browser does not replace files in an existing
+persistent machine. A complete SDK installation or a new machine is still
+required before its new components can be used.
+
+A complete SDK replacement was validated on Node using the same project,
+Cargo home and target directory, with the compiler inode, length and mtime
+preserved. The new standard library and build-script output were used,
+then builds stayed fresh before and after reopening the persistent disk.
+
+The same full replacement currently fails during archive extraction on
+Chromium, Firefox and WebKit with ENOSPC. A Chromium diagnostic run also
+reported about 700 MiB origin usage against more than 10 GiB quota, so that
+failure is not established to be browser quota exhaustion. Its underlying
+persistence failure remains unresolved. Browser SDK replacement is not
+claimed as supported; an existing saved machine does not receive a new
+SDK merely because its boot image URL changes. Ordinary Cargo builds and
+same-SDK cache reuse are independently validated on all four hosts.
+
+Incremental compilation is disabled for the WebKit acceptance workflow.
+During bring-up, Cargo's default incremental mode repeatedly made WebKit
+terminate its web process with `ExceededMemoryLimit` while compiling the build script.
+The same workspace passed Node, Chromium and Firefox with incremental
+compilation enabled. A larger compiled-module retention window reduced
+recompilation but did not prevent WebKit's termination; runtime limits and
+the default cache policy are unchanged. Cargo still reuses completed
+outputs and build-script results across a persistent reboot without rustc's
+incremental cache.
+
+With `/usr/bin` on `PATH`, run the installed toolchain:
+
+```sh
+cd /home/maker/project
+cargo check --offline -j1
+cargo build --offline -j1
+cargo run --offline -j1
+cargo fmt --all
+cargo fmt --all -- --check
+cargo clippy --offline -j1 --workspace -- -D warnings
+cargo doc --offline --no-deps -j1
+cargo test --offline -j1 --workspace -- --test-threads=1
+```
+
+The public rustc entry point supplies `-Zunstable-options` and the matching
+`/usr` sysroot, including for Cargo's compiler probes and host build scripts.
+It reads output paths from rustc's JSON artifact notifications and runs the
+normal guest fork instrumenter on linked WebAssembly outputs importing fork.
+Diagnostics pass through unchanged. Probes and metadata-only compiles replace
+the wrapper with rustc; direct human-diagnostic links use a filename query. Instrumentation failures fail
+the compile. Build scripts and executables using `std::process::Command`
+therefore follow the same preparation contract as packaged programs.
+
+Cargo is pinned to `eb9b60f1f6604b5e022c56be31692c215b8ba11d`, the
+compiler source tree's Cargo revision. It retains curl and Git transports,
+using Kandelo's declared libcurl, OpenSSL and zlib. The current libcurl
+build supports HTTP/1.1; this Cargo build does not request HTTP/2. Registry
+fetching, TLS trust configuration, Git credentials, procedural macros and
+arbitrary third-party crates are not covered by the offline acceptance case.
+Local-registry `.crate` archives are covered by acceptance: Cargo verifies
+their checksum, unpacks them, preserves executable permissions and builds
+their Rust code. CPU-count detection uses Kandelo's musl `sysconf`, allowing
+Cargo to choose its default job count. For bounded browser builds, `-j1`
+remains the tested recommendation. Cargo defaults to HTTP/1.1 when the
+linked curl lacks HTTP/2; explicit HTTP configuration remains authoritative.
+Kandelo's libcurl uses `/etc/ssl/certs/ca-certificates.crt` and
+`/etc/ssl/certs` for trust, including the browser's session CA bundle.
+This configuration does not establish end-to-end HTTPS registry support.
+
+Cargo install/uninstall are also unvalidated. The std port still lacks a
+Kandelo-specific `std::env::consts` entry; platform identity and filename
+constants use the generic fallback. Cargo build scripts use the actual
+compiler-reported executable path, including its `.wasm` suffix.
+Vendored sources and path dependencies avoid registry access. Crates whose
+platform code does not recognize Kandelo still need portability work, just
+as they do when cross-compiled on the build machine.
+
+The acceptance fixtures are `host/test/cargo-in-guest.test.ts` and
+`apps/browser-demos/test/cargo-in-guest.spec.ts`. The partial shell's login
+terminal and lazy tools are covered by
+`apps/browser-demos/test/cargo-partial-image.spec.ts`. Set
+`KANDELO_REQUIRE_GUEST_CARGO=1` to make missing experimental artifacts fail
+instead of skip. `KANDELO_GUEST_RUST_SDK_BUNDLE` can name the normal resolver's
+canonical ZIP output when the optional bundle is outside the published view.
+The workspace includes a path dependency, generated Rust
+source from `build.rs`, a build script launching rustc and a program spawning
+itself. The tests check a fresh build, reuse of existing outputs and running
+again after reopening the persistent disk. The documented profile passes on desktop Node, Chromium, Firefox and
+WebKit. Builds and test execution use one job; `cargo check` also exercises
+default CPU-count detection. Runtime memory limits are unchanged.
+
+### Unit and integration tests
+
+The matching sysroot ships `libtest` and its dependencies. The compiler
+entry point selects Rust's upstream abort-mode test harness for `--test`:
+each test runs in a subprocess, allowing the parent to report failures and
+check `#[should_panic(expected = "...")]` without panic unwinding.
+Ordinary programs still use `panic = "abort"`.
+Tests run in separate processes, so they do not share mutable process globals.
+This does not provide stack unwinding or destructor cleanup after a panic.
+
+```sh
+cargo test --offline -j1 --workspace -- --test-threads=1
+```
+
+Plain `cargo test` can now reach the documentation-test phase using the
+matching rustdoc. The public rustdoc entry point supplies the same sysroot
+and uses `/usr/bin/rustc` as its default test builder, so generated doctest
+executables receive the normal fork preparation. Explicit test builders
+remain authoritative. The named custom target keeps its compiler identity;
+a [tracked rustdoc patch](../tests/runtime-workarounds/RUST-RUSTDOC-NAMED-CUSTOM-TARGET/entry.md)
+resolves doctest executable suffixes through the normal target search.
+This does not add panic unwinding.
+Test filtering, ignored tests, expected panics, mismatched panic messages,
+failure exit status, build-script generated source, subprocess tests and
+running tests again after reopening a persistent disk are exercised by Cargo acceptance.
+The negative acceptance cases explicitly run the ignored failing tests;
+they must report failure, rather than turn an empty test run green.
+Acceptance uses one test thread; parallel harness execution still needs
+dedicated coverage.
+
+### Native build scripts and compatibility coverage
+
+The shared workload in `host/test/fixtures/rust-compatibility.ts` uses
+Cargo inside the guest to compile and execute C/C++ dependencies. Its
+`build.rs` invokes the installed C and C++ SDK drivers and archiver,
+produces a static archive and generated Rust, and links an executable that
+calls both languages. A C++ global vector checks startup initialization.
+The workload changes a C source and checks the new runtime result, checks
+reuse of unchanged output, rejects a deliberately missing native symbol at
+final link, and rebuilds successfully after restoring the source.
+
+Its unit and integration tests exercise Mutex, Condvar, Barrier, channels
+and thread joins; child working directories, a cleared environment, piped
+standard streams, and nonzero exit status; and a child panic observed as
+SIGABRT. The panic child attempts `catch_unwind`, but neither recovers nor
+runs its destructor. This confirms the documented abort boundary, not
+unwinding support. Harness execution still uses `--test-threads=1`; guest
+threads within a test are separate from parallel libtest scheduling.
+
+Documentation cases cover an example that executes native code, a
+`compile_fail` example with an expected diagnostic code, `no_run`, `ignore`
+and `should_panic`. A deliberately failing assertion must make Cargo fail;
+restoring the example must pass. A filesystem marker distinguishes the
+executed example from the compiled-only example.
+
+The embedding's owned-job deadline is tested separately from libtest:
+a running parent and child exceed the deadline, the result reports
+`timed_out` after family retirement, and a subsequent guest process checks
+that both PIDs return ESRCH from `kill(pid, 0)`. Another command must then
+execute successfully. This is a host-controlled command-family deadline,
+not a new per-test timeout option in Cargo or libtest.
+
+External procedural-macro crates currently fail before expansion: Cargo
+reports that `wasm32-unknown-kandelo-std` does not support the `proc-macro`
+crate type. A minimal local macro/consumer pair checks this known boundary.
+Built-in derives and declarative macros do not use that loading path.
+Supporting them needs further target/compiler work and loader validation;
+installing rustdoc, rustfmt and Clippy does not provide that support.
+
+Node, Chromium, Firefox and WebKit acceptance run this same workload.
+The fixtures are `host/test/rust-compatibility-in-guest.test.ts` and
+`apps/browser-demos/test/rust-compatibility-in-guest.spec.ts`. This does not
+establish compatibility with arbitrary configure scripts, C++ exception unwinding across Rust, registry `libc`
+versions, or arbitrary native-build helper crates.
+
+Native linking currently warns about `UnwindRegistersSave.S.o` and
+`UnwindRegistersRestore.S.o` in the libc++ archives. These unused members
+are ARM64 Mach-O objects, which wasm-ld ignores. The libc++ recipe lacks an
+explicit assembly target; correcting it and validating rebuilt archives
+remains follow-up work.
+
+### Native dependency helpers
+
+The optional `rust-native-fixtures` package prepares unmodified, locked
+`cc` 1.2.61, `find-msvc-tools` and `shlex` sources with Cargo's checksum
+verification. The guest compiles those Rust crates and uses `cc` to build
+C/C++ archives, then executes a program calling both languages. Source
+preparation produces a verified ZIP; no build-machine executables enter
+the fixture.
+
+Node, Chromium and Firefox pass this configured case. The SDK exposes its
+public tools as `cc`, `c++` and `wasm32posix-*`; default `cc` discovery looks
+for `clang` on PATH and fails. Configure the real SDK drivers and its C++
+runtime explicitly:
+
+```sh
+export CC=wasm32posix-cc CXX=wasm32posix-c++ AR=wasm32posix-ar
+export CXXSTDLIB=c++
+cargo run --offline --locked -j1
+```
+
+WebKit currently fails earlier: guest rustc exhausts its native Wasm call
+stack compiling the `cc` crate and exits 139; Cargo returns 101. The browser
+acceptance requires both that compiler failure and the actual worker's
+`Maximum call stack size exceeded` diagnostic. It records an unsupported
+capability, not successful native compilation. Explicitly using 16
+code-generation units for build dependencies also failed. Cargo applies
+[separate profile settings to build dependencies](https://doc.rust-lang.org/cargo/reference/profiles.html#build-dependencies).
+Compiler symbols and the failing recursion path need further investigation.
+
+From the declared dev shell, prepare both optional artifacts:
+
+```sh
+cargo xtask build-deps resolve kandelo-rust-sdk --arch wasm32
+cargo xtask build-deps resolve rust-native-fixtures --arch wasm32
+```
+
+Set `KANDELO_GUEST_RUST_SDK_BUNDLE` to the first output root's
+`kandelo-rust-sdk.zip` and `KANDELO_GUEST_RUST_NATIVE_FIXTURES` to the second
+root's `share/kandelo/rust-native-fixtures.zip`. With
+`KANDELO_REQUIRE_GUEST_CARGO=1`, the Node and browser
+`rust-native-dependencies-in-guest` acceptance files fail when either input
+is missing. The `cc` parallel feature, unmodified registry `libc` versions
+and arbitrary configure scripts remain unvalidated.
+
+### Formatting, linting and documentation
+
+The tools come from the compiler's pinned Rust source revision. The guest
+SDK includes `rustdoc`, `rustfmt`, `cargo-fmt`, `cargo-clippy` and
+`clippy-driver`; Clippy uses the same compiler libraries as rustc.
+
+The shared workflow in `host/test/fixtures/rust-devtools.ts` checks tool
+versions, rejects unformatted source, formats it, rejects an intentional
+Clippy lint, accepts the corrected source, verifies a generated function's
+HTML, and requires a documentation example to execute. Node and browser
+acceptance use the same guest commands on persistent disks. This is a small
+compatibility case, not coverage of every rustdoc or Clippy option.
+For a denied Clippy lint, Cargo returns status 101 with the real diagnostic
+and reports the driver's abort-mode termination by `SIGABRT`, as with fatal
+rustc errors. Correcting the source allows the same lint policy to pass.
+
+Executables linked through the installed Rust and Clippy compiler entry
+points carry the SDK's `kandelo.abi.contract` digest. The host checks that
+digest against the kernel's program interface. A foreign or duplicate
+contract is rejected; incompatible executables must be rebuilt.
+
+### Remaining development-tool gaps
+
+| Expected workflow | Guest SDK status |
+|---|---|
+| Editor analysis and standard-library source navigation | Guest `rust-analyzer` and `rust-src` are not shipped |
+| External procedural macros, such as derive plugins | Target rejects the `proc-macro` crate type; expansion is unsupported |
+| Cargo dependencies that compile C/C++ or run configure tools | Direct guest SDK builds pass on all four hosts; configured cc-rs builds pass on Node/Chromium/Firefox and hit a compiler stack limit on WebKit; other helpers/configure scripts remain unvalidated |
+| `catch_unwind` and panic unwinding | Unsupported; abort-mode libtest isolates tests instead |
+| Backtraces | Experimental worker VM capture with owned names and available source locations; see below |
+| Online registries, Git authentication and proxies | Transport defaults configured; end-to-end workflow unvalidated |
+| Incremental compilation on WebKit | Disabled in the tested profile because of native process memory limits |
+| Instrumentation coverage | Ordinary guest Cargo builds, subprocesses, synchronized threads and unit tests pass on Node/Chromium/Firefox/WebKit; see [the coverage workflow](rust-debugging.md#coverage-inside-kandelo) |
+| Parallel test harnesses, release/LTO builds and benchmarks | Need dedicated guest-toolchain validation; the tested command deadline belongs to the embedding owned-job API |
+
+On the build machine, the cross-compilation wrapper can build test targets
+with `--no-run`, but its `test` subcommand still needs a Cargo runner that
+prepares and executes the hashed test artifacts. Guest Cargo executes its
+test artifacts directly through the installed compiler entry point.
+
+## Source diagnostics and backtraces
+
+The experimental Kandelo standard-library backend captures the executing
+worker's real VM stack. `Backtrace::force_capture()` captures regardless of
+`RUST_BACKTRACE`; `Backtrace::capture()` honors Rust's normal environment
+selection. `RUST_BACKTRACE=1` requests a trace when a panic aborts the process.
+Cross-compiled programs are validated on Node, Chromium, Firefox and WebKit,
+including captures retained across later captures, thread exit, subprocesses,
+and aborting panics. Node, Chromium and Firefox resolve the expected user
+source lines. The tested WebKit engine provides function names without
+instruction offsets, so its trace has names but no source lines.
+
+Build through the normal `wasm32posix-cargo` wrapper. It retains function
+names and prepares available DWARF source lines automatically. The guest
+compiler entry point selects the same preparation flags. Ordinary guest Cargo
+builds capture backtraces across a persistent reboot and a source edit on all
+four hosts. The host wrapper retains immutable
+original linker outputs below the Cargo target directory, so a no-change build
+can prepare from the original again. It does not instrument generated fork
+runtime code a second time. Release builds still need debug information for
+user source lines, for example:
+
+```toml
+[profile.release]
+debug = 1
+```
+
+For an individual artifact, capture its exact SHA-256 and resolve an absolute
+Wasm instruction offset with:
+
+```sh
+scripts/run-wasm-fork-instrument.sh program.wasm --debug-location 0x1234
+```
+
+This reads only diagnostic metadata in that artifact. Source paths are display
+strings, not permission to read the build machine or browser filesystem.
+A returned `null` location means the exact offset is unresolved. An engine
+that omits instruction offsets can still provide named frames, without source
+lines. Keep the actual final artifact when comparing traces: preparing or
+optimizing it again can change function indices and instruction offsets.
+
+Captured Rust frames own their symbol metadata, so a later capture or thread
+exit cannot replace a saved trace. The interface caps capture at 128 frames
+and 64 KiB of packet data. With multiple live guest modules, the host reports
+module ambiguity and omits guessed source locations. Generated fork helpers
+can appear without source lines. Inline virtual frames, local-variable
+inspection, interactive breakpoints and stepping are not implemented by this
+backend. The [program extension contract](program-extensions.md) describes
+wire versions, typed admission and module identity.
+
 ## Sharing libraries with C and C++
 
 Rust and C/C++ code link into one program against one musl, so static
@@ -97,10 +516,10 @@ These return the correct failure (POSIX-honest), not a fake success:
 - **`panic = "abort"`** is the target default (unwinding is not wired):
   a panic prints its message and the process exits by `SIGABRT` (status
   134).
-- **Backtraces are unsupported**: there is no unwinder to walk the Wasm
-  stack, so `std::backtrace::Backtrace` reports `Unsupported` and
-  `RUST_BACKTRACE` adds nothing to a panic message. The std overlay selects
-  the backtrace crate's `noop` backend for Kandelo.
+- **Backtraces capture VM frames, not unwind state**: names can survive
+  without instruction offsets; source lines require an actual offset and a
+  matching map. Capturing a trace does not enable panic unwinding or
+  `catch_unwind`. See the workflow below.
 - **`std::net`**: external UDP is `ENETUNREACH` on Node; the browser host
   has no raw/server sockets; DNS/`getaddrinfo` is a stub (use literal IPs
   or resolve out-of-band).
@@ -117,7 +536,9 @@ in a private sysroot:
 - `sdk/rust/wasm32-unknown-kandelo{,-std}.json` — target specs. The std
   spec uses `target-family = ["unix","wasm"]`, links via the SDK driver
   (`linker = wasm32posix-cc`, `entry-name = __main_argc_argv`), and bakes
-  in `+atomics,+bulk-memory`.
+  in `+atomics,+bulk-memory`. Self-contained CRT/linker fallback is disabled:
+  the SDK driver supplies those files. Rust's own bundled `gcc-ld` directory
+  is not required, including when rustc itself runs inside Kandelo.
 - `sdk/rust/libc-upstream/` (submodule, `rust-lang/libc` pinned to the
   version `std` uses) + `sdk/rust/libc-kandelo.patch` (our delta:
   `kandelo` arms reusing linux-musl bindings + a reconciled wasm32 arch
@@ -213,7 +634,9 @@ and `docs/plans/2026-09-07-rust-std-target-implementation.md`.
 
 ## Status
 
-Full-`std` parity is demonstrated. Remaining hardening: reconcile the
+The documented `std` surface is demonstrated. Remaining hardening: reconcile the
 remaining WALI-derived constants/syscall numbers in the wasm32 libc leaf
 to Kandelo's ABI (none has affected the demonstrated surface), and
 upstream the target as tier-3.
+
+For the development-checkout source debugger, see [Debugging Rust programs](rust-debugging.md).

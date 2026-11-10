@@ -4,12 +4,15 @@ import { WASM_PAGE_SIZE } from "../src/constants";
 import {
   acquireForkMemoryClone,
   copyArrayBufferInChunks,
+  copyIntoZeroedArrayBuffer,
+  copyProcessAddressSpace,
   createProcessMemoryRetirementPressureHook,
   deriveProcessMemoryRetirementAdmissionThresholds,
   ProcessMemoryAllocator,
   ProcessMemoryCapacityError,
   ProcessMemoryRetirementBacklogError,
   type ProcessMemoryAllocationRequest,
+  type ProcessMemoryAllocatorOptions,
 } from "../src/process-memory";
 
 function request(
@@ -611,17 +614,319 @@ describe("ProcessMemoryAllocator", () => {
     });
   });
 
-  it("copies across bounded view boundaries", () => {
+  it("copies across bounded view boundaries and zero chunks", () => {
     const source = new ArrayBuffer(17);
     const destination = new ArrayBuffer(17);
     new Uint8Array(source).set(
-      Array.from({ length: 17 }, (_, index) => index + 1),
+      Array.from({ length: 17 }, (_, index) => (index >> 2) % 2 ? 0 : index + 1),
     );
-    copyArrayBufferInChunks(destination, source, 4);
+    copyIntoZeroedArrayBuffer(destination, source, 4);
     expect(new Uint8Array(destination)).toEqual(new Uint8Array(source));
     expect(() =>
-      copyArrayBufferInChunks(new ArrayBuffer(16), source, 4)
+      copyIntoZeroedArrayBuffer(new ArrayBuffer(16), source, 4)
     ).toThrow();
+    expect(() => copyIntoZeroedArrayBuffer(destination, source, 0)).toThrow();
+    expect(() => copyIntoZeroedArrayBuffer(destination, source, 6)).toThrow();
+  });
+
+  it("does not write the destination chunks whose source is all zero", () => {
+    const source = new ArrayBuffer(12);
+    const destination = new ArrayBuffer(12);
+    new Uint8Array(source).set([1, 2, 3, 4], 8);
+    new Uint8Array(destination).fill(0xff);
+    copyIntoZeroedArrayBuffer(destination, source, 4);
+    expect([...new Uint8Array(destination)]).toEqual([
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1, 2, 3, 4,
+    ]);
+  });
+
+  it("writes every destination chunk in dense mode", () => {
+    const source = new ArrayBuffer(12);
+    const destination = new ArrayBuffer(12);
+    new Uint8Array(source).set([1, 2, 3, 4], 8);
+    new Uint8Array(destination).fill(0xff);
+    copyArrayBufferInChunks(destination, source, 4);
+    expect(new Uint8Array(destination)).toEqual(new Uint8Array(source));
+    expect(() => copyArrayBufferInChunks(new ArrayBuffer(8), source, 4)).toThrow();
     expect(() => copyArrayBufferInChunks(destination, source, 0)).toThrow();
+  });
+
+  it("selects the fork copy by mode", () => {
+    const source = new ArrayBuffer(2 * WASM_PAGE_SIZE);
+    new Uint8Array(source)[2 * WASM_PAGE_SIZE - 1] = 7;
+    const stale = (): ArrayBuffer => {
+      const buffer = new ArrayBuffer(source.byteLength);
+      new Uint8Array(buffer).fill(0xff);
+      return buffer;
+    };
+    // A non-fresh destination exposes which pages each mode wrote.
+    const sparse = new Uint8Array(stale());
+    copyProcessAddressSpace("sparse", sparse.buffer, source);
+    expect(sparse[0]).toBe(0xff);
+    expect(sparse[2 * WASM_PAGE_SIZE - 1]).toBe(7);
+    const dense = new Uint8Array(stale());
+    copyProcessAddressSpace("dense", dense.buffer, source);
+    expect(dense).toEqual(new Uint8Array(source));
+  });
+
+  it.each(["sparse", "dense"] as const)("clones a fork address space exactly with %s copy", (forkCopy) => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 4,
+      maxTotalBytes: 16 * WASM_PAGE_SIZE,
+      forkCopy,
+    });
+    const parentLease = allocator.acquire(request(3, 8));
+    const parentBytes = new Uint8Array(parentLease.memory.buffer);
+    parentBytes[1] = 0x11;
+    parentBytes[parentBytes.length - 1] = 0xee;
+    const childLease = acquireForkMemoryClone(allocator, parentLease.memory, 4, 8);
+    expect(new Uint8Array(childLease.memory.buffer)).toEqual(parentBytes);
+    childLease.release();
+    parentLease.release();
+  });
+
+  it("rejects an unknown fork copy mode", () => {
+    expect(() => new ProcessMemoryAllocator({
+      maxMemories: 1,
+      maxTotalBytes: WASM_PAGE_SIZE,
+      forkCopy: "lazy" as never,
+    })).toThrow(/fork address-space copy mode/);
+  });
+});
+
+
+describe("allocator-owned execution admission metadata (activation disabled)", () => {
+  function allocator() {
+    return new ProcessMemoryAllocator({
+      maxMemories: 3,
+      maxTotalBytes: 16 * WASM_PAGE_SIZE,
+      retirementBackpressureMs: 0,
+    });
+  }
+
+  it("shares only opaque metadata across exact aliases and isolates fresh generations", () => {
+    const memoryAllocator = allocator();
+    const lease = memoryAllocator.acquire(request(2));
+    const owner = lease.executionOwner;
+    const before = owner.snapshot();
+    const alias = lease.retainAlias();
+    const fresh = memoryAllocator.acquire(request(2));
+    expect(alias.executionOwner).toBe(owner);
+    expect(fresh.executionOwner).not.toBe(owner);
+    expect(owner.snapshot().admissionEpoch).toBeGreaterThan(before.admissionEpoch);
+    expect(Object.isFrozen(owner)).toBe(true);
+    expect(Object.isFrozen(before)).toBe(true);
+    expect(before).toEqual({ admissionEpoch: 0, pendingReservations: 0,
+      exposures: 0, unknown: false, forced: false, retired: false });
+    expect(Object.keys(owner)).toEqual(["snapshot"]);
+    expect(Object.values(owner).some(value => value instanceof WebAssembly.Memory)).toBe(false);
+    lease.release();
+    expect(owner.snapshot().retired).toBe(false);
+    alias.release();
+    expect(owner.snapshot().retired).toBe(true);
+    expect(fresh.executionOwner.snapshot().retired).toBe(false);
+    fresh.release();
+    memoryAllocator.clear();
+  });
+
+  it("reserves and consumes before Memory escapes with once-only admission", () => {
+    const memoryAllocator = allocator();
+    const lease = memoryAllocator.acquire(request(2));
+    const before = lease.executionOwner.snapshot();
+    const token = lease.reserveWriter();
+    expect(Object.isFrozen(token)).toBe(true);
+    expect(token.owner).toBe(lease.executionOwner);
+    const reserved = token.owner.snapshot();
+    expect(reserved.admissionEpoch).toBeGreaterThan(before.admissionEpoch);
+    expect(reserved).toMatchObject({ pendingReservations: 1, exposures: 0, unknown: false });
+    const memory = token.exposeMemory();
+    expect(memory).toBeInstanceOf(WebAssembly.Memory);
+    expect(memory.buffer.byteLength).toBe(2 * WASM_PAGE_SIZE);
+    expect(token.owner.snapshot()).toMatchObject({ pendingReservations: 0, exposures: 1, unknown: false });
+    expect(token.owner.snapshot().admissionEpoch).toBeGreaterThan(reserved.admissionEpoch);
+    const exposed = token.owner.snapshot();
+    expect(() => token.exposeMemory()).toThrow("already exposed");
+    expect(() => token.cancelBeforeExposure()).toThrow("already exposed");
+    expect(token.owner.snapshot()).toEqual(exposed);
+    const next = lease.reserveWriter();
+    expect(next.id).toBeGreaterThan(token.id);
+    expect(next.exposeMemory()).toBe(memory);
+    expect(token.owner.snapshot().exposures).toBe(2); // Cumulative, not live writers.
+    lease.release();
+    memoryAllocator.clear();
+  });
+
+  it("bounds reservations per lease and allocates IDs across aliases without reuse", () => {
+    const memoryAllocator = allocator();
+    const lease = memoryAllocator.acquire(request(2));
+    const alias = lease.retainAlias();
+    const first = lease.reserveWriter();
+    const beforeRefusal = first.owner.snapshot();
+    expect(() => lease.reserveWriter()).toThrow("already has a writer reservation");
+    expect(first.owner.snapshot()).toEqual(beforeRefusal);
+    const second = alias.reserveWriter();
+    expect(second.id).toBeGreaterThan(first.id);
+    expect(first.owner.snapshot().pendingReservations).toBe(2);
+    first.cancelBeforeExposure();
+    const cancelled = first.owner.snapshot();
+    expect(() => first.cancelBeforeExposure()).toThrow("already cancelled");
+    expect(() => first.exposeMemory()).toThrow("already cancelled");
+    expect(first.owner.snapshot()).toEqual(cancelled);
+    const third = lease.reserveWriter();
+    expect(third.id).toBeGreaterThan(second.id);
+    third.cancelBeforeExposure();
+    second.cancelBeforeExposure();
+    expect(first.owner.snapshot()).toMatchObject({ pendingReservations: 0, exposures: 0 });
+    lease.release(); alias.release(); memoryAllocator.clear();
+  });
+
+  it("invalidates only the consumed lease's outstanding token while its alias stays live", () => {
+    const memoryAllocator = allocator();
+    const lease = memoryAllocator.acquire(request(2));
+    const alias = lease.retainAlias();
+    const stale = lease.reserveWriter();
+    const live = alias.reserveWriter();
+    lease.release();
+    expect(stale.owner.snapshot()).toMatchObject({ pendingReservations: 1, retired: false });
+    expect(() => stale.exposeMemory()).toThrow("already consumed");
+    expect(() => stale.cancelBeforeExposure()).toThrow("already consumed");
+    expect(() => lease.reserveWriter()).toThrow("already consumed");
+    expect(live.exposeMemory()).toBeInstanceOf(WebAssembly.Memory);
+    alias.release();
+    expect(stale.owner.snapshot()).toMatchObject({ pendingReservations: 0, retired: true });
+    memoryAllocator.clear();
+  });
+
+  it("keeps unknown raw exposure sticky through later explicit admissions", () => {
+    const memoryAllocator = allocator();
+    const lease = memoryAllocator.acquire(request(2));
+    const before = lease.executionOwner.snapshot();
+    const memory = lease.memory;
+    expect(lease.executionOwner.snapshot().unknown).toBe(true);
+    expect(lease.executionOwner.snapshot().admissionEpoch).toBeGreaterThan(before.admissionEpoch);
+    const token = lease.reserveWriter();
+    expect(token.exposeMemory()).toBe(memory);
+    expect(token.owner.snapshot().unknown).toBe(true);
+    lease.release();
+    expect(token.owner.snapshot()).toMatchObject({ unknown: true, retired: true });
+    memoryAllocator.clear();
+  });
+
+  it("does not trust an injected construction callback even when it returns a valid fresh Memory", async () => {
+    const memoryAllocator = new ProcessMemoryAllocator({
+      maxMemories: 1, maxTotalBytes: 4 * WASM_PAGE_SIZE,
+      createMemoryAsync: async request => new WebAssembly.Memory({
+        initial: request.initialPages, maximum: request.maximumPages, shared: true,
+      }),
+    });
+    const lease = await memoryAllocator.acquireWhenAvailable(request(2));
+    expect(lease.executionOwner.snapshot().unknown).toBe(true);
+    lease.reserveWriter().cancelBeforeExposure();
+    expect(lease.executionOwner.snapshot().unknown).toBe(true);
+    lease.release(); memoryAllocator.clear();
+  });
+
+  it("poisons pending and new admissions across all aliases after forced termination", () => {
+    const memoryAllocator = allocator();
+    const lease = memoryAllocator.acquire(request(2));
+    const alias = lease.retainAlias();
+    const pending = lease.reserveWriter();
+    alias.releaseAfterForcedTermination();
+    expect(pending.owner.snapshot()).toMatchObject({ forced: true, unknown: true, retired: false });
+    expect(() => pending.exposeMemory()).toThrow("after forced termination");
+    expect(() => pending.cancelBeforeExposure()).toThrow("after forced termination");
+    expect(() => lease.reserveWriter()).toThrow("after forced termination");
+    // Preserve the old raw getter contract; it supplies no new safe admission.
+    expect(lease.memory).toBeInstanceOf(WebAssembly.Memory);
+    lease.release();
+    expect(pending.owner.snapshot()).toMatchObject({ forced: true, retired: true, pendingReservations: 0 });
+    expect(() => pending.exposeMemory()).toThrow("already consumed");
+    memoryAllocator.clear();
+  });
+
+  it("binds unknown creator provenance to the actual path despite callback mutation", async () => {
+    const options: ProcessMemoryAllocatorOptions = {
+      maxMemories: 1, maxTotalBytes: 4 * WASM_PAGE_SIZE,
+      createMemoryAsync: async request => {
+        delete options.createMemoryAsync;
+        return new WebAssembly.Memory({
+          initial: request.initialPages, maximum: request.maximumPages, shared: true,
+        });
+      },
+    };
+    const memoryAllocator = new ProcessMemoryAllocator(options);
+    const lease = await memoryAllocator.acquireWhenAvailable(request(2));
+    expect(options.createMemoryAsync).toBeUndefined();
+    expect(lease.executionOwner.snapshot().unknown).toBe(true);
+    lease.release(); memoryAllocator.clear();
+  });
+
+  it("cannot retarget stale tokens to a fresh exec-style allocation", () => {
+    const memoryAllocator = allocator();
+    const old = memoryAllocator.acquire(request(2));
+    const token = old.reserveWriter();
+    old.release();
+    const fresh = memoryAllocator.acquire(request(2));
+    expect(token.owner).not.toBe(fresh.executionOwner);
+    const freshBefore = fresh.executionOwner.snapshot();
+    expect(() => token.exposeMemory()).toThrow("already consumed");
+    expect(() => token.cancelBeforeExposure()).toThrow("already consumed");
+    expect(fresh.executionOwner.snapshot()).toEqual(freshBefore);
+    fresh.release(); memoryAllocator.clear();
+  });
+
+  it("does not publish a reservation if its weak token allocation fails", () => {
+    const memoryAllocator = allocator();
+    const lease = memoryAllocator.acquire(request(2));
+    const before = lease.executionOwner.snapshot();
+    try {
+      vi.stubGlobal("WeakRef", class {
+        constructor() { throw new Error("injected token allocation failure"); }
+      });
+      expect(() => lease.reserveWriter()).toThrow("injected token allocation failure");
+      expect(lease.executionOwner.snapshot()).toEqual(before);
+    } finally { vi.unstubAllGlobals(); }
+    const token = lease.reserveWriter();
+    expect(token.id).toBe(1);
+    token.cancelBeforeExposure();
+    lease.release(); memoryAllocator.clear();
+  });
+
+  it("fails closed if a token's weak lease reference has cleared", () => {
+    const memoryAllocator = allocator();
+    const lease = memoryAllocator.acquire(request(2));
+    try {
+      // Deterministic cleared-reference branch; not a claim about GC timing.
+      vi.stubGlobal("WeakRef", class {
+        deref() { return undefined; }
+      });
+      const token = lease.reserveWriter();
+      expect(() => token.exposeMemory()).toThrow("already consumed");
+      expect(() => token.cancelBeforeExposure()).toThrow("already consumed");
+      expect(token.owner.snapshot().pendingReservations).toBe(1);
+      lease.release();
+      expect(token.owner.snapshot()).toMatchObject({ pendingReservations: 0, retired: true });
+    } finally { vi.unstubAllGlobals(); memoryAllocator.clear(); }
+  });
+
+  it.each([false, true])("retains retryable lease custody after a backing check throws (forced=%s)", forced => {
+    const memoryAllocator = allocator();
+    const lease = memoryAllocator.acquire(request(2));
+    const memory = lease.reserveWriter().exposeMemory();
+    const token = lease.reserveWriter();
+    const buffer = vi.spyOn(memory, "buffer", "get").mockImplementationOnce(() => {
+      throw new Error("injected backing check failure");
+    });
+    try {
+      expect(() => forced ? lease.releaseAfterForcedTermination() : lease.release())
+        .toThrow("injected backing check failure");
+      expect(token.owner.snapshot()).toMatchObject({ pendingReservations: 1, retired: false, forced });
+      expect(memoryAllocator.getRetirementStats()).toMatchObject({ liveMemories: 1, liveAliases: 1 });
+      if (forced) expect(() => token.exposeMemory()).toThrow("after forced termination");
+      else token.cancelBeforeExposure();
+    } finally { buffer.mockRestore(); }
+    lease.release();
+    expect(token.owner.snapshot()).toMatchObject({ pendingReservations: 0, retired: true, forced });
+    memoryAllocator.clear();
   });
 });

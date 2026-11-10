@@ -13,13 +13,34 @@ import {
   selectRootfsIoBytes,
   selectRootfsMetadataBytes,
 } from "../src/runtime-memory-profile";
-import { DEFAULT_KERNEL_MAX_PAGES, DEFAULT_MAX_PAGES } from "../src/constants";
+import { DEFAULT_KERNEL_MAX_PAGES, DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "../src/constants";
 
 describe("rootfs I/O budget", () => {
-  it("shares bounded cache/scratch capacity independently of namespace and journal state", () => {
-    expect(selectRootfsIoBytes(undefined)).toBe(32 * 1024 * 1024);
+  it("admits retained mapping/fork state independently of namespace and journal state", () => {
+    expect(selectRootfsIoBytes(undefined)).toBe(128 * 1024 * 1024);
     expect(selectRootfsIoBytes(1024)).toBe(8 * 1024 * 1024);
     expect(() => selectRootfsIoBytes(DEFAULT_KERNEL_MAX_PAGES + 1)).toThrow(RangeError);
+  });
+
+  it.each([
+    [1, 8192],
+    [1024, 8 * 1024 * 1024],
+    [4096, 32 * 1024 * 1024],
+    [8192, 64 * 1024 * 1024],
+    [CONSTRAINED_MEMORY_PROFILE.kernelMaxPages, 96 * 1024 * 1024],
+    [DESKTOP_MEMORY_PROFILE.kernelMaxPages, 128 * 1024 * 1024],
+  ])("bounds %i kernel pages by one eighth and the I/O cap", (pages, expected) => {
+    const selected = selectRootfsIoBytes(pages);
+    expect(selected).toBe(expected);
+    expect(selected).toBeLessThanOrEqual(Math.floor(pages * WASM_PAGE_SIZE / 8));
+    expect(selected).toBeLessThanOrEqual(128 * 1024 * 1024);
+  });
+
+  it("leaves kernel/process constructor reservation ceilings unchanged", () => {
+    expect(DESKTOP_MEMORY_PROFILE.kernelMaxPages * WASM_PAGE_SIZE).toBe(1024 * 1024 * 1024);
+    expect(CONSTRAINED_MEMORY_PROFILE.kernelMaxPages * WASM_PAGE_SIZE).toBe(768 * 1024 * 1024);
+    expect(declaredMachineReservationBytes(DESKTOP_MEMORY_PROFILE, 2)).toBe(3 * 1024 * 1024 * 1024);
+    expect(declaredMachineReservationBytes(CONSTRAINED_MEMORY_PROFILE, 2)).toBe(1280 * 1024 * 1024);
   });
 });
 

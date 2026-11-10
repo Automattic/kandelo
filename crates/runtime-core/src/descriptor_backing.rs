@@ -180,21 +180,22 @@ impl<T> SharedBackingTable<T> {
         Ok(())
     }
 
-    /// Drop a [`Self::pin`], freeing the value once no OFD and no other
-    /// mapping holds it.
-    pub fn unpin(&mut self, idx: usize) {
-        drop(self.unpin_take(idx));
+    /// Drop a [`Self::pin`]. False proves no pin was consumed.
+    pub fn unpin(&mut self, idx: usize) -> bool {
+        let held = self.entries.get(idx).and_then(Option::as_ref)
+            .is_some_and(|entry| entry.pins > 0);
+        if held { drop(self.unpin_take(idx)); }
+        held
     }
 
+    /// The final IO-backed value must escape the table borrow before its
+    /// host handles can close. A nonfinal pin still consumes exactly one pin.
     #[must_use]
     pub fn unpin_take(&mut self, idx: usize) -> Option<T> {
-        let Some(slot) = self.entries.get_mut(idx) else {
-            return None;
-        };
-        let Some(entry) = slot.as_mut() else {
-            return None;
-        };
-        entry.pins = entry.pins.saturating_sub(1);
+        let slot = self.entries.get_mut(idx)?;
+        let entry = slot.as_mut()?;
+        if entry.pins == 0 { return None; }
+        entry.pins -= 1;
         if entry.pins == 0 && entry.refs == 0 {
             return slot.take().map(|entry| entry.value);
         }

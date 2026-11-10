@@ -100,7 +100,7 @@ test("package activity invitations join before starting termchat in a fresh term
     const join = guest.getByRole("form", { name: "Join activity" });
     await expect(join.getByLabel("Your name")).toHaveValue("guest");
     await join.getByLabel("Your name").fill("bob");
-    await guest.screenshot({ path: "../../.context/package-session-chat-invitation.png", animations: "disabled" });
+    await guest.screenshot({ path: "../../.scratch/package-session-chat-invitation.png", animations: "disabled" });
     await join.getByRole("button", { name: "Join and open chat", exact: true }).click();
     await expect.poll(() => screen(guest), { timeout: 90_000 }).toContain("alice is online");
     await expect.poll(() => screen(page), { timeout: 30_000 }).toContain("bob is online");
@@ -108,8 +108,8 @@ test("package activity invitations join before starting termchat in a fresh term
     await guest.keyboard.insertText("joined via package declaration");
     await guest.keyboard.press("Enter");
     await expect.poll(() => screen(page)).toContain("joined via package declaration");
-    await guest.screenshot({ path: "../../.context/package-session-chat-guest.png" });
-    await page.screenshot({ path: "../../.context/package-session-chat-host.png" });
+    await guest.screenshot({ path: "../../.scratch/package-session-chat-guest.png" });
+    await page.screenshot({ path: "../../.scratch/package-session-chat-host.png" });
     await guest.keyboard.press("Escape");
     await expect.poll(() => screen(page)).toContain("bob is offline");
   } finally { await context.close(); }
@@ -202,7 +202,7 @@ test("Doom's package offer acquires a WAD from bare shell and sends it to the pl
   await expect(form.getByRole("checkbox")).toHaveCount(0);
   await form.getByLabel("Game type").selectOption("deathmatch");
   await form.getByLabel("Starting level", { exact: true }).selectOption("E1M2");
-  await page.screenshot({ path: "../../.context/package-session-doom-offer.png", animations: "disabled" });
+  await page.screenshot({ path: "../../.scratch/package-session-doom-offer.png", animations: "disabled" });
   await form.getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(page.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 60_000 });
   await expect.poll(async () => {
@@ -229,7 +229,7 @@ test("Doom's package offer acquires a WAD from bare shell and sends it to the pl
     const join = guest.getByRole("form", { name: "Join activity" });
     await expect(guest.locator(".knetwork-metadata")).toContainText("Deathmatch");
     await expect(guest.locator(".knetwork-metadata")).toContainText("E1M2");
-    await guest.screenshot({ path: "../../.context/package-session-doom-invitation.png", animations: "disabled" });
+    await guest.screenshot({ path: "../../.scratch/package-session-doom-invitation.png", animations: "disabled" });
     await join.getByRole("button", { name: "Join and play Doom", exact: true }).click();
     await expect.poll(() => activeTerminal(page), { timeout: 90_000 }).toContain("player 1 of 2 (2 nodes)");
     await expect.poll(() => activeTerminal(guest), { timeout: 60_000 }).toContain("player 2 of 2 (2 nodes)");
@@ -241,9 +241,9 @@ test("Doom's package offer acquires a WAD from bare shell and sends it to the pl
     await expect(guest.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 30_000 });
     expect(guestDownloads).toBe(0);
     await pressKeys(page, ["Tab"]);
-    await page.screenshot({ path: "../../.context/package-session-doom-level-automap.png", animations: "disabled" });
-    await page.screenshot({ path: "../../.context/package-session-doom-host.png" });
-    await guest.screenshot({ path: "../../.context/package-session-doom-guest.png" });
+    await page.screenshot({ path: "../../.scratch/package-session-doom-level-automap.png", animations: "disabled" });
+    await page.screenshot({ path: "../../.scratch/package-session-doom-host.png" });
+    await guest.screenshot({ path: "../../.scratch/package-session-doom-guest.png" });
     await page.getByRole("button", { name: "Network session: connected", exact: true }).click();
     await page.getByRole("button", { name: "Change activity", exact: true }).click();
     const another = page.getByRole("form", { name: "Host activity" });
@@ -278,8 +278,8 @@ test("termchat discovers and chats between session joiners through the normal sh
     await expect.poll(() => screen(alice.page)).toContain("hello from bob over WebRTC");
     await typeAtPrompt(alice.page, "?send /tmp/rtc.txt");
     await expect.poll(() => screen(bob.page), { timeout: 30_000 }).toContain("Successfully received file");
-    await alice.page.screenshot({ path: "../../.context/termchat-session-alice.png" });
-    await bob.page.screenshot({ path: "../../.context/termchat-session-bob.png" });
+    await alice.page.screenshot({ path: "../../.scratch/termchat-session-alice.png" });
+    await bob.page.screenshot({ path: "../../.scratch/termchat-session-bob.png" });
     for (const target of [bob.page, alice.page]) {
       await target.locator(".kshell-host").first().click();
       await target.keyboard.press("Escape");
@@ -315,8 +315,8 @@ test("computers join one hosted session from its link and talk over guest TCP", 
     expect(rootImage(await currentComputerMetadata(first.page))).toBe(hostImage);
     await expect(members(page)).toHaveCount(3);
     await expect(members(first.page)).toHaveCount(3);
-    await page.screenshot({ path: "../../.context/network-session-host.png" });
-    await second.page.screenshot({ path: "../../.context/network-session-joiner.png" });
+    await page.screenshot({ path: "../../.scratch/network-session-host.png" });
+    await second.page.screenshot({ path: "../../.scratch/network-session-joiner.png" });
     for (const each of [page, first.page, second.page]) await closePanel(each);
 
     // Joiner to joiner crosses the hosting computer's forwarding.
@@ -415,13 +415,13 @@ test("Quake's own multiplayer menu hosts a game another computer finds and joins
     // Main menu → Multiplayer → Join a Game → Search for local games.
     await pressKeys(joiner, ["Escape", "ArrowDown", "Enter", "Enter", "ArrowUp", "Enter"]);
     await joiner.waitForTimeout(5_000);
-    await joiner.screenshot({ path: "../../.context/quake-lan-search.png" });
+    await joiner.screenshot({ path: "../../.scratch/quake-lan-search.png" });
     // The list shows the hosting computer's game; Enter joins it.
     await pressKeys(joiner, ["Enter"]);
     await expect.poll(async () => ((await terminalLines(page)).match(/entered the game/g) ?? []).length, { timeout: 60_000 })
       .toBeGreaterThanOrEqual(2);
-    await page.screenshot({ path: "../../.context/quake-lan-host.png" });
-    await joiner.screenshot({ path: "../../.context/quake-lan-joiner.png" });
+    await page.screenshot({ path: "../../.scratch/quake-lan-host.png" });
+    await joiner.screenshot({ path: "../../.scratch/quake-lan-joiner.png" });
   } finally {
     await context.close();
   }
@@ -466,7 +466,7 @@ test("one invitation form creates a plain invite, preserves or replaces the room
   await expect(link).toHaveCount(0);
   await form.getByLabel("Activity", { exact: true }).selectOption("");
   await expect(form.getByRole("button", { name: "Start network session", exact: true })).toBeEnabled();
-  await page.screenshot({ path: "../../.context/invitation-ux-optional-activity.png", animations: "disabled" });
+  await page.screenshot({ path: "../../.scratch/invitation-ux-optional-activity.png", animations: "disabled" });
 });
 
 
@@ -509,7 +509,7 @@ for (const dependencyMode of ["known hint", "uploaded hint", "uploaded peer"] as
         await expect(join).toContainText("Receive from host");
         await guest.route("**/wads/doom1.wad", route => route.abort());
       }
-      await guest.screenshot({ path: `../../.context/invitation-ux-${dependencyMode.replaceAll(" ", "-")}.png`, animations: "disabled" });
+      await guest.screenshot({ path: `../../.scratch/invitation-ux-${dependencyMode.replaceAll(" ", "-")}.png`, animations: "disabled" });
       await action.click();
       const screen = async (target: Page) => {
         await target.getByRole("button", { name: "Terminal", exact: true }).click();

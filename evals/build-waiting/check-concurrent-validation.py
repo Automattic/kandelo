@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Two real overlapping runners; use through scripts/dev-shell.sh.
 
-Artifacts stay in a fresh .context directory. No existing server is reused or
+Artifacts stay in a fresh .scratch directory. No existing server is reused or
 stopped. Baseline mode confines the old shared output defaults to this fixture.
 """
 import argparse
@@ -19,8 +19,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--baseline-ref', help='replay the config and policy from this git revision')
 parser.add_argument('--project', default='chromium', choices=['chromium', 'firefox', 'webkit'])
 args = parser.parse_args()
-(ROOT / '.context').mkdir(exist_ok=True)
-scratch = Path(tempfile.mkdtemp(prefix='concurrent-validation-', dir=ROOT / '.context'))
+(ROOT / '.scratch').mkdir(exist_ok=True)
+scratch = Path(tempfile.mkdtemp(prefix='concurrent-validation-', dir=ROOT / '.scratch'))
 print(f'Evidence: {scratch}', flush=True)
 
 def write(name, content):

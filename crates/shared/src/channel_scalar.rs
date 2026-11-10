@@ -815,15 +815,6 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
-        // klogctl's `len` is an `int`, but it sizes the staged output buffer,
-        // so its extent domain must be explicit rather than left at the signed
-        // default. A negative length is refused when the span is validated.
-        syscall_number: extended_syscalls::SYS_SYSLOG,
-        musl_name: "syslog",
-        arguments: U32_ARGUMENT_2,
-        result: ChannelResultKind::I32,
-    },
-    ChannelScalarSyscall {
         syscall_number: extended_syscalls::SYS_FALLOCATE,
         musl_name: "fallocate",
         arguments: FALLOCATE_ARGUMENTS,

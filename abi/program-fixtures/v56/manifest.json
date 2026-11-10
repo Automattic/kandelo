@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "programAbi": 56,
+  "fixtures": [
+    {
+      "name": "echo",
+      "file": "echo.wasm",
+      "sourcePath": "examples/echo.c",
+      "sourceSha256": "d153f64dceca0b2253d922f2ff49e5a0dc96c18df130b276bee342d61866880e",
+      "size": 19230,
+      "sha256": "1e9a6bb0dc39432b2562ae32669b4e60eb06a53d147e21abd5a75a396bd7d1e5"
+    },
+    {
+      "name": "spawn-smoke",
+      "file": "spawn-smoke.wasm",
+      "sourcePath": "examples/spawn-smoke.c",
+      "sourceSha256": "dcc36dfd9c37da7bede8d8033ba355e0ff059cc0ac3c48f1676053d5643649eb",
+      "size": 47025,
+      "sha256": "3a96e6e86a6ea8f87b778c6166bf886418cdbc382c82edc02d74a523c661cf1d"
+    },
+    {
+      "name": "fstatat-empty-path",
+      "file": "fstatat-empty-path.wasm",
+      "sourcePath": "examples/fstatat_empty_path_test.c",
+      "sourceSha256": "ad26b806d74b17cf55b787617fe648a6912e5c85d61ccfb4579c921dd4117ee5",
+      "size": 40282,
+      "sha256": "0bc2a963559ff93f62fa5c7c607fcdd839b257733c85aa44ee4df3f0ff8dd91f"
+    },
+    {
+      "name": "mmap-file",
+      "file": "mmap-file.wasm",
+      "sourcePath": "examples/mmap_file_test.c",
+      "sourceSha256": "f12c9871dc3c2f0c2b36880d3074a37acd8cdc0a1d4aa55559c45d40f9348d22",
+      "size": 39352,
+      "sha256": "3714985fe285d09be0a452bf31feb8ae3fe87229d6722f851354f6ad20c34d67"
+    },
+    {
+      "name": "pthread",
+      "file": "pthread.wasm",
+      "sourcePath": "examples/test-pthread.c",
+      "sourceSha256": "b6497e8c695c315e7bc93053e83d298bcf427e78a815ed2def4a99d4952ef08a",
+      "size": 41968,
+      "sha256": "c1dba80dc25ca3fdb12afb6f653b41c92753078203a431009b1137c7e19b5cf9"
+    },
+    {
+      "name": "environment-lifecycle",
+      "file": "environment-lifecycle.wasm",
+      "sourcePath": "examples/environment_lifecycle_test.c",
+      "sourceSha256": "2ac6a885f00f49920ef522752e6e048de5b1d07249939d03c209039918f92b1e",
+      "size": 56187,
+      "sha256": "92042f757fd9131a5daa13ed3b5c9f9243b63770c837636657c5619fe5342b64"
+    }
+  ],
+  "preparationSource": {
+    "file": "raw-fork.wasm",
+    "sourcePath": "examples/mmap_shared_anonymous_fork.c",
+    "sourceSha256": "d1d419f72194ca573ef9803a41635b7a0b736cc74feba14cdf3d04ea1d331edc",
+    "size": 195448,
+    "sha256": "224d739017b670feff7cd8f155f9508089f8de36d9fc4ec70c84c40dca355039"
+  },
+  "compileFlags": [
+    "-O2",
+    "-Isysroot/include/libdrm",
+    "-Isysroot/include/drm"
+  ],
+  "programContractDigest": "54b113fe33c91c5c4543f292d1ee83678cc8d27fb891c0f63dc923118cc58f43",
+  "sourceRevision": "39aadd13386b5683f5dacc482b4c9e2dc54822ce",
+  "producer": "scripts/build-program-baseline.py --create-current with the sourceRevision normal SDK, musl, instrumenter and ABI stamp tool"
+}

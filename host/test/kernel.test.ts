@@ -190,6 +190,7 @@ function createCapacityProbeContractHarness() {
     {
       kernelExportNames: [
         "kernel_dequeue_signal",
+        "kernel_get_process_exec_generation",
         "kernel_get_process_exit_signal",
         "kernel_handle_channel",
         "kernel_mq_drain_notification",

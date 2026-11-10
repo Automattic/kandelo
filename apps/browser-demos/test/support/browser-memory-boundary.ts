@@ -16,12 +16,11 @@ export function persistentRealmMemoryFailures(
       return;
     }
     if (value instanceof SharedArrayBuffer) {
-      // The sole shared worker→main payload is an independent pixel mirror.
-      // Checking length alone cannot prove provenance; mirror unit tests also
-      // assert that this allocation is independent of the guest's buffer.
-      if (root?.type !== "fb_bind" || path !== "message.pixels"
-        || value.byteLength !== root.len
-        || (value as SharedArrayBuffer & { growable?: boolean }).growable) {
+      // Independently allocated device storage only: the pixel mirror.
+      const pixels = root?.type === "fb_bind" && path === "message.pixels"
+        && value.byteLength === root.len;
+      if (!pixels
+          || (value as SharedArrayBuffer & { growable?: boolean }).growable) {
         failures.push(`${path}: unreviewed shared backing reached browser main`);
       }
       return;

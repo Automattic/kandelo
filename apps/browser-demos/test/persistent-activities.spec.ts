@@ -70,7 +70,7 @@ for (const initialProfile of ["shell", "doom"]) test(`Doom menu saves survive qu
   await addProbeTerminal();
   await doomKeys(page, ["Escape", "Enter", "Enter", "Enter"]);
   await doomKeys(page, ["Escape", "ArrowDown", "ArrowDown", "ArrowDown", "Enter", "Enter", "s", "a", "v", "e", "Enter"]);
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/doom-save-menu-${initialProfile}-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/doom-save-menu-${initialProfile}-${testInfo.project.name}.png`) });
   await probe();
   const saved = await runTerminalCommand(page, "find \"$HOME/.fdoom.tar\" -type f; wc -c \"$HOME/.fdoom.tar/savegame/doomsav0.dsg\"; sha256sum \"$HOME/.fdoom.tar/savegame/doomsav0.dsg\"");
   console.log("Doom save files", saved.output);
@@ -100,7 +100,7 @@ for (const initialProfile of ["shell", "doom"]) test(`Doom menu saves survive qu
   expect((await runTerminalCommand(page, "sha256sum \"$HOME/.fdoom.tar/savegame/doomsav0.dsg\"")).output).toContain(hash!);
   await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await doomKeys(page, ["F2", "ArrowDown", "Enter", "r", "Enter"]);
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/doom-save-loaded-${initialProfile}-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/doom-save-loaded-${initialProfile}-${testInfo.project.name}.png`) });
   await probe();
   const afterRestart = await runTerminalCommand(page, "find \"$HOME/.fdoom.tar\" -type f; sha256sum \"$HOME/.fdoom.tar/savegame/doomsav0.dsg\"; test -s \"$HOME/.fdoom.tar/savegame/doomsav1.dsg\"");
   expect(afterRestart.output).toContain(hash!);
@@ -119,7 +119,7 @@ for (const initialProfile of ["shell", "doom"]) test(`Doom menu saves survive qu
   await probe();
   await runTerminalCommand(page, "test -s \"$HOME/.fdoom.tar/savegame/doomsav2.dsg\"");
   await page.getByRole("button", { name: "Graphics", exact: true }).click();
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/doom-save-recovered-${initialProfile}-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/doom-save-recovered-${initialProfile}-${testInfo.project.name}.png`) });
 });
 
 test("Doom activity retains its WAD and starts with music after a persistent shell refresh", async ({ page }, testInfo) => {
@@ -151,7 +151,7 @@ test("Doom activity retains its WAD and starts with music after a persistent she
   await expect(page.locator('[data-audio-active="true"]')).toHaveCount(1, { timeout: 30000 });
   await expectRunningMachineAudio(page, 30000);
   expect(recoveryDownloads).toBe(0);
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/persistent-doom-recovered-${testInfo.project.name}.png`) });
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.scratch/persistent-doom-recovered-${testInfo.project.name}.png`) });
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await expect(page.locator(".kshell-host:visible .xterm-rows")).not.toContainText("GENMIDI not found");
 });

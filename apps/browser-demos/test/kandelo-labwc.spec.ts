@@ -1,0 +1,239 @@
+import { expect, test, type Page } from "../playwright-test";
+import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
+import { setInternalsOpen } from "./support/dock";
+import { typePhysicalText } from "./support/physical-typing";
+import { footFrame, menuChange, panelStart, type Frame, type Rect } from "./support/labwc-frame";
+
+// These real-rendering checks must never claim the user's desktop focus.
+test.use({ headless: true });
+
+async function openSurface(page: Page, label: "Internals" | "Graphics" | "Terminal") {
+  if (label === "Internals") await waitForMachineBootInput(page);
+  // Real display clicks capture the browser pointer. Follow the shipped
+  // Escape-to-release interaction before selecting controls outside the guest.
+  if (await page.evaluate(() => document.pointerLockElement !== null)) {
+    await page.keyboard.press("Escape");
+    await expect.poll(() => page.evaluate(() => document.pointerLockElement === null))
+      .toBe(true);
+  }
+  await page.getByRole("button", { name: "More", exact: true })
+    .waitFor({ state: "visible", timeout: 30_000 });
+  await setInternalsOpen(page, label === "Internals");
+  if (label !== "Internals") {
+    const view = page.getByLabel("Computer views").getByRole("button", { name: label, exact: true });
+    if ((await view.getAttribute("aria-current")) !== "true") await view.click();
+  }
+}
+const canvas = (page: Page) => page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas").first();
+async function chipText(page: Page) {
+  return (await page.locator(".kdemo-surface-controls").filter({ hasText: "flips" }).allInnerTexts()).join(" ");
+}
+async function displayOwner(page: Page) {
+  const owner = await page.locator(".kmachine-primary .kmodeset-surface").getAttribute("data-kms-owner-pid");
+  return owner === null ? Number.NaN : Number(owner);
+}
+async function terminalText(page: Page) {
+  return (await page.locator(".xterm-rows").first().locator(":scope > div").allInnerTexts()).join("\n");
+}
+
+
+async function movePointer(page: Page, frame: Frame, x: number, y: number, steps = 1) {
+  const box = (await canvas(page).boundingBox())!;
+  await page.mouse.move(box.x + x * box.width / frame.width, box.y + y * box.height / frame.height, { steps });
+}
+async function focusDemo(page: Page) {
+  await openSurface(page, "Graphics");
+  // Browser focus must not click a guest window or panel and thereby
+  // replace the compositor focus this test is intended to observe.
+  await canvas(page).focus();
+  await expect(canvas(page)).toBeFocused();
+}
+async function footProcesses(page: Page, count: number, returnToDemo = true) {
+  await openSurface(page, "Internals");
+  await page.getByRole("tab", { name: "Procs", exact: true }).click();
+  await expect(page.locator(".ktable tbody tr > td:last-child").filter({ hasText: /^(?:\/\S*\/)?foot(?:\s|$)/ }))
+    .toHaveCount(count, { timeout: 180_000 });
+  if (returnToDemo) await focusDemo(page);
+}
+
+/** Shipped gallery boot, stock labwc actions and real foot shells. The Node
+ * companion uses pixman; this spec exercises GLES2 through GBM/EGL/WebGL2 in
+ * each of Chromium, Firefox and WebKit when selected by the normal runner.
+ * Upstream control reference:
+ * https://github.com/labwc/labwc/blob/0.20.2/docs/labwc-actions.5.scd
+ */
+test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanly", async ({ page }) => {
+  test.setTimeout(480_000);
+  await gotoMachine(page, "labwc");
+  await openSurface(page, "Internals");
+  await expect.poll(async () => (await page.locator(".ksys-line").allInnerTexts()).join("\n"), { timeout: 180_000 })
+    .toMatch(/running .*\/usr\/bin\/labwc/);
+  await focusDemo(page);
+  await expect(canvas(page)).toBeVisible({ timeout: 30_000 });
+  await expect.poll(() => chipText(page), { timeout: 120_000 }).toMatch(/webgl2-gl/i);
+  await expect.poll(() => displayOwner(page), { timeout: 120_000 }).toBeGreaterThan(0);
+  const owner = await displayOwner(page);
+
+  let first: Frame;
+  await expect.poll(async () => {
+    first = await footFrame(page);
+    return first.foot !== null;
+  }, { timeout: 180_000, intervals: [1_000] }).toBe(true);
+  // The session starts SFWBar beside the first Foot. Labwc focuses an
+  // on-demand TOP/OVERLAY layer surface when it maps, so a panel that
+  // requests on-demand focus before mapping takes the keyboard from Foot.
+  // Upstream SFWBar maps with no keyboard interactivity. Wait for the
+  // painted panel before the browser pointer has entered the display, so
+  // the first keystrokes prove that the panel's map left Foot focused. No
+  // click may establish that focus.
+  await expect.poll(async () => (await panelStart(page)) !== null,
+    { timeout: 180_000, intervals: [1_000] }).toBe(true);
+  // The initial prompt is short. Require executed, rendered output instead
+  // of assuming it occupies an arbitrary number of white pixels.
+  await typePhysicalText(page, "printf '\\033[48;2;220;30;30mLABWC_RENDERED_READY\\033[0m\\n'\n", { delay: 40 });
+  await expect.poll(async () => {
+    const frame = await footFrame(page);
+    return frame.ink > 200 && frame.red > 200;
+  }, { timeout: 60_000 }).toBe(true);
+  first = await footFrame(page);
+  const bounds = first.foot!;
+  // A floating client leaves root visible; this must not be a fullscreen
+  // kiosk/tile or merely a dark unpainted output.
+  expect(bounds.width).toBeLessThan(first.width - 20);
+  expect(bounds.height).toBeLessThan(first.height - 20);
+  expect(bounds.y).toBeGreaterThan(12);
+  await footProcesses(page, 1);
+  await typePhysicalText(page, "mark=first\n", { delay: 40 });
+
+  // The panel is an exclusive bottom layer above every window. Its Start
+  // button fills the bar's height, so its top is the bottom of the area in
+  // which a window is visible rather than covered by the panel. Read it from
+  // the settled desktop, not from the panel's first frame.
+  const panelTop = (await panelStart(page))!.y;
+
+  // Drag the server-side title, above the client background. The renderer
+  // must move the same-sized client, exposing root at its original position.
+  const titleX = bounds.x + bounds.width / 2, titleY = bounds.y - 12;
+  // Labwc's stock 10px outer-edge snapping maximizes a top-edge drop.
+  // Choose a real interior move: keep the whole client on the output and
+  // the title/drop point at least 20px from its edges, preserving enough
+  // displacement to prove translation. Never turn this into a snap test.
+  const dx = [80, -80].find(delta => bounds.x + delta >= 8
+    && bounds.x + bounds.width + delta <= first.width - 8
+    && titleX + delta >= 20 && titleX + delta <= first.width - 20);
+  const dy = [40, -40].find(delta => bounds.y + bounds.height + delta <= first.height - 8
+    && titleY + delta >= 20 && titleY + delta <= first.height - 20);
+  expect(dx, "floating window has room for a horizontal interior drag").toBeDefined();
+  expect(dy, "floating window has room for a vertical interior drag").toBeDefined();
+  await movePointer(page, first, titleX, titleY);
+  await page.mouse.down();
+  try {
+    await movePointer(page, first, titleX + dx!, titleY + dy!, 12);
+  } finally { await page.mouse.up(); }
+  // A floating window may legitimately move under the panel. The painted
+  // client is then the part above the panel, so the same-size check
+  // compares against the height a translated window leaves uncovered.
+  const movedHeight = Math.min(bounds.y + bounds.height + dy!, panelTop) - (bounds.y + dy!);
+  let after: Rect | null = null;
+  try {
+    await expect.poll(async () => {
+      after = (await footFrame(page)).foot;
+      return after !== null && Math.abs(after.x - bounds.x) > 40 && Math.abs(after.y - bounds.y) > 25
+        && Math.abs(after.width - bounds.width) < 5 && Math.abs(after.height - movedHeight) < 5;
+    }, { timeout: 60_000, intervals: [500] }).toBe(true);
+  } catch (error) {
+    await test.info().attach("labwc-drag-geometry", { contentType: "text/plain",
+      body: JSON.stringify({ bounds, dx, dy, panelTop, movedHeight, after }) });
+    throw error;
+  }
+
+  // Right-click exposed root: the shipped menu is real compositor paint,
+  // with a connected rectangle far larger than a hardware cursor. Escape
+  // must remove that rectangle; reopen it and activate its Terminal item.
+  const movedFrame = await footFrame(page), movedBounds = movedFrame.foot!;
+  const root = [[24, 24], [movedFrame.width - 30, 24], [24, panelTop - 30],
+    [movedFrame.width - 30, panelTop - 30]].find(([x, y]) =>
+    x < movedBounds.x - 10 || x > movedBounds.x + movedBounds.width + 10
+      || y < movedBounds.y - 50 || y > movedBounds.y + movedBounds.height + 10);
+  expect(root, "floating desktop leaves an exposed root point").toBeDefined();
+  await movePointer(page, movedFrame, root![0], root![1]);
+  const rootBefore = await canvas(page).screenshot();
+  await page.mouse.down({ button: "right" }); await page.mouse.up({ button: "right" });
+  await expect.poll(() => menuChange(page, rootBefore), { timeout: 30_000 }).not.toBeNull();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => menuChange(page, rootBefore), { timeout: 30_000 }).toBeNull();
+  await page.mouse.down({ button: "right" }); await page.mouse.up({ button: "right" });
+  await expect.poll(() => menuChange(page, rootBefore), { timeout: 30_000 }).not.toBeNull();
+  // Upstream's default ignoreButtonReleasePeriod is 250 ms, not readiness.
+  await page.waitForTimeout(300);
+  const terminalItem = (await menuChange(page, rootBefore))!;
+  const menuPoint = { x: terminalItem.x + terminalItem.width / 2, y: terminalItem.y + 10 };
+  const menuCanvas = (await canvas(page).boundingBox())!;
+  await test.info().attach("labwc-menu-input", { contentType: "application/json",
+    body: JSON.stringify({ dpr: await page.evaluate(() => window.devicePixelRatio),
+      frame: { width: movedFrame.width, height: movedFrame.height }, canvas: menuCanvas,
+      item: terminalItem, point: menuPoint,
+      cssPoint: { x: menuCanvas.x + menuPoint.x * menuCanvas.width / movedFrame.width,
+        y: menuCanvas.y + menuPoint.y * menuCanvas.height / movedFrame.height } }) });
+  await movePointer(page, movedFrame, menuPoint.x, menuPoint.y);
+  await page.mouse.down(); await page.mouse.up();
+  // Observe the menu action in the guest before sending Escape to release
+  // host pointer capture. The new foreground terminal paints at its initial
+  // placement, independently of the first window's interior drag.
+  await expect.poll(async () => {
+    const foreground = (await footFrame(page)).foot;
+    return foreground !== null && Math.abs(foreground.x - movedBounds.x) > 40
+      && Math.abs(foreground.y - movedBounds.y) > 25;
+  }, { timeout: 60_000, intervals: [500] }).toBe(true);
+  await footProcesses(page, 2);
+  await page.keyboard.press("Alt+Shift+Q");
+  await footProcesses(page, 1);
+
+  // Open another real terminal. Distinct shell variables then prove each
+  // focus change reached the intended PTY, not only a repaint or key echo.
+  await page.keyboard.press("Alt+Enter");
+  await footProcesses(page, 2);
+  // A process row precedes Wayland map/activation. Typing at that point
+  // splits the command across the old and new PTYs (Firefox trace: "mar"
+  // in the first shell, "k=second" in the second). Observe the new window
+  // where the menu-launched terminal also mapped before sending its keys.
+  await expect.poll(async () => {
+    const foreground = (await footFrame(page)).foot;
+    return foreground !== null && Math.abs(foreground.x - movedBounds.x) > 40
+      && Math.abs(foreground.y - movedBounds.y) > 25;
+  }, { timeout: 60_000, intervals: [500] }).toBe(true);
+  const secondBounds = (await footFrame(page)).foot!;
+  await typePhysicalText(page, "mark=second; printf '\\033[48;2;30;50;220mSECOND_READY\\033[0m\\n'\n", { delay: 40 });
+  await expect.poll(async () => (await footFrame(page)).blue, { timeout: 60_000 }).toBeGreaterThan(200);
+  await page.keyboard.press("Alt+j");
+  await expect.poll(async () => {
+    const frame = await footFrame(page);
+    return frame.foot !== null && Math.abs(frame.foot.x - movedBounds.x) < 5
+      && Math.abs(frame.foot.y - movedBounds.y) < 5 && frame.red > 200;
+  }, { timeout: 60_000, intervals: [500] }).toBe(true);
+  await typePhysicalText(page, "echo FIRST:$mark > /tmp/labwc-first && printf '\\033[48;2;30;180;60mFIRST_WRITTEN\\033[0m\\n'\n", { delay: 40 });
+  await expect.poll(async () => (await footFrame(page)).green, { timeout: 60_000 }).toBeGreaterThan(200);
+  await page.keyboard.press("Alt+k");
+  await expect.poll(async () => {
+    const frame = await footFrame(page);
+    return frame.foot !== null && Math.abs(frame.foot.x - secondBounds.x) < 5
+      && Math.abs(frame.foot.y - secondBounds.y) < 5 && frame.blue > 200;
+  }, { timeout: 60_000, intervals: [500] }).toBe(true);
+  await typePhysicalText(page, "echo SECOND:$mark > /tmp/labwc-second && printf '\\033[48;2;180;30;180mSECOND_WRITTEN\\033[0m\\n'\n", { delay: 40 });
+  await expect.poll(async () => (await footFrame(page)).purple, { timeout: 60_000 }).toBeGreaterThan(200);
+  await page.keyboard.press("Alt+Shift+E");
+
+  // Observe real display release and automatic return to the launching shell.
+  // A prompt, hidden xterm text or host termination is not compositor exit.
+  await expect.poll(() => displayOwner(page), { timeout: 60_000 }).toBe(0);
+  await expect(page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }))
+    .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
+  await page.locator(".xterm").first().click();
+  await typePhysicalText(page, "echo labwc-exit=$?; cat /tmp/labwc-first /tmp/labwc-second\n", { delay: 40 });
+  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/labwc-exit=0/);
+  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain("FIRST:first");
+  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain("SECOND:second");
+  expect(owner).toBeGreaterThan(0);
+  await footProcesses(page, 0, false);
+  await expect.poll(() => displayOwner(page)).toBe(0);
+});

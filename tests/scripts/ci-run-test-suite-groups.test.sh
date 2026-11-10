@@ -143,6 +143,7 @@ cp \
     "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
     "$REPO_ROOT/scripts/ci-vitest-resource-isolated-cases.tsv" \
     "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" \
+    "$REPO_ROOT/scripts/record-test-report.sh" \
     "$REPO_ROOT/scripts/stage-portable-resolver-binaries.sh" \
     "$REPO_ROOT/scripts/validate-publication-blocker-report.sh" \
     "$REPO_ROOT/scripts/verify-ci-staging-shell-handoff.sh" \
@@ -428,11 +429,9 @@ check_premerge_browser_production_contract() {
     materialize_line="$(grep -nF \
         'bash scripts/materialize-ci-publication-blockers.sh' \
         <<<"$browser_block" | cut -d: -f1)"
-    [ "$(grep -Fc \
-        './run.sh --already-materialized --fetch-only prepare-browser' \
-        <<<"$browser_block")" -eq 1 ] || return 1
-    fetch_line="$(grep -nF \
-        './run.sh --already-materialized --fetch-only prepare-browser' \
+    [ "$(grep -Fc './run.sh prepare-browser' <<<"$browser_block")" -eq 1 ] ||
+        return 1
+    fetch_line="$(grep -nF './run.sh prepare-browser' \
         <<<"$browser_block" | head -n 1 | cut -d: -f1)"
     production_line="$(grep -nF 'run_pages_shaped_browser_build' \
         <<<"$browser_block" | cut -d: -f1)"
@@ -837,9 +836,51 @@ PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     VERIFY_BROWSER_PRODUCTION_BUILD=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser
 grep -Fxq materialized "$blocker_capture"
-grep -Fxq -- \
-    "--already-materialized --fetch-only prepare-browser" \
-    "$browser_capture"
+grep -Fxq -- "prepare-browser" "$browser_capture"
+
+# WHY: the fixture's run.sh is a recorder that accepts any arguments, so it
+# kept passing after the real run.sh retired `--already-materialized` and
+# `--fetch-only` and the CI browser shard failed before preparing anything.
+# Replay the recorded arguments against a copy of the real run.sh, whose
+# dev-shell and setup helpers are stubs that return a successful empty
+# local build, so the runner's invocation must be one run.sh accepts.
+check_real_run_sh_accepts() {
+    local args_file="$1"
+    local replay="$TMP_DIR/real-run-sh"
+    local -a recorded_args
+    rm -rf "$replay"
+    mkdir -p "$replay/sdk" "$replay/scripts"
+    cp "$REPO_ROOT/run.sh" "$replay/run.sh"
+    cp "$REPO_ROOT/sdk/activate.sh" "$replay/sdk/activate.sh"
+    cp \
+        "$REPO_ROOT/scripts/wasm-artifact-guards.sh" \
+        "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh" \
+        "$replay/scripts/"
+    printf '#!/usr/bin/env bash\nexec "$@"\n' > "$replay/scripts/dev-shell.sh"
+    cat > "$replay/scripts/setup.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$LOCAL_BUILD_CAPTURE"
+printf '{"schema":1,"policy":"source-only-v1","outcome":"succeeded","nodes":[]}\n'
+EOF
+    read -r -a recorded_args < "$args_file"
+    rm -f "$TMP_DIR/real-run-sh.local-build"
+    LOCAL_BUILD_CAPTURE="$TMP_DIR/real-run-sh.local-build" \
+        bash "$replay/run.sh" "${recorded_args[@]}" \
+        > "$TMP_DIR/real-run-sh.out" 2>&1 || return 1
+    # prepare-browser must have reached the local SourceOnly package build.
+    grep -q '^packages ' "$TMP_DIR/real-run-sh.local-build"
+}
+check_real_run_sh_accepts "$browser_capture" || {
+    echo "real run.sh rejected the browser suite's preparation command:" >&2
+    cat "$TMP_DIR/real-run-sh.out" >&2 || true
+    exit 1
+}
+printf '%s\n' "--already-materialized --fetch-only prepare-browser" \
+    > "$TMP_DIR/retired-browser-run.args"
+if check_real_run_sh_accepts "$TMP_DIR/retired-browser-run.args"; then
+    echo "real run.sh replay accepted the retired browser selection" >&2
+    exit 1
+fi
 for production_binding in \
     'inputs=<unset>' \
     'serve_dist=<unset>' \

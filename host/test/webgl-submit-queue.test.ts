@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SubmitQueue,
-  type SubmitFrame,
+  SubmitFrame,
   type QueueEntry,
 } from "../src/webgl/submit-queue.js";
 import type { GlBinding } from "../src/webgl/registry.js";
@@ -11,7 +11,7 @@ function mkBinding(pid: number, contextId: number | null = null): GlBinding {
 }
 
 function mkFrame(tag = 0): SubmitFrame {
-  return { memorySab: new SharedArrayBuffer(0), off: tag, len: 0 };
+  return new SubmitFrame(new Uint8Array([tag]),0,1);
 }
 
 /** Mirror the drain side: take the head frame and release if exhausted. */
@@ -24,8 +24,27 @@ function drainOne(q: SubmitQueue): QueueEntry | null {
 }
 
 describe("SubmitQueue", () => {
+  it.each([true, false])("retires an empty lane without rechecking changed master authority (compositor: %s)", compositor => {
+    let admitted = false;
+    const binding = mkBinding(2);
+    const q = new SubmitQueue(candidate => {
+      expect(candidate).toBe(binding);
+      if (admitted) throw new Error("Master authority changed after admission");
+      return compositor;
+    });
+    q.enqueue(binding, mkFrame());
+    admitted = true;
+    const entry = q.pickNext()!;
+    entry.frames.shift();
+    expect(() => q.releaseIfEmpty(entry)).not.toThrow();
+    expect(q.isEmpty()).toBe(true);
+    // Failed dispatch can stop draining immediately. No lane may retain the
+    // consumed binding (and its guest memory) until a later pickNext call.
+    expect(q).toMatchObject({ compositor: [], clients: [] });
+  });
+
   it("compositor pid jumps ahead of clients enqueued earlier", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10), mkFrame());
     q.enqueue(mkBinding(11), mkFrame());
     q.enqueue(mkBinding(2), mkFrame());
@@ -33,7 +52,7 @@ describe("SubmitQueue", () => {
   });
 
   it("drains compositor first, then clients in enqueue order", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10), mkFrame());
     q.enqueue(mkBinding(2), mkFrame());
     q.enqueue(mkBinding(11), mkFrame());
@@ -46,7 +65,7 @@ describe("SubmitQueue", () => {
   });
 
   it("round-robins among clients when each carries multiple frames", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const a = mkBinding(10);
     const b = mkBinding(11);
     const c = mkBinding(12);
@@ -67,7 +86,7 @@ describe("SubmitQueue", () => {
   });
 
   it("multiple frames for the same (pid, ctx) coalesce into one entry", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const a = mkBinding(10, 7);
     q.enqueue(a, mkFrame(1));
     q.enqueue(a, mkFrame(2));
@@ -75,11 +94,11 @@ describe("SubmitQueue", () => {
 
     const e = q.pickNext();
     expect(e?.frames.length).toBe(3);
-    expect(e?.frames.map((f) => f.off)).toEqual([1, 2, 3]);
+    expect(e?.frames.map((f) => f.validate(bytes=>bytes[0]))).toEqual([1, 2, 3]);
   });
 
   it("same pid with different contextId produces two distinct entries", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10, 1), mkFrame(1));
     q.enqueue(mkBinding(10, 2), mkFrame(2));
 
@@ -90,7 +109,7 @@ describe("SubmitQueue", () => {
   });
 
   it("releaseIfEmpty is a no-op when the entry still has frames", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const a = mkBinding(10);
     q.enqueue(a, mkFrame(1));
     q.enqueue(a, mkFrame(2));
@@ -106,7 +125,7 @@ describe("SubmitQueue", () => {
   });
 
   it("releaseIfEmpty drops empty entries from byKey and the lane", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10), mkFrame());
     drainOne(q);
     expect(q.isEmpty()).toBe(true);
@@ -114,13 +133,13 @@ describe("SubmitQueue", () => {
   });
 
   it("pickNext on empty queue returns null and leaves isEmpty true", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     expect(q.pickNext()).toBeNull();
     expect(q.isEmpty()).toBe(true);
   });
 
   it("isCompositor predicate override routes the chosen pid to the compositor lane", () => {
-    const q = new SubmitQueue((pid) => pid === 99);
+    const q = new SubmitQueue(binding => binding.pid === 99);
     q.enqueue(mkBinding(2), mkFrame());
     q.enqueue(mkBinding(10), mkFrame());
     q.enqueue(mkBinding(99), mkFrame());
@@ -128,7 +147,7 @@ describe("SubmitQueue", () => {
   });
 
   it("compositor with multiple frames stays at the head until drained", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(2), mkFrame(1));
     q.enqueue(mkBinding(2), mkFrame(2));
     q.enqueue(mkBinding(10), mkFrame(3));
@@ -140,7 +159,7 @@ describe("SubmitQueue", () => {
   });
 
   it("re-enqueuing after release creates a fresh entry at the tail", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const a = mkBinding(10);
     const b = mkBinding(11);
     q.enqueue(a, mkFrame(1));
@@ -155,7 +174,7 @@ describe("SubmitQueue", () => {
   });
 
   it("purges every queued frame for one exiting pid without disturbing peers", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10, 1), mkFrame(1));
     q.enqueue(mkBinding(10, 1), mkFrame(2));
     q.enqueue(mkBinding(10, 2), mkFrame(3));
@@ -173,4 +192,41 @@ describe("SubmitQueue", () => {
     drainOne(q);
     expect(q.isEmpty()).toBe(true);
   });
+});
+
+it.each([false,true])("snapshots only the selected subview bytes from shared=%s backing", shared => {
+  const backing=shared?new SharedArrayBuffer(64):new ArrayBuffer(64);
+  const source=new Uint8Array(backing,7,12);source.set([0,1,2,3,4,5,6,7,8,9,10,11]);
+  const frame=new SubmitFrame(source,3,4);
+  source.fill(99);
+  expect(frame.byteLength).toBe(4);
+  expect(frame.validate((bytes,off,len)=>{
+    expect(off).toBe(0);expect(len).toBe(4);expect([...bytes]).toEqual([3,4,5,6]);
+    expect(bytes.buffer).not.toBe(backing);expect(bytes.buffer).toBeInstanceOf(ArrayBuffer);return 0;
+  })).toBe(0);
+});
+it("captures native typed-array slots without invoking overridable source accessors", () => {
+  const source=new Uint8Array([1,2,3]);
+  for(const name of ["buffer","byteOffset","byteLength","slice","subarray"])
+    Object.defineProperty(source,name,{get(){throw new Error("borrowed source accessor");}});
+  const frame=new SubmitFrame(source,1,2);
+  expect(frame.validate(bytes=>{expect([...bytes]).toEqual([2,3]);return 0;})).toBe(0);
+});
+it("rejects invalid spans before admitting a frame", () => {
+  for(const [offset,length] of [[-1,1],[0,-1],[.5,1],[0,.5],[NaN,1],[0,Infinity],[3,0],[1,2],[Number.MAX_SAFE_INTEGER,1]])
+    expect(()=>new SubmitFrame(new Uint8Array(2),offset,length)).toThrow(RangeError);
+  expect(new SubmitFrame(new Uint8Array(2),2,0).byteLength).toBe(0);
+});
+it("rejects duplicate admission without duplicating an accepted packet", () => {
+  const q=new SubmitQueue(binding => binding.pid === 2),binding=mkBinding(10),frame=mkFrame(7);
+  q.enqueue(binding,frame);
+  expect(()=>q.enqueue(binding,frame)).toThrow("already admitted");
+  expect(q.pickNext()?.frames).toEqual([frame]);
+});
+it("discarding a session clears the bytes of caller-held frame tokens", () => {
+  const q=new SubmitQueue(binding => binding.pid === 2),binding=mkBinding(10),frame=mkFrame(7);
+  q.enqueue(binding,frame);q.removeSession(10);
+  expect(frame.validate(()=>0)).toBe(-5);
+  expect(()=>frame.run(binding,()=>0)).toThrow("already consumed");
+  expect(q.isEmpty()).toBe(true);
 });

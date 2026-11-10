@@ -12,6 +12,8 @@ import { chromium, type Browser, type Page, type BrowserContext } from "playwrig
 import { resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 
+import { ViteStartupOutput } from "./vite-startup-output";
+
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const BROWSER_DIR = resolve(REPO_ROOT, "apps/browser-demos");
 // A fixed default port. --strictPort makes a taken port fail
@@ -53,6 +55,7 @@ async function startViteServer(): Promise<ChildProcess> {
     );
 
     let started = false;
+    const startupOutput = new ViteStartupOutput();
     const timeout = setTimeout(() => {
       if (!started) {
         proc.kill();
@@ -62,7 +65,7 @@ async function startViteServer(): Promise<ChildProcess> {
 
     proc.stdout!.on("data", (data: Buffer) => {
       const text = data.toString();
-      if (!started && text.includes("Local:")) {
+      if (!started && startupOutput.push(text)) {
         started = true;
         viteAlive = true;
         clearTimeout(timeout);

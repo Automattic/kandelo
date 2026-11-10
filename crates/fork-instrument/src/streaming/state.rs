@@ -365,8 +365,21 @@ impl FrozenStateRewrites {
         output: &mut Function,
         limit: usize,
     ) -> Result<()> {
+        self.emit_source_range(source, operation, output, limit)
+            .map(|_| ())
+    }
+
+    /// Return only the source operation (or its semantic helper call),
+    /// excluding table guards and segment bookkeeping emitted around it.
+    pub(crate) fn emit_source_range(
+        &self,
+        source: &SourceInstruction<'_>,
+        operation: Instruction<'_>,
+        output: &mut Function,
+        limit: usize,
+    ) -> Result<std::ops::Range<usize>> {
         let op = &source.operation;
-        if matches!(
+        let range = if matches!(
             op,
             Operator::CallIndirect { .. } | Operator::ReturnCallIndirect { .. }
         ) && matches!(operation, Instruction::Call(_) | Instruction::ReturnCall(_))
@@ -376,19 +389,25 @@ impl FrozenStateRewrites {
             if let Some(guard) = self.consumer_guard(op) {
                 output.instruction(&Instruction::Call(guard));
             }
+            let start = output.byte_len();
             output.instruction(&operation);
+            start..output.byte_len()
         } else if let Some(key) = Key::from_op(op, &self.synchronized, self.resume_table) {
             let function = *self
                 .calls
                 .get(&key)
                 .context("state operation was not discovered before freezing")?;
+            let start = output.byte_len();
             if matches!(key, Key::TailIndirect { .. }) {
                 output.instruction(&Instruction::ReturnCall(function));
             } else {
                 output.instruction(&Instruction::Call(function));
             }
+            start..output.byte_len()
         } else {
+            let start = output.byte_len();
             output.instruction(&operation);
+            let range = start..output.byte_len();
             let bit = match *op {
                 Operator::DataDrop { data_index } => self.hooks.data.get(&data_index),
                 Operator::ElemDrop { elem_index } => self.hooks.elements.get(&elem_index),
@@ -401,12 +420,13 @@ impl FrozenStateRewrites {
                     .instruction(&Instruction::I32Or)
                     .instruction(&Instruction::GlobalSet(bit.global));
             }
-        }
+            range
+        };
         ensure!(
             output.byte_len() <= limit,
             "state rewrite exceeds function output budget"
         );
-        Ok(())
+        Ok(range)
     }
 
     pub fn emit_helper(&self, ordinal: u32, limit: usize) -> Result<Function> {

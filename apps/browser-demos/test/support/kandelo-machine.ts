@@ -16,11 +16,12 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, type FrameLocator, type Page } from "../../playwright-test";
+import { expect, test, type FrameLocator, type Page } from "../../playwright-test";
 import { parseGalleryRoster } from "../../../../web-libs/kandelo-session/src/gallery-roster";
 import { readLocalSupportedSet } from "../../../../scripts/local-supported-set.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
+type VfsProductImages = typeof import("../fixtures/vfs-product-images");
 
 export const GALLERY_ROSTER = parseGalleryRoster(
   readFileSync(join(here, "../../pages/kandelo/gallery-roster.json"), "utf8"),
@@ -90,9 +91,12 @@ async function resolveVfsImageUrl(
       waitUntil: "domcontentloaded",
     });
     const result = await probe.evaluate(async (id) => {
-      const { vfsProductImageUrl, VfsProductImageNotBuiltError } = await import(
-        "/test/fixtures/vfs-product-images.ts"
-      );
+      // The browser resolves this server-root URL, while TypeScript checks
+      // the real source module. Making the URL relative would resolve it
+      // beneath the page instead of Vite's test-fixture endpoint.
+      const fixtureUrl = "/test/fixtures/vfs-product-images.ts";
+      const { vfsProductImageUrl, VfsProductImageNotBuiltError } =
+        await import(fixtureUrl) as VfsProductImages;
       try {
         return { url: await vfsProductImageUrl(id), notBuilt: null };
       } catch (error) {
@@ -172,6 +176,15 @@ export async function gotoMachine(
   await page.goto(await machineUrl(page, profileId, options), {
     waitUntil: "domcontentloaded",
   });
+}
+
+/** The dock mounts before the modal machine-switch overlay. A first click
+ * can otherwise be lost when that overlay appears between pointer down/up.
+ * Observe the actual boot and modal completion before using its controls. */
+export async function waitForMachineBootInput(page: Page): Promise<void> {
+  await expect(page.getByRole("button", { name: /^Current computer: .*, Running$/ }))
+    .toBeVisible({ timeout: 180_000 });
+  await expect(page.locator(".kmprogress-overlay")).toBeHidden({ timeout: 180_000 });
 }
 
 /**

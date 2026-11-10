@@ -25,7 +25,10 @@ Persistent-program baseline enforcement is stricter than the ordinary
 additive snapshot classifier. Preserve the declared supported baseline even
 when bumping a program version; see
 `docs/persistent-program-compatibility.md`. Do not replace or restamp its
-frozen executable fixtures to make a new runtime pass.
+frozen executable fixtures to make a new runtime pass. The maintainer has
+explicitly retired ABI 55 before deployment; the minimum supported baseline is
+56. Preserve the historical v55 cohort unchanged and establish v56 only from
+fresh normal SDK builds, as the compatibility document describes.
 
 Treat these as ABI surface:
 
@@ -58,16 +61,6 @@ bump leaves every program valid. When you add a snapshot section, choose
 its surface by asking whether a running program can observe it; if any
 part of it can, it is `Program`. See docs/abi-versioning.md ("Which
 changes force a program rebuild").
-
-Within one epoch the host also admits the affirmed prior contracts recorded
-in `abi/accepted-program-digests.json`. Do not add an entry by hand-writing a
-digest: an entry is authorized only when `xtask check-program-baseline`
-re-derives the digest from a stored copy of the snapshot that produced it,
-the snapshot classifier finds only additions since that surface, and a named
-author has recorded why the addition is behaviorally safe for programs that
-predate it. Both conditions, never one — a change can be additive in schema
-and breaking in behavior. An `ABI_VERSION` bump supersedes every entry. See
-docs/abi-versioning.md ("Affirmed prior program contracts").
 
 A structural additive change may keep the same `ABI_VERSION` only when existing
 binaries remain valid and existing ABI entries are unchanged. Additions still

@@ -144,7 +144,7 @@ describe("qtbase package contract", () => {
       "fontconfig@2.15.0",
       "harfbuzz@10.1.0",
       "libpng@1.6.43",
-      "libxkbcommon@1.7.0",
+      "libxkbcommon@1.13.2",
       "libwayland@1.24.0",
     ]) {
       expect(manifest).toContain(`"${dep}"`);

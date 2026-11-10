@@ -3,7 +3,7 @@ use fork_instrument::original_artifact::{OriginalReference, attach_original_refe
 use runtime_core::program_preparation::{PreparationLimits, PreparationPlan, PreparationProfile};
 use sha2::{Digest, Sha256};
 
-const ORIGINAL: &[u8] = include_bytes!("../../../abi/program-fixtures/v55/raw-fork.wasm");
+const ORIGINAL: &[u8] = include_bytes!("../../../abi/program-fixtures/v56/raw-fork.wasm");
 
 fn profile() -> PreparationProfile {
     PreparationProfile {
@@ -11,11 +11,14 @@ fn profile() -> PreparationProfile {
         optimizer_sha256: None,
         options_sha256: Sha256::digest(b"fork-instrument::Options::default()").into(),
         dependency_closure_sha256: Sha256::digest(b"frozen-statically-linked-program").into(),
-        program_contract_sha256: [
-            0x13, 0x58, 0xec, 0xa0, 0x4a, 0x8d, 0x33, 0xfa, 0x5b, 0xcc, 0x27, 0xd1, 0xc6, 0x72, 0xaf, 0x2f,
-            0x6e, 0x7a, 0xaf, 0x46, 0x6a, 0x39, 0x8a, 0xd5, 0x98, 0xd9, 0x91, 0x34, 0x7b, 0x1a, 0x44, 0x15,
-        ],
-        program_abi: 55,
+        program_contract_sha256: {
+            let baseline: serde_json::Value = serde_json::from_str(include_str!("../../../abi/supported-program-baseline.json")).unwrap();
+            assert_eq!(baseline["abi_version"], 56);
+            let hex = baseline["program_contract_digest"].as_str().unwrap();
+            assert_eq!(hex.len(), 64, "ABI-56 digest must be sealed before fixture tests");
+            core::array::from_fn(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+        },
+        program_abi: 56,
     }
 }
 
@@ -52,4 +55,10 @@ fn bound_instrumented_output_is_never_accepted_as_an_original_to_instrument_agai
     let misleading = attach_original_reference(&source, &reference, limits().source_bytes).unwrap();
     let plan = PreparationPlan::from_source(misleading.bytes(), profile(), limits()).unwrap();
     assert_eq!(plan.verify_original(instrumented.bytes.bytes()), Err(wasm_posix_shared::Errno::ENOEXEC));
+}
+
+#[test]
+fn retired_abi_55_is_not_a_current_preparation_source() {
+    let retired = include_bytes!("../../../abi/program-fixtures/v55/raw-fork.wasm");
+    assert!(matches!(PreparationPlan::from_source(retired, profile(), limits()), Err(wasm_posix_shared::Errno::ENOEXEC)));
 }

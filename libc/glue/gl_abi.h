@@ -10,9 +10,15 @@
  * run, not as silent decode corruption.
  */
 
+#include <stddef.h>
 #include <stdint.h>
+#include "drm_owned.h"
 
-#define WPK_GL_OP_VERSION 2u
+#define WPK_GL_OP_VERSION 17u
+#define WPK_GL_INLINE_DRAW_HEADER_BYTES 16u
+#define WPK_GL_INLINE_DRAW_ATTRIBUTE_BYTES 20u
+#define WPK_GL_INLINE_DRAW_MAX_BYTES 65535u
+#define WPK_GL_INLINE_DRAW_MAX_ATTRIBUTES 16u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -27,10 +33,22 @@
 #define GLIO_SUBMIT           0x47u
 #define GLIO_PRESENT          0x48u
 #define GLIO_QUERY            0x49u
+#define GLIO_UPDATE_SURFACE   0x4Au
+#define GLIO_SUBMIT_QUERY     0x4Bu
+#define WPK_GL_SUBMIT_QUERY_PHASE_SUBMIT 1u
+#define WPK_GL_SUBMIT_QUERY_PHASE_QUERY  2u
+#define WPK_GL_SUBMIT_QUERY_REPLY_MAGIC  0x47535131u
 
 /* Surface kind tags. */
 #define WPK_SURFACE_DEFAULT  1u
 #define WPK_SURFACE_PBUFFER  2u
+/* Surface creation config word: RGBA8/D24S8 storage in the low byte and the
+ * color/depth/stencil sample count in bits 8..16 (0 = single-sampled). */
+#define WPK_SURFACE_CONFIG_RGBA8_D24S8 1u
+#define WPK_SURFACE_CONFIG_SAMPLES_SHIFT 8u
+#define WPK_SURFACE_CONFIG_MAX_SAMPLES 31u
+#define WPK_SURFACE_CONFIG(samples) \
+    (WPK_SURFACE_CONFIG_RGBA8_D24S8 | ((uint32_t)(samples) << WPK_SURFACE_CONFIG_SAMPLES_SHIFT))
 
 /* Cmdbuf op tags (TLV: u16 op, u16 payload_len, payload). */
 #define OP_CLEAR                       0x0001u
@@ -53,6 +71,9 @@
 #define OP_BIND_BUFFER                 0x0102u
 #define OP_BUFFER_DATA                 0x0103u
 #define OP_BUFFER_SUB_DATA             0x0104u
+#define OP_BEGIN_CLIENT_ARRAY 0x0105u
+#define OP_END_CLIENT_ARRAY 0x0106u
+#define OP_BUFFER_DATA_SNAPSHOT 0x0107u
 
 #define OP_GEN_TEXTURES                0x0200u
 #define OP_DELETE_TEXTURES             0x0201u
@@ -87,6 +108,13 @@
 #define OP_DISABLE_VERTEX_ATTRIB_ARRAY 0x0501u
 #define OP_VERTEX_ATTRIB_POINTER       0x0502u
 #define OP_DRAW_ARRAYS                 0x0503u
+#define OP_DRAW_CLIENT_ARRAYS          0x0506u
+#define OP_DRAW_BUFFER_SNAPSHOTS 0x0507u
+#define OP_DRAW_PREPARED_INLINE_COMPACT 0x050cu
+#define OP_DRAW_PREPARED_INLINE 0x050bu
+#define OP_DRAW_PREPARED_SNAPSHOTS 0x050au
+#define OP_DRAW_FRAMEBUFFER_SNAPSHOTS 0x0508u
+#define OP_CLEAR_FRAMEBUFFER_SNAPSHOT 0x0509u
 #define OP_DRAW_ELEMENTS               0x0504u
 #define OP_VERTEX_ATTRIB_4FV           0x0505u
 
@@ -118,6 +146,10 @@
 #define OP_POLYGON_OFFSET 0x001Bu
 #define OP_DEPTH_RANGEF 0x001Cu
 #define OP_SAMPLE_COVERAGE 0x001Du
+#define OP_CLIENT_ERRORS 0x001Eu
+/* Pending host-predicted flag mask, then the one locally observed flag bit. */
+#define OP_ERROR_OBSERVED 0x001Fu
+#define OP_TRANSPORT_ERROR_OBSERVED 0x0020u
 #define OP_TEX_PARAMETERF 0x0208u
 #define OP_COMPRESSED_TEX_IMAGE_2D 0x0209u
 #define OP_COMPRESSED_TEX_SUB_IMAGE_2D 0x020Au
@@ -132,6 +164,10 @@
 #define OP_UNIFORM4IV 0x040Du
 #define OP_UNIFORM_MATRIX2FV 0x040Eu
 #define OP_UNIFORM_MATRIX3FV 0x040Fu
+#define OP_UNIFORM_UPLOAD_BEGIN 0x0410u
+#define OP_UNIFORM_UPLOAD_CHUNK 0x0411u
+#define OP_UNIFORM_UPLOAD_COMMIT 0x0412u
+#define OP_UNIFORM_UPLOAD_CANCEL 0x0413u
 #define OP_DELETE_RENDERBUFFERS 0x0708u
 #define OP_DRAW_BUFFER 0x0709u
 #define OP_DRAW_BUFFERS 0x070Au
@@ -142,6 +178,17 @@
 
 /* Sync-query op tags. */
 #define QOP_GET_ERROR             0x01u
+/* Additive QOP_GET_ERROR form (shared::gl::error_drain): input
+ * [client mask, REQUEST]; checked reply [count, retained,
+ * errors[CAPACITY], WPK_GL_QUERY_REPLY_MAGIC]. retained==0 means the
+ * reply carried every flag the context had recorded. */
+#define WPK_GL_ERROR_DRAIN_REQUEST 0x4744524eu
+#define WPK_GL_ERROR_DRAIN_RECEIPT_REQUEST 0x47524350u
+#define WPK_GL_ERROR_DRAIN_RECEIPT_BYTES 52u
+#define QOP_ERROR_DRAIN_RECEIPT 0x003du
+#define WPK_GL_ERROR_DRAIN_REQUEST_BYTES 8u
+#define WPK_GL_ERROR_DRAIN_CAPACITY 8u
+#define WPK_GL_ERROR_DRAIN_REPLY_BYTES 44u
 #define QOP_GET_STRING            0x02u
 #define QOP_GET_INTEGERV          0x03u
 #define QOP_GET_FLOATV            0x04u
@@ -156,24 +203,350 @@
 #define QOP_GET_SHADER_PRECISION_FORMAT 0x0Du
 #define QOP_FINISH                0x0Eu
 
+#define QOP_GET_BUFFER_PARAMETER 0x0012u
+#define QOP_GET_VERTEX_ATTRIBIV 0x0013u
+#define QOP_GET_VERTEX_ATTRIBFV 0x0014u
+#define QOP_IS_OBJECT 0x0015u
+#define QOP_IS_ENABLED 0x0016u
+#define QOP_GET_INDEX_USAGE 0x0017u
+
+#define QOP_GET_ACTIVE_ATTRIB 0x0018u
+#define QOP_GET_ATTACHED_SHADERS 0x0019u
+#define QOP_GET_SHADER_SOURCE 0x001Au
+#define QOP_GET_FB_ATTACHMENT 0x001Bu
+#define QOP_GET_RENDERBUFFER_PARAMETER 0x001Cu
+#define QOP_GET_TEX_PARAMETER 0x001Du
+#define OP_VALIDATE_PROGRAM 0x030Bu
+#define OP_USE_PROGRAM_JOURNAL 0x030Cu
+
+#define QOP_SHADER_SOURCE_UPLOAD 0x001Eu
+/* Upload input: action, shader, token, total/offset, optional CHUNK bytes.
+ * BEGIN=1, CHUNK=2, COMMIT=3, ABORT=4. Checked reply payload echoes token. */
+
+/* V7 checked result: status, count, 16 values, completion magic (76 bytes). */
+#define QOP_GET_UNIFORM_VALUES 0x001Fu
+#define QOP_GET_ACTIVE_UNIFORM_INFO 0x0020u
+#define QOP_LOOKUP_UNIFORM 0x0021u
+/* V9: kind (texture=1/RBO=2), target, name; checked accepted=1 reply. */
+#define QOP_BIND_IMAGE_OBJECT 0x0022
+#define QOP_IMAGE_TARGET 0x0023u
+#define QOP_IMAGE_SOURCE_STATE 0x0024u
+#define QOP_BOUND_IMAGE_TARGET 0x0025u
+#define QOP_BOUND_IMAGE_STATE 0x0026u
+#define QOP_IMAGE_OBJECT_DELETE 0x0027u
+#define QOP_IMAGE_ATTACHMENT 0x0028u
+#define QOP_IMAGE_STORAGE 0x0029u
+#define QOP_BIND_FRAMEBUFFER 0x002Au
+// V14: target/name (8 bytes), checked accepted binding (12-byte reply).
+#define QOP_BIND_BUFFER 0x002Bu
+/* V15: name (4 bytes), checked accepted deletion (12-byte reply). */
+#define QOP_DELETE_BUFFER 0x002Cu
+/* V16: no input; width, height, pixels and completion marker (16 bytes),
+ * or the 20-byte reply with the supported sample-count mask (bit n = n
+ * samples) before the marker. Requires a live display's mapped object
+ * session, not a current context. */
+#define QOP_CONTEXT_RESET_SCOPE 0x0037u
+#define QOP_CREATE_SHADER_PROGRAM 0x0038u
+#define QOP_PROGRAM_MUTATION 0x0039u
+#define QOP_PROGRAM_CAPTURE 0x003Au
+#define QOP_PROGRAM_JOURNAL 0x003Bu
+#define QOP_PROGRAM_JOURNAL_BARRIER 0x003Cu
+#define QOP_SURFACE_CAPABILITIES 0x002Du
+#define WPK_SURFACE_CAPABILITIES_LEN 16u
+#define WPK_SURFACE_CAPABILITIES_SAMPLES_LEN 20u
+#define QOP_CREATE_FENCE 0x002Eu
+#define QOP_FENCE_STATUS 0x002Fu
+#define QOP_RELEASE_FENCE 0x0030u
+#define QOP_FLUSH 0x0031u
+#define QOP_COMPRESSED_UPLOAD 0x0032u
+#define WPK_GL_COMPRESSED_UPLOAD_MAX_BYTES 16777216u
+/* eglWaitSync. in: u32 source session fd (the kernel substitutes the
+ * session identity), u32 fence token. out: u32 status, u32 token,
+ * u32 disposition, u32 magic. Disposition ORDERED means the destination may
+ * continue; CLIENT_SIGNAL means the fence is on another physical renderer and
+ * the caller must observe its signal before issuing later commands. */
+#define QOP_SERVER_WAIT 0x0035u
+/* Kernel-issued only (DRM_IOCTL_WPK_EXPORT_FENCE); the guest never sends it. */
+#define QOP_EXPORT_FENCE 0x0036u
+#define WPK_SERVER_WAIT_ORDERED 0u
+#define WPK_SERVER_WAIT_CLIENT_SIGNAL 1u
+#define QOP_OBJECT_CAPTURE 0x0034u
+#define QOP_READBACK_CAPTURE 0x0033u
+/* Private mode of the existing BO bind ioctl, returning a source token. */
+#define WPK_GL_IMAGE_SOURCE_TARGET 0x57504b49u
+
+/* V3+ query replies: u32 status (0 success, 1 recorded GL error),
+ * payload, u32 completion magic. Index usage payload: u32 maximum index
+ * followed by 8192 bytes of index-presence bits (byte/short indices).
+ * Old query layouts are unchanged. All words are little-endian. */
+#define WPK_GL_INDEX_REPLY_LEN 8204u
+#define WPK_GL_QUERY_REPLY_MAGIC 0x47514c33u
+
 /* Marshalled ioctl arg structs — must match shared::gl byte-for-byte. */
+#define WPK_GL_SESSION_DISPLAY 1u
+#define WPK_GL_SESSION_OBJECTS 2u
+/* DISPLAY: native DRM fd (-1 means this render file); OBJECTS: root fd. */
+struct gl_init_info { uint32_t op_version, role; int32_t display_fd; uint32_t display_id; };
 struct gl_submit_info { uint32_t offset; uint32_t length; };
-struct gl_context_attrs { uint32_t client_version; uint32_t reserved[3]; };
+struct gl_make_current { uint32_t context_id, draw_surface_id, read_surface_id; };
+/* ABI 58: source context 0 creates an independent object group. */
+/* flags: WPK_GL_CONTEXT_FLAG_* (an EGL robust buffer access context). */
+#define WPK_GL_CONTEXT_FLAG_ROBUST_ACCESS 1u
+struct gl_context_attrs { uint32_t client_version; uint32_t share_context_id; uint32_t flags; uint32_t context_id; };
 struct gl_surface_attrs { uint32_t kind; uint32_t width; uint32_t height; uint32_t config_id; uint32_t reserved[4]; };
+/* ABI 57: zero identity on input; accepted size and fresh identity on output. */
+struct gl_surface_create { struct gl_surface_attrs attrs; uint32_t surface_id; };
+/* GLIO_UPDATE_SURFACE copy variant: retain the render back, write an
+ * unpublished top-row-first front. Zero target_reserved distinguishes it
+ * from a retarget; copy_target_bo names a GEM handle on this session. */
+struct gl_surface_front_copy {
+    uint32_t kind, width, height, config_id;
+    uint32_t target_reserved, copy_target_bo, format, pitch;
+};
 struct gl_query_info {
     uint32_t op;
-    uint32_t in_buf_ptr;
+    uintptr_t in_buf_ptr;
     uint32_t in_buf_len;
-    uint32_t out_buf_ptr;
+    uintptr_t out_buf_ptr;
     uint32_t out_buf_len;
     uint32_t reserved;
 };
 
-/* Cross-archive accessors. libEGL.a defines them; libGLESv2.a calls
- * them. Returns -1 / NULL until eglMakeCurrent has run, so the GL
- * stubs no-op cleanly if called before context setup. */
+/* InOut, native pointer width; old query layout/reserved word are unchanged.
+ * This is one synchronous ordered invocation, not a replayable transaction. */
+struct gl_submit_query_result {
+    uint32_t completed_phase;
+    int32_t submit_rc, query_rc;
+    uint32_t result_magic;
+};
+struct gl_submit_query_info {
+    struct gl_submit_info submit;
+    struct gl_query_info query;
+    struct gl_submit_query_result result;
+};
+_Static_assert(sizeof(struct gl_submit_query_result) == 16, "submit/query result layout");
+_Static_assert(sizeof(struct gl_submit_query_info) == (sizeof(uintptr_t) == 8 ? 64 : 48), "submit/query native layout");
+_Static_assert(__builtin_offsetof(struct gl_submit_query_info, query) == 8, "submit/query query offset");
+_Static_assert(__builtin_offsetof(struct gl_submit_query_info, result) == (sizeof(uintptr_t) == 8 ? 48 : 32), "submit/query result offset");
+
+/* Cross-archive accessors require a current context on the calling thread.
+ * Native windows own independent device descriptors and transfer BO names. */
 int      _wpk_gl_fd(void);
+void *_wpk_gl_context_owner(void);
+int _wpk_egl_context_device_ioctl(void *owner,unsigned long request,void *arg);
 uint8_t *_wpk_gl_cmdbuf_base(void);
 void     _wpk_gl_flush(void);
+/* Graphics reset state, owned by libEGL (EXT/KHR_robustness section 2.6).
+ * ENODEV loses the context; the failure-only scope receipt distinguishes
+ * its logical reset from physical renderer/share-group loss. */
+struct wpk_gles_context;
+struct wpk_gles_context *_wpk_gl_command_encoder(void);
+void     _wpk_gl_note_reset(void);
+/* Cold lifetime cookie; the dispatch guard protects it during foreign I/O. */
+void _wpk_gl_set_encoder_reset_owner(struct wpk_gles_context *state,void *owner);
+void _wpk_egl_note_encoder_reset(void *owner);
+int      _wpk_gl_context_reset(void);
+int      _wpk_gl_has_draw_surface(void);
+int      _wpk_gl_reset_error(unsigned int *error);
+unsigned int _wpk_gl_graphics_reset_status(void);
+int      _wpk_gl_robustness_state(unsigned int pname, int32_t *value);
+/* Process-wide graphics-device request count (libEGL). Every request from
+ * libEGL or libGLESv2 advances it before entering the device; glGetError
+ * uses it to prove no request followed the drain it answers from. The
+ * fork guard returns 0 when a fork child could not be made to advance it. */
+void     _wpk_gl_note_device_request(void);
+uint64_t _wpk_gl_device_requests(void);
+/* Controlled library calls keep the same request counter; external raw I/O
+ * also revokes buffer/layout authority through a separate monotonic epoch. */
+void _wpk_gl_note_known_device_request(void);
+void _wpk_gl_reconcile_raw_authority(struct wpk_gles_context *state);
+uint64_t _wpk_gl_raw_device_requests(void);
+int      _wpk_gl_device_requests_fork_safe(void);
+/* Private library ownership epoch; initialize fork tracking before acquiring
+ * local authority. Zero means tracking has not been installed successfully. */
+uint64_t _wpk_gl_device_owner_epoch(void);
+/* Cold driver admission, not a public GLES entrypoint. Ordinary clients keep
+ * checked selection until automatic admission is independently validated. */
+int _wpk_gl_enable_program_journal(void);
+
+/* Opaque client encoder state belongs to an EGL context, not its current
+ * thread. Only libGLESv2 knows its layout; EGL owns creation and retirement. */
+struct wpk_gles_context;
+struct wpk_object_group;
+/* Private cross-archive guard; no device/wire layout is changed. Same-thread
+ * guards nest, while the outer scope keeps peers excluded and cancellation
+ * disabled through publication. A null group means admission failed and begin
+ * already unlocked/restored cancellation. Ending a guard clears its group. */
+struct wpk_gl_name_scope {
+    struct wpk_object_group *group;
+    int cancel_state;
+};
+struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state);
+void _wpk_gl_end_name_scope(struct wpk_gl_name_scope *scope);
+#define WPK_GL_NAME_SCOPE(state)                                                                   \
+    struct wpk_gl_name_scope name_scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =         \
+        _wpk_gl_begin_name_scope(state);                                                        \
+    if (!name_scope.group) return
+int _wpk_gl_flush_checked(void);
+int _wpk_gl_server_flush_checked(void);
+int _wpk_gl_finish_checked(void);
+#define WPK_GL_EXTERNAL_NAME_COLLISION 0x0502u
+int _wpk_gl_discard_external_candidate(uint32_t name);
+
+struct wpk_gles_context *_wpk_gl_current_encoder(void);
+int _wpk_gl_encoder_owned(struct wpk_gles_context *state);
+struct wpk_gles_context *_wpk_gl_create_encoder(void);
+#define WPK_GL_OBJECT_GROUPS 1
+struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *source);
+/* Internal name spaces: buffer 0, texture 1, renderbuffer 2, shader/program 3.
+ * Returns a GL error enum; failure leaves output and reservations unchanged. */
+uint32_t _wpk_gl_reserve_names(struct wpk_gles_context *state, uint32_t name_space, int32_t count,
+                               uint32_t *out);
+/* Adopt an acknowledged public WPK texture name; hidden image carriers are
+ * not public objects. Returns a GL error enum, preserving first error. */
+uint32_t _wpk_gl_register_external_texture(struct wpk_gles_context *state, uint32_t name);
+/* EGL holds its lifetime guard, then this dispatch guard, across host retire
+ * and C name/capture retirement. No cleanup query may follow host destruction.
+ * A refused host retirement leaves every C owner intact. */
+struct wpk_gl_name_scope _wpk_gl_begin_encoder_retirement(struct wpk_gles_context *state);
+/* Two-phase EGL retirement retains the dispatch guard across a failure-only
+ * all-context reset proof. reset_group may be1 only while EGL's lifetime
+ * mutex proves that every context sharing this encoder's group is lost. */
+struct wpk_gl_name_scope _wpk_gl_lock_encoder_retirement(struct wpk_gles_context *state);
+int _wpk_gl_prepare_encoder_retirement(struct wpk_gles_context *state,int reset_group);
+/* Borrow only a proved healthy, same-group public context's metadata authority;
+ * no command prefix or mutable encoder is borrowed. Caller holds both guards. */
+int _wpk_gl_prepare_encoder_retirement_with_peer(struct wpk_gles_context *state,
+                                                 struct wpk_gles_context *peer);
+void _wpk_gl_retire_encoder_programs(struct wpk_gles_context *state);
+void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
+int _wpk_gl_discard_inherited_encoders(struct wpk_gles_context **states,size_t count);
+void _wpk_gl_inherited_cleanup_begin(void);
+void _wpk_gl_inherited_cleanup_end(void);
+
+/* An EGLImage made by eglCreateImageKHR from dma-buf planes. A
+ * GPU-tier bo (its PRIME fd has no CPU mapping) is sampled and rendered
+ * through the host texture the bo owns; a CPU-tier bo is read from
+ * `pixels`, the caller's mapping of the dma-buf. A YUV image
+ * (`external_only`) holds one plane per plane of its format (CPU bytes, or
+ * a GPU-tier texture of the plane's format) and is sampled only through
+ * TEXTURE_EXTERNAL_OES, converted to RGBA by the host when a plane is
+ * written. */
+struct egl_generation;
+struct wpk_drm_owner;
+struct wpk_egl_image_borrow;
+struct wpk_egl_image {
+    struct egl_generation *generation; /* borrowed while this generation lives */
+    struct wpk_drm_owner *source_owner; /* image-owned exact source FILE edge */
+    uintptr_t public_handle; /* never reuse an invalidated public identity */
+    uint64_t storage_references; /* explicit process-owned private holds */
+    uint64_t renderer_references; /* invalidated with inherited renderers */
+    struct wpk_egl_image_borrow *borrows; /* exact caller-scoped admission */
+    int public_live, constructing;
+    struct wpk_drm_actor_claim construction_claim;
+    struct wpk_drm_owner *construction_file, *construction_bo;
+    struct wpk_egl_image *next;
+    uint32_t handle;          /* GEM handle on the EGL session's fd */
+    struct wpk_drm_owner *bo_owner;
+    uint32_t width, height;
+    uint32_t fourcc;          /* DRM_FORMAT_[AX]RGB8888 / [AX]BGR8888 */
+    uint32_t pitch;
+    const uint8_t *pixels;    /* first row of a CPU-tier image, else NULL */
+    void *map;                /* the mmap behind `pixels` */
+    size_t map_len;
+    struct wpk_drm_mapping mapping;
+    /* YUV images: every plane's GEM handle on the EGL session's fd (each
+     * one import reference), pitch, offset and the mapping proving it is
+     * CPU storage, and the conversion EGL_EXT_image_dma_buf_import's hints
+     * select (WPK_YUV_* color space, full range, WPK_CHROMA_SITING_*). */
+    int external_only;
+    uint32_t plane_count;
+    struct { uint32_t handle, pitch, offset; void *map; size_t map_len; struct wpk_drm_owner *owner; struct wpk_drm_mapping mapping; } planes[3];
+    uint32_t color_space, full_range, chroma_siting;
+};
+
+/* DRM_IOCTL_WPK_CHECK_BO_FORMAT mirrors shared::dri::WpkDrmCheckBoFormat:
+ * EINVAL when the GPU-tier bo `handle` was allocated (or exported) in
+ * storage another `format` cannot name; a CPU-tier bo holds any format. */
+#define WPK_DRM_IOCTL_CHECK_BO_FORMAT 0xc00864e4u
+struct wpk_drm_check_bo_format { uint32_t handle, format; };
+_Static_assert(sizeof(struct wpk_drm_check_bo_format) == 8, "check bo format layout");
+/* DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE mirrors shared::dri::WpkDrmImportPlanarImage:
+ * import a YUV image of context `ctx_id` from one bo handle, pitch and
+ * offset per plane; `source` returns the image's private source token. */
+#define WPK_DRM_IOCTL_IMPORT_PLANAR_IMAGE 0xc04864e5u
+#define WPK_YUV_BT601 0u
+#define WPK_YUV_BT709 1u
+#define WPK_YUV_BT2020 2u
+#define WPK_CHROMA_SITING_H_HALF 1u
+#define WPK_CHROMA_SITING_V_HALF 2u
+struct wpk_drm_import_planar_image {
+    uint32_t ctx_id, width, height, format;
+    uint32_t bo_handles[3], pitches[3], offsets[3];
+    uint32_t color_space, full_range, chroma_siting, source, reserved;
+};
+_Static_assert(sizeof(struct wpk_drm_import_planar_image) == 72, "planar image import layout");
+/* An image that only TEXTURE_EXTERNAL_OES may sample (a YUV dma-buf). */
+int _wpk_egl_image_external_only(const struct wpk_egl_image *image);
+
+/* DRM_IOCTL_WPK_EXPORT_IMAGE mirrors shared::dri::WpkDrmExportImage: publish
+ * a texture level, cube-map face level or renderbuffer of `ctx_id` as a new
+ * GPU-tier bo whose storage is that object's image (EGL 1.5 section 3.9).
+ * Outputs are zero on input; `source`/`revision` order the object's sibling
+ * state in the exporting share group. */
+#define WPK_DRM_IOCTL_EXPORT_IMAGE 0xc03064e3u
+struct wpk_drm_export_image {
+    uint32_t ctx_id, target, name, level;
+    uint32_t bo_handle, width, height, internal_format, source, revision;
+    uint32_t reserved[2];
+};
+_Static_assert(sizeof(struct wpk_drm_export_image) == 48, "export image layout");
+/* DRM_IOCTL_WPK_EXPORT_FENCE mirrors shared::dri_sync::WpkDrmExportFence:
+ * on an EGL object session's fd, publish that session's fence `token` as a
+ * new sync_file descriptor (eglDupNativeFenceFDANDROID). `flags` accepts
+ * only O_CLOEXEC. */
+#define WPK_DRM_IOCTL_EXPORT_FENCE 0xc01064e6u
+struct wpk_drm_export_fence {
+    uint32_t token, flags;
+    int32_t fd;
+    uint32_t pad;
+};
+_Static_assert(sizeof(struct wpk_drm_export_fence) == 16, "export fence layout");
+/* sync_file's SYNC_IOC_FILE_INFO (include/uapi/linux/sync_file.h); with
+ * num_fences 0 it only reports the file's status and fence count. */
+#define WPK_SYNC_IOC_FILE_INFO 0xc0383e04u
+struct wpk_sync_file_info {
+    char name[32];
+    int32_t status;
+    uint32_t flags, num_fences, pad;
+    uint64_t sync_fence_info;
+};
+_Static_assert(sizeof(struct wpk_sync_file_info) == 56, "sync_file_info layout");
+/* Source object admission for an exported image, in the exporting context's
+ * share group. kind 1 = texture of `object_target` (GL_TEXTURE_2D or
+ * GL_TEXTURE_CUBE_MAP), 2 = renderbuffer. */
+#define WPK_GL_IMAGE_SOURCE_READY 0
+#define WPK_GL_IMAGE_SOURCE_INVALID 1   /* not an object of that type */
+#define WPK_GL_IMAGE_SOURCE_SIBLING 2   /* already an EGLImage sibling */
+int _wpk_gl_image_source_state(struct wpk_gles_context *state, uint32_t kind,
+                               uint32_t object_target, uint32_t name);
+/* Record the accepted export: the source object retains the image as one of
+ * its siblings until it is respecified or deleted. */
+int _wpk_gl_link_image_source(struct wpk_gles_context *state, uint32_t kind, uint32_t name,
+                               struct wpk_egl_image *image, uint32_t source, uint32_t revision);
+
+/* A retained private source token, separate from public GL names, for either
+ * storage tier. Zero for no current context or unavailable native storage. */
+/* Lookup retains a temporary reference; the caller must release it. */
+struct wpk_egl_image *_wpk_egl_image_lookup(const void *image);
+void _wpk_egl_image_retain(struct wpk_egl_image *image);
+void _wpk_egl_image_release(struct wpk_egl_image *image);
+/* Nontransferable lexical GL/API admission, released on its calling thread.
+ * Use ordinary retain/release for an explicit process-owned storage handoff. */
+struct wpk_egl_image *_wpk_egl_image_borrow_lookup(const void *image, struct wpk_egl_image_borrow **out);
+void _wpk_egl_image_borrow_release(struct wpk_egl_image_borrow **borrow);
+int _wpk_egl_image_retain_renderer(struct wpk_egl_image *image);
+void _wpk_egl_image_release_renderer(struct wpk_egl_image *image);
+uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image);
 
 #endif

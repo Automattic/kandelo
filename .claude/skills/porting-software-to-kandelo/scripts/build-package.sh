@@ -10,7 +10,7 @@ set -uo pipefail
 pkg="${1:?usage: build-package.sh <package> [wasm32|wasm64]}"
 arch="${2:-wasm32}"
 repo="$(git rev-parse --show-toplevel)"
-scratch_root="${KANDELO_AGENT_SCRATCH_DIR:-$repo/.context}"
+scratch_root="${KANDELO_AGENT_SCRATCH_DIR:-$repo/.scratch}"
 mkdir -p "$scratch_root" || exit 1
 run_dir="$(mktemp -d "$scratch_root/package-build.XXXXXX")" || exit 1
 log="$run_dir/build.log"

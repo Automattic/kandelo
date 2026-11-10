@@ -4,8 +4,8 @@
  * wlcompositor server end-to-end so host/test/wlcompositor-smoke.test.ts
  * can assert the compositor actually composites and routes input:
  *
- *   1. connect to /run/wayland-0, bind the v1 globals (wl_compositor,
- *      wl_shm, xdg_wm_base, wl_seat, wl_output).
+ *   1. connect to $WAYLAND_DISPLAY (else /tmp/wayland-0), bind the v1
+ *      globals (wl_compositor, wl_shm, xdg_wm_base, wl_seat, wl_output).
  *   2. create an xdg_toplevel, ack the compositor's configure.
  *   3. allocate a renderD128 dumb-bo, paint it solid red, and hand its
  *      prime-fd to wl_shm as the pool — the shared-buffer path that lets
@@ -24,9 +24,20 @@
  * shortcut it locks the session through ext-session-lock — a lock surface
  * the size of the output, the keyboard on it, unlock on the first key.
  *
+ * With WLC_MEMFD=1 the window's buffer lives in an ordinary memfd pool
+ * instead of a DRM buffer (host/test/wlcompositor-shm-memfd-smoke.test.ts):
+ * the way libwayland clients allocate wl_shm everywhere. The buffer sits
+ * partway into the pool behind bytes of another colour, and its pixels are
+ * written only after the compositor has received (and mapped) the pool, so
+ * the red the compositor samples can only come from its own MAP_SHARED
+ * mapping of the pool, read at the buffer's offset.
+ *
  * Prints markers the test asserts and exits 0. The compositor exits 0
  * once we disconnect.
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE   /* memfd_create */
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -60,6 +71,7 @@
 #define RED   0x00ff0000u   /* XRGB8888: opaque red (X byte ignored) */
 
 struct client {
+    struct wl_display *display;
     struct wl_compositor *compositor;
     struct wl_shm *shm;
     struct xdg_wm_base *wm_base;
@@ -79,6 +91,7 @@ struct client {
     struct xdg_toplevel *toplevel;
 
     int configured;     /* got + acked the initial xdg configure */
+    int attached;       /* the buffer is attached and committed */
     int frame_done;     /* compositor flipped our buffer */
     int presented;      /* wp_presentation_feedback resolved (either event) */
     int got_keymap;     /* wl_keyboard.keymap arrived + parsed */
@@ -373,6 +386,10 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xs,
     struct client *c = data;
     xdg_surface_ack_configure(xs, serial);
     c->configured = 1;
+    /* A compositor that waits for clients to apply a configure (sway's
+     * transactions) gets the commit it waits for; the buffer is kept. */
+    if (c->attached)
+        wl_surface_commit(c->surface);
 }
 static const struct xdg_surface_listener xdg_surface_listener = {
     .configure = xdg_surface_configure,
@@ -520,11 +537,54 @@ static int connect_socket(void) {
     return -1;
 }
 
+/* WLC_MEMFD: a wl_shm buffer in a memfd pool, as libwayland clients make
+ * them. The buffer starts MEMFD_OFFSET bytes into the pool (not page
+ * aligned, as GTK packs buffers), and the bytes before it are green, so a
+ * compositor that read the pool from its start would show green. The red
+ * is written only after a roundtrip, when the compositor has created (and
+ * mapped) the pool, so it reaches the compositor only through a shared
+ * mapping. The mapping stays alive with the buffer for the process. */
+#define MEMFD_OFFSET 12352
+#define MEMFD_DECOY  0x0000ff00u   /* XRGB8888: opaque green */
+static struct wl_buffer *make_memfd_buffer(struct client *c, int32_t w,
+                                           int32_t h, uint32_t color) {
+    int32_t stride = w * 4;
+    int32_t size = MEMFD_OFFSET + stride * h;
+    int fd = memfd_create("wlclient-test", MFD_CLOEXEC);
+    if (fd < 0) { perror("memfd_create"); return NULL; }
+    if (ftruncate(fd, size) < 0) { perror("ftruncate"); close(fd); return NULL; }
+    uint8_t *map = mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) { perror("mmap"); close(fd); return NULL; }
+    for (int32_t i = 0; i < MEMFD_OFFSET / 4; i++)
+        ((uint32_t *)map)[i] = MEMFD_DECOY;
+
+    struct wl_shm_pool *pool = wl_shm_create_pool(c->shm, fd, size);
+    struct wl_buffer *buf = wl_shm_pool_create_buffer(
+        pool, MEMFD_OFFSET, w, h, stride, WL_SHM_FORMAT_XRGB8888);
+    wl_shm_pool_destroy(pool);   /* the buffer keeps the pool alive */
+    close(fd);                   /* the compositor holds its own copy */
+    /* The compositor has mapped the pool once this returns (or killed the
+     * connection, which the next dispatch reports). */
+    if (wl_display_roundtrip(c->display) < 0) {
+        fprintf(stderr, "roundtrip after create_pool\n");
+        return NULL;
+    }
+    uint32_t *px = (uint32_t *)(map + MEMFD_OFFSET);
+    for (int32_t y = 0; y < h; y++)
+        for (int32_t x = 0; x < w; x++)
+            px[y * w + x] = color;
+    printf("BUFFER memfd offset=%d stride=%d\n", MEMFD_OFFSET, stride);
+    fflush(stdout);
+    return buf;
+}
+
 /* Allocate a renderD128 dumb-bo, paint it, and wrap it as a wl_shm buffer
- * whose pool fd is the bo's prime-fd — the shared path the compositor
- * imports. Returns the wl_buffer (bo kept alive for its lifetime). */
+ * whose pool fd is the bo's prime-fd. Returns the wl_buffer (bo kept alive
+ * for its lifetime). */
 static struct wl_buffer *make_buffer_sized(struct client *c, int32_t w,
                                            int32_t h, uint32_t color) {
+    if (getenv("WLC_MEMFD")) return make_memfd_buffer(c, w, h, color);
     int render = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
     if (render < 0) { perror("open renderD128"); return NULL; }
     struct gbm_device *gbm = gbm_create_device(render);
@@ -607,10 +667,18 @@ int main(void) {
     struct client c;
     memset(&c, 0, sizeof(c));
 
-    int fd = connect_socket();
-    if (fd < 0) return 1;
-    struct wl_display *display = wl_display_connect_to_fd(fd);
-    if (!display) { fprintf(stderr, "wl_display_connect_to_fd\n"); return 1; }
+    /* A compositor that exports WAYLAND_DISPLAY names its own socket;
+     * sway, for one, never uses wayland-0. */
+    struct wl_display *display;
+    if (getenv("WAYLAND_DISPLAY")) {
+        display = wl_display_connect(NULL);
+    } else {
+        int fd = connect_socket();
+        if (fd < 0) return 1;
+        display = wl_display_connect_to_fd(fd);
+    }
+    if (!display) { fprintf(stderr, "wl_display_connect\n"); return 1; }
+    c.display = display;
 
     struct wl_registry *registry = wl_display_get_registry(display);
     wl_registry_add_listener(registry, &registry_listener, &c);
@@ -742,6 +810,7 @@ int main(void) {
         wp_presentation_feedback_add_listener(fb, &feedback_listener, &c);
     }
     wl_surface_commit(c.surface);
+    c.attached = 1;
 
     /* The frame callback fires once the compositor has flipped our pixels;
      * the presentation feedback resolves on the same flip. */

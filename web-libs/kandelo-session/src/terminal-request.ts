@@ -1,7 +1,7 @@
 // A request from inside the machine to open a terminal running a command.
 //
 // A program in the machine publishes it as a Kandelo exchange output of type
-// TERMINAL_REQUEST_MIME (the image's `kandelo-terminal` helper does). The
+// TERMINAL_REQUEST_MIME (the image's `kandelo-page-terminal` helper does). The
 // browser app opens a new terminal tab for it, as it does for an activity,
 // and types the command at that terminal's prompt: the user sees what ran,
 // and once it exits, Up and Enter run it again. A dropped ROM uses this so the

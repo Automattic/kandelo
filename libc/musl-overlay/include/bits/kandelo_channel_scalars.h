@@ -327,11 +327,6 @@ _Static_assert(__NR_preadv2 == 297u,
 #endif
 _Static_assert(__NR_pwritev2 == 298u,
 "musl __NR_pwritev2 drifted from the Kandelo channel scalar contract");
-#ifndef __NR_syslog
-#error "musl is missing __NR_syslog required by the Kandelo channel scalar contract"
-#endif
-_Static_assert(__NR_syslog == 304u,
-"musl __NR_syslog drifted from the Kandelo channel scalar contract");
 #ifndef __NR_fallocate
 #error "musl is missing __NR_fallocate required by the Kandelo channel scalar contract"
 #endif

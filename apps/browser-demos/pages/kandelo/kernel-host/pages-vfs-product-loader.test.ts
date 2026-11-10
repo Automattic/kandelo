@@ -43,7 +43,7 @@ function groupFixture(base: string, directory = "vfs-groups/release-1") {
       schema: 1,
     }),
   );
-  const entry: PagesVfsProductEntry = {
+  const entry = {
     asset_group: {
       bytes: manifest.byteLength,
       path: manifestPath,
@@ -54,7 +54,7 @@ function groupFixture(base: string, directory = "vfs-groups/release-1") {
     load: "lazy",
     path: `${base}products/browser-node/sha256-${sha256(image)}/browser-node-42.vfs.zst`,
     sha256: sha256(image),
-  };
+  } satisfies PagesVfsProductEntry;
   const imageUrl = `https://kandelo.invalid${base}${directory}/images/node.vfs.zst`;
   return { entry, image, imageUrl, manifest, manifestPath };
 }
@@ -143,12 +143,14 @@ test("returns an immutable copy of activated lazy asset authority", async () => 
 
   const activation = await loader.activate("browser-node");
 
-  assert.equal(Object.isFrozen(activation.lazyAssets), true);
+  const lazyAssets = activation.lazyAssets;
+  assert.ok(lazyAssets, "a grouped activation must retain its authenticated lazy authority");
+  assert.equal(Object.isFrozen(lazyAssets), true);
   assert.throws(() => {
-    activation.lazyAssets.directoryUrl = "https://kandelo.invalid/a/forged/";
+    lazyAssets.directoryUrl = "https://kandelo.invalid/a/forged/";
   }, /read only|Cannot assign/i);
   assert.equal(
-    activation.lazyAssets.directoryUrl,
+    lazyAssets.directoryUrl,
     "https://kandelo.invalid/a/vfs-groups/release-1/",
   );
 });

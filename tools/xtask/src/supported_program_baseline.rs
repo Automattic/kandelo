@@ -17,6 +17,10 @@ fn validate(bytes: &[u8], version: u32, digest: &[u8; 32]) -> Result<(), String>
     if baseline.format != 1 {
         return Err("unsupported program baseline format".to_owned());
     }
+    // The maintainer retired ABI 55 before deployment; it is only a refusal fixture.
+    if baseline.abi_version < 56 || version < 56 {
+        return Err("program ABI 55 and earlier are below the supported baseline 56".to_owned());
+    }
     let actual: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
     if baseline.abi_version != version || baseline.program_contract_digest != actual {
         return Err(format!(
@@ -27,9 +31,7 @@ fn validate(bytes: &[u8], version: u32, digest: &[u8; 32]) -> Result<(), String>
     Ok(())
 }
 
-pub(crate) fn check(
-    repo: &Path,
-) -> Result<Vec<crate::accepted_program_digests::Verdict>, String> {
+pub(crate) fn check(repo: &Path) -> Result<[u8; 32], String> {
     let version = wasm_posix_shared::ABI_VERSION;
     let digest = crate::local_abi_identity::local_abi_contract_digest(repo, version)?;
     require_current_snapshot(&digest, &crate::dump_abi::source_program_contract_digest()?)?;
@@ -42,12 +44,7 @@ pub(crate) fn check(
         return Err("supported program baseline exceeds 4096 bytes".to_owned());
     }
     validate(&bytes, version, &digest)?;
-    // The accepted-digest record is part of what a program may be admitted
-    // against, so every gate that enforces the baseline re-derives it too: a
-    // recorded prior contract that today's program surface contradicts must
-    // fail the build, not quietly keep being admitted.
-    // Returned rather than printed so a caller decides what to report.
-    crate::accepted_program_digests::authorize(repo)
+    Ok(digest)
 }
 
 fn require_current_snapshot(snapshot: &[u8; 32], source: &[u8; 32]) -> Result<(), String> {
@@ -61,11 +58,8 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     if !args.is_empty() {
         return Err("usage: xtask check-program-baseline".to_owned());
     }
-    let accepted = check(&crate::repo_root())?;
+    check(&crate::repo_root())?;
     println!("abi: supported program baseline is unchanged");
-    for verdict in &accepted {
-        println!("{}", verdict.describe());
-    }
     Ok(())
 }
 
@@ -85,24 +79,31 @@ mod tests {
     #[test]
     fn accepts_only_the_declared_baseline() {
         let digest = [0x31; 32];
-        let bytes = baseline(55, &digest);
-        assert!(validate(&bytes, 55, &digest).is_ok());
+        let bytes = baseline(56, &digest);
+        assert!(validate(&bytes, 56, &digest).is_ok());
         assert!(
-            validate(&bytes, 56, &digest)
+            validate(&bytes, 57, &digest)
                 .unwrap_err()
                 .contains("baseline changed")
         );
         assert!(
-            validate(&bytes, 55, &[0x32; 32])
+            validate(&bytes, 56, &[0x32; 32])
                 .unwrap_err()
                 .contains("baseline changed")
         );
     }
 
     #[test]
+    fn refuses_retired_abi_55_even_with_its_matching_digest() {
+        let digest = [0x31; 32];
+        assert!(validate(&baseline(55, &digest), 55, &digest).unwrap_err().contains("below the supported baseline 56"));
+        assert!(validate(&baseline(56, &digest), 55, &digest).is_err());
+    }
+
+    #[test]
     fn refuses_unknown_or_malformed_contracts() {
         let digest = [0x31; 32];
-        let valid: serde_json::Value = serde_json::from_slice(&baseline(55, &digest)).unwrap();
+        let valid: serde_json::Value = serde_json::from_slice(&baseline(56, &digest)).unwrap();
         for (key, value) in [
             ("format", json!(2)),
             ("abi_version", json!(-1)),
@@ -112,7 +113,7 @@ mod tests {
         ] {
             let mut invalid = valid.clone();
             invalid[key] = value;
-            assert!(validate(&serde_json::to_vec(&invalid).unwrap(), 55, &digest).is_err());
+            assert!(validate(&serde_json::to_vec(&invalid).unwrap(), 56, &digest).is_err());
         }
     }
 

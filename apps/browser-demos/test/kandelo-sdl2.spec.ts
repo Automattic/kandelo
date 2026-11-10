@@ -1,6 +1,8 @@
+import { test } from "./support/persistent-page";
 import { setInternalsOpen } from "./support/dock";
-import { expect, test, type Page } from "../playwright-test";
+import { expect, type Page } from "../playwright-test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
+import { typePhysicalText } from "./support/physical-typing";
 
 async function openInternals(page: Page) {
   await setInternalsOpen(page, true);
@@ -30,8 +32,23 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
     // app-side demo name.
     .toMatch(/running \/usr\/bin\/sdl2/);
 
-  const canvas = page.locator(".kmodeset-canvas").first();
+  // Internals inspection is not the graphics endpoint. Close it normally
+  // before sampling; placeholder invisibility alone does not prove a flip.
+  await setInternalsOpen(page, false);
+  const graphics = page.getByLabel("Computer views").getByRole("button", { name: "Graphics", exact: true });
+  if (await graphics.getAttribute("aria-current") !== "true") await graphics.click();
+  const surface = page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-surface").first();
+  const canvas = surface.locator(".kmodeset-canvas").first();
   await expect(canvas).toBeVisible({ timeout: 30_000 });
+  const presents = async () => Number(await surface.getAttribute("data-kms-present-count"));
+  let firstPresent: number | undefined;
+  await expect.poll(async () => {
+    const currentOwner = Number(await surface.getAttribute("data-kms-owner-pid"));
+    const count = await presents();
+    if (!(currentOwner > 0 && count > 0)) return false;
+    firstPresent ??= count;
+    return count > firstPresent;
+  }, { timeout: 90_000, message: "actual KMS owner and advancing presented frames" }).toBe(true);
 
   /* Wait for the app's FIRST presented frame before sampling anything.
    * "running /usr/bin/sdl2" only means the process launched: between that and
@@ -63,6 +80,8 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
    *     above 3 KB even with cursor blink off. */
   const fullSizes: number[] = [];
   const leftSizes: number[] = [];
+  type SampleTiming = { start: number; fullEnd?: number; leftEnd?: number; fullBytes?: number; leftBytes?: number };
+  const sampleTimings: SampleTiming[] = [];
   const bb = await canvas.boundingBox();
   if (!bb) throw new Error("canvas bounding box unavailable");
   const leftClip = {
@@ -75,19 +94,30 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
    * 6×500 ms schedule: under software GL the app may present only a
    * few frames per second, so animation evidence needs a deadline,
    * not a fixed sample count. */
-  await expect
-    .poll(
-      async () => {
-        await page.waitForTimeout(500);
-        const full = await canvas.screenshot();
-        const left = await page.screenshot({ clip: leftClip });
-        fullSizes.push(full.byteLength);
-        leftSizes.push(left.byteLength);
-        return Math.max(...fullSizes) - Math.min(...fullSizes);
-      },
-      { timeout: 30_000, message: "right pane not animating (no PNG byte-size variance within 30 s)" },
-    )
-    .toBeGreaterThan(400);
+  try {
+    await expect
+      .poll(
+        async () => {
+          await page.waitForTimeout(500);
+          const timing: SampleTiming = { start: Date.now() };
+          sampleTimings.push(timing);
+          const full = await canvas.screenshot();
+          timing.fullEnd = Date.now(); timing.fullBytes = full.byteLength;
+          const left = await page.screenshot({ clip: leftClip });
+          timing.leftEnd = Date.now(); timing.leftBytes = left.byteLength;
+          fullSizes.push(full.byteLength);
+          leftSizes.push(left.byteLength);
+          return Math.max(...fullSizes) - Math.min(...fullSizes);
+        },
+        { timeout: 30_000, message: "right pane PNG sampling did not establish animation within 30 s; see sample counts/timings" },
+      )
+      .toBeGreaterThan(400);
+    expect(fullSizes.length, "animation requires at least two completed PNG pairs").toBeGreaterThanOrEqual(2);
+  } finally {
+    await test.info().attach("sdl-animation-samples.json", {
+      body: JSON.stringify({ fullSizes, leftSizes, sampleTimings }, null, 2), contentType: "application/json",
+    });
+  }
   for (const sz of fullSizes) {
     expect(
       sz,
@@ -133,6 +163,56 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
     .toMatch(/sdl2: OK frames=\d+ elapsed=\d+ ms exit=esc/);
 });
 
+test("KMS primary scanout stays opaque between shader page flips and vblank", async ({ page }) => {
+  test.setTimeout(180_000);
+  await gotoMachineOrSkip(page, "sdl2");
+  const canvas = page.locator(".kmodeset-canvas").first();
+  await expect(canvas).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByText(/Waiting for PAGE_FLIP on CRTC/)).toBeHidden({ timeout: 90_000 });
+  await canvas.focus();
+  await page.keyboard.press("Control+KeyA");
+  // Why: a constant, translucent shader separates scanout correctness from
+  // animation. The primary plane must show its RGB unchanged; alternating
+  // opaque vblank and alpha-preserving flip paths expose the page behind it.
+  await typePhysicalText(page,
+    "void mainImage(out vec4 c,in vec2 p){c=vec4(0.125,0.5,0.25,0.25);}");
+  const sample = async () => {
+    const box = (await canvas.boundingBox())!;
+    const png = await page.screenshot({ clip: {
+      x: box.x + box.width * 0.82, y: box.y + box.height * 0.45,
+      width: 8, height: 8,
+    } });
+    return page.evaluate(async (encoded) => {
+      const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+      const image = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const surface = new OffscreenCanvas(image.width, image.height);
+      const context = surface.getContext("2d")!;
+      context.drawImage(image, 0, 0); image.close();
+      const { data } = context.getImageData(0, 0, surface.width, surface.height);
+      const total = [0, 0, 0];
+      for (let i = 0; i < data.length; i += 4)
+        for (let channel = 0; channel < 3; channel++) total[channel] += data[i + channel];
+      return total.map(value => Math.round(value / (data.length / 4)));
+    }, png.toString("base64"));
+  };
+  const correct = (rgb: number[]) => rgb.every((value, channel) =>
+    Math.abs(value - [32, 128, 64][channel]) <= 3);
+  // This also waits for auto-compilation and the startup splash to end.
+  await expect.poll(async () => correct(await sample()), { timeout: 30_000 }).toBe(true);
+  const samples: number[][] = [];
+  for (let frame = 0; frame < 20; frame++) {
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    samples.push(await sample());
+  }
+  await test.info().attach("primary-scanout-rgb", {
+    body: JSON.stringify(samples), contentType: "application/json",
+  });
+  for (const rgb of samples) expect(correct(rgb), `primary scanout RGB ${rgb}`).toBe(true);
+  await canvas.focus();
+  await page.keyboard.press("Escape");
+  await expect(canvas).toBeHidden({ timeout: 30_000 });
+});
+
 test("SDL's default cursor uses the shared KMS cursor plane", async ({ page, browserName }) => {
   test.skip(browserName !== "chromium", "cursor plane acceptance targets Chromium");
   test.setTimeout(180_000);
@@ -145,14 +225,17 @@ test("SDL's default cursor uses the shared KMS cursor plane", async ({ page, bro
   await worker!.evaluate(() => {
     const proto = OffscreenCanvasRenderingContext2D.prototype;
     const put = proto.putImageData;
-    proto.putImageData = function (...args: Parameters<typeof put>) {
+    // Parameters<> selects only the final overload. Preserve both actual
+    // call shapes, including the three-argument cursor upload, unchanged.
+    proto.putImageData = function (...args:
+      [ImageData, number, number] | [ImageData, number, number, number, number, number, number]) {
       const image = args[0];
       if (image.width <= 64 && image.height <= 64) {
         let opaque = 0;
         for (let i = 3; i < image.data.length; i += 4) if (image.data[i]) opaque++;
         (globalThis as any).__kmsCursorProbe = { x: args[1], y: args[2], opaque };
       }
-      return put.apply(this, args);
+      return Reflect.apply(put, this, args);
     };
   });
   const box = (await canvas.boundingBox())!;
@@ -170,5 +253,5 @@ test("SDL's default cursor uses the shared KMS cursor plane", async ({ page, bro
     }).toBe(true);
     expect((await worker!.evaluate(() => (globalThis as any).__kmsCursorProbe)).opaque).toBeGreaterThan(20);
   }
-  await page.screenshot({ path: "../../.context/sdl-shared-kms-cursor.png", scale: "css", clip: box });
+  await page.screenshot({ path: test.info().outputPath("sdl-shared-kms-cursor.png"), scale: "css", clip: box });
 });

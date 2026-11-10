@@ -1,0 +1,27 @@
+kind = "program"
+name = "mariadb-docs"
+version = "10.5.28"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `mariadb` package (mariadb, and mysql as an alias of it).
+# The source, SHA-256 and version are the `mariadb` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://archive.mariadb.org/mariadb-10.5.28/source/mariadb-10.5.28.tar.gz"
+sha256 = "0b5070208da0116640f20bd085f1136527f998cc23268715bcbf352e7b7f3cc1"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-only"
+url = "https://github.com/MariaDB/server/blob/10.5/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/mariadb-docs/build-mariadb-docs.sh"
+
+[[outputs]]
+name = "mariadb-docs"
+wasm = "mariadb-docs.zip"
+fork_instrumentation = "disabled"

@@ -51,7 +51,74 @@ function withArchiveAddresses<const T extends readonly Omit<ShellLazyArchiveSpec
   return specs.map((spec) => ({ ...spec, archiveUrl: shellLazyArchiveAddress(spec.resolverPath) }));
 }
 
+/**
+ * `<pkg>-docs` packages that ship a program's upstream manual pages, each with
+ * the page whose presence proves the archive is mounted. They all mount at
+ * `/usr/`, so pages land in `/usr/share/man`, where the man front-end looks.
+ * See docs/porting-guide.md "Shipping man pages".
+ */
+const UPSTREAM_MAN_PAGE_ARCHIVES = [
+  ["attr-docs", "share/man/man1/getfattr.1"],
+  ["bash-docs", "share/man/man1/bash.1"],
+  ["bc-docs", "share/man/man1/bc.1"],
+  ["byacc-docs", "share/man/man1/yacc.1"],
+  ["bzip2-docs", "share/man/man1/bzip2.1"],
+  ["cpython-docs", "share/man/man1/python3.1"],
+  ["diffutils-docs", "share/man/man1/diff.1"],
+  ["elinks-docs", "share/man/man1/elinks.1"],
+  ["file-docs", "share/man/man1/file.1"],
+  ["findutils-docs", "share/man/man1/find.1"],
+  ["flex-docs", "share/man/man1/flex.1"],
+  ["gawk-docs", "share/man/man1/gawk.1"],
+  ["grep-docs", "share/man/man1/grep.1"],
+  ["gzip-docs", "share/man/man1/gzip.1"],
+  ["jq-docs", "share/man/man1/jq.1"],
+  ["less-docs", "share/man/man1/less.1"],
+  ["lhasa-docs", "share/man/man1/lha.1"],
+  ["love-docs", "share/man/man6/love.6"],
+  ["m4-docs", "share/man/man1/m4.1"],
+  ["make-docs", "share/man/man1/make.1"],
+  ["mandoc-docs", "share/man/man1/man.1"],
+  ["mariadb-docs", "share/man/man1/mysql.1"],
+  ["nano-docs", "share/man/man1/nano.1"],
+  ["netcat-docs", "share/man/man1/netcat.1"],
+  ["nethack-docs", "share/man/man6/nethack.6"],
+  ["php-docs", "share/man/man1/php.1"],
+  ["ruby-docs", "share/man/man1/ruby.1"],
+  ["scummvm-docs", "share/man/man6/scummvm.6"],
+  ["sfwbar-docs", "share/man/man1/sfwbar.1"],
+  ["sed-docs", "share/man/man1/sed.1"],
+  ["tar-docs", "share/man/man1/tar.1"],
+  ["tmux-docs", "share/man/man1/tmux.1"],
+  ["unzip-docs", "share/man/man1/unzip.1"],
+  ["vim-docs", "share/man/man1/vim.1"],
+  ["xz-docs", "share/man/man1/xz.1"],
+  ["zip-docs", "share/man/man1/zip.1"],
+  ["zstd-docs", "share/man/man1/zstd.1"],
+] as const;
+
 export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
+  {
+    id: "rust-docs",
+    dependency: "rust-docs",
+    resolverPath: "programs/wasm32/rust-docs.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "share/man/man1/rustc.1",
+  },
+  {
+    id: "rust-profiler-runtime",
+    dependency: "rust-profiler-runtime-bundle",
+    resolverPath: "programs/wasm32/rust-profiler-runtime.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "lib/rustlib/wasm32-unknown-kandelo-std/lib/libprofiler_builtins.rlib",
+  },
+  {
+    id: "rust-std",
+    dependency: "rustc",
+    resolverPath: "programs/wasm32/rustc/rust-std.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "lib/rustlib/wasm32-unknown-kandelo-std/target.json",
+  },
   {
     id: "harper",
     dependency: "harper-browser-bundle",
@@ -143,6 +210,13 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
     mountPrefix: "/usr/",
     requiredMember: "share/man/man8/lsof.8",
   },
+  ...UPSTREAM_MAN_PAGE_ARCHIVES.map(([name, requiredMember]) => ({
+    id: name,
+    dependency: name,
+    resolverPath: `programs/wasm32/${name}.zip`,
+    mountPrefix: "/usr/" as const,
+    requiredMember,
+  })),
   {
     id: "kandelo-sdk",
     dependency: "kandelo-sdk-browser-bundle",
@@ -153,11 +227,18 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
   },
 ] as const);
 
-/** Data the canonical shell can load on first use: trust roots, speech and desktops.
+/** Data the canonical shell can load on first use: trust roots, speech, cursors, keymaps and desktops.
  * Kept separate from the shared tool archives: service-image builders do not
  * declare espeak-ng or wayland-demo and must not acquire those dependencies.
  */
 export const SHELL_LAZY_DATA_ARCHIVE_SPECS = withArchiveAddresses([
+  {
+    id: "cursor-theme",
+    dependency: "bibata-cursor-theme",
+    resolverPath: "programs/wasm32/bibata-cursor-theme.zip",
+    mountPrefix: "/usr/share/",
+    requiredMember: "icons/default/index.theme",
+  },
   {
     id: "ca-certificates",
     dependency: "ca-certificates",
@@ -178,6 +259,16 @@ export const SHELL_LAZY_DATA_ARCHIVE_SPECS = withArchiveAddresses([
     resolverPath: "programs/wayland-demo/kandelo-desktop-data.zip",
     mountPrefix: "/usr/share/kandelo/",
     requiredMember: "themes/tokyo-night/theme.conf",
+  },
+  {
+    // libxkbcommon's compiled-in root. Only Wayland clients and compositors
+    // compile keymaps from names, so a shell that never starts a desktop
+    // never fetches the 3.3 MB of rules, symbols and geometry.
+    id: "xkeyboard-config",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/xkeyboard-config.zip",
+    mountPrefix: "/usr/share/X11/xkb/",
+    requiredMember: "rules/evdev",
   },
 ] as const);
 
@@ -233,6 +324,11 @@ const SHELL_PROFILE_SCRIPTS = [
     register: registerManShellProfile,
     owner: "mandoc-browser-bundle",
   },
+  {
+    path: "/etc/profile.d/rust.sh",
+    register: registerRustShellProfile,
+    owner: "kandelo-rustc",
+  },
 ] as const satisfies ReadonlyArray<{
   path: string;
   register: (fs: VfsImageFilesystem) => void;
@@ -243,6 +339,13 @@ const SHELL_PROFILE_SCRIPTS = [
 /** Guest paths of every script `registerShellProfileScripts` writes. */
 export const SHELL_PROFILE_SCRIPT_PATHS: readonly string[] =
   SHELL_PROFILE_SCRIPTS.map((script) => script.path);
+
+export function registerRustShellProfile(fs: VfsImageFilesystem): void {
+  ensureDirRecursive(fs, "/etc/profile.d");
+  // The prebuilt standard library uses musl's time64 ABI on this target.
+  writeVfsFile(fs, "/etc/profile.d/rust.sh",
+    "export RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1\n", 0o644);
+}
 
 // The maker account's interactive identity: prompt, history file, locale,
 // terminal type, and the TLS trust anchors curl/wget/etc. expect at their

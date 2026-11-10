@@ -1,0 +1,23 @@
+kind = "program"
+name = "rust-profiler-runtime-bundle"
+version = "1.97.0-nightly-2026-04-27"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = ["rust-profiler-runtime@1.97.0-nightly-2026-04-27"]
+
+[source]
+provider = "repository"
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT AND Apache-2.0 WITH LLVM-exception"
+url = "https://github.com/Automattic/kandelo"
+
+[build]
+script_path = "packages/registry/rust-profiler-runtime-bundle/build.sh"
+
+[[outputs]]
+name = "rust-profiler-runtime"
+wasm = "rust-profiler-runtime.zip"
+fork_instrumentation = "disabled"

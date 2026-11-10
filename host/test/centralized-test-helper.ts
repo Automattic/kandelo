@@ -18,6 +18,7 @@ import { detectPtrWidth, extractHeapBase, PAGES_PER_THREAD, WASM_PAGE_SIZE } fro
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
+  type ForkAddressSpaceCopy,
   type ProcessMemoryLayout,
 } from "../src/process-memory";
 import {
@@ -166,6 +167,8 @@ export interface RunProgramOptions {
   maxPages?: number;
   /** Aggregate process-memory admission budget for allocation-path tests. */
   maxProcessMemoryBytes?: number;
+  /** Fork address-space copy mode (NodeKernelHost default when omitted). */
+  forkCopy?: ForkAddressSpaceCopy;
   /** Custom PlatformIO (defaults to NodePlatformIO).
    *  When provided, forces main-thread mode (PlatformIO can't be serialized). */
   io?: PlatformIO;
@@ -303,6 +306,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxWorkers: 4,
     maxPages: options.maxPages,
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
+    forkCopy: options.forkCopy,
     rootfsImage,
     rootfsMountSpec: options.rootfsNosuid === undefined
       ? undefined
@@ -530,7 +534,9 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     }
   };
 
-  const kernelWorker = new CentralizedKernelWorker(
+  // Callbacks close over this worker during construction. Fix its type so
+  // callback result inference cannot recursively define the worker itself.
+  const kernelWorker: CentralizedKernelWorker = new CentralizedKernelWorker(
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {

@@ -1,5 +1,8 @@
 script_path = "packages/registry/shell/build-shell.sh"
 inputs = [
+  "images/vfs/scripts/shell-rust-sdk-manifest.ts",
+  "images/vfs/scripts/rust-sdk-manifest.py",
+  "sdk/guest-rust/src/sdk-components.json",
   "images/vfs/scripts/filesystem-layout.ts",
 
   "host/src/native-artifact-identity.ts",
@@ -18,9 +21,11 @@ inputs = [
   "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
   "packages/registry/shell/source-rootfs-shell-dependency-contract.mjs",
   "packages/registry/shell/source-rootfs-shell-demo.json",
+  "packages/registry/shell/eager-budget.json",
   "packages/registry/shell/scummvm-freeware-games.json",
   "images/vfs/scripts/build-source-rootfs-shell-image.ts",
   "images/vfs/scripts/shell-selection.ts",
+  "images/vfs/scripts/image-eager-budget.ts",
   "images/vfs/runtime/game-import.py",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
   "images/vfs/scripts/program-originals.ts",
@@ -74,7 +79,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 82
+revision = 87
 # WHY: source-package composition changes the product bytes. Keep ordinary
 # resolution closed until this exact revision is rebuilt and admitted.
 publication_state = "pending"

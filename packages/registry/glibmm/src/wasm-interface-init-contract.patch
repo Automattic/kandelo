@@ -1,0 +1,16 @@
+Subject: [PATCH] Register unary interface initializers explicitly
+
+Keep genuine GInterfaceInitFunc callbacks at their public two-argument arity.
+These initializers take one argument and use the explicit GLib adapter.
+
+--- a/tests/glibmm_interface_move/main.cc
++++ b/tests/glibmm_interface_move/main.cc
+@@ -80,7 +80,7 @@
+ }
+ 
+ G_DEFINE_TYPE_EXTENDED(TestDerived, test_derived, G_TYPE_OBJECT, 0,
+-  G_IMPLEMENT_INTERFACE(TEST_TYPE_IFACE, test_Iface_init))
++  G_IMPLEMENT_INTERFACE_UNARY(TEST_TYPE_IFACE, test_Iface_init))
+ 
+ class TestInterface;
+ 

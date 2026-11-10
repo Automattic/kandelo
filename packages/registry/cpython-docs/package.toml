@@ -1,0 +1,27 @@
+kind = "program"
+name = "cpython-docs"
+version = "3.13.3"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `cpython` package (python3, and python as an alias of it).
+# The source, SHA-256 and version are the `cpython` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://www.python.org/ftp/python/3.13.3/Python-3.13.3.tar.xz"
+sha256 = "40f868bcbdeb8149a3149580bb9bfd407b3321cd48f0be631af955ac92c0e041"
+provider = "archive"
+
+[license]
+spdx = "Python-2.0"
+url = "https://docs.python.org/3/license.html"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/cpython-docs/build-cpython-docs.sh"
+
+[[outputs]]
+name = "cpython-docs"
+wasm = "cpython-docs.zip"
+fork_instrumentation = "disabled"

@@ -75,8 +75,16 @@ name = "attr"
 class = "platform"
 
 [[packages]]
+name = "attr-docs"
+class = "browser-product"
+
+[[packages]]
 name = "bash"
 class = "user-software"
+
+[[packages]]
+name = "bash-docs"
+class = "browser-product"
 
 [[packages]]
 name = "basu"
@@ -87,12 +95,24 @@ name = "bc"
 class = "user-software"
 
 [[packages]]
+name = "bc-docs"
+class = "browser-product"
+
+[[packages]]
 name = "byacc"
 class = "user-software"
 
 [[packages]]
+name = "byacc-docs"
+class = "browser-product"
+
+[[packages]]
 name = "flex"
 class = "user-software"
+
+[[packages]]
+name = "flex-docs"
+class = "browser-product"
 
 [[packages]]
 name = "binaryen"
@@ -105,6 +125,10 @@ class = "platform"
 [[packages]]
 name = "bzip2"
 class = "user-software"
+
+[[packages]]
+name = "bzip2-docs"
+class = "browser-product"
 
 [[packages]]
 name = "ca-certificates"
@@ -143,6 +167,10 @@ name = "cpython"
 class = "user-software"
 
 [[packages]]
+name = "cpython-docs"
+class = "browser-product"
+
+[[packages]]
 name = "kandelo-cc"
 class = "platform"
 
@@ -167,6 +195,10 @@ name = "diffutils"
 class = "user-software"
 
 [[packages]]
+name = "diffutils-docs"
+class = "browser-product"
+
+[[packages]]
 name = "dosbox-pure"
 class = "user-software"
 
@@ -177,6 +209,10 @@ class = "user-software"
 [[packages]]
 name = "elinks"
 class = "user-software"
+
+[[packages]]
+name = "elinks-docs"
+class = "browser-product"
 
 [[packages]]
 name = "espeak-ng"
@@ -203,8 +239,16 @@ name = "file"
 class = "user-software"
 
 [[packages]]
+name = "file-docs"
+class = "browser-product"
+
+[[packages]]
 name = "findutils"
 class = "user-software"
+
+[[packages]]
+name = "findutils-docs"
+class = "browser-product"
 
 [[packages]]
 name = "fmt"
@@ -231,6 +275,10 @@ name = "gawk"
 class = "user-software"
 
 [[packages]]
+name = "gawk-docs"
+class = "browser-product"
+
+[[packages]]
 name = "gdk-pixbuf"
 class = "platform"
 
@@ -247,8 +295,16 @@ name = "glibmm"
 class = "platform"
 
 [[packages]]
+name = "gobject-callback-tests"
+class = "test-support"
+
+[[packages]]
 name = "grep"
 class = "user-software"
+
+[[packages]]
+name = "grep-docs"
+class = "browser-product"
 
 [[packages]]
 name = "gtk-layer-shell"
@@ -265,6 +321,10 @@ class = "platform"
 [[packages]]
 name = "gzip"
 class = "user-software"
+
+[[packages]]
+name = "gzip-docs"
+class = "browser-product"
 
 [[packages]]
 name = "harfbuzz"
@@ -289,6 +349,10 @@ class = "platform"
 [[packages]]
 name = "jq"
 class = "user-software"
+
+[[packages]]
+name = "jq-docs"
+class = "browser-product"
 
 [[packages]]
 name = "jsoncpp"
@@ -323,8 +387,16 @@ name = "less"
 class = "user-software"
 
 [[packages]]
+name = "less-docs"
+class = "browser-product"
+
+[[packages]]
 name = "lhasa"
 class = "user-software"
+
+[[packages]]
+name = "lhasa-docs"
+class = "browser-product"
 
 [[packages]]
 name = "libcss"
@@ -347,6 +419,10 @@ name = "libdom"
 class = "platform"
 
 [[packages]]
+name = "libdisplay-info"
+class = "platform"
+
+[[packages]]
 name = "libdrm"
 class = "platform"
 
@@ -357,6 +433,14 @@ class = "platform"
 [[packages]]
 name = "libevent"
 class = "platform"
+
+[[packages]]
+name = "graphics-cts-egl"
+class = "test-support"
+
+[[packages]]
+name = "graphics-cts"
+class = "test-support"
 
 [[packages]]
 name = "libevent-tests"
@@ -403,7 +487,7 @@ name = "libsigcxx"
 class = "platform"
 
 [[packages]]
-name = "libudev"
+name = "libudev-zero"
 class = "platform"
 
 [[packages]]
@@ -411,13 +495,23 @@ name = "libwapcaplet"
 class = "platform"
 
 [[packages]]
+name = "libseat"
+class = "platform"
+
+[[packages]]
 name = "libwayland"
 class = "platform"
 
 [[packages]]
-# Vendored protocol XML consumed by libwayland and wayland-demo via
-# wayland-scanner. A library, not a source package: its bytes ship in-tree.
 name = "wayland-protocols"
+class = "platform"
+
+[[packages]]
+name = "wlr-protocols"
+class = "platform"
+
+[[packages]]
+name = "xkeyboard-config"
 class = "platform"
 
 [[packages]]
@@ -453,8 +547,16 @@ name = "m4"
 class = "user-software"
 
 [[packages]]
+name = "m4-docs"
+class = "browser-product"
+
+[[packages]]
 name = "make"
 class = "user-software"
+
+[[packages]]
+name = "make-docs"
+class = "browser-product"
 
 [[packages]]
 name = "mako"
@@ -465,12 +567,20 @@ name = "mandoc"
 class = "user-software"
 
 [[packages]]
+name = "mandoc-docs"
+class = "browser-product"
+
+[[packages]]
 name = "mandoc-browser-bundle"
 class = "browser-product"
 
 [[packages]]
 name = "mariadb"
 class = "user-software"
+
+[[packages]]
+name = "mariadb-docs"
+class = "browser-product"
 
 [[packages]]
 name = "mariadb-test"
@@ -493,6 +603,10 @@ name = "nano"
 class = "user-software"
 
 [[packages]]
+name = "nano-docs"
+class = "browser-product"
+
+[[packages]]
 name = "ncurses"
 class = "platform"
 
@@ -505,8 +619,16 @@ name = "netcat"
 class = "user-software"
 
 [[packages]]
+name = "netcat-docs"
+class = "browser-product"
+
+[[packages]]
 name = "nethack"
 class = "user-software"
+
+[[packages]]
+name = "nethack-docs"
+class = "browser-product"
 
 [[packages]]
 name = "nethack-browser-bundle"
@@ -565,6 +687,10 @@ name = "php"
 class = "user-software"
 
 [[packages]]
+name = "php-docs"
+class = "browser-product"
+
+[[packages]]
 name = "pixman"
 class = "platform"
 
@@ -617,6 +743,10 @@ name = "ruby"
 class = "user-software"
 
 [[packages]]
+name = "ruby-docs"
+class = "browser-product"
+
+[[packages]]
 name = "ruby-todo-vfs"
 class = "browser-product"
 
@@ -627,6 +757,10 @@ class = "browser-product"
 [[packages]]
 name = "scummvm"
 class = "user-software"
+
+[[packages]]
+name = "scummvm-docs"
+class = "browser-product"
 
 [[packages]]
 name = "freeciv"
@@ -665,6 +799,42 @@ name = "sdl2-mixer"
 class = "platform"
 
 [[packages]]
+name = "wlroots"
+class = "platform"
+
+[[packages]]
+name = "bibata-cursor-theme"
+class = "platform"
+
+[[packages]]
+name = "cage"
+class = "user-software"
+
+[[packages]]
+name = "json-c"
+class = "platform"
+
+[[packages]]
+name = "sway"
+class = "user-software"
+
+[[packages]]
+name = "labwc"
+class = "user-software"
+
+[[packages]]
+name = "sfwbar"
+class = "user-software"
+
+[[packages]]
+name = "sfwbar-docs"
+class = "browser-product"
+
+[[packages]]
+name = "swaybg"
+class = "user-software"
+
+[[packages]]
 name = "sdl2-mixer-playwave"
 class = "user-software"
 
@@ -675,6 +845,10 @@ class = "platform"
 [[packages]]
 name = "sed"
 class = "user-software"
+
+[[packages]]
+name = "sed-docs"
+class = "browser-product"
 
 [[packages]]
 name = "shell"
@@ -717,8 +891,16 @@ name = "tar"
 class = "user-software"
 
 [[packages]]
+name = "tar-docs"
+class = "browser-product"
+
+[[packages]]
 name = "tmux"
 class = "user-software"
+
+[[packages]]
+name = "tmux-docs"
+class = "browser-product"
 
 [[packages]]
 name = "toybox"
@@ -745,12 +927,20 @@ name = "unzip"
 class = "user-software"
 
 [[packages]]
+name = "unzip-docs"
+class = "browser-product"
+
+[[packages]]
 name = "utf8proc"
 class = "platform"
 
 [[packages]]
 name = "vim"
 class = "user-software"
+
+[[packages]]
+name = "vim-docs"
+class = "browser-product"
 
 [[packages]]
 name = "vim-browser-bundle"
@@ -773,8 +963,16 @@ name = "xz"
 class = "user-software"
 
 [[packages]]
+name = "xz-docs"
+class = "browser-product"
+
+[[packages]]
 name = "zip"
 class = "user-software"
+
+[[packages]]
+name = "zip-docs"
+class = "browser-product"
 
 [[packages]]
 name = "zlib"
@@ -789,8 +987,16 @@ name = "zstd"
 class = "user-software"
 
 [[packages]]
+name = "zstd-docs"
+class = "browser-product"
+
+[[packages]]
 name = "love"
 class = "user-software"
+
+[[packages]]
+name = "love-docs"
+class = "browser-product"
 
 [[packages]]
 name = "lua"
@@ -842,6 +1048,30 @@ manifest = "images/vfs/products/browser-lamp.toml"
 name = "texlive"
 reason = "deferred software"
 
+[[packages]]
+name = "rustc"
+class = "user-software"
+
+[[packages]]
+name = "rust-llvm"
+class = "platform"
+
+[[packages]]
+name = "rust-profiler-runtime"
+class = "platform"
+
+[[packages]]
+name = "rust-profiler-runtime-bundle"
+class = "browser-product"
+
+[[packages]]
+name = "rust-coverage-tools"
+class = "user-software"
+
+[[packages]]
+name = "rust-docs"
+class = "browser-product"
+
 [[exclusions]]
 name = "erlang"
 reason = "deferred software"
@@ -872,3 +1102,19 @@ reason = "retired standalone browser product; use WordPress with MariaDB"
 id = "browser-redis"
 package = "redis-vfs"
 manifest = "images/vfs/products/browser-redis.toml"
+
+[[packages]]
+name = "cargo"
+class = "user-software"
+
+[[packages]]
+name = "kandelo-rustc"
+class = "user-software"
+
+[[exclusions]]
+name = "kandelo-rust-sdk"
+reason = "experimental guest Rust SDK bundle"
+
+[[exclusions]]
+name = "rust-native-fixtures"
+reason = "optional guest Rust native-dependency acceptance inputs"

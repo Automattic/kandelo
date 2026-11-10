@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { reduce10, reduceFloat, reduceHalf, snapshotScanout, scanoutRgba } from "../src/dri/scanout-format";
 import { KmsCursorPlane } from "../src/dri/cursor-plane.js";
 import { GbmBoRegistry } from "../src/dri/registry.js";
 import { KmsRegistry, buildVirtualConnectorMode } from "../src/dri/kms-registry.js";
@@ -23,6 +24,20 @@ describe("KmsRegistry", () => {
     expect(kms.currentFb(1)).toBeUndefined();
   });
 
+  it("isDark: a CRTC that latched no framebuffer, or lost the one it scans, is dark", () => {
+    const kms = new KmsRegistry(new GbmBoRegistry());
+    expect(kms.isDark(1)).toBe(false); // never lit: nothing was shown
+    kms.addFb(fb(10));
+    kms.setFb(1, 10, { x: 0, y: 0, width: 64, height: 32 });
+    expect(kms.isDark(1)).toBe(false);
+    kms.setFb(1, 0, { x: 0, y: 0, width: 0, height: 0 }); // ACTIVE 0 / DPMS Off
+    expect(kms.isDark(1)).toBe(true);
+    kms.setFb(1, 10, { x: 0, y: 0, width: 64, height: 32 });
+    expect(kms.isDark(1)).toBe(false);
+    kms.rmFb(10); // RMFB disables the CRTC that scans it
+    expect(kms.isDark(1)).toBe(true);
+  });
+
   it("flipCount counts every latch, including a rebind of the same fb", () => {
     const kms = new KmsRegistry(new GbmBoRegistry());
     expect(kms.flipCount()).toBe(0);
@@ -38,14 +53,21 @@ describe("KmsRegistry", () => {
     expect(kms.flipCount()).toBe(2);
   });
 
-  it("setMasterPid / dropMaster / isMasterPid", () => {
+  it("uses exact file and grant identity independently of presenter PID", () => {
     const kms = new KmsRegistry(new GbmBoRegistry());
-    expect(kms.isMasterPid(7)).toBe(false);
-    kms.setMasterPid(7);
-    expect(kms.isMasterPid(7)).toBe(true);
-    expect(kms.isMasterPid(8)).toBe(false);
-    kms.dropMaster();
-    expect(kms.isMasterPid(7)).toBe(false);
+    expect(kms.isMasterFile(1n)).toBe(false);
+    expect(kms.setMaster(7, 1n, 1n)).toBe(true);
+    expect(kms.isMasterFile(1n)).toBe(true);
+    expect(kms.isMasterFile(2n)).toBe(false);
+    expect(kms.dropMaster(2n, 1n)).toBe(false);
+    expect(kms.dropMaster(1n, 2n)).toBe(false);
+    expect(kms.isMasterFile(1n)).toBe(true);
+    expect(kms.dropMaster(1n, 1n)).toBe(true);
+    expect(kms.isMasterFile(1n)).toBe(false);
+    expect(kms.setMaster(7, 1n, 1n)).toBe(false);
+    expect(kms.setMaster(8, 1n, 2n)).toBe(true);
+    expect(kms.dropMaster(1n, 1n)).toBe(false);
+    expect(kms.getMasterPid()).toBe(8);
   });
 
   it("scanoutBytes returns the bo's pixel SAB for the bound CRTC", () => {
@@ -62,6 +84,31 @@ describe("KmsRegistry", () => {
     expect(bytes!.byteLength).toBe(4096);
   });
 
+  it("scans out the viewport the kernel latched, from the plane offset", () => {
+    const bos = new GbmBoRegistry();
+    bos.create({ pid: 1, bo_id: 100, size: 4096, w: 32, h: 32, stride: 128 });
+    const sab = bos.pixelView(100)!;
+    for (let i = 0; i < sab.byteLength; i++) sab[i] = i & 0xff;
+    const kms = new KmsRegistry(bos);
+    // ADDFB2 offsets[0] = 256 (two 128-byte rows), XRGB8888 32x16.
+    kms.addFb({ fb_id: 10, bo_id: 100, width: 32, height: 16, pixel_format: 0x34325258, pitch: 128, offset: 256 });
+    kms.setFb(1, 10, { x: 0, y: 0, width: 32, height: 16 });
+    expect(kms.currentFb(1)).toMatchObject({ width: 32, height: 16, x: 0, y: 0, offset: 256 });
+    expect(kms.scanoutBytes(1)![0]).toBe(0);
+    expect(kms.scanoutBytes(1)!.byteLength).toBe(4096 - 256);
+    // SETCRTC panning: an 8x4 viewport at (2, 3) starts 3 rows and 2 pixels in.
+    kms.setFb(1, 10, { x: 2, y: 3, width: 8, height: 4 });
+    const view = kms.currentFb(1)!;
+    expect(view).toMatchObject({ fb_id: 10, width: 8, height: 4, x: 2, y: 3, pitch: 128, offset: 256 + 3 * 128 + 8 });
+    expect(kms.scanoutBytes(1)![0]).toBe((256 + 3 * 128 + 8) & 0xff);
+    const packed = snapshotScanout(view, kms.scanoutBytes(1)!);
+    expect(packed.byteLength).toBe(8 * 4 * 4);
+    expect(packed[32]).toBe((256 + 4 * 128 + 8) & 0xff);
+    // A viewport outside the fb presents nothing.
+    kms.setFb(1, 10, { x: 30, y: 0, width: 8, height: 4 });
+    expect(kms.currentFb(1)).toBeUndefined();
+  });
+
   it("scanoutBytes returns undefined for an unknown bo", () => {
     const kms = new KmsRegistry(new GbmBoRegistry());
     kms.addFb(fb(10, 999));
@@ -74,6 +121,7 @@ describe("KmsRegistry", () => {
     const bos = new GbmBoRegistry({ getProcessMemory: (p) => p === 7 ? mem : undefined });
     bos.create({ pid: 7, bo_id: 100, size: 4096, w: 32, h: 32, stride: 128 });
     bos.bind(7, 100, 0, 4096);
+    bos.primeBindFromSab(7, 100, mem, 0);
 
     const kms = new KmsRegistry(bos);
     kms.addFb(fb(10, 100));
@@ -147,7 +195,7 @@ it("snapshots premultiplied cursor pixels and moves independently of scanout", (
   bos.create({ pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8 });
   bos.pixelView(1)!.set([0, 32, 64, 128, 0, 0, 255, 255]);
   const kms = new KmsRegistry(bos);
-  kms.setMasterPid(7);
+  kms.setMaster(7, 1n, 1n);
   kms.setCursor(7, 3, 1, 2, 2, 30, 40, 1, 1);
   const shown = kms.cursorSnapshot();
   expect(Array.from(shown.pixels!.slice(0, 8))).toEqual([128, 64, 0, 128, 255, 0, 0, 255]);
@@ -162,7 +210,10 @@ it("snapshots premultiplied cursor pixels and moves independently of scanout", (
   expect(shown.pixels![0]).toBe(128); // Detached snapshots stay immutable.
   expect(kms.cursorSnapshot()).toBe(updated);
   expect(kms.flipCount()).toBe(0);
-  kms.dropMaster();
+  // Device plane state survives the master; only the BO's retirement ends it.
+  kms.dropMaster(1n, 1n);
+  expect(kms.cursorSnapshot()).toBe(updated);
+  expect(kms.retireCursorBo(1)).toBe(true);
   expect(kms.cursorSnapshot().pixels).toBeNull();
   expect(kms.cursorSnapshot().version).toBeGreaterThan(shown.version);
 });
@@ -225,6 +276,7 @@ it("refreshes the live cursor producer without flushing beyond the packed image"
   const bos = new GbmBoRegistry({ getProcessMemory: pid => pid === 7 ? memory : undefined });
   bos.create({ pid: 7, bo_id: 1, size: 4096, w: 32, h: 32, stride: 128 });
   bos.bind(7, 1, 0, 4096);
+  bos.primeBindFromSab(7, 1, memory, 0);
   const mapped = new Uint8Array(memory.buffer);
   mapped.set([0, 0, 255, 255]);
   mapped[16] = 42;
@@ -242,31 +294,185 @@ it("refreshes the live cursor producer without flushing beyond the packed image"
 });
 
 
-it("consumes full cursor records without recopying motion images or resurrecting retired owners", () => {
+it("keeps the device cursor plane across master changes and never reads retired storage", () => {
   const bos = new GbmBoRegistry();
   bos.create({ pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8 });
   bos.pixelView(1)!.set([0, 0, 255, 255]);
   const kms = new KmsRegistry(bos);
-  const record = (words: number[]) => {
-    const bytes = new Uint8Array(32);
-    const view = new DataView(bytes.buffer);
-    words.forEach((word, i) => view.setUint32(i * 4, word, true));
+  const record = (words: number[], reserved = 0n) => {
+    const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
+    view.setBigUint64(0, reserved, true);
+    [...words, words[0] ? 25 : 0].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
     return bytes;
   };
-  kms.setMasterPid(7);
-  kms.applyCursorRecord(record([7, 1, 2, 2, 30, 40, -3, 1]));
+  kms.setMaster(7, 1n, 1n);
+  kms.applyCursorRecord(record([1, 2, 2, 30, 40, -3, 1]));
   const pixels = kms.cursorSnapshot().pixels;
   expect(pixels).not.toBeNull();
-  kms.applyCursorRecord(record([7, 1, 2, 2, -5, 70, -3, 1]));
+  kms.applyCursorRecord(record([1, 2, 2, -5, 70, -3, 1]));
   expect(kms.cursorSnapshot()).toMatchObject({ x: -5, y: 70, hotX: -3 });
   expect(kms.cursorSnapshot().pixels).toBe(pixels);
-  kms.dropMaster();
+  // Linux plane state: dropping master and a new master's grant leave the
+  // cursor shown, and the new master's motion keeps the inherited image.
+  kms.dropMaster(1n, 1n);
+  expect(kms.cursorSnapshot().pixels).toBe(pixels);
+  kms.setMaster(8, 2n, 2n);
+  expect(kms.cursorSnapshot().pixels).toBe(pixels);
+  kms.applyCursorRecord(record([1, 2, 2, 11, 12, -3, 1]));
+  expect(kms.cursorSnapshot()).toMatchObject({ x: 11, y: 12, pixels });
+  // A record with nonzero reserved bytes is a protocol violation.
+  expect(() => kms.applyCursorRecord(record([1, 2, 2, 11, 12, -3, 1], 2n))).toThrow("Invalid KMS cursor record");
+  // The kernel destroys the image only after replacing it; the host stops
+  // presenting a retired BO instead of reading it.
+  expect(kms.retireCursorBo(2)).toBe(false);
   bos.destroy(7, 1);
-  kms.applyCursorRecord(record([7, 1, 2, 2, 30, 40, 0, 0]));
-  expect(kms.cursorSnapshot().pixels).toBeNull();
-  kms.setMasterPid(8);
-  kms.applyCursorRecord(record([8, 0, 0, 0, 1, 2, 0, 0]));
+  expect(kms.retireCursorBo(1)).toBe(true);
+  expect(kms.cursorSnapshot()).toMatchObject({ x: 11, y: 12, pixels: null });
+  kms.applyCursorRecord(record([0, 0, 0, 1, 2, 0, 0]));
   expect(kms.cursorSnapshot()).toMatchObject({ x: 1, y: 2, pixels: null });
-  kms.applyCursorRecord(record([0, 0, 0, 0, 0, 0, 0, 0]));
+  expect(kms.dropMaster(1n, 1n)).toBe(false);
+  expect(kms.setMaster(7, 1n, 1n)).toBe(false);
+  expect(kms.getMasterPid()).toBe(8);
+});
+
+
+describe("DRM scanout pixel layouts", () => {
+  it.each([
+    ["XRGB8888", 0x34325258, [3, 2, 1, 0, 6, 5, 4, 0]],
+    ["ARGB8888", 0x34325241, [3, 2, 1, 64, 6, 5, 4, 128]],
+    ["XBGR8888", 0x34324258, [1, 2, 3, 0, 4, 5, 6, 0]],
+    ["ABGR8888", 0x34324241, [1, 2, 3, 64, 4, 5, 6, 128]],
+  ] as const)("decodes %s without confusing channel order or row padding", (_name, pixel_format, bytes) => {
+    const source = new Uint8Array(new SharedArrayBuffer(12));
+    source.set([...bytes.slice(0, 4), 99, 99, ...bytes.slice(4), 99, 99]);
+    const packed = snapshotScanout({ width: 1, height: 2, pitch: 6, pixel_format }, source);
+    expect(packed.buffer).toBeInstanceOf(ArrayBuffer);
+    expect(Array.from(scanoutRgba(pixel_format, packed))).toEqual([1, 2, 3, 255, 4, 5, 6, 255]);
+    source.fill(0);
+    expect(Array.from(packed)).toEqual(bytes);
+  });
+
+  it("expands little-endian RGB565 endpoints and ignores padding", () => {
+    const source = new Uint8Array([0, 248, 224, 7, 31, 0, 99, 99, 255, 255, 0, 0, 16, 132]);
+    const packed = snapshotScanout({ width: 3, height: 2, pitch: 8, pixel_format: 0x36314752 }, source);
+    expect(Array.from(scanoutRgba(0x36314752, packed))).toEqual([
+      255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255,
+      255, 255, 255, 255, 0, 0, 0, 255, 132, 130, 132, 255,
+    ]);
+  });
+
+  it("shows R8 as red and GR88 as red and green, the channels they lack zero", () => {
+    // 3-pixel rows with one padding byte (R8) or two (GR88).
+    const r8 = snapshotScanout({ width: 3, height: 1, pitch: 4, pixel_format: 0x20203852 }, new Uint8Array([7, 0, 255, 99]));
+    expect(Array.from(scanoutRgba(0x20203852, r8))).toEqual([7, 0, 0, 255, 0, 0, 0, 255, 255, 0, 0, 255]);
+    const gr88 = snapshotScanout({ width: 2, height: 1, pitch: 6, pixel_format: 0x38385247 },
+      new Uint8Array([7, 8, 255, 1, 99, 99]));
+    expect(Array.from(scanoutRgba(0x38385247, gr88))).toEqual([7, 8, 0, 255, 255, 1, 0, 255]);
+    expect(() => scanoutRgba(0x38385247, new Uint8Array(3))).toThrow(RangeError);
+  });
+
+  it("reduces 10-bit channels to 8 bits by rounding, in all four channel orders", () => {
+    // Channels 1023, 512, 2 (and alpha bits 3): 255, round(130.6) = 128, round(0.5) = 0... exactly
+    // round(v * 255 / 1023): 1023 -> 255, 512 -> 128, 2 -> 0, 3 -> 1.
+    const word = (low: number, mid: number, high: number) => (3 << 30 | high << 20 | mid << 10 | low) >>> 0;
+    const bytes = (w: number) => [w & 255, (w >>> 8) & 255, (w >>> 16) & 255, w >>> 24];
+    const pixel = [...bytes(word(1023, 512, 2)), ...bytes(word(3, 0, 1022))];
+    for (const [fourcc, bgr] of [[0x30334241, false], [0x30334258, false], [0x30335241, true], [0x30335258, true]] as const) {
+      const rgba = Array.from(scanoutRgba(fourcc, Uint8Array.from(pixel)));
+      expect(rgba).toEqual(bgr ? [0, 128, 255, 255, 255, 0, 1, 255] : [255, 128, 0, 255, 1, 0, 255, 255]);
+    }
+  });
+
+  it("reduces half floats to 8 bits: [0, 1] rounded, NaN 0, out of range clamped", () => {
+    const half = [0x3c00, 0x3800, 0x0000, 0x0000, /* 1, 0.5, 0 */ 0x7e00, 0xbc00, 0x7c00, 0x3c00, /* NaN, -1, inf */
+      0x4000, 0x1c00, 0x2400, 0x0000 /* 2, 2^-8 (0.996 -> 1), 2^-6 (3.98 -> 4) */];
+    const packed = new Uint8Array(new Uint16Array(half).buffer);
+    for (const fourcc of [0x48344241, 0x48344258])
+      expect(Array.from(scanoutRgba(fourcc, packed))).toEqual([255, 128, 0, 255, 0, 0, 255, 255, 255, 1, 4, 255]);
+  });
+
+  it("rounds exactly as the presenter shader's float32 arithmetic does, for every 10-bit and half value", () => {
+    const f = Math.fround;
+    for (let v = 0; v < 1024; v++) {
+      expect(reduce10(v)).toBe(Math.round(v * 255 / 1023));
+      // floor((v * 510 + 1023) / 2046) in float32 (kms-color-stage.ts).
+      expect(Math.floor(f(f(f(v * 510) + 1023) / 2046))).toBe(reduce10(v));
+      // v recovered from the normalized texel v / 1023.
+      expect(Math.floor(f(f(f(v / 1023) * 1023) + 0.5))).toBe(v);
+    }
+    for (let bits = 0; bits < 0x10000; bits++) {
+      const reduced = reduceHalf(bits);
+      // floor(clamp(f, 0, 1) * 255 + 0.5) in float32.
+      const sign = bits & 0x8000 ? -1 : 1, e = (bits >>> 10) & 31, m = bits & 1023;
+      const half = e === 31 ? (m ? NaN : sign * Infinity) : sign * (e ? (1 + m / 1024) * 2 ** (e - 15) : m * 2 ** -24);
+      const clamped = Number.isNaN(half) ? 0 : Math.min(Math.max(half, 0), 1);
+      expect(Math.floor(f(f(f(clamped) * 255) + 0.5))).toBe(reduced);
+      expect(reduceFloat(half)).toBe(reduced);
+    }
+  });
+
+  it("rejects unknown formats and incomplete geometry before copying", () => {
+    const fb = { width: 2, height: 2, pitch: 8, pixel_format: 0x34324241 };
+    for (const geometry of [
+      { ...fb, pixel_format: 0 }, { ...fb, width: 0 }, { ...fb, height: -1 },
+      { ...fb, pitch: 7 }, { ...fb, width: 1.5 }, { ...fb, height: Number.MAX_SAFE_INTEGER },
+    ]) expect(() => snapshotScanout(geometry, new Uint8Array(16))).toThrow(RangeError);
+    expect(() => snapshotScanout(fb, new Uint8Array(15))).toThrow(RangeError);
+    expect(() => scanoutRgba(0x36314752, new Uint8Array(3))).toThrow(RangeError);
+  });
+});
+
+
+it("distinguishes renewed framebuffer identity with identical BO and image geometry", () => {
+  const bos = new GbmBoRegistry();
+  bos.create({pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8});
+  bos.pixelView(1)!.set([0, 0, 255, 255]);
+  const kms = new KmsRegistry(bos);
+  const record = (fb: number) => {
+    const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
+    [1, 2, 2, 30, 40, 0, 0, fb].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
+    return bytes;
+  };
+  kms.applyCursorRecord(record(25));
+  const first = kms.cursorSnapshot();
+  kms.applyCursorRecord(record(26));
+  const renewed = kms.cursorSnapshot();
+  expect(renewed.pixels).toEqual(first.pixels);
+  expect(renewed.pixels).not.toBe(first.pixels);
+  expect(kms.retireCursorBo(2)).toBe(false);
+  expect(kms.cursorSnapshot()).toBe(renewed);
+  expect(kms.retireCursorBo(1)).toBe(true);
   expect(kms.cursorSnapshot().pixels).toBeNull();
+});
+
+
+it("applies the device cursor plane with no master, and needs framebuffer identity for an image", () => {
+  const bos = new GbmBoRegistry(), kms = new KmsRegistry(bos);
+  bos.create({pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8});
+  bos.pixelView(1)!.set([0, 0, 255, 255]);
+  const snapshot = kms.cursorSnapshot();
+  const read = vi.spyOn(bos, "syncToSab");
+  const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
+  [1, 2, 2, 0, 0, 0, 0, 0].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
+  expect(() => kms.applyCursorRecord(bytes)).toThrow("image identity");
+  expect(kms.cursorSnapshot()).toBe(snapshot);
+  expect(read).not.toHaveBeenCalled();
+  // A plane installed before a master change keeps updating without one.
+  view.setUint32(36, 25, true);
+  expect(kms.applyCursorRecord(bytes)!.pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([255, 0, 0, 255]));
+});
+
+it("refuses protocol 4 image/FB inconsistencies before reading or replacing current storage", () => {
+  const bos = new GbmBoRegistry(), kms = new KmsRegistry(bos);
+  kms.setMaster(7, 1n, 1n);
+  const snapshot = kms.cursorSnapshot();
+  const read = vi.spyOn(bos, "syncToSab");
+  for (const words of [[999,2,2,0,0,0,0,0], [0,0,0,0,0,0,0,25], [0,2,2,0,0,0,0,0],
+    [0,0,0,0,0,1,0,0], [999,65,2,0,0,0,0,25]]) {
+    const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
+    words.forEach((word,i) => view.setUint32(8+i*4,word,true));
+    expect(() => kms.applyCursorRecord(bytes)).toThrow(/Invalid KMS cursor image/);
+    expect(kms.cursorSnapshot()).toBe(snapshot);
+    expect(read).not.toHaveBeenCalled();
+  }
 });

@@ -1,0 +1,237 @@
+Subject: [PATCH] Adapt collection and trigger callbacks without changing helpers
+
+Collection callbacks return void and receive both item and user data.
+Keep workspace commits and widget updates available with their original
+direct-call and source-function types, and route collections through
+proper GFunc adapters. Trigger callbacks similarly need their store
+argument and void return. Retain one stable trigger adapter identity for
+both registration and removal. Preserve tray item construction results
+for direct callers while ignoring them through correctly typed listener
+and collection adapters. No protocol or widget feature is disabled.
+
+--- a/src/workspace.c
++++ b/src/workspace.c
+@@ -258,6 +258,12 @@
+   LISTENER_CALL(workspace_invalidate, ws);
+ }
+ 
++void workspace_commit_foreach ( gpointer data, gpointer user_data )
++{
++  (void)user_data;
++  workspace_commit(data);
++}
++
+ void workspace_mod_state ( gpointer id, gint32 mask, gboolean state )
+ {
+   workspace_t *ws;
+--- a/src/workspace.h
++++ b/src/workspace.h
+@@ -47,6 +47,7 @@
+ void workspace_listener_remove ( void *data );
+ workspace_t *workspace_new ( gpointer id );
+ void workspace_commit ( workspace_t *ws );
++void workspace_commit_foreach ( gpointer data, gpointer user_data );
+ void workspace_change_focus ( gpointer id );
+ //void workspace_set_state ( workspace_t *ws, guint32 state );
+ void workspace_mod_state ( gpointer id, gint32 mask, gboolean state );
+--- a/src/ipc/ext-workspace.c
++++ b/src/ipc/ext-workspace.c
+@@ -181,7 +181,7 @@
+     return;
+   g_debug("Workspace: group %p, add output: %p", group, output);
+   g_ptr_array_add(group->outputs, output);
+-  g_ptr_array_foreach(group->workspaces, (GFunc)workspace_commit, NULL);
++  g_ptr_array_foreach(group->workspaces, workspace_commit_foreach, NULL);
+ }
+ 
+ static void ew_workspace_group_handle_output_leave(void *data,
+@@ -192,7 +192,7 @@
+ 
+   g_debug("Workspace: group %p, remove output: %p", group, output);
+   g_ptr_array_remove(group->outputs, output);
+-  g_ptr_array_foreach(group->workspaces, (GFunc)workspace_commit, NULL);
++  g_ptr_array_foreach(group->workspaces, workspace_commit_foreach, NULL);
+ }
+ 
+ static void ew_workspace_group_handle_workspace_enter(void *data,
+@@ -276,7 +276,7 @@
+ static void ew_workspace_manager_handle_done(void *data,
+     struct ext_workspace_manager_v1 *workspace_manager)
+ {
+-  g_list_foreach(workspace_get_list(), (GFunc)workspace_commit, NULL);
++  g_list_foreach(workspace_get_list(), workspace_commit_foreach, NULL);
+ }
+ 
+ static void ew_workspace_manager_handle_finished(void *data,
+--- a/src/ipc/cosmic-workspaces.c
++++ b/src/ipc/cosmic-workspaces.c
+@@ -214,7 +214,7 @@
+ static void cw_workspace_manager_handle_done(void *data,
+     struct zcosmic_workspace_manager_v1 *workspace_manager)
+ {
+-  g_list_foreach(workspace_get_list(), (GFunc)workspace_commit, NULL);
++  g_list_foreach(workspace_get_list(), workspace_commit_foreach, NULL);
+ }
+ 
+ static void cw_workspace_manager_handle_finished(void *data,
+--- a/src/gui/basewidget.c
++++ b/src/gui/basewidget.c
+@@ -75,6 +75,10 @@
+   return array;
+ }
+ 
++static void base_widget_update_value_foreach ( gpointer self, gpointer user_data );
++static void base_widget_style_foreach ( gpointer self, gpointer user_data );
++static void base_widget_update_foreach ( gpointer self, gpointer user_data );
++
+ static gboolean base_widget_update_value ( GtkWidget *self )
+ {
+   BaseWidgetPrivate *priv;
+@@ -89,7 +93,7 @@
+ 
+   if(!priv->local_state)
+     g_list_foreach(base_widget_get_mirror_children(self),
+-        (GFunc)base_widget_update_value, NULL);
++        base_widget_update_value_foreach, NULL);
+ 
+   return FALSE;
+ }
+@@ -107,7 +111,7 @@
+ 
+   if(!priv->local_state)
+     g_list_foreach(base_widget_get_mirror_children(self),
+-        (GFunc)base_widget_style, NULL);
++        base_widget_style_foreach, NULL);
+ 
+   return FALSE;
+ }
+@@ -148,7 +152,7 @@
+   base_widget_eval_async(self, priv->value, (GSourceFunc)base_widget_update_value);
+   base_widget_eval_async(self, priv->style, (GSourceFunc)base_widget_style);
+   if(priv->local_state)
+-    g_list_foreach(priv->mirror_children, (GFunc)base_widget_update, NULL);
++    g_list_foreach(priv->mirror_children, base_widget_update_foreach, NULL);
+   return FALSE;
+ }
+ 
+@@ -156,6 +160,30 @@
+ {
+   scanner_invalidate();
+   return base_widget_update(self);
++}
++
++static void base_widget_update_value_foreach ( gpointer self, gpointer user_data )
++{
++  (void)user_data;
++  base_widget_update_value(self);
++}
++
++static void base_widget_style_foreach ( gpointer self, gpointer user_data )
++{
++  (void)user_data;
++  base_widget_style(self);
++}
++
++static void base_widget_update_foreach ( gpointer self, gpointer user_data )
++{
++  (void)user_data;
++  base_widget_update(self);
++}
++
++static void base_widget_update_trigger ( gpointer self, vm_store_t *store )
++{
++  (void)store;
++  base_widget_update_expressions(self);
+ }
+ 
+ static void base_widget_destroy ( GtkWidget *self )
+@@ -169,7 +197,7 @@
+   g_debug("widget destroyed: '%s'", priv->id);
+   g_ptr_array_remove(base_widgets, self);
+   trigger_remove((gchar *)(priv->trigger),
+-      (trigger_func_t)base_widget_update_expressions, self);
++      base_widget_update_trigger, self);
+   priv->trigger = NULL;
+   g_idle_remove_by_data(self);
+   g_mutex_lock(&widget_mutex);
+@@ -409,7 +437,7 @@
+   priv = base_widget_get_instance_private(BASE_WIDGET(self));
+ 
+   trigger_remove((gchar *)(priv->trigger),
+-      (trigger_func_t)base_widget_update_expressions, self);
++      base_widget_update_trigger, self);
+   priv->trigger = NULL;
+ 
+   if(priv->mirror_parent && !priv->local_state)
+@@ -419,7 +447,7 @@
+   {
+     priv->interval = 0;
+     priv->trigger = trigger_add(trigger,
+-        (trigger_func_t)base_widget_update_expressions, self);
++        base_widget_update_trigger, self);
+   }
+ }
+ 
+--- a/src/gui/tray.c
++++ b/src/gui/tray.c
+@@ -7,6 +7,16 @@
+ #include "tray.h"
+ 
+ G_DEFINE_TYPE_WITH_CODE (Tray, tray, FLOW_GRID_TYPE, G_ADD_PRIVATE (Tray))
++
++static void tray_item_added ( sni_item_t *sni, gpointer self )
++{
++  tray_item_new(sni, self);
++}
++
++static void tray_item_new_foreach ( gpointer sni, gpointer self )
++{
++  tray_item_added(sni, self);
++}
+ 
+ static void tray_destroy ( GtkWidget *self )
+ {
+@@ -40,7 +50,7 @@
+ }
+ 
+ static sni_listener_t tray_sni_listener = {
+-  .sni_new = (void (*)(sni_item_t *, void *))tray_item_new,
++  .sni_new = tray_item_added,
+   .sni_invalidate = (void (*)(sni_item_t *, void *))tray_invalidate_item,
+   .sni_destroy = (void (*)(sni_item_t *, void *))tray_destroy_item,
+ };
+@@ -55,7 +65,7 @@
+   gtk_grid_set_column_homogeneous(
+       GTK_GRID(base_widget_get_child(GTK_WIDGET(self))), FALSE);
+ 
+-  g_list_foreach(sni_item_get_list(), (GFunc)tray_item_new, self);
++  g_list_foreach(sni_item_get_list(), tray_item_new_foreach, self);
+ }
+ 
+ GtkWidget *tray_new ( void )
+--- a/src/gui/switcher.c
++++ b/src/gui/switcher.c
+@@ -142,6 +142,12 @@
+   return TRUE;
+ }
+ 
++static void switcher_trigger ( gpointer dir, vm_store_t *store )
++{
++  (void)store;
++  switcher_event(dir);
++}
++
+ static void switcher_class_init ( SwitcherClass *kclass )
+ {
+   GTK_WIDGET_CLASS(kclass)->destroy = switcher_destroy;
+@@ -149,8 +155,8 @@
+   G_OBJECT_CLASS(kclass)->set_property = switcher_set_property;
+ 
+   g_unix_signal_add(SIGUSR1, (GSourceFunc)switcher_event, NULL);
+-  trigger_add("switcher_forward", (trigger_func_t)switcher_event, NULL);
+-  trigger_add("switcher_back", (trigger_func_t)switcher_event, (void *)1);
++  trigger_add("switcher_forward", switcher_trigger, NULL);
++  trigger_add("switcher_back", switcher_trigger, (void *)1);
+   FLOW_GRID_CLASS(kclass)->limit = FALSE;
+   g_object_class_install_property(G_OBJECT_CLASS(kclass), SWITCHER_FILTER,
+       g_param_spec_enum("filter", "filter", "sfwbar_config", filter_type_get(),

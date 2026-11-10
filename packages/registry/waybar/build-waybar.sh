@@ -77,7 +77,7 @@ LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not 
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set}"
 LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set}"
-PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/xml"
+PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/share/wayland-protocols"
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set}"
 PCRE2_PREFIX="${WASM_POSIX_DEP_PCRE2_DIR:?WASM_POSIX_DEP_PCRE2_DIR not set}"
 # wasm32posix-c++ resolves libc++ headers through the sysroot. Project a
@@ -121,9 +121,9 @@ gen_protocol() {
     wayland-scanner private-code   "$xml" "$GEN/$base-protocol.c"
     wayland-scanner client-header  "$xml" "$GEN/$base-client-protocol.h"
 }
-gen_protocol "$PROTOCOLS_XML/xdg-shell.xml"
-gen_protocol "$PROTOCOLS_XML/xdg-output-unstable-v1.xml"
-gen_protocol "$PROTOCOLS_XML/idle-inhibit-unstable-v1.xml"
+gen_protocol "$PROTOCOLS_XML/stable/xdg-shell/xdg-shell.xml"
+gen_protocol "$PROTOCOLS_XML/unstable/xdg-output/xdg-output-unstable-v1.xml"
+gen_protocol "$PROTOCOLS_XML/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml"
 gen_protocol "$SRC_DIR/protocol/wlr-foreign-toplevel-management-unstable-v1.xml"
 gen_protocol "$SRC_DIR/protocol/river-status-unstable-v1.xml"
 gen_protocol "$SRC_DIR/protocol/river-control-unstable-v1.xml"

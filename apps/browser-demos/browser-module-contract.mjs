@@ -31,6 +31,14 @@ export const browserImageModule32ModuleSpecifier = "@kandelo-image-module32-wasm
 export const browserPositionedImageModule32ModuleSpecifier = "@kandelo-image-module-positioned32-wasm";
 export const browserPagesVfsProductsModuleSpecifier =
   "virtual:kandelo-pages-vfs-products";
+export const browserPartialImageModuleSpecifier = "virtual:kandelo-partial-image";
+
+// The dev plugin validates partial-image metadata, but emits null in production.
+// Requiring an artifact binding here would make ordinary production builds
+// depend on an optional worktree image. Keep this exact; unknown IDs still fail.
+export const browserOptionalDataModules = Object.freeze([
+  browserPartialImageModuleSpecifier,
+]);
 
 export const browserVirtualModuleCapabilities = Object.freeze({
   [browserKernelModuleSpecifier]: "kernel-wasm",

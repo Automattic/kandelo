@@ -1,0 +1,27 @@
+Use the bundled Linux UAPI headers on platforms other than FreeBSD.
+
+include/linux/input.h and include/linux/uinput.h pick the bundled
+Linux or FreeBSD copy by __linux__ / __FreeBSD__ and expand to nothing
+anywhere else, so the build fails on any other platform that speaks the
+Linux evdev and uinput ABI. Kandelo implements that ABI but is not
+Linux and does not define __linux__ (sdk/config.site). Fall back to the
+Linux copy instead of to nothing.
+
+--- a/include/linux/input.h
++++ b/include/linux/input.h
+@@ -2,4 +2,6 @@
+ #include "linux/input.h"
+ #elif __FreeBSD__
+ #include "freebsd/input.h"
++#else
++#include "linux/input.h"
+ #endif
+--- a/include/linux/uinput.h
++++ b/include/linux/uinput.h
+@@ -2,4 +2,6 @@
+ #include "linux/uinput.h"
+ #elif __FreeBSD__
+ #include "freebsd/uinput.h"
++#else
++#include "linux/uinput.h"
+ #endif

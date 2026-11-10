@@ -1,0 +1,10 @@
+script_path = "packages/registry/json-c/build-json-c.sh"
+inputs = [
+  "packages/registry/json-c/build-json-c.sh",
+  "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/Platform/Kandelo.cmake",
+  "scripts/package-build-roots.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1

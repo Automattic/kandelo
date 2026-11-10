@@ -20,6 +20,11 @@ struct connector {
     uint32_t count_modes, count_props, count_encoders, encoder_id;
     uint32_t id, type, type_id, connection, mm_width, mm_height, subpixel, pad;
 };
+struct resources {
+    uint64_t fbs, crtcs, connectors, encoders;
+    uint32_t count_fbs, count_crtcs, count_connectors, count_encoders;
+    uint32_t min_width, max_width, min_height, max_height;
+};
 struct absinfo { int32_t value, minimum, maximum, fuzz, flat, resolution; };
 struct dumb { uint32_t height, width, bpp, flags, handle, pitch; uint64_t size; };
 struct fb {
@@ -39,15 +44,24 @@ int main(int argc, char **argv) {
     int max_y = argc > 2 ? atoi(argv[2]) : 65535;
     int fd = open("/dev/dri/card0", O_RDWR);
     CHECK(fd >= 0);
-    struct connector c = { .id = 1 };
+    uint32_t connector_id = 0, crtc_id = 0;
+    struct resources resources = {
+        .connectors = (uintptr_t)&connector_id, .count_connectors = 1,
+        .crtcs = (uintptr_t)&crtc_id, .count_crtcs = 1,
+    };
+    CHECK(ioctl(fd, 0xc04064a0, &resources) == 0);
+    CHECK(resources.count_connectors == 1 && resources.count_crtcs == 1);
+    struct connector c = { .id = connector_id };
     CHECK(ioctl(fd, GETCONNECTOR, &c) == 0);
     CHECK(c.count_modes >= 17 && c.count_modes <= 32);
     struct mode modes[32];
     memset(modes, 0x5a, sizeof modes);
     c.modes = (uintptr_t)modes;
     c.count_modes = 1;
+    c.count_props = c.count_encoders = 0;
     CHECK(ioctl(fd, GETCONNECTOR, &c) == 0);
     CHECK(modes[0].clock == 0x5a5a5a5a);
+    c.count_props = c.count_encoders = 0;
     CHECK(ioctl(fd, GETCONNECTOR, &c) == 0);
     CHECK((modes[0].type & (1 << 3)) != 0);
     unsigned preferred = 0, small = 0, fullhd = 0, uhd = 0;
@@ -75,11 +89,17 @@ int main(int argc, char **argv) {
         struct fb fb = { .width = width, .height = height, .format = 0x34325258,
                          .handles = {bo.handle}, .pitches = {bo.pitch} };
         CHECK(ioctl(fd, 0xc06864b8, &fb) == 0);
-        struct crtc crtc = { .id = 1, .fb = fb.id, .mode_valid = 1 };
+        struct crtc crtc = { .id = crtc_id, .fb = fb.id, .mode_valid = 1 };
         for (unsigned i = 0; i < c.count_modes; i++) {
             if (modes[i].hdisplay == width && modes[i].vdisplay == height) crtc.mode = modes[i];
         }
         CHECK(crtc.mode.hdisplay == width);
+        /* A modeset needs its explicit connector set. Linux rejects a
+         * valid mode with count_connectors == 0 (drm_mode_setcrtc). */
+        errno = 0;
+        CHECK(ioctl(fd, 0xc06864a2, &crtc) == -1 && errno == EINVAL);
+        crtc.connectors = (uintptr_t)&connector_id;
+        crtc.count = 1;
         CHECK(ioctl(fd, 0xc06864a2, &crtc) == 0);
         CHECK(ioctl(input, 0x80184540, &x) == 0 && x.maximum == max_x);
         CHECK(ioctl(input, 0x80184541, &y) == 0 && y.maximum == max_y);

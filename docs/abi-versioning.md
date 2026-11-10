@@ -18,22 +18,20 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
-Program ABI 55 is the declared supported baseline. The separate
-`abi/supported-program-baseline.json` gate preserves the declared program
-digest across kernel/host rebuilds; ordinary snapshot regeneration or a
-program version bump does not bypass it. The gate itself is exact: it refuses
-an additive program-surface change as firmly as a changed one. What gets past
-it is not a relaxation of the gate but a separate, derived record of affirmed
-predecessors — see "Affirmed prior program contracts" below. Kernel-host-only
-changes remain independently versioned and do not affect this baseline.
+Program ABI 56 is the supported baseline; ABI 55 was retired before release.
+The separate `abi/supported-program-baseline.json` gate preserves the current program digest across
+kernel/host rebuilds; ordinary snapshot regeneration or a program version bump
+does not bypass it. The gate also refuses additive changes to the base
+program surface. New interfaces use independently versioned, explicitly
+required [program imports](program-extensions.md) with their own admission
+checks. Kernel-host-only changes remain independently versioned and do not
+affect this baseline.
 
 Run `cargo xtask check-program-baseline` for the focused check. The ordinary
 ABI check and package/build/stamping entry points enforce it as well.
-Already-built fixtures under `abi/program-fixtures/v55` must not be rebuilt to
-make compatibility tests pass; `host/test/supported-program-baseline.test.ts`
-runs those exact bytes on the current kernel, which is the end-to-end evidence
-that the declared baseline plus its affirmed predecessor keeps the cohort
-running. See the [persistent-program compatibility
+Already-built fixtures under `abi/program-fixtures/v56` must not be rebuilt to
+make compatibility tests pass; the archived ABI-55 cohort remains a refusal
+control. See the [persistent-program compatibility
 contract](persistent-program-compatibility.md) for exact scope and remaining
 release validation.
 
@@ -43,70 +41,6 @@ and follows trivial direct-call marker wrappers to a bounded depth. This is
 metadata inspection, not execution of candidate code. Native allocation tests
 cover a large unrelated body and many unrelated bodies; they do not establish
 application startup performance or total artifact-admission memory bounds.
-
-## Affirmed prior program contracts
-
-A program carries one 32-byte digest in its `kandelo.abi.contract` custom
-section, hashed over `ABI_VERSION` plus every section
-`abi_surfaces.program` lists, and admission compares it for equality. A hash
-cannot be partially matched, so a program built one additive field ago differs
-from the current contract exactly as much as one built against a contradictory
-contract. **The strictness is in the stamp, not in the comparison**, and
-loosening the comparison alone would discard the signal rather than refine it.
-
-`abi/accepted-program-digests.json` records prior contracts the current epoch
-still admits beside its own. A contract joins that record only when **both**
-of two independent conditions hold — never one:
-
-1. **The classifier finds only additions.** `cargo xtask
-   check-program-baseline` runs the snapshot compatibility classifier
-   (`tools/xtask/src/dump_abi.rs`) over the *program-surface view* of the
-   prior snapshot and of the current one: the epoch, the program-surface
-   section list, and those sections' values, which is exactly the data the
-   digest hashes. Kernel-host sections are absent from both sides rather than
-   filtered out of the answer, so no kernel-host change can appear in it, and
-   a section that moved out of the program surface appears as a removal, which
-   stays breaking.
-2. **A named author has affirmed the behavior.** A change can be additive in
-   schema and breaking in behavior: a new errno an existing syscall can now
-   return, a reserved flag bit gaining meaning, a `repr(C)` struct gaining a
-   field. No classifier can see any of those, so each entry carries an
-   `affirmation` — author, date, and prose saying why the addition is safe for
-   programs that predate it.
-
-### Why this is not a list of digests someone pasted in
-
-`docs/persistent-program-compatibility.md` forbids working around the exact
-gate "by accepting arbitrary old digests or giving new requirements the old
-identity". Nothing in this record is arbitrary, and the mechanism is built so
-that a reviewer does not have to take that on trust:
-
-- Each entry's digest is **recomputed**, by the same function that stamps
-  programs, from a stored copy of the snapshot that produced it under
-  `abi/accepted-program-snapshots/<digest>.json`. The file is found *by* the
-  digest, so a hand-written digest names no snapshot; and the digest is
-  checked against the snapshot's content, so a snapshot edited to suit no
-  longer hashes to its digest. An entry also records the Git revision the
-  stored snapshot came from, for a reviewer to diff against history.
-- The classifier's verdict is **re-derived on every build**, not remembered.
-  An entry that was an additive predecessor last month and is contradicted by
-  today's program surface fails the build today, and the refusal names the
-  breaking item.
-- An entry recorded under an epoch `ABI_VERSION` has since replaced is
-  **superseded**: reported by name, and absent from the accepted set. A digest
-  binds the epoch, and bumping it is a deliberate declaration that every
-  program is rebuilt, so this mechanism relaxes digest equality *within* one
-  epoch and never relaxes the epoch check itself. The epoch is checked
-  separately, by `expectedAbi` in `host/src/constants.ts`.
-
-Anything outside the accepted set still fails hard, and an unstamped legacy
-guest still warns once and passes, exactly as before. `cargo xtask dump-abi`
-renders the authorized set into
-`host/src/generated/abi.ts` as `ACCEPTED_PROGRAM_CONTRACT_DIGESTS`, which both
-the Node.js and browser hosts read from the same shared admission code in
-`host/src/constants.ts`, so neither host can admit a program the other
-refuses. Because that constant is generated, `scripts/check-abi-version.sh`
-fails on drift between the record and what the host compiles against.
 
 ## ABI staging rollout status
 
@@ -148,98 +82,6 @@ requests, execute candidate code, publish candidate or canonical artifacts,
 update a GitHub Check, create or protect an ABI branch, or deploy Pages. Those
 operations require the later staging layers and their hosted evidence.
 Existing ABI release and VFS behavior is unchanged.
-
-## klogctl reaches the kernel message ring (ABI 55, affirmed predecessor)
-
-`klogctl` (`SYS_SYSLOG`, Kandelo syscall 304 — Kandelo's own numbering, not
-Linux's 103) now reads the kernel message ring. It previously had a
-fake-success stub in the kernel's channel dispatch that answered every action
-with a bare `0`, so a program asking for the kernel log was told it had
-succeeded and handed nothing. That stub is gone.
-
-Neither `dmesg` nor `klogctl` is POSIX, so this is a chosen design for a
-facility POSIX does not describe, not a compatibility claim. The committed
-contract is the rendered byte stream: one line per record, `<pri>` followed by
-`[seconds.microseconds]`, the text and a newline, where `pri = facility * 8 + level`. Reads (actions 2,
-3 and 4) are unrestricted because a Kandelo machine has no multi-tenant threat
-model; clearing (actions 4 and 5) requires root because it destroys state
-every reader shares. Actions 6, 7 and 8 are refused with `EINVAL` rather than
-accepted and ignored: Kandelo has no console log level to turn off, turn on, or
-set. So is every action outside the table, including the numbers Linux calls
-`CLOSE` and `OPEN`, for which Kandelo keeps no per-caller state.
-
-Action 9 (`SIZE_UNREAD`) reports *rendered* bytes, not the ring's stored
-header-plus-text bytes, because a caller sizes a buffer from it and then
-reads; reporting the stored count would under-size the buffer and lose
-records. Action 10 (`SIZE_BUFFER`) reports the ring's fixed 128 KiB.
-
-### Why the kernel's memory minimum bumped HOST_ADAPTER_VERSION
-
-Regenerating the snapshot raised `kernel_imports.minimum_pages` from 19 to 21:
-the two pages (128 KiB) the kernel message ring occupies as static data. That
-section is kernel-host surface, so the question is which version it moves, and
-the answer is `HOST_ADAPTER_VERSION` — 4 to 5. Programs are unaffected; the
-kernel and the host must be rebuilt together, which they always are.
-
-The reasoning is worth recording because the next static-data growth will
-raise the same question. `minimum_pages` on the `env.memory` import is a
-*demand the kernel makes of the host*: supply a memory of at least this many
-pages at instantiation, or the kernel does not instantiate. Raising it
-strengthens that demand, and a host that satisfied the old one does not
-necessarily satisfy the new one. The classifier judges `kernel_imports` with
-exactly that polarity — `classify_compat_change` routes the section through
-`classify_removal_only_array_by_module_name`, whose changed-entry arm makes
-*any* field change on an existing import breaking, while a dropped import is
-additive — and so reports this as `changed kernel_imports entry "env.memory"`.
-This is the whole reason for the bump, and it is the part to check rather than
-take on trust. A strengthened kernel-host demand is what
-`HOST_ADAPTER_VERSION` exists for: the kernel records it in its host-adapter
-manifest and the host refuses any other value at boot, so a stale pairing
-fails loudly instead of failing at instantiation with a `LinkError`.
-
-In practice no host that can pair with this kernel supplies fewer: the host
-creates kernel memory with `initial: 24` (`host/src/kernel.ts`), whose comment
-states the intent directly — the figure "must remain above the kernel Wasm's
-linker-derived minimum and leaves headroom for future static data without
-re-tuning host construction each time." Twenty-one pages sit inside that with
-three to spare, so nothing observable breaks today. That is an argument that
-the bump is *cheap*, not an argument that it is unnecessary: the pairing should
-be decided by a declared contract rather than by how much headroom happens to
-be left.
-
-There is no precedent either way, and it is worth being exact about that,
-because this subsection exists for whoever grows the kernel's static data next.
-`minimum_pages` has moved once before, 18 to 19 in `a1f8442718`, and that
-commit did bump `HOST_ADAPTER_VERSION` (2 to 4) — but it earned the bump
-independently: the same snapshot change added fifteen `env` kernel imports
-(`host_overlay_*`, `host_overlay_target_*`, `host_overlay_compaction_*`), each
-breaking on its own under the polarity above, and `env.memory` was the only
-*changed* existing import in it. Twenty-five added `kernel_exports` rode along
-too, and those are additive and earn nothing. So a page-count rise has never by
-itself moved the kernel-host version. **This change is the one setting that
-precedent, not following one** — which is why the argument above has to stand
-on the classifier's polarity rather than on history.
-
-A rise that reached or passed `initial: 24` would be a different matter again:
-it would make instantiation fail outright, and it needs the host's figure
-raised — with the `WebAssembly.Memory` reservation cost that implies on WebKit
-— rather than a version bump alone.
-
-### Why this did not take a new program epoch
-
-Routing the syscall adds its number, its pointer-argument descriptor and that
-descriptor's channel scalar contract to the program surface. The program
-contract digest is exact, so it changes, and the declared baseline is the new
-ABI-55 digest. `ABI_VERSION` stayed at 55 because the predecessor digest is
-admitted beside it under "Affirmed prior program contracts" above: the
-classifier reports all three moved sections as additions, and the recorded
-affirmation argues the behavioral half — at ABI 55 the kernel answered 304
-with a hardcoded `0` and an untouched buffer, which nothing can usefully
-depend on. Programs, package archives and ABI-bound VFS images built against
-the predecessor keep running; `host/test/supported-program-baseline.test.ts`
-runs the frozen v55 cohort on this kernel as the evidence. See
-[persistent-program compatibility](persistent-program-compatibility.md) for
-the scope of that evidence and what it does not promise.
 
 ## ABI 52 futex deadlines and multicast delivery
 
@@ -292,6 +134,45 @@ behavior matrix and remaining boundaries.
 
 ## What counts as an ABI change
 
+### Persistent journal tail backpressure
+
+Program ABI 56 is retained for the correction of false `ENOSPC` at the
+active journal tail bound. Regular-file operations already permit waiting:
+for example, writing a deferred base file can return the kernel's internal
+`EAGAIN` while copy-on-write obtains its original bytes. The guest already
+waits through the host-owned retry protocol. The tail bound is another
+internal readiness condition, not a guest-visible capacity limit or a new
+nonblocking guarantee. `ENOSPC` continues to mean actual capacity or quota
+exhaustion; its erroneous use for maintenance pressure is corrected.
+
+This does not change syscall arguments, return-value meanings, channel
+layouts, or the existing permission to block for regular-file storage.
+The frozen ABI-56 program cohort and declared program digest stay unchanged.
+The new required `kernel_rootfs_take_compaction_request` export does change
+the kernel-host capability contract, so `HOST_ADAPTER_VERSION` advances
+from 4 to 5 and both hosts are rebuilt with the kernel. A genuinely new
+guest blocking or interruption contract would still require a program ABI
+bump under the rules below.
+
+### Kernel message ring and the `kandelo.klog.v1` extension
+
+The kernel message ring is 128 KiB of kernel memory, which raises the
+kernel Wasm's `env.memory` minimum from 19 pages to 21. A raised minimum
+is a stronger demand on the host, so the classifier reports a changed
+`kernel_imports` entry. Every host that pairs with this kernel already
+supplies 24 pages (`host/src/kernel.ts`).
+
+`klogctl` is served as the `kandelo.klog.v1` [program
+extension](program-extensions.md), not as base syscall 304. The process
+worker forwards the import as kernel-host request
+`extension_requests::KLOG_V1`, whose buffer descriptor lives in the new
+`extension_requests` kernel-host section rather than in
+`syscall_arg_descriptors`. Every program-surface section is therefore
+byte-identical to the ABI-56 baseline, and the program digest is
+unchanged. The kernel now answers 304 with `ENOSYS` rather than the old
+fake success. Together these are kernel-host changes, so
+`HOST_ADAPTER_VERSION` advances from 5 to 6.
+
 ### Scheduled optional kernel exports
 
 `shared::abi::HOST_ADAPTER_KERNEL_EXPORTS` declares host-facing kernel
@@ -333,8 +214,12 @@ validation.
 
 The KMS cursor transport uses this mechanism: `kernel_kms_cursor_configure`
 and `kernel_kms_cursor_read` are optional in ABI 50 and required from ABI
-51. New hosts negotiate protocol 1; older hosts load the kernel with cursor
-capability disabled. No cursor host import is required. See
+51. The current unpublished ABI 56 / host 3 family negotiates protocol 3,
+whose 40-byte record includes exact master-lease and framebuffer identity.
+Protocols 1 and 2 are refused; matching numeric versions alone do not admit
+artifacts from an earlier source checkpoint. The `kms_cursor_transport`
+snapshot section belongs to the kernel-host surface, leaving the program
+contract digest unchanged. No cursor host import is required. See
 [the cursor transport contract](architecture.md) for the record layout and
 ownership rules.
 
@@ -2332,6 +2217,342 @@ memory or process RSS. Remaining compaction/recovery/snapshot/FIFO/transport
 admission and measured memory acceptance are still required. Guest syscall
 marshalling and serialized storage formats are unchanged.
 
+
+The graphics ABI 53-58 entries below record unreleased development
+checkpoints on the compatibility branch. At that checkpoint main used
+ABI 53; the earlier consolidated ABI 54 combined both contracts. Normal
+artifacts must be rebuilt from that combined source and snapshot.
+
+### Development ABI 53 graphics ownership and renderer acknowledgement
+
+ABI 53 changes the meaning of existing DRM ioctls so an unmodified wlroots
+compositor (cage) can drive `/dev/dri/card0`:
+
+- **The first open of `card0` becomes the DRM master.** While no open file
+  is master, `open("/dev/dri/card0")` makes the new open file the master,
+  as Linux's `drm_master_open` does. Before ABI 53 a process had to call
+  `DRM_IOCTL_SET_MASTER`. A second process that opens `card0` while the
+  first still holds it now gets `EBUSY` from `SET_MASTER` and `EACCES`
+  from the master-only ioctls (SETCRTC, PAGE_FLIP, cursor, property
+  writes, `AUTH_MAGIC`).
+- **RMFB of the scanout framebuffer disables the CRTC**, as on Linux. The
+  new `DRM_IOCTL_MODE_CLOSEFB` releases a framebuffer but keeps the
+  scanout one on screen until SETCRTC or PAGE_FLIP latches another.
+- **fstat of a PRIME fd succeeds.** It reports mode `0600` with no file
+  type bits, `st_size` equal to the buffer size, like Linux's anonymous
+  inode. Before ABI 53 it failed with `EBADF`, so a host `MAP_SHARED`
+  mapping of a PRIME fd failed.
+- **Framebuffer ids are device-wide.** `ADDFB2` takes ids from one
+  counter that starts after the fixed mode objects, so two open files
+  never share an fb id. Before ABI 53 each open file counted from 1.
+- **Framebuffers belong to the open file, not to each process holding
+  it.** A `fork()` or `posix_spawn()` child shares its parent's
+  framebuffers, and only the last close of the open file in any process
+  removes them. Before, the child had a copy, and its close -- the
+  `O_CLOEXEC` close at `exec` -- removed the parent's framebuffers and
+  disabled the CRTC under a running compositor.
+- **SETCRTC without a mode disables the CRTC**, as on Linux: the request's
+  `fb_id` is ignored. More than one connector fails with `EINVAL`.
+- **`DRM_IOCTL_GET_CAP` of an unknown capability fails with `EINVAL`**, as
+  on Linux. Before ABI 53 it reported 0.
+- **A null array pointer with a nonzero count fails with `EFAULT`** in the
+  KMS queries that copy arrays out.
+- **`/dev/dri/card0` and `/dev/dri/renderD128` report `st_rdev` 226:0 and
+  226:128**, the Linux DRM numbers.
+- **`socket(AF_NETLINK, SOCK_RAW or SOCK_DGRAM, NETLINK_KOBJECT_UEVENT)`
+  succeeds.** Other netlink socket types fail with the new errno
+  `ESOCKTNOSUPPORT` (94).
+- **A read-only `sysfs` is mounted at `/sys`**, and `/proc/mounts` lists it.
+
+The KMS ioctls the port added (plane and property queries, `SET_CLIENT_CAP`,
+`GET_MAGIC`/`AUTH_MAGIC`, cursor, `CREATE_LEASE`, `CLOSEFB`) each have an
+ioctl contract in `crates/shared/src/ioctl_contract.rs`.
+
+The kernel fork/exec state record moves from `FORK_VERSION` 19 to 20: it
+carries each card0 open file's `DRM_CLIENT_CAP_UNIVERSAL_PLANES` and magic
+token and each AF_NETLINK socket's port id and groups, and no longer
+serializes a card0 file's framebuffers or framebuffer id counter.
+
+ABI-bound artifacts require rebuilding for ABI 53; the strict
+`__abi_version` equality check rejects earlier programs. Validation of the
+combined implementation is tracked in the graphics compatibility inventory.
+
+The kernel's `host_gl_create_context` import now returns `i32`: zero
+acknowledges a live native or forwarded renderer, and a negative errno
+rejects creation without publishing a context in the kernel. This replaces
+the old void result, under which renderer-less hosts and failed WebGL
+allocations appeared to create a context successfully. The host rolls back
+partial device ownership and permits a subsequent attempt. EGL reports
+`EGL_NO_CONTEXT` with `EGL_BAD_ALLOC` when this allocation fails.
+
+### Development ABI 54 independent graphics sessions
+
+Every initialized GL open file description receives a nonzero kernel-owned
+session identity. The `host_gl_bind`, `host_gl_unbind`,
+`host_gl_create_context`, `host_gl_create_surface`,
+`host_gl_destroy_surface`, `host_gl_submit`, `host_gl_present` and
+`host_gl_query` imports append this `u32` identity to their parameters.
+This replaces process-only routing, under which a second open overwrote
+the first command buffer and either close could retire the other renderer.
+Host registries, forwarding messages, queues and KMS canvas claims now
+retain independent sessions within a process. Unsigned identities remain
+unsigned when Wasm passes them to JavaScript as signed `i32` arguments.
+
+`GlContextAttrs` stays 16 bytes: `client_version` at offset 0, two reserved
+zero words at offset 4 and an output `context_id` at offset 12. Context
+creation is now an `InOut` ioctl so the ordinary marshaller validates the
+result destination before allocation. Input `context_id` must be zero;
+successful acknowledged creation returns a fresh nonzero kernel identity.
+Destroy/recreate never reuses it. EGL uses that returned identity for
+foreign texture imports instead of assuming context 1.
+
+A GL renderer and its command memory belong to their creating process.
+Inherited or transferred file descriptions retain that ownership: GL
+operations from another process fail with `EACCES`, that process's mapping
+cleanup leaves the owner's renderer intact, and final open-description
+cleanup names the original owner. GEM/PRIME sharing keeps its existing
+open-description semantics. This does not implement EGL share groups or
+claim complete graphics fork/exec validation.
+
+All ABI-bound programs, SDK libraries, package archives and images require
+the normal ABI 54 rebuild. There is still one backend context and surface
+per session, and the EGL facade still exposes one context; multiple EGL
+contexts, context-specific encoders and shared objects remain open work.
+
+### Development ABI 55 thread-current authority and window retargeting
+
+`GLIO_MAKE_CURRENT` now takes an input-only 12-byte `GlMakeCurrent`:
+`context_id`, `draw_surface_id`, `read_surface_id` (three `u32` words).
+All zero releases the caller's current bindings. A nonzero context with
+zero surfaces binds surfaceless. The kernel uses the authoritative caller
+TID, rejects another thread's live ownership, and publishes a replacement
+only after host acknowledgement. Submit, query and foreign-texture access
+require that current thread; thread exit releases it. Destroying a current
+context or attached surface reports `EBUSY`.
+
+The host import is now
+`host_gl_make_current(pid, ctx, draw, read, session) -> i32`. Zero means
+accepted; negative errno leaves the old binding intact. Release is an
+idempotent metadata operation that succeeds without waiting for a renderer.
+Forwarded binds use an independent bounded acknowledgement mailbox and
+copied drawable scalars, preserving the guest-memory ownership contract.
+
+`GLIO_UPDATE_SURFACE` (`0x4A`, input-only 32-byte `GlSurfaceAttrs`) replaces
+an existing GPU window target without destroying the surface or its current
+references. The kernel resolves its handle to a global BO identity before
+calling `host_gl_update_surface(pid, surface, attrs, len, session) -> i32`.
+Failure preserves the old target. Wayland-EGL only publishes its replacement
+buffer after acceptance. This currently supports existing GPU window
+targets on the same native renderer; the full surface model remains open.
+
+Regenerated declarations, snapshot, resolver and graphics package floors
+match ABI 55. All kernels, hosts, SDK archives, programs, packages and images
+require the normal rebuild; prior artifacts must not be restamped. Focused
+source checks do not constitute that deferred combined-artifact validation.
+
+### Development ABI 56 display-generation authority
+
+`GLIO_INIT` changes from an input-only four-byte operation version to a
+16-byte input/output `GlInitInfo`: `op_version`, `role`, signed
+`display_fd`, and `display_id`. Display role 1 requires fd -1 and ID 0;
+the kernel returns a fresh generation identity. Object role 2 requires
+a live display descriptor owned by the same process and its matching
+generation. Duplicated descriptors retain the same authority; reusing
+a descriptor number for a later generation does not revive old sessions.
+
+Display roots cannot map command memory or create renderer objects.
+Termination or final root close revokes new object creation and positive
+make-current requests. Existing current object sessions retain submit,
+query, release and destruction paths. Closing a root sends no renderer
+unbind because the root never allocated a renderer.
+
+The EGL library now opens separate display and object descriptions,
+rolls both back on failed initialization, and revokes the root when
+terminated. Subsequent C generation records permit reinitialization while
+old current resources remain retained, using this existing wire contract.
+Public multiple contexts within one generation and independent surfaces
+remain incomplete. Normal guest-artifact validation is still pending.
+
+The snapshot, ioctl marshalling, generated constants and standalone
+resolver are regenerated for ABI 56; graphics operation version stays 5.
+Prior ABI-bound artifacts require the normal rebuild. Full SDK, program,
+package and image provisioning and combined integration validation remain
+deferred; focused source checks do not establish artifact compatibility.
+
+### Development ABI 57 acknowledged surface creation
+
+`GLIO_CREATE_SURFACE` changes from 32-byte input attributes to a 36-byte
+input/output `GlSurfaceCreateInfo`: the existing attributes followed by
+`surface_id`. The ID must be zero on input and is fresh and nonzero on
+success. Width and height return the backend-accepted dimensions. The
+caller receives its original local target GEM handle; only a private
+kernel copy carries the translated host BO ID. Failed creation preserves
+caller bytes, current/context state and backing ownership.
+
+`host_gl_create_surface(pid, surface, attrs_ptr, attrs_len, session)` now
+returns an i32 status. Its mutable attributes span is the 36-byte private
+kernel argument. Zero acknowledges accepted native storage and dimensions;
+negative errno rejects it. Candidate destruction is identity checked and
+ordered before backing release, covering lost acknowledgement cleanup.
+Surface IDs are no longer scoped magic values of 1. The C client consumes
+the returned identity when binding. `GLIO_UPDATE_SURFACE` retains its
+32-byte input wire; command operation version remains 5.
+
+The main-thread fallback uses copied creation scalars and the same fixed
+independent query mailbox, with eight reply bytes for dimensions. It never
+receives guest memory. Native allocation remains private until accepted
+completion; cancellation frees it. Forwarded swap reuses that mailbox for
+an acknowledged owner selection, visible-target blit and flush. Generated constants, ioctl marshalling,
+snapshot and standalone resolver move together to ABI 57. Old product
+artifacts must be rebuilt through the normal graph. Focused source/native
+checks do not prove the deferred combined guest artifact closure or full
+public cross-session surface routing; see the compatibility ledger.
+
+
+
+The subsequent cross-session binding work retains ABI 57 and the existing
+12-byte make-current wire. Live same-process/same-generation surface IDs
+may now come from other object sessions. Kernel-private surface records
+retain BO storage for current selectors after owner retirement; existing
+valid own-surface and surfaceless requests retain their protocol behavior.
+The host resolves those identities on the same renderer. No host import,
+message layout or serialized fork field changes in that additive step.
+
+
+### Development ABI 58 shared context construction
+
+`GlContextAttrs` remains 16 bytes, with client version at offset 0,
+`share_context_id` at 4, reserved u32 at 8 and returned context ID at 12.
+A zero share identity requests an independent object group. A nonzero
+identity must name a live context of the same process/display generation.
+The kernel rejects invalid authority before host entry and publishes the
+new context only after native or forwarded group creation acknowledges it.
+The source may remain current on another thread. Its later destruction
+does not revoke a surviving peer's object group.
+
+The host import signature and command operation version 5 are unchanged.
+Native construction joins shared object maps on one renderer. Main-thread
+fallback receives only a reviewed source session ID in the existing fixed
+creation mailbox; cancellation retires the unpublished member. Context
+bindings, errors, framebuffer/vertex-array containers and default textures
+remain local. Snapshot field metadata, generated constants and the
+standalone resolver move to ABI 58 together. Normal SDK/program/package/
+image artifacts must be rebuilt; focused source checks are not evidence
+for that deferred closure. The public C shared-object layer remains open.
+
+
+### Additive graphics operation table 6 within ABI 58
+
+The private client-array upload commands add `OP_BEGIN_CLIENT_ARRAY`
+(0x0105) and `OP_END_CLIENT_ARRAY` (0x0106), both with empty payloads. They
+retain and restore the actual context-local ARRAY binding, including an
+unnamed buffer kept alive after another context deletes its public name.
+Existing operation tags/payloads, imports, ioctls and query layouts retain
+their meanings. The kernel forwards command bytes without decoding them.
+
+`shared::gl::OP_VERSION` therefore advances independently from 5 to 6;
+`ABI_VERSION` stays 58. GLIO_INIT accepts compatible tables 1 through 6
+and rejects zero/future tables with ENOSYS. Rust, C and TypeScript table
+constants change together. The source/snapshot check confirms the ABI
+snapshot and generated outputs remain unchanged. This additive command
+policy does not cover incompatible payload or syscall semantic changes.
+
+
+### Additive graphics operation table 7 within ABI 58
+
+`QOP_GET_UNIFORM_VALUES` (0x001F) adds a 12-byte input containing program,
+signed location and a 0/1 integer-result selector. Its fixed 76-byte output
+contains status, value count, sixteen value words with zero padding and
+the checked completion marker at offset 72. The renderer supplies count
+and values in one read; C validates the envelope before publishing output.
+Existing query tags/layouts, syscalls and imports retain their meanings.
+
+`OP_VERSION` advances from 6 to 7 under the independent command-table
+policy. Global ABI stays 58, with unchanged snapshot/generated outputs.
+INIT accepts compatible tables 1 through 7; the focused kernel regression
+includes 1/5/6/7 and rejects zero/future tables. This addition removes the
+C uniform-width cache; it does not promise compatibility for an older host
+that cannot decode the new tag.
+
+
+### Additive graphics operation table 8 within ABI 58
+
+`QOP_GET_ACTIVE_UNIFORM_INFO` (0x0020) adds the checked active-attribute
+chunk layout for uniform reflection: program/index/offset/capacity input,
+then status, total length, size, type, capacity bytes and completion.
+`QOP_LOOKUP_UNIFORM` (0x0021) adds bounded inline or token-checked name
+transfers: action/program/token/length-or-offset plus optional bytes.
+Its checked 16-byte reply contains status, token, signed location and
+completion magic. INLINE/BEGIN/CHUNK/COMMIT/ABORT are 0/1/2/3/4; each
+message fits the existing independent 64 KiB query transport.
+
+Existing tags/layouts/imports/syscalls retain their contracts. Repeated
+legacy location lookups now return a stable opaque index, correcting the
+GLES semantics without changing its wire. New queries independently
+advance `OP_VERSION` to 8; ABI stays 58 and snapshot/generated outputs are
+unchanged. INIT accepts compatible 1..8, with explicit 1/5/6/7/8 coverage
+and zero/future rejection. This does not establish shader-name translation
+beyond WebGL's limits or full uniform conformance.
+
+
+### Development ABI 59 combined main and graphics interfaces
+
+This section records the earlier unpublished ABI 59 integration checkpoint.
+The consolidated ABI 54 below supersedes its numeric label; its graphics
+contracts remain part of the combined source.
+
+At that checkpoint, ABI 59 combined main's ABI 53 xattr marshalling,
+scalar contracts and
+exchange imports/exports with the graphics session, thread-current,
+display-generation, independent-surface and shared-context contracts
+developed through ABI 58. Operation table 16 remains independently
+versioned. Generated declarations and the full snapshot must describe
+both sets of interfaces. Rebuild normal SDK/kernel/program/package/image
+artifacts through the existing build graph; prior artifacts cannot be
+restamped or reused across the changed ABI.
+
+Kernel-only export inspection is sufficient to regenerate the snapshot,
+not to establish runtime or compositor compatibility. The compatibility
+ledger records exact integration evidence and unrun normal build gates.
+
+
+### ABI 54 consolidated main and graphics interfaces
+
+Current main `5cd771bff8` uses ABI 53. The user requested one version above
+main for this unpublished effort, so the combined implementation now uses
+ABI 54. It includes main's current process/orphan lifecycle behavior and
+all graphics interfaces developed under the earlier provisional numbers
+52-59. Those numbers remain historical evidence only. No old artifact is
+made compatible by renumbering or restamping it.
+
+This earlier ABI 54 consolidation is superseded by ABI 55 below. Regenerate the full snapshot,
+C/TypeScript declarations and standalone resolver from the combined source.
+Normal SDK/kernel/program/package/image artifacts must be rebuilt together
+before the complete consumer/conformance phase. The independent GL
+operation table is independently versioned; its current version is 17.
+
+Operation table 17 adds retained native-fence create/status/release queries
+and a flush acknowledgement. Fence requests carry a client-known nonzero
+u32 token and return four u32 words (status, echoed token, signaled bit,
+reply magic). Status/release authorize retained object sessions without a
+current context; creation retains live-display/current-thread checks. No
+marshalled structure or kernel-import signature changes. The combined
+effort now uses ABI 55 after integration of main ABI 54.
+
+
+### Development ABI 55 graphics compatibility combined with main
+
+ABI 55 combines the graphics interfaces above with main ABI 54, including
+the kernel-owned wait and executable-admission changes in PR #1581. At this earlier checkpoint, 55 was the single epoch for the unpublished
+graphics effort. ABI 56 below supersedes that numeric label.
+The independent GL operation table remains 17. Fork-state version 21
+combines graphics inheritance with main's executable OFD inheritance;
+both preceding branches independently used fork-state version 20.
+
+Regenerate the complete snapshot, C/TypeScript declarations and standalone
+resolver, then rebuild normal SDK, kernel, program, package and image
+artifacts. Previous ABI 54 test results remain historical evidence and
+do not validate this combined implementation.
 ### ABI 55 programs bind only to the program surface
 
 The persistence integration retains program ABI 55 and advances the separate
@@ -2373,6 +2594,250 @@ Changing what the stamp covers changes every program's digest once, so
 every program, package archive, test fixture and VFS image is rebuilt for
 55. After that, kernel-host-only changes, compatible or not, leave them
 valid.
+
+
+### ABI 56 graphics compatibility combined with program-surface main
+
+The maintainer approved merging main's host-adapter ABI 4 on 2026-11-07.
+It combines main's incompatible initial-process launch interface with all
+unpublished graphics contracts below. Program ABI 56, GL table 17 and
+fork-state version 21 remain unchanged. The original host-3 allocation
+explained below is historical; rebuild kernel and host together for 4.
+The same decision raises the supported program baseline to 56 because no
+ABI-55 deployment exists. Preserve frozen v55 fixtures unchanged and build
+fresh v56 fixtures through the normal SDK path. Old program-55 executables
+must fail admission, rather than receive a compatibility shim or new stamp.
+See [persistent-program compatibility](persistent-program-compatibility.md).
+
+Main `cb0a8226c965` uses program ABI 55 and kernel-host version 2. The
+combined graphics effort uses program ABI 56, one above current main,
+and preserves the new program-only contract digest and exact kernel-host
+version check. Keep 56 across increments of this unpublished effort.
+Kernel-host version 3 covers the incompatible graphics import signatures,
+session routing, acknowledged resources and exact DRM file/grant identity.
+The same unpublished host3 contract also includes the required read-only
+`host_proc_compare_bytes(pid: i32, addr: i64, snapshot: i32, len: i32) -> i32`
+import used by file-mapping publication. The snapshot pointer names an
+initialized Rust slice lent only for that synchronous comparison. Results
+are exactly0 for equal,1 for different,2 for unavailable native comparison,
+or negative errno. A result of2 triggers the normal separately validated
+owned-copy read; it never means equality. All native authority remains
+inside the synchronous host call. Both hosts must implement it. Earlier development
+host3 kernels and hosts are not interchangeable with this regenerated
+contract; rebuild them together. This completes the already-reserved
+successor to main's host2 rather than allocating another development ABI.
+The GL operation table stays 17 and fork-state record version stays 21.
+
+The required kernel-host export `kernel_get_process_exec_generation`
+copies the current image's unsigned 64-bit generation into an exact
+eight-byte host scratch lease, in little-endian order. Its arguments are
+`(pid: u32, output: *mut u8, capacity: u32)` and its result is eight on
+success or negative errno without output mutation. Pending spawn children
+may register before publication; absent and reaped limbo identities
+return ESRCH. Keep status separate from the generation's full 64 bits.
+The getter supports binding a host registration to its actual Rust image;
+it does not grant deferred cleanup authority or enable public retained
+query scheduling. This addition completes the same unpublished host3
+contract and requires matching regenerated kernel/host artifacts.
+
+The same unpublished host3 contract makes the five DRI/GL cleanup imports
+return `i32`: `host_gbm_bo_unbind`, `host_gbm_bo_destroy`,
+`host_gl_unbind`, `host_kms_rmfb` and `host_kms_drop_master`. They were
+void, so a host that failed to release a buffer, framebuffer, grant or GL
+session was indistinguishable from one that succeeded. The only value a
+host may return is `wasm_posix_shared::dri_cleanup_status::COMPLETE`
+(`0`). A host that cannot finish reports a fatal host fault by throwing
+out of the import, which stops the kernel instance; the kernel traps on
+any other returned value. An earlier revision of this unpublished contract
+also defined `1` (host retained) and recorded negative refusals and lost
+unbind writebacks in `/proc/kandelo/writeback_losses`; both are removed,
+since a release the host cannot finish is a host-internal fault, not a
+recoverable loss. The `dri_cleanup_status` kernel-host snapshot section
+and the generated `DRI_CLEANUP_COMPLETE` TypeScript constant carry the
+contract. Earlier host3 kernels and hosts are not interchangeable with this
+contract; rebuild them together.
+
+The same unpublished host3 contract adds the kernel export
+`kernel_report_host_mapping_writeback_error(pid, map_addr, dev, ino,
+told_fd)`. The host calls it when it cannot write a mapping's dirty bytes
+back to a host-mounted file, so the kernel records the loss and reports it
+as `EIO` once to every open description of the file (identified by its
+`host_fstat` device and inode), as it does for kernel-owned files.
+
+The same unpublished host3 contract adds the required import
+`host_proc_quiescent_epoch(pid: i32) -> i64`. It returns the mutation
+epoch of the process's memory while the process is provably quiescent
+(every thread channel at `CH_PENDING`, no vfork child sharing the
+memory) and -1 otherwise; the host changes the epoch before any guest
+code of the process can run again and at every host write into its
+memory, including each `host_proc_write_bytes`. The kernel uses it to
+prove a shared-mapping comparison redundant (`CleanStamp` in
+`crates/runtime-core/src/memory.rs`). A required import is an
+incompatible kernel-host change, so a host3 kernel or host from before
+it is not interchangeable with one after it; rebuild them together. The
+program digest is unchanged, so programs, packages and images stay
+valid. `scripts/check-abi-version.sh` classifies the change as
+incompatible against a base from inside this unpublished family (for
+example `ABI_CHECK_BASE_REF=07e8e10aec`) and as consistent against main,
+whose kernel-host version is 2; the decision to keep it within host 3
+follows the treatment of `host_proc_compare_bytes` above.
+
+The same contract changes what `kernel_shared_mapping_sync_process`'s
+`force` argument means (`sync_force` in `crates/runtime-core/src/memory.rs`,
+`KERNEL_SHARED_MAPPING_SYNC_*` in `host/src/kernel-worker.ts`): `0` is a
+syscall completion, at which the kernel pulls every other mapper of the
+process's kernel-owned files and refreshes the process; the new `3` is a
+syscall entry, at which it does no kernel-file work and only synchronizes
+SysV attachments; `1` stays a forced publication (fork, exec preflight,
+exit, teardown); and `2`, which claimed a completion unchanged since its
+entry, is retired and read as `0`. The signature is unchanged, so the
+snapshot does not record it, but a host and kernel from either side of the
+change are not interchangeable: an older kernel reads `3` as a forced sync
+(correct, slower), while an older host would never pass `3` and would
+leave a newer kernel pulling at both boundaries. Rebuild them together.
+
+The same contract drops the four optional kernel exports
+`kernel_gl_query_capture`, `kernel_gl_query_session`,
+`kernel_gl_query_advance` and `kernel_gl_query_release`, and the reserved
+`host_gl_query` operation `0x7ffffffe` they drove. Only a test hook ever
+called them: production `GLIO_QUERY` runs synchronously within the ioctl.
+A guest query with that operation number now reaches the renderer as an
+unknown operation.
+
+Regenerate the snapshot, C/TypeScript declarations and standalone resolver
+from the merged source. All normal SDK, kernel, program, package and image
+artifacts require rebuilding for the combined program surface. Historical
+ABI 55 graphics results do not validate the newly combined implementation.
+
+### Additive glGetError drain within ABI 56 and operation table 17
+
+`QOP_GET_ERROR` gains an 8-byte input form: the existing ES2 client-flag
+mask followed by `shared::gl::error_drain::REQUEST` (`0x4744524e`). Its
+reply is exactly 44 bytes: count, retained, eight error slots and
+`QUERY_REPLY_MAGIC`. The renderer captures native flags, merges the mask,
+then moves up to eight recorded flags, oldest first, into the reply and
+removes them from the context; `retained` is 1 when flags remain. Unused
+slots are zero. The empty and 4-byte inputs keep their exact pop-one
+meaning and 4-byte reply, so existing binaries are unaffected. The kernel
+forwards query bytes without decoding them, so no ioctl, marshalled
+structure, snapshot section or program digest changes; Rust, C
+(`gl_abi.h`) and TypeScript (`ops.ts`) mirror the constants.
+
+The operation table stays 17 under the unpublished program 56 / host 3 /
+GL 17 / fork 21 family: like the multisampled surface configs below, this
+is a new accepted form of an existing value. A libGLESv2 built with it
+needs a renderer that decodes it; an older renderer rejects the 8-byte
+input with `EINVAL`, which libGLESv2 reports as `GL_INVALID_OPERATION`
+rather than misreading a reply. Packages linking libGLESv2 must be rebuilt
+to use the form; `libc/glue` is a global package input, so the normal
+build re-keys them.
+
+The guest semantics that depend on it (answering later `glGetError` calls
+locally until the next device request) are described in
+`docs/architecture.md` with the host error-flag contract.
+
+### Ordered guest error observations within ABI 56 and GL table 17
+
+`OP_ERROR_OBSERVED` (`0x001f`) adds an 8-byte payload containing two
+little-endian u32 masks: the pending command-predicted flags and the single
+flag bit already returned locally. Both use bits 0,1,2,5,6 for the five ES2
+flags; the consumed mask is zero or one bit of the pending mask. Malformed
+records reject the complete batch before effects. The host consumes only
+that flag in the selected context, at this position in the stream. It
+neither clears other flags nor interrupts private upload transactions.
+The audit compares the pending mask with its independent host validator
+before consumption; a mismatch is fatal in fatal mode. Production consumes
+the locally reported flag without trusting the expected mask to change
+command acceptance or any other context's state.
+
+Existing operations and layouts remain unchanged. The kernel forwards
+opaque command bytes, so no syscall, marshalled structure, snapshot section
+or program digest changes. Rust, C and TypeScript mirror the new constant.
+Keep program 56 / unpublished host 3 / GL 17 / fork 21. Old binaries retain
+their existing error drains. New libGLESv2 consumers need the updated host:
+an older host rejects the new record with `EINVAL`, rather than silently
+misreading it. Rebuild the libraries, linked consumers and host together
+through the normal build graph. Both SDK layout checks and the current
+kernel/snapshot check pass without changing the reserved family.
+
+### Ordered transport-error observations within ABI 56 and GL table 17
+
+`OP_TRANSPORT_ERROR_OBSERVED` (`0x0020`) has an empty payload. It denotes
+an `INVALID_OPERATION` already returned by a failed guest transport call.
+The host consumes only that coalesced flag at this record's exact position,
+leaving other flags, other contexts and errors from later commands intact.
+It performs no native operation or upload interruption. Unlike the ordinary
+`OP_ERROR_OBSERVED`, this record claims no exact knowledge of other flags.
+The existing exact-mask audit remains unchanged. Nonempty payloads reject the
+whole command batch before effects.
+
+The C failure path reserves its header in advance alongside the existing
+error trailer, without allocation or another submission. Consecutive failed
+observations with no intervening record coalesce; this bounded scan runs only
+on failure. This does not recover arbitrary error flags lost with an unknown
+error-drain reply; retained drain-reply custody remains unfinished work.
+
+The new optional Program section `gl_transport_error_observation` records
+this command without changing any previous snapshot entry. Its addition
+changes the program-contract digest. Keep versions56/3/17/21, and rebuild
+matching SDKs, linked programs, kernel and images normally. Old programs keep
+their existing path; an old host rejects the new record rather than silently
+accepting it. Future changes to this established section are exact-match
+compatibility checks, including its error value, empty payload and effect.
+
+### Additive multisampled surface configs within ABI 56
+
+Two existing values gain new accepted forms; no layout, operation number
+or snapshot record changes. `GlSurfaceAttrs.config_id` on
+`GLIO_CREATE_SURFACE` is a storage config word: the low byte stays `1`
+(RGBA8 with DEPTH24_STENCIL8) and bits 8..16 carry a sample count, zero
+for single-sampled storage or 2..31 (`shared::gl::surface_config`). The
+kernel rejects every other word with `EINVAL`; the host rejects a count
+its renderer cannot allocate exactly with `EINVAL`. `GLIO_UPDATE_SURFACE`
+still requires `1`: it names single-sampled BO storage, and a
+multisampled surface keeps its multisampled storage across a retarget.
+`QOP_SURFACE_CAPABILITIES` accepts a 20-byte reply in addition to the
+16-byte one: width, height, pixels, the supported sample-count mask (bit
+n = n samples) and the completion magic. Existing binaries keep sending
+config `1` and the 16-byte query unchanged. A libEGL built after this
+addition sends the 20-byte query from `eglInitialize`, so it needs a
+kernel and host with this change, as the additive-epoch rule below
+describes.
+
+### Additive robust-access context flag within ABI 56
+
+`GlContextAttrs` word 2 (offset 8), previously a reserved zero, is now
+`flags`. Bit 0 is `shared::gl::CONTEXT_FLAG_ROBUST_ACCESS`: EGL created
+the context with `EGL_CONTEXT_OPENGL_ROBUST_ACCESS(_EXT)` = `EGL_TRUE`,
+and the host keeps every draw's vertex fetches in range for it (robust
+buffer access, `host/src/webgl/robust-access.ts`). The kernel and host
+reject any other bit with `EINVAL`. The layout is unchanged; the
+snapshot records only the field's new name. Existing binaries send zero
+and are unaffected. A libEGL built after this addition sends the flag for
+robust contexts only, so those need a kernel and host with this change.
+
+Within the same family, the host reports a lost WebGL renderer (a
+graphics reset) as `ENODEV` on `GLIO_SUBMIT`, `GLIO_QUERY`,
+`GLIO_PRESENT`, `GLIO_MAKE_CURRENT` and shared `GLIO_CREATE_CONTEXT`,
+where present and make-current previously answered `EIO`. Earlier
+libEGL builds already map `ENODEV` to `EGL_CONTEXT_LOST`.
+
+### Additive vblank-time export within ABI 56
+
+`kernel_vblank_elapsed(elapsed_us: u32) -> u32` is an additive kernel
+export (the kernel-host surface; programs are unaffected). It counts one
+vblank that happened `elapsed_us` microseconds before the call: the
+kernel stamps it with its own `CLOCK_MONOTONIC` minus that age, never
+earlier than the previous vblank's time. The browser host passes the age
+of the display frame (`requestAnimationFrame`) that the vblank landed on,
+so flip events, `WAIT_VBLANK` replies and out-fences carry the frame's
+time rather than the moment the kernel worker got to run; timer vblanks
+pass 0. `kernel_vblank()` remains and is now `kernel_vblank_elapsed(0)`.
+WHY an age rather than an absolute time: the host's frame clock and the
+kernel's `CLOCK_MONOTONIC` source need not share an origin, only a rate.
+A host that finds no `kernel_vblank_elapsed` export calls `kernel_vblank`,
+which stamps the call time as before. `HOST_ADAPTER_VERSION` is unchanged:
+no export the host requires and no import the kernel requires changed.
 
 ## The snapshot
 
@@ -2630,6 +3095,24 @@ process-expected globals, the `env` imports programs link against, and
 the fork-instrumentation artifact contract (`wpk_fork_*` exports,
 save-buffer and frame formats).
 
+The `gl_inline_client_draw` program section also binds the owned client-array
+draw record emitted by libGLESv2: opcode, header and attribute layouts,
+component types, size limits and original vertex-index interpretation.
+Programs emit these bytes even though the host decodes them, so this is a
+program contract. Adding the section changes the program digest and rebuilds
+programs, libraries and images through the normal build graph. The unpublished
+combined graphics effort keeps its reserved program 56 / host 3 / GL table 17 /
+fork 21 numbers across increments at the user's request; that does not permit
+artifacts with an older contract digest to run against a newer candidate.
+
+The optional `gl_program_uniform_guest_signature` program section adds journal
+action9 without changing action8's request, reply, reserved words or authority.
+The new action preserves the48-byte reply and reports both native setter and
+guest reflection types, so external2D and ordinary2D samplers are distinguishable.
+Its Program classification changes the contract digest and requires coherent
+SDK, kernel, program and image rebuilds even though the reserved56/3/17/21
+version family is unchanged. Existing action8 bytes do not gain a new meaning.
+
 The sections under `abi_surfaces.kernel_host` are not in it: kernel
 exports, kernel imports (`env.host_*`), host-adapter metadata, the
 export filter policy, and the wire formats only the kernel and host
@@ -2696,3 +3179,21 @@ older large-spawn reservation/fallback contract, and changes the synchronization
 semantics of reusable storage. By contrast, identical generated spawn/native
 layout constants and an internal TypeScript pointer-plus-capacity value would
 not by themselves require an ABI version bump.
+
+### Graphics reset scope within the unpublished ABI 56 family
+
+`QOP_CONTEXT_RESET_SCOPE` adds unused GL17 query tag `0x37`. Existing query
+inputs, replies and opcodes remain unchanged. It has no input and a checked
+12-byte reply `[status=0, scope, QUERY_REPLY_MAGIC]`: scope zero is healthy,
+one is a logical context reset, and two is physical renderer loss. It may
+read the caller's retained object session before MakeCurrent or after reset;
+it requires its own live context and grants no other state-query authority.
+It does not replay state, consume native error flags or wait on buffer fences.
+
+LibEGL asks only after a loss reply. A known physical loss invalidates its
+share group; D-49/D-50 logical resets invalidate only the guilty context.
+An unavailable scope is diagnosed and retained locally, never inferred to
+have destroyed healthy peers. Versions remain program56 / host3 / GL17 /
+fork21. The additive snapshot section changes the program contract digest,
+so the next coherent build must rebuild programs and images normally; an
+older frozen preview does not contain this fix merely because versions match.

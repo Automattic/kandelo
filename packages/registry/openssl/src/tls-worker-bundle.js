@@ -3,7 +3,14 @@
 // src/tls-worker.ts
 var import_node_worker_threads = require("node:worker_threads");
 
-// src/tls/shims.ts
+// ../../../host/src/networking/tls/shims.ts
+function nonSharedBytes(source) {
+  const view = ArrayBuffer.isView(source);
+  const buffer = view ? source.buffer : source;
+  const offset = view ? source.byteOffset : 0;
+  const length = source.byteLength;
+  return buffer instanceof ArrayBuffer ? new Uint8Array(buffer, offset, length) : new Uint8Array(new Uint8Array(buffer, offset, length));
+}
 function concatUint8Arrays(arrays) {
   let totalLength = 0;
   arrays.forEach((a) => totalLength += a.length);
@@ -31,7 +38,7 @@ var logger = {
   log: (...args) => console.log(...args)
 };
 
-// src/tls/utils.ts
+// ../../../host/src/networking/tls/utils.ts
 function flipObject(obj) {
   return Object.fromEntries(Object.entries(obj).map(([k, v]) => [v, k]));
 }
@@ -111,7 +118,7 @@ var ArrayBufferWriter = class {
   }
 };
 
-// src/tls/extensions/types.ts
+// ../../../host/src/networking/tls/extensions/types.ts
 var ExtensionTypes = {
   server_name: 0,
   max_fragment_length: 1,
@@ -170,7 +177,7 @@ var ExtensionTypes = {
 };
 var ExtensionNames = flipObject(ExtensionTypes);
 
-// src/tls/extensions/0_server_name.ts
+// ../../../host/src/networking/tls/extensions/0_server_name.ts
 var ServerNameTypes = {
   host_name: 0
 };
@@ -228,7 +235,7 @@ var ServerNameExtension = class {
   }
 };
 
-// src/tls/extensions/11_ec_point_formats.ts
+// ../../../host/src/networking/tls/extensions/11_ec_point_formats.ts
 var ECPointFormats = {
   uncompressed: 0,
   ansiX962_compressed_prime: 1,
@@ -287,7 +294,7 @@ var ECPointFormatsExtension = class {
   }
 };
 
-// src/tls/extensions/23_extended_master_secret.ts
+// ../../../host/src/networking/tls/extensions/23_extended_master_secret.ts
 var ExtendedMasterSecretExtension = {
   decodeFromClient(_data) {
     return {};
@@ -304,7 +311,7 @@ var ExtendedMasterSecretExtension = {
   }
 };
 
-// src/tls/extensions/65281_renegotiation_info.ts
+// ../../../host/src/networking/tls/extensions/65281_renegotiation_info.ts
 var RenegotiationInfoExtension = {
   decodeFromClient(data) {
     const length = data[0] ?? 0;
@@ -329,7 +336,7 @@ var RenegotiationInfoExtension = {
   }
 };
 
-// src/tls/cipher-suites.ts
+// ../../../host/src/networking/tls/cipher-suites.ts
 var CipherSuites = {
   TLS1_CK_PSK_WITH_RC4_128_SHA: 138,
   TLS1_CK_PSK_WITH_3DES_EDE_CBC_SHA: 139,
@@ -536,7 +543,7 @@ var CipherSuites = {
 };
 var CipherSuitesNames = flipObject(CipherSuites);
 
-// src/tls/extensions/10_supported_groups.ts
+// ../../../host/src/networking/tls/extensions/10_supported_groups.ts
 var SupportedGroups = {
   secp256r1: 23,
   secp384r1: 24,
@@ -593,7 +600,7 @@ var SupportedGroupsExtension = class {
   }
 };
 
-// src/tls/extensions/13_signature_algorithms.ts
+// ../../../host/src/networking/tls/extensions/13_signature_algorithms.ts
 var SignatureAlgorithms = {
   anonymous: 0,
   rsa: 1,
@@ -669,7 +676,7 @@ var SignatureAlgorithmsExtension = class {
   }
 };
 
-// src/tls/extensions/parse-extensions.ts
+// ../../../host/src/networking/tls/extensions/parse-extensions.ts
 var TLSExtensionsHandlers = {
   server_name: ServerNameExtension,
   signature_algorithms: SignatureAlgorithmsExtension,
@@ -700,12 +707,12 @@ function parseClientHelloExtensions(data) {
   return parsed;
 }
 
-// src/tls/1_2/prf.ts
+// ../../../host/src/networking/tls/1_2/prf.ts
 async function tls12Prf(secret, label, seed, outputLength) {
   const seedBytes = concatArrayBuffers([label, seed]);
   const hmacKey = await crypto.subtle.importKey(
     "raw",
-    secret,
+    nonSharedBytes(secret),
     { name: "HMAC", hash: { name: "SHA-256" } },
     false,
     ["sign"]
@@ -729,7 +736,7 @@ async function hmacSha256(key, data) {
   );
 }
 
-// src/tls/1_2/types.ts
+// ../../../host/src/networking/tls/1_2/types.ts
 var CompressionMethod = {
   Null: 0,
   Deflate: 1
@@ -828,7 +835,7 @@ var ECNamedCurves = {
   arbitrary_explicit_char2_curves: 65282
 };
 
-// src/tls/1_2/connection.ts
+// ../../../host/src/networking/tls/1_2/connection.ts
 var TLSConnectionClosed = class extends Error {
 };
 var TLS_Version_1_2 = new Uint8Array([3, 3]);
@@ -1034,7 +1041,7 @@ var TLS_1_2_Connection = class {
       serverPrivateKey: ecdheKeyPair.privateKey,
       clientPublicKey: await crypto.subtle.importKey(
         "raw",
-        clientKeyExchangeRecord.body.exchange_keys,
+        nonSharedBytes(clientKeyExchangeRecord.body.exchange_keys),
         { name: "ECDH", namedCurve: "P-256" },
         false,
         []
@@ -1118,14 +1125,14 @@ var TLS_1_2_Connection = class {
       masterSecret,
       clientWriteKey: await crypto.subtle.importKey(
         "raw",
-        clientWriteKey,
+        nonSharedBytes(clientWriteKey),
         { name: "AES-GCM" },
         false,
         ["encrypt", "decrypt"]
       ),
       serverWriteKey: await crypto.subtle.importKey(
         "raw",
-        serverWriteKey,
+        nonSharedBytes(serverWriteKey),
         { name: "AES-GCM" },
         false,
         ["encrypt", "decrypt"]
@@ -1345,7 +1352,7 @@ var TLS_1_2_Connection = class {
         tagLength: 128
       },
       this.sessionKeys.serverWriteKey,
-      payload
+      nonSharedBytes(payload)
     );
     ++this.sentRecordSequenceNumber;
     const encrypted = concatUint8Arrays([
@@ -1777,7 +1784,7 @@ var MessageEncoder = class {
   }
 };
 
-// src/tls/certificates.ts
+// ../../../host/src/networking/tls/certificates.ts
 function generateCertificate(description, issuerKeyPair) {
   return CertificateGenerator.generateCertificate(description, issuerKeyPair);
 }
@@ -1823,7 +1830,7 @@ var CertificateGenerator = class {
         hash: "SHA-256"
       },
       privateKey,
-      tbsCertificate.buffer
+      nonSharedBytes(tbsCertificate)
     );
     const certificate = ASN1Encoder.sequence([
       new Uint8Array(tbsCertificate.buffer),
@@ -2694,3 +2701,9 @@ import_node_worker_threads.parentPort.on("message", (msg) => {
   }
   loop();
 });
+/*!
+ * TLS 1.2 implementation from WordPress Playground.
+ * Copyright WordPress Foundation and contributors.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ * Source provenance and local modifications are recorded in NOTICE.
+ */

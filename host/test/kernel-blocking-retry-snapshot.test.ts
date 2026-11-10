@@ -89,6 +89,7 @@ const RUST_TARGETED_RETRY_OPERATIONS = [
   "Connect",
   "CopyFileRange",
   "Fcntl",
+  "FileMetadata",
   "Flock",
   "MqReceive",
   "MqSend",
@@ -188,10 +189,12 @@ function createRetryHarness(
   const hostOnlyRetrySyscalls = new Set<number>([
     ABI_SYSCALLS.Open,
     ABI_SYSCALLS.Openat,
+    ABI_SYSCALLS.Rename,
     ABI_SYSCALLS.Poll,
     ABI_SYSCALLS.Ppoll,
     ABI_SYSCALLS.Select,
     ABI_SYSCALLS.Pselect6,
+    ABI_SYSCALLS.Ioctl,
   ]);
   const kernelExports: Record<string, unknown> = {
     kernel_blocking_retry_release: vi.fn(() => 0),
@@ -202,11 +205,18 @@ function createRetryHarness(
     kernel_dequeue_signal: () => 0,
     kernel_get_fd_accept_wake_idx: vi.fn(() => -1),
     kernel_get_fd_pipe_idx: vi.fn(() => -1),
+    // Process registration binds to the Rust image generation (b746c31c64).
+    kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+      new DataView(kernelMemory.buffer).setBigUint64(Number(pointer), 1n, true);
+      return 8;
+    },
     kernel_get_process_exit_signal: () => -1,
     kernel_get_process_state: () => 0,
     kernel_get_socket_timeout_ms: vi.fn(() => 0n),
     kernel_generate_host_signal: () => 0,
     kernel_handle_channel: () => 0,
+    kernel_owned_mapping_finish: vi.fn(() => 0),
+    kernel_rootfs_take_compaction_request: () => 0,
     kernel_is_fd_nonblock: () => 0,
     kernel_pick_signal_target_tid: vi.fn(() => pid),
     kernel_set_current_tid: () => 0,
@@ -654,7 +664,7 @@ describe("blocking retry snapshot contract", () => {
     }
   });
 
-  it("keeps token zero exclusive to seven reviewed host-only snapshot families", () => {
+  it("keeps token zero exclusive to reviewed namespace and readiness snapshots", () => {
     const hostOnlyClassifier = BLOCKED_RETRY_SOURCE.match(
       /fn is_explicit_host_only_snapshot_syscall\(syscall: u32\) -> bool \{([\s\S]*?)\n\}/,
     )?.[1];
@@ -669,12 +679,33 @@ describe("blocking retry snapshot contract", () => {
       (match) => match[1],
     ).sort();
     expect(hostOnlyFamilies).toEqual([
+      "Syscall::Chmod as u32",
+      "Syscall::Chown as u32",
+      "Syscall::Fchmodat as u32",
+      "Syscall::Fchownat as u32",
+      "Syscall::Link as u32",
+      "Syscall::Linkat as u32",
+      "Syscall::Mkdir as u32",
+      "Syscall::Mkdirat as u32",
       "Syscall::Open as u32",
       "Syscall::Openat as u32",
       "Syscall::Poll as u32",
+      "Syscall::Rename as u32",
+      "Syscall::Renameat as u32",
+      "Syscall::Rmdir as u32",
       "Syscall::Select as u32",
+      "Syscall::Symlink as u32",
+      "Syscall::Symlinkat as u32",
+      "Syscall::Truncate as u32",
+      "Syscall::Unlink as u32",
+      "Syscall::Unlinkat as u32",
+      "Syscall::Utimensat as u32",
+      "extended_syscalls::SYS_FCHMODAT2",
+      "extended_syscalls::SYS_MKNOD",
+      "extended_syscalls::SYS_MKNODAT",
       "extended_syscalls::SYS_PPOLL",
       "extended_syscalls::SYS_PSELECT6",
+      "extended_syscalls::SYS_RENAMEAT2",
     ]);
 
     const fromSyscall = BLOCKED_RETRY_SOURCE.match(
@@ -818,6 +849,120 @@ afterEach(() => {
 });
 
 describe("blocking retry request snapshots", () => {
+  it.each(WIDTHS)("%s waits for requested compaction without polling or rereading a write payload", async (_name, pointerWidth) => {
+    const harness = createRetryHarness(pointerWidth);
+    const source = 0x1000;
+    harness.processBytes.set([1, 2, 3], source);
+    writeRequest(harness, ABI_SYSCALLS.Write, [7n, BigInt(source), 3n]);
+    let started!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>(done => { started = done; });
+    const compacted = new Promise<void>(done => { release = done; });
+    const compact = vi.fn(async () => { started(); await compacted; });
+    // Maintenance must start before an already queued readiness worker turn;
+    // that turn could otherwise replace the pending retry before startup.
+    const beforeReadinessWake = new Promise<boolean>(done => {
+      setImmediate(() => done(compact.mock.calls.length === 1));
+    });
+    harness.worker.setRootfsCompactionHandler(compact);
+    const attempts: number[][] = [];
+    harness.kernelExports.kernel_rootfs_take_compaction_request = () => 1;
+    // Regular-file O_NONBLOCK must not leak the private EAGAIN sentinel.
+    harness.kernelExports.kernel_is_fd_nonblock = () => 1;
+    harness.kernelExports.kernel_handle_channel = vi.fn((rawPointer: number | bigint) => {
+      const view = kernelView(harness, rawPointer);
+      const pointer = Number(kernelArg(view, 1));
+      attempts.push(Array.from(harness.kernelBytes.slice(pointer, pointer + 3)));
+      publishKernelResult(view, attempts.length === 1 ? -1 : 3, attempts.length === 1 ? EAGAIN : 0);
+      return 0;
+    });
+    harness.worker.handleSyscall(harness.channel);
+    await reached;
+    expect(await beforeReadinessWake).toBe(true);
+    expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
+    expect(harness.worker.pendingPollRetries.get(harness.channel).timer).toBeNull();
+    expect(attempts).toHaveLength(1);
+    harness.processBytes.fill(99, source, source + 3);
+    writeRequest(harness, ABI_SYSCALLS.Write, [88n, 0n, 0n]);
+    release();
+    await vi.waitFor(() => expect(requestStatus(harness)).toBe(CHANNEL_STATUS_COMPLETE));
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(attempts).toEqual([[1, 2, 3], [1, 2, 3]]);
+    expect(requestResult(harness).returnValue).toBe(3);
+    expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Write);
+  });
+
+  it("returns a real compaction quota error to the waiter", async () => {
+    const harness = createRetryHarness(4);
+    writeRequest(harness, ABI_SYSCALLS.Write, [7n, 0x1000n, 1n]);
+    harness.kernelExports.kernel_rootfs_take_compaction_request = () => 1;
+    harness.kernelExports.kernel_handle_channel = vi.fn((rawPointer: number | bigint) => {
+      publishKernelResult(kernelView(harness, rawPointer), -1, EAGAIN);
+      return 0;
+    });
+    const compact = vi.fn(async () => { throw Object.assign(new Error("quota exceeded"), { code: "ENOSPC" }); });
+    harness.worker.setRootfsCompactionHandler(compact);
+    harness.worker.handleSyscall(harness.channel);
+    await vi.waitFor(() => expect(requestStatus(harness)).toBe(CHANNEL_STATUS_COMPLETE));
+    expect(requestResult(harness)).toEqual({ status: CHANNEL_STATUS_COMPLETE, returnValue: -1, errno: 28 });
+    expect(harness.kernelExports.kernel_handle_channel).toHaveBeenCalledOnce();
+    expect(harness.kernelExports.kernel_blocking_retry_release).toHaveBeenCalledWith(harness.channel.pid, harness.channel.pid, 1n);
+    expect(compact).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves O_NONBLOCK if a retry still would block after compaction", async () => {
+    const harness = createRetryHarness(4);
+    writeRequest(harness, ABI_SYSCALLS.Write, [7n, 0x1000n, 1n]);
+    let attempts = 0;
+    harness.kernelExports.kernel_is_fd_nonblock = () => 1;
+    harness.kernelExports.kernel_rootfs_take_compaction_request = () => attempts === 1 ? 1 : 0;
+    harness.kernelExports.kernel_handle_channel = vi.fn((rawPointer: number | bigint) => {
+      attempts++;
+      publishKernelResult(kernelView(harness, rawPointer), -1, EAGAIN);
+      return 0;
+    });
+    const compact = vi.fn(async () => {});
+    harness.worker.setRootfsCompactionHandler(compact);
+    harness.worker.handleSyscall(harness.channel);
+    await vi.waitFor(() => expect(requestStatus(harness)).toBe(CHANNEL_STATUS_COMPLETE));
+    expect(requestResult(harness).errno).toBe(EAGAIN);
+    expect(attempts).toBe(2);
+    expect(compact).toHaveBeenCalledOnce();
+    expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Write);
+  });
+
+  it("retains both rename paths while metadata waits for compaction", async () => {
+    const harness = createRetryHarness(4);
+    const encoder = new TextEncoder();
+    harness.processBytes.set(encoder.encode("/home/maker/before\0"), 0x1000);
+    harness.processBytes.set(encoder.encode("/home/maker/after\0"), 0x2000);
+    writeRequest(harness, ABI_SYSCALLS.Rename, [0x1000n, 0x2000n]);
+    let release!: () => void;
+    let started!: () => void;
+    const reached = new Promise<void>(done => { started = done; });
+    const compacted = new Promise<void>(done => { release = done; });
+    harness.worker.setRootfsCompactionHandler(async () => { started(); await compacted; });
+    harness.kernelExports.kernel_rootfs_take_compaction_request = () => 1;
+    const paths: string[][] = [];
+    harness.kernelExports.kernel_handle_channel = (rawPointer: number | bigint) => {
+      const view = kernelView(harness, rawPointer);
+      paths.push([0, 1].map(index => {
+        const pointer = Number(kernelArg(view, index));
+        const end = harness.kernelBytes.indexOf(0, pointer);
+        return new TextDecoder().decode(harness.kernelBytes.slice(pointer, end));
+      }));
+      publishKernelResult(view, paths.length === 1 ? -1 : 0, paths.length === 1 ? EAGAIN : 0);
+      return 0;
+    };
+    harness.worker.handleSyscall(harness.channel);
+    await reached;
+    harness.processBytes.fill(99, 0x1000, 0x2020);
+    release();
+    await vi.waitFor(() => expect(requestStatus(harness)).toBe(CHANNEL_STATUS_COMPLETE));
+    expect(paths).toEqual(Array(2).fill(["/home/maker/before", "/home/maker/after"]));
+    expect(requestResult(harness).errno).toBe(0);
+  });
+
   it.each(WIDTHS)(
     "%s retains a scalar write's fd, source range, length, and payload",
     async (_name, pointerWidth) => {
@@ -3350,7 +3495,7 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         ABI_SYSCALLS.Accept,
       );
       expect(
-        harness.kernelExports.kernel_handle_channel.mock.calls.map(
+        (harness.kernelExports.kernel_handle_channel as ReturnType<typeof vi.fn>).mock.calls.map(
           (call) => call[3],
         ),
       ).toEqual([0n]);
@@ -3418,7 +3563,7 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         ABI_SYSCALLS.Accept,
       );
       expect(
-        harness.kernelExports.kernel_handle_channel.mock.calls.map(
+        (harness.kernelExports.kernel_handle_channel as ReturnType<typeof vi.fn>).mock.calls.map(
           (call) => call[3],
         ),
       ).toEqual([0n]);
@@ -4590,4 +4735,232 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
       ).toBe(false);
     },
   );
+});
+
+
+// The real generated ioctl contract stages the complete fixed envelope. These
+// controls exercise the ordinary channel boundary and timer, not a parser mock.
+describe("owned graphics retry custody", () => {
+  const request = 0xc14064e7;
+  const pointer = 0x1000;
+
+  function prepare(harness: RetryHarness, action = 11): void {
+    const packet = new DataView(harness.processMemory.buffer, pointer, 320);
+    packet.setUint32(0, 1, true);
+    packet.setUint32(4, action, true);
+    packet.setBigUint64(8, 3n, true);
+    packet.setUint32(24, 7, true);
+    packet.setUint32(40, action === 11 ? 16 : 4, true);
+    packet.setInt32(32, -1, true);
+    packet.setUint32(64, 1, true);
+    packet.setInt32(72, 25, true);
+    writeRequest(harness, ABI_SYSCALLS.Ioctl, [-1n, BigInt(request), BigInt(pointer)],
+      harness.channel, action === 11);
+  }
+
+  it.each(WIDTHS)("%s preserves request identity and uses each remaining budget", async (_name, width) => {
+    vi.useFakeTimers();
+    const h = createRetryHarness(width);
+    prepare(h);
+    const attempts: number[] = [];
+    h.kernelExports.kernel_handle_channel = vi.fn((raw: number | bigint) => {
+      const channel = kernelView(h, raw);
+      expect(channel.getUint32(CH_SYSCALL, true)).toBe(ABI_SYSCALLS.Ioctl);
+      expect(Number(kernelArg(channel, 1))).toBe(request);
+      const packet = kernelView(h, kernelArg(channel, 2));
+      expect(packet.getUint32(4, true)).toBe(11);
+      expect(packet.getBigUint64(8, true)).toBe(3n);
+      expect(packet.getUint32(24, true)).toBe(7);
+      expect(packet.getInt32(72, true)).toBe(25);
+      attempts.push(attempts.length + 1);
+      packet.setUint32(56, 0x4f574e31, true);
+      packet.setInt32(48, attempts.length < 3 ? -EAGAIN : 0, true);
+      packet.setUint32(52, attempts.length < 3 ? 3 : 1, true);
+      packet.setInt32(76, attempts.length === 1 ? 2 : attempts.length === 2 ? 1 : 0, true);
+      publishKernelResult(channel, attempts.length < 3 ? -1 : 0, attempts.length < 3 ? EAGAIN : 0);
+      return 0;
+    });
+    h.worker.handleSyscall(h.channel);
+    expect(requestStatus(h)).toBe(CHANNEL_STATUS_PENDING);
+    // Neither mailbox replacement nor packet mutation can change the parked
+    // operation, its copy-back address, or its original 25ms deadline policy.
+    writeRequest(h, ABI_SYSCALLS.Read, [99n, 0x2000n, 1n]);
+    h.processBytes.fill(0xee, pointer, pointer + 320);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toEqual([1]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toEqual([1, 2]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toEqual([1, 2, 3]);
+    expect(requestResult(h)).toMatchObject({status: CHANNEL_STATUS_COMPLETE, returnValue: 0, errno: 0});
+    expect(new DataView(h.processMemory.buffer, pointer).getUint32(24, true)).toBe(7);
+    expect(h.worker.pendingPollRetries.size).toBe(0);
+    expect(h.worker.blockingRetrySnapshots.size).toBe(0);
+    expect(h.onKernelFatal).not.toHaveBeenCalled();
+  });
+
+  for (const corrupt of ["transaction", "magic", "remaining", "result", "fd", "source", "request", "flags", "reserved", "events", "timeout", "remaining-infinite", "remaining-increase", "zero-timeout"] as const) {
+    it.each(WIDTHS)(`%s fails loudly on an invalid pending ${corrupt}`, async (_name, width) => {
+      vi.useFakeTimers();
+      const h = createRetryHarness(width);
+      prepare(h);
+      if(corrupt === "zero-timeout")new DataView(h.processMemory.buffer,pointer,320).setInt32(72,0,true);
+      h.kernelExports.kernel_handle_channel = vi.fn((raw: number | bigint) => {
+        const channel = kernelView(h, raw);
+        const packet = kernelView(h, kernelArg(channel, 2));
+        packet.setUint32(56,0x4f574e31,true);packet.setInt32(48,-EAGAIN,true);
+        packet.setUint32(52, 3, true);
+        packet.setInt32(76, 2, true);
+        if (corrupt === "transaction") packet.setBigUint64(8, 4n, true);
+        if (corrupt === "magic") packet.setUint32(56, 0, true);
+        if (corrupt === "remaining") packet.setInt32(76, 0, true);
+        if (corrupt === "result") packet.setInt32(48, 0, true);
+        if (corrupt === "fd") packet.setInt32(32, 9, true);
+        if (corrupt === "source") packet.setUint32(28, 9, true);
+        if (corrupt === "request") packet.setUint32(36, 1, true);
+        if (corrupt === "flags") packet.setUint32(44, 1, true);
+        if (corrupt === "reserved") packet.setUint32(60, 1, true);
+        if (corrupt === "events") packet.setUint32(64, 2, true);
+        if (corrupt === "timeout") packet.setInt32(72, 999, true);
+        if (corrupt === "remaining-infinite") packet.setInt32(76, -1, true);
+        if (corrupt === "remaining-increase") packet.setInt32(76, 26, true);
+        publishKernelResult(channel, -1, EAGAIN);
+        return 0;
+      });
+      expect(() => h.worker.handleSyscall(h.channel)).toThrow("invalid owned-resource pending receipt");
+      await Promise.resolve();
+      expect(h.onKernelFatal).toHaveBeenCalledOnce();
+      expect(h.worker.pendingPollRetries.size).toBe(0);
+    });
+  }
+
+  it.each(WIDTHS)("%s cancels a parked owned poll before publishing signal interruption", (_name, width) => {
+    vi.useFakeTimers();
+    const h = createRetryHarness(width);
+    prepare(h);
+    const syscalls: number[] = [];
+    let caught = false;
+    h.kernelExports.kernel_dequeue_signal = (_pid: number, out: number | bigint) => {
+      if (caught) return 0;
+      caught = true;
+      return writeKernelCaughtSignal(h, out);
+    };
+    h.kernelExports.kernel_handle_channel = vi.fn((raw: number | bigint) => {
+      const channel = kernelView(h, raw);
+      const syscall = channel.getUint32(CH_SYSCALL, true);
+      syscalls.push(syscall);
+      if (syscall === ABI_SYSCALLS.Ioctl) {
+        const packet = kernelView(h, kernelArg(channel, 2));
+        packet.setUint32(56,0x4f574e31,true);packet.setInt32(48,-EAGAIN,true);
+        packet.setUint32(52, 3, true);
+        packet.setInt32(76, 2, true);
+        publishKernelResult(channel, -1, EAGAIN);
+      } else {
+        expect(syscall).toBe(ABI_SYSCALLS.ThreadCancel);
+        expect(Number(kernelArg(channel, 0))).toBe(h.channel.pid);
+        publishKernelResult(channel, 0, 0);
+      }
+      return 0;
+    });
+    h.worker.handleSyscall(h.channel);
+    expect(syscalls).toEqual([ABI_SYSCALLS.Ioctl, ABI_SYSCALLS.ThreadCancel]);
+    expect(requestResult(h)).toMatchObject({status: CHANNEL_STATUS_COMPLETE, returnValue: -1, errno: EINTR});
+    expect(h.worker.pendingPollRetries.size).toBe(0);
+    expect(h.worker.blockingRetrySnapshots.size).toBe(0);
+  });
+});
+
+
+describe("owned mapping construction", () => {
+  for (const exact of [false, true]) for (const kind of ["command", "buffer", "capacity-failure", "backing-failure", "fixed-capacity-failure", "fixed-backing-failure", "identity-zero", "identity-changed"] as const) {
+    if (!exact && kind.startsWith("identity-")) continue;
+    it.each(WIDTHS)(`%s finishes ${exact ? "exact " : ""}${kind} once before publishing its receipt`, async (_name, width) => {
+      const h = createRetryHarness(width);
+      const capacityFailure=kind.includes("capacity-failure");
+      const identityFailure=kind.startsWith("identity-");
+      const action=exact ? 13 : 4;
+      const pointer=0x1000, address=kind === "fixed-capacity-failure" ? 0x70000 : capacityFailure ? 0x90000 : 0x30000;
+      const length=kind === "fixed-capacity-failure" ? 0x20000 : 0x10000;
+      const originalBytes=h.processMemory.buffer.byteLength;
+      const oldProbe=address<originalBytes?address:0x30000;
+      h.processBytes.fill(0x5a,oldProbe,Math.min(oldProbe+length,originalBytes));
+      const input=new DataView(h.processMemory.buffer,pointer,320);
+      input.setUint32(0,1,true);input.setUint32(4,action,true);
+      input.setBigUint64(8,1n,true);input.setUint32(24,7,true);
+      input.setUint32(40,exact ? 40 : 32,true);input.setInt32(32,-1,true);
+      input.setBigUint64(72,BigInt(length),true);input.setUint32(88,3,true);input.setUint32(92,kind.startsWith("fixed-")?0x11:1,true);
+      const request=0xc14064e7;
+      let receipt:Uint8Array|undefined;
+      let constructors=0,finishes=0;
+      if(kind === "buffer") {
+        h.worker.bos.create({pid:h.channel.pid,bo_id:71,size:16,w:2,h:2,stride:8});
+        expect(h.worker.bos.publishDevicePixels(71,new Uint8Array(16).fill(0x91))).toBe(true);
+      }
+      h.kernelExports.kernel_owned_mapping_finish=vi.fn((_pid:number,_tid:number,token:number,tx:bigint,errno:number)=>{
+        expect(token).toBe(7);expect(tx).toBe(1n);
+        expect(h.processBytes[oldProbe]).toBe(0x5a);
+        expect(errno).toBe(capacityFailure ? 12 : 0);
+        finishes++;
+        const packet=new DataView(receipt!.buffer);
+        packet.setUint32(52,1,true);
+        if(kind === "identity-changed")packet.setBigUint64(96,42n,true);
+        packet.setInt32(48,kind.includes("backing-failure") ? -12 : -errno,true);
+        if(kind === "buffer")expect(h.worker.bos.bind(h.channel.pid,71,address,length,0,length)).toBe(0);
+        return 0;
+      });
+      h.kernelExports.kernel_handle_channel=vi.fn((raw:number|bigint)=>{
+        const channel=kernelView(h,raw);
+        expect(channel.getUint32(CH_SYSCALL,true)).toBe(ABI_SYSCALLS.Ioctl);
+        const offset=Number(kernelArg(channel,2));
+        const packet=kernelView(h,offset);
+        const action=packet.getUint32(4,true);
+        if(action===(exact ? 13 : 4)) {
+          constructors++;
+          packet.setUint32(56,0x4f574e31,true);
+          packet.setUint32(52,3,true);
+          packet.setBigUint64(64,BigInt(address),true);
+          if(exact)packet.setBigUint64(96,kind === "identity-zero" ? 0n : 41n,true);
+          receipt=h.kernelBytes.slice(offset,offset+320);
+        } else {
+          expect(action).toBe(6);
+          expect(receipt).toBeDefined();
+          h.kernelBytes.set(receipt!,offset);
+        }
+        publishKernelResult(channel,0,0);return 0;
+      });
+      writeRequest(h,ABI_SYSCALLS.Ioctl,[-1n,BigInt(request),BigInt(pointer)]);
+      if(identityFailure) {
+        expect(() => h.worker.handleSyscall(h.channel)).toThrow();
+        await Promise.resolve();
+        expect(h.onKernelFatal).toHaveBeenCalledOnce();
+        expect(finishes).toBe(kind === "identity-zero" ? 0 : 1);
+        expect(h.processBytes[oldProbe]).toBe(0x5a);
+        return;
+      }
+      h.worker.handleSyscall(h.channel);
+      expect(constructors).toBe(1);expect(finishes).toBe(1);
+      expect(requestResult(h)).toMatchObject({status:CHANNEL_STATUS_COMPLETE,returnValue:0,errno:0});
+      const returned=new DataView(h.processMemory.buffer,pointer,320);
+      expect(returned.getUint32(52,true)).toBe(1);
+      if(exact)expect(returned.getBigUint64(96,true)).toBe(41n);
+      const failed=kind.includes("failure");
+      expect(returned.getInt32(48,true)).toBe(failed ? -12 : 0);
+      if(failed) {
+        expect(h.processBytes[oldProbe]).toBe(0x5a);
+        expect(h.processMemory.buffer.byteLength).toBe(originalBytes);
+      } else {
+        expect(h.processBytes[address]).toBe(kind === "buffer" ? 0x91 : 0);
+        expect(h.processBytes[address+16]).toBe(0);
+        // A recovered sealed receipt cannot initialize the address again,
+        // including after the caller has modified this mapping's contents.
+        h.processBytes[address]=0xa2;
+        returned.setUint32(4,6,true);returned.setUint32(40,0,true);
+        writeRequest(h,ABI_SYSCALLS.Ioctl,[-1n,BigInt(request),BigInt(pointer)]);
+        h.worker.handleSyscall(h.channel);
+        expect(h.processBytes[address]).toBe(0xa2);
+        expect(constructors).toBe(1);expect(finishes).toBe(1);
+      }
+      expect(h.onKernelFatal).not.toHaveBeenCalled();
+    });
+  }
 });

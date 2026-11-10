@@ -41,6 +41,7 @@ import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { makeHostScratchTempRoot } from "./centralized-test-helper";
+import { extractZipEntry, parseZipCentralDirectory } from "../src/vfs/zip";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -54,9 +55,10 @@ const dashBin = tryResolveBinary("programs/dash.wasm");
 const daemonBin = tryResolveBinary("programs/dbus/dbus-daemon.wasm");
 const waybarBin = tryResolveBinary("programs/waybar.wasm");
 const kwlctlBin = tryResolveBinary("programs/kwlctl.wasm");
+const xkbZip = tryResolveBinary("programs/wayland-demo/xkeyboard-config.zip");
 const hasBinaries =
   !!compositorBin && !!dashBin && !!daemonBin && !!waybarBin && !!kwlctlBin &&
-  existsSync(dashBin!);
+  !!xkbZip && existsSync(dashBin!);
 
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
@@ -130,18 +132,20 @@ describe("waybar — upstream status bar on wlcompositor's Hyprland IPC", () => 
       const root = makeHostScratchTempRoot("kandelo-waybar-");
       const fontDir = join(root, "fonts");
       mkdirSync(fontDir);
-      // GTK builds its keymap through xkb_context_new() with default
-      // flags, and that returns NULL when not one of its include paths
-      // exists — the caller does not check, so the NULL context reaches
-      // xkb_keymap_new_from_string and reads its atom table at address
-      // 0. The rootfs image carries /usr/share/X11/xkb for exactly this
-      // reason (MANIFEST), but this host runs with rootfsImage
-      // undefined, so the guest sees the developer's real filesystem,
-      // where that directory does not exist. Point the system path at
-      // an empty directory we own: the keymap is the compositor's
-      // self-contained string, so nothing is ever read from it.
+      // GTK compiles a default evdev/pc105/us keymap from the
+      // xkeyboard-config rules before the compositor's keymap arrives.
+      // The desktop image unpacks them at /usr/share/X11/xkb, but this
+      // host runs with rootfsImage undefined, so the guest sees the
+      // developer's real filesystem. Unpack the same rules into a
+      // directory we own and point the system path at it.
       const xkbDir = join(root, "xkb");
-      mkdirSync(xkbDir);
+      const zip = new Uint8Array(readFileSync(xkbZip!));
+      for (const entry of parseZipCentralDirectory(zip)) {
+        if (entry.isDirectory) continue;
+        const target = join(xkbDir, entry.fileName);
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, extractZipEntry(zip, entry));
+      }
       copyFileSync(INCONSOLATA, join(fontDir, "Inconsolata-Regular.ttf"));
       const confPath = join(root, "fonts.conf");
       writeFileSync(

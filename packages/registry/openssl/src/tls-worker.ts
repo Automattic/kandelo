@@ -15,12 +15,12 @@
  */
 
 import { parentPort } from "node:worker_threads";
-import { TLS_1_2_Connection } from "./tls/1_2/connection";
+import { TLS_1_2_Connection } from "../../../../host/src/networking/tls/1_2/connection";
 import {
     generateCertificate,
     certificateToPEM,
     type GeneratedCertificate,
-} from "./tls/certificates";
+} from "../../../../host/src/networking/tls/certificates";
 
 // ------------------------------------------------------------------ types
 

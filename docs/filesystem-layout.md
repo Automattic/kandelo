@@ -16,9 +16,11 @@ missing platform capabilities to claim full-system FHS conformance.
 | `/lib` | Libraries required by essential programs, if any; static WebAssembly programs need no invented dynamic loader |
 | `/usr/bin` | Ordinary user commands, language runtimes, development tools, public Kandelo commands and game launchers |
 | `/usr/sbin` | Service daemons and nonessential administration, such as mariadbd, redis-server and php-fpm |
-| `/usr/libexec` | Private executable helpers; game engines behind public launch wrappers and the service control helper |
+| `/usr/libexec` | Private executable helpers; game engines, upstream Cargo and the Rust compiler behind their SDK entry points, and the service control helper |
 | `/usr/lib` | Libraries, runtime modules, npm, Erlang and the private Qt installation tree |
 | `/usr/lib/kandelo/wasm32posix` | Guest SDK sysroot, glue and cross-compilation configuration |
+| `/usr/lib/rustlib` | Matching target specification, prebuilt standard library and profiler runtime for the guest Rust compiler |
+| `/usr/share/kandelo/rust-sdk` | The experimental Rust SDK's static build-component identity manifest |
 | `/usr/share` | Architecture-independent application data, manuals, terminfo, licenses and demo catalogs |
 | `/usr/local` | Local administrator additions; shipped images may create empty directories but install no files here |
 | `/etc` | Machine configuration, accounts, service definitions and Kandelo demo metadata |
@@ -75,6 +77,11 @@ builds; it must preserve this layout in the final composed image.
 Public game launchers live in `/usr/bin`; their private engines live in
 `/usr/libexec`. This avoids two different programs named `scummvm`, `fbdoom`
 or `quake` relying on PATH precedence between `/usr/local/bin` and `/usr/bin`.
+
+The shell's `/usr/bin/kandelo-page-terminal` publishes a terminal request to
+the machine's page. SFWBar's `/usr/bin/kandelo-terminal` launches native Foot
+in its Wayland session. Their distinct names preserve package ownership:
+the base page publisher must not overwrite an optional desktop helper.
 
 `dos-play` keeps downloaded games, their license files and mutable DOS files
 in the invoking user's `$XDG_DATA_HOME/dos-play`, defaulting to

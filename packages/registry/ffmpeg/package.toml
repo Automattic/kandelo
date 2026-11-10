@@ -14,7 +14,7 @@ depends_on = [
   # libwayland-{client,egl,cursor} and libxkbcommon, and libwayland-client
   # marshals through libffi. sdl2.pc names them with -l only.
   "libwayland@1.24.0",
-  "libxkbcommon@1.7.0",
+  "libxkbcommon@1.13.2",
   "libffi@0.1.0",
 ]
 arches = ["wasm32"]

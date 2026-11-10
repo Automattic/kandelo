@@ -121,6 +121,27 @@ pub(super) struct Cli {
     #[arg(long)]
     pub(super) keep_names: bool,
 
+    /// Preserve source locations from linked DWARF through instrumentation
+    /// and wasm-opt, embedding a bounded map in the output. Missing DWARF is
+    /// an error. Source paths are diagnostic metadata; sources are not read.
+    #[arg(long, requires = "output", conflicts_with = "retain_uninstrumented")]
+    pub(super) debug_map: bool,
+
+    /// Preserve linked DWARF locations when available. Builds without usable
+    /// line information retain names only; malformed metadata is an error.
+    #[arg(long, requires = "output", conflicts_with_all = ["debug_map", "retain_uninstrumented"])]
+    pub(super) debug_map_if_present: bool,
+
+    /// Resolve an absolute Wasm instruction byte offset using INPUT's
+    /// embedded source map. Prints the exact module SHA-256 and source
+    /// location, without opening source files. Decimal or 0x hexadecimal.
+    #[arg(long, value_name = "OFFSET", conflicts_with_all = [
+        "output", "original_store", "reprepare_from_original", "original_reference", "verify_original",
+        "discover_only", "sink_report", "contract_inventory", "artifact_identity", "fork_capability_hex",
+        "linked_frame_descriptor_hex", "reserved_env_imports", "streaming_scan", "legacy_asyncify_exports",
+    ])]
+    pub(super) debug_location: Option<String>,
+
     /// Analyze the module and print the discovered fork-path function
     /// set as JSON to stdout. Skips instrumentation and output emission.
     /// Useful for validating call-graph discovery against

@@ -1,0 +1,36 @@
+WebAssembly is a distinct CPU; retain all existing pointer-width assertions.
+No Linux/x86 identity and no test/result changes.
+
+--- a/framework/delibs/debase/deDefs.h
++++ b/framework/delibs/debase/deDefs.h
+@@ -117,10 +117,16 @@
+ #define DE_CPU_MIPS_64 6
+ #define DE_CPU_RISCV_32 7
+ #define DE_CPU_RISCV_64 8
++#define DE_CPU_WASM32 9
++#define DE_CPU_WASM64 10
+ 
+ /* CPU detection. */
+ #if defined(DE_CPU)
+ /* Allow definitions from outside. */
++#elif defined(__wasm64__)
++#define DE_CPU DE_CPU_WASM64
++#elif defined(__wasm32__)
++#define DE_CPU DE_CPU_WASM32
+ #elif defined(__aarch64__)
+ #define DE_CPU DE_CPU_ARM_64
+ #elif defined(__arm__) || defined(__ARM__) || defined(__ARM_NEON__) || defined(ARM_BUILD)
+--- a/framework/delibs/debase/deDefs.c
++++ b/framework/delibs/debase/deDefs.c
+@@ -38,9 +38,9 @@
+ DE_STATIC_ASSERT(DE_PTR_SIZE == sizeof(void *));
+ 
+ /* Sanity checks for DE_PTR_SIZE & DE_CPU */
+-#if !((DE_CPU == DE_CPU_X86_64 || DE_CPU == DE_CPU_ARM_64 || DE_CPU == DE_CPU_MIPS_64 || DE_CPU == DE_CPU_RISCV_64) && \
++#if !((DE_CPU == DE_CPU_X86_64 || DE_CPU == DE_CPU_ARM_64 || DE_CPU == DE_CPU_MIPS_64 || DE_CPU == DE_CPU_RISCV_64 || DE_CPU == DE_CPU_WASM64) && \
+       (DE_PTR_SIZE == 8)) &&                                                                                           \
+-    !((DE_CPU == DE_CPU_X86 || DE_CPU == DE_CPU_ARM || DE_CPU == DE_CPU_MIPS || DE_CPU == DE_CPU_RISCV_32) &&          \
++    !((DE_CPU == DE_CPU_X86 || DE_CPU == DE_CPU_ARM || DE_CPU == DE_CPU_MIPS || DE_CPU == DE_CPU_RISCV_32 || DE_CPU == DE_CPU_WASM32) &&          \
+       (DE_PTR_SIZE == 4))
+ #error "DE_CPU and DE_PTR_SIZE mismatch"
+ #endif

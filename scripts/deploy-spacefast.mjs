@@ -80,9 +80,9 @@ async function main(args) {
   // Check the external publishing tool before an expensive build. Keep it
   // outside the pure build shell so its existing host authentication works.
   if (mode !== "prepare") await run("sf", ["--version"]);
-  const context = join(root, ".context");
-  await mkdir(context, { recursive: true });
-  const work = await mkdtemp(join(context, "spacefast-deploy-"));
+  const scratch = join(root, ".scratch");
+  await mkdir(scratch, { recursive: true });
+  const work = await mkdtemp(join(scratch, "spacefast-deploy-"));
   const site = join(work, "static");
   await run("bash", [join(root, "run.sh"), "build-browser", "--base", "/", "--out", site,
     "--cors-proxy", "/cors-proxy?url=", "--signalling-url", "/signalling"]);
@@ -92,7 +92,7 @@ async function main(args) {
   // The shell may print setup notices. The packager's last line is the path;
   // validate that result rather than guessing a glob or evaluating its text.
   const bundle = await realpath(output.trim().split(/\r?\n/).at(-1));
-  const local = relative(await realpath(context), bundle);
+  const local = relative(await realpath(scratch), bundle);
   if (!local.startsWith("spacefast-kandelo-build-") || local.includes(sep)) {
     throw new Error("Packager returned an unexpected bundle directory; nothing published");
   }

@@ -1,6 +1,6 @@
 // A ROM dropped on a shell machine plays: Kandelo exchange hands it to the
 // machine's agent (kxchgd), whose retro rule keeps it in ~/roms and asks the
-// page, through kandelo-terminal, for a terminal with `retro-run ROM` typed at
+// page, through kandelo-page-terminal, for a terminal with `retro-run ROM` typed at
 // its prompt (images/vfs/scripts/build-source-rootfs-shell-image.ts,
 // RETRO_LOAD_ROM_HANDLER; web-libs/kandelo-session/src/terminal-request.ts).
 //

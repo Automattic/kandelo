@@ -25,6 +25,8 @@ Libs: -L${libdir} -ldrm
 Cflags: -I${includedir} -I${includedir}/libdrm -I${includedir}/drm
 EOF
 
+        # The version is the Mesa gbm API level the shim implements: 21.1
+        # added gbm_bo_get_fd_for_plane, which wlroots' allocator requires.
         cat >"$pc_dir/gbm.pc" <<'EOF'
 prefix=${pcfiledir}/../..
 libdir=${prefix}/lib
@@ -32,7 +34,7 @@ includedir=${prefix}/include
 
 Name: gbm
 Description: Kandelo wasm GBM userspace shim
-Version: 1.0.0
+Version: 21.1.0
 Libs: -L${libdir} -lgbm -ldrm
 Cflags: -I${includedir} -I${includedir}/libdrm -I${includedir}/drm
 EOF

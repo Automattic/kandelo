@@ -20,6 +20,7 @@ import { DEFAULT_COMPUTER_RETENTION } from "../../../../../web-libs/kandelo-sess
 import { OpenWebsiteDialog } from "./OpenWebsiteDialog";
 import type { WebPreviewTarget } from "../../../../../web-libs/kandelo-session/src/web-preview-address";
 import { AboutDialog } from "./AboutDialog";
+import { CreditsDialog } from "./CreditsDialog";
 import { PersistenceWarningDialog } from "./PersistenceReleaseWarning";
 import { isMachineProgressBlocking } from "../panes/machine-progress-format";
 import { EmptyState } from "../views/EmptyState";
@@ -30,10 +31,9 @@ import { ShareDialog } from "../dialogs/ShareDialog";
 import type {
   BootDescriptor,
   GalleryItem,
-  LazyDownloadEvent,
   MachineAudioState,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
+import { LazyDownloadToasts } from "./LazyDownloadToasts";
 import { useWebMcp } from "../webmcp/use-webmcp";
 import type { DisplayHandle } from "../panes/Display";
 import { TerminalDockControls } from "./TerminalDockControls";
@@ -128,6 +128,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     setOpenWebsite(true);
   }, []);
   const [previewError, setPreviewError] = React.useState<string | null>(null);
+  const [creditsOpen, setCreditsOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
@@ -234,7 +235,8 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
   React.useEffect(() => {
     setDemoDockControls(null);
     setDemoGuidePopup(null);
-    setInternalsOpen(false);
+    // Image composition can enrich desc.id during the same boot. Internals
+    // is a user choice: keep diagnostics open through that metadata update.
     setThemeOpen(false);
     setServicesOpen(false);
   }, [desc.id]);
@@ -469,7 +471,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
   const packageSessions = usePackageSessions(host, networkSession, launchActivity, CANONICAL_SHELL_IMAGE_URL ?? undefined);
 
   // A program in the machine asked for a terminal running a command (a
-  // dropped ROM's handler does, through kandelo-terminal). It opens as an
+  // dropped ROM's handler does, through kandelo-page-terminal). It opens as an
   // activity: a fresh terminal with the command typed at its prompt, so the
   // user sees what ran and can run it again once it exits.
   const launchActivityRef = React.useRef(launchActivity);
@@ -683,6 +685,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
           onOpenAbout={() => setAboutOpen(true)}
           servicesAvailable={services.entries.length > 0 || services.starting || services.error !== null}
           onOpenServices={() => setServicesOpen(true)}
+          onOpenCredits={() => setCreditsOpen(true)}
           onCloseGuide={() => setDemoGuideOpen(false)}
           onCloseInternals={() => setInternalsOpen(false)}
           onCloseTheme={() => setThemeOpen(false)}
@@ -695,6 +698,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
       {persistenceDialog && library.current && <PersistenceWarningDialog title={library.current.title} onKeep={persistenceDialog === "keep" ? () => void keepCurrentComputer() : undefined} onClose={() => setPersistenceDialog(null)} />}
       {openWebsite && <OpenWebsiteDialog session={networkSession.state.snapshot} initialTarget={websiteTarget} onClose={() => setOpenWebsite(false)} />}
       {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
+      {creditsOpen && <CreditsDialog onClose={() => setCreditsOpen(false)} />}
       {servicesOpen && <ServicesPanel controls={services} onClose={() => setServicesOpen(false)} onStarted={service => {
         const preview = host.getWebPreview();
         const target = preview?.destination ?? (preview?.port === undefined ? undefined : { hostname: "localhost", port: preview.port });
@@ -815,121 +819,3 @@ const ThemePopup: React.FC<{
     </section>
   </div>
 );
-
-const LazyDownloadToasts: React.FC<{
-  downloads: LazyDownloadEvent[];
-}> = ({ downloads }) => {
-  const [dismissed, setDismissed] = React.useState<Set<string>>(() => new Set());
-  const visibleDownloads = React.useMemo(
-    () => downloads.filter((download) => !dismissed.has(download.id)),
-    [dismissed, downloads],
-  );
-
-  React.useEffect(() => {
-    setDismissed((current) => {
-      if (current.size === 0) return current;
-      const activeIds = new Set(downloads.map((download) => download.id));
-      let changed = false;
-      const next = new Set<string>();
-      for (const id of current) {
-        if (activeIds.has(id)) {
-          next.add(id);
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? next : current;
-    });
-  }, [downloads]);
-
-  const dismiss = React.useCallback((id: string) => {
-    setDismissed((current) => new Set(current).add(id));
-  }, []);
-
-  if (visibleDownloads.length === 0) return null;
-
-  return (
-    <aside className="kdownload-toasts" aria-label="Download status" aria-live="polite">
-      {visibleDownloads.slice(0, 3).map((download) => (
-        <LazyDownloadToast key={download.id} download={download} onDismiss={dismiss} />
-      ))}
-      {visibleDownloads.length > 3 && (
-        <div className="kdownload-toast kdownload-toast-overflow">
-          <span className="kdownload-toast-title">More downloads</span>
-          <span className="kdownload-toast-detail">+{visibleDownloads.length - 3} active</span>
-        </div>
-      )}
-    </aside>
-  );
-};
-
-const LazyDownloadToast: React.FC<{
-  download: LazyDownloadEvent;
-  onDismiss: (id: string) => void;
-}> = ({ download, onDismiss }) => {
-  const pct = download.totalBytes && download.totalBytes > 0
-    ? Math.min(100, Math.max(0, (download.loadedBytes / download.totalBytes) * 100))
-    : null;
-  const label = lazyDownloadAssetLabel(download);
-  const progressLabel = downloadProgressLabel(download, pct);
-  const title = `${downloadStatusVerb(download)} ${label}`;
-  const detail = `${humanBytes(download.loadedBytes)}${
-    download.totalBytes ? ` / ${humanBytes(download.totalBytes)}` : ""
-  }`;
-
-  return (
-    <div
-      className={`kdownload-toast kdownload-toast-${download.status}`}
-      title={download.error ? `${title}: ${download.error}` : `${title} (${detail})`}
-    >
-      <div className="kdownload-toast-top">
-        <span className="kdownload-toast-title">{title}</span>
-        <span className="kdownload-toast-progress-label">{progressLabel}</span>
-        <button
-          type="button"
-          className="kdownload-toast-close"
-          aria-label={`Dismiss ${label} download status`}
-          onPointerDown={(event) => event.stopPropagation()}
-          onPointerUp={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            onDismiss(download.id);
-          }}
-        >
-          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6">
-            <path d="M3 3l6 6" />
-            <path d="M9 3 3 9" />
-          </svg>
-        </button>
-      </div>
-      <div className="kdownload-toast-detail">
-        {download.error ?? detail}
-      </div>
-      <div className={`kdownload-toast-bar${pct === null ? " indeterminate" : ""}`} aria-hidden="true">
-        <span style={{ width: pct === null ? "44%" : `${pct}%` }} />
-      </div>
-    </div>
-  );
-};
-
-function downloadStatusVerb(event: LazyDownloadEvent): string {
-  switch (event.status) {
-    case "complete": return "Downloaded";
-    case "error": return "Failed";
-    default: return "Downloading";
-  }
-}
-
-function downloadProgressLabel(event: LazyDownloadEvent, pct: number | null): string {
-  if (event.status === "complete") return "OK";
-  if (event.status === "error") return "ERR";
-  return pct === null ? "..." : `${Math.round(pct)}%`;
-}
-
-function humanBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kib = bytes / 1024;
-  if (kib < 1024) return `${kib.toFixed(kib < 10 ? 1 : 0)} KiB`;
-  const mib = kib / 1024;
-  return `${mib.toFixed(mib < 10 ? 1 : 0)} MiB`;
-}

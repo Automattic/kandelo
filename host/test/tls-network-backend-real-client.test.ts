@@ -11,7 +11,9 @@ import {
   certificateToPEM,
   generateCertificate,
   privateKeyToPEM,
-} from "../../packages/registry/openssl/src/tls/certificates";
+} from "../src/networking/tls/certificates";
+
+import { nonSharedBytes } from "../src/networking/tls/shims";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -431,4 +433,29 @@ it("preserves repeated decrypted request fields through the real TLS client path
 
   expect(((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers).get("x-repeat"))
     .toBe("first, second");
+});
+
+
+it("preserves exact private and shared byte ranges at Fetch/WebCrypto boundaries", async () => {
+  const privateBacking = new Uint8Array([99, 2, 3, 4, 88]);
+  const privateRange = new DataView(privateBacking.buffer, 1, 3);
+  const privateBytes = nonSharedBytes(privateRange);
+  expect(privateBytes.buffer).toBe(privateBacking.buffer);
+  expect([...privateBytes]).toEqual([2, 3, 4]);
+  expect([...new Uint8Array(await new Response(privateBytes).arrayBuffer())]).toEqual([2, 3, 4]);
+
+  const sharedBacking = new Uint8Array(new SharedArrayBuffer(5));
+  sharedBacking.set([99, 2, 3, 4, 88]);
+  const sharedRange = new DataView(sharedBacking.buffer, 1, 3);
+  const sharedBytes = nonSharedBytes(sharedRange);
+  expect(sharedBytes.buffer).toBeInstanceOf(ArrayBuffer);
+  expect([...sharedBytes]).toEqual([2, 3, 4]);
+  sharedBacking.fill(7);
+  expect([...sharedBytes]).toEqual([2, 3, 4]);
+  expect([...new Uint8Array(await new Response(sharedBytes).arrayBuffer())]).toEqual([2, 3, 4]);
+  expect(await crypto.subtle.digest("SHA-256", sharedBytes)).toEqual(
+    await crypto.subtle.digest("SHA-256", new Uint8Array([2, 3, 4])),
+  );
+  expect(nonSharedBytes(privateBacking.buffer).byteLength).toBe(5);
+  expect(nonSharedBytes(sharedBacking.buffer).buffer).toBeInstanceOf(ArrayBuffer);
 });

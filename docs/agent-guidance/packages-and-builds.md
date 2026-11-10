@@ -97,13 +97,25 @@ per-checkout command: `./run.sh cache-gc` (a dry run unless `--apply`) and
 the automatic collection a successful local build runs at most once a day.
 It removes a generation only when no live checkout root names its key and it
 has gone unused past the age limit (or, with `--below-abi N`, was built for an
-ABI below `N`), and it skips while any build holds the cache lock. Do not hand-delete cache entries or add another sweeper: every
-build that uses the cache must hold `cache_gc::CacheUseLock` for as long as it
+ABI below `N`, or above `N` with `--above-abi N`), and it skips while any
+build holds the cache lock. Do not hand-delete cache entries or add another
+sweeper: every build that uses the cache must hold `cache_gc::CacheUseLock`
+for as long as it
 can read a generation, or collection can remove an entry underneath it. Run
 destructive collection against the shared cache only when the user asks;
 test it against a scratch `KANDELO_SOURCE_CACHE_ROOT`, and set
 `KANDELO_CACHE_GC_AUTO=0` when a build must not collect. See
 [Cache garbage collection](../package-management.md#cache-garbage-collection).
+
+## Man pages for ports
+
+When upstream provides man pages (including its normally generated pages),
+aim to include lazy references for them where possible. The shell's existing
+pattern is a separate `<program>-docs` ZIP package mounted at `/usr/`, with
+pages under `/usr/share/man`; an existing lazy runtime bundle can also carry
+them. Software without man pages needs none invented for now. Follow
+[Shipping man pages](../porting-guide.md#shipping-man-pages) for the package,
+image registration and validation details.
 
 ## Line editing for REPL CLIs
 
@@ -131,8 +143,14 @@ binary; it does not relicense other libraries the binary also links (e.g.
 Record which shipped binaries link GPL `readline` so each binary's aggregate
 license is known.
 
-Builds must use the worktree-local SDK. Source `sdk/activate.sh` from package
-scripts; do not rely on `npm link` or a globally installed wrapper. If a build
+Builds that use the SDK must use the worktree-local SDK. Source
+`sdk/activate.sh` from those package scripts; do not rely on `npm link` or a
+globally installed wrapper. When adding or revising a recipe, review its
+script and sourced helpers. If they never use the SDK or sysroot, declare
+`[build].toolchain = "none"`; this retains packaging and declared
+inputs while removing SDK paths from the recipe environment. It is a
+reviewed input assertion with a PATH check, not a sandbox. See the
+[recipe contract](../package-management.md#cache-key-hashing). If a build
 only works because the host PATH leaks a tool, fix `flake.nix` or the build
 inputs, not the user's shell.
 

@@ -1,0 +1,145 @@
+Give swaynag's no-op Wayland listeners their callback prototypes
+
+swaynag fills eleven Wayland listener slots with one unprototyped
+function:
+
+    static void nop() {
+    	// Intentionally left blank
+    }
+
+libwayland calls each slot with the arguments of its event, so the
+same function is called as, for example,
+
+    void (*)(void *, struct wl_output *)               wl_output.done
+    void (*)(void *, struct wl_seat *, const char *)   wl_seat.name
+
+Calling a function through a pointer to an incompatible function type
+is undefined behavior (C11 6.3.2.3p8). Native calling conventions happen
+to tolerate the extra arguments, but a WebAssembly indirect call checks
+the callee's signature and traps: swaynag died with "null function or
+function signature mismatch" in its startup roundtrip, before it
+mapped its bar. The same code fails under control-flow-integrity
+checking (clang -fsanitize=cfi-icall) on native targets.
+
+Replace nop with one empty function per slot, each with the prototype
+of its event, as swaybar already does.
+
+This is a portability fix, not a Kandelo adaptation: nothing here is
+specific to one platform.
+
+--- a/swaynag/swaynag.c
++++ b/swaynag/swaynag.c
+@@ -12,7 +12,57 @@
+ #include "swaynag/types.h"
+ #include "wlr-layer-shell-unstable-v1-client-protocol.h"
+ 
+-static void nop() {
++static void surface_leave(void *data, struct wl_surface *surface,
++		struct wl_output *output) {
++	// Intentionally left blank
++}
++
++static void wl_pointer_leave(void *data, struct wl_pointer *wl_pointer,
++		uint32_t serial, struct wl_surface *surface) {
++	// Intentionally left blank
++}
++
++static void wl_pointer_frame(void *data, struct wl_pointer *wl_pointer) {
++	// Intentionally left blank
++}
++
++static void wl_pointer_axis_source(void *data, struct wl_pointer *wl_pointer,
++		uint32_t axis_source) {
++	// Intentionally left blank
++}
++
++static void wl_pointer_axis_stop(void *data, struct wl_pointer *wl_pointer,
++		uint32_t time, uint32_t axis) {
++	// Intentionally left blank
++}
++
++static void wl_pointer_axis_discrete(void *data, struct wl_pointer *wl_pointer,
++		uint32_t axis, int32_t discrete) {
++	// Intentionally left blank
++}
++
++static void seat_handle_name(void *data, struct wl_seat *wl_seat,
++		const char *name) {
++	// Intentionally left blank
++}
++
++static void output_geometry(void *data, struct wl_output *output, int32_t x,
++		int32_t y, int32_t width_mm, int32_t height_mm, int32_t subpixel,
++		const char *make, const char *model, int32_t transform) {
++	// Intentionally left blank
++}
++
++static void output_mode(void *data, struct wl_output *output, uint32_t flags,
++		int32_t width, int32_t height, int32_t refresh) {
++	// Intentionally left blank
++}
++
++static void output_done(void *data, struct wl_output *output) {
++	// Intentionally left blank
++}
++
++static void output_description(void *data, struct wl_output *output,
++		const char *description) {
+ 	// Intentionally left blank
+ }
+ 
+@@ -130,7 +180,7 @@
+ 
+ static const struct wl_surface_listener surface_listener = {
+ 	.enter = surface_enter,
+-	.leave = nop,
++	.leave = surface_leave,
+ };
+ 
+ static void update_cursor(struct swaynag_seat *seat) {
+@@ -289,14 +339,14 @@
+ 
+ static const struct wl_pointer_listener pointer_listener = {
+ 	.enter = wl_pointer_enter,
+-	.leave = nop,
++	.leave = wl_pointer_leave,
+ 	.motion = wl_pointer_motion,
+ 	.button = wl_pointer_button,
+ 	.axis = wl_pointer_axis,
+-	.frame = nop,
+-	.axis_source = nop,
+-	.axis_stop = nop,
+-	.axis_discrete = nop,
++	.frame = wl_pointer_frame,
++	.axis_source = wl_pointer_axis_source,
++	.axis_stop = wl_pointer_axis_stop,
++	.axis_discrete = wl_pointer_axis_discrete,
+ };
+ 
+ static void seat_handle_capabilities(void *data, struct wl_seat *wl_seat,
+@@ -315,7 +365,7 @@
+ 
+ static const struct wl_seat_listener seat_listener = {
+ 	.capabilities = seat_handle_capabilities,
+-	.name = nop,
++	.name = seat_handle_name,
+ };
+ 
+ static void output_scale(void *data, struct wl_output *output,
+@@ -345,12 +395,12 @@
+ }
+ 
+ static const struct wl_output_listener output_listener = {
+-	.geometry = nop,
+-	.mode = nop,
+-	.done = nop,
++	.geometry = output_geometry,
++	.mode = output_mode,
++	.done = output_done,
+ 	.scale = output_scale,
+ 	.name = output_name,
+-	.description = nop,
++	.description = output_description,
+ };
+ 
+ static void handle_global(void *data, struct wl_registry *registry,

@@ -59,7 +59,11 @@ test("the partial image boots as its own machine with only its activities", asyn
     if (!manifest!.packages.includes(pkg)) continue;
     expect((await runTerminalCommand(page, command)).output).toMatch(expected);
   }
-  expect((await runTerminalCommand(page, "command -v ffmpeg || echo NO_FFMPEG")).output).toContain("NO_FFMPEG");
+  // This suite accepts any selected package set. Presence must follow the
+  // manifest; assuming ffmpeg is absent rejects valid graphics partials.
+  const ffmpeg = (await runTerminalCommand(page, "command -v ffmpeg || echo NO_FFMPEG")).output;
+  if (manifest!.packages.includes("ffmpeg")) expect(ffmpeg).toMatch(/\/usr\/bin\/ffmpeg/);
+  else expect(ffmpeg).toContain("NO_FFMPEG");
 
   // The activity list is the image's own: exactly the activities it kept.
   await page.getByRole("button", { name: "Activities", exact: true }).click();
@@ -73,7 +77,7 @@ test("the partial image boots as its own machine with only its activities", asyn
     }
   }
 
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/partial-image-activities-${test.info().project.name}.png`) });
+  await page.screenshot({ path: test.info().outputPath("partial-image-activities.png") });
 
   // Nothing the partial route served went into Cache Storage.
   expect((await cachedUrls(page)).filter((url) => url.includes("@kandelo-partial"))).toEqual([]);
@@ -88,5 +92,5 @@ test("the gallery lists the partial image first, by what it carries", async ({ p
   await page.getByRole("button", { name: "+ New computer", exact: true }).click();
   const named = manifest!.packages.length === 0 ? "the base only" : manifest!.packages.join(", ");
   await expect(page.getByText(`Partial ${manifest!.image} + ${named}`).first()).toBeVisible();
-  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/partial-image-gallery-${test.info().project.name}.png`) });
+  await page.screenshot({ path: test.info().outputPath("partial-image-gallery.png") });
 });

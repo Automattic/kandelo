@@ -141,13 +141,15 @@ BASH="$BASH_DIR/bash.wasm"
 # Inputs only the packages that own them bring: the Wayland desktops'
 # launchers (a package runtime_file is NOT installed into the shell image by
 # the composer, so it has to be threaded explicitly), their data, libinput's
-# device quirks (unpacked at /usr/share/libinput), and the speech data.
+# device quirks (unpacked at /usr/share/libinput), lazy xkeyboard-config
+# rules at /usr/share/X11/xkb, and the speech data.
 SELECTED_INPUTS=()
 if selected wayland-demo; then
     [ -n "$WAYLAND_DEMO_DIR" ] || fail "WASM_POSIX_DEP_WAYLAND_DEMO_DIR is required"
     require_real_directory WASM_POSIX_DEP_WAYLAND_DEMO_DIR "$WAYLAND_DEMO_DIR"
     for input in wldesktop:wldesktop omarchydesktop:omarchydesktop \
-        desktop-data:kandelo-desktop-data.zip libinput-quirks:libinput-quirks.zip; do
+        desktop-data:kandelo-desktop-data.zip libinput-quirks:libinput-quirks.zip \
+        xkeyboard-config:xkeyboard-config.zip; do
         require_regular_file "${input%%:*} dependency output" "$WAYLAND_DEMO_DIR/${input#*:}"
         SELECTED_INPUTS+=("--${input%%:*}" "$WAYLAND_DEMO_DIR/${input#*:}")
     done
@@ -163,6 +165,9 @@ if [ -n "$SELECTION_FILE" ]; then
 fi
 DEMO_CONFIG="$SCRIPT_DIR/source-rootfs-shell-demo.json"
 DEMO_PROFILE_OVERLAY="$SCRIPT_DIR/source-rootfs-shell-demo-profiles.json"
+# The reviewed ceiling on what every visitor downloads before the first
+# prompt. The composer fails the build when the image exceeds it.
+EAGER_BUDGET="$SCRIPT_DIR/eager-budget.json"
 COMPOSER="$REPO_ROOT/images/vfs/scripts/build-source-rootfs-shell-image.ts"
 TSX_CLI="$REPO_ROOT/node_modules/tsx/dist/cli.mjs"
 
@@ -170,6 +175,7 @@ require_regular_file "rootfs dependency output" "$ROOTFS"
 require_regular_file "bash dependency output" "$BASH"
 require_regular_file "main-shell demo config" "$DEMO_CONFIG"
 require_regular_file "source-rootfs demo profile overlay" "$DEMO_PROFILE_OVERLAY"
+require_regular_file "shell eager-content budget" "$EAGER_BUDGET"
 require_regular_file "source-rootfs shell composer" "$COMPOSER"
 require_regular_file "locked tsx CLI" "$TSX_CLI"
 
@@ -194,6 +200,7 @@ TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     ${SELECTED_INPUTS[@]+"${SELECTED_INPUTS[@]}"} \
     --demo-config "$DEMO_CONFIG" \
     --demo-profile-overlay "$DEMO_PROFILE_OVERLAY" \
+    --eager-budget "$EAGER_BUDGET" \
     --dependency-contract "$DEPENDENCY_CONTRACT" \
     --out "$VFS"
 

@@ -933,6 +933,9 @@ pub fn run_compiler_driver(compiler: &str, args: &[String], linking: bool) -> Re
     // No readable output (e.g. -o /dev/null on some hosts): nothing to inspect.
     let module = std::fs::read(&output).ok();
     if let Some(module) = module.as_deref().filter(|m| is_wasm_module(m)) {
+        let facts = wasm_artifact::read_artifact_facts(module).map_err(|error| error.0)?;
+        let failures = wasm_artifact::program_extensions::describe_failures(&facts, wasm_artifact::program_extensions::IMPLEMENTED);
+        if !failures.is_empty() { return Err(failures.join("; ")); }
         if is_fork_capable(module)? {
             if let Some(hashed) = with_code_hash_section(module)? {
                 write_output(&output, &hashed)?;

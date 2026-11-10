@@ -1,0 +1,144 @@
+import { expect, test, type Page } from "../playwright-test";
+
+import { gotoMachine, waitForMachineBootInput } from "./support/kandelo-machine";
+import { cageShellTextColumns } from "./support/cage-shell-frame";
+import { screenshotPixelDelta } from "./support/screenshot-pixels";
+import { setInternalsOpen } from "./support/dock";
+
+/** Show the Internals syslog, Graphics, or the machine's terminal.
+ *  Internals opens through More in the dock; showing another view means
+ *  closing it and selecting that view. */
+async function openSurface(page: Page, label: "Internals" | "Graphics" | "Terminal") {
+  if (label === "Internals") await waitForMachineBootInput(page);
+  await page.getByRole("button", { name: "More", exact: true })
+    .waitFor({ state: "visible", timeout: 30_000 });
+  await setInternalsOpen(page, label === "Internals");
+  if (label !== "Internals") {
+    const view = page
+      .getByLabel("Computer views")
+      .getByRole("button", { name: label, exact: true });
+    if ((await view.getAttribute("aria-current")) !== "true") await view.click();
+  }
+}
+
+async function syslogText(page: Page): Promise<string> {
+  const lines = await page.locator(".ksys-line").allInnerTexts();
+  return lines.join("\n");
+}
+
+/** The machine's terminal: cage and wlterm write their stdout there. */
+async function terminalText(page: Page): Promise<string> {
+  if ((await page.locator(".xterm-rows").count()) === 0) return "";
+  const rows = await page.locator(".xterm-rows").first().locator(":scope > div").allInnerTexts();
+  return rows.join("\n");
+}
+
+async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
+  await openSurface(page, "Terminal");
+  await expect.poll(() => terminalText(page), { timeout }).toMatch(pattern);
+}
+
+const canvasLocator = (page: Page) =>
+  page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-canvas").first();
+
+/** Full text of the Modeset status chip in the dock ("" while mounting). */
+async function chipText(page: Page): Promise<string> {
+  const texts = await page
+    .locator(".kdemo-surface-controls")
+    .filter({ hasText: "flips" })
+    .allInnerTexts()
+    .catch(() => [] as string[]);
+  return texts.join(" ");
+}
+
+/**
+ * Browser gate for the cage machine: upstream cage on wlroots, with no
+ * WLR_RENDERER override. The card has a render node, so wlroots takes its
+ * GLES2 renderer, which reaches the host's WebGL2 bridge through libEGL's
+ * GBM platform. The Node host has no WebGL2, so this spec is the only gate
+ * on that path.
+ *
+ * Gates:
+ *   1. The machine runs cage, and wlterm maps (WLTERM_READY, which wlterm
+ *      prints after its first committed frame).
+ *   2. cage's GL context owns the canvas: the Modeset chip reports the
+ *      `webgl2-gl` renderer, which only a GL session that claimed the CRTC
+ *      shows. Every frame on screen is therefore a gbm buffer wlroots
+ *      rendered with GLES2 and the page flip blitted.
+ *   3. The canvas shows a frame, not a blank: wlterm's window compresses
+ *      to a PNG far larger than an all-black canvas.
+ *   4. After the shell's first output appears, only typing changes the
+ *      frame: the frame holds still for a second
+ *      (wlterm draws nothing on a timer), then a keystroke goes through
+ *      libinput, cage's seat, wl_keyboard and wlterm's PTY, and the
+ *      shell's echo is drawn into wlterm's wl_shm buffer, which wlroots
+ *      uploads as a texture.
+ *   5. `exit` ends the shell, and wlterm reports a clean exit.
+ */
+test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async ({ page }) => {
+  test.setTimeout(300_000);
+
+  await gotoMachine(page, "cage");
+
+  await openSurface(page, "Internals");
+  await expect
+    .poll(() => syslogText(page), { timeout: 180_000 })
+    .toMatch(/running .*\/usr\/bin\/cage/);
+  expect(await syslogText(page)).not.toMatch(/configured command failed/);
+
+  // Gate 1.
+  await expectTerminal(page, /WLTERM_READY/, 120_000);
+
+  // Gate 2.
+  await openSurface(page, "Graphics");
+  const canvas = canvasLocator(page);
+  await expect(canvas).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(() => chipText(page), { timeout: 30_000 })
+    .toMatch(/webgl2-gl/i);
+
+  // Gate 3. An all-black canvas compresses to a few KB.
+  await expect
+    .poll(
+      async () => (await canvas.screenshot()).byteLength,
+      { timeout: 60_000, intervals: [1_000, 2_000, 5_000] },
+    )
+    .toBeGreaterThan(8_000);
+
+  // Gate 4.
+  // The first committed frame is an empty grid. Wait for actual shell
+  // output before testing idle stability: loading the shell and drawing its
+  // prompt is a legitimate change after WLTERM_READY, without any input.
+  const mode = (await chipText(page)).match(/(\d+)×(\d+)/);
+  expect(mode, "the Modeset chip reports the connector mode").not.toBeNull();
+  const output = { width: Number(mode![1]), height: Number(mode![2]) };
+  await expect.poll(
+    async () => cageShellTextColumns(page, await canvas.screenshot(), output),
+    { timeout: 60_000, message: "wlterm has rendered the shell's first output" },
+  ).toBeGreaterThan(24);
+  // Browser focus must not inject a guest click and change wlterm or
+  // compositor state before the typing-only framebuffer assertion.
+  await canvas.focus();
+  await expect(canvas).toBeFocused();
+  // Locator screenshots include DOM overlays above the canvas. The initial
+  // lazy-download toasts can finish after the shell prompt is painted; their
+  // disappearance is not a change in wlterm's framebuffer.
+  await expect(page.getByRole("complementary", { name: "Download status" }))
+    .toBeHidden({ timeout: 60_000 });
+  const frame = () => canvas.screenshot({ animations: "disabled" });
+  const before = await frame();
+  await page.waitForTimeout(1_000);
+  const idleDelta = await screenshotPixelDelta(page, before, await frame());
+  expect(idleDelta, "wlterm's rendered pixels remain unchanged while idle").toMatchObject({ same: true, changed: 0 });
+  await page.keyboard.type("echo cage-gles2-ok\n", { delay: 40 });
+  await expect
+    .poll(
+      async () => (await screenshotPixelDelta(page, before, await frame())).same,
+      { timeout: 60_000, intervals: [500, 1_000, 2_000] },
+    )
+    .toBe(false);
+
+  // Gate 5.
+  await page.keyboard.type("exit\n", { delay: 40 });
+  await expectTerminal(page, /WLTERM_EXIT code=0/, 60_000);
+});

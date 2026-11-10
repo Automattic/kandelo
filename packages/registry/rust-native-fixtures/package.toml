@@ -1,0 +1,20 @@
+kind = "library"
+name = "rust-native-fixtures"
+version = "0.1.0"
+kernel_abi = 55
+depends_on = []
+
+[source]
+provider = "repository"
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT OR Apache-2.0"
+url = "https://github.com/rust-lang/cc-rs"
+
+[build]
+script_path = "packages/registry/rust-native-fixtures/build.sh"
+
+[outputs]
+files = ["share/kandelo/rust-native-fixtures.zip"]

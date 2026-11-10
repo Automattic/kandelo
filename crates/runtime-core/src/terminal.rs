@@ -77,12 +77,21 @@ fn echoctl_renders_as_caret(byte: u8) -> bool {
 
 /// Window size structure
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WinSize {
     pub ws_row: u16,
     pub ws_col: u16,
     pub ws_xpixel: u16,
     pub ws_ypixel: u16,
+}
+
+/// Captured kernel-owned terminal routing, consumed only after the caller's
+/// mutable Process borrow ends. Never a host-selected signal target.
+#[derive(Debug)]
+pub(crate) struct TerminalResizeEffect {
+    pub foreground_pgid: i32,
+    pub session_id: i32,
+    pub cell_dimensions_changed: bool,
 }
 
 /// Kernel-internal terminal state (simulated, not affecting actual host I/O).
@@ -154,6 +163,17 @@ impl TerminalState {
             cooked_buffer: Vec::new(),
             eof_pending: false,
         }
+    }
+
+    /// Publish the complete shared winsize and report an actual change.
+    pub(crate) fn replace_winsize(&mut self, next: WinSize) -> Option<TerminalResizeEffect> {
+        let previous = core::mem::replace(&mut self.winsize, next);
+        (previous != next).then_some(TerminalResizeEffect {
+            foreground_pgid: self.foreground_pgid,
+            session_id: self.session_id,
+            cell_dimensions_changed: previous.ws_row != next.ws_row
+                || previous.ws_col != next.ws_col,
+        })
     }
 
     /// Serialize terminal attributes to musl's 60-byte `struct termios` layout.

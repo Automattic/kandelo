@@ -283,10 +283,13 @@ export function buildRootfsLazyWiring(
           status: "complete",
           loadedBytes: bytes instanceof Uint8Array ? bytes.byteLength : bytes.length,
         });
-      }, (error) => {
+      }, (reason: unknown) => {
         if (disposed) return;
-        slots.set(uri, { state: "failed", errno: deferredErrno(error) });
-        report(onProgress, { ...base, status: "error", loadedBytes: 0, error: String(error) });
+        slots.set(uri, { state: "failed", errno: deferredErrno(reason) });
+        // Keep the real transport/decoder cause alongside its precise errno.
+        const detail = reason instanceof Error ? reason.message : String(reason);
+        report(onProgress, { ...base, status: "error", loadedBytes: 0,
+          error: `fetching ${uri} failed: ${detail}` });
       }).finally(() => {
         inFlight.delete(uri);
         if (disposed && inFlight.size === 0) inFlight.dispose();
@@ -315,7 +318,13 @@ export function buildRootfsLazyWiring(
   const discardDeferred = (uri: string): void => {
     // Only native validation can reject a completed transfer. Pending and
     // terminal transport failures retain their original bounded policy.
-    if (!disposed && slots.get(uri)?.state === "ready") slots.delete(uri);
+    const slot = slots.get(uri);
+    if (!disposed && slot?.state === "ready") {
+      slots.delete(uri);
+      report(onProgress, { id: uri, kind: "file", url: uri, status: "error",
+        loadedBytes: slot.bytes instanceof Uint8Array ? slot.bytes.byteLength : slot.bytes.length,
+        error: "Native VFS rejected the transfer: size or SHA-256 mismatch" });
+    }
   };
   const dispose = (): void => {
     if (disposed) return;
@@ -369,7 +378,7 @@ export async function waitForDeferredFetch(
 }
 
 /**
- * Fetch the address, preserving a transport failure for the slot's errno.
+ * Fetch the address, preserving transport failure for errno and diagnostics.
  *
  * ONE ADDRESS, NO ALTERNATES. This walked a transport list and compared each
  * answer's length against a declared size, trying the next on a mismatch.
@@ -383,5 +392,6 @@ async function fetchDeferred(
   fetcher: (url: string, onProgress?: DeferredByteProgress) => Promise<Uint8Array | DeferredByteSource>,
   onProgress: DeferredByteProgress,
 ): Promise<Uint8Array | DeferredByteSource | undefined> {
+  // Preserve the actual rejection for the provider's diagnostic.
   return fetcher(uri, onProgress);
 }

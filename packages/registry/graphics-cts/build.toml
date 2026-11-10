@@ -1,0 +1,6 @@
+script_path = "packages/registry/graphics-cts/build-graphics-cts.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = ["packages/registry/graphics-cts", "scripts/package-build-roots.sh", "sdk/cmake"]
+publication_state = "pending"

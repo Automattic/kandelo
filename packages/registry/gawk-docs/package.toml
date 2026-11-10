@@ -1,0 +1,27 @@
+kind = "program"
+name = "gawk-docs"
+version = "5.3.0"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `gawk` package (gawk, and awk as an alias of it).
+# The source, SHA-256 and version are the `gawk` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/gawk/gawk-5.3.0.tar.xz"
+sha256 = "ca9c16d3d11d0ff8c69d79dc0b47267e1329a69b39b799895604ed447d3ca90b"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/gawk.git/tree/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/gawk-docs/build-gawk-docs.sh"
+
+[[outputs]]
+name = "gawk-docs"
+wasm = "gawk-docs.zip"
+fork_instrumentation = "disabled"

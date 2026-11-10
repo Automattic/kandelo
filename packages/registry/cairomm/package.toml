@@ -6,7 +6,7 @@ depends_on = [
   "cairo@1.18.6",
   "libsigcxx@2.10.3",
   "glib@2.84.4",
-  "pixman@0.42.2",
+  "pixman@0.46.4",
   "fontconfig@2.15.0",
   "freetype@2.13.3",
   "libpng@1.6.43",

@@ -8,10 +8,8 @@
 # wayland-scanner and compile the meson TU list directly (minus
 # cairo-pixbuf.c — built without icons).
 #
-# One patch: pool-buffer.c allocates wl_shm buffers as renderD128
-# dumb-bos passed by prime-fd instead of shm_open memfds — on this
-# kernel a plain shm mmap is NOT shared across processes, only the DRI
-# bo registry is. Same contract as foot's shm patch.
+# wl_shm uses upstream shared-memory pools. The remaining patches avoid
+# a static-link symbol collision and preserve typed callback signatures.
 #
 # mako forks its on-notify exec actions and makoctl forks its `menu`
 # helper — wasm-fork-instrument is mandatory for both.
@@ -60,7 +58,7 @@ LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:?WASM_POSIX_DEP_LIBXML2_DIR not set
 LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not set}"
 LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set}"
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set}"
-PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/xml"
+PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/share/wayland-protocols"
 
 # mako links libc++ because it pulls in harfbuzz. Project a private sysroot
 # with the resolved libcxx overlaid: the worktree SDK seed is an input tree
@@ -100,10 +98,10 @@ mkdir -p "$GEN" "$INSTALL_DIR"
 
 echo "==> Generating protocol glue..."
 PROTOCOLS=(
-    "$PROTOCOLS_XML/xdg-shell.xml"
-    "$PROTOCOLS_XML/cursor-shape-v1.xml"
-    "$PROTOCOLS_XML/xdg-activation-v1.xml"
-    "$PROTOCOLS_XML/tablet-unstable-v2.xml"
+    "$PROTOCOLS_XML/stable/xdg-shell/xdg-shell.xml"
+    "$PROTOCOLS_XML/staging/cursor-shape/cursor-shape-v1.xml"
+    "$PROTOCOLS_XML/staging/xdg-activation/xdg-activation-v1.xml"
+    "$PROTOCOLS_XML/unstable/tablet/tablet-unstable-v2.xml"
     "$SRC_DIR/protocol/wlr-layer-shell-unstable-v1.xml"
 )
 for xml in "${PROTOCOLS[@]}"; do
@@ -165,9 +163,9 @@ done
 # pangoft2/pango/cairo, pango pulls harfbuzz/fribidi/gio/gobject/glib
 # (PangoFontMap is a GListModel), cairo pulls pixman/fontconfig/
 # freetype/png, harfbuzz (C++) pulls libc++, libffi last so gobject
-# closures and wl_closure_invoke resolve. libgbm/libdrm come from the base
-# sysroot. libiconv follows libxml2: fontconfig parses its configuration
-# with libxml2, and this libxml2 converts encodings through GNU libiconv.
+# closures and wl_closure_invoke resolve. libiconv follows libxml2: fontconfig
+# parses its configuration with libxml2, which converts encodings through
+# GNU libiconv.
 MAKO_LIBS=(
     "$PANGO_PREFIX/lib/libpangocairo-1.0.a"
     "$PANGO_PREFIX/lib/libpangoft2-1.0.a"
@@ -190,8 +188,6 @@ MAKO_LIBS=(
     "$LIBWAYLAND_PREFIX/lib/libwayland-cursor.a"
     "$LIBWAYLAND_PREFIX/lib/libwayland-client.a"
     "$BASU_PREFIX/lib/libbasu.a"
-    "$SYSROOT/lib/libgbm.a"
-    "$SYSROOT/lib/libdrm.a"
     "$SYSROOT/lib/libc++.a"
     "$SYSROOT/lib/libc++abi.a"
     "$LIBFFI_PREFIX/lib/libffi.a"

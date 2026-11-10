@@ -181,6 +181,9 @@
             # wayland version so its runtime matches the generated glue.
             # Consumers declare it as a `[[host_tools]]` prerequisite.
             pkgs.wayland-scanner
+            # hwdata — build-machine data (pnp.ids) that libdisplay-info
+            # and wlroots read through a native meson dependency.
+            pkgs.hwdata
             # spirv-opt — qsb shells out to it for every shader built with
             # qt_add_shaders(... OPTIMIZED), which Quickshell's widgets
             # module uses.

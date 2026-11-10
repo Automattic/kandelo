@@ -110,7 +110,10 @@
     "wasm"
   ],
   "scripts": {
+    "prebuild": "node scripts/generate-snapshot-comparator.mjs --check",
     "build": "tsup",
+    "generate:snapshot-comparator": "node scripts/generate-snapshot-comparator.mjs",
+    "check:snapshot-comparator": "node scripts/generate-snapshot-comparator.mjs --check",
     "dev": "tsup --watch",
     "typecheck": "tsup --dts-only",
     "docs": "typedoc",
@@ -129,6 +132,7 @@
     "tsx": "^4.23.12",
     "typedoc": "^0.28.20",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vite": "^8.3.2",
     "vitest": "^5.0.3"
   },
   "dependencies": {

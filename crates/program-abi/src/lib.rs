@@ -222,22 +222,15 @@
 ///     sections `xtask dump-abi` marks as the program surface
 ///     (`abi_surfaces`), not kernel exports, kernel imports, host-adapter
 ///     metadata or kernel-host wire formats. Those bump the kernel-host
-///     version, `abi::HOST_ADAPTER_VERSION` (checked exactly), instead of
-///     this. docs/abi-versioning.md ("ABI 55").
-///     Within this epoch `klogctl` (`SYS_SYSLOG`, Kandelo syscall 304) also
-///     arrived, without starting a new one. The kernel's channel dispatch
-///     used to answer 304 with a bare `0`, so a guest reading the kernel log
-///     was told it succeeded and handed nothing; that fake-success stub is
-///     gone and the syscall now routes to the kernel message ring. Routing it
-///     adds a syscall number, its pointer-argument descriptor and that
-///     descriptor's channel scalar contract to the program surface, which
-///     changes the exact program digest. The predecessor digest stays
-///     admitted through `abi/accepted-program-digests.json`, whose entries
-///     need both an additive classifier verdict and a named author's
-///     affirmation. docs/abi-versioning.md ("Affirmed prior program
-///     contracts").
-pub const ABI_VERSION: u32 = 55;
+///     version, `abi::HOST_ADAPTER_VERSION` (now 2, checked exactly), instead
+///     of this. docs/abi-versioning.md ("ABI 55").
+/// 56: combine main's program-surface digest with kernel-owned graphics
+///     sessions, shared contexts, acknowledged surfaces and retained storage.
+///     One epoch covers the unpublished graphics compatibility effort.
+pub const ABI_VERSION: u32 = 56;
 
+
+pub mod program_extensions;
 
 pub mod abi {
     pub const THREAD_SLOT_DECL_EXPORT: &str = "__wasm_posix_thread_slots";

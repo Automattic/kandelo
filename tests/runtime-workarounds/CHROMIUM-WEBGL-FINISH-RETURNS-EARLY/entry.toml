@@ -1,0 +1,22 @@
+id = "CHROMIUM-WEBGL-FINISH-RETURNS-EARLY"
+kind = "bug"
+status = "confirmed"
+runtimes = ["chromium"]
+summary = "WebGL finish() returns while earlier draws are still executing"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["chromium"]
+self_judging = true
+timeout_seconds = 120
+
+[[observed]]
+runtime = "chromium"
+version = "153.0.8010.12"
+os = "macos"
+reproduced = true
+date = 2026-11-02
+source = "suite"
+released = false

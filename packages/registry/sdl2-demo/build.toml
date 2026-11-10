@@ -16,6 +16,7 @@ inputs = [
   "libc/glue/libegl_stub.c",
   "libc/glue/libglesv2_stub.c",
   "libc/glue/gl_abi.h",
+  "libc/glue/drm_format_info.h",
   "libc/musl-overlay/include/linux/input-event-codes.h",
   "scripts/build-musl.sh",
   "scripts/build-dri-stubs.sh",

@@ -27,6 +27,23 @@ def mz(signature=None, extender=b''):
 
 
 class ImportTests(unittest.TestCase):
+    def test_terminal_request_uses_page_publisher_and_preserves_failure(self):
+        command = "scummvm 'Imported game'"
+        with patch.object(game.subprocess, 'run') as run:
+            run.return_value.returncode = 0
+            self.assertTrue(game.request_terminal(command, True))
+            run.assert_called_once_with([
+                '/usr/bin/kandelo-page-terminal', '--title', 'Imported games',
+                '--display', command,
+            ])
+            run.reset_mock()
+            run.return_value.returncode = 1
+            self.assertFalse(game.request_terminal(command, False))
+            run.assert_called_once_with([
+                '/usr/bin/kandelo-page-terminal', '--title', 'Imported games',
+                command,
+            ])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

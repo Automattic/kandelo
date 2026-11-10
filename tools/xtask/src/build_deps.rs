@@ -23,9 +23,10 @@
 //!     (where `UPPER` is the dep name upper-cased with `-` → `_`),
 //!     the resolved cache path of that dep's `{lib,include,…}`.
 //!   * `WASM_POSIX_DEP_PKG_CONFIG_PATH` — colon-joined list of every
-//!     *transitively*-resolved lib's `lib/pkgconfig/` directory (only
-//!     paths that actually contain such a directory are included; libs
-//!     without pkgconfig — e.g. ncurses — are skipped). Consumers
+//!     *transitively*-resolved lib's `lib/pkgconfig/` and `share/pkgconfig/`
+//!     directories, pkg-config's own default pair (only directories that
+//!     exist are included; libs without pkgconfig — e.g. ncurses — are
+//!     skipped). Consumers
 //!     prepend it to `PKG_CONFIG_PATH` so pkg-config can chase
 //!     `Requires.private` chains across the whole dep graph.
 //!
@@ -58,7 +59,7 @@ use sha2::{Digest, Sha256};
 use crate::host_tool_probe::{self, ProbeFailure};
 use crate::pkg_manifest::{
     BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, GitBuildInput,
-    HostTool, MAX_CACHE_PROVENANCE_BYTES, ManifestKind, SourceProvider, TargetArch,
+    HostTool, MAX_CACHE_PROVENANCE_BYTES, ManifestKind, PackageToolchain, SourceProvider, TargetArch,
     cache_provenance_path, expected_cache_provenance_bytes, file_paths_conflict,
     remove_cache_provenance, validate_cache_provenance, write_cache_provenance,
 };
@@ -7224,8 +7225,11 @@ fn compute_sha_with_identity_context_for_platform(
     };
     let global_toolchain_inputs = match target.kind {
         ManifestKind::Library | ManifestKind::Program => match global_toolchain_inputs_override {
-            Some(inputs) => inputs.to_vec(),
-            None => global_package_toolchain_digests()?,
+            Some(inputs) => inputs.iter().filter(|input| {
+                target.build.toolchain == PackageToolchain::Sdk
+                    || PACKAGE_PACKAGING_INPUTS.contains(&input.label.as_str())
+            }).cloned().collect(),
+            None => package_global_build_input_digests(target)?,
         },
         ManifestKind::Source => Vec::new(),
     };
@@ -7239,6 +7243,11 @@ fn compute_sha_with_identity_context_for_platform(
     };
 
     let mut h = Sha256::new();
+    // Keep historical SDK keys byte-for-byte. The opt-out changes the recipe
+    // environment as well as its input closure, so give it a versioned identity.
+    if target.build.toolchain == PackageToolchain::None {
+        h.update(b"kandelo-package-toolchain-v1\0none\0");
+    }
     if let Some(domain_separator) = policy.domain_separator() {
         h.update(domain_separator);
     }
@@ -7527,6 +7536,35 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "scripts/calltypes-plugin.sh",
 ];
 
+// Toolchain-free recipes still consume the pinned host environment, source
+// staging, installation and admission helpers. Do not drop those inputs with
+// the compiler/sysroot inputs. Keep this subset in the legacy list's order.
+const PACKAGE_PACKAGING_INPUTS: &[&str] = &[
+    "flake.nix",
+    "flake.lock",
+    "rust-toolchain.toml",
+    "scripts/dev-shell.sh",
+    "scripts/setup.sh",
+    "scripts/install-local-binary.sh",
+    "scripts/wasm-artifact-guards.sh",
+    "scripts/package-build-roots.sh",
+    "scripts/package-source-metadata.py",
+    "scripts/check-package-imports.sh",
+    "tools/xtask/src/package_imports.rs",
+    "tools/xtask/src/program_env_imports.rs",
+    ".github/actions/package-archive-build",
+    ".github/actions/package-toolchain",
+    ".github/actions/fetch-submodules",
+    ".github/actions/download-run-artifacts",
+];
+
+fn package_global_build_input_paths(target: &DepsManifest) -> &'static [&'static str] {
+    match target.build.toolchain {
+        PackageToolchain::Sdk => GLOBAL_PACKAGE_TOOLCHAIN_INPUTS,
+        PackageToolchain::None => PACKAGE_PACKAGING_INPUTS,
+    }
+}
+
 /// The full input closure of the wasm-fork-instrument tool: the crate's
 /// cargo-derived workspace source closure (crates/fork-instrument, its
 /// workspace path-deps, and .cargo/config.toml) plus the explicit non-crate
@@ -7555,6 +7593,7 @@ fn fork_instrument_tool_input_paths(root: &Path) -> Result<Vec<String>, String> 
 type RootDigestCache = OnceLock<Mutex<BTreeMap<PathBuf, Result<Vec<BuildInputDigest>, String>>>>;
 
 static GLOBAL_PACKAGE_TOOLCHAIN_DIGESTS: RootDigestCache = OnceLock::new();
+static PACKAGE_PACKAGING_DIGESTS: RootDigestCache = OnceLock::new();
 static FORK_INSTRUMENT_TOOL_DIGESTS: RootDigestCache = OnceLock::new();
 
 fn root_scoped_build_input_digests(
@@ -7589,6 +7628,16 @@ fn global_package_toolchain_digests() -> Result<Vec<BuildInputDigest>, String> {
     let root = repo_root();
     root_scoped_build_input_digests(&GLOBAL_PACKAGE_TOOLCHAIN_DIGESTS, &root, |root| {
         global_package_build_input_digests_for(root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
+    })
+}
+
+fn package_global_build_input_digests(target: &DepsManifest) -> Result<Vec<BuildInputDigest>, String> {
+    if target.build.toolchain == PackageToolchain::Sdk {
+        return global_package_toolchain_digests();
+    }
+    let root = repo_root();
+    root_scoped_build_input_digests(&PACKAGE_PACKAGING_DIGESTS, &root, |root| {
+        global_package_build_input_digests_for(root, PACKAGE_PACKAGING_INPUTS)
     })
 }
 
@@ -8330,6 +8379,47 @@ fn repository_source_authority_root(
     })
 }
 
+/// Canonical declared-input payload encoding, independent of filesystem access.
+/// Keep these bytes stable: generic and strict source policies differ in what
+/// they may open, not in the identity of the regular payload they both admit.
+enum BuildInputEntry<'a> {
+    File(&'a [u8]),
+    Directory,
+    Symlink(&'a Path),
+}
+
+fn encode_build_input_entry(hasher: &mut Sha256, relative: &Path, entry: BuildInputEntry<'_>) {
+    let tag: &[u8] = match entry {
+        BuildInputEntry::File(_) => b"file\0",
+        BuildInputEntry::Directory => b"dir\0",
+        BuildInputEntry::Symlink(_) => b"symlink\0",
+    };
+    hasher.update(tag);
+    hasher.update(relative.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    match entry {
+        BuildInputEntry::File(bytes) => {
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(b"\0");
+            hasher.update(bytes);
+            hasher.update(b"\0");
+        }
+        BuildInputEntry::Directory => {}
+        BuildInputEntry::Symlink(target) => {
+            hasher.update(target.to_string_lossy().as_bytes());
+            hasher.update(b"\0");
+        }
+    }
+}
+
+/// Directory payload selection shared by both access policies. Git's exact
+/// administrative child name is not source, whether a directory or worktree
+/// pointer; never follow it. Other hidden/ignored/untracked files remain inputs.
+/// Explicit metadata inputs enter the walkers directly and are still hashed.
+fn build_input_source_child(name: &std::ffi::OsStr) -> bool {
+    !matches!(name.to_str(), Some("." | ".." | ".git"))
+}
+
 #[cfg(unix)]
 fn strict_source_build_input_digest(root: &Path, input: &Path) -> Result<[u8; 32], String> {
     strict_source_build_input_digest_with(root, input, &mut |_| {})
@@ -8600,7 +8690,7 @@ fn strict_source_hash_entry_unix<BeforeRead>(
 where
     BeforeRead: FnMut(&Path),
 {
-    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
     let mut opened = strict_source_open_at(parent, name, path, "open")?;
     let initial = opened
@@ -8614,22 +8704,13 @@ where
     }
     before_read(path);
     strict_source_reopen_unchanged(parent, name, &initial, path)?;
-    let relative_text = relative.to_string_lossy();
     if initial.is_file() {
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut opened, &mut bytes)
             .map_err(|error| format!("read source-only build input {}: {error}", path.display()))?;
-        hasher.update(b"file\0");
-        hasher.update(relative_text.as_bytes());
-        hasher.update(b"\0");
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(b"\0");
-        hasher.update(bytes);
-        hasher.update(b"\0");
+        encode_build_input_entry(hasher, relative, BuildInputEntry::File(&bytes));
     } else {
-        hasher.update(b"dir\0");
-        hasher.update(relative_text.as_bytes());
-        hasher.update(b"\0");
+        encode_build_input_entry(hasher, relative, BuildInputEntry::Directory);
         let mut directory = rustix::fs::Dir::read_from(&opened).map_err(|error| {
             format!("read source-only build input directory {}: {error}", path.display())
         })?;
@@ -8641,7 +8722,7 @@ where
             let bytes = entry.file_name().to_bytes();
             // Git pointers/history describe a checkout, not its source. Keep
             // the strict and ordinary directory digests identical here.
-            if matches!(bytes, b"." | b".." | b".git") {
+            if !build_input_source_child(std::ffi::OsStr::from_bytes(bytes)) {
                 continue;
             }
             entries.push(OsString::from_vec(bytes.to_vec()));
@@ -9175,35 +9256,22 @@ fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<()
     let meta =
         std::fs::symlink_metadata(path).map_err(|e| format!("stat {}: {e}", path.display()))?;
     let rel = path.strip_prefix(root).unwrap_or(path);
-    let rel = rel.to_string_lossy();
 
     if meta.file_type().is_symlink() {
         let target =
             std::fs::read_link(path).map_err(|e| format!("readlink {}: {e}", path.display()))?;
-        h.update(b"symlink\0");
-        h.update(rel.as_bytes());
-        h.update(b"\0");
-        h.update(target.to_string_lossy().as_bytes());
-        h.update(b"\0");
+        encode_build_input_entry(h, rel, BuildInputEntry::Symlink(&target));
         return Ok(());
     }
 
     if meta.is_file() {
         let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        h.update(b"file\0");
-        h.update(rel.as_bytes());
-        h.update(b"\0");
-        h.update((bytes.len() as u64).to_le_bytes());
-        h.update(b"\0");
-        h.update(bytes);
-        h.update(b"\0");
+        encode_build_input_entry(h, rel, BuildInputEntry::File(&bytes));
         return Ok(());
     }
 
     if meta.is_dir() {
-        h.update(b"dir\0");
-        h.update(rel.as_bytes());
-        h.update(b"\0");
+        encode_build_input_entry(h, rel, BuildInputEntry::Directory);
         let mut entries = std::fs::read_dir(path)
             .map_err(|e| format!("read_dir {}: {e}", path.display()))?
             .collect::<Result<Vec<_>, _>>()
@@ -9213,7 +9281,7 @@ fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<()
             // Submodule/worktree `.git` files contain checkout-specific
             // paths; standalone `.git` directories contain mutable history.
             // Hash the working sources, including local edits, instead.
-            if entry.file_name() == ".git" {
+            if !build_input_source_child(&entry.file_name()) {
                 continue;
             }
             hash_build_input_entry(h, root, &entry.path())?;
@@ -10691,8 +10759,8 @@ fn try_fetch_without_deps(
 ///
 /// The transitive set lets the caller compose
 /// `WASM_POSIX_DEP_PKG_CONFIG_PATH` for the build script: every node
-/// gets every descendant's `lib/pkgconfig/` dir, which mirrors how
-/// pkg-config follows `Requires.private` chains.
+/// gets every descendant's pkgconfig dirs, which mirrors how pkg-config
+/// follows `Requires.private` chains.
 ///
 /// Deduped via `BTreeSet` so a diamond dep (`libZ -> {libA, libB} ->
 /// libCommon`) only contributes `libCommon`'s path once.
@@ -11235,12 +11303,14 @@ fn ensure_built_uncached(
 
 /// Build the `WASM_POSIX_DEP_PKG_CONFIG_PATH` value for a build script.
 ///
-/// Joins every transitive lib path's `lib/pkgconfig/` subdirectory with
-/// `:` — POSIX's standard search-path separator, and what pkg-config
-/// itself uses for `PKG_CONFIG_PATH`. Paths whose `lib/pkgconfig/`
-/// directory doesn't exist (e.g. ncurses, libs that ship no .pc file)
-/// are skipped: handing pkg-config a list of nonexistent search paths
-/// clutters diagnostics with no benefit.
+/// Joins every transitive lib path's `lib/pkgconfig/` and
+/// `share/pkgconfig/` subdirectories with `:` — POSIX's standard
+/// search-path separator, and what pkg-config itself uses for
+/// `PKG_CONFIG_PATH`. pkg-config searches both under a prefix:
+/// architecture-independent packages such as wayland-protocols install
+/// their `.pc` under `share/`. Directories that don't exist (e.g. ncurses,
+/// libs that ship no .pc file) are skipped: handing pkg-config a list of
+/// nonexistent search paths clutters diagnostics with no benefit.
 ///
 /// Returns an empty string when no transitive lib ships pkgconfig. The
 /// caller still sets the env var to that empty string, keeping the
@@ -11248,14 +11318,9 @@ fn ensure_built_uncached(
 fn compose_pkgconfig_path(paths: &BTreeSet<PathBuf>) -> String {
     paths
         .iter()
-        .filter_map(|p| {
-            let pc = p.join("lib").join("pkgconfig");
-            if pc.is_dir() {
-                Some(pc.to_string_lossy().into_owned())
-            } else {
-                None
-            }
-        })
+        .flat_map(|p| [p.join("lib").join("pkgconfig"), p.join("share").join("pkgconfig")])
+        .filter(|pc| pc.is_dir())
+        .map(|pc| pc.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join(":")
 }
@@ -12830,7 +12895,7 @@ fn materialize_direct_dependencies(
 ///
 /// `pkgconfig_path` is the pre-composed value for
 /// `WASM_POSIX_DEP_PKG_CONFIG_PATH` — a colon-joined list of every
-/// transitive lib's `lib/pkgconfig/` dir. Always set, even when empty,
+/// transitive lib's `lib/pkgconfig/` and `share/pkgconfig/` dirs. Always set, even when empty,
 /// so the contract for build scripts stays uniform.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProvenanceSnapshot {
@@ -14121,7 +14186,7 @@ fn capture_cache_key_inputs(
     CacheKeyInputSnapshot {
         declared: build_input_digests_from_repo(target, registry, repo_root, policy)
             .unwrap_or_default(),
-        global_toolchain_memoized: global_package_toolchain_digests().unwrap_or_default(),
+        global_toolchain_memoized: package_global_build_input_digests(target).unwrap_or_default(),
     }
 }
 
@@ -14186,7 +14251,7 @@ fn describe_cache_key_input_drift(
     // to the key comparison itself; without this re-read the report would say
     // "nothing changed" while a shared input had in fact moved underneath.
     let after_global =
-        global_package_build_input_digests_for(repo_root, GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
+        global_package_build_input_digests_for(repo_root, package_global_build_input_paths(target))
             .unwrap_or_default();
     describe_cache_key_input_drift_lines(
         &before.declared,
@@ -14247,6 +14312,47 @@ fn describe_cache_key_input_drift_lines(
     );
     report
 }
+
+/// PATH filtering catches ordinary accidental SDK use; it is not a sandbox.
+/// Recipes remain responsible for declaring every input they read, including
+/// any SDK source they access directly. See docs/package-management.md.
+fn configure_package_toolchain_environment(
+    command: &mut Command,
+    repo: &Path,
+    toolchain: PackageToolchain,
+) -> Result<(), String> {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    command.env("PATH", package_build_path(repo, toolchain, &inherited)?);
+    if toolchain == PackageToolchain::None {
+        for variable in [
+            "CC", "CXX", "CPP", "AR", "AS", "LD", "NM", "RANLIB", "STRIP",
+            "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "CONFIG_SITE", "WASM_POSIX_SYSROOT",
+        ] {
+            command.env_remove(variable);
+        }
+    }
+    Ok(())
+}
+
+fn package_build_path(repo: &Path, toolchain: PackageToolchain, inherited: &OsStr) -> Result<OsString, String> {
+    let sdk_bin = repo.join("sdk/bin");
+    if toolchain == PackageToolchain::Sdk {
+        // WHY: ordinary builds must resolve this worktree's wrappers first,
+        // never a sibling checkout's globally linked SDK.
+        let mut path = sdk_bin.into_os_string();
+        path.push(":");
+        path.push(inherited);
+        return Ok(path);
+    }
+    let paths = std::env::split_paths(inherited).filter(|path| {
+        // Also remove sibling SDKs and aliases, so a second SDK later in PATH
+        // cannot silently satisfy a recipe that opted out of the toolchain.
+        !path.ends_with("sdk/bin")
+            && !std::fs::canonicalize(path).is_ok_and(|real| real.ends_with("sdk/bin"))
+    });
+    std::env::join_paths(paths).map_err(|error| format!("package build PATH: {error}"))
+}
+
 fn build_into_cache(
     target: &DepsManifest,
     registry: &Registry,
@@ -14438,25 +14544,7 @@ fn build_into_cache(
         }
         cmd.arg(&script);
         configure_primary_source_environment(&mut cmd, target, policy, primary_source.as_ref())?;
-        // Worktree-local SDK invocation. Prepend `<repo>/sdk/bin` to PATH
-        // so build scripts that call `wasm32posix-cc` (and friends)
-        // resolve to THIS worktree's SDK source — not whatever a global
-        // `npm link` last pointed at. Without this, a sibling worktree's
-        // SDK + sysroot can leak into the build, producing binaries with
-        // a foreign ABI. `<repo>/sdk/bin/` holds committed wrapper
-        // scripts that run this worktree's SDK driver; see
-        // `docs/package-management.md` "Toolchain on PATH".
-        let sdk_bin = crate::repo_root().join("sdk").join("bin");
-        let path_var = match std::env::var_os("PATH") {
-            Some(existing) => {
-                let mut p = std::ffi::OsString::from(&sdk_bin);
-                p.push(":");
-                p.push(existing);
-                p
-            }
-            None => std::ffi::OsString::from(&sdk_bin),
-        };
-        cmd.env("PATH", path_var);
+        configure_package_toolchain_environment(&mut cmd, repo_root, target.build.toolchain)?;
         cmd.env("WASM_POSIX_DEP_OUT_DIR", &tmp);
         cmd.env("WASM_POSIX_DEP_WORK_DIR", &work.recipe_work);
         cmd.env("WASM_POSIX_DEP_NAME", &target.name);
@@ -15163,7 +15251,8 @@ fn build_into_cache(
 }
 
 /// Replace every occurrence of `tmp` with `canonical` inside
-/// installed `.pc` and `.la` files under `tmp/lib/…`. Runs while
+/// installed `.pc` and `.la` files under `tmp/lib/…` and the `.pc` files
+/// under `tmp/share/pkgconfig/`. Runs while
 /// the tree still lives at `tmp` so the observable canonical cache
 /// entry never contains a stale temp path.
 ///
@@ -15179,8 +15268,8 @@ fn rewrite_install_prefix_paths(tmp: &Path, canonical: &Path) -> Result<(), Stri
     }
     let lib_dir = tmp.join("lib");
     rewrite_dir(&lib_dir, &tmp_s, &canonical_s)?;
-    let pc_dir = lib_dir.join("pkgconfig");
-    rewrite_dir(&pc_dir, &tmp_s, &canonical_s)?;
+    rewrite_dir(&lib_dir.join("pkgconfig"), &tmp_s, &canonical_s)?;
+    rewrite_dir(&tmp.join("share").join("pkgconfig"), &tmp_s, &canonical_s)?;
     Ok(())
 }
 
@@ -17652,64 +17741,6 @@ fn resolve_source_repo_root(
     Ok(Some(runtime_root))
 }
 
-/// The positional subcommand [`run`] would dispatch on, or `None` when the
-/// arguments do not name one.
-///
-/// WHY it exists: `build-deps` accepts every global flag in any position
-/// (`build-deps --arch=wasm64 path zlib` and `build-deps path zlib
-/// --arch=wasm64` are the same command), so which argument is the subcommand
-/// is a question only this module's own flag grammar can answer. A caller that
-/// re-derived it would drift from `run` the next time a flag is added.
-///
-/// A flag error answers `None`: `run` will report it, and the caller asking
-/// this question is deciding how much to say, not whether to proceed.
-fn positional_subcommand(args: &[String]) -> Option<String> {
-    // Same extractors, in the same order, as `run` below.
-    let (_, args) = extract_source_only_flag(args.to_vec()).ok()?;
-    let (_, args) = extract_source_repo_root_flag(args).ok()?;
-    let (_, args) = extract_arch_flag(args).ok()?;
-    let (_, args) = extract_binaries_dir_flag(args).ok()?;
-    let (_, args) = extract_force_source_build_flag(args).ok()?;
-    args.into_iter().next()
-}
-
-/// Whether `args` select a subcommand whose whole job is to print one
-/// machine-readable value — a path, a digest, or a JSON record a caller
-/// captures with `$(...)` — and which builds nothing.
-///
-/// WHY the admission gate asks: `tools/xtask/src/main.rs` runs the supported
-/// program baseline before dispatching `build-deps`, and announces on stderr
-/// when that check admits a prior program contract beside the current one.
-/// That announcement belongs on the commands that build something. On a value
-/// query it is noise at best, and corrupts the answer for any consumer that
-/// merges stdout and stderr — which is why
-/// `tools/xtask/tests/build_deps_cache_root.rs` requires `build-deps
-/// cache-root` to write no stderr at all.
-///
-/// The list below mirrors the query arms of `run`'s dispatch. `resolve`,
-/// `install-local-artifact` and the index writers are absent on purpose: they
-/// build or write, so they are exactly where the announcement belongs. The
-/// `check` arms are absent too — they already write prose diagnostics, so one
-/// more line cannot corrupt anything they promise.
-pub(crate) fn selects_value_query(args: &[String]) -> bool {
-    matches!(
-        positional_subcommand(args).as_deref(),
-        Some(
-            "cache-root"
-                | "output-fork-instrumentation"
-                | "output-fork-instrumentation-for-rel"
-                | "output-metadata"
-                | "output-path"
-                | "parse"
-                | "path"
-                | "runtime-file-metadata"
-                | "runtime-file-path"
-                | "sha"
-                | "toolchain-inputs"
-        )
-    )
-}
-
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let ambient_policy = ambient_resolution_policy()?;
     let (explicit_source_only, args) = extract_source_only_flag(args)?;
@@ -17876,7 +17907,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                         return Err("build-deps resolve: unexpected extra arg".into());
                     }
                     if matches!(manifest.kind, ManifestKind::Library | ManifestKind::Program) {
-                        crate::local_build::ensure_package_sysroot(&repo, arch)?;
+                        for sdk_arch in resolve_sysroot_arches(&manifest, &registry, arch)? {
+                            crate::local_build::ensure_package_sysroot(&repo, sdk_arch)?;
+                        }
                     }
                     cmd_resolve(
                         &manifest,
@@ -18009,6 +18042,7 @@ fn cmd_parse(m: &DepsManifest) -> Result<(), String> {
         "build     = {}",
         m.build_script_path(&crate::repo_root()).display()
     );
+    println!("toolchain = {}", m.build.toolchain.as_str());
     println!("outputs.libs     = {:?}", m.outputs.libs);
     println!("outputs.headers  = {:?}", m.outputs.headers);
     if !m.outputs.pkgconfig.is_empty() {
@@ -18207,6 +18241,30 @@ fn output_fork_instrumentation_for_rel(
         }
     }
     Ok(ForkInstrumentationPolicy::Auto)
+}
+
+fn resolve_sysroot_arches(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+) -> Result<BTreeSet<TargetArch>, String> {
+    if target.build.toolchain == PackageToolchain::Sdk {
+        // Preserve the existing standalone preparation for ordinary SDK roots.
+        return Ok(BTreeSet::from([arch]));
+    }
+    // Opting out applies only to this recipe. A compiled dependency still
+    // needs its SDK, including architecture fallback in a mixed-width graph.
+    let graph = resolved_dependency_graph_with_loader(target, arch, &mut |name| registry.load(name))?;
+    let mut required = BTreeSet::new();
+    for (node, kind) in graph.nodes {
+        if node.package_name != target.name
+            && matches!(kind, ManifestKind::Library | ManifestKind::Program)
+            && registry.load(&node.package_name)?.build.toolchain == PackageToolchain::Sdk
+        {
+            required.insert(node.target_arch);
+        }
+    }
+    Ok(required)
 }
 
 fn cmd_resolve(
@@ -23621,6 +23679,270 @@ wasm = "second.wasm"
         (repo, commit)
     }
 
+    fn git_admin_hash_fixture(label: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let (source, commit) = immutable_git_fixture(label);
+        let root = source.parent().unwrap().to_path_buf();
+        let first = root.join("first-worktree");
+        let second = root.join("second-worktree");
+        for worktree in [&first, &second] {
+            fixture_git(
+                &source,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "--detach",
+                    worktree.to_str().unwrap(),
+                    &commit,
+                ],
+            );
+        }
+        (root, source, first, second)
+    }
+
+    #[test]
+    fn build_input_git_admin_generic_ignores_checkout_administration() {
+        let (_, source, first, second) = git_admin_hash_fixture("hash-git-admin-generic");
+        assert!(source.join(".git").is_dir());
+        assert!(first.join(".git").is_file());
+        assert_ne!(
+            fs::read(first.join(".git")).unwrap(),
+            fs::read(second.join(".git")).unwrap()
+        );
+        let expected = hash_build_input(&first).unwrap();
+        assert_eq!(
+            hash_build_input(&second).unwrap(),
+            expected,
+            "worktree paths are not source inputs"
+        );
+        assert_eq!(
+            hash_build_input(&source).unwrap(),
+            expected,
+            "a private .git directory is not source payload"
+        );
+        fixture_git(&source, &["config", "kandelo.test-admin", "changed"]);
+        assert_eq!(hash_build_input(&source).unwrap(), expected);
+        // Explicit metadata inputs still request those bytes, not a directory walk.
+        assert_ne!(
+            hash_build_input(&first.join(".git")).unwrap(),
+            hash_build_input(&second.join(".git")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_strict_ignores_checkout_administration() {
+        let (root, source, first, second) = git_admin_hash_fixture("hash-git-admin-strict");
+        let expected = strict_source_build_input_digest(&root, &first).unwrap();
+        assert_eq!(
+            strict_source_build_input_digest(&root, &second).unwrap(),
+            expected
+        );
+        assert_eq!(
+            strict_source_build_input_digest(&root, &source).unwrap(),
+            expected
+        );
+        assert_eq!(
+            hash_build_input(&first).unwrap(),
+            expected,
+            "both input policies hash the same payload"
+        );
+        assert_ne!(
+            strict_source_build_input_digest(&root, &first.join(".git")).unwrap(),
+            strict_source_build_input_digest(&root, &second.join(".git")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_nested_metadata_does_not_rekey_source() {
+        let root = tempdir("hash-git-admin-nested");
+        let input = root.join("sdk");
+        let nested = input.join("rust/libc");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("lib.rs"), "source\n").unwrap();
+        let clean = hash_build_input(&input).unwrap();
+        fs::write(nested.join(".git"), "gitdir: /checkout-one/admin\n").unwrap();
+        assert_eq!(hash_build_input(&input).unwrap(), clean);
+        assert_eq!(
+            strict_source_build_input_digest(&root, &input).unwrap(),
+            clean
+        );
+        fs::write(nested.join(".git"), "gitdir: /checkout-two/admin\n").unwrap();
+        assert_eq!(hash_build_input(&input).unwrap(), clean);
+        assert_eq!(
+            strict_source_build_input_digest(&root, &input).unwrap(),
+            clean
+        );
+        fs::remove_file(nested.join(".git")).unwrap();
+        fs::create_dir(nested.join(".git")).unwrap();
+        fs::write(nested.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert_eq!(hash_build_input(&input).unwrap(), clean);
+        assert_eq!(
+            strict_source_build_input_digest(&root, &input).unwrap(),
+            clean
+        );
+        let explicit = hash_build_input(&nested.join(".git")).unwrap();
+        fs::write(nested.join(".git/HEAD"), "changed pin\n").unwrap();
+        assert_ne!(hash_build_input(&nested.join(".git")).unwrap(), explicit);
+        assert_eq!(
+            strict_source_build_input_digest(&root, &nested.join(".git")).unwrap(),
+            hash_build_input(&nested.join(".git")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_preserves_dirty_hidden_and_untracked_source() {
+        let (root, _, first, _) = git_admin_hash_fixture("hash-git-admin-source");
+        let digest = || {
+            let generic = hash_build_input(&first).unwrap();
+            assert_eq!(
+                strict_source_build_input_digest(&root, &first).unwrap(),
+                generic
+            );
+            generic
+        };
+        let clean = digest();
+        for name in [
+            "payload.txt",
+            ".gitignore",
+            ".gitmodules",
+            ".gitdir",
+            ".hidden-source",
+            "untracked.c",
+            "generated.tmp",
+        ] {
+            let path = first.join(name);
+            let old = fs::read(&path).ok();
+            fs::write(&path, "new source bytes\n").unwrap();
+            assert_ne!(digest(), clean, "must hash actual source {name}");
+            if let Some(old) = old {
+                fs::write(&path, old).unwrap();
+            } else {
+                fs::remove_file(&path).unwrap();
+            }
+            assert_eq!(digest(), clean);
+        }
+        // A pin/HEAD alone cannot stand in for the checked-out source bytes.
+        fs::write(first.join("payload.txt"), "dirty despite unchanged HEAD\n").unwrap();
+        assert_ne!(digest(), clean);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_preserves_symlink_and_mode_contracts() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let (root, _, first, _) = git_admin_hash_fixture("hash-git-admin-links-modes");
+        let clean = hash_build_input(&first).unwrap();
+        let payload = first.join("payload.txt");
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o700)).unwrap();
+        // Legacy declared-input identity hashes payload bytes, not executable bits.
+        // Do not silently invalidate every cache key as part of the admin fix.
+        assert_eq!(hash_build_input(&first).unwrap(), clean);
+        assert_eq!(
+            strict_source_build_input_digest(&root, &first).unwrap(),
+            clean
+        );
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o000)).unwrap();
+        let error = strict_source_build_input_digest(&root, &first).unwrap_err();
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(error.contains("open"), "{error}");
+        let link = first.join("source-link");
+        symlink("payload.txt", &link).unwrap();
+        let linked = hash_build_input(&first).unwrap();
+        assert_ne!(linked, clean);
+        assert!(strict_source_build_input_digest(&root, &first)
+            .unwrap_err()
+            .contains("symlink"));
+        fs::remove_file(&link).unwrap();
+        symlink(".gitignore", &link).unwrap();
+        assert_ne!(hash_build_input(&first).unwrap(), linked);
+        assert!(strict_source_build_input_digest(&root, &first)
+            .unwrap_err()
+            .contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_payload_encoding_matches_legacy_goldens() {
+        use std::os::unix::fs::symlink;
+        let root = tempdir("hash-git-admin-goldens");
+        let file = root.join("file.bin");
+        fs::write(&file, b"golden\0\xff\n").unwrap();
+        let file_golden = "a5e0f5357199ace4ea59bdcb69f8ff46375b29381db7713739f107d6740466cd";
+        assert_eq!(hex(&hash_build_input(&file).unwrap()), file_golden);
+        assert_eq!(
+            hex(&strict_source_build_input_digest(&root, &file).unwrap()),
+            file_golden
+        );
+        let tree = root.join("tree");
+        fs::create_dir_all(tree.join("deep")).unwrap();
+        fs::create_dir(tree.join("empty")).unwrap();
+        fs::write(tree.join(".hidden"), b"H\n").unwrap();
+        fs::write(tree.join("deep/payload.bin"), b"\0\xffx").unwrap();
+        let tree_golden = "e3fd25e550dcfe68db619a3b5646d074dbe96dcd0d0be353b497bb9388cf6713";
+        assert_eq!(hex(&hash_build_input(&tree).unwrap()), tree_golden);
+        assert_eq!(
+            hex(&strict_source_build_input_digest(&root, &tree).unwrap()),
+            tree_golden
+        );
+        let link = root.join("link");
+        symlink("../target", &link).unwrap();
+        assert_eq!(
+            hex(&hash_build_input(&link).unwrap()),
+            "5cb614baca681b2925ca2b53692859785770ecf3d791abe4879e1522538756b4"
+        );
+        assert!(strict_source_build_input_digest(&root, &link)
+            .unwrap_err()
+            .contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_backends_agree_for_unicode_source_names() {
+        let root = tempdir("hash-git-admin-unicode");
+        let tree = root.join("tree");
+        fs::create_dir(&tree).unwrap();
+        for (name, data) in [(".源", b"hidden".as_slice()), ("aé", b"source".as_slice())] {
+            fs::write(tree.join(name), data).unwrap();
+        }
+        assert_eq!(
+            hash_build_input(&tree).unwrap(),
+            strict_source_build_input_digest(&root, &tree).unwrap()
+        );
+    }
+
+    #[test]
+    fn build_input_git_admin_child_selection_is_exact() {
+        for name in [".", "..", ".git"] {
+            assert!(
+                !build_input_source_child(std::ffi::OsStr::new(name)),
+                "{name}"
+            );
+        }
+        for name in [
+            ".gitignore",
+            ".gitmodules",
+            ".gitdir",
+            ".GIT",
+            ".hidden",
+            "untracked.c",
+        ] {
+            assert!(
+                build_input_source_child(std::ffi::OsStr::new(name)),
+                "{name}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert!(build_input_source_child(std::ffi::OsStr::from_bytes(
+                b".git\xff"
+            )));
+        }
+    }
+
     fn uleb(mut n: u32) -> Vec<u8> {
         let mut out = Vec::new();
         loop {
@@ -24784,6 +25106,113 @@ allow_uninitialized_gitlinks = true
             before, after,
             "the cache identities serialized into program-packages.json must change with global toolchain inputs",
         );
+    }
+
+    #[test]
+    fn toolchain_none_keys_keep_packaging_inputs_and_transitive_sdk_dependencies() {
+        let root = tempdir("toolchain-none-keys");
+        write_program(&root, "pages", "1.0.0", &[], ":", &[("pages", "pages.zip")]);
+        write_lib(&root, "compiled", "1.0.0", &[], ":", "[outputs]\nlibs = [\"lib/out.a\"]\n");
+        for name in ["pages", "compiled"] {
+            let path = root.join(name).join("package.toml");
+            let text = fs::read_to_string(&path).unwrap().replace(&"0".repeat(64), &"1".repeat(64));
+            fs::write(path, text).unwrap();
+        }
+        let registry = Registry { roots: vec![root.clone()] };
+        let mut pages = registry.load("pages").unwrap();
+        pages.program_outputs[0].fork_instrumentation = ForkInstrumentationPolicy::Disabled;
+        let inputs = vec![
+            BuildInputDigest { label: "sdk/src".into(), digest: [1; 32] },
+            BuildInputDigest { label: "libc/glue".into(), digest: [2; 32] },
+            BuildInputDigest { label: "scripts/install-local-binary.sh".into(), digest: [3; 32] },
+        ];
+        let hash = |manifest: &DepsManifest, inputs: &[BuildInputDigest], policy| {
+            compute_sha_with_global_toolchain_inputs_for_policy(
+                manifest, &registry, TEST_ARCH, current_abi_version(), policy,
+                &mut BTreeMap::new(), &mut Vec::new(), Some(inputs),
+            ).unwrap()
+        };
+        for policy in [ResolvePolicy::Default, ResolvePolicy::SourceOnlyV1] {
+            let sdk = hash(&pages, &inputs, policy);
+            let mut sdk_edit = inputs.clone();
+            sdk_edit[0].digest = [4; 32];
+            assert_ne!(sdk, hash(&pages, &sdk_edit, policy));
+            pages.build.toolchain = PackageToolchain::None;
+            assert!(resolve_sysroot_arches(&pages, &registry, TEST_ARCH).unwrap().is_empty());
+            let none = hash(&pages, &inputs, policy);
+            assert_ne!(sdk, none, "toolchain declaration is key material");
+            assert_eq!(none, hash(&pages, &sdk_edit, policy));
+            let mut libc_edit = inputs.clone();
+            libc_edit[1].digest = [5; 32];
+            assert_eq!(none, hash(&pages, &libc_edit, policy));
+            let mut packaging_edit = inputs.clone();
+            packaging_edit[2].digest = [6; 32];
+            assert_ne!(none, hash(&pages, &packaging_edit, policy));
+            let mut source_edit = pages.clone();
+            source_edit.source.sha256 = "a".repeat(64);
+            assert_ne!(none, hash(&source_edit, &inputs, policy));
+            let mut dependent = pages.clone();
+            dependent.depends_on.push(DepRef { name: "compiled".into(), version: "1.0.0".into() });
+            assert_eq!(resolve_sysroot_arches(&dependent, &registry, TEST_ARCH).unwrap(), BTreeSet::from([TEST_ARCH]));
+            assert_ne!(hash(&dependent, &inputs, policy), hash(&dependent, &sdk_edit, policy),
+                "opting out must retain a compiled dependency's full SDK identity");
+            pages.build.toolchain = PackageToolchain::Sdk;
+        }
+        assert!(PACKAGE_PACKAGING_INPUTS.iter().all(|path| GLOBAL_PACKAGE_TOOLCHAIN_INPUTS.contains(path)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn toolchain_none_path_removes_sdk_entries_and_aliases_but_keeps_packaging_tools() {
+        let root = tempdir("toolchain-none-path");
+        let sdk = root.join("sdk/bin");
+        fs::create_dir_all(&sdk).unwrap();
+        let mut entries = vec![sdk.clone(), root.join("sibling/sdk/bin/"), PathBuf::from("/usr/bin"), sdk.clone()];
+        #[cfg(unix)]
+        {
+            let alias = root.join("linked-tools");
+            std::os::unix::fs::symlink(&sdk, &alias).unwrap();
+            entries.push(alias);
+        }
+        let inherited = std::env::join_paths(&entries).unwrap();
+        let filtered = package_build_path(&root, PackageToolchain::None, &inherited).unwrap();
+        assert_eq!(std::env::split_paths(&filtered).collect::<Vec<_>>(), vec![PathBuf::from("/usr/bin")]);
+        let ordinary = package_build_path(&root, PackageToolchain::Sdk, &inherited).unwrap();
+        assert_eq!(std::env::split_paths(&ordinary).next().unwrap(), sdk);
+        let mut command = Command::new("bash");
+        configure_package_toolchain_environment(&mut command, &root, PackageToolchain::None).unwrap();
+        for variable in ["CC", "CONFIG_SITE", "WASM_POSIX_SYSROOT"] {
+            assert!(command.get_envs().any(|(name, value)| name == variable && value.is_none()));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn toolchain_none_recipe_catches_accidental_sdk_use_before_publication() {
+        let root = tempdir("toolchain-none-recipe");
+        let cache = root.join("cache");
+        let fake_sdk = root.join("sdk/bin");
+        fs::create_dir_all(&fake_sdk).unwrap();
+        let compiler = fake_sdk.join("wasm32posix-cc");
+        fs::write(&compiler, "#!/bin/bash\nprintf 'SDK was called\\n'\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&compiler, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        write_lib(&root, "bad-pages", "1.0.0", &[],
+            "wasm32posix-cc\nmkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\nprintf 'data' > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"",
+            "[outputs]\nlibs = [\"lib/out.a\"]\n");
+        let registry = Registry { roots: vec![root.clone()] };
+        let mut manifest = registry.load("bad-pages").unwrap();
+        manifest.build.toolchain = PackageToolchain::None;
+        let error = ensure_built(&manifest, &registry, TEST_ARCH, TEST_ABI,
+            &resolve_opts_with_repo(&cache, None, &root)).unwrap_err();
+        assert!(error.contains("127"), "compiler should be absent: {error}");
+        let sha = compute_sha(&manifest, &registry, TEST_ARCH, TEST_ABI,
+            &mut BTreeMap::new(), &mut Vec::new()).unwrap();
+        assert!(!canonical_path(&cache, &manifest, TEST_ARCH, TEST_ABI, &sha).exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -27991,6 +28420,41 @@ libs = ["lib/libBar.a"]
     // path. These tests pin that behaviour.
 
     #[test]
+    fn share_pkgconfig_prefix_is_rewritten_to_canonical_path() {
+        let root = tempdir("sharepc-reg");
+        let cache = tempdir("sharepc-cache");
+        write_lib(
+            &root,
+            "libSharePc",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/share/pkgconfig"
+cat > "$WASM_POSIX_DEP_OUT_DIR/share/pkgconfig/libSharePc.pc" <<PCEOF
+prefix=$WASM_POSIX_DEP_OUT_DIR
+pkgdatadir=\${prefix}/share/libSharePc
+Name: libSharePc
+Version: 1.0.0
+PCEOF
+"#,
+            r#"[outputs]
+pkgconfig = ["share/pkgconfig/libSharePc.pc"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libSharePc").unwrap();
+
+        let canonical =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+
+        let pc = std::fs::read_to_string(canonical.join("share/pkgconfig/libSharePc.pc")).unwrap();
+        assert!(
+            pc.contains(&format!("prefix={}", canonical.display())),
+            "share/pkgconfig prefix must point at the canonical cache path; got:\n{pc}"
+        );
+    }
+
+    #[test]
     fn pkgconfig_prefix_is_rewritten_to_canonical_path() {
         let root = tempdir("pc-rewrite-reg");
         let cache = tempdir("pc-rewrite-cache");
@@ -28440,6 +28904,55 @@ libs = ["lib/libBaz.a"]
 
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libBaz").unwrap();
+        ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+    }
+
+    /// An architecture-independent dependency installs its `.pc` under
+    /// `share/pkgconfig/`, the second directory pkg-config searches under
+    /// a prefix. The consumer's `WASM_POSIX_DEP_PKG_CONFIG_PATH` carries it.
+    #[test]
+    fn pkg_config_path_includes_share_pkgconfig() {
+        let root = tempdir("pcshare-reg");
+        let cache = tempdir("pcshare-cache");
+        write_lib(
+            &root,
+            "libData",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/share/pkgconfig"
+cat > "$WASM_POSIX_DEP_OUT_DIR/share/pkgconfig/libData.pc" <<'PCEOF'
+Name: libData
+Version: 1.0.0
+PCEOF
+"#,
+            r#"[outputs]
+pkgconfig = ["share/pkgconfig/libData.pc"]
+"#,
+        );
+        write_lib(
+            &root,
+            "libUser",
+            "1.0.0",
+            &["libData@1.0.0"],
+            r#"
+case "$WASM_POSIX_DEP_PKG_CONFIG_PATH" in
+    *libData*share/pkgconfig*) : ;;
+    *)
+        echo "WASM_POSIX_DEP_PKG_CONFIG_PATH lacks libData's share/pkgconfig: $WASM_POSIX_DEP_PKG_CONFIG_PATH" >&2
+        exit 1
+        ;;
+esac
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libUser.a"
+"#,
+            r#"[outputs]
+libs = ["lib/libUser.a"]
+"#,
+        );
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libUser").unwrap();
         ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
     }
 
@@ -35676,6 +36189,13 @@ spdx = "TestLicense"
             return;
         }
 
+        // WHY: the public resolve preflight may first build the native SDK
+        // driver, whose Cargo cache follows HOME. Provision that prerequisite
+        // before replacing HOME/XDG solely to detect ordinary package-cache
+        // access; the child still performs the normal freshness check.
+        crate::local_build::ensure_package_sysroot(&repo_root(), default_target_arch().unwrap())
+            .unwrap();
+
         let registry_root = tempdir("source-handoff-public-cli-registry");
         let (archive, digest) = fixture_source_archive(&registry_root);
         write_source_archive_fixture(&registry_root, "consumer-source", &archive, &digest);
@@ -35708,6 +36228,14 @@ printf 'PUBLIC\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
 
         let ordinary_cache_home = registry_root.join("ordinary-cache-home");
         let ordinary_home = registry_root.join("ordinary-home");
+        // SDK freshness checks may run Cargo before the fixture build. Keep
+        // that independent host-tool cache at its parent location: changing
+        // HOME here is intended to detect ordinary binary resolver caches.
+        let cargo_home = std::env::var_os("CARGO_HOME").unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").expect("test requires HOME or CARGO_HOME"))
+                .join(".cargo")
+                .into_os_string()
+        });
         let output = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -35719,6 +36247,7 @@ printf 'PUBLIC\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
             .env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT", &selected_base)
             .env("XDG_CACHE_HOME", &ordinary_cache_home)
             .env("HOME", &ordinary_home)
+            .env("CARGO_HOME", &cargo_home)
             .env_remove("WASM_POSIX_BINARY_CACHE_ROOT")
             .env_remove(SOURCE_ONLY_POLICY_ENV)
             .output()
@@ -35733,7 +36262,9 @@ printf 'PUBLIC\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
         assert!(selected_base.join("source-archives/sha256").is_dir());
         assert!(
             !ordinary_cache_home.exists() && !ordinary_home.exists(),
-            "source-only CLI consulted an ordinary cache default",
+            "source-only CLI consulted an ordinary cache default:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
 
         let origin_trap = registry_root.join("top-level-origin-must-not-open.tar.gz");

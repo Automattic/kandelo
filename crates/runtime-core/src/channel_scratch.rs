@@ -7,7 +7,7 @@ use core::mem::size_of;
 
 use wasm_posix_shared::abi::extended_syscalls;
 use wasm_posix_shared::host_abi::{
-    SYSCALL_ARG_DESCRIPTORS, SyscallArgDesc, SyscallArgSize,
+    SyscallArgDesc, SyscallArgSize,
 };
 use wasm_posix_shared::{
     Errno, Syscall, WasmEpollEvent, WasmSysvMessageHeader, kernel_scratch_wire, prctl,
@@ -577,12 +577,10 @@ pub unsafe fn validate_channel_scratch_arguments(
     if syscall_number == extended_syscalls::SYS_PRCTL {
         return validate_prctl_layout(args, region);
     }
-    if let Ok(index) = SYSCALL_ARG_DESCRIPTORS
-        .binary_search_by_key(&syscall_number, |descriptor| descriptor.syscall_number)
-    {
-        return unsafe {
-            validate_descriptor_layout(args, SYSCALL_ARG_DESCRIPTORS[index].args, region, pointer_width)
-        };
+    // Base syscalls and program-extension requests stage through the same
+    // descriptor shapes; `request_arg_descriptor` keeps their tables apart.
+    if let Some(entry) = wasm_posix_shared::host_abi::request_arg_descriptor(syscall_number) {
+        return unsafe { validate_descriptor_layout(args, entry.args, region, pointer_width) };
     }
     validate_special_layout(syscall_number, args, region, pointer_width)
 }

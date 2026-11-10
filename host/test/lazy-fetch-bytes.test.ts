@@ -103,6 +103,46 @@ describe("native rootfs lazy transport retry policy", () => {
 
 });
 
+it("carries an explicit reload through the native byte transport", async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+  expect(await fetchLazyResourceBytes(fetcher, "https://fixture.invalid/data", 3, undefined,
+    { cache: "reload" })).toEqual(new Uint8Array([1, 2, 3]));
+  expect(fetcher).toHaveBeenCalledWith("https://fixture.invalid/data", { cache: "reload" });
+});
+
+
+it.each(["advertised", "streamed"])("preserves the %s native-bound rejection cause through the shared EIO pipe", async (kind) => {
+  const events: Array<{ status: string; error?: string }> = [];
+  let cancelled = false;
+  const fetcher = vi.fn(async () => new Response(new ReadableStream({
+    start(controller) { if (kind === "streamed") controller.enqueue(new Uint8Array([1, 2, 3, 4])); },
+    cancel() { cancelled = true; },
+  }), kind === "advertised" ? { headers: { "content-length": "4" } } : {}));
+  const wiring = buildRootfsLazyWiring((uri, progress) => fetchLazyResourceBytes(fetcher, uri, 3, progress),
+    event => events.push(event));
+  const dest = new Uint8Array(3).fill(99);
+  expect(wiring.deferredProvider("font.bin", 0n, dest)).toBe(-11);
+  await wiring.whenFetchSettles();
+  expect(wiring.deferredProvider("font.bin", 0n, dest)).toBe(-5);
+  expect(wiring.deferredProvider("font.bin", 0n, dest)).toBe(-5);
+  expect(dest).toEqual(new Uint8Array(3).fill(99));
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(cancelled).toBe(true);
+  expect(events.at(-1)).toMatchObject({ status: "error", error: expect.stringContaining("native byte bound 3") });
+  expect(events.map(event => event.status)).not.toContain("complete");
+});
+
+it("preserves exhausted HTTP failure attribution without restarting failed reads", async () => {
+  const events: Array<{ status: string; error?: string }> = [];
+  const fetcher = vi.fn(async () => new Response("not found", { status: 404 }));
+  const wiring = buildRootfsLazyWiring(uri => fetchLazyResourceBytes(fetcher, uri, 3), event => events.push(event));
+  expect(wiring.deferredProvider("font.bin", 0n, new Uint8Array(3))).toBe(-11);
+  await wiring.whenFetchSettles();
+  expect(wiring.deferredProvider("font.bin", 0n, new Uint8Array(3))).toBe(-5);
+  expect(events.at(-1)).toMatchObject({ status: "error", error: expect.stringContaining("HTTP 404") });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
 describe("native rootfs lazy transport phases", () => {
   it("starts the transfer idle deadline only after preparation settles", async () => {
     vi.useFakeTimers();

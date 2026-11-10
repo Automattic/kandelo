@@ -36,6 +36,49 @@ npx tsx benchmarks/compare.ts benchmarks/results/before.json benchmarks/results/
 If a benchmark suite skips because its binary is missing, the claim is not
 proven. Build or fetch the prerequisite before drawing conclusions.
 
+## Investigate before rebuilding the full preview
+
+Screen performance theories with profiles of an existing frozen build and
+small diagnostics around the measured hot path. Record source/artifact
+identities, include setup or invocation costs relevant to the change, and
+exercise equal/changed data and small/large inputs. A fast isolated operation
+is evidence about that operation; application benefit remains to be measured.
+Do not require a new SDK, every package and a new image for each theory.
+
+Keep a provisioned experimental checkout for incremental investigations.
+Host-only changes can reuse its compatible kernel and program artifacts;
+Vite can consume TypeScript directly, while distribution-entry tests need
+an incremental host build. Kernel implementation changes need a normal kernel
+build. Rebuild SDK/program/image inputs when their actual contracts or build
+inputs change, and preserve freshness and ABI failures. Never force a stale
+cache key or borrow incompatible artifacts to make an experiment run.
+
+Stop the experimental server before changing its source, freeze each run's
+inputs and preserve already published previews. Full normal preview builds
+and the required application, cross-host, memory and conformance gates are
+candidate checkpoints. They remain required for acceptance and broad claims;
+they are not prerequisites for profiling or an isolated diagnostic.
+See [the incremental investigation loop](../profiling.md#incremental-performance-investigations).
+
+## Fork address-space copy mode
+
+Fork copies the parent's whole address space into a new memory. The
+`forkCopy` host option (`NodeKernelHost`, `BrowserKernel`) selects how:
+
+- `"sparse"` (default) skips all-zero pages, so the child commits far less
+  memory. Keep it for memory-bound sessions: browser machines (especially
+  WebKit), PHP-FPM and other prefork services, and anything near its process
+  memory budget.
+- `"dense"` writes every byte. Choose it when fork latency matters more than
+  memory, such as fork-heavy Node workloads (`configure`, `make`, shell
+  loops). In one Node benchmark it was about 5-7% faster on `fork_ms` and
+  `clone_ms`.
+
+Both modes produce identical child bytes, so switching is a resource
+choice, not a behavior change. State which mode a fork benchmark used, and
+compare modes on the workload that matters rather than assuming either is
+faster or smaller. See `docs/architecture.md` (fork step 6).
+
 ## Comparing the finished change with its destination
 
 For a claim about performance after merge, compare the latest runtime with

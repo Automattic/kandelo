@@ -30,9 +30,10 @@ int main(void) {
     CHECK(res->count_crtcs >= 1, "count_crtcs");
     CHECK(res->count_connectors >= 1, "count_connectors");
     CHECK(res->count_encoders >= 1, "count_encoders");
+    /* Mode objects share one id space, as on Linux. */
     CHECK(res->crtcs[0] == 1, "crtcs[0]");
-    CHECK(res->connectors[0] == 1, "connectors[0]");
-    CHECK(res->encoders[0] == 1, "encoders[0]");
+    CHECK(res->encoders[0] == 2, "encoders[0]");
+    CHECK(res->connectors[0] == 3, "connectors[0]");
     uint32_t crtc_id = res->crtcs[0];
     uint32_t conn_id = res->connectors[0];
     uint32_t enc_id  = res->encoders[0];
@@ -45,7 +46,8 @@ int main(void) {
 
     drmModeEncoderPtr enc = drmModeGetEncoder(fd, enc_id);
     CHECK(enc, "drmModeGetEncoder");
-    CHECK(enc->crtc_id == crtc_id, "encoder.crtc_id");
+    /* An encoder has no selected CRTC until a real modeset enables one. */
+    CHECK(enc->crtc_id == 0, "disabled encoder.crtc_id");
 
     drmModeCrtcPtr crtc = drmModeGetCrtc(fd, crtc_id);
     CHECK(crtc, "drmModeGetCrtc");
@@ -53,18 +55,28 @@ int main(void) {
 
     struct drm_mode_create_dumb cd;
     memset(&cd, 0, sizeof(cd));
-    cd.width = 64; cd.height = 64; cd.bpp = 32;
+    cd.width = conn->modes[0].hdisplay; cd.height = conn->modes[0].vdisplay; cd.bpp = 32;
     CHECK(ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &cd) == 0, "CREATE_DUMB");
 
     uint32_t handles[4] = { cd.handle, 0, 0, 0 };
     uint32_t pitches[4] = { cd.pitch,  0, 0, 0 };
     uint32_t offsets[4] = { 0, 0, 0, 0 };
     uint32_t fb_id = 0;
-    CHECK(drmModeAddFB2(fd, 64, 64, DRM_FORMAT_XRGB8888,
+    CHECK(drmModeAddFB2(fd, cd.width, cd.height, DRM_FORMAT_XRGB8888,
                         handles, pitches, offsets, &fb_id, 0) == 0,
           "drmModeAddFB2");
     CHECK(fb_id != 0, "fb_id != 0");
 
+    CHECK(drmModeSetCrtc(fd, crtc_id, fb_id, 0, 0, &conn_id, 1, &conn->modes[0]) == 0,
+          "drmModeSetCrtc enable");
+    drmModeFreeEncoder(enc);
+    enc = drmModeGetEncoder(fd, enc_id);
+    CHECK(enc && enc->crtc_id == crtc_id, "enabled encoder.crtc_id");
+    CHECK(drmModeSetCrtc(fd, crtc_id, 0, 0, 0, NULL, 0, NULL) == 0,
+          "drmModeSetCrtc disable");
+    drmModeFreeEncoder(enc);
+    enc = drmModeGetEncoder(fd, enc_id);
+    CHECK(enc && enc->crtc_id == 0, "disabled again encoder.crtc_id");
     CHECK(drmModeRmFB(fd, fb_id) == 0, "drmModeRmFB");
 
     drmModeFreeCrtc(crtc);

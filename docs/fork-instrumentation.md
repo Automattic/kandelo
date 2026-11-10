@@ -1720,6 +1720,60 @@ Do not add `--closed-world` or other whole-program GC type passes after
 instrumentation: they may rewrite the GC types the reference codecs
 describe in `kandelo.wpk_fork.gc_codec`.
 
+### Optional source-line maps
+
+`--debug-map` reads linked DWARF line information before the transform
+removes it. It records the actual emitted ranges of source operations,
+then passes a standard source map through the final Binaryen optimization.
+The flag fails if the input has no usable DWARF; `--keep-names` separately
+retains function names. `--debug-map-if-present` uses available line
+information but accepts absent or empty line tables; present malformed or
+oversized metadata still fails. Rust compiler entry points use this mode.
+Compile the linked input with debug information:
+
+```sh
+scripts/run-wasm-fork-instrument.sh linked-with-debug.wasm \
+  --debug-map --keep-names -o prepared.wasm
+scripts/run-wasm-fork-instrument.sh prepared.wasm --debug-location 0x1234
+```
+
+The lookup takes an **absolute module byte offset**, as reported by a Wasm
+frame with a program counter. It prints JSON containing the exact input
+module's SHA-256, the offset, and a one-based source line/column, or a null
+location when unresolved. A frame without an instruction offset cannot be
+resolved by this command. It never opens or fetches a source file.
+
+The optional `kandelo.debug.lines` custom section is appended after Code.
+Its format is the eight bytes `KDBG\x01\0\0\0`, the Code payload's absolute
+offset as a little-endian u64, the 32-byte SHA-256 of that payload, then a
+flat source-map v3 JSON document. Generated columns are absolute Wasm byte
+offsets on generated line zero. The binding rejects a map if another pass
+changes the code or moves it. The full module hash in lookup output binds
+the observation to the actual final artifact; the map's `file` field is
+never treated as identity. Regenerate maps through the preparation pipeline
+after further transformations. Ordinary preparation removes an old embedded
+map rather than copying stale locations.
+
+Source operations lowered to semantic helper calls retain their call-site
+locations. Generated helper bodies, activation setup/replay and surrounding
+table/segment bookkeeping remain unmapped. Overlapping conflicting DWARF
+locations remain unresolved. Optimization can remove functions. When a map is requested, the final
+Binaryen pass disables function inlining: otherwise it can replace a mapped
+source call with an unmapped generated helper body. Other optimizations still
+run, and earlier compiler inlining is unchanged. This map does not recreate
+logical inline frames, locals or variable values.
+DWARF and map bytes, line rows, filenames and paths have explicit budgets;
+exceeding one fails preparation. Filenames are diagnostic metadata, never
+permission to read host files. The source-map reader covers linked DWARF 4
+and 5 line tables, including separate compilation units.
+
+`tests/debug_lines.rs` checks actual Node frame offsets from compiled C and
+Rust before/after native instrumentation and optimization, plus failure
+before destination replacement. The shared worker consumes these maps for
+[Rust backtraces](rust-target.md#source-diagnostics-and-backtraces), using the
+[versioned stack capture interface](program-extensions.md). Source maps do
+not implement breakpoints, stepping or local-variable inspection.
+
 ## Dispatch schemes
 
 Every fork-path function uses **one of two dispatch shapes**, chosen by the
@@ -2252,6 +2306,16 @@ assume the dlopen contract (`--side-modules=traced-entries`), which only
 bash needs (it can dlopen); with `assume-all-entries-fork-returning` bash
 keeps 1,927 of 1,929 functions. Instrumented binaries
 built through the SDK with embedded facts have not been run yet.
+
+The file-backed conversion analysis checks fixed-point convergence by
+probing the current and previous non-null primary-key sets in both
+directions. It does not materialize temporary `EXCEPT` result trees.
+Both components of conversion pairs and the separate name relation must
+agree before the existing feedback loop can stop. The four-round policy,
+conservative target discovery and emitted continuation format are
+unchanged. Exhaustive small-snapshot differential tests compare the
+indexed query with set difference; schema and query-plan controls protect
+its non-null and indexed-probe assumptions.
 
 ## Guarantees and non-guarantees
 

@@ -9,11 +9,13 @@ import {
   CH_SYSCALL,
   CH_TOTAL_SIZE,
   CHANNEL_STATUS_COMPLETE,
+  CHANNEL_STATUS_PENDING,
 } from "../src/generated/abi";
 import {
   createCentralizedKernelWorkerTestDouble,
 } from "../src/kernel-worker";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import { WasmPosixKernel } from "../src/kernel";
 import {
   createKernelSharedMappingStub,
   SYSV_MIRROR_EXPORT_NAMES,
@@ -451,6 +453,322 @@ function sysvHarness(options: SysvMirrorStubOptions = {}) {
     writeChunk,
   };
 }
+
+describe("kernel-owned shared-mapping boundary failures", () => {
+  function pendingChannel(h: ReturnType<typeof sysvHarness>) {
+    const channel = (h.kw as any).processes.get(h.pids[0]).channels[0];
+    channel.i32View = new Int32Array(channel.memory.buffer, 0, 1);
+    channel.consecutiveSyscalls = 0;
+    Object.assign(h.kw as any, {
+      config: {},
+      syscallRing: new Map(),
+      syscallTraceEnabled: false,
+      pendingCancels: new Set(),
+    });
+    writeChannelSyscall(channel, ABI_SYSCALLS.Getpid, []);
+    Atomics.store(channel.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
+    return channel;
+  }
+
+  it.each([-5, -12, 1])("rejects boundary export result %i before dispatch and completes EIO once", (result) => {
+    const h = sysvHarness({
+      fail: { kernel_shared_mapping_sync_process: result },
+    });
+    const channel = pendingChannel(h);
+    const relisten = vi.fn();
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: relisten });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      (h.kw as any).handleSyscall(channel);
+      const view = new DataView(channel.memory.buffer);
+      expect(h.handleChannel).not.toHaveBeenCalled();
+      // Raw error completion contains one further synchronization attempt;
+      // it catches that failure rather than replaying the syscall.
+      expect(h.sysv.callsTo("kernel_shared_mapping_sync_process")).toEqual([
+        { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 3] },
+        { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
+      ]);
+      expect(view.getBigInt64(CH_RETURN, true)).toBe(-5n);
+      expect(view.getUint32(CH_ERRNO, true)).toBe(5);
+      if (result < 0) {
+        expect(error).toHaveBeenCalledWith(
+          `[completeChannel] shared-memory synchronization failed for pid=${channel.pid}:`,
+          expect.objectContaining({
+            message: `Cannot synchronize kernel shared mappings for pid=${channel.pid}: boundary=completion, status=${result}`,
+          }),
+        );
+      }
+      expect(Atomics.load(channel.i32View, CH_STATUS / 4)).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(relisten).toHaveBeenCalledExactlyOnceWith(channel);
+    } finally { error.mockRestore(); }
+  });
+
+  it("dispatches and completes normally when the real sync export succeeds", () => {
+    const h = sysvHarness();
+    const channel = pendingChannel(h);
+    const relisten = vi.fn();
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: relisten });
+    (h.kw as any).handleSyscall(channel);
+    const view = new DataView(channel.memory.buffer);
+    expect(h.handleChannel).toHaveBeenCalledTimes(1);
+    expect(h.sysv.callsTo("kernel_shared_mapping_sync_process")).toHaveLength(2);
+    expect(view.getBigInt64(CH_RETURN, true)).toBe(0n);
+    expect(view.getUint32(CH_ERRNO, true)).toBe(0);
+    expect(Atomics.load(channel.i32View, CH_STATUS / 4)).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(relisten).toHaveBeenCalledExactlyOnceWith(channel);
+  });
+
+  it("tells the kernel which boundary each sync is", () => {
+    const h = sysvHarness();
+    const channel = pendingChannel(h);
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: vi.fn() });
+    (h.kw as any).handleSyscall(channel);
+    writeChannelSyscall(channel, ABI_SYSCALLS.Getpid, []);
+    Atomics.store(channel.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
+    (h.kw as any).handleSyscall(channel);
+    // Entry (3): no kernel-file work. Completion (0): pull peers, refresh.
+    expect(h.sysv.callsTo("kernel_shared_mapping_sync_process").map((c) => c.args))
+      .toEqual([[channel.pid, 3], [channel.pid, 0], [channel.pid, 3], [channel.pid, 0]]);
+  });
+
+  it("treats a completion without a recorded entry, or with output bytes, as a completion", () => {
+    const h = sysvHarness();
+    const channel = pendingChannel(h);
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: vi.fn() });
+    (h.kw as any).completeChannel(channel, ABI_SYSCALLS.Getpid, [], undefined, 0, 0, []);
+    (h.kw as any).completeChannel(
+      channel, ABI_SYSCALLS.Read, [0, 0x5000, 1], undefined, 1, 0,
+      [{ ptr: 0x5000, bytes: new Uint8Array([0x6d]) }],
+    );
+    expect(h.sysv.callsTo("kernel_shared_mapping_sync_process")).toEqual([
+      { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
+      { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
+    ]);
+  });
+
+  it.each([ABI_SYSCALLS.Read, ABI_SYSCALLS.Readv, ABI_SYSCALLS.Recvfrom,
+    ABI_SYSCALLS.Recvmsg])(
+    "refreshes BO imports when receive %i consumes a publication newer than its readiness wake",
+    (syscallNr) => {
+      const h = sysvHarness(), channel = pendingChannel(h);
+      const reader = channel.memory, writer = h.memories.get(h.pids[1])!;
+      const kernel = new WasmPosixKernel({}, {} as any, {
+        getProcessMemory: pid => h.memories.get(pid),
+      });
+      h.kw.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
+      const address = 0x6000, size = 256;
+      kernel.bos.create({ pid: h.pids[1], bo_id: 7, size, w: 16, h: 4, stride: 64 });
+      for (const [pid, memory] of [[channel.pid, reader], [h.pids[1], writer]] as const) {
+        kernel.bos.bind(pid, 7, address, size);
+        kernel.bos.primeBindFromSab(pid, 7, memory, address);
+      }
+      // A previous message woke the reader. The producer paints and sends
+      // another commit while the reader is still draining that socket.
+      kernel.bos.syncImportsForPid(channel.pid, reader);
+      new Uint8Array(writer.buffer)[address + 17] = 0xdc;
+      const observed: number[] = [];
+      h.kw.testAuthority.configureScratchBoundaryHooksForTest({
+        relistenChannel: () => { observed.push(...new Uint8Array(reader.buffer, address + 17, 2)); },
+      });
+      (h.kw as any).completeChannel(channel, syscallNr, [4, address + 18, 1], undefined, 1, 0,
+        [{ ptr: address + 18, bytes: new Uint8Array([0x5d]) }]);
+      expect(new Uint8Array(reader.buffer)[address + 17]).toBe(0xdc);
+      expect([...kernel.bos.pixelView(7)!.slice(17, 19)]).toEqual([0xdc, 0x5d]);
+      expect(observed).toEqual([0xdc, 0x5d]);
+    },
+  );
+
+  it.each([
+    [ABI_SYSCALLS.Wait4, 42, false],
+    [ABI_SYSCALLS.Wait4, 0, false],
+    [ABI_SYSCALLS.Waitid, 0, false],
+    [ABI_SYSCALLS.Wait4, 42, true],
+    [ABI_SYSCALLS.Waitid, 0, true],
+  ] as const)("imports departed child BO writes for wait %i result %i raw=%s before resume", (syscallNr, result, raw) => {
+    const h=sysvHarness(),channel=pendingChannel(h),reader=channel.memory;
+    const writer=h.memories.get(h.pids[1])!;
+    const kernel=new WasmPosixKernel({},{} as any,{getProcessMemory:pid=>h.memories.get(pid)});
+    h.kw.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
+    const address=0x6000,size=256;
+    kernel.bos.create({pid:h.pids[1],bo_id:7,size,w:16,h:4,stride:64});
+    for(const [pid,memory] of [[channel.pid,reader],[h.pids[1],writer]] as const){
+      kernel.bos.bind(pid,7,address,size);kernel.bos.primeBindFromSab(pid,7,memory,address);
+    }
+    new Uint8Array(writer.buffer)[address+17]=0xdc;
+    kernel.bos.unbind(h.pids[1],7,address,size);
+    expect(kernel.bos.pixelView(7)![17]).toBe(0xdc);
+    expect(new Uint8Array(reader.buffer)[address+17]).toBe(0);
+    const observed:number[]=[];
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({
+      relistenChannel:()=>{observed.push(...new Uint8Array(reader.buffer,address+17,2));},
+    });
+    if(raw){
+      // Kernel-decided wait outputs precede the completion event; preserve
+      // them while importing the departed writer's disjoint byte.
+      new Uint8Array(reader.buffer)[address+18]=0x5d;
+      (h.kw as any).completeChannelRaw(channel,result,0,undefined,true,true);
+    }else{
+      (h.kw as any).completeChannel(channel,syscallNr,[],undefined,result,0,
+        [{ptr:address+18,bytes:new Uint8Array([0x5d])}]);
+    }
+    expect(observed).toEqual([0xdc,0x5d]);
+    expect([...kernel.bos.pixelView(7)!.slice(17,19)]).toEqual([0xdc,0x5d]);
+  });
+
+  it.each([
+    [ABI_SYSCALLS.Recvmsg, 0, 0],
+    [ABI_SYSCALLS.Recvmsg, -1, 11],
+    [ABI_SYSCALLS.Getpid, 61, 0],
+    [ABI_SYSCALLS.Wait4, -1, 10],
+    [ABI_SYSCALLS.Waitid, -1, 10],
+  ])("does not scan BO imports for syscall %i returning %i with errno %i", (syscallNr, value, errno) => {
+    const h = sysvHarness(), channel = pendingChannel(h);
+    const kernel = new WasmPosixKernel({}, {} as any);
+    h.kw.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
+    const scan = vi.spyOn(kernel.bos, "hasStaleableImports");
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: vi.fn() });
+    (h.kw as any).completeChannel(channel, syscallNr, [], undefined, value, errno, []);
+    expect(scan).not.toHaveBeenCalled();
+    expect(new DataView(channel.memory.buffer).getBigInt64(CH_RETURN, true)).toBe(BigInt(value));
+  });
+
+  // `host_proc_quiescent_epoch` (`CleanStamp` in runtime-core memory.rs):
+  // an epoch only while no guest code of the process can run, and a new one
+  // after anything that can change its memory.
+  describe("quiescent epoch", () => {
+    function addSibling(h: ReturnType<typeof sysvHarness>, status: number) {
+      const channel = (h.kw as any).processes.get(h.pids[0]).channels[0];
+      const registration = (h.kw as any).processes.get(h.pids[0]);
+      const siblingOffset = 0x8000;
+      const sibling = {
+        pid: channel.pid,
+        memory: channel.memory,
+        channelOffset: siblingOffset,
+        i32View: new Int32Array(channel.memory.buffer, siblingOffset, 1),
+      };
+      Atomics.store(sibling.i32View, CH_STATUS / 4, status);
+      registration.channels.push(sibling);
+      return sibling;
+    }
+
+    it("is reported only while every thread channel is pending", () => {
+      const h = sysvHarness();
+      const channel = pendingChannel(h);
+      const epoch = () => h.kw.testAuthority.processQuiescentEpochForTest(channel.pid);
+      expect(epoch()).toBeGreaterThanOrEqual(0n);
+      const sibling = addSibling(h, CHANNEL_STATUS_COMPLETE);
+      expect(epoch()).toBe(-1n);
+      Atomics.store(sibling.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
+      expect(epoch()).toBeGreaterThanOrEqual(0n);
+      // A thread whose channel was attached but has made no syscall yet.
+      Atomics.store(sibling.i32View, CH_STATUS / 4, 0);
+      expect(epoch()).toBe(-1n);
+      Atomics.store(channel.i32View, CH_STATUS / 4, CHANNEL_STATUS_COMPLETE);
+      Atomics.store(sibling.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
+      expect(epoch()).toBe(-1n);
+    });
+
+    it("is never reported for an unknown process or one whose memory is borrowed", () => {
+      const h = sysvHarness();
+      const channel = pendingChannel(h);
+      expect(h.kw.testAuthority.processQuiescentEpochForTest(9999)).toBe(-1n);
+      const processes = (h.kw as any).processes as Map<number, any>;
+      const borrower = { ...processes.get(channel.pid), pid: 4242, channels: [] };
+      processes.set(4242, borrower);
+      try {
+        expect(h.kw.testAuthority.processQuiescentEpochForTest(channel.pid)).toBe(-1n);
+      } finally { processes.delete(4242); }
+    });
+
+    it("changes when a completion is materialized and when it is published", () => {
+      const h = sysvHarness();
+      const channel = pendingChannel(h);
+      const epoch = () => h.kw.testAuthority.processQuiescentEpochForTest(channel.pid);
+      const before = epoch();
+      const prepared = {
+        kind: "marshalled", outputWrites: [], retVal: 0, errVal: 0,
+        materialized: false, relistenRequested: false,
+      };
+      (h.kw as any).materializePreparedChannelCompletion(channel, prepared);
+      const materialized = epoch();
+      expect(materialized).toBeGreaterThan(before);
+      (h.kw as any).publishPreparedChannelCompletion(channel, prepared);
+      expect(epoch()).toBe(-1n);
+      Atomics.store(channel.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
+      expect(epoch()).toBeGreaterThan(materialized);
+    });
+  });
+
+  it.each([-5, 0])("completes a detached output with sync result %i without hiding its effects", (result) => {
+    let channel: ReturnType<typeof pendingChannel>;
+    const ptr = 0x5000;
+    const observed: number[] = [];
+    const h = sysvHarness({ fail: {
+      get kernel_shared_mapping_sync_process() {
+        observed.push(new Uint8Array(channel.memory.buffer)[ptr]);
+        return result;
+      },
+    } });
+    channel = pendingChannel(h);
+    const relisten = vi.fn();
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: relisten });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      (h.kw as any).completeChannel(
+        channel, ABI_SYSCALLS.Read, [0, ptr, 1], undefined, 1, 0,
+        [{ ptr, bytes: new Uint8Array([0x6d]) }],
+      );
+      expect(observed).toEqual([0x6d]);
+      expect(new Uint8Array(channel.memory.buffer)[ptr]).toBe(0x6d);
+      const view = new DataView(channel.memory.buffer);
+      expect(view.getBigInt64(CH_RETURN, true)).toBe(BigInt(result < 0 ? -5 : 1));
+      expect(view.getUint32(CH_ERRNO, true)).toBe(result < 0 ? 5 : 0);
+      expect(Atomics.load(channel.i32View, CH_STATUS / 4)).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(relisten).toHaveBeenCalledExactlyOnceWith(channel);
+      expect(h.handleChannel).not.toHaveBeenCalled();
+    } finally { error.mockRestore(); }
+  });
+
+  it.each([-5, 0])("materializes outputs before sync result %i without replaying effects", (result) => {
+    let channel: ReturnType<typeof pendingChannel>;
+    const ptr = 0x5000;
+    const observed: number[] = [];
+    const h = sysvHarness({ fail: {
+      get kernel_shared_mapping_sync_process() {
+        observed.push(new Uint8Array(channel.memory.buffer)[ptr]);
+        return result;
+      },
+    } });
+    channel = pendingChannel(h);
+    const relisten = vi.fn();
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: relisten });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const prepared = {
+      kind: "marshalled", outputWrites: [{ ptr, bytes: new Uint8Array([0x6d]) }],
+      retVal: 1, errVal: 0, materialized: false, relistenRequested: true,
+    };
+    try {
+      // Exercise the actual completion materializer with an independently
+      // owned output. No boundary hook replaces the real export call.
+      (h.kw as any).materializePreparedChannelCompletion(channel, prepared);
+      expect(observed).toEqual([0x6d]);
+      expect(prepared.outputWrites).toEqual([]);
+      expect(prepared.retVal).toBe(result < 0 ? -5 : 1);
+      expect(prepared.errVal).toBe(result < 0 ? 5 : 0);
+      expect(prepared.materialized).toBe(true);
+      new Uint8Array(channel.memory.buffer)[ptr] = 0x7e;
+      (h.kw as any).materializePreparedChannelCompletion(channel, prepared);
+      expect(observed).toEqual([0x6d]);
+      expect(new Uint8Array(channel.memory.buffer)[ptr]).toBe(0x7e);
+      (h.kw as any).publishOrParkChannelCompletion(channel, prepared);
+      const view = new DataView(channel.memory.buffer);
+      expect(view.getBigInt64(CH_RETURN, true)).toBe(BigInt(result < 0 ? -5 : 1));
+      expect(view.getUint32(CH_ERRNO, true)).toBe(result < 0 ? 5 : 0);
+      expect(Atomics.load(channel.i32View, CH_STATUS / 4)).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(relisten).toHaveBeenCalledExactlyOnceWith(channel);
+    } finally { error.mockRestore(); }
+  });
+});
 
 describe("SysV SHM coherence and lifecycle", () => {
   // The publish/refresh byte protocol itself -- disjoint-run merging, version

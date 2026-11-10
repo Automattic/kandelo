@@ -1,0 +1,27 @@
+kind = "program"
+name = "m4-docs"
+version = "1.4.19"
+kernel_abi = 55
+depends_on = []
+
+# Upstream manual pages for the `m4` package (m4).
+# The source, SHA-256 and version are the `m4` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/m4/m4-1.4.19.tar.xz"
+sha256 = "63aede5c6d33b6d9b13511cd0be2cac046f2e70fd0a07aa9573a04a82783af96"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/m4.git/tree/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/m4-docs/build-m4-docs.sh"
+
+[[outputs]]
+name = "m4-docs"
+wasm = "m4-docs.zip"
+fork_instrumentation = "disabled"

@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import type { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { populateShellRuntimeLayout } from "./shell-runtime-layout";
 import { installPackageSessionFiles } from "./package-session-files";
+import { registerShellRustSdkManifest } from "./shell-rust-sdk-manifest";
 import { imageFileStat, registerResolvedProgramOriginal, type ProgramOriginalImageOptions } from "./program-originals";
 import { symlink } from "../../../host/src/vfs/image-helpers";
 import { ensureDirRecursive, writeVfsFile } from "./vfs-image-helpers";
@@ -143,4 +144,5 @@ export function populateSourceRootfsShellOverlay(
   // let the maker account's identity script ship in the layered base image
   // but not in this one.
   registerShellProfileScripts(fs, includes);
+  registerShellRustSdkManifest(fs, resolveArtifact, includes);
 }

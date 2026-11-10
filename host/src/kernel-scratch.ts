@@ -150,6 +150,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_drain_audio",
   "kernel_drain_wait_completions",
   "kernel_drain_wakeup_events",
+  "kernel_dri_fence_host_requests",
   "kernel_enum_procs",
   "kernel_epoll_wake_indices",
   "kernel_exchange_add_entry",
@@ -169,6 +170,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_get_cwd",
   "kernel_get_dirfd_path",
   "kernel_get_fd_path",
+  "kernel_get_process_exec_generation",
   "kernel_getrusage",
   "kernel_getsockopt",
   "kernel_handle_channel",
@@ -283,6 +285,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_drain_audio":
     case "kernel_drain_wait_completions":
     case "kernel_drain_wakeup_events":
+    case "kernel_dri_fence_host_requests":
     case "kernel_enum_procs":
     case "kernel_handle_channel":
     case "kernel_handle_channel_record":
@@ -322,6 +325,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_rootfs_lazy_resource_limits":
       return REQUIRED_POINTER_1;
     case "kernel_get_cwd":
+    case "kernel_get_process_exec_generation":
     case "kernel_getrusage":
     case "kernel_pipe2":
     case "kernel_process_attach_exe_path":
@@ -409,6 +413,7 @@ function isKernelScratchExportName(
     case "kernel_drain_audio":
     case "kernel_drain_wait_completions":
     case "kernel_drain_wakeup_events":
+    case "kernel_dri_fence_host_requests":
     case "kernel_enum_procs":
     case "kernel_epoll_wake_indices":
     case "kernel_exchange_add_entry":
@@ -428,6 +433,7 @@ function isKernelScratchExportName(
     case "kernel_get_cwd":
     case "kernel_get_dirfd_path":
     case "kernel_get_fd_path":
+    case "kernel_get_process_exec_generation":
     case "kernel_getrusage":
     case "kernel_getsockopt":
     case "kernel_handle_channel":

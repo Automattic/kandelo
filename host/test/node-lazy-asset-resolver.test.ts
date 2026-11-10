@@ -17,7 +17,11 @@ describe("Node lazy asset resolver ownership", () => {
     const wrapper = join(directory, "xtask");
     const hostTarget = execFileSync("rustc", ["-vV"], { encoding: "utf8" })
       .match(/^host: (.+)$/m)![1];
-    const checker = resolve("../target/program-index-checker", hostTarget, "release/xtask");
+    // CI prepares its checker in the ordinary native release directory. The
+    // fallback resolver only builds program-index-checker when no override
+    // exists; wrapping a guessed path would then invoke a missing binary.
+    const checker = process.env.WASM_POSIX_XTASK_BIN
+      ?? resolve("../target/program-index-checker", hostTarget, "release/xtask");
     const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
     writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quote(marker)}\nexec ${quote(checker)} "$@"\n`, { mode: 0o755 });
     const previousChecker = process.env.WASM_POSIX_XTASK_BIN;

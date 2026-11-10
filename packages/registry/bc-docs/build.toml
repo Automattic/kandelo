@@ -1,0 +1,10 @@
+script_path = "packages/registry/bc-docs/build-bc-docs.sh"
+inputs = [
+  "packages/registry/bc-docs/build-bc-docs.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/install-package-man-pages.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

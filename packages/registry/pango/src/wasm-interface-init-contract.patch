@@ -1,0 +1,126 @@
+Subject: [PATCH] Preserve full interface init callbacks and adapt unary sites explicitly
+
+GInterfaceInitFunc has two arguments. Keep its public registration macros at
+that arity; a shared one-argument trampoline must not erase genuine callbacks.
+Known one-argument initializers use explicit GLib unary adapter macros.
+Apply after the existing callback-signature portability patch.
+
+--- a/pango/fonts.c
++++ b/pango/fonts.c
+@@ -2664,7 +2664,7 @@
+ }
+ 
+ G_DEFINE_ABSTRACT_TYPE_WITH_CODE (PangoFontFamily, pango_font_family, G_TYPE_OBJECT,
+-                                  G_IMPLEMENT_INTERFACE (G_TYPE_LIST_MODEL, pango_font_family_list_model_init))
++                                  G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_LIST_MODEL, pango_font_family_list_model_init))
+ 
+ static PangoFontFace *pango_font_family_real_get_face (PangoFontFamily *family,
+                                                        const char      *name);
+--- a/pango/pango-fontmap.c
++++ b/pango/pango-fontmap.c
+@@ -71,7 +71,7 @@
+ G_DEFINE_ABSTRACT_TYPE_WITH_CODE (PangoFontMap, pango_font_map, G_TYPE_OBJECT,
+                                   G_ADD_PRIVATE (PangoFontMap)
+                                   g_type_add_class_private (g_define_type_id, sizeof (PangoFontMapClassPrivate));
+-                                  G_IMPLEMENT_INTERFACE (G_TYPE_LIST_MODEL, pango_font_map_list_model_init))
++                                  G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_LIST_MODEL, pango_font_map_list_model_init))
+ 
+ static void
+ pango_font_map_get_property (GObject    *object,
+--- a/pango/pangocairo-coretextfont.c
++++ b/pango/pangocairo-coretextfont.c
+@@ -59,7 +59,7 @@
+ }
+ 
+ G_DEFINE_TYPE_WITH_CODE (PangoCairoCoreTextFont, pango_cairo_core_text_font, PANGO_TYPE_CORE_TEXT_FONT,
+-                         G_IMPLEMENT_INTERFACE (PANGO_TYPE_CAIRO_FONT, cairo_font_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (PANGO_TYPE_CAIRO_FONT, cairo_font_iface_init))
+ 
+ /* we want get_glyph_extents extremely fast, so we use a small wrapper here
+  * to avoid having to lookup the interface data like we do for get_metrics
+--- a/pango/pangocairo-coretextfontmap.c
++++ b/pango/pangocairo-coretextfontmap.c
+@@ -87,7 +87,7 @@
+ }
+ 
+ G_DEFINE_TYPE_WITH_CODE (PangoCairoCoreTextFontMap, pango_cairo_core_text_font_map, PANGO_TYPE_CORE_TEXT_FONT_MAP,
+-                         G_IMPLEMENT_INTERFACE (PANGO_TYPE_CAIRO_FONT_MAP, cairo_font_map_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (PANGO_TYPE_CAIRO_FONT_MAP, cairo_font_map_iface_init))
+ 
+ 
+ static PangoCoreTextFont *
+--- a/pango/pangocairo-fcfont.c
++++ b/pango/pangocairo-fcfont.c
+@@ -104,7 +104,7 @@
+ }
+ 
+ G_DEFINE_TYPE_WITH_CODE (PangoCairoFcFont, pango_cairo_fc_font, PANGO_TYPE_FC_FONT,
+-                         G_IMPLEMENT_INTERFACE (PANGO_TYPE_CAIRO_FONT, cairo_font_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (PANGO_TYPE_CAIRO_FONT, cairo_font_iface_init))
+ 
+ static void
+ pango_cairo_fc_font_finalize (GObject *object)
+--- a/pango/pangocairo-fcfontmap.c
++++ b/pango/pangocairo-fcfontmap.c
+@@ -96,7 +96,7 @@
+ }
+ 
+ G_DEFINE_TYPE_WITH_CODE (PangoCairoFcFontMap, pango_cairo_fc_font_map, PANGO_TYPE_FC_FONT_MAP,
+-                         G_IMPLEMENT_INTERFACE (PANGO_TYPE_CAIRO_FONT_MAP, cairo_font_map_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (PANGO_TYPE_CAIRO_FONT_MAP, cairo_font_map_iface_init))
+ 
+ static void
+ pango_cairo_fc_font_map_fontset_key_substitute (PangoFcFontMap    *fcfontmap G_GNUC_UNUSED,
+--- a/pango/pangocairo-win32font.c
++++ b/pango/pangocairo-win32font.c
+@@ -81,7 +81,7 @@
+ }
+ 
+ G_DEFINE_TYPE_WITH_CODE (PangoCairoWin32Font, pango_cairo_win32_font, PANGO_TYPE_WIN32_FONT,
+-                         G_IMPLEMENT_INTERFACE (PANGO_TYPE_CAIRO_FONT, cairo_font_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (PANGO_TYPE_CAIRO_FONT, cairo_font_iface_init))
+ 
+ static cairo_font_face_t *
+ pango_cairo_win32_font_create_font_face (PangoCairoFont *font)
+--- a/pango/pangocairo-win32fontmap.c
++++ b/pango/pangocairo-win32fontmap.c
+@@ -68,7 +68,7 @@
+ }
+ 
+ G_DEFINE_TYPE_WITH_CODE (PangoCairoWin32FontMap, pango_cairo_win32_font_map, PANGO_TYPE_WIN32_FONT_MAP,
+-                         G_IMPLEMENT_INTERFACE (PANGO_TYPE_CAIRO_FONT_MAP, cairo_font_map_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (PANGO_TYPE_CAIRO_FONT_MAP, cairo_font_map_iface_init))
+ 
+ static void
+ pango_cairo_win32_font_map_finalize (GObject *object)
+--- a/pango/pangofc-fontmap.c
++++ b/pango/pangofc-fontmap.c
+@@ -1519,7 +1519,7 @@
+ 
+ G_DEFINE_ABSTRACT_TYPE_WITH_CODE (PangoFcFontMap, pango_fc_font_map, PANGO_TYPE_FONT_MAP,
+                                   G_ADD_PRIVATE (PangoFcFontMap)
+-                                  G_IMPLEMENT_INTERFACE (G_TYPE_LIST_MODEL, pango_fc_font_map_list_model_init))
++                                  G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_LIST_MODEL, pango_fc_font_map_list_model_init))
+ 
+ static void
+ start_fontconfig_thread (PangoFcFontMap *fcfontmap)
+@@ -3539,7 +3539,7 @@
+ }
+ 
+ G_DEFINE_TYPE_WITH_CODE (PangoFcFamily, pango_fc_family, PANGO_TYPE_FONT_FAMILY,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_LIST_MODEL, pango_fc_family_list_model_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_LIST_MODEL, pango_fc_family_list_model_init))
+ 
+ static PangoFcFace *
+ create_face (PangoFcFamily *fcfamily,
+--- a/pango/pangowin32-fontmap.c
++++ b/pango/pangowin32-fontmap.c
+@@ -148,7 +148,7 @@
+ }
+ 
+ G_DEFINE_TYPE_WITH_CODE (PangoWin32FontMap, pango_win32_font_map, PANGO_TYPE_FONT_MAP,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_LIST_MODEL, pango_win32_font_map_list_model_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_LIST_MODEL, pango_win32_font_map_list_model_init))
+ 
+ #define TOLOWER(c) \
+   (((c) >= 'A' && (c) <= 'Z') ? (c) - 'A' + 'a' : (c))

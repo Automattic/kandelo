@@ -136,11 +136,7 @@ fi
 
 # Say whether this change forces every program to be rebuilt: programs carry
 # a digest of the program surface only (see docs/abi-versioning.md), so a
-# kernel-host-only change leaves them valid. A changed digest does not by
-# itself condemn every program either: `check-program-baseline` above lists
-# the prior contracts `abi/accepted-program-digests.json` still admits, and a
-# program carrying one of those keeps running. Reading that list is the way to
-# tell, so this says which question to ask rather than answering it wrongly.
+# kernel-host-only change leaves them valid.
 if [ "$snapshot_changed" -eq 1 ]; then
     base_snapshot="$(mktemp "${TMPDIR:-/tmp}/wasm-posix-abi-base.XXXXXX.json")"
     git show "$base_ref:abi/snapshot.json" > "$base_snapshot"
@@ -148,10 +144,7 @@ if [ "$snapshot_changed" -eq 1 ]; then
         if [ "$base_digest" = "$(run_xtask abi-program-digest)" ]; then
             echo "abi: program digest unchanged; existing programs stay valid."
         else
-            echo "abi: program digest changed to $(run_xtask abi-program-digest)."
-            echo "abi: a program must carry that digest, or a prior one the accepted"
-            echo "     contracts above admit ($base_ref's is $base_digest); anything"
-            echo "     else must be rebuilt."
+            echo "abi: program digest changed; every program must be rebuilt."
         fi
     else
         echo "abi: $base_ref's snapshot has no program digest; every program must be rebuilt."

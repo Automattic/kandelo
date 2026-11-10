@@ -69,120 +69,76 @@ is the prerequisite for this work, not evidence that all older binaries now
 run unchanged. An exact current-program digest is still a strict admission
 rule, not a supported-baseline compatibility policy.
 
-The declared baseline is program ABI 55 and the exact digest recorded in
-`abi/supported-program-baseline.json`. `xtask check-program-baseline` checks
-that declared baseline against the source-derived program surface,
-independently of ordinary snapshot regeneration, and refuses a stale snapshot.
-Bootstrap, local package builds, image commands, package bundling and program
-stamping also enforce it. The baseline does not include kernel-host-only
-sections: the kernel and host can change together without forcing user
-programs to be rebuilt.
+The minimum supported program baseline is ABI 56 and the exact digest recorded
+in `abi/supported-program-baseline.json`. `xtask check-program-baseline` checks
+it against the source-derived program surface, independently of ordinary
+snapshot regeneration, and refuses a stale snapshot. Bootstrap, local package
+builds, image commands, package bundling and program stamping also enforce it. The baseline
+does not include kernel-host-only sections: the kernel and host can change
+together without forcing user programs to be rebuilt.
 
-That gate stays deliberately exact by default: it refuses a new
-program-surface field as firmly as a changed or removed one, so a program
-whose digest is neither the declared baseline nor an admitted predecessor is
-turned away.
+This first gate is deliberately exact. It refuses new program-surface fields
+as well as changed or removed fields, even if the ordinary snapshot classifier
+calls the change additive. Independently versioned [program extensions](program-extensions.md)
+use exact Wasm import namespaces and typed admission instead of changing the
+base digest. Programs without extension imports retain their existing base
+identity; unknown required versions are refused. This does not permit new
+fields in the base snapshot, arbitrary old digests, or giving new requirements
+an old extension identity. Existing syscall IDs, structures and directly
+accessed libc layouts retain their meaning.
 
-There is exactly one way past it, and it is not a list someone can extend by
-hand. `abi/accepted-program-digests.json` records prior program contracts the
-*current* epoch still admits beside its own, and an entry is authorized on
-every build by two independent conditions that must both hold:
+The maintainer deliberately retired the initial ABI-55 baseline before
+release: nothing deployed relies on those binaries. This is an explicit
+baseline decision, not evidence that ABI-55 binaries remain compatible.
+ABI 55 and earlier are refused. Existing saved executable files are preserved;
+rebuilding is required, not silent restamping or a fallback runtime. Persistence
+format versions and the first-release warning remain separate contracts.
 
-1. the snapshot compatibility classifier, run over the program-surface view of
-   the entry's stored prior snapshot and of today's surface — exactly the data
-   the digest hashes — reports no breaking change; and
-2. a named author has recorded, in prose, why the addition is behaviorally
-   safe for programs that predate it.
+`abi/program-fixtures/v55/manifest.json` and any generated ABI-55 bytes remain
+unchanged historical evidence and refusal/parser controls. They must never be
+used as the inputs to a new ABI stamp. The active cohort lives under
+`abi/program-fixtures/v56/`: its source plan names six C programs and one raw
+fork source. A new manifest must measure freshly compiled normal ABI-56 output;
+there are no predeclared output hashes or fabricated fixture files.
 
-The digest in an entry is recomputed from a stored copy of the snapshot that
-produced it, with the same function that stamps programs, so a hand-written
-digest resolves to no snapshot and an edited snapshot no longer hashes to its
-digest. The classifier's verdict is re-derived every build rather than
-remembered, so an entry contradicted by today's surface fails today. An entry
-recorded under an epoch `ABI_VERSION` has since replaced is superseded:
-reported by name and admitting nothing, because an `ABI_VERSION` bump is a
-deliberate declaration that every program is rebuilt. `docs/abi-versioning.md`
-("Affirmed prior program contracts") carries the full mechanism.
+After the source-derived ABI-56 snapshot and declared baseline digest are
+reviewed and the producer source is committed cleanly, establish the cohort
+once through the normal tools:
 
-So this is still not a required-extension mechanism: nothing lets a *program*
-declare which parts of the surface it needs, and that remains unimplemented.
-What exists is an affirmed-predecessor set — narrower, and derived rather than
-asserted. The prohibition it replaces still stands for everything outside it:
-do not accept arbitrary old digests, and do not give new requirements the old
-identity. Existing syscall IDs, structures and directly accessed libc layouts
-retain their meaning.
+```sh
+scripts/dev-shell.sh python3 scripts/build-program-baseline.py --create-current
+```
 
-`abi/program-fixtures/v55/manifest.json` pins six ABI-55 executables and one
-raw fork program by source revision, source hashes and expected output hashes.
-ABI 55 is the supported program contract, not the persistence format version.
-The compiled Wasm files are generated locally and ignored by Git.
+This explicit operation ensures the producer's normal musl core, compiles with
+its SDK, instruments the six executable fixtures with its fork tool and stamps
+only those freshly compiled outputs and the fresh raw fork source. It refuses
+existing destination outputs/manifest, checks clean producer source before and
+after, and records its commit, input hashes, contract and actual output hashes.
+Review and commit the resulting manifest, not the ignored generated Wasm files.
+No ABI-56 cohort is ready until that command has actually completed.
 
-Normal program builds and test setup run
-`python3 scripts/build-program-baseline.py`. On a cache miss it creates a
-detached checkout of the pinned earlier main revision under `target/`, builds
-that checkout's musl and SDK, instruments with its tool and stamps with its
-ABI contract. Its locked development environment is separate from the runtime
-under test. Missing history in a shallow checkout is fetched from the official
-repository. A first build needs network access and the declared Nix tools;
-later runs reuse verified local outputs. An existing file with the wrong hash
-fails instead of being silently replaced.
+Normal program builds and test setup then run
+`python3 scripts/build-program-baseline.py`. A missing active manifest is a
+loud preparation error, never a reason to use the old cohort. Cache misses
+reproduce each pinned manifest with its producer revision's own normal SDK,
+musl, instrumenter and stamp tool in a detached checkout. The archived ABI-55
+cohort is reproduced unchanged when needed for negative controls. Shallow
+checkouts fetch missing producer history from the official repository; tool
+realization and first builds need network access. Existing wrong output hashes
+fail rather than being replaced.
 
-The manifest's generated cohort is reproduced from that historical producer;
-it is not recompiled or restamped with the current SDK to satisfy a new
-runtime. Tests then load those bytes unchanged, covering output, spawn/wait,
+Tests load the active ABI-56 bytes unchanged and cover output, spawn/wait,
 filesystem metadata, private mappings, threads and fork/exec environment
-isolation. Browser tests also verify the installed hashes and run offline.
-These examples do not replace semantic conformance suites or prove every
-program compatible.
+isolation. They separately require the current runtime to refuse unchanged
+ABI-55 bytes without deleting/restamping them. Metadata-only readers may still
+inspect an old artifact; inspection does not authorize execution or preparation.
+Browser tests retain installed-hash/offline checks. These examples do not
+replace semantic conformance suites or prove every program compatible.
 
 An incompatible change needs either a bounded Rust adapter that preserves the
-old guest representation/semantics or a deliberately new program baseline. An
-*additive* change has the third route above, which is neither: the affirmed
-predecessor set. It still may not be reached by adding a list of old digests
-without the two conditions and the tests.
-
-Routing `klogctl` (`SYS_SYSLOG`, Kandelo syscall 304) to the kernel message
-ring took that third route. It adds a syscall number, its pointer-argument
-descriptor and that descriptor's channel scalar contract to the program
-surface, which changes the exact program digest — so the gate alone would turn
-away every program built before it, including the frozen cohort. No adapter
-applies, because nothing old is being preserved: a syscall that previously did
-not exist now does. But nothing old is being *contradicted* either, which is
-what the two conditions test. The classifier reports all three moved sections
-as additions:
-
-```text
-abi: additive-compatible change: added channel_scalar_contract.syscalls entry "304"
-abi: additive-compatible change: added syscall_arg_descriptors entry "304"
-abi: additive-compatible change: added syscalls entry "304"
-```
-
-and the recorded affirmation argues the behavioral half the classifier cannot
-see: at ABI 55 syscall 304 was absent from the declared contract, yet reachable
-(`__NR_syslog` was already in `bits/syscall.h.in`, so musl's `klogctl`
-compiled), and the kernel answered every such call with a hardcoded `0` and an
-untouched buffer. Nothing can usefully depend on that fake success, so
-replacing it with real behavior cannot regress a program built against it. The
-one declared argument kind, `{index 2, u32}`, reinterprets the sign of a length
-argument that previously could not affect the answer at all.
-
-So the epoch stayed at ABI 55, the declared baseline is the new ABI-55 digest,
-and the predecessor digest `1358eca04a8d33fa5bcc27d1c672af2f6e7aaf466a398ad598d991347b1a4415`
-is admitted beside it. `xtask check-program-baseline` prints that admission on
-every build:
-
-```text
-abi: accepted prior program contract 1358eca0… (additive surface, affirmed)
-```
-
-`host/test/supported-program-baseline.test.ts` is the end-to-end evidence: its
-eight cases load the frozen v55 bytes unchanged and run them on this kernel,
-so the cohort is still a *running* cohort rather than a refusal cohort. That
-remains evidence about these programs and this change, not a general promise:
-the cohort is six executables and one raw fork program, and an additive
-program-surface change is the only kind the two conditions can admit. In
-particular, changes to signal or channel layouts cannot be solved by a
-JavaScript version check.
+old guest representation/semantics or a deliberately new program baseline.
+Do not add a list of old digests without those tests. In particular, changes
+to signal or channel layouts cannot be solved by a JavaScript version check.
 Moving libc to a smaller stable gateway can hide future internal layouts, but
 does not retroactively decouple programs linked against today's channel.
 
@@ -191,7 +147,7 @@ does not retroactively decouple programs linked against today's channel.
 For this iteration the fork instrumentation contract is versioned, not declared
 stable. Its linked-frame, module-state, reference, exception and capability
 descriptors have explicit format versions checked before launch. The current
-program digest also binds this surface; the ABI-55 baseline is a regression
+program digest also binds this surface; the ABI-56 baseline is a regression
 gate for this release, not a promise to freeze the unfinished fork protocol.
 A future incompatible fork change needs an explicit compatibility decision and
 corresponding version/baseline changes, not a silent snapshot refresh.
@@ -560,7 +516,7 @@ sealed output custody and cache publication remain required. Production must
 not call the direct parsing methods and claim inspection-worker containment.
 
 The initial-tool launch primitive uses kernel-host adapter 4 without changing
-program ABI 55. Rust can retain a readonly, anonymous current-runtime tool for a
+the ABI-56 program baseline. Rust can retain a readonly, anonymous current-runtime tool for a
 pending child's initial generation, then require the same complete observation
 and spawn commit as any other executable. The shared host wrapper snapshots
 code bytes inside its admitted entry; a busy gate retains no new program.

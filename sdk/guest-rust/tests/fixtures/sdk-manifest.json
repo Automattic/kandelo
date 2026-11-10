@@ -1,0 +1,17 @@
+{
+  "components": {
+    "cargo": "cc42a00ffb7996b0f6364098b472954dc7533e3c044d65900c2d5a0bf314f965",
+    "cargo-clippy": "a9dc8cb803626d70c7d6ade13e69aae912a8764c8fc30c76c3a09d619b1202b5",
+    "cargo-fmt": "0d3b2a704ad2b281ab5ef3251ee5368157d51a666dc5601bd381af0e44771950",
+    "clippy-driver": "3a537a4b091630b12dfa4b84a7418acdd3e81bce1fbf31de139bbe2235de504e",
+    "kandelo-rustc": "9606ff6a4e8f613e7971d7019eded79dec11e5eed62f2f7d40e8ab2c48e89a96",
+    "kandelo-sdk": "1510ae1c4137edac0167bab37313cf99464840cf9eb50eece30369c00af9566d",
+    "rust-std": "622cbbf503fd717dd2c8c2c8fbf00b26605e7ea691ee096d285558ece21052aa",
+    "rustc": "d4871db7732371ba4b1fcbabeed05ec8dbb78fa6cff1344e42956a388b30dc67",
+    "rustdoc": "cb0b3d2d22fff569fe69e5db09f351e0431b78e64ac431a5925932c3b778b6ed",
+    "rustfmt": "2d554fbc468cf75ea44f919fdeadaf3f8bd0c7262cb3d3a5cf011ac73e9484d2",
+    "wasm-fork-instrument": "144e8521665543bb155d10fab200f16cc4e834dcaf4efaa14e8f6fb0649fed9c"
+  },
+  "identity": "b51410a03b334a4188b96480dc4ab4143d1fb99ac2e9e294e4dfc16d064c31d5",
+  "schema": 1
+}

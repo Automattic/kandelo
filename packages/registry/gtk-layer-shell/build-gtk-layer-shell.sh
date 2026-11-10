@@ -6,11 +6,10 @@
 # gtk-layer-shell is meson-only upstream, so this bypasses meson like
 # mako/atk: wayland-scanner generates the protocol glue meson would
 # (wlr-layer-shell from the tarball's protocol/, xdg-shell from the
-# vendored wayland-protocols XML, `<basename>-client.h` naming per
+# wayland-protocols package, `<basename>-client.h` naming per
 # protocol/meson.build), then the upstream src/meson.build TU list
 # compiles directly. The ext-session-lock glue upstream also generates
-# is skipped — no 0.9.2 source references it, and the vendored
-# wayland-protocols set does not carry it. 0.9.2 has no generated
+# is skipped — no 0.9.2 source references it. 0.9.2 has no generated
 # version header; src/meson.build passes the version as -D defines.
 #
 # No callback-arity patch: every signal handler, class-closure
@@ -35,7 +34,7 @@
 #     WASM_POSIX_DEP_CAIRO_DIR                  # resolved cairo prefix
 #     WASM_POSIX_DEP_GDK_PIXBUF_DIR             # resolved gdk-pixbuf prefix
 #     WASM_POSIX_DEP_LIBWAYLAND_DIR             # resolved libwayland prefix
-#     WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR  # staged protocol XML
+#     WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR  # resolved wayland-protocols prefix
 
 set -euo pipefail
 
@@ -73,7 +72,7 @@ HARFBUZZ_PREFIX="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not 
 CAIRO_PREFIX="${WASM_POSIX_DEP_CAIRO_DIR:?WASM_POSIX_DEP_CAIRO_DIR not set}"
 GDK_PIXBUF_PREFIX="${WASM_POSIX_DEP_GDK_PIXBUF_DIR:?WASM_POSIX_DEP_GDK_PIXBUF_DIR not set}"
 LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set}"
-PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/xml"
+PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/share/wayland-protocols"
 
 # --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -100,7 +99,7 @@ mkdir -p "$GEN" "$INSTALL_DIR/lib"
 echo "==> Generating protocol glue..."
 PROTOCOLS=(
     "$SRC_DIR/protocol/wlr-layer-shell-unstable-v1.xml"
-    "$PROTOCOLS_XML/xdg-shell.xml"
+    "$PROTOCOLS_XML/stable/xdg-shell/xdg-shell.xml"
 )
 for xml in "${PROTOCOLS[@]}"; do
     base="$(basename "$xml" .xml)"

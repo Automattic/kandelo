@@ -14,7 +14,9 @@ describe("Node native rootfs lazy cohort", () => {
     const marker = join(directory, "calls");
     const wrapper = join(directory, "xtask");
     const hostTarget = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (.+)$/m)![1];
-    const checker = resolve("../target/program-index-checker", hostTarget, "release/xtask");
+    // Match the prepared checker the resolver actually uses under CI.
+    const checker = process.env.WASM_POSIX_XTASK_BIN
+      ?? resolve("../target/program-index-checker", hostTarget, "release/xtask");
     const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
     writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quote(marker)}\nexec ${quote(checker)} "$@"\n`, { mode: 0o755 });
     const expected = ["dash", "bash"].map((name) => readFileSync(resolveBinary(`programs/wasm32/${name}.wasm`)));

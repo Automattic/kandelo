@@ -80,6 +80,18 @@ Demos are consumers of Kandelo, not alternate implementations of Kandelo. Demo
 code must not bypass, simulate, or paper over runtime, VFS, package, libc,
 syscall, kernel, or host defects.
 
+## Worktree Storage
+
+Keep retained notes, checkpoints, and attachments in `.context/`. Conductor
+preserves that directory when archiving a workspace. Put disposable bulk
+data in gitignored `.scratch/`: temporary worktrees/checkouts, profiles,
+traces, source/build experiments, and logs. Use a unique directory per run;
+jobs provide `$KANDELO_AGENT_SCRATCH_DIR`. Playwright reports already live
+outside `.context/` in `test-results/`. Copy any evidence needed after
+archival into retained storage before removing the workspace. See
+[`docs/repository-organization.md`](docs/repository-organization.md#worktree-local-storage)
+for storage ownership and cleanup.
+
 ## Agent Work Loop
 
 For nontrivial work:
@@ -321,11 +333,15 @@ code. A partial image is evidence only for its named packages; build the
 canonical products before a PR. See `docs/agent-guidance/packages-and-builds.md`
 "Partial images are development builds".
 
-Build scripts must honor the resolver contract, use the worktree-local SDK,
-declare every dependency they use, install only into `WASM_POSIX_DEP_OUT_DIR`,
-and produce the outputs declared in package metadata. Fork-using packages must
-be instrumented with `scripts/run-wasm-fork-instrument.sh`; legacy Asyncify
-artifacts are stale and must be rebuilt, not supported.
+Build scripts must honor the resolver contract, declare every dependency
+they use, install only into `WASM_POSIX_DEP_OUT_DIR`, and produce the outputs
+declared in package metadata. For recipes that never use the Kandelo SDK or
+sysroot, declare `[build].toolchain = "none"` after reviewing the script and
+its helpers; see the package guide for retained inputs and the limits of
+its PATH check. SDK builds keep the default and use the worktree-local SDK.
+Fork-using packages must be instrumented with
+`scripts/run-wasm-fork-instrument.sh`; legacy Asyncify artifacts are stale
+and must be rebuilt, not supported.
 
 Kandelo is not Linux. Never define `__linux__` in the SDK, its flags, its
 `config.site`, or the sysroot. When an upstream gates a path on `__linux__`,
@@ -432,28 +448,27 @@ linked programs. Use the dev shell for these commands.
 PR titles and commit subjects must begin with a concise purpose prefix in the
 form `Area: Purpose`, such as `Packages:`, `Kernel:`, `POSIX:`, `CI:`,
 `Browser:`, or `Docs:`. Choose the area that best identifies the contract or
-capability a reader should notice; the prefix is a routing hint, not a substitute
-for a purpose-led title. PR descriptions and commit messages should then lead
-with the platform contract, user-visible behavior, system invariant, or project
-capability being changed or protected. Every PR description must put a
-plain-language `## Why` section before `## What changed`, implementation
-details, or validation. Explain the current problem, who or what it affects,
-and why fixing it matters before describing the mechanics.
+capability a reader should notice.
 
-Prefer concise PR titles that remain suitable as merge subjects.
-Keep PR descriptions as concise and focused as reasonable while giving a
-junior developer enough clear context to understand the problem, change,
-and relevant validation. See the focused guide for the writing contract.
-Manually wrap prose in PR descriptions and commit-message bodies at
-72 columns. Do not reflow Markdown tables, code blocks, generated
-text, or indivisible URLs and identifiers when wrapping would damage
-their semantics.
+Keep PR titles and descriptions short, simple, and written in plain language a
+junior developer can follow. The title names what changes in ordinary words
+(`Docs: Add credits`), short enough to serve as the merge subject. The
+description has three sections: `## Why` (one to three sentences: the problem
+and who it affects), `## What changed` (a few one-line bullets describing the
+resulting behavior), and `## Validation` (what was run and what was not). Most
+PRs need 10 to 20 lines. Define necessary terms, and leave out jargon,
+internal task names, and the story of how the work went. Implementation detail
+goes in commit message bodies, not the PR description.
 
-Write PR descriptions so a junior developer can understand them without prior
-incident history or repository shorthand. Define necessary terms, expand
-acronyms on first use, use concrete examples where they clarify the failure,
-and do not make issue or PR links carry the explanation. Technical precision is
-required; unexplained jargon is not.
+Commit messages follow the same rules. The subject is a short `Area: Purpose`
+line. The body says what changed and why in a few short, plain paragraphs or
+bullets: keep the details a future reader needs (the reason for a non-obvious
+choice, an important limit, evidence for a claim) and leave out the
+investigation story, repetition, and filler. Most bodies need 3 to 10 lines.
+
+Do not hard-wrap PR description prose; GitHub's squash merge re-wraps it.
+Wrap commit-message bodies at 72 columns, except tables, code blocks,
+generated text, and indivisible URLs or identifiers.
 
 Preserve contributor attribution when rewriting PR history. Inspect original
 authorship before restacking, rebasing, amending, cherry-picking, or squashing;
