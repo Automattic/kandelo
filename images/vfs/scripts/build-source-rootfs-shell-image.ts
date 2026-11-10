@@ -2216,6 +2216,20 @@ export async function buildSourceRootfsShellImage(
   if ((rulesStat.mode & FILE_TYPE_MASK) !== DIRECTORY_MODE) {
     throw new Error(`${rulesDir} must be a directory`);
   }
+  // The man-page index lists every docs package's pages. An image missing
+  // one of them would offer apropos/whatis results that `man` cannot open,
+  // so the index goes only into images that carry all of them.
+  if (includes("man-index")) {
+    const missing = SHELL_LAZY_ARCHIVE_SPECS
+      .filter((spec) => spec.id.endsWith("-docs") && !includes(spec.dependency))
+      .map((spec) => spec.dependency);
+    if (missing.length > 0) {
+      throw new Error(
+        `man-index covers docs packages this image does not select (${missing.join(", ")}); ` +
+          "select every docs package or leave man-index out",
+      );
+    }
+  }
   ensureDirRecursive(fs, "/usr/libexec/kandelo");
   for (const { name, handler, script, rule, owner } of GAME_EXCHANGE_RULES) {
     if (!includes(owner)) continue;
