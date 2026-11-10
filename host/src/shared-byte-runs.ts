@@ -44,17 +44,6 @@ export function mergeChangedByteRuns(
           }
           let word = (i - lead) / 4;
           const end = sourceWords.length;
-          // Compare a bounded group before returning to the byte-level merge.
-          // A differing word still receives the original exact-byte treatment.
-          while (len >= 4096 && word + 8 <= end
-            && sourceWords[word] === snapshotWords[word]
-            && sourceWords[word + 1] === snapshotWords[word + 1]
-            && sourceWords[word + 2] === snapshotWords[word + 2]
-            && sourceWords[word + 3] === snapshotWords[word + 3]
-            && sourceWords[word + 4] === snapshotWords[word + 4]
-            && sourceWords[word + 5] === snapshotWords[word + 5]
-            && sourceWords[word + 6] === snapshotWords[word + 6]
-            && sourceWords[word + 7] === snapshotWords[word + 7]) word += 8;
           while (word < end && sourceWords[word] === snapshotWords[word]) word++;
           i = lead + word * 4;
           if (i >= len) break;

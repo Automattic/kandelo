@@ -5961,11 +5961,29 @@ runs, using the exact bytes that reached canonical storage, and marks
 readers pending. It never rereads the live producer to advance that
 baseline: stores made during the scan must remain detectable at the next
 publication, including stores to an earlier byte the scan already passed.
-Readiness refresh remains unconditional for the
-selected BO's mapped readers: mutable canonical pixel views do not provide
-an authoritative version that would permit skipping those refreshes.
-This remains boundary synchronization,
-not live aliasing between Wasm memories. A snapshot is bounded by the
+Each reader records the canonical revision it has imported. A current
+reader needs no copy; a stale reader imports only changed byte runs and
+advances its baseline from canonical bytes, so a concurrent guest store
+remains detectable. Unrestricted mutable `pixelView` access permanently
+disables that revision shortcut for the BO. Internal read-only consumers
+borrow `readPixelView`; device writes use `publishDevicePixels`.
+
+A mapping comparison can be reused only when the existing process mutation
+epoch proves every thread is parked and no vfork alias can write. The proof
+is checked against the original mapped memory, before and after the scan;
+unknown or running address spaces always scan. Host imports invalidate the
+same epoch. A prefix comparison proves only that prefix.
+
+Large mappings with authenticated constructor metadata use the existing
+read-only Wasm comparator on 64 KiB blocks. Each mapping owns an independent,
+nonshared baseline memory whose initial and maximum sizes both equal the
+rounded allocation. Instances and exports exist only during a synchronous
+borrow of the original process memory. Dirty blocks still use exact
+changed-byte publication; small mappings and unavailable native capabilities
+use the JavaScript comparison. Splits allocate independent baselines, and
+retirement releases them with their mappings. No guest memory is sent to a
+persistent browser realm, and no ABI or memory-budget ceiling changes.
+This remains boundary synchronization, not live aliasing between Wasm memories. A snapshot is bounded by the
 mapping length and BO size and retired with its mapping; backing is retired
 only by the kernel's final-reference destroy notification. Partial DRI
 `munmap` trims or splits that ownership instead of revoking the whole
