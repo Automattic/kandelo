@@ -28340,3 +28340,30 @@ Maintainer Firefox feedback accepts improved responsiveness and game
 performance, while the remaining Cage/Sway sharpness difference is follow-up
 work. The [R1 report](cage-reliability-2026-11.md#current-integration-after-the-macos-update)
 records the current image/kernel identities and separates earlier results.
+
+
+### R1 shutdown and desktop validation checkpoint — 2026-11-10
+
+The completed current-main desktop matrix is 104/120 (zero skips), including
+all 15 Cage and 12 Sway cases. Twelve cursor-import failures reproduce on
+main: the fixture never enabled its CRTC. A real primary scanout repairs
+the private fixture (12/12); tracked validation is pending. Two WebKit cases
+fail OPFS setup before machine creation and now share the established
+persistent-page fixture. The Chromium ScummVM archive-import failure also
+reproduces on main; it remains a failure record, not an allowance.
+
+The current-main memory gate is 17/18. Chromium and Firefox complete four
+mixed-machine cycles; WebKit reports an unexpected cancellation of a pending
+process allocation during WordPress retirement. The browser factory/gate
+repair preserves terminal cancellation after exact rollback while keeping
+real allocation and worker-retirement errors visible. Its focused source
+selection passes 125/125. New normal-product and complete memory validation
+remain pending.
+
+Matched WebKit Sway/Steel Sky main controls now also fail 0/2. One records
+a fork-replay typed-array allocation OOM; the other records the candidate's
+detached-byte allocation OOM in a different kernel operation, followed by
+fatal failure. Earlier successful controls remain mixed outcomes. The
+resource cause and complete paired performance validation remain open;
+no browser defect, green allowance or complete R1 acceptance is inferred.
+See the [current repair evidence](cage-reliability-2026-11.md#browser-shutdown-cancellation-and-fixture-corrections--2026-11-10).
