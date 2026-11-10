@@ -31607,7 +31607,8 @@ wasm = "bad.wasm"
 
     #[test]
     fn wasm_artifact_policy_rejects_empty_and_exportless_when_exports_required() {
-        // Regression guard for the stale-fixture class (kd-872c / kd-xc19): the
+        // Regression guard for the stale-fixture class documented in
+        // docs/history/xtask-stale-fixture-repair.md: the
         // production artifact validation MUST keep rejecting empty
         // (`touch`-style, 0-byte / non-wasm) outputs and wasm missing required
         // exports. The 7 stale tests failed precisely because they emitted such

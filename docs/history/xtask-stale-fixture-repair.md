@@ -1,4 +1,10 @@
-# kd-872c — xtask stale-fixture repair + gate: test outcome summary
+# xtask stale-fixture repair and validation
+
+> **Historical reference.** This is historical validation for incidents `kd-872c` and `kd-xc19`. Counts, test names, commands and ABI versions below are preserved from the original report; they do not describe a new run on the current tree.
+
+Retained from [test-runs/kd-872c/SUMMARY.md](https://github.com/Automattic/kandelo/blob/e9b878876750dbd9b2d966463579787319c555f3/test-runs/kd-872c/SUMMARY.md). This is the source tree used to retain the record, not evidence that its tests ran at that commit.
+
+---
 
 Command (host target, inside `scripts/dev-shell.sh`):
 
