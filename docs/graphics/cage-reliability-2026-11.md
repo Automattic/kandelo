@@ -16,20 +16,25 @@ game appears.
 
 The current source integrates pinned main
 `8161769ed9d2394e7793bfd82be08cbf890e7145`, inheriting its published host
-adapter 6 and program ABI 56. Its source ownership/lifecycle selection
-passes 267/267 and source graphics selection passes 2,353/2,353. Full normal
-product preparation is complete, and the prepared-product host selection
-passes 239/239. The current integration's actual Steel Sky checks pass
-Cage 3/3 and Chromium Sway; Firefox Sway fails to open the game menu and
-WebKit Sway remains on the download screen. Combined browser/memory checks,
-matched Sway controls and all nine enabled Node/browser benchmark comparisons
-remain in progress. The frozen preview
-and its browser results belong to host adapter 5, not this integration.
-Neither constitutes native-feel acceptance. The earlier
-cap-only same-origin-relay memory result was 18/18; its default-relay 15/18,
-direct-public-relay 12/18, broader graphics 32/36 and corrected affected
-12/12 results below remain separate historical observations. Earlier
-intermittent unpacking, Sway and WebKit audio-retirement findings are retained.
+adapter 6 and program ABI 56. Before the latest shutdown repair, source
+ownership/lifecycle passed 267/267, source graphics passed 2,353/2,353,
+prepared-product host checks passed 239/239, and offline frozen-program
+compatibility passed 6/6. The original combined desktop matrix completed
+104/120: all 15 Cage and 12 Sway cases passed. Its other failures include
+12 cursor-fixture cases, two WebKit storage-fixture cases and two ScummVM
+archive-import cases; the latter reproduces on pinned main.
+
+The current-integration memory gate completed 17/18 browser cases. Chromium
+and Firefox completed four mixed-machine cycles each. WebKit reported an
+unexpected allocation cancellation during WordPress teardown; the owning
+browser factory/gate repair now passes 125 focused source checks. A new
+normal build and complete memory validation are still required for that
+repair. Original Steel Sky checks passed Cage 3/3 and Chromium Sway;
+Firefox's menu assertion and intermittent WebKit allocation failures remain
+adverse observations. All nine enabled Node/browser before/after benchmark
+comparisons remain unfinished. No complete R1 or native-feel acceptance is
+claimed. Older host-adapter-5 observations, including the cap-only 18/18
+memory result and its other failed configurations, remain separate evidence.
 
 This delivery investigates work package R1 after #1594. It does not activate
 B2–B6/C1–C3 or claim full graphics/native-feel acceptance.
@@ -1296,3 +1301,71 @@ complete suite passes **6/6**, zero skips/retries/flaky results, on Chromium,
 Firefox and WebKit for both memory and OPFS storage. These are the existing
 offline frozen-program, permission/ABI rejection and retained-original
 repreparation assertions; none were weakened.
+
+
+## Browser shutdown cancellation and fixture corrections — 2026-11-10
+
+The combined memory gate (`cage-main6-memory-1110-151145-3da3`) exited 1
+with 17/18 browser cases. Its source checks, 267 ownership cases, three
+Node lifecycle cases and seven Bun lifecycle cases passed. Chromium and
+Firefox each completed four mixed-machine cycles. During WebKit's second
+WordPress retirement, destroying the process-memory factory canceled an
+in-flight fork allocation with a generic `Process memory factory was
+destroyed` error. The runtime retained that unexpected diagnostic, and the
+later cycle correctly failed its no-runtime-errors assertion.
+
+The creator gate already distinguishes terminal admission closure from a
+real allocation failure, and fork rollback already requires exact child and
+host-owner cleanup before accepting that closure. The browser factory now
+carries the gate's private cancellation identity to its pending allocations.
+A failed allocation-worker termination remains an unbranded aggregate error
+containing both causes; it cannot be accepted as successful cancellation.
+The kernel dispatcher and Node destruction behavior are unchanged.
+
+The original factory regression fails with the generic error; the corrected
+factory passes all 15 cases. The final focused selection passes seven files
+and 125 tests. Four old fork-ownership assertions also failed on unchanged
+main (24/28 there): they expected a retired channel to remain pending.
+Those assertions now verify Rust's SIGSEGV death and the actual SIGKILL/EINTR
+retirement wakeup, including the exact transport marker. Their 30 cases pass.
+This source evidence does not replace the full browser-memory gate.
+
+The original desktop matrix (`cage-main6-desktops-1110-151632-450c`)
+completed 104/120 with zero skips, including all 15 Cage and 12 Sway cases.
+All twelve cursor-import cases asked for a presented cursor while its CRTC
+was dark; unchanged main reproduces all four Chromium failures. The fixture
+now allocates a real black primary buffer and enables scanout through SDK
+libdrm before testing cursor imports. The private corrected fixture passes
+12/12 across all three engines. Labwc and ScummVM-Wayland now use the shared
+persistent-page fixture, as Cage and Sway already do, after the original
+WebKit cases failed at OPFS setup before starting a machine. Current tracked
+browser validation is pending; no renderer workaround or assertion was removed.
+
+The two ScummVM archive-import failures (Chromium and Firefox) report SDL's
+missing video driver during detection, preserving the downloaded original.
+The Chromium case reproduces on pinned main and is recorded in
+`tests/baselines/playwright-chromium-scummvm-unrecognized-archive.json`.
+That record is evidence, not a test allowance.
+
+
+### Matched WebKit main control
+
+Two fixed-inventory WebKit Sway/Steel Sky controls against unchanged pinned
+main (`cage-main-copy-stack-control-1110-164508-fe07`) both failed the
+six-minute visible-game assertion (0/2, exit 1 after 12m34s). The first
+has no captured allocation error. The second records `RangeError: Out of
+memory` at the detached `Uint8Array` allocation in `kernel-scratch.copyOut`,
+this time while resolving epoll readiness, followed by a fatal kernel
+entry diagnostic. Candidate failures reached the same allocation in read
+and exec transfers. This establishes that this allocation failure also
+occurs on main; it does not establish its resource owner or prove the
+candidate cannot worsen it. Earlier successful main and candidate controls
+remain mixed outcomes. Both complete traces and worker errors are retained.
+
+A separate candidate control using ordinary owned-array graphics baselines
+also fails in `copyOut`; the added nonshared Wasm baselines are therefore
+not necessary for the failure. A synthetic short-copy experiment removes
+millions of temporary views, but direct instrumentation finds that its
+source-copy mode is unused in the actual game workload. Neither experiment
+is included as a speculative production fix. No ceiling, lifecycle assertion,
+error classification or test deadline was relaxed.
