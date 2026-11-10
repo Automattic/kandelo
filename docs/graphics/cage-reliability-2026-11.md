@@ -6,18 +6,24 @@ display are implemented. Cage uses one guest pixel per CSS pixel instead
 of the earlier fixed 1280×720 cap. The original rendering/resize/restart
 matrix passes 15/15 on the frozen host-adapter-5 canonical build across
 Chromium, Firefox and WebKit. The later shifted-command check fails that
-old terminal; its additional input repair awaits rebuilt-browser validation.
-Actual Steel
-Sky rendering and game-menu input pass under Cage in all three engines;
-the corrected Sway check passes Chromium and Firefox but fails WebKit with
-a visibly corrupted terminal before the game appears.
+old terminal. The repaired terminal passes the current normal-entry Chromium
+check and all five Node wlterm checks, including shifted input under Cage
+and Sway.
+On that frozen build, actual Steel Sky rendering and game-menu input pass
+under Cage in all three engines; the corrected Sway check passes Chromium
+and Firefox but fails WebKit with a visibly corrupted terminal before the
+game appears.
 
 The current source integrates pinned main
 `8161769ed9d2394e7793bfd82be08cbf890e7145`, inheriting its published host
 adapter 6 and program ABI 56. Its source ownership/lifecycle selection
-passes 267/267 and source graphics selection passes 2,353/2,353. Normal
-product preparation, combined browser/memory checks and all nine enabled
-Node/browser benchmark comparisons remain in progress. The frozen preview
+passes 267/267 and source graphics selection passes 2,353/2,353. Full normal
+product preparation is complete, and the prepared-product host selection
+passes 239/239. The current integration's actual Steel Sky checks pass
+Cage 3/3 and Chromium Sway; Firefox Sway fails to open the game menu and
+WebKit Sway remains on the download screen. Combined browser/memory checks,
+matched Sway controls and all nine enabled Node/browser benchmark comparisons
+remain in progress. The frozen preview
 and its browser results belong to host adapter 5, not this integration.
 Neither constitutes native-feel acceptance. The earlier
 cap-only same-origin-relay memory result was 18/18; its default-relay 15/18,
@@ -1231,3 +1237,62 @@ those rebuilt guest checks remain pending.
 The `wayland-demo` package revision advances from 15 to 16 for the changed
 terminal bytes. Rebuilt-browser validation remains pending; the frozen
 56514 rendering preview predates this additional input repair.
+
+
+### Current integration after the macOS update
+
+The resumed preparation completed successfully in job
+`cage-main6-resume-1110-135811-f029` (48m53s). It built the full normal
+package set, all example/test programs including GTK3 and SDL2, both
+MariaDB targets, WordPress setup, the pinned-main ABI checks and host
+output. The earlier build stopped with SIGTERM at the maintainer's request
+before updating macOS; that exit 143 is retained as an intentional stop.
+No supported fixture was omitted. All 18 preserved preview cohorts retain
+their prior hashes.
+
+The current preview runs through `./run.sh browser` at port 56517, with
+program ABI 56 / host adapter 6. The normal shell is 1,069,801 bytes,
+SHA-256 `169987506144a2a713df6c68b47adb280b1213957e66978562d6855714f16abd`;
+the kernel is 2,959,451 bytes, SHA-256
+`20f8ba1c1c6ced1a11bed01ceb662bc542eaa1fb7769cddc93c80bc69a00c904`.
+The Chromium normal-entry check passes 1/1, including physical uppercase
+and shifted punctuation, visible repaint and terminal handoff with exit 0.
+The separately preserved port-56514 preview remains on host adapter 5.
+
+The initial prepared-product host run passed 235/239, with four failures
+in `dri-import-lifetime.test.ts`. The same four failures reproduced with
+the original test on pinned main `8161769ed9d2` (4/8 passed). Those tests
+launched owned jobs but observed terminal callbacks; the Node adapter
+intentionally captures that output in the owned-job stream. Commit
+`b16b513ecd` changes the fixture to bounded `readOwnedJob` observations,
+checks truncation/expiry, and observes actual job-family termination and
+opener-worker retirement with the original deadlines and guest markers.
+It changes no runtime behavior. The corrected file passes 8/8, and the
+complete prepared-product selection then passes **24 files, 239/239 tests,
+zero skips**. This includes all five wlterm cases: plain and shifted input
+under both Cage and Sway, plus client/compositor signal handling.
+
+The actual Steel Sky selection on this integration passes **4/6**: Cage
+passes Chromium, Firefox and WebKit; Chromium Sway also passes. Firefox
+Sway reaches the real `sky` engine and visible game pixels but fails the
+60-second game-menu assertion. Its pre-hotkey screenshot shows the game
+tile with a black interior; the cause remains unestablished. WebKit Sway
+fails the six-minute visible-game assertion while the retained screenshot
+still shows the download at 23%, without a game tile. Trace inspection
+subsequently found 35 syscall-handler `RangeError: Out of memory` errors
+and one fatal kernel-instance failure in that WebKit run. The exhausted
+allocation and its cause are not yet established; this is not merely a
+network timeout. The original logs, screenshots and traces remain retained.
+The same post-update Sway checks pass 2/2 on pinned main (Firefox and
+WebKit). These controls do not repair either candidate failure.
+
+The frozen-program compatibility suite initially fails 0/6 before guest
+initialization: the config allocates a server port again in each worker,
+so browser navigation reaches six different unbound ports. The same config
+is on pinned main. Commit `35fa95759a` publishes the selected port into the
+config's existing environment variable, matching the ordinary Playwright
+config's worker-inheritance policy. With this fixture correction, the
+complete suite passes **6/6**, zero skips/retries/flaky results, on Chromium,
+Firefox and WebKit for both memory and OPFS storage. These are the existing
+offline frozen-program, permission/ABI rejection and retained-original
+repreparation assertions; none were weakened.

@@ -28314,3 +28314,29 @@ the default 15/18 and direct-public 12/18 remain failures, and the earlier
 unexplained PCM retirement and intermittent Sway findings remain open. PR #1678
 stays a draft. The requested modest Cage preview is available separately
 from broader graphics, native Safari and combined-latest-main acceptance.
+
+
+### R1 current-main integration, 2026-11-10
+
+The shared-buffer repair now integrates pinned main `8161769ed9d2`, with
+program ABI 56 and host adapter 6. Full normal products and all supported
+example/test fixtures have been prepared. The normal `./run.sh browser`
+Cage entry passes its Chromium shifted-input/repaint/exit check (1/1).
+The prepared-product host selection passes 24 files / 239 tests, including
+five Node wlterm cases; the source ownership/lifecycle and graphics
+selections pass 267 and 2,353 cases respectively. Frozen-program offline
+compatibility passes 6/6 across Chromium, Firefox and WebKit, with memory
+and OPFS storage. Owned-job output and worker/server port observations were
+corrected in the test fixtures; their original failures remain recorded.
+
+Actual Steel Sky checks pass Cage 3/3 and Chromium Sway on this integration.
+Firefox Sway fails its menu assertion; WebKit Sway stops during download
+with retained `RangeError: Out of memory` and fatal kernel diagnostics.
+The same post-update Sway checks pass Firefox and WebKit on pinned main.
+Their causes remain under investigation. These findings differ from the
+historical WebKit corrupted-terminal failure. Current full memory/desktop
+and paired performance validation is unfinished; the PR remains a draft.
+Maintainer Firefox feedback accepts improved responsiveness and game
+performance, while the remaining Cage/Sway sharpness difference is follow-up
+work. The [R1 report](cage-reliability-2026-11.md#current-integration-after-the-macos-update)
+records the current image/kernel identities and separates earlier results.
