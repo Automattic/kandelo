@@ -240,7 +240,7 @@ test("Cage resizes, releases its display on exit and survives repeated live rest
 
 
 for (const density of [1, 2]) {
-  test.describe(`Cage modest display at browser density ${density}`, () => {
+  test.describe(`Cage CSS display at browser density ${density}`, () => {
     test.use({
       viewport: { width: 1920, height: 1080 }, deviceScaleFactor: density,
       page: async ({ page, playwright, browserName, channel, launchOptions,
@@ -274,7 +274,7 @@ for (const density of [1, 2]) {
         } finally { await browser.close(); }
       },
     });
-    test(`Cage keeps a modest guest display at browser density ${density}`, async ({ page, browserName }) => {
+    test(`Cage uses its CSS pane size at browser density ${density}`, async ({ page, browserName }) => {
       test.setTimeout(240_000);
       await gotoMachine(page, "cage");
       await expectTerminal(page, /WLTERM_READY/, 120_000);
@@ -282,12 +282,12 @@ for (const density of [1, 2]) {
       const canvas = canvasLocator(page);
       await expect(canvas).toBeVisible({ timeout: 30_000 });
       const pixels = await canvas.evaluate(element => new Promise<{
-        cssWidth: number; nativeWidth?: number; dpr: number;
+        cssWidth: number; cssHeight: number; nativeWidth?: number; dpr: number;
       }>(resolve => {
         const observer = new ResizeObserver(([entry]) => {
           if (entry.contentRect.width < 1) return;
           observer.disconnect();
-          resolve({ cssWidth: entry.contentRect.width,
+          resolve({ cssWidth: entry.contentRect.width, cssHeight: entry.contentRect.height,
             nativeWidth: entry.devicePixelContentBoxSize?.[0]?.inlineSize, dpr: devicePixelRatio });
         });
         observer.observe(element);
@@ -301,8 +301,9 @@ for (const density of [1, 2]) {
       const mode = (await chipText(page)).match(/([0-9]+)×([0-9]+)/)!;
       const output = { width: Number(mode[1]), height: Number(mode[2]) };
       console.log("CAGE_MODE_DENSITY", JSON.stringify({ browserName, density, ...pixels, guest: output }));
-      expect(output.width).toBeLessThanOrEqual(1280);
-      expect(output.height).toBeLessThanOrEqual(720);
+      expect(output.width).toBeGreaterThan(1280);
+      expect(Math.abs(output.width - pixels.cssWidth)).toBeLessThanOrEqual(1);
+      expect(Math.abs(output.height - pixels.cssHeight)).toBeLessThanOrEqual(1);
       await expect.poll(async () => cageShellTextColumns(page, await canvas.screenshot(), output),
         { timeout: 60_000 }).toBeGreaterThan(24);
       await expect(page.getByRole("complementary", { name: "Download status" }))
@@ -315,7 +316,7 @@ for (const density of [1, 2]) {
       expect((await chipText(page)).match(/([0-9]+)×([0-9]+)/)![0]).toBe(mode[0]);
       await canvas.focus(); await expect(canvas).toBeFocused();
       const before = await canvas.screenshot();
-      await page.keyboard.type("echo CAGE_MODE_CAP_OK\n", { delay: 40 });
+      await page.keyboard.type("echo CAGE_CSS_GRID_OK\n", { delay: 40 });
       await expect.poll(async () => (await screenshotPixelDelta(page, before, await canvas.screenshot())).same,
         { timeout: 60_000 }).toBe(false);
       await page.keyboard.type("exit\n", { delay: 40 });

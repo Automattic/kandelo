@@ -3554,15 +3554,20 @@ the connector's bounds. Width must be a whole number from 640 through
 size unless the 640×480 connector minimum applies. If `displayScale` is
 also declared, that scale is applied before the maximum. The bounded
 monitor reports 96 reference DPI, and the chosen scanout, cursor and input
-coordinates all use the actual guest grid. Cage's normal shell profile
-prefers a maximum of 1280×720 for demo responsiveness; this deliberately
-trades native-density sharpness for smaller graphics buffers.
+coordinates all use the actual guest grid.
 
 The maximum constrains the preferred monitor size, rather than removing
 higher standard modes from the virtual connector. A guest can explicitly
 choose another supported mode. The browser fits that actual scanout; this
 setting does not force a live compositor to switch modes after a resize.
 Apply it before launching the graphical client.
+
+Cage's normal shell profile instead declares `displayScale: 1`: one guest
+pixel per CSS pixel, with no fixed 1280×720 cap and no HiDPI supersampling.
+This keeps the initial pane's text grid sharp without allocating a Retina-sized
+monitor. The connector still enforces its 640×480 through 3840×2160 bounds.
+An application can choose a higher supported mode explicitly; the profile
+does not expose a live density control.
 
 Omitting both `displayScale` and `displayMaxSize` preserves native
 device-pixel output and CSS-derived physical size, so compositors and

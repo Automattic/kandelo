@@ -224,7 +224,7 @@
         ],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer",
-        "displayMaxSize": { "width": 1280, "height": 720 }
+        "displayScale": 1
       }
     },
     "labwc": {
