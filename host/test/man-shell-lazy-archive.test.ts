@@ -221,6 +221,16 @@ describe.skipIf(!available)(
         ["1 curl", /transfer a URL/],
         ["1 wget", /The non-interactive network downloader/],
         ["1 perlfunc", /Perl builtin functions/],
+        ["1 git-commit", /Record changes to the repository/],
+        ["5 gitignore", /Specifies intentionally untracked files to ignore/],
+        ["1 sway", /An i3-compatible Wayland compositor/],
+        ["1 swaymsg", /Send messages to a running instance of sway/],
+        ["1 swaybg", /Background for Wayland/],
+        ["1 cage", /a Wayland kiosk compositor/],
+        ["1 labwc", /a Wayland stacking compositor/],
+        // The TERM default that foot's build fills into the page.
+        ["5 foot.ini", /environment variable TERM to\.\s+Default:\s+foot\b/],
+        ["1 dbus-daemon", /Message bus daemon/],
       ];
       const present = probes.filter(([page]) => pages.has(page));
       expect(present.length).toBeGreaterThan(0);
