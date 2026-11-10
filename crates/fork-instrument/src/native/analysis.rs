@@ -20,7 +20,12 @@ pub fn analyze<'a>(
     );
     let side_module =
         options.entry_import == "env.fork" || scan.custom_data("dylink.0").next().is_some();
+    let named = |name: &str, module: &str, field: &str| {
+        name.split_once('.')
+            .is_some_and(|(m, n)| m == module && n == field)
+    };
     let mut entry_imports = Vec::new();
+    let mut checkpoint_imports = Vec::new();
     let mut seeds = Vec::new();
     let mut dynamic_linker = false;
     for (index, source) in scan.functions.iter().enumerate() {
@@ -28,27 +33,54 @@ pub fn analyze<'a>(
             continue;
         };
         let index = u32::try_from(index)?;
-        let entry = options
-            .entry_import
-            .split_once('.')
-            .is_some_and(|(m, n)| m == module && n == name);
+        let entry = named(&options.entry_import, module, name);
+        let checkpoint = !entry
+            && options
+                .checkpoint_import
+                .as_deref()
+                .is_some_and(|checkpoint| named(checkpoint, module, name));
         if entry {
             entry_imports.push(index);
         }
+        if checkpoint {
+            checkpoint_imports.push(index);
+        }
         dynamic_linker |= crate::call_graph::is_dynamic_linker_function_import(module, name);
-        if side_module || entry || (module == "env" && name == "__wasm_dlopen") {
+        if side_module || entry || checkpoint || (module == "env" && name == "__wasm_dlopen") {
             seeds.push(index);
         }
     }
-    let participates = side_module || dynamic_linker || !entry_imports.is_empty();
-    let reaching = if participates {
-        scan.reaching_from_seeds(seeds, side_module || dynamic_linker)?
+    let participates = side_module
+        || dynamic_linker
+        || !entry_imports.is_empty()
+        || !checkpoint_imports.is_empty();
+    let external = side_module || dynamic_linker;
+    let covered = if participates && !checkpoint_imports.is_empty() && options.sinks && !side_module
+    {
+        let facts = checkpoint_facts(&scan, options, limits);
+        checkpoint::select(
+            &scan,
+            &checkpoint_imports,
+            facts.as_ref(),
+            limits.program.metadata_bytes,
+        )?
     } else {
+        None
+    };
+    let reaching = if !participates {
         ReachingPlan {
             activations: BTreeSet::new(),
             control_reachable: BTreeSet::new(),
             tail_sites: BTreeSet::new(),
         }
+    } else if covered.is_some() {
+        let fork_seeds = seeds
+            .iter()
+            .copied()
+            .filter(|seed| !checkpoint_imports.contains(seed));
+        scan.reaching_from_seeds(fork_seeds, external)?
+    } else {
+        scan.reaching_from_seeds(seeds.iter().copied(), external)?
     };
     let mut analysis = Analysis {
         scan,
@@ -64,16 +96,105 @@ pub fn analyze<'a>(
             facts_error: None,
             dlopen_contract: None,
         },
+        cover: (!checkpoint_imports.is_empty()).then_some(checkpoint::Cover::Every),
     };
+    // WHY no sinks over a whole checkpoint closure: a restored checkpoint
+    // returns through every frame, so no frame may stay above a boundary.
     if participates
         && options.sinks
         && !side_module
         && options.entry_import == "kernel.kernel_fork"
         && analysis.decision.entry_imports.len() == 1
+        && (checkpoint_imports.is_empty() || covered.is_some())
     {
         refine(&mut analysis, options, limits)?;
     }
+    if let Some(covered) = covered {
+        cover_frames(
+            &mut analysis,
+            covered,
+            &checkpoint_imports,
+            &seeds,
+            external,
+        )?;
+    }
     Ok(analysis)
+}
+
+/// Add the covered frames of the checkpoint closure to the fork plan. A
+/// fork boundary does not stop a checkpoint unwind: the host continues it
+/// past the boundary into the covered callers. A selection that leaves too
+/// little uninstrumented falls back to the whole closure without sinks.
+fn cover_frames(
+    analysis: &mut Analysis<'_>,
+    covered: BTreeSet<u32>,
+    checkpoint_imports: &[u32],
+    seeds: &[u32],
+    external: bool,
+) -> Result<()> {
+    let closure = analysis
+        .scan
+        .reaching_from_seeds(seeds.iter().copied(), external)?;
+    let kept = |function: &u32| covered.contains(function) || checkpoint_imports.contains(function);
+    let mut reaching = ReachingPlan {
+        activations: analysis.reaching.activations.clone(),
+        control_reachable: analysis.reaching.control_reachable.clone(),
+        tail_sites: analysis.reaching.tail_sites.clone(),
+    };
+    reaching
+        .activations
+        .extend(closure.activations.iter().copied().filter(kept));
+    reaching
+        .control_reachable
+        .extend(closure.control_reachable.iter().copied().filter(kept));
+    reaching.tail_sites.extend(
+        closure
+            .tail_sites
+            .iter()
+            .copied()
+            .filter(|point| covered.contains(&point.function)),
+    );
+    if checkpoint::pays_off(&analysis.scan, &reaching.activations, &closure.activations) {
+        analysis.reaching = reaching;
+        analysis.cover = Some(checkpoint::Cover::Frames(covered));
+        return Ok(());
+    }
+    analysis.reaching = closure;
+    analysis.boundaries.clear();
+    analysis.decision.source = PlanSource::Closure;
+    analysis.decision.facts = None;
+    analysis.decision.facts_error = None;
+    analysis.decision.dlopen_contract = None;
+    Ok(())
+}
+
+/// Compiler facts for the coverage selection, or `None` when the module
+/// carries none this analysis can use; the selection then runs without.
+fn checkpoint_facts(
+    scan: &Scan<'_>,
+    options: &Options,
+    limits: AnalysisLimits,
+) -> Option<FactsStore> {
+    if !options.facts || scan.custom_data(crate::facts::SECTION).next().is_none() {
+        return None;
+    }
+    let store = FactsStore::from_scan(scan, limits.storage).and_then(|store| {
+        store.resolve_calls(
+            scan,
+            FactsOptions {
+                effective_types: options.effective_types,
+            },
+        )?;
+        Ok(store)
+    });
+    match store {
+        Ok(store) => Some(store),
+        Err(error) => {
+            crate::progress::Progress::new("checkpoint coverage")
+                .note(format_args!("facts unavailable: {error:#}"));
+            None
+        }
+    }
 }
 
 fn refine(analysis: &mut Analysis<'_>, options: &Options, limits: AnalysisLimits) -> Result<()> {

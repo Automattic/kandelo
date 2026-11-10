@@ -11,6 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { statSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -214,7 +215,19 @@ const TEST_PROGRAMS = [
   "thread-exit-group.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
+  "checkpoint-loop.c",
+  "checkpoint-epoll.c",
+  "checkpoint-threads.c",
+  "checkpoint-dlopen.c",
+  "checkpoint-handles.c",
+  "checkpoint-pty-echo.c",
+  "checkpoint-blocking-read.c",
 ];
+
+/** Extra compiler flags a test program needs beyond the shared invocation. */
+const TEST_PROGRAM_FLAGS: Record<string, readonly string[]> = {
+  "checkpoint-dlopen.c": ["-ldl"],
+};
 
 /** Memory64 counterparts needed to prove pointer-width-neutral syscall input. */
 const WASM64_TEST_PROGRAMS = [...new Set([
@@ -246,6 +259,15 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "unix_dgram_cross_process_test.c",
   // Forks a client so the daemon half is a different process.
   "syslog_client_test.c",
+  "test-pthread.c",
+  "block-forever.c",
+  "checkpoint-loop.c",
+  "checkpoint-epoll.c",
+  "checkpoint-threads.c",
+  "checkpoint-dlopen.c",
+  "checkpoint-handles.c",
+  "checkpoint-pty-echo.c",
+  "checkpoint-blocking-read.c",
 ]);
 
 /** WAT fixtures used by host runtime tests. */
@@ -288,13 +310,21 @@ function needsRebuild(srcFile: string, outFile: string): boolean {
   return newestToolchainMtimeMs() > outStat.mtimeMs;
 }
 
+/**
+ * The second seed import named when instrumenting a fixture, matching
+ * `scripts/build-programs.sh`. A program that never forks reaches its unwind
+ * only through `kernel.kernel_checkpoint`.
+ */
+const FORK_INSTRUMENT_SEEDS = ["--checkpoint-entry", "kernel.kernel_checkpoint"];
+
 function compileCTestProgram(
   src: string,
   out: string,
   forkInstrument: boolean,
+  flags: readonly string[] = [],
 ): void {
   if (!forkInstrument) {
-    execFileSync("wasm32posix-cc", [src, "-o", out], {
+    execFileSync("wasm32posix-cc", [...flags, src, "-o", out], {
       cwd: repoRoot,
       stdio: "pipe",
     });
@@ -303,7 +333,7 @@ function compileCTestProgram(
 
   const linked = `${out}.linked`;
   try {
-    execFileSync("wasm32posix-cc", [src, "-o", linked], {
+    execFileSync("wasm32posix-cc", [...flags, src, "-o", linked], {
       cwd: repoRoot,
       stdio: "pipe",
     });
@@ -311,6 +341,7 @@ function compileCTestProgram(
       "bash",
       [
         join(repoRoot, "scripts/run-wasm-fork-instrument.sh"),
+        ...FORK_INSTRUMENT_SEEDS,
         linked,
         "-o",
         out,
@@ -352,9 +383,33 @@ function fixtureBuildContract(
   }
   return captureProgramFixtureBuildContract(
     repoRoot,
-    `${arch}\nfork=${forkInstrumented}\n${compilerVersion}`,
+    `${arch}\nfork=${forkInstrumented}\nseeds=${
+      forkInstrumented ? FORK_INSTRUMENT_SEEDS.join(" ") : ""
+    }\n${compilerVersion}`,
     inputs,
   );
+}
+
+/**
+ * Fold a program's extra flags into its freshness fingerprint.
+ *
+ * The flags change what the compiler emits without changing any input file,
+ * like the instrument seeds, so a fixture built under different flags must
+ * not read as current.
+ */
+function flaggedContract(
+  contract: ProgramFixtureBuildContract,
+  flags: readonly string[],
+): ProgramFixtureBuildContract {
+  if (flags.length === 0) return contract;
+  return {
+    repoRoot: contract.repoRoot,
+    inputFingerprint: createHash("sha256")
+      .update(contract.inputFingerprint)
+      .update("\0flags\0")
+      .update(flags.join("\0"))
+      .digest("hex"),
+  };
 }
 
 export async function setup() {
@@ -403,17 +458,21 @@ export async function setup() {
   }
 
   for (const { arch, src, out } of RESOLVED_PROGRAM_FIXTURES) {
-    const contract = arch === "wasm64" ? wasm64Contract : wasm32Contract;
+    const contract = arch === "wasm64" ? wasm64Contract : wasm32ForkContract;
     if (!programFixtureNeedsRebuild(src, out, contract)) continue;
 
     mkdirSync(dirname(out), { recursive: true });
     console.log(
       `[global-setup] Compiling ${src.slice(repoRoot.length + 1)} (${arch})...`,
     );
-    execFileSync(`${arch}posix-cc`, [src, "-o", out], {
-      cwd: repoRoot,
-      stdio: "pipe",
-    });
+    if (arch === "wasm64") {
+      execFileSync("wasm64posix-cc", [src, "-o", out], {
+        cwd: repoRoot,
+        stdio: "pipe",
+      });
+    } else {
+      compileCTestProgram(src, out, true);
+    }
     stampProgramFixture(src, out, contract);
   }
 
@@ -426,13 +485,15 @@ export async function setup() {
       continue;
     }
 
-    const contract = FORK_INSTRUMENTED_PROGRAMS.has(cFile)
-      ? wasm32ForkContract
-      : wasm32Contract;
+    const flags = TEST_PROGRAM_FLAGS[cFile] ?? [];
+    const contract = flaggedContract(
+      FORK_INSTRUMENTED_PROGRAMS.has(cFile) ? wasm32ForkContract : wasm32Contract,
+      flags,
+    );
     if (!programFixtureNeedsRebuild(src, out, contract)) continue;
 
     console.log(`[global-setup] Compiling ${cFile}...`);
-    compileCTestProgram(src, out, FORK_INSTRUMENTED_PROGRAMS.has(cFile));
+    compileCTestProgram(src, out, FORK_INSTRUMENTED_PROGRAMS.has(cFile), flags);
     stampProgramFixture(src, out, contract);
   }
 

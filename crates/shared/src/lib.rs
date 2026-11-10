@@ -1628,6 +1628,42 @@ pub mod channel {
     pub const SIG_ALT_SP: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_ALT_SP_OFFSET;
     /// Alternate signal-stack size.
     pub const SIG_ALT_SIZE: usize = SIG_BASE + kernel_scratch_wire::SIGNAL_ALT_SIZE_OFFSET;
+
+    // Checkpoint request area — reserved immediately below the signal delivery
+    // area, at the end of the data buffer. The host writes the request word
+    // before it completes a process's pending syscall. The glue reads it at the
+    // same post-syscall hook that delivers a signal, and calls
+    // `kernel.kernel_checkpoint` when it is set.
+    //
+    // This is not the libc `__wasm_posix_signal_checkpoint` trampoline, which
+    // re-enters one channel completion so a deferred signal handler can run.
+    /// Bytes the checkpoint request wire occupies.
+    pub const CHECKPOINT_WIRE_SIZE: usize = size_of::<u32>();
+    /// Keep the reserved tail naturally aligned even though the wire is packed.
+    pub const CHECKPOINT_AREA_ALIGNMENT: usize = core::mem::align_of::<u64>();
+    /// Complete reserved checkpoint area, including any trailing alignment pad.
+    pub const CHECKPOINT_AREA_SIZE: usize = (CHECKPOINT_WIRE_SIZE + CHECKPOINT_AREA_ALIGNMENT - 1)
+        / CHECKPOINT_AREA_ALIGNMENT
+        * CHECKPOINT_AREA_ALIGNMENT;
+    /// Base offset of the checkpoint request area.
+    pub const CHECKPOINT_BASE: usize = SIG_BASE - CHECKPOINT_AREA_SIZE;
+    /// The checkpoint request word (u32), a bit set. 0 = no request.
+    ///
+    /// The host publishes it; the guest clears it once it has taken the
+    /// request, so a later syscall on the same channel does not unwind again.
+    pub const CHECKPOINT_REQUEST: usize = CHECKPOINT_BASE;
+    /// Request bit: unwind this process's call stack into its linear memory.
+    pub const CHECKPOINT_REQUEST_UNWIND: u32 = 1;
+    /// Request bit: resubmit the syscall this request rode in on.
+    ///
+    /// The freeze completes a parked syscall with `EINTR` to reach a boundary
+    /// the process would otherwise never reach. No signal was caught, so the
+    /// process is owed the call it was making rather than an interruption.
+    /// This bit is what tells the guest to make that call again.
+    pub const CHECKPOINT_REQUEST_RESTART: u32 = 2;
+    /// Every request bit the host may publish.
+    pub const CHECKPOINT_REQUEST_KNOWN_MASK: u32 =
+        CHECKPOINT_REQUEST_UNWIND | CHECKPOINT_REQUEST_RESTART;
 }
 
 #[cfg(test)]
@@ -1679,6 +1715,29 @@ mod channel_abi_tests {
         assert!(channel::SIG_DELIVERY_SIZE <= channel::SIG_AREA_SIZE);
         assert_eq!(channel::SIG_AREA_SIZE - channel::SIG_DELIVERY_SIZE, 0);
         assert_eq!(channel::SIG_BASE % channel::SIG_AREA_ALIGNMENT, 0);
+    }
+
+    #[test]
+    fn checkpoint_request_sits_below_the_signal_area_without_moving_it() {
+        assert_eq!(
+            channel::CHECKPOINT_BASE + channel::CHECKPOINT_AREA_SIZE,
+            channel::SIG_BASE,
+        );
+        assert!(
+            channel::CHECKPOINT_REQUEST + channel::CHECKPOINT_WIRE_SIZE <= channel::SIG_BASE,
+        );
+        assert_eq!(channel::CHECKPOINT_BASE % channel::CHECKPOINT_AREA_ALIGNMENT, 0);
+        assert!(channel::CHECKPOINT_BASE >= channel::DATA_OFFSET);
+        assert_ne!(channel::CHECKPOINT_REQUEST_UNWIND, 0);
+        assert_ne!(channel::CHECKPOINT_REQUEST_RESTART, 0);
+        assert_eq!(
+            channel::CHECKPOINT_REQUEST_UNWIND & channel::CHECKPOINT_REQUEST_RESTART,
+            0,
+        );
+        assert_eq!(
+            channel::CHECKPOINT_REQUEST_KNOWN_MASK,
+            channel::CHECKPOINT_REQUEST_UNWIND | channel::CHECKPOINT_REQUEST_RESTART,
+        );
     }
 
     #[test]
@@ -2280,7 +2339,11 @@ pub mod abi {
     ///    descriptor in `host_abi::EXTENSION_REQUEST_DESCRIPTORS`.
     /// 7: bounded entropy continuations, process-range validation, and private
     ///    guest-address I/O transport.
-    pub const HOST_ADAPTER_VERSION: u32 = 7;
+    /// 8: machine checkpoints (ABI 57). The kernel imports
+    ///    `host_accept_select` so a replica serves a shared accept queue to the
+    ///    worker the primary chose, and exports the restore calls for host
+    ///    handles, timers, PTY sessions and stream state.
+    pub const HOST_ADAPTER_VERSION: u32 = 8;
     /// A bounded entropy batch yielded without completing its guest syscall.
     /// Negative errno values occupy -1..=-4095; this is transport-only status.
     pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
@@ -3221,7 +3284,8 @@ pub mod abi {
             WPK_FORK_MODULE_STATE_TABLE_BASELINE_FINGERPRINT_SIZE,
             WPK_FORK_MODULE_STATE_TABLE_DESCRIPTOR_PAYLOAD_SIZE,
             WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT, WPK_FORK_REQUIRED_EXPORTS,
-            WPK_FORK_PROCESS_IMPORT, WPK_FORK_REQUIRED_IMPORTS, WPK_FORK_REQUIRED_TABLE_IMPORTS,
+            WPK_CHECKPOINT_PROCESS_IMPORT, WPK_FORK_PROCESS_IMPORT, WPK_FORK_REQUIRED_IMPORTS,
+            WPK_FORK_REQUIRED_TABLE_IMPORTS,
             extended_syscalls::SYSCALLS, wpk_fork_linked_chunk_header_size,
             wpk_fork_linked_node_header_size, wpk_fork_module_state_chunk_header_size,
         };
@@ -3398,6 +3462,11 @@ pub mod abi {
             assert_eq!(WPK_FORK_PROCESS_IMPORT.name, "kernel_fork");
             assert_eq!(WPK_FORK_PROCESS_IMPORT.params, &[super::ProgramArtifactValueType::I32]);
             assert_eq!(WPK_FORK_PROCESS_IMPORT.results, &[super::ProgramArtifactValueType::I32]);
+
+            assert_eq!(WPK_CHECKPOINT_PROCESS_IMPORT.module, "kernel");
+            assert_eq!(WPK_CHECKPOINT_PROCESS_IMPORT.name, "kernel_checkpoint");
+            assert!(WPK_CHECKPOINT_PROCESS_IMPORT.params.is_empty());
+            assert!(WPK_CHECKPOINT_PROCESS_IMPORT.results.is_empty());
 
             assert_eq!(WPK_FORK_LINKED_FRAME_FORMAT_MAGIC, *b"KLCF");
             assert_eq!(WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE, 24);

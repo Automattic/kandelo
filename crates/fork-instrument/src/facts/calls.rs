@@ -130,6 +130,47 @@ impl FactsStore {
         Ok(Some(output))
     }
 
+    /// The functions the program registers with `registry` (`thread` for a
+    /// `pthread_create` start routine, `signal` for a handler), by name.
+    pub fn registered(&self, registry: &str) -> Result<Vec<String>> {
+        ensure!(self.calls_ready.get(), "call planning has not completed");
+        let Some(registry) = self.find_atom(registry)? else {
+            return Ok(Vec::new());
+        };
+        let mut remaining = self.metadata_budget();
+        let mut output = Vec::new();
+        let mut query = self.db.prepare(
+            "SELECT a.name FROM registered r JOIN atom a ON a.id=r.name WHERE r.registry=? ORDER BY a.name",
+        )?;
+        let mut rows = query.query([registry])?;
+        while let Some(row) = rows.next()? {
+            let name = row.get_ref(0)?.as_str()?;
+            charge(&mut remaining, name.len() + 32)?;
+            output.push(name.to_owned());
+        }
+        Ok(output)
+    }
+
+    /// The functions bound to a checked dispatch hub of `registry`: for
+    /// `thread`, musl's `start` and `start_c11`.
+    pub fn hubs_of(&self, registry: &str) -> Result<Vec<u32>> {
+        ensure!(self.calls_ready.get(), "call planning has not completed");
+        let Some(registry) = self.find_atom(registry)? else {
+            return Ok(Vec::new());
+        };
+        let mut query = self
+            .db
+            .prepare("SELECT DISTINCT caller FROM hub WHERE registry=? ORDER BY caller")?;
+        let hubs = query
+            .query_map([registry], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<u32>>>()?;
+        ensure!(
+            hubs.len() <= self.metadata_budget() / 4,
+            "facts hubs exceed resident metadata budget"
+        );
+        Ok(hubs)
+    }
+
     /// Bounded compatibility projection for small fixtures/oracle comparison.
     /// The native planner uses disk lookups and need not collect this matrix.
     pub fn collect_call_facts(&self) -> Result<CallFacts> {

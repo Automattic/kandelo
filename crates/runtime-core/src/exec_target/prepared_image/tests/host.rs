@@ -7,7 +7,7 @@ const IMAGE: i64 = 82_002;
 fn private_program_host() -> MutableHost {
     MutableHost {
         closed: Vec::new(), program_metadata: Some((0o555, 0)),
-        source: include_bytes!("../../../../../../abi/program-fixtures/v56/echo.wasm").to_vec(),
+        source: include_bytes!("../../../../../../abi/program-fixtures/v57/echo.wasm").to_vec(),
         image: Vec::new(), corrupt_source_on_image_read: false, source_bytes_read: 0,
         corrupt_image_after_source_bytes: None, image_revision: 0,
     }

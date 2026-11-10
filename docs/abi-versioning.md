@@ -21,10 +21,14 @@ convention — CI enforces it.
 Kernel-host adapter version 7 adds bounded entropy-read continuations, a
 nonallocating process-range validation import, and a private guest-address I/O
 transport. Selection, allocation admission and retained write payloads are
-kernel-owned; ordinary readv dispatch needs no separate entropy probe. The host and kernel must be rebuilt together. Guest program ABI
-56 and its supported digest are unchanged; existing guest binaries remain valid.
+kernel-owned; ordinary readv dispatch needs no separate entropy probe. Version
+8 adds the kernel exports and the kernel import that restore a machine
+checkpoint (see [ABI 57 machine checkpoints](#abi-57-machine-checkpoints)).
+The host and kernel must be rebuilt together.
 
-Program ABI 56 is the supported baseline; ABI 55 was retired before release.
+Program ABI 57 is the supported baseline. ABI 55 and ABI 56 were retired
+before release; ABI 57 adds the checkpoint request word and two process
+imports, so ABI-56 programs must be rebuilt.
 The separate `abi/supported-program-baseline.json` gate preserves the current program digest across
 kernel/host rebuilds; ordinary snapshot regeneration or a program version bump
 does not bypass it. The gate also refuses additive changes to the base
@@ -2844,6 +2848,84 @@ kernel's `CLOCK_MONOTONIC` source need not share an origin, only a rate.
 A host that finds no `kernel_vblank_elapsed` export calls `kernel_vblank`,
 which stamps the call time as before. `HOST_ADAPTER_VERSION` is unchanged:
 no export the host requires and no import the kernel requires changed.
+
+### ABI 57 machine checkpoints
+
+ABI 57 versions the machine-migration contract: a running machine can be
+frozen into a checkpoint, torn down, and restored — in the same tab, in
+another tab, or on another computer.
+
+The syscall channel reserves an 8-byte checkpoint request area directly
+below the signal delivery area, at the tail of the data buffer. It holds one
+`u32` request word, a bit set. The host publishes the word before completing
+a process's pending syscall; libc's post-syscall trampoline clears it and,
+when `CHECKPOINT_REQUEST_UNWIND` is set, calls the new process import
+`kernel.kernel_checkpoint`. The import takes nothing and returns nothing: the
+capture pass unwinds the call stack into linear memory instead of returning,
+and a rewind resumes the guest after the syscall that carried the request.
+Every freshly built main program imports the hook, and hosts validate its
+signature the way they validate `kernel.kernel_fork`. The import is also the
+instrumenter's checkpoint seed, so programs that never fork still carry the
+unwind machinery.
+
+Before it calls the hook, libc asks the second new import,
+`kernel.kernel_checkpoint_covered() -> i32`, whether every frame on the
+calling thread's stack can be unwound. An instrumented module exports the
+mutable `i32` global `__wpk_checkpoint_cover`, which the host sets to 1 before
+it enters `_start` or a thread's start routine. wasm-fork-instrument replaces
+every call to the import with the calling frame's coverage, so only a module
+it never instrumented reaches the host, which answers 1. See
+[fork-instrumentation.md](fork-instrumentation.md#checkpoint-coverage).
+
+The freeze completes a parked blocking syscall with `EINTR` so the process
+reaches the trampoline at all, and publishes `CHECKPOINT_REQUEST_RESTART`
+beside `CHECKPOINT_REQUEST_UNWIND`. The bit tells the guest to resubmit the
+interrupted syscall once the rewind returns; no signal was caught, so the
+caller is owed the call it was making.
+
+The request word and both imports are program surface, so the supported
+program baseline moves to ABI 57 with this change. Programs built for ABI 56
+do not carry the hook and must be rebuilt.
+
+Restore adds kernel exports and one kernel import, which are kernel-host
+surface and bump `HOST_ADAPTER_VERSION` to 8. `kernel_enumerate_host_handles`
+and `kernel_remap_host_handles` let a receiver read the host handles held
+inside restored kernel memory and rewrite them to its own;
+`kernel_get_fd_status_flags` reads the flags it reopens a stream with, and
+`kernel_seek_fd` moves the reopened handle to the recorded position. Both name
+the process explicitly, so no guest task is bound for them.
+`kernel_rearm_host_timers` re-arms a restored process's armed interval timer
+with its remaining time (POSIX timer slots store no deadline, so their
+remaining time stays a documented gap). `kernel_pty_index_for_pid` lets the
+receiver re-seed the host maps that route terminal input to a restored
+process's PTY, and `kernel_pty_session_id` names the session whose pid that
+PTY's output is routed under. `kernel_cancel_host_owned_wait` retires the
+kernel wait state of a task the freeze completes, naming the task explicitly.
+The kernel also imports `host_accept_select`, the host's choice of which
+waiting acceptor takes a connection, so a replica can replay that choice.
+
+The kernel owns `/` since ABI 49, so the kernel memory copy carries the
+filesystem. The receiver boots the same VFS image: unmodified image content
+stays in the host's copy of the image and is not part of the checkpoint.
+
+A persistent root keeps its journal outside kernel memory, in browser storage
+or a Node journal file, and its bounded cache can evict committed blocks to
+that journal. A checkpoint of such a machine (checkpoint format 10) carries
+the root whole: the base image as the kernel reads it (the checked physical
+layout for a verified base), every file of the persistence directory, the
+slots the kernel memory names for the journal and its index, and the
+generation the compactor held. The freeze holds compaction off, reads the
+static files first, and reads the live journal and index in the same instant
+as the kernel memory. A write that reaches the journal's tail bound during
+the freeze needs the compaction the freeze holds off, so its process cannot
+park; the freeze gives the machine back, lets the compaction run, and tries
+again, as it does for a launch that arrives during the freeze. The receiver
+boots no image of its own: it installs in-memory copies of the journal and
+index in the captured slots, and runs a compactor over the copies so writes
+past the journal's tail bound compact as they would on the original. Nothing the replica writes reaches the original
+computer's storage. Compaction runs on each computer's own schedule, and it
+changes kernel memory, so a replication state hash can report the kernel
+region as diverged after one side compacts and the other has not.
 
 ## The snapshot
 

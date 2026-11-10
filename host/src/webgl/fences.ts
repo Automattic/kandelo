@@ -123,6 +123,8 @@ export class GlFenceOwner {
   constructor(source?: GlFenceSource) {
     this.source = source ? Object.freeze({pid:source.pid,sessionId:source.sessionId,operations:source.operations}) : null;
   }
+  /** Live fences; a machine checkpoint cannot carry one. */
+  get size(): number { return this.fences.size; }
   matchesSource(source: GlFenceSource): boolean {
     return !!this.source && this.source.pid === source.pid && this.source.sessionId === source.sessionId
       && this.source.operations === source.operations;

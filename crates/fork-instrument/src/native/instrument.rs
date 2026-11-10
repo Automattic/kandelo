@@ -4,7 +4,11 @@ use super::{AnalysisLimits, Decision, analyze, metadata};
 use crate::{
     Options,
     artifact_io::{ArtifactSpool, MappedArtifact, copy_without_custom},
-    streaming::{EmitReport, PipelineLimits, features},
+    streaming::{
+        EmitReport, PipelineLimits,
+        checkpoint::{self, Cover},
+        features,
+    },
 };
 use anyhow::{Context, Result, bail};
 use wasmparser::{Encoding, Parser, Payload, ValidPayload, Validator};
@@ -103,6 +107,25 @@ fn instrument_inner(
         .emission
         .max_spooled_section_bytes
         .min(limits.output_bytes);
+    let source;
+    let analysis = if let Some(Cover::Frames(covered)) = &analysis.cover {
+        progress.note(format_args!(
+            "checkpoint coverage, {} frames",
+            covered.len()
+        ));
+        let mut spool = ArtifactSpool::new(limits.output_bytes)?;
+        checkpoint::cover(
+            &analysis.scan,
+            covered,
+            &mut spool,
+            limits.pipeline.emission,
+            limits.pipeline.metadata_bytes,
+        )?;
+        source = spool.freeze()?;
+        analysis.rebase(source.bytes())?
+    } else {
+        analysis
+    };
     progress.note(format_args!("freeze plan"));
     let (mut pipeline, decision) = analysis.freeze(limits.pipeline)?;
     if let Some(lines) = &lines {

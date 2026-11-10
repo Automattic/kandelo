@@ -9,14 +9,14 @@ use wasm_posix_shared::mode::{S_ISGID, S_ISUID};
 
 mod host;
 
-const ORIGINAL: &[u8] = include_bytes!("../../../../../abi/program-fixtures/v56/raw-fork.wasm");
+const ORIGINAL: &[u8] = include_bytes!("../../../../../abi/program-fixtures/v57/raw-fork.wasm");
 
 #[test]
 fn initial_exec_commits_the_retained_path_once_after_complete_observation() {
     let _namespace = NamespaceGuard::enter();
     let mut proc = Process::new(100);
     let mut locks = AdvisoryLockManager::new();
-    let source = include_bytes!("../../../../../abi/program-fixtures/v56/echo.wasm");
+    let source = include_bytes!("../../../../../abi/program-fixtures/v57/echo.wasm");
     let descriptor = install(&mut proc, b"/source", source);
     let owner = PreparedExecOwner::Process { pid: 100, caller_tid: 100, generation: 0 };
     let token = prepare(&mut proc, &mut locks, &mut NoopHost, owner, AT_FDCWD, b"/source", 0).unwrap();

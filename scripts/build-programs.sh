@@ -203,10 +203,11 @@ CFLAGS=(
     -I"$SYSROOT/include/drm"
 )
 
-# Fork support comes from wasm-fork-instrument. The tool auto-discovers
-# fork-path functions via call-graph analysis from `kernel.kernel_fork`;
-# no onlylist is needed.
-# See docs/fork-instrumentation.md.
+# Fork support comes from wasm-fork-instrument. The tool auto-discovers the
+# functions it must instrument via call-graph analysis from the seed imports;
+# no onlylist is needed. The wrapper also seeds `kernel.kernel_checkpoint`,
+# because a program that never forks still reaches its unwind through it. See
+# docs/fork-instrumentation.md.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 build_program() {

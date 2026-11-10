@@ -1,7 +1,7 @@
 //! The post-link module edits, checked against the fork instrumenter that
 //! reads them.
 
-use kandelo_cc::driver::is_fork_capable;
+use kandelo_cc::driver::imports_migration_seed;
 use kandelo_cc::wasm::{
     CALLTYPES_CODE_HASH_SECTION, CALLTYPES_SECTION, is_relocatable, with_abi_contract_section,
     with_code_hash_section, without_custom_section,
@@ -127,16 +127,21 @@ fn stripping_the_facts_keeps_every_other_byte() {
 }
 
 #[test]
-fn fork_capability_is_the_kernel_fork_import() {
-    assert!(is_fork_capable(&module(FORK_MODULE)).unwrap());
+fn a_migration_seed_is_the_kernel_fork_or_kernel_checkpoint_import() {
+    assert!(imports_migration_seed(&module(FORK_MODULE)).unwrap());
+    let checkpoint = r#"(module
+      (import "kernel" "kernel_checkpoint" (func))
+      (func (export "_start")))"#;
+    assert!(imports_migration_seed(&module(checkpoint)).unwrap());
     let other = r#"(module
       (import "kernel" "kernel_forks" (func (result i32)))
       (import "env" "kernel_fork" (func (result i32)))
+      (import "env" "kernel_checkpoint" (func))
       (import "env" "memory" (memory 1 1 shared))
       (import "env" "g" (global i32))
       (func (export "_start")))"#;
-    assert!(!is_fork_capable(&module(other)).unwrap());
-    assert!(!is_fork_capable(&module("(module (func (export \"_start\")))")).unwrap());
+    assert!(!imports_migration_seed(&module(other)).unwrap());
+    assert!(!imports_migration_seed(&module("(module (func (export \"_start\")))")).unwrap());
 }
 
 const CONTRACT: [u8; 32] = [0x5a; 32];

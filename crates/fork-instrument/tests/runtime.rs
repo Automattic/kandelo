@@ -463,6 +463,84 @@ fn marks_dlopen_main_indirect_boundary_separately() {
 }
 
 #[test]
+fn a_checkpoint_seed_does_not_claim_the_dlopen_fork_boundary() {
+    // The capability claim describes the fork boundary only: a program that
+    // can dlopen but only imports the checkpoint seed never forks.
+    let input = wat::parse_str(
+        r#"
+        (module
+          (import "kernel" "kernel_checkpoint" (func $checkpoint))
+          (import "env" "__wasm_dlsym" (func $dlsym (param i32 i32 i32) (result i32)))
+          (type $callback (func (result i32)))
+          (table 1 funcref)
+          (memory 1)
+          (func (export "_start") call $checkpoint)
+          (func (export "dispatch") (result i32)
+            i32.const 0
+            call_indirect (type $callback)))
+        "#,
+    )
+    .expect("wat parse");
+    let output = instrument(
+        &input,
+        &Options {
+            checkpoint_import: Some("kernel.kernel_checkpoint".into()),
+            ..Options::default()
+        },
+    )
+    .expect("instrument");
+    validate(&output);
+    assert_eq!(
+        fork_capabilities(&output),
+        vec![vec![
+            WPK_FORK_CAPABILITIES_VERSION,
+            WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
+        ]],
+    );
+}
+
+#[test]
+fn a_checkpoint_seed_instruments_a_module_that_never_forks() {
+    let input = wat::parse_str(
+        r#"
+        (module
+          (import "kernel" "kernel_checkpoint" (func $checkpoint))
+          (memory 1)
+          (func (export "_start")
+            call $checkpoint))
+        "#,
+    )
+    .expect("wat parse");
+    assert_eq!(
+        instrument(&input, &Options::default()).expect("instrument"),
+        input,
+        "no seed import leaves the linker bytes untouched",
+    );
+    let output = instrument(
+        &input,
+        &Options {
+            checkpoint_import: Some("kernel.kernel_checkpoint".into()),
+            ..Options::default()
+        },
+    )
+    .expect("instrument");
+    validate(&output);
+    let module = Module::from_buffer(&output).expect("parse");
+    for export in [
+        names::EXPORT_UNWIND_BEGIN,
+        names::EXPORT_UNWIND_END,
+        names::EXPORT_REWIND_BEGIN,
+        names::EXPORT_REWIND_END,
+        names::EXPORT_STATE,
+    ] {
+        assert!(
+            module.exports.iter().any(|e| e.name == export),
+            "`{export}` export missing",
+        );
+    }
+}
+
+#[test]
 fn marks_env_fork_side_entry_separately() {
     let input = wat::parse_str(
         r#"

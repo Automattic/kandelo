@@ -1,0 +1,346 @@
+// Machine handover — this machine, moved whole to the other computer.
+//
+// WHY: a mirror shows a machine but never moves one. The framebuffer and the
+// terminal mirrors leave every process where it is, so the keeper keeps
+// running and the viewer only watches. Handover is the other half: the keeper
+// freezes its machine, sends the checkpoint together with the boot descriptor
+// naming the image those processes run on, and gives this computer up. The
+// taker boots that image, restores the checkpoint into it, and the same
+// processes carry on there — a game of fbDOOM included, from the frame it was
+// frozen on.
+//
+// The descriptor travels with the checkpoint because a viewer holds no image
+// of its own. The tab-to-tab demo omits it: both of its tabs hardcode one
+// image, so both already agree on what to boot.
+//
+// One computer holds the machine at a time. The keeper gives it up once the
+// checkpoint has gone out, and the taker adopts only after it has arrived,
+// so the machine never runs in two places. The keeper does not wait for the
+// taker to confirm the adoption: a taker that fails after the checkpoint
+// left leaves the machine on neither computer.
+//
+// Which computer that is decides who types, so it must be able to change more
+// than once and in both directions: the person watching takes the machine,
+// types, and hands it back the same way. Both sides therefore follow the
+// peer's announcement of whether it holds a machine rather than a role fixed
+// when the two computers first connected.
+import * as React from "react";
+import { LocalCheckpointHandover } from "@host/migration/transport-local";
+import { LocalReplicationLog } from "@host/replication/log-local";
+import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
+import { useStatus } from "../kernel-host/react";
+import type {
+  BootDescriptor,
+  CapturedMachine,
+  KernelHost,
+} from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { PeerLink } from "../../../lib/sharing-peer";
+
+/**
+ * How long a taker waits for the keeper's machine.
+ *
+ * A freeze unwinds every process before it can read one, and the checkpoint
+ * then crosses the wire in chunks, so the wait is generous. It is bounded all
+ * the same: a keeper that never answers has to read as a failed handover, not
+ * as one still in progress.
+ */
+const TAKE_TIMEOUT_MS = 120_000;
+
+/**
+ * How long a computer handing a machine back waits for the other to take it.
+ *
+ * The other computer usually runs a replica, so the take is a proof and not
+ * a transfer. A person is waiting on the Disconnect button all the same, so
+ * the wait is short, and a machine nobody took stays where it runs.
+ */
+const HAND_BACK_TIMEOUT_MS = 20_000;
+
+/**
+ * How often the hand back is asked again while the wait runs.
+ *
+ * The other computer refuses a take while its replica boots, as two boots
+ * of one page race. Asking again lets it take as soon as the replica is up.
+ */
+const HAND_BACK_REPEAT_MS = 1_000;
+
+/** How often the hand back looks for the peer holding the machine. */
+const HAND_BACK_CHECK_MS = 100;
+
+export interface MachineHandover {
+  /** True while this machine answers the peer's requests for it. */
+  readonly offering: boolean;
+  /** True while the other computer says it holds a machine. */
+  readonly peerHasMachine: boolean;
+  /**
+   * True from the moment this computer gave its machine away until it holds
+   * one again.
+   *
+   * A computer with no machine is otherwise indistinguishable from one that
+   * never had one, and the two should not be shown the same page: the person
+   * who handed a machine over chose to, and is waiting for it to start on the
+   * other computer rather than waiting for someone to share something.
+   */
+  readonly handedOver: boolean;
+  /** True while this computer is asking the peer for its machine. */
+  readonly taking: boolean;
+  /** Why the last attempt failed, or null when none has. */
+  readonly failure: string | null;
+  /** Ask the peer for its machine and run it here. */
+  take(): void;
+  /** True while this computer waits for the peer to take its machine back. */
+  readonly handingBack: boolean;
+  /** True when the last hand back ran out of time and the machine stayed here. */
+  readonly handBackFailed: boolean;
+  /**
+   * Give the machine back to the computer it was taken from, before this one
+   * disconnects.
+   *
+   * Resolves true when the machine left, or when it did not come from the
+   * peer and there is nothing to give back. Resolves false when the peer did
+   * not take it in time; a second call after that resolves true at once, so
+   * the person can disconnect and keep the machine here.
+   */
+  handBack(): Promise<boolean>;
+}
+
+export function useMachineHandover(
+  host: KernelHost,
+  link: PeerLink | null,
+  /**
+   * Whether this computer's machine is a replica of the peer's.
+   *
+   * A replica is a copy of one machine, not a second machine, so the computer
+   * holding one announces that it holds none. Offering it would let the peer
+   * take a copy of its own machine and leave two of them, each deciding for
+   * itself and neither following the other.
+   */
+  replicating: boolean,
+  /**
+   * Take the machine by proof instead of by transfer, when this page runs a
+   * caught-up replica. Resolves true when the machine changed hands; false
+   * sends the take to the checkpoint transfer below, which still works
+   * after a seal.
+   */
+  promote: () => Promise<boolean>,
+  /**
+   * Whether this computer is booting a replica of the peer's machine. A take
+   * started during that boot races it, so a hand back waits it out.
+   */
+  joining: boolean,
+): MachineHandover {
+  const status = useStatus();
+  const [taking, setTaking] = React.useState(false);
+  const [failure, setFailure] = React.useState<string | null>(null);
+  const [peerHasMachine, setPeerHasMachine] = React.useState(false);
+  const [handedOver, setHandedOver] = React.useState(false);
+  const [handingBack, setHandingBack] = React.useState(false);
+  const [handBackFailed, setHandBackFailed] = React.useState(false);
+  // True while the machine running here was taken from the peer, so a
+  // disconnect returns it to the computer it came from.
+  const tookFromPeerRef = React.useRef(false);
+
+  // The transport wraps the link's channel; the link owns and closes it, so
+  // dropping a transport here must not close the channel underneath it.
+  const handover = React.useMemo(
+    () =>
+      link
+        ? new LocalCheckpointHandover<CapturedMachine, BootDescriptor>(
+          link.handover,
+        )
+        : null,
+    [link],
+  );
+
+  // A computer with no link has no peer to hold anything. Clearing on the way
+  // in as well as on the way out keeps a dropped link from leaving a stale
+  // take-over button behind.
+  React.useEffect(() => {
+    setPeerHasMachine(false);
+    if (!handover) return;
+    let prewarmed: string | null = null;
+    const stop = handover.watchKeeper((holding, offered) => {
+      setPeerHasMachine(holding);
+      if (!holding || offered === null) return;
+      // The keeper's descriptor is another computer's input, and prewarming it
+      // makes this page fetch what it names. Check it exactly as the take does
+      // before it boots one, and as a shared URL's is checked.
+      try {
+        validateBootDescriptor(offered);
+      } catch {
+        return;
+      }
+      // Once per image. A keeper announces on every probe, and re-fetching a
+      // machine's image each time it says hello would spend more than the wait
+      // it is meant to save.
+      if (prewarmed === offered.id) return;
+      prewarmed = offered.id;
+      // Nothing has been asked for yet, so a prewarm that fails is not a
+      // failure to report: the take that follows fetches for itself and
+      // reports it then, where a person is waiting for an answer.
+      void host.prewarmBootDescriptor(offered).catch(() => {});
+    });
+    return () => {
+      stop();
+      setPeerHasMachine(false);
+    };
+  }, [handover, host]);
+
+  // Holding a machine ends any earlier handover: this computer is running one
+  // again, whether it booted it or took it back.
+  React.useEffect(() => {
+    if (status === "running") {
+      setHandedOver(false);
+      return;
+    }
+    tookFromPeerRef.current = false;
+    setHandBackFailed(false);
+  }, [status]);
+
+  // Losing the link ends it too. Without a peer there is no machine starting
+  // elsewhere to wait for, so the page is back to having nothing.
+  React.useEffect(() => {
+    tookFromPeerRef.current = false;
+    setHandBackFailed(false);
+    if (!handover) setHandedOver(false);
+  }, [handover]);
+
+  React.useEffect(() => {
+    if (!handover || status !== "running" || replicating) return;
+    return handover.offer(
+      () => host.captureMachine(),
+      () => {
+        // The machine runs on the other computer now. Give this one up
+        // rather than keep a second copy diverging from one state.
+        setHandedOver(true);
+        void host.releaseMachine();
+      },
+      // Says which image this machine runs, so the computer watching can load
+      // it before it asks for the machine. It is the same descriptor a take
+      // would deliver, sent early and on its own: naming an image is not
+      // handing one over, and a viewer that never takes has only fetched
+      // something it could have fetched anyway.
+      () => host.getBootDescriptor(),
+    );
+  }, [handover, host, replicating, status]);
+
+  const take = React.useCallback(() => {
+    if (!handover) return;
+    setTaking(true);
+    setFailure(null);
+    void (async () => {
+      try {
+        // A replica already holds the machine, milliseconds behind: the
+        // proof — seal, drain, hash, release — is the whole transfer, and
+        // the screen never goes through a boot. Anything that falls
+        // through lands on the checkpoint take, the path every take used
+        // before promotion existed.
+        if (replicating && (await promote())) {
+          tookFromPeerRef.current = true;
+          return;
+        }
+        const machine = await handover.take(TAKE_TIMEOUT_MS);
+        // A descriptor from the peer is another computer's input. Check it
+        // the way a shared URL's is checked, before this page boots an image
+        // it names. The checkpoint itself is validated by the restore that
+        // consumes it, in host/src/migration/restore.ts.
+        validateBootDescriptor(machine.boot);
+        // The terminals travel with the machine so the restored processes
+        // arrive already reachable, and so this computer redraws the screen
+        // the other one was showing instead of a fresh one. `adoptMachine`
+        // checks them, as it is the layer that acts on them.
+        await host.adoptMachine(
+          machine.boot,
+          machine.checkpoint,
+          machine.terminals,
+        );
+        tookFromPeerRef.current = true;
+      } catch (error) {
+        setFailure(error instanceof Error ? error.message : String(error));
+      } finally {
+        setTaking(false);
+      }
+    })();
+  }, [handover, host, promote, replicating]);
+
+  // The hand back is heard through refs: the listener lives as long as the
+  // link, and the state it reads changes with every take.
+  const takeRef = React.useRef(take);
+  takeRef.current = take;
+  const peerHasMachineRef = React.useRef(peerHasMachine);
+  peerHasMachineRef.current = peerHasMachine;
+  // A booting machine is this computer's own, as much as a running one: a take
+  // started during its boot races it, and the machine can arrive on neither.
+  const mayTakeBackRef = React.useRef(false);
+  mayTakeBackRef.current =
+    peerHasMachine
+    && ((status !== "running" && status !== "booting") || replicating)
+    && !joining
+    && !taking;
+
+  React.useEffect(() => {
+    if (!link) return;
+    // The wire wraps the link's channel; the link owns and closes it, so
+    // dropping the wire here must not close the channel underneath it.
+    const wire = new LocalReplicationLog(link.replication);
+    return wire.onHandBack(() => {
+      if (mayTakeBackRef.current) takeRef.current();
+    });
+  }, [link]);
+
+  const handBack = React.useCallback(async () => {
+    if (handBackFailed) {
+      setHandBackFailed(false);
+      return true;
+    }
+    if (!link || !tookFromPeerRef.current || host.getStatus() !== "running") {
+      return true;
+    }
+    const wire = new LocalReplicationLog(link.replication);
+    setHandingBack(true);
+    try {
+      // The machine has left when this computer stopped running it and the
+      // peer says it holds it. The stop alone is not enough: a promotion
+      // releases here before the peer hears the release, and a link closed
+      // in between strands the machine on neither computer.
+      const left = await new Promise<boolean>((resolve) => {
+        const check = setInterval(() => {
+          if (host.getStatus() === "running") return;
+          if (peerHasMachineRef.current) settle(true);
+        }, HAND_BACK_CHECK_MS);
+        const repeat = setInterval(() => {
+          if (host.getStatus() === "running") wire.handBack();
+        }, HAND_BACK_REPEAT_MS);
+        // A machine that stopped here and was never heard of again is gone
+        // from this computer either way, so only a machine still running
+        // here stays.
+        const expire = setTimeout(
+          () => settle(host.getStatus() !== "running"),
+          HAND_BACK_TIMEOUT_MS,
+        );
+        function settle(result: boolean) {
+          clearInterval(check);
+          clearInterval(repeat);
+          clearTimeout(expire);
+          resolve(result);
+        }
+        wire.handBack();
+      });
+      setHandBackFailed(!left);
+      return left;
+    } finally {
+      setHandingBack(false);
+    }
+  }, [handBackFailed, host, link]);
+
+  return {
+    offering: handover !== null && status === "running" && !replicating,
+    peerHasMachine,
+    handedOver,
+    taking,
+    failure,
+    take,
+    handingBack,
+    handBackFailed,
+    handBack,
+  };
+}

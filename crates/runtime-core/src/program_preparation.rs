@@ -285,7 +285,7 @@ impl PreparationReceipt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const ORIGINAL: &[u8] = include_bytes!("../../../abi/program-fixtures/v56/raw-fork.wasm");
+    const ORIGINAL: &[u8] = include_bytes!("../../../abi/program-fixtures/v57/raw-fork.wasm");
 
     fn profile() -> PreparationProfile {
         PreparationProfile { preparer_sha256: [1; 32], optimizer_sha256: None, options_sha256: [2; 32],
@@ -334,7 +334,7 @@ mod tests {
             (3, alloc::vec![1, 0]),
             (5, alloc::vec![1, if memory64 { 4 } else { 0 }, 1]),
             (7, exports),
-            (10, alloc::vec![1, 4, 0, 0x41, 56, 0x0b]),
+            (10, alloc::vec![1, 4, 0, 0x41, 57, 0x0b]),
         ] {
             module.push(section_id);
             length(&mut module, contents.len());

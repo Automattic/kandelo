@@ -176,7 +176,7 @@ export type GlChangeListener = (pid: number, ev: GlChangeEvent) => void;
  *  is no SAB backing — the pixels only ever exist on the GPU. The
  *  producer renders into `fbo`; a consumer that `WPK_BIND_FOREIGN_TEXTURE`s
  *  it samples `tex` zero-copy, so it MUST be on the same `gl`. */
-export type GpuBo = GlGpuAllocation;
+export type GpuBo = GlGpuAllocation & { drmFormat: number };
 
 export type GlExecutionRetirementGuard = {
   readonly context: WebGL2RenderingContext;
@@ -621,7 +621,8 @@ export class GlContextRegistry {
    *  returns the existing texId without reallocating. Returns the guest-
    *  visible texture id, or `null` if the context could not allocate the
    *  objects (the kernel then rolls back and the guest falls back to a
-   *  CPU-tier dumb bo).
+   *  CPU-tier dumb bo). A restored checkpoint passes the `texId` the bo
+   *  had, which a foreign texture bound to it took as its guest name.
    *
    *  Runs OUTSIDE the submit-drain/muxer path, so the prior
    *  TEXTURE_BINDING_2D and FRAMEBUFFER_BINDING are saved and restored —
@@ -632,6 +633,7 @@ export class GlContextRegistry {
     w: number,
     h: number,
     format = 0x34324241,
+    texId = this.nextGpuBoTexId,
   ): number | null {
     if (!Number.isInteger(bo_id) || bo_id <= 0 || bo_id > 0xffff_ffff ||
         !Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0 ||
@@ -640,14 +642,13 @@ export class GlContextRegistry {
     const existing = this.gpuBos.get(bo_id);
     if (existing) return !existing.retirement.pending && existing.gl === gl && existing.w === w && existing.h === h
       ? existing.texId : null;
-    if (this.nextGpuBoTexId > 0x7fff_ffff) return null;
+    if (texId > 0x7fff_ffff) return null;
     // The kernel admits only formats with exact texture storage.
     const storage = gpuStorageFormat(format);
     if (!storage) throw new Error(`GPU BO ${bo_id} has no texture storage for format ${format}`);
-    const texId = this.nextGpuBoTexId;
     if (!allocateGpuStorage(gl,w,h,texId,allocation=>{
-      this.gpuBos.set(bo_id,allocation);
-      this.nextGpuBoTexId++;
+      this.gpuBos.set(bo_id,Object.assign(allocation,{drmFormat:format}));
+      this.nextGpuBoTexId = Math.max(this.nextGpuBoTexId, texId + 1);
     },storage)) return null;
     // A format without alpha lives in storage with alpha: alpha starts at
     // 1.0 and is never written (opaque-alpha.ts).
@@ -668,6 +669,11 @@ export class GlContextRegistry {
   gpuBo(bo_id: number): GpuBo | undefined {
     const entry = this.gpuBos.get(bo_id);
     return entry?.retirement.pending ? undefined : entry;
+  }
+
+  /** Every live GPU-tier bo id, for a machine checkpoint to carry. */
+  gpuBoIds(): number[] {
+    return [...this.gpuBos.keys()].filter(bo_id => this.gpuBo(bo_id));
   }
 
   /** Apply the GPU-tier producer render-target redirect for `b` if both

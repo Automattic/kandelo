@@ -145,6 +145,24 @@ void testedTypes(Value *V, std::map<Value *, std::vector<Metadata *>> &tests,
   ok = false;
 }
 
+// Attach a call's type facts to the call and to the load that produced its
+// callee. WHY the load too: inlining a call into an EH region rebuilds it as an
+// invoke (llvm::changeToInvokeAndSplitBasicBlock), which copies only !prof, so
+// a vcall in a lambda run under try/catch lost its facts. A cloned load keeps
+// all of its metadata.
+void tagCall(CallBase *CB, Value *Callee, StringRef Kind, MDNode *N) {
+  CB->setMetadata(Kind, N);
+  if (auto *L = dyn_cast<LoadInst>(Callee)) L->setMetadata(Kind, N);
+}
+
+// A call's type facts: its own, or its callee load's when the call lost them.
+MDNode *callFacts(CallBase *CB, StringRef Kind) {
+  if (MDNode *N = CB->getMetadata(Kind)) return N;
+  if (auto *L = dyn_cast<LoadInst>(CB->getCalledOperand()->stripPointerCasts()))
+    return L->getMetadata(Kind);
+  return nullptr;
+}
+
 // The function a call targets directly, looking through aliases.
 Function *directCallee(CallBase *CB) {
   if (Function *F = CB->getCalledFunction()) return F;
@@ -344,7 +362,7 @@ struct TagPass : PassInfoMixin<TagPass> {
         testedTypes(C, tests, ts, ok);
         if (ok && !ts.empty()) {
           std::vector<Metadata *> ops(ts.begin(), ts.end());
-          CB->setMetadata("kandelo.icall", MDNode::get(Ctx, ops));
+          tagCall(CB, C, "kandelo.icall", MDNode::get(Ctx, ops));
           continue;
         }
         // Virtual call: callee = load (gep vtable, K), vtable tested.
@@ -366,7 +384,7 @@ struct TagPass : PassInfoMixin<TagPass> {
           ops.push_back(T);
           ops.push_back(ConstantAsMetadata::get(ConstantInt::get(Type::getInt64Ty(Ctx), K)));
         }
-        CB->setMetadata("kandelo.vcall", MDNode::get(Ctx, ops));
+        tagCall(CB, L, "kandelo.vcall", MDNode::get(Ctx, ops));
       }
       F.setMetadata("kandelo.hadtests", MDNode::get(Ctx, {}));
       // Delete the tests: the optimizer must see an ordinary build.
@@ -796,13 +814,13 @@ struct EmitPass : PassInfoMixin<EmitPass> {
           ++nind;
           std::string sig = wasmSig(CB->getFunctionType(), DL);
           bool any = false;
-          if (MDNode *N = CB->getMetadata("kandelo.icall")) {
+          if (MDNode *N = callFacts(CB, "kandelo.icall")) {
             for (const MDOperand &O : N->operands()) {
               os << "S\t" << fn << "\t" << s << "\t" << sig << "\ticall\t" << typeIdString(O.get(), M) << "\n";
               any = true;
             }
           }
-          if (MDNode *N = CB->getMetadata("kandelo.vcall")) {
+          if (MDNode *N = callFacts(CB, "kandelo.vcall")) {
             for (unsigned i = 0; i + 1 < N->getNumOperands(); i += 2) {
               auto *K = mdconst::dyn_extract<ConstantInt>(N->getOperand(i + 1));
               os << "S\t" << fn << "\t" << s << "\t" << sig << "\tvcall\t"

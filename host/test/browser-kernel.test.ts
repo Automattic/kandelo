@@ -17,6 +17,7 @@ import { createHash } from "node:crypto";
 import { WASM_PAGE_SIZE } from "../src/constants";
 import type { HttpResponse } from "../src/networking";
 import { PERSISTENT_KERNEL_REALM_DESTROY_TIMEOUT_MS } from "../src/kernel-realm-destroy";
+import type { MachineCheckpoint } from "../src/migration/checkpoint";
 
 const defaultArtifactModuleState = vi.hoisted(() => ({ loads: 0 }));
 vi.mock("../src/vfs/opfs-file-reference", () => ({ referenceOpfsFile: async () => ({ path: ["probe.vfs"] }) }));
@@ -2203,6 +2204,47 @@ describe("BrowserKernel", () => {
     expect(audio.node.connect).toHaveBeenCalledWith(audio.context.destination);
   });
 
+  it("prepares PCM output for audio activity that arrives before the PCM connection", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const diagnostics: string[] = [];
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic.message),
+    });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    const pcmPort = { close: vi.fn() };
+
+    worker.simulateMessage({ type: "audio_activity" });
+    worker.simulateMessage({ type: "ready", pcmPort });
+    await initPromise;
+    await vi.waitFor(() => {
+      expect(kernel.getAudioState()).toBe("suspended");
+    });
+
+    expect(audio.node.port.postMessage).toHaveBeenCalledWith(
+      { type: "attach", port: pcmPort }, [pcmPort],
+    );
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("boots the / of a persistent-root checkpoint only with vfsImage \"checkpoint\"", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const workers = MockWorker.instances.length;
+    const restoreCheckpoint = { persistentRoot: {} } as unknown as MachineCheckpoint;
+    await expect(kernel.initFromImage({ kernelWasm: new ArrayBuffer(8), vfsImage: "checkpoint" }))
+      .rejects.toThrow(/vfsImage "checkpoint"/);
+    await expect(kernel.initFromImage({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0), restoreCheckpoint }))
+      .rejects.toThrow(/vfsImage "checkpoint"/);
+    expect(MockWorker.instances.length).toBe(workers);
+  });
+
   it("settles browser PCM before terminating the worker and leaves the shared context open", async () => {
     const audio = browserAudioGlobals();
     const BrowserKernel = await loadBrowserKernel();
@@ -2427,5 +2469,98 @@ describe("BrowserKernel", () => {
       await closed;
     }
     expect(held.size).toBe(0);
+  });
+
+  async function bootAudioMachine(
+    BrowserKernel: Awaited<ReturnType<typeof loadBrowserKernel>>,
+  ) {
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances.at(-1)!;
+    worker.simulateMessage({
+      type: "ready",
+      pcmPort: { close: vi.fn() },
+    });
+    await initPromise;
+    await kernel.prepareAudio();
+    return { kernel, worker };
+  }
+
+  async function destroyAudioMachine(machine: {
+    kernel: InstanceType<Awaited<ReturnType<typeof loadBrowserKernel>>>;
+    worker: MockWorker;
+  }) {
+    const destroyPromise = machine.kernel.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    machine.worker.simulateMessage({
+      type: "response",
+      requestId: machine.worker.lastMessage("destroy").requestId,
+      result: { gracefulDetachComplete: true },
+    });
+    await destroyPromise;
+  }
+
+  it("hands the next machine the shared context running when teardown suspended it", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const first = await bootAudioMachine(BrowserKernel);
+    await first.kernel.resumeAudio();
+    await destroyAudioMachine(first);
+    expect(audio.context.state).toBe("suspended");
+
+    // The user started this context for the page. A machine switch suspends
+    // it to settle the old machine's tail, and the new machine's ring needs a
+    // consumer: without one its first full /dev/dsp write blocks for good.
+    const second = await bootAudioMachine(BrowserKernel);
+
+    expect(audio.context.resume).toHaveBeenCalledTimes(2);
+    expect(audio.context.state).toBe("running");
+    expect(second.kernel.getAudioState()).toBe("running");
+  });
+
+  it("leaves a shared context the user never started suspended for the next machine", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const first = await bootAudioMachine(BrowserKernel);
+    await destroyAudioMachine(first);
+
+    const second = await bootAudioMachine(BrowserKernel);
+
+    expect(audio.context.resume).not.toHaveBeenCalled();
+    expect(second.kernel.getAudioState()).toBe("suspended");
+  });
+
+  it("leaves a replacement context suspended after the browser closed the one teardown suspended", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const first = await bootAudioMachine(BrowserKernel);
+    await first.kernel.resumeAudio();
+    await destroyAudioMachine(first);
+    await audio.context.close();
+
+    const replacement = browserAudioGlobals();
+    const second = await bootAudioMachine(BrowserKernel);
+
+    expect(replacement.AudioContextCtor).toHaveBeenCalledOnce();
+    expect(replacement.context.resume).not.toHaveBeenCalled();
+    expect(second.kernel.getAudioState()).toBe("suspended");
+  });
+
+  it("keeps the shared context running while another machine renders through it", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const first = await bootAudioMachine(BrowserKernel);
+    await first.kernel.resumeAudio();
+    const second = await bootAudioMachine(BrowserKernel);
+
+    await destroyAudioMachine(first);
+
+    expect(audio.context.suspend).not.toHaveBeenCalled();
+    expect(audio.context.state).toBe("running");
+    expect(second.kernel.getAudioState()).toBe("running");
   });
 });

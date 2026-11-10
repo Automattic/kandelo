@@ -30,9 +30,14 @@ pub(crate) fn discover(input: &[u8], options: &Options) -> Result<Analysis> {
         },
         Default::default(),
     )?;
+    let checkpoint = options
+        .checkpoint_import
+        .as_deref()
+        .map(|name| format!(" and checkpoint import `{name}`"))
+        .unwrap_or_default();
     ensure!(
         analysis.decision.participates,
-        "entry import `{}` not found (or not a function) in the module. If this module does not use fork, there is nothing to instrument.",
+        "entry import `{}`{checkpoint} not found (or not a function) in the module. If this module does not use fork, there is nothing to instrument.",
         options.entry_import
     );
     let mut fork_path: Vec<_> = analysis

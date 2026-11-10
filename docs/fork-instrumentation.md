@@ -316,7 +316,8 @@ and emitted separately with the normal continuation machinery. Its only user
 locals are the i32 transaction token and entry; its frame is 24 bytes on both
 pointer widths. All three checkpoint sites and the indirect initializer call
 use frozen transports. The initializer transport reconciles the process table
-before normal or private resume routing. The generated driver gets a resume
+on normal dispatch, after resume routing; a private replay does not reconcile
+it. The generated driver gets a resume
 catalog entry after the original activation entries. Callers must seed the
 original loader imports and enable conservative external dispatch in the
 original closure, then include this generated activation in resume planning.
@@ -772,8 +773,9 @@ Unknown source roles, unplanned shapes, changed bytes and resource failures
 reject explicitly. No all-function body or activation-layout cache is retained.
 
 Generated indirect transports now carry the frozen source-table guard policy.
-They reconcile at helper entry, before either normal invocation or private
-resume-table routing. The private resume table remains outside source tracking.
+They reconcile after resume-table routing, on normal invocation only; a
+private replay never reads the source table. The private resume table remains
+outside source tracking.
 Constructor provenance and table/drop hooks compose with already-lowered
 source operations, preserving original program points and symbolic branches.
 
@@ -798,9 +800,13 @@ pointers. No facts database survives into helper or source emission.
 
 The frozen assembly now includes host `_start` and thread resume boundaries,
 side-module constant ABI markers and sink replay selectors. Thread boundaries
-guard process tables before normal dispatch or private replay; the public i32
-table index is zero-extended for table64. Sink descriptors group equal result
-signatures and preserve dense frame ordinals. Unexpected sink returns go back
+and other generated transports guard process tables after their replay
+routing: normal dispatch reconciles, but a private replay routed through the
+resume table never reads the source table and does not reconcile it. A
+checkpoint replays while its thread still holds the archive reader, so a
+reconcile there would wait on a writer that a peer parked in the same freeze
+keeps busy. The public i32 table index is zero-extended for table64. Sink
+descriptors group equal result signatures and preserve dense frame ordinals. Unexpected sink returns go back
 to the host's invariant check, while genuine guest traps remain traps.
 
 The shared full-provider replay fixtures now use this policy and assembly.
@@ -1565,8 +1571,9 @@ A function whose scalar spill region is at least
 per-activation scratch region carved from the guest shadow stack instead
 of declaring locals:
 
-- Entry: `SP -= scratch_size; base = SP` (one added pointer-width local),
-  the same discipline as `crates/wasm-local-root-spill`. `SP = base +
+- Entry: `SP -= scratch_size; base = SP` (one added pointer-width local,
+  saved in the frame like a user local), the same discipline as
+  `crates/wasm-local-root-spill`. `SP = base +
   scratch_size` is emitted before every function exit — returns, tail
   calls, br-to-entry, and uncaught throws including the postamble's
   private unwind throw — and `SP = base` is reseeded at catch landings to
@@ -1611,7 +1618,8 @@ shadow stack on every iteration. bash optimized with `wasm-opt -O2` before
 instrumentation has `execute_command_internal` in scratch mode and crashed
 in musl's allocator after several hundred `( : )` subshells.
 `tests/scratch_spill_node.rs` checks the stack pointer at the replayed fork
-call and after the replayed caller returns.
+call and after the replayed caller returns, and that a frame reserved
+after the landing does not overlap the restored region.
 
 A module without a locatable mutable `__stack_pointer` global of
 the module pointer width falls back to the local-based shape.
@@ -1688,8 +1696,10 @@ with that backend.
 
 A fork-using program goes through Binaryen's `wasm-opt` twice:
 
-1. **Before instrumentation.** The SDK's `-O` link runs `wasm-opt` (clang
-   schedules it after `wasm-ld`), and some recipes run their own pass.
+1. **Before instrumentation.** Some recipes run their own pass. The SDK
+   holds back the `wasm-opt` that clang schedules after `wasm-ld` for a
+   module the instrumenter will see, so its facts keep describing the
+   linked functions.
    Inlining, dead-function removal and identical-function merging shrink
    the call graph the instrumenter has to cover. Quickshell's raw link has
    108,860 functions on the fork path; after `wasm-opt -O2` it has 51,960.
@@ -2162,11 +2172,18 @@ for the implementation.
 
 ## Call-graph discovery
 
-Instrumentation only rewrites functions that can transitively reach the
-designated async import (default: `kernel.kernel_fork`). The discovery
-algorithm in `crates/fork-instrument/src/streaming/graph.rs`:
+Instrumentation only rewrites functions that can transitively reach a seed
+import. There are two seeds. `--entry` names the fork boundary and defaults to
+`kernel.kernel_fork`. `--checkpoint-entry` names a second boundary and adds to
+the first rather than replacing it: discovery walks a seed's callers only, so
+naming the checkpoint import through `--entry` would drop `kernel_fork` from
+the closure. `scripts/run-wasm-fork-instrument.sh` passes
+`--checkpoint-entry kernel.kernel_checkpoint` on every run that writes an
+output, so a program that never forks is still instrumented at its syscall
+returns. The fork capability claim describes the `--entry` seed only. The
+discovery algorithm in `crates/fork-instrument/src/streaming/graph.rs`:
 
-1. Seed set `S` = { the imported `kernel.kernel_fork` function }.
+1. Seed set `S` = { each named seed import present in the module }.
 2. **Direct reverse closure.** For every newly discovered callee `g`, add
    every local function that directly calls `g`.
 3. **Indirect reverse closure.** If `g` can be dispatched from a function
@@ -2206,6 +2223,104 @@ cleanup handlers, `atexit` handlers, and qsort-style comparators in the current
 libc output. The broader "instrument every address-taken function" rule from
 the original C3 plan was not needed for this PR and was not added; K-01, K-02,
 K-04, and K-07 cover the current behavior.
+
+## Checkpoint coverage
+
+The checkpoint seed reaches almost every function of a large program: any
+function that can make a syscall can be live at a syscall return. A machine
+checkpoint does not need every syscall return. It waits until every thread
+idles, so it needs only the frames of the stacks a thread idles on.
+`crates/fork-instrument/src/streaming/checkpoint.rs` selects those frames,
+and the instrumenter adds the checkpoint closure only where it meets them.
+The fork closure keeps its sinks.
+
+**Selection.** The call graph holds direct calls, indirect calls the compiler
+facts resolve to at most 8 targets (same-signature table members without
+facts), every indirect call in a thread root with all its targets (the
+dispatch that picks the thread's body, such as `QThread::run`), and the C
+runtime's call from `__libc_start_main` to `main`. Calls into a registered
+signal handler are not edges. Functions whose every path ends in process or
+thread exit are removed, `__pthread_exit` by name: its loop over the cleanup
+handlers, which can park, would otherwise read as a wait loop, and the walk
+below a park function would follow a cancellation through every handler. The
+park functions are the blocking calls a thread idles in (`poll`, `ppoll`,
+`select`, `epoll_wait`, `nanosleep`, `read`, `accept`, `wait4`,
+`sigsuspend`, ...), and `__pthread_cond_timedwait` below a thread root. The
+roots are `_start`, musl's thread entries `start` and `start_c11` (the host
+calls one for each new thread, and it calls the start routine), and every
+`pthread_create` start routine the facts name. The facts bind the thread
+entries to musl's source file; without facts, their names find them. From
+each root:
+
+1. the entry segment follows calls outside wait loops, up to 8 calls deep,
+   through functions that can reach a park function (a wait loop is a loop
+   with a call that can reach one);
+2. the descent follows each call inside a wait loop of the entry segment to a
+   park function, along paths at most one call longer than the shortest;
+3. below every park function, the frames down to `kernel.kernel_checkpoint`
+   are added.
+
+Then every selected function without a call a checkpoint can unwind through
+is dropped, until none is left: a function needs a direct call into a
+selected function or the checkpoint import, or an indirect call. The entry
+segment stops 8 calls deep, so its last functions can have no selected
+callee. No covered stack holds such a frame, and the activation planner has
+no call to record it at (`less`'s `twalk`, whose only callee `walk` is not
+selected, failed with `activation has no ordinary call landings`).
+
+The selection decodes each body once into a summary of its calls and
+structured control. The facts it uses come from a private facts store of
+their own, the same relations the sink analysis reads.
+
+**The instrumented set.** With a selection, the fork closure is computed from
+the fork seeds only, and the sink analysis reduces it as described in the
+next section. The checkpoint closure (every seed) then adds its covered
+functions and the checkpoint import. A sink never removes a covered frame:
+a restored checkpoint returns through every frame, so a fork boundary does
+not stop a checkpoint unwind. The host's `env.__wpk_fork_boundary` throws
+the unwind tag during a checkpoint capture, and the covered callers above
+the boundary record their frames.
+
+The whole checkpoint closure stays instrumented, without fork sinks, and the
+answer is always 1, when:
+
+- the module has no name section. The SDK keeps the facts and the names in
+  every module that imports `kernel.kernel_fork` or
+  `kernel.kernel_checkpoint`. A recipe that runs its own `wasm-opt` before
+  instrumenting drops the names;
+- the instrumented set holds 90% or more of the checkpoint closure's
+  operators. The token code then costs more than the uninstrumented frames
+  save (bash, vim and php);
+- the call summaries exceed the program metadata budget;
+- the module is a side module, or `--no-sinks` is set.
+
+In that case the `kernel.kernel_checkpoint_covered` import stays in the
+module, and the host answers 1.
+
+**The run-time check.** `crates/fork-instrument/src/streaming/checkpoint/cover.rs`
+rewrites the original module before activation planning. A covered function
+reads the exported global `__wpk_checkpoint_cover` into a local at entry and
+clears it; before a call to a covered callee it writes that local back (for
+an indirect call, only when the table slot holds a covered function; one
+generated test per table compares the slot). Each call to the import
+`kernel.kernel_checkpoint_covered` becomes the calling frame's local, or 0
+in an uncovered frame. The host writes 1 into the global before it enters
+`_start` or a thread entry. An uncovered `_start` or thread entry clears the
+global at entry, so the host's 1 never reaches a covered function below an
+uncovered frame. The local is an ordinary source local for the activation
+planner, so a rewound frame restores it with its other locals. The rewrite
+keeps every source function, global and type index and adds no tail call,
+so the plan carries over to the rewritten module; its bytes go to a private
+spool file.
+
+libc takes a checkpoint only when the answer is 1; otherwise the request
+stays pending, and the freeze sweeps parked syscalls again every 50 ms until
+every thread unwound or the freeze timed out. A thread that idles on an
+uncovered stack therefore makes the freeze time out: the truthful failure. A
+thread or process on its way out runs uncovered to its end; the freeze stops
+waiting for it and reads the machine without it, and the kernel keeps the
+exit for the parent. Only one that ends after it unwound fails the freeze,
+because its frames were already counted.
 
 ## Fork sinks and compiler facts
 

@@ -43,9 +43,47 @@ pub struct Analysis<'a> {
     pub reaching: ReachingPlan,
     pub boundaries: BTreeSet<u32>,
     pub decision: Decision,
+    /// Set when the module imports a checkpoint seed.
+    pub cover: Option<checkpoint::Cover>,
 }
 
 impl<'a> Analysis<'a> {
+    /// Carry the plan over to `covered`, this module after
+    /// [`checkpoint::cover`]. Function indices are unchanged, and the
+    /// rewrite adds no tail call, so each tail site keeps its ordinal.
+    pub fn rebase<'b>(self, covered: &'b [u8]) -> anyhow::Result<Analysis<'b>> {
+        let scan = scan(covered)?;
+        let tail_sites = self
+            .reaching
+            .tail_sites
+            .iter()
+            .map(|point| {
+                let tails = |scan: &Scan<'_>| {
+                    scan.functions
+                        .get(point.function as usize)
+                        .and_then(|function| function.body.as_ref())
+                        .map(|body| body.tails.iter().map(|tail| tail.point).collect::<Vec<_>>())
+                        .unwrap_or_default()
+                };
+                let ordinal = tails(&self.scan).iter().position(|tail| tail == point);
+                ordinal
+                    .and_then(|ordinal| tails(&scan).get(ordinal).copied())
+                    .ok_or_else(|| anyhow::anyhow!("checkpoint coverage moved a tail site"))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        Ok(Analysis {
+            scan,
+            reaching: ReachingPlan {
+                activations: self.reaching.activations,
+                control_reachable: self.reaching.control_reachable,
+                tail_sites,
+            },
+            boundaries: self.boundaries,
+            decision: self.decision,
+            cover: None,
+        })
+    }
+
     /// Complete the frozen native assembly after releasing analysis storage.
     /// Nonparticipating modules take the separate unchanged-copy path.
     pub fn freeze(self, limits: PipelineLimits) -> anyhow::Result<(NativePipeline<'a>, Decision)> {

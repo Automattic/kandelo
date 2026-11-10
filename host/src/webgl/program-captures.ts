@@ -81,6 +81,38 @@ function retireCaptureAdmission(state: Captures, owner?: GlBinding): void {
   }
 }
 
+/** A context's capture handles as a machine checkpoint carries them: each
+ * handle the guest holds and the program it captured, by name. A capture
+ * must still be its name's linked program, because the restore captures
+ * that name again. Null when the group never captured. */
+export function checkpointGlProgramCaptures(b: GlBinding, refuse: (reason: string) => never):
+    { next: number; handles: { handle: number; name: number }[] } | null {
+  const state=groups.get(b.objects);
+  if(!state) return null;
+  if(state.closed || state.pending) refuse(`pid ${b.pid}'s program captures are closing`);
+  const handles=[...state.pins].map(([handle,pin])=>{
+    if(state.owners?.get(handle)!==b) refuse(`pid ${b.pid}'s program capture ${handle} is not its context's own`);
+    if(b.programs.get(pin.name)!==pin.program) refuse(`pid ${b.pid}'s program capture ${handle} holds an executable its program no longer links`);
+    return {handle,name:pin.name};
+  });
+  return {next:state.next,handles};
+}
+
+/** Capture each carried handle again, under the number the guest holds. */
+export function restoreGlProgramCaptures(execution: GlContextExecutionLease,
+    r: { next: number; handles: readonly { handle: number; name: number }[] }): boolean {
+  const b=execution.binding;
+  if(groups.has(b.objects)) return false;
+  const state: Captures={next:1,closed:false,pins:new Map(),pending:null};
+  groups.set(b.objects,state);
+  for(const {handle,name} of [...r.handles].sort((x,y)=>x.handle-y.handle)) {
+    state.next=handle;
+    if(captureContextGlProgram(execution,name)!==handle) return false;
+  }
+  state.next=r.next;
+  return true;
+}
+
 /** Acquire only within the caller's share group. The returned owner is not
  * in the cache, so cache retirement cannot revoke already accepted work. */
 export function retainGlProgramCapture(b: GlBinding, handle: number): GlProgramQueryPin | null {

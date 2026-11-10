@@ -507,6 +507,10 @@ function signatures(
       parameters: [i32, pointer, i32],
       result: i32,
     },
+    kernel_pty_set_winsize: {
+      parameters: [i32, i32, i32],
+      result: i32,
+    },
     kernel_read_proc_maps: {
       parameters: [i32, pointer, i32],
       result: i32,

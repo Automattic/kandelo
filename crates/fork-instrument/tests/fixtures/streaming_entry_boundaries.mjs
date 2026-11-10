@@ -40,8 +40,8 @@ for (const thread of [false, true]) {
           ? run.instance.exports.wpk_fork_resume_thread(replay ? 0 : 1, pointer(replay ? 999 : 10))
           : run.instance.exports.wpk_fork_resume_start();
       } finally {
-        if (thread && requireGuards) assert(publication.reconciles > prior,
-          'thread boundary guards before normal dispatch and private replay');
+        if (thread && requireGuards) assert.equal(publication.reconciles > prior, !replay,
+          'thread boundary guards before normal dispatch, not before private replay');
       }
     }
     function check(run, consumed) {

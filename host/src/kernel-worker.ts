@@ -48,6 +48,7 @@ import { createOverlaySealCodec, type OverlaySealCodec } from "./vfs/overlay-sea
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { assertVfsFileRange } from "./vfs/file-range";
 import { FileReadBuffer, FileReadBufferError } from "./vfs/file-read-buffer";
+import type { InputEvent } from "./input/input-source";
 
 
 import { LongTimeouts, MAX_ENGINE_TIMER_DELAY_MS } from "./long-timeout";
@@ -56,6 +57,8 @@ import {
   getKernelGraphicsAccess,
   negErrno,
   WasmPosixKernel,
+  type AcceptSelectionTap,
+  type GlQueryTap,
   type KernelPointer,
   type KmsDisplaySize,
 } from "./kernel";
@@ -65,6 +68,7 @@ import { VblankClock } from "./dri/vblank-clock";
 import { isJavaScriptCoreUserAgent } from "./runtime-memory-profile";
 import { getCanvasWebGl2Context } from "./webgl/canvas-context";
 import { ABSOLUTE_POINTER_EXTENT } from "./input/input-source.js";
+import type { CheckpointGl } from "./webgl/snapshot";
 import {
   createKernelEntryScopedInstance,
   invokeKernelEntrySerializedHostOperation,
@@ -139,6 +143,8 @@ import {
   BoundedHttpResponseChunks,
   buildRawHttpRequest,
   parseRawHttpResponse,
+  parseRawRequestLine,
+  type HttpExchangeTap,
   type HttpRequest,
   type HttpResponse,
   type SendHttpRequestOptions,
@@ -155,6 +161,9 @@ import {
   CH_ARG_SIZE,
   CH_ARGS,
   CH_ARGS_COUNT,
+  CH_CHECKPOINT_REQUEST,
+  CH_CHECKPOINT_REQUEST_RESTART,
+  CH_CHECKPOINT_REQUEST_UNWIND,
   CH_DATA,
   CH_DATA_SIZE,
   CH_ERRNO,
@@ -283,6 +292,7 @@ import {
   readEffectiveConsumerPosition,
   readProducerPosition,
   validatePcmTransport,
+  writeDiscardPosition,
   type PcmTransportDescriptor,
 } from "./audio/pcm-transport";
 
@@ -315,9 +325,10 @@ const kernelEntryIntrinsicMemoryBuffer =
   )!.get!;
 const kernelEntryIntrinsicDataViewSetBigInt64 =
   KernelEntryIntrinsicDataView.prototype.setBigInt64;
+const kernelEntryIntrinsicDataViewGetUint32 =
+  KernelEntryIntrinsicDataView.prototype.getUint32;
 const kernelEntryIntrinsicDataViewSetUint32 =
   KernelEntryIntrinsicDataView.prototype.setUint32;
-const kernelEntryIntrinsicDataViewGetUint32 = KernelEntryIntrinsicDataView.prototype.getUint32;
 const kernelEntryIntrinsicDataViewGetBigInt64 = KernelEntryIntrinsicDataView.prototype.getBigInt64;
 const kernelEntryIntrinsicDataViewGetBigUint64 = KernelEntryIntrinsicDataView.prototype.getBigUint64;
 const kernelEntryIntrinsicAtomics = Atomics;
@@ -454,6 +465,26 @@ const ERANGE = 34;
 const ENAMETOOLONG = 36;
 const ENOENT = 2;
 const ENOSYS = 38;
+const ESPIPE = 29;
+const SEEK_CUR = 1;
+
+interface RestoredStreamPlanEntry {
+  oldHandle: number;
+  pid: number;
+  fd: number;
+  path: string;
+  flags: number;
+}
+
+interface RestoredStreamRemap extends RestoredStreamPlanEntry {
+  newHandle: number;
+}
+
+interface RestoredHostHandlePlan {
+  streams: RestoredStreamPlanEntry[];
+  dirs: number;
+  maxStream: number;
+}
 const ENOTSUP = 95;
 /** A kernel built without the shared-mapping entry points cannot serve this
  *  host: the kernel half of MAP_SHARED has no host fallback. */
@@ -1494,6 +1525,104 @@ function ownedPollRemainingMs(
 }
 
 /**
+ * Replication's hand on the order the kernel serves channels in.
+ *
+ * A recording machine names every task it serves, in order. A replaying
+ * machine serves a task only when the log names it next, and keeps every
+ * other pending channel waiting for its turn.
+ */
+export type DispatchOrderTap =
+  | {
+    readonly mode: "record";
+    record(
+      pid: number,
+      tid: number,
+      mark?:
+        | { readonly entry: string; readonly vblankAgeUs?: number }
+        | { readonly retry: true },
+    ): void;
+  }
+  | {
+    readonly mode: "replay";
+    next():
+      | {
+        readonly pid: number;
+        readonly tid: number;
+        readonly entry?: string;
+        readonly vblankAgeUs?: number;
+        readonly retry?: true;
+      }
+      | "open"
+      | "wait";
+    /** Whether the task's next dispatch the log holds is a retry. */
+    nextIsRetry(pid: number, tid: number): boolean | null;
+    /** Whether the log, as far as it has arrived, holds this host entry. */
+    holdsEntry(entry: string): boolean;
+    /** This host entry ran before the log named it; pass the entry over. */
+    ranAhead(entry: string): void;
+    /** Stop following the order; every later `next` answers `"open"`. */
+    abandon(): void;
+    /**
+     * Serve the dispatch `next` named. True when that delivered decisions the
+     * primary made before it, such as a keystroke.
+     */
+    take(): boolean;
+    /** Settles when the log may name more than it did; see `"wait"`. */
+    arrival(): Promise<void>;
+  };
+
+/**
+ * How long a replay waits for the dispatch the log names next before it stops
+ * following the order. Longer than a guest computes between two syscalls.
+ */
+const DISPATCH_ORDER_STALL_MS = 5_000;
+
+/** The dispatch-order entry for one tick of the vblank pump. */
+const VBLANK_TICK_ENTRY = "vblank tick";
+
+/**
+ * The dispatch-order entry for one firing of the kernel wait deadline timer.
+ *
+ * The drain it runs reads the machine clock and expires every park whose
+ * deadline that reading passed, so where it lands decides when a sleep, a
+ * futex timeout or a timed `wait4` ends.
+ */
+const KERNEL_WAIT_DEADLINE_ENTRY = "kernel wait deadline";
+
+/**
+ * The dispatch-order entry for one expiry of a process's `alarm()` timer.
+ *
+ * The SIGALRM it sends decides where the guest's handler runs, and with it
+ * every clock read and syscall that handler makes.
+ */
+function alarmExpiryEntry(pid: number): string {
+  return `alarm expiry pid=${pid}`;
+}
+
+const ALARM_EXPIRY_ENTRY = /^alarm expiry pid=(\d+)$/;
+
+/**
+ * The dispatch-order entry for the arm of a take-over seal's freeze.
+ *
+ * What the primary records after it is that freeze's own work: the syscall
+ * each process unwinds at, and the capture arena it maps. A replica repeats
+ * that work only when its own freeze arms at the same place, so its replay
+ * holds every task here until the replica freezes.
+ */
+const REPLICATION_SEAL_ENTRY = "replication seal";
+
+/**
+ * The guest process a host entry label names, or null for machine work.
+ *
+ * Replication orders the entries the host runs for one process on its own
+ * schedule; queries about the machine as a whole stay unordered.
+ */
+function processNamedByEntryLabel(label: string): number | null {
+  const named = /\b(?:pid|child)=(\d+)/.exec(label);
+  return named === null ? null : Number(named[1]);
+}
+
+/**
  * One captured syscall, surfaced by the opt-in trace ring buffer
  * (enableSyscallTrace + drainSyscallTrace). Used by Kandelo Inspector →
  * Syscalls and any tooling that wants a live `strace`-equivalent.
@@ -2218,6 +2347,22 @@ export interface CentralizedKernelCallbacks {
   onKernelFatal?: (error: Error) => void;
 
   /**
+   * Called as a pointer movement reaches the kernel, not as one is requested.
+   *
+   * `injectMouseEvent` defers while a kernel entry is in flight, so a caller
+   * that recorded at its own call site would place the movement earlier in a
+   * replication log than the kernel applied it. This fires inside the
+   * deferred entry, where the position is the real one.
+   */
+  onPointerInjected?: (dx: number, dy: number, buttons: number) => void;
+
+  /**
+   * Called as evdev records reach the kernel, for the same reason as
+   * `onPointerInjected`: the deferred entry is where the position is real.
+   */
+  onInputEventsInjected?: (records: readonly InputEvent[]) => void;
+
+  /**
    * Called when a process forks. The kernel has already cloned the Process
    * in its ProcessTable. The callback should spawn a child Worker with
    * a copy of the parent's Memory and register it with the kernel.
@@ -2583,6 +2728,7 @@ interface CentralizedKernelWorkerTestAuthority {
     }>;
   }): readonly ChannelInfo[];
   resumeStoppedProcessForTest(pid: number): boolean;
+  armAlarmForTest(pid: number, seconds: number): void;
   discardStoppedProcessStateForTest(pid: number): void;
   installParkedCloneCompletionForTest(options: {
     readonly channel: ChannelInfo;
@@ -3071,6 +3217,15 @@ export class CentralizedKernelWorker {
    * down the dedicated Worker.
    */
   #kernelFatalError: Error | null = null;
+  /**
+   * Rejectors for checkpoint dispatch releases still waiting in the gate FIFO.
+   *
+   * A fatal latch clears queued ingress, so a queued release would otherwise
+   * never settle and the freeze would wait forever on a machine that is
+   * already gone.
+   */
+  readonly #pendingCheckpointDispatchReleases =
+    new Set<(error: Error) => void>();
   #initialized = false;
   /**
    * Maps a pthread syscall mailbox to its kernel/libc thread id.
@@ -3099,6 +3254,8 @@ export class CentralizedKernelWorker {
   private threadForkContexts = new Map<string, { fnPtr: number; argPtr: number }>();
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
+  /** The task the last channel bind named; see `currentGuestTid`. */
+  private lastBoundTask: { pid: number; tid: number } | null = null;
   /**
    * Bind the kernel's view of "which thread is executing this syscall" to the
    * already-selected channel. The channel offset is the transport identity; TID
@@ -3141,6 +3298,7 @@ export class CentralizedKernelWorker {
     tid: number,
     entry?: KernelWorkerEntryContext,
   ): void {
+    this.lastBoundTask = { pid, tid };
     const setTid = this.#kernelInstanceIfAvailableForEntry(entry)?.exports
       .kernel_set_current_tid as
       ((pid: number, tid: number) => number) | undefined;
@@ -3235,6 +3393,21 @@ export class CentralizedKernelWorker {
    * kernel wake-event stream, so ordinary syscall completion does not need an
    * extra Wasm state query. */
   private stoppedPids = new Set<number>();
+  /**
+   * Pids whose next non-deferred syscall completion must carry an unwind
+   * request. A checkpoint freeze arms this; it is empty at every other time.
+   */
+  private checkpointUnwindPids = new Set<number>();
+  /**
+   * Channels whose parked syscall a checkpoint freeze completed with EINTR.
+   *
+   * No signal was caught, so each one is owed the call it was making. The
+   * request word carries `CH_CHECKPOINT_REQUEST_RESTART` for exactly these,
+   * and the guest resubmits once the rewind returns.
+   */
+  #checkpointRestartChannels = new Set<ChannelInfo>();
+  /** Pids held out of dispatch by a checkpoint freeze rather than by SIGSTOP. */
+  private checkpointHeldPids = new Set<number>();
   /**
    * CONTINUED transitions observed while fork/spawn/exec has a live kernel
    * Process but has not registered its replacement memory/channels yet. The
@@ -3455,10 +3628,14 @@ export class CentralizedKernelWorker {
   private activePtyIndices = new Set<number>();
   /** PTY output callbacks: ptyIdx → callback */
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
+  /** Restored PTY index → the session its output is routed under */
+  private restoredPtySessions = new Map<number, number>();
 
   private networkListenObserver:
     | ((pid: number, fd: number, port: number) => void)
     | undefined;
+  private httpExchangeTap: HttpExchangeTap | null = null;
+  private replayedInjectionChain: Promise<void> = Promise.resolve();
   /** KMS presenter: OffscreenCanvas per CRTC for the vblank pump to blit
    *  the bound framebuffer into. Populated via `attachKmsCanvas`. */
   private kmsCanvases = new Map<number, OffscreenCanvas>();
@@ -3478,6 +3655,42 @@ export class CentralizedKernelWorker {
    *  resume it. Key present = canvas currently GL-claimed. */
   private kmsModeBeforeGlOwn = new Map<
     number, "2d" | "webgl2" | "webgl2-scanout" | undefined
+  >();
+  /** CRTCs a live WebGL2 context paints. Written only by
+   *  `markKmsCanvasGlOwned`, which `host_gl_create_context` calls once the
+   *  context exists.
+   *
+   *  Declaring `mode: "webgl2"` is a request, not a fact: it stops the pump
+   *  from claiming 2D, but until the guest calls `eglCreateContext` its
+   *  pixels still reach the GBM buffer object a checkpoint reads. Keeping the
+   *  two apart is what lets a CPU-painting modeset guest be captured. */
+  private kmsGlOwned = new Set<number>();
+  /** The GL device a checkpoint restore has not rebuilt yet.
+   *
+   *  The device's renderer lives on the CRTC canvases its sessions paint,
+   *  and a canvas arrives whenever the embedder attaches one — after `init`
+   *  on both hosts, never on Node. Until every one is there the captured
+   *  device is held here, and a capture of this machine hands it back
+   *  verbatim: a machine whose screen has not reappeared yet still carries
+   *  its GL state forward. */
+  private pendingGlRestore: {
+    gl: CheckpointGl;
+    /** CRTCs whose canvases the rebuild waits for. */
+    crtcs: ReadonlySet<number>;
+    /** Pids whose syscalls wait for the rebuild. */
+    pids: ReadonlySet<number>;
+    onBoundary: (line: string) => void;
+    /** The rebuild failed, so the processes run without their GL state. */
+    refused?: boolean;
+  } | null = null;
+  /** Pending channels of processes whose restored GL context waits for its
+   *  canvas; see `#holdForGlRestore`. */
+  readonly #glRestoreHolds = new Map<
+    ChannelInfo,
+    {
+      readonly label: string;
+      readonly operation: (entry: KernelWorkerEntryContext) => undefined;
+    }
   >();
   /** KMS stats SAB per CRTC. Slots [0..4] populated by the pump (frame
    *  count, timestamp, width, height, blit µs); slots [5,6] populated
@@ -3521,6 +3734,43 @@ export class CentralizedKernelWorker {
   /** The vblank pump's clock: display frames where the worker has them,
    *  else a timer at the mode's refresh (see dri/vblank-clock.ts). */
   private vblankClock: VblankClock | null = null;
+  /** Answers how far past the named process's own point the primary already
+   *  went, in machine milliseconds, or null when it has not; see
+   *  `setReplicationAheadProbe`. */
+  #replicationAheadProbe: ((pid: number) => number | null) | null = null;
+  /** See `setDispatchOrderTap`. */
+  #dispatchOrderTap: DispatchOrderTap | null = null;
+  /** When the replay last served a dispatch the log named. */
+  #orderedProgressAt = 0;
+  /** The pending check for a replay stalled on the log's next dispatch. */
+  #orderStallTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Whether a tick the log names is already queued to run. */
+  #loggedVblankTickQueued = false;
+  /** Whether a deadline drain the log names is already queued to run. */
+  #loggedKernelWaitDeadlineQueued = false;
+  /** Whether a replay refused this host's own deadline drain. */
+  #kernelWaitDeadlineRefused = false;
+  /** Processes whose alarm expiry the log names, already queued to run. */
+  readonly #loggedAlarmExpiriesQueued = new Set<number>();
+  /** Processes whose expiry on this host's own alarm timer a replay refused. */
+  readonly #refusedAlarmExpiries = new Set<number>();
+  /** Whether a parked replay already waits for the log to grow. */
+  #awaitingLogArrival = false;
+  /** Tasks a replay served since it began, by `pid:tid`. */
+  readonly #orderedTasksServed = new Set<string>();
+  /** How many turns a replay took delivered decisions the primary made. */
+  #pushedDeliveries = 0;
+  /** Channels that took their turn and wait behind the decisions it delivered. */
+  readonly #admittedBehindPushed = new Set<ChannelInfo>();
+  /** Pending channels a replay holds for their turn, by `pid:tid`. */
+  readonly #parkedDispatches = new Map<
+    string,
+    {
+      readonly channel: ChannelInfo;
+      readonly label: string;
+      readonly operation: (entry: KernelWorkerEntryContext) => undefined;
+    }
+  >();
   /** `KmsRegistry.flipCount()` at the last vblank tick. The pump wakes
    *  blocked retries only when this moved — an unconditional 60 Hz wake
    *  would retry every parked poll/select in the system each tick. */
@@ -3631,24 +3881,7 @@ export class CentralizedKernelWorker {
       // Absolute pointer axes belong to the device, not the framebuffer.
       // Never change their range at SETCRTC: running input clients cache it.
       markKmsCanvasGlOwned: (crtcId: number) => {
-        // A program GL context now owns the canvas (fires only after the
-        // context actually exists). If the pump's webgl2-scanout
-        // presenter was active on this CRTC, it holds state on the SAME
-        // WebGL2 context the program just inherited — stand it down and
-        // free what it owns (texture, program, vertex array; deletion also
-        // unbinds each); anything else the presenter set (viewport, clear
-        // color) is state the claiming session sets itself before drawing.
-        this.releaseKmsPresenter(crtcId);
-        this.kmsGlPresenters.delete(crtcId);
-        if (!this.kmsModeBeforeGlOwn.has(crtcId)) {
-          this.kmsModeBeforeGlOwn.set(crtcId, this.kmsContextMode.get(crtcId));
-        }
-        this.kmsContextMode.set(crtcId, "webgl2");
-        // Slot 7 = 3: program-owned WebGL2 (direct GL rendering; no pump
-        // presenter). Distinct from 2 (pump webgl2-scanout) so gates can
-        // tell GPU compositing from CPU-composite-then-GPU-present.
-        const stats = this.kmsStatsViews.get(crtcId);
-        if (stats && stats.length > 7) Atomics.store(stats, 7, 3);
+        this.markKmsCanvasGlOwned(crtcId);
       },
       onKmsGlPresented: (crtcId: number) => {
         const stats = this.kmsStatsViews.get(crtcId);
@@ -3663,6 +3896,7 @@ export class CentralizedKernelWorker {
         // path). Resume the pre-claim presenter mode; the next tick
         // rebuilds a webgl2-scanout presenter on the same context and
         // repopulates slot 7.
+        this.kmsGlOwned.delete(crtcId);
         if (!this.kmsModeBeforeGlOwn.has(crtcId)) return;
         const prev = this.kmsModeBeforeGlOwn.get(crtcId);
         this.kmsModeBeforeGlOwn.delete(crtcId);
@@ -3682,28 +3916,7 @@ export class CentralizedKernelWorker {
       // startVblankPump is a no-op once the pump runs.
       onKmsScanoutActive: () => this.startVblankPump(),
       onAlarm: (seconds: number): number => {
-        const pid = this.currentHandlePid;
-        if (pid === 0) return 0;
-
-        this.cancelAlarmTimerForProcess(pid);
-
-        if (seconds > 0) {
-          const timer = this.#registerTimeout(() => {
-            if (this.alarmTimers.get(pid) !== timer) return;
-            this.alarmTimers.delete(pid);
-            // WHY: the timer runs after the syscall import and its Rust entry
-            // have both returned. Open a fresh lexical scope instead of
-            // letting an asynchronous callback recover ambient Wasm authority.
-            this.#runOrDeferKernelEntry(
-              `alarm expiry pid=${pid}`,
-              (entry) => {
-                this.sendSignalToProcess(pid, SIGALRM, true, entry);
-                return undefined;
-              },
-            );
-          }, seconds * 1000);
-          this.alarmTimers.set(pid, timer);
-        }
+        this.#armAlarm(this.currentHandlePid, seconds);
         return 0;
       },
       onNetListen: (fd: number, port: number, addr: [number, number, number, number]): number => {
@@ -5043,6 +5256,9 @@ export class CentralizedKernelWorker {
         }
         return channels;
       },
+      armAlarmForTest: (pid, seconds): void => {
+        this.#armAlarm(pid, seconds);
+      },
       resumeStoppedProcessForTest: (pid): boolean => {
         if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
         let resumed: boolean | undefined;
@@ -5194,6 +5410,12 @@ export class CentralizedKernelWorker {
     this.blockingRetrySnapshots.clear();
     this.blockingRetryWakeTargets.clear();
     this.activeChannelRequests.clear();
+    // A queued checkpoint release was just discarded with the rest of the
+    // FIFO. Tell its freeze so the machine reports a poisoned generation
+    // instead of waiting for an entry that can never run.
+    const pendingReleases = [...this.#pendingCheckpointDispatchReleases];
+    this.#pendingCheckpointDispatchReleases.clear();
+    for (const rejectRelease of pendingReleases) rejectRelease(error);
     if (this.vblankClock !== null) {
       this.vblankClock.stop();
       this.vblankClock = null;
@@ -5572,6 +5794,42 @@ export class CentralizedKernelWorker {
     }
   }
 
+  /**
+   * The slots that hold the journal and its index, or null without a journal.
+   *
+   * A compaction moves the journal between slots, and the kernel memory names
+   * a slot rather than a file, so a restore must put each copy back in the
+   * slot it was read from.
+   */
+  rootfsPersistenceSlots(): { readonly journal: 0 | 1 | 2; readonly index: 0 | 1 | 2 | null } | null {
+    if (this.#persistentOverlayActiveStorage === null) return null;
+    return { journal: this.#persistentOverlayImportSlot, index: this.#persistentOverlayIndexSlot };
+  }
+
+  /**
+   * Give an adopted kernel the journal its memory already describes.
+   *
+   * The adopted memory holds the mounted journal's offsets, block locations
+   * and index state, so enabling persistence again would scan a journal the
+   * kernel already mounted, and the kernel refuses that with EBUSY. Only the
+   * storages are installed, each in the slot the captured kernel read it from.
+   */
+  adoptRootfsPersistence(
+    journal: PersistentOverlayStorage,
+    index: PersistentOverlayStorage | null,
+    slots: { readonly journal: 0 | 1 | 2; readonly index: 0 | 1 | 2 | null },
+  ): void {
+    if (this.#persistentOverlayActiveStorage !== null) throw new Error("rootfs persistence is already mounted");
+    if ((index === null) !== (slots.index === null) || slots.journal === slots.index) {
+      throw new Error("adopted rootfs persistence slots do not match its storages");
+    }
+    this.#setPersistentOverlaySlot(slots.journal, journal);
+    if (slots.index !== null) this.#setPersistentOverlaySlot(slots.index, index);
+    this.#persistentOverlayImportSlot = slots.journal;
+    this.#persistentOverlayIndexSlot = slots.index;
+    this.#persistentOverlayActiveStorage = journal;
+  }
+
   syncRootfsPersistence(): void {
     if (this.#rootfsImageLength === 0) return;
     let status: number | undefined;
@@ -5628,7 +5886,15 @@ export class CentralizedKernelWorker {
    * failure here has no second opinion to fall back to and must not silently
    * become a `/`-less boot: it throws, and the boot fails at the real cause.
    */
-  #maybeLoadKernelRootfs(instance: WebAssembly.Instance): Error | undefined {
+  /**
+   * With `adopted`, the kernel memory came from a checkpoint and already holds
+   * the loaded `/`, its clock, sibling prefixes and set-ID policy. Loading the
+   * image again would replace the captured tree, so only the host's byte pipe
+   * and deferred providers are installed. A persistent image is served the
+   * same way: the kernel memory already holds its verified geometry and
+   * cache, and `adoptRootfsPersistence` gives back the journal it names.
+   */
+  #maybeLoadKernelRootfs(instance: WebAssembly.Instance, adopted: boolean): Error | undefined {
     const imageLength = this.#rootfsImageLength;
     const imageRead = this.#rootfsImageRead;
     const provider = this.#rootfsDeferredProvider;
@@ -5636,6 +5902,12 @@ export class CentralizedKernelWorker {
     if (imageRead === null) throw new Error("rootfs image has no byte reader");
     const memory = this.#kernelMemory;
     if (memory === null) return;
+    if (adopted) {
+      this.#installRootfsImageWindow(imageLength, imageRead);
+      this.#kernel.setRootfsDeferredProvider(provider);
+      this.#kernel.setRootfsDeferredInvalidator(this.#rootfsDeferredInvalidator);
+      return;
+    }
 
     const setNow = instance.exports.kernel_set_rootfs_now as
       | ((secLo: number, secHi: number, nsec: number) => number)
@@ -5696,12 +5968,7 @@ export class CentralizedKernelWorker {
 
     // The image byte window is installed FIRST, because
     // `kernel_rootfs_load_image` calls straight back out through it.
-    this.#kernel.setRootfsImageProvider((offset, dest) => {
-      const start = Number(offset);
-      if (!Number.isSafeInteger(start) || start < 0) return -22; // EINVAL
-      if (start >= imageLength) return 0; // end of image
-      return imageRead(start, dest);
-    });
+    this.#installRootfsImageWindow(imageLength, imageRead);
     const imageLenLo = imageLength >>> 0;
     const imageLenHi = Math.floor(imageLength / 0x1_0000_0000);
     let loaded: number;
@@ -5773,6 +6040,18 @@ export class CentralizedKernelWorker {
 
     // The positioned reader remains installed for image-backed files and
     // the fixed-persistence digest of the complete container.
+  }
+
+  #installRootfsImageWindow(
+    imageLength: number,
+    imageRead: (offset: number, dest: Uint8Array) => number,
+  ): void {
+    this.#kernel.setRootfsImageProvider((offset, dest) => {
+      const start = Number(offset);
+      if (!Number.isSafeInteger(start) || start < 0) return -22; // EINVAL
+      if (start >= imageLength) return 0; // end of image
+      return imageRead(start, dest);
+    });
   }
 
   /**
@@ -6531,8 +6810,21 @@ export class CentralizedKernelWorker {
   /**
    * Initialize the kernel.
    * Loads kernel Wasm and validates the host adapter ABI.
+   *
+   * With `adoptKernelMemoryImage`, the freshly instantiated kernel's memory
+   * is overwritten with a captured image before the first kernel call.
+   * Instantiation must come first: it applies the module's data segments,
+   * and copying afterwards leaves no range holding initial values that the
+   * captured kernel had already mutated. The scratch regions below are then
+   * allocated from the restored dlmalloc heap, so their pointers are
+   * consistent with the adopted state; the captured boot's own scratch
+   * regions stay allocated inside it, a bounded leak of two regions per
+   * restore.
    */
-  async init(kernelWasmBytes: BufferSource): Promise<void> {
+  async init(
+    kernelWasmBytes: BufferSource,
+    options?: { readonly adoptKernelMemoryImage?: Uint8Array },
+  ): Promise<void> {
     if (this.#kernelFatalError !== null) {
       throw new Error("cannot reinitialize a failed kernel worker");
     }
@@ -6561,6 +6853,9 @@ export class CentralizedKernelWorker {
       throw new Error("kernel initialization did not publish its runtime");
     }
     this.#kernelPointerWidth = this.#kernel.getKernelPtrWidth();
+    if (options?.adoptKernelMemoryImage !== undefined) {
+      this.#adoptKernelMemoryImage(options.adoptKernelMemoryImage);
+    }
 
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
       throw new KernelReentrantEntryError("kernel initialization completion");
@@ -6617,9 +6912,15 @@ export class CentralizedKernelWorker {
         // Hand scratch-mount ownership to the in-kernel tmpfs, and the `/`
         // tree to the in-kernel rootfs, before any guest filesystem op runs.
         enableKernelTmpfs(instance);
-        rootfsLoadFailure = this.#maybeLoadKernelRootfs(instance);
+        rootfsLoadFailure = this.#maybeLoadKernelRootfs(
+          instance,
+          options?.adoptKernelMemoryImage !== undefined,
+        );
         if (rootfsLoadFailure !== undefined) return undefined;
-        this.#initExchange(instance);
+        this.#initExchange(
+          instance,
+          options?.adoptKernelMemoryImage !== undefined,
+        );
 
         // Blocking-wait deadlines are kernel state on CLOCK_MONOTONIC, not
         // host wall-clock arithmetic. Hand that authority over before any
@@ -8605,6 +8906,22 @@ export class CentralizedKernelWorker {
     return result;
   }
 
+  /** The PTY index serving `pid`'s terminal, when this machine knows one. */
+  ptyIndexFor(pid: number): number | undefined {
+    return this.ptyIndexByPid.get(pid);
+  }
+
+  /**
+   * The session a restored PTY serves, or undefined when no session holds it.
+   *
+   * The captured machine's host routed the PTY's output under the pid it
+   * spawned the session with, and the page that adopts the terminal listens
+   * under that pid. Every restored process on the PTY shares its output.
+   */
+  restoredPtySessionFor(ptyIdx: number): number | undefined {
+    return this.restoredPtySessions.get(ptyIdx);
+  }
+
   #setupPtyWithinKernelEntry(
     pid: number,
     entry: KernelWorkerEntryContext,
@@ -9115,6 +9432,293 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Overwrite the kernel's memory with a captured image, before any kernel
+   * call has run against this generation.
+   *
+   * Growing host-side is safe only because the whole buffer is overwritten
+   * next: the pages become exactly the pages the captured kernel grew
+   * itself, so the restored dlmalloc state describes every one of them.
+   */
+  #adoptKernelMemoryImage(image: Uint8Array): void {
+    if (this.#kernelMemory === null) {
+      throw new Error("kernel memory is not instantiated");
+    }
+    const buffer = kernelEntryIntrinsicApply(
+      kernelEntryIntrinsicMemoryBuffer,
+      this.#kernelMemory,
+      [],
+    ) as ArrayBufferLike;
+    if (
+      image.byteLength < buffer.byteLength
+      || image.byteLength % WASM_PAGE_SIZE !== 0
+    ) {
+      throw new Error(
+        `cannot adopt a ${image.byteLength}-byte kernel image into a kernel `
+        + `whose fresh memory is already ${buffer.byteLength} bytes`,
+      );
+    }
+    const deltaPages =
+      (image.byteLength - buffer.byteLength) / WASM_PAGE_SIZE;
+    if (deltaPages > 0) this.#kernelMemory.grow(deltaPages);
+    const grown = kernelEntryIntrinsicApply(
+      kernelEntryIntrinsicMemoryBuffer,
+      this.#kernelMemory,
+      [],
+    ) as ArrayBufferLike;
+    new Uint8Array(grown).set(image);
+  }
+
+  /**
+   * Copy the kernel's linear memory, which is the entire kernel bucket.
+   *
+   * Both kernel mutable globals hold their initial values at a dispatch
+   * boundary, so a fresh instantiation against these bytes reproduces
+   * them and nothing else has to be carried. The copy is taken rather than the
+   * Memory handed out: a checkpoint is a value, and a live alias would keep
+   * mutating after the freeze released.
+   */
+  copyKernelMemoryForCheckpoint(): Uint8Array {
+    if (this.#kernelMemory === null) {
+      throw new Error("kernel memory is not instantiated");
+    }
+    // The captured intrinsic getter, applied here rather than through the
+    // process-memory helper: that helper's contract is process backings, and
+    // this is the one place the kernel's own backing is read whole.
+    const buffer = kernelEntryIntrinsicApply(
+      kernelEntryIntrinsicMemoryBuffer,
+      this.#kernelMemory,
+      [],
+    ) as ArrayBufferLike;
+    return new Uint8Array(buffer).slice();
+  }
+
+  /**
+   * Ask every registered process to unwind at its next syscall boundary, and
+   * give a process parked in a blocking syscall a boundary to reach.
+   *
+   * Returns the pids that were armed. The request word reaches a thread only
+   * when that thread's own syscall completes, which is the point at which the
+   * guest reads it. A process parked in a syscall the kernel has not completed
+   * reaches no such point on its own, and every realistic machine has one: a
+   * login shell in `wait4`, an idle daemon in `poll` or `accept`, a reader on
+   * a quiet pipe. Each parked wait is therefore retired here and completed
+   * with EINTR, which is a boundary rather than an interruption — the guest is
+   * told to resubmit the call once its rewind returns.
+   *
+   * A persistent `/` keeps its journal outside kernel memory, and a
+   * compaction in flight is moving that journal between slots the kernel
+   * memory names. The entry holds compaction off for the whole freeze, so one
+   * found prepared here is a defect in that hold, refused before any process
+   * is asked to unwind.
+   */
+  armCheckpointUnwind(): number[] {
+    if (this.#preparedOverlayImportSlot !== null) {
+      throw new Error("a filesystem compaction is in flight, so the journal has no single state to copy");
+    }
+    const pids = [...this.processes.keys()];
+    this.checkpointUnwindPids = new Set(pids);
+    this.#runImmediateKernelEntry("checkpoint unwind arm", (entry) => {
+      for (const registration of this.processes.values()) {
+        for (const channel of registration.channels) {
+          this.#interruptParkedChannelForCheckpoint(channel, entry);
+        }
+      }
+      return undefined;
+    });
+    this.#passReplicationSeal();
+    return pids;
+  }
+
+  /** Name the arm of a take-over seal's freeze in the recording. */
+  recordReplicationSeal(): void {
+    const tap = this.#dispatchOrderTap;
+    if (tap?.mode !== "record") return;
+    tap.record(0, 0, { entry: REPLICATION_SEAL_ENTRY });
+  }
+
+  /**
+   * Take the seal entry the replay holds at, now that this freeze has armed.
+   *
+   * Every completion from here on carries the unwind request, so the tasks
+   * the replay held reach the boundary their counterparts unwound at.
+   */
+  #passReplicationSeal(): void {
+    const tap = this.#dispatchOrderTap;
+    if (tap?.mode !== "replay") return;
+    const next = this.#nextOrderedDispatch(tap);
+    if (next === "open" || next === "wait") return;
+    if (next.entry !== REPLICATION_SEAL_ENTRY) return;
+    if (tap.take()) this.#pushedDeliveries += 1;
+    this.#orderedProgressAt = Date.now();
+    this.releaseOrderedDispatches();
+  }
+
+  /**
+   * Free one parked channel to reach the post-syscall hook.
+   *
+   * An idle mailbox is left alone: it carries no in-flight request, so its
+   * process is already running and will reach the hook by itself.
+   *
+   * Any Rust wait state the task retained is retired first, through the same
+   * exact-task cleanup `pthread_cancel` uses. Publishing EINTR over live
+   * kernel wait state would leave the checkpoint reading a machine whose
+   * kernel still believes the task is waiting. When that cleanup declines, the
+   * channel stays parked and the freeze reports it as a straggler, which is
+   * the truthful outcome: nothing here may fake a boundary it did not reach.
+   */
+  #interruptParkedChannelForCheckpoint(
+    channel: ChannelInfo,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    if (!this.isRegisteredChannel(channel)) return;
+    if (!this.activeChannelRequests.has(channel)) return;
+    if (!this.#cancelLiveTaskKernelWait(channel, entry)) return;
+    this.#checkpointRestartChannels.add(channel);
+    if (!this.#interruptParkedWait(channel, entry, false)) {
+      this.#checkpointRestartChannels.delete(channel);
+    }
+  }
+
+  /**
+   * Stop asking for unwinds, and recall every word already published.
+   *
+   * A completion that lands while a process is already unwinding republishes
+   * the word after the guest cleared it — the capture's own arena mmaps are
+   * the standing case. Left in place, that leftover makes the guest's first
+   * post-resume syscall begin a second capture with no freeze to resume it,
+   * and the guest parks forever. Every participant is parked or abandoned by
+   * the time the freeze disarms, so the recall cannot race the guest's read.
+   *
+   * The restart bit is the one thing the recall keeps, and only on a word the
+   * guest has not read yet. A freeze that times out has still completed that
+   * channel's parked syscall with EINTR, and the caller is owed its call back
+   * whether or not the capture succeeded. Recalling the unwind alone leaves
+   * the guest a request it can satisfy without a freeze to resume it.
+   */
+  disarmCheckpointUnwind(): void {
+    for (const pid of this.checkpointUnwindPids) {
+      const registration = this.processes.get(pid);
+      if (!registration) continue;
+      for (const channel of registration.channels) {
+        const buffer = kernelEntryMemoryBuffer(channel.memory);
+        const processView = new KernelEntryIntrinsicDataView(
+          buffer,
+          channel.channelOffset,
+        );
+        const published = kernelEntryIntrinsicApply(
+          kernelEntryIntrinsicDataViewGetUint32,
+          processView,
+          [CH_CHECKPOINT_REQUEST, true],
+        ) as number;
+        kernelEntryIntrinsicApply(
+          kernelEntryIntrinsicDataViewSetUint32,
+          processView,
+          [
+            CH_CHECKPOINT_REQUEST,
+            published & CH_CHECKPOINT_REQUEST_RESTART,
+            true,
+          ],
+        );
+      }
+    }
+    this.checkpointUnwindPids.clear();
+    this.#checkpointRestartChannels.clear();
+  }
+
+  /**
+   * Hold every registered process at its syscall boundary, reusing the
+   * stopped-process dispatch gate rather than a second freeze mechanism.
+   *
+   * This is the first step of a checkpoint. It deliberately does not touch kernel
+   * process state: `stoppedPids` is the host-side dispatch gate and
+   * `resumeStoppedProcess` requires the authoritative state to be Running, so
+   * a machine frozen this way resumes through the same barrier a SIGCONT uses.
+   * A process the kernel really has stopped is left to that owner.
+   */
+  holdProcessDispatchForCheckpoint(): number[] {
+    const held: number[] = [];
+    for (const pid of this.processes.keys()) {
+      if (this.stoppedPids.has(pid)) continue;
+      this.stoppedPids.add(pid);
+      this.checkpointHeldPids.add(pid);
+      held.push(pid);
+    }
+    return held;
+  }
+
+  /**
+   * Hold a restored process at its first syscall until the host has restored
+   * the device state it answers from.
+   *
+   * The host restores processes one at a time, and each awaits between
+   * them, so an earlier process would otherwise run against framebuffer,
+   * buffer-object and KMS registries that are still empty. The hold is the
+   * freeze's own, and `releaseProcessDispatchForCheckpoint` ends it; a
+   * process the kernel really has stopped stays stopped.
+   */
+  holdRestoredProcessDispatch(pid: number): void {
+    if (this.stoppedPids.has(pid)) return;
+    this.stoppedPids.add(pid);
+    this.checkpointHeldPids.add(pid);
+  }
+
+  /**
+   * Release every process this freeze held, and only those.
+   *
+   * The release joins the ingress FIFO rather than demanding an idle gate.
+   * A freeze always leaves queued work behind it: the arm sweep completes
+   * every parked syscall, and a machine driving a display keeps its 60 Hz
+   * vblank tick, which `startVblankPump` does not suspend. An immediate entry
+   * refuses while anything is queued, so it refused on exactly the machines
+   * worth handing over. Queueing keeps the release in request order behind
+   * that work, which is the order the gate already guarantees, and the gate
+   * always drains what it queued.
+   *
+   * Every held pid is resumed inside one entry. A single ingress may release
+   * more than one stopped process, so a reentrant listener sees the whole
+   * release or none of it.
+   *
+   * Resolves with the pids whose resume barrier did not complete. A pid that
+   * exited or was stopped for real while the freeze ran is reported rather
+   * than retried here, because its owner decides what happens next.
+   */
+  releaseProcessDispatchForCheckpoint(): Promise<number[]> {
+    const held = [...this.checkpointHeldPids];
+    this.checkpointHeldPids.clear();
+    return new Promise<number[]>((resolve, reject) => {
+      if (this.#kernelFatalError !== null) {
+        reject(this.#kernelFatalError);
+        return;
+      }
+      // A fatal latch discards queued ingress without running it. Register the
+      // rejector first: the release must report a poisoned generation rather
+      // than leave the freeze waiting for a callback that can never run.
+      this.#pendingCheckpointDispatchReleases.add(reject);
+      const settle = (unreleased: number[]): undefined => {
+        this.#pendingCheckpointDispatchReleases.delete(reject);
+        resolve(unreleased);
+        return undefined;
+      };
+      this.#runOrDeferKernelEntry(
+        "checkpoint freeze dispatch release",
+        (entry) => settle(this.#resumeHeldDispatch(held, entry)),
+      );
+    });
+  }
+
+  #resumeHeldDispatch(
+    held: readonly number[],
+    entry: KernelWorkerEntryContext,
+  ): number[] {
+    const unreleased: number[] = [];
+    for (const pid of held) {
+      if (!this.stoppedPids.has(pid)) continue;
+      if (!this.resumeStoppedProcess(pid, entry)) unreleased.push(pid);
+    }
+    return unreleased;
+  }
+
+  /**
    * Unregister a process. Stops listening on its channels and removes
    * it from the kernel's process table.
    */
@@ -9232,6 +9836,7 @@ export class CentralizedKernelWorker {
   }
 
   private cancelAlarmTimerForProcess(pid: number): void {
+    this.#refusedAlarmExpiries.delete(pid);
     const alarmTimer = this.alarmTimers.get(pid);
     if (alarmTimer === undefined) return;
     // WHY: browser timer handles may be zero, and deleting the exact identity
@@ -9423,12 +10028,16 @@ export class CentralizedKernelWorker {
     expectedMemory?: WebAssembly.Memory,
   ): boolean {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const label = `process deactivation pid=${pid}`;
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
-      throw new KernelReentrantEntryError(`process deactivation pid=${pid}`);
+      throw new KernelReentrantEntryError(label);
+    }
+    if (!this.#admitHostEntry(label, pid)) {
+      throw new KernelReentrantEntryError(label);
     }
     let result = true;
     const deferred = this.#runOrDeferKernelEntry(
-      `process deactivation pid=${pid}`,
+      label,
       (entry) => {
         result = this.#deactivateProcessWithinKernelEntry(
           pid,
@@ -9439,7 +10048,7 @@ export class CentralizedKernelWorker {
       },
     );
     if (deferred) {
-      throw new KernelReentrantEntryError(`process deactivation pid=${pid}`);
+      throw new KernelReentrantEntryError(label);
     }
     return result;
   }
@@ -9902,6 +10511,9 @@ export class CentralizedKernelWorker {
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
       // A successful setup commits exec in Rust. Its result cannot be queued
       // behind the caller that needs to decide whether the old image survives.
+      throw new KernelReentrantEntryError("kernel exec commit");
+    }
+    if (!this.#admitHostEntry(`kernel exec commit pid=${pid} target=${target}`, pid)) {
       throw new KernelReentrantEntryError("kernel exec commit");
     }
     let result = 0;
@@ -10934,6 +11546,388 @@ export class CentralizedKernelWorker {
     if (execGeneration !== registration.execGeneration) {
       return new Error(`Process ${pid} changed exec generation`);
     }
+    pending.attachedChannel = this.#installThreadChannelTransportWithinKernelEntry(
+      pid,
+      tid,
+      fnPtr,
+      argPtr,
+      channelOffset,
+      registration,
+      entry,
+    );
+    pending.attachedChannelOffset = channelOffset;
+    return undefined;
+  }
+
+  /**
+   * Reattach a checkpointed pthread's channel in a restored machine.
+   *
+   * The restored kernel memory already owns this task identity: the clone
+   * that minted it ran on the captured machine, so there is no one-shot
+   * attachment capability to consume. The kernel keeps the last word on the
+   * TID through `kernel_validate_task`; the host only rebuilds transport for
+   * a task Rust already has.
+   */
+  attachRestoredThreadChannel(
+    pid: number,
+    tid: number,
+    fnPtr: number,
+    argPtr: number,
+    channelOffset: number,
+  ): void {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("restored thread channel attachment");
+    }
+    const deferred = this.#runOrDeferKernelEntry(
+      "restored thread channel attachment",
+      (entry) => {
+        this.#attachRestoredThreadChannelWithinKernelEntry(
+          pid,
+          tid,
+          fnPtr,
+          argPtr,
+          channelOffset,
+          entry,
+        );
+        return undefined;
+      },
+    );
+    if (deferred) {
+      throw new KernelReentrantEntryError("restored thread channel attachment");
+    }
+  }
+
+  /**
+   * Rebind every host handle a restored kernel memory still names.
+   *
+   * The adopted kernel memory carries the captured machine's opaque host
+   * handles in its open file descriptions. Three phases keep kernel entries
+   * free of host effects: one kernel entry reads the handle map, the host
+   * reopens each named resource through this machine's `PlatformIO`, and a
+   * second kernel entry remaps the stale values machine-wide and heals
+   * positions through the kernel's own seek paths — all before any process
+   * worker starts. Interval timers re-arm with their remaining time through
+   * `kernel_rearm_host_timers`.
+   *
+   * Handles 0-2 are the machine-invariant pre-opened stdio and stay as they
+   * are. A non-stdio stream handle whose description has no path (a
+   * host-delegated pipe) cannot be reopened by name; it is left stale, which
+   * a later I/O attempt reports as the reset it is.
+   */
+  rebindRestoredHostHandles(restoredProcesses: readonly { pid: number }[]): void {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("restored host handle rebinding");
+    }
+    let plan: RestoredHostHandlePlan | null = null;
+    const planDeferred = this.#runOrDeferKernelEntry(
+      "restored host handle enumeration",
+      (entry) => {
+        plan = this.#readRestoredHostHandlePlanWithinKernelEntry(entry);
+        return undefined;
+      },
+    );
+    if (planDeferred || plan === null) {
+      throw new KernelReentrantEntryError("restored host handle enumeration");
+    }
+    const { streams, dirs, maxStream } = plan as RestoredHostHandlePlan;
+
+    // Directory handles anchor `openat` chains under a host mount, and the
+    // mount roots they descend from are themselves handles the kernel holds.
+    // Re-opening a directory by its path would hand the kernel an anchor that
+    // no longer chains to those roots, so a machine holding one stays here.
+    if (dirs > 0) {
+      throw new Error(
+        `restoring a checkpoint that holds ${dirs} host directory `
+          + "handle(s) is not supported: only kernel-owned filesystems move",
+      );
+    }
+    if (maxStream >= 0) {
+      if (!this.io.reserveHandleFloor) {
+        throw new Error(
+          "restoring a checkpoint with live host handles requires a "
+            + "PlatformIO that reserves a handle floor",
+        );
+      }
+      this.io.reserveHandleFloor(maxStream + 1);
+    }
+    const streamRemaps: RestoredStreamRemap[] = streams.map((stream) => ({
+      ...stream,
+      newHandle: this.io.open(
+        stream.path,
+        stream.flags
+          & ~(OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_EXCL | OPEN_FLAGS.O_TRUNC),
+        0,
+      ),
+    }));
+
+    let completed = false;
+    const applyDeferred = this.#runOrDeferKernelEntry(
+      "restored host handle rebinding",
+      (entry) => {
+        this.#applyRestoredHostHandleRemapsWithinKernelEntry(
+          streamRemaps,
+          restoredProcesses,
+          entry,
+        );
+        completed = true;
+        return undefined;
+      },
+    );
+    if (applyDeferred || !completed) {
+      throw new KernelReentrantEntryError("restored host handle rebinding");
+    }
+  }
+
+  #readRestoredHostHandlePlanWithinKernelEntry(
+    entry: KernelWorkerEntryContext,
+  ): RestoredHostHandlePlan {
+    const records = this.#enumerateHostHandlesWithinKernelEntry(entry);
+    const streamExemplars = new Map<number, { pid: number; fd: number }>();
+    const dirHandles = new Set<number>();
+    let maxStream = -1;
+    for (const record of records) {
+      if (record.kind !== 0) {
+        dirHandles.add(record.handle);
+        continue;
+      }
+      maxStream = Math.max(maxStream, record.handle);
+      if (record.handle > 2 && !streamExemplars.has(record.handle)) {
+        streamExemplars.set(record.handle, { pid: record.pid, fd: record.fd });
+      }
+    }
+
+    const statusFlags = this.#kernelInstanceForEntry(entry).exports
+      .kernel_get_fd_status_flags as
+      ((pid: number, fd: number) => number) | undefined;
+    if (!statusFlags) {
+      throw new Error("Kernel missing host handle rebinding exports");
+    }
+
+    const streams: RestoredStreamPlanEntry[] = [];
+    for (const [oldHandle, exemplar] of streamExemplars) {
+      const path = this.#restoredHandlePath(exemplar.pid, exemplar.fd, entry);
+      if (path === null) continue;
+      const flags = statusFlags(exemplar.pid, exemplar.fd);
+      if (flags < 0) {
+        throw new Error(
+          `restored pid ${exemplar.pid} fd ${exemplar.fd}: F_GETFL failed: ${flags}`,
+        );
+      }
+      streams.push({ oldHandle, ...exemplar, path, flags });
+    }
+    return { streams, dirs: dirHandles.size, maxStream };
+  }
+
+  #restoredHandlePath(
+    pid: number,
+    fd: number,
+    entry: KernelWorkerEntryContext,
+  ): string | null {
+    const result = this.#readKernelOwnedPath(pid, fd, entry);
+    if (result.kind === "error") {
+      if (result.errno === ENOENT) return null;
+      throw new Error(
+        `restored pid ${pid} fd ${fd}: path read failed: ${result.errno}`,
+      );
+    }
+    return new TextDecoder().decode(result.value);
+  }
+
+  #applyRestoredHostHandleRemapsWithinKernelEntry(
+    streamRemaps: readonly RestoredStreamRemap[],
+    restoredProcesses: readonly { pid: number }[],
+    entry: KernelWorkerEntryContext,
+  ): void {
+    const remap = this.#kernelInstanceForEntry(entry).exports
+      .kernel_remap_host_handles as
+      ((kind: number, oldHandle: bigint, newHandle: bigint) => number) | undefined;
+    const seek = this.#kernelInstanceForEntry(entry).exports.kernel_seek_fd as
+      | ((pid: number, fd: number, offset: bigint, whence: number) => bigint)
+      | undefined;
+    if (!remap || !seek) {
+      throw new Error("Kernel missing host handle rebinding exports");
+    }
+    for (const stream of streamRemaps) {
+      const rewritten = remap(
+        0,
+        BigInt(stream.oldHandle),
+        BigInt(stream.newHandle),
+      );
+      if (rewritten <= 0) {
+        throw new Error(
+          `restored host handle remap kind=0 `
+            + `${stream.oldHandle} -> ${stream.newHandle} failed: ${rewritten}`,
+        );
+      }
+      const sought = seek(stream.pid, stream.fd, 0n, SEEK_CUR);
+      if (sought < 0n && sought !== BigInt(-ESPIPE)) {
+        throw new Error(
+          `restored pid ${stream.pid} fd ${stream.fd}: position sync failed: ${sought}`,
+        );
+      }
+    }
+    for (const { pid } of restoredProcesses) {
+      this.#rearmRestoredIntervalTimerWithinKernelEntry(pid, entry);
+      this.#reseedRestoredPtyIndexWithinKernelEntry(pid, entry);
+    }
+  }
+
+  #enumerateHostHandlesWithinKernelEntry(
+    entry: KernelWorkerEntryContext,
+  ): { pid: number; fd: number; kind: number; handle: number }[] {
+    const scratch = this.#requireMainScratchRegion();
+    const bytes = scratch.withLease((lease) => {
+      const request = Math.min(SCRATCH_SIZE, scratch.capacity);
+      const written = this.#invokeEntryScratchExport(
+        entry,
+        lease,
+        "kernel_enumerate_host_handles",
+        [lease.exportPointer(0, request), request],
+      );
+      if (written < 0) {
+        throw new KernelScratchError(
+          `kernel host handle enumeration failed: ${written}`,
+          EIO,
+        );
+      }
+      if (!Number.isSafeInteger(written) || written > request) {
+        throw new KernelScratchError(
+          "kernel host handle enumeration exceeded scratch capacity",
+          EIO,
+        );
+      }
+      return lease.copyOut(0, written);
+    });
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const count = view.getUint32(0, true);
+    if (bytes.byteLength !== 4 + count * 20) {
+      throw new KernelScratchError(
+        "kernel host handle enumeration wire length mismatch",
+        EIO,
+      );
+    }
+    const records: { pid: number; fd: number; kind: number; handle: number }[] =
+      [];
+    for (let index = 0; index < count; index++) {
+      const offset = 4 + index * 20;
+      const handle = view.getBigInt64(offset + 12, true);
+      if (handle < 0n || handle > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new KernelScratchError(
+          `kernel host handle enumeration emitted unusable handle ${handle}`,
+          EIO,
+        );
+      }
+      records.push({
+        pid: view.getUint32(offset, true),
+        fd: view.getInt32(offset + 4, true),
+        kind: view.getUint32(offset + 8, true),
+        handle: Number(handle),
+      });
+    }
+    return records;
+  }
+
+  #rearmRestoredIntervalTimerWithinKernelEntry(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    const rearm = this.#kernelInstanceForEntry(entry).exports
+      .kernel_rearm_host_timers as ((pid: number) => number) | undefined;
+    if (!rearm) {
+      throw new Error("Kernel missing kernel_rearm_host_timers export");
+    }
+    // onAlarm associates the platform timer with the syscall's process; give
+    // the re-arm the same association the original arming had.
+    const savedHandlePid = this.currentHandlePid;
+    this.currentHandlePid = pid;
+    let result: number;
+    try {
+      result = rearm(pid);
+    } finally {
+      this.currentHandlePid = savedHandlePid;
+    }
+    if (result < 0) {
+      throw new Error(
+        `restored pid ${pid}: interval timer re-arm failed: ${result}`,
+      );
+    }
+  }
+
+  /**
+   * Re-seed the host's pid → PTY routing for one restored process.
+   *
+   * The adopted kernel memory carries the whole PTY table, but the maps that
+   * route host keyboard input, winsize changes, and output drains to a PTY
+   * died with the captured machine. The kernel's own PTY slave descriptors
+   * name the pair, so the mapping is re-derived instead of trusted from
+   * checkpoint metadata.
+   */
+  #reseedRestoredPtyIndexWithinKernelEntry(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    const ptyIndexForPid = this.#kernelInstanceForEntry(entry).exports
+      .kernel_pty_index_for_pid as ((pid: number) => number) | undefined;
+    if (!ptyIndexForPid) {
+      throw new Error("Kernel missing kernel_pty_index_for_pid export");
+    }
+    const result = ptyIndexForPid(pid);
+    if (result === -ENOENT) return;
+    if (result < 0) {
+      throw new Error(`restored pid ${pid}: PTY index read failed: ${result}`);
+    }
+    this.ptyIndexByPid.set(pid, result);
+    this.activePtyIndices.add(result);
+    const ptySessionId = this.#kernelInstanceForEntry(entry).exports
+      .kernel_pty_session_id as ((ptyIdx: number) => number) | undefined;
+    if (!ptySessionId) {
+      throw new Error("Kernel missing kernel_pty_session_id export");
+    }
+    const session = ptySessionId(result);
+    if (session < 0) {
+      throw new Error(`restored PTY ${result}: session read failed: ${session}`);
+    }
+    if (session > 0) this.restoredPtySessions.set(result, session);
+  }
+
+  #attachRestoredThreadChannelWithinKernelEntry(
+    pid: number,
+    tid: number,
+    fnPtr: number,
+    argPtr: number,
+    channelOffset: number,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    if (this.execHandoffPids?.has(pid)) {
+      throw new Error(`Process ${pid} is replacing its image`);
+    }
+    if (!this.#isProcessExecutionActiveWithinKernelEntry(pid, entry)) {
+      throw new Error(`Process ${pid} is not running`);
+    }
+    const registration = this.processes.get(pid);
+    if (!registration) throw new Error(`Process ${pid} not registered`);
+    this.#installThreadChannelTransportWithinKernelEntry(
+      pid,
+      tid,
+      fnPtr,
+      argPtr,
+      channelOffset,
+      registration,
+      entry,
+    );
+  }
+
+  #installThreadChannelTransportWithinKernelEntry(
+    pid: number,
+    tid: number,
+    fnPtr: number,
+    argPtr: number,
+    channelOffset: number,
+    registration: ProcessRegistration,
+    entry: KernelWorkerEntryContext,
+  ): ChannelInfo {
     if (
       !Number.isSafeInteger(tid)
       || tid <= 0
@@ -11011,8 +12005,7 @@ export class CentralizedKernelWorker {
       if (!this.usePolling) {
         this.listenOnChannel(channel);
       }
-      pending.attachedChannelOffset = channelOffset;
-      pending.attachedChannel = channel;
+      return channel;
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
       registration.channels = registration.channels.filter(
@@ -12283,6 +13276,17 @@ export class CentralizedKernelWorker {
     label: string,
     operation: (entry: KernelWorkerEntryContext) => undefined,
   ): void {
+    const pid = processNamedByEntryLabel(label);
+    if (pid !== null && this.#kernelEntryGate.acceptsImmediateVoidIngress) {
+      if (!this.#admitHostEntry(label, pid)) return;
+    }
+    this.#runImmediateKernelEntryNow(label, operation);
+  }
+
+  #runImmediateKernelEntryNow(
+    label: string,
+    operation: (entry: KernelWorkerEntryContext) => undefined,
+  ): void {
     this.#kernelEntryGate.runImmediateVoidIngress(
       label,
       (scope, effects) => {
@@ -12704,11 +13708,546 @@ export class CentralizedKernelWorker {
         if (!this.#kernelInstance) {
           throw new Error("Kernel is not initialized for channel dispatch");
         }
-        operation(entry);
+        if (this.#holdForGlRestore(channel, label, operation)) return;
+        if (!this.#admitDispatch(channel, label, operation)) return;
+        // A dispatch into a process Rust already ended only settles the
+        // transport handshake its teardown races (`handleExitedProcessChannel`),
+        // so whether it happens at all is the host's timing.
+        const exited = this.hostReaped?.has(channel.pid) ?? false;
+        const recorded = this.#dispatchOrderTap?.mode === "record" && !exited
+          ? {
+            tid: this.guestTidForChannel(channel),
+            retry: this.activeChannelRequests.has(channel),
+          }
+          : null;
+        try {
+          operation(entry);
+        } finally {
+          if (recorded !== null) {
+            this.#recordDispatch(channel.pid, recorded.tid, recorded.retry);
+          }
+          this.releaseOrderedDispatches();
+        }
       },
       dedupeKey,
     );
     if (deferred) channel.handling = true;
+  }
+
+  /**
+   * Hold a restored process's syscalls until its GL context is rebuilt.
+   *
+   * The captured context painted a canvas, so the machine answered every GL
+   * call against a live context. Served before this host's canvas arrives,
+   * the same call fails or binds nothing, and the process continues on a path
+   * the captured machine never took.
+   */
+  #holdForGlRestore(
+    channel: ChannelInfo,
+    label: string,
+    operation: (entry: KernelWorkerEntryContext) => undefined,
+  ): boolean {
+    const pending = this.pendingGlRestore;
+    if (!pending || pending.refused || !pending.pids.has(channel.pid)) {
+      return false;
+    }
+    this.#glRestoreHolds.set(channel, { label, operation });
+    return true;
+  }
+
+  /** Whether `#holdForGlRestore` holds a channel of `pid`. */
+  #holdsGlRestore(pid: number): boolean {
+    for (const channel of this.#glRestoreHolds.keys()) {
+      if (channel.pid === pid) return true;
+    }
+    return false;
+  }
+
+  /** Serve the channels `#holdForGlRestore` held for `pid`. */
+  #releaseGlRestoreHolds(pid: number): void {
+    for (const [channel, held] of [...this.#glRestoreHolds]) {
+      if (channel.pid !== pid) continue;
+      this.#glRestoreHolds.delete(channel);
+      this.#runOrDeferChannelKernelEntry(channel, held.label, held.operation);
+    }
+  }
+
+  /**
+   * Whether this channel may be served now, under the replication order.
+   *
+   * A recording names the task. A replay serves it only when the log names it
+   * next; otherwise the channel stays pending and parked until its turn.
+   */
+  #admitDispatch(
+    channel: ChannelInfo,
+    label: string,
+    operation: (entry: KernelWorkerEntryContext) => undefined,
+  ): boolean {
+    if (this.#admittedBehindPushed.delete(channel)) return true;
+    const deliveries = this.#pushedDeliveries;
+    if (!this.#admitDispatchInOrder(channel, label, operation)) return false;
+    if (this.#pushedDeliveries === deliveries) return true;
+    // The primary applied these decisions between two kernel entries, before
+    // this dispatch. Here they are queued behind this entry, so the dispatch
+    // follows them, on the turn it already took.
+    this.#admittedBehindPushed.add(channel);
+    this.#runOrDeferChannelKernelEntry(channel, label, operation);
+    return false;
+  }
+
+  #admitDispatchInOrder(
+    channel: ChannelInfo,
+    label: string,
+    operation: (entry: KernelWorkerEntryContext) => undefined,
+  ): boolean {
+    const tap = this.#dispatchOrderTap;
+    if (tap === null || tap.mode === "record") return true;
+    if (this.hostReaped?.has(channel.pid)) return true;
+    const tid = this.guestTidForChannel(channel);
+    const key = `${channel.pid}:${tid}`;
+    const next = this.#nextOrderedDispatch(tap);
+    if (next === "open") {
+      this.#parkedDispatches.delete(key);
+      return true;
+    }
+    // A retry takes only a retry's turn. One the log names fresh belongs to
+    // the task's next syscall, which the primary made because this one
+    // already finished there.
+    if (
+      next !== "wait"
+      && next.entry === undefined
+      && next.pid === channel.pid
+      && next.tid === tid
+      && (next.retry === true || !this.activeChannelRequests.has(channel))
+    ) {
+      this.#parkedDispatches.delete(key);
+      this.#orderedTasksServed.add(key);
+      if (tap.take()) this.#pushedDeliveries += 1;
+      this.#orderedProgressAt = Date.now();
+      return true;
+    }
+    if (this.#retryOutrunsLog(tap, channel, tid)) {
+      this.#parkedDispatches.delete(key);
+      this.#orderedTasksServed.add(key);
+      return true;
+    }
+    this.#parkedDispatches.set(key, { channel, label, operation });
+    if (next === "wait") this.#releaseOnLogArrival(tap.arrival());
+    else this.#watchOrderStall(tap);
+    return false;
+  }
+
+  /**
+   * Serve the parked channels again once the primary's log grows.
+   *
+   * A live replica that caught up with its primary has no next dispatch to
+   * serve, and nothing else on this worker will ask again: the guest tasks
+   * are all parked behind the order.
+   */
+  #releaseOnLogArrival(arrival: Promise<void>): void {
+    if (this.#awaitingLogArrival) return;
+    this.#awaitingLogArrival = true;
+    void arrival.then(() => {
+      this.#awaitingLogArrival = false;
+      this.releaseOrderedDispatches();
+    });
+  }
+
+  /**
+   * Name the channel a recording machine just served.
+   *
+   * It is recorded once the syscall ran, because only then is it known
+   * whether a retry left the syscall pending.
+   */
+  #recordDispatch(pid: number, tid: number, retry: boolean): void {
+    const tap = this.#dispatchOrderTap;
+    if (tap?.mode !== "record") return;
+    tap.record(pid, tid, retry ? { retry: true } : undefined);
+  }
+
+  /**
+   * The dispatch the log names next, passing over retries nothing here makes.
+   *
+   * The log names a retry only after that syscall's first dispatch, which is
+   * strictly ordered, so a task with no syscall in flight here already
+   * finished it in fewer tries than the primary needed. A task that still has
+   * it in flight makes the retry: its host wait retries it until it is done.
+   * So does a task this replay has not served yet: its first dispatch is the
+   * syscall the capture caught in flight, which the restore issues afresh.
+   */
+  #nextOrderedDispatch(
+    tap: Extract<DispatchOrderTap, { mode: "replay" }>,
+  ): ReturnType<typeof tap.next> {
+    for (;;) {
+      const next = tap.next();
+      if (next === "open" || next === "wait") return next;
+      if (next.retry !== true) return next;
+      if (
+        !this.#orderedTasksServed.has(`${next.pid}:${next.tid}`)
+        || this.#taskHasSyscallInFlight(next.pid, next.tid)
+      ) {
+        return next;
+      }
+      if (tap.take()) this.#pushedDeliveries += 1;
+    }
+  }
+
+  /** Whether a replay serves channels in the order its log names. */
+  #followsDispatchOrder(): boolean {
+    const tap = this.#dispatchOrderTap;
+    return tap?.mode === "replay" && tap.next() !== "open";
+  }
+
+  /**
+   * Run the retry the log names next, when this machine holds it on a timer.
+   *
+   * The primary's host retried the wait on its own timer or wakeup. Waiting
+   * for this machine's timer would serve the wait again at its original pace,
+   * and a wakeup can depend on a task the order holds behind this retry.
+   */
+  #runLoggedRetry(next: ReturnType<Extract<DispatchOrderTap, { mode: "replay" }>["next"]>): void {
+    if (next === "open" || next === "wait" || next.retry !== true) return;
+    for (const retries of [this.pendingPollRetries, this.pendingSelectRetries]) {
+      for (const [channel, retry] of retries) {
+        if (
+          channel.pid !== next.pid
+          || this.guestTidForChannel(channel) !== next.tid
+        ) {
+          continue;
+        }
+        if (retry.timer !== null) {
+          this.#cancelRegisteredTimeout(retry.timer);
+          this.#cancelRegisteredImmediate(retry.timer);
+        }
+        retries.delete(channel);
+        this.retrySyscall(channel);
+        return;
+      }
+    }
+  }
+
+  /** Whether a channel of this task has a syscall the kernel has not finished. */
+  #taskHasSyscallInFlight(pid: number, tid: number): boolean {
+    for (const channel of this.processes.get(pid)?.channels ?? []) {
+      if (
+        this.activeChannelRequests.has(channel)
+        && this.guestTidForChannel(channel) === tid
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether a retry this machine makes has no counterpart in the log.
+   *
+   * The task's next dispatch in the log is a new syscall, so the primary's
+   * syscall finished in fewer tries than this one needs. Holding the retry
+   * for a turn the log will never give it would stop the task for good.
+   */
+  #retryOutrunsLog(
+    tap: Extract<DispatchOrderTap, { mode: "replay" }>,
+    channel: ChannelInfo,
+    tid: number,
+  ): boolean {
+    return this.activeChannelRequests.has(channel)
+      && tap.nextIsRetry(channel.pid, tid) === false;
+  }
+
+  /**
+   * Whether a host entry for `pid` may run now, under the replication order.
+   *
+   * The host runs some kernel entries for a process on its own schedule, so
+   * a replay cannot park them the way it parks a channel. It refuses them
+   * instead, and their caller retries until the log names them next.
+   */
+  #admitHostEntry(label: string, pid: number): boolean {
+    const tap = this.#dispatchOrderTap;
+    if (tap === null) return true;
+    if (tap.mode === "record") {
+      tap.record(pid, pid, { entry: label });
+      return true;
+    }
+    const next = this.#nextOrderedDispatch(tap);
+    if (next === "open") return true;
+    if (next !== "wait" && next.entry === label) {
+      tap.take();
+      this.#orderedProgressAt = Date.now();
+      // The entry runs synchronously once admitted; the channel the log names
+      // after it is served once it has.
+      queueMicrotask(() => this.releaseOrderedDispatches());
+      return true;
+    }
+    if (!tap.holdsEntry(label)) {
+      // Host work the primary never did, such as the launch a restored
+      // process starts again for a spawn that was in flight at the capture.
+      // Holding it for a turn the log does not hold would stop that process.
+      tap.ranAhead(label);
+      return true;
+    }
+    if (next !== "wait") this.#watchOrderStall(tap);
+    return false;
+  }
+
+  /**
+   * Whether a host entry for the whole machine may run now, under the
+   * replication order.
+   *
+   * A vblank tick completes the page flips the guests queued, and a
+   * compositor reads that completion from its DRM fd. A deadline drain ends
+   * the parks its clock reading passed. An alarm expiry sends SIGALRM. All
+   * are ordered host entries: a replay runs one only where the log names it,
+   * because one of its own timers would decide at a point the primary did
+   * not.
+   */
+  #admitMachineEntry(label: string): boolean {
+    const tap = this.#dispatchOrderTap;
+    if (tap === null) return true;
+    if (tap.mode === "record") {
+      tap.record(0, 0, { entry: label });
+      return true;
+    }
+    const next = this.#nextOrderedDispatch(tap);
+    if (next === "open") return true;
+    if (next === "wait" || next.entry !== label) return false;
+    this.#takeOrderedEntry(tap);
+    return true;
+  }
+
+  /**
+   * Admit a vblank tick as `#admitMachineEntry` admits a host entry, and
+   * answer the age the kernel stamps it with: `ageUs` (undefined when this
+   * kernel stamps the call time), or on a replay the primary's. Null when a
+   * replay refuses the tick here.
+   */
+  #admitVblankTick(ageUs: number | undefined): { readonly ageUs?: number } | null {
+    const tap = this.#dispatchOrderTap;
+    if (tap === null) return { ageUs };
+    if (tap.mode === "record") {
+      tap.record(0, 0, ageUs === undefined
+        ? { entry: VBLANK_TICK_ENTRY }
+        : { entry: VBLANK_TICK_ENTRY, vblankAgeUs: ageUs });
+      return { ageUs };
+    }
+    const next = this.#nextOrderedDispatch(tap);
+    if (next === "open") return { ageUs };
+    if (next === "wait" || next.entry !== VBLANK_TICK_ENTRY) return null;
+    this.#takeOrderedEntry(tap);
+    return { ageUs: next.vblankAgeUs };
+  }
+
+  #takeOrderedEntry(tap: Extract<DispatchOrderTap, { mode: "replay" }>): void {
+    tap.take();
+    this.#orderedProgressAt = Date.now();
+    queueMicrotask(() => this.releaseOrderedDispatches());
+  }
+
+  /**
+   * Schedule the vblank tick the log names next, whether or not a pump runs.
+   *
+   * It runs as its own scheduled root, like the pump's ticks: the caller can
+   * be the restore installing the replay, whose next kernel entry would find
+   * this tick's entry still open.
+   */
+  #runLoggedVblankTick(
+    next: ReturnType<Extract<DispatchOrderTap, { mode: "replay" }>["next"]>,
+  ): void {
+    if (next === "open" || next === "wait") return;
+    if (next.entry !== VBLANK_TICK_ENTRY || this.#loggedVblankTickQueued) return;
+    this.#loggedVblankTickQueued = true;
+    const timer = this.#registerTimeout(() => {
+      this.#runScheduledListenerRoot("logged vblank tick", () => {
+        this.#tickVblank(null, kernelEntryIntrinsicApply(
+          this.#performanceNow, this.#performanceReceiver, [],
+        ) as number);
+      });
+    }, 0);
+    (timer as { unref?: () => void }).unref?.();
+  }
+
+  /**
+   * Schedule the deadline drain the log names next.
+   *
+   * Once the replay stops following the order, the drain its order refused
+   * runs here instead: nothing else re-arms the timer that refusal spent.
+   */
+  #runLoggedKernelWaitDeadline(
+    next: ReturnType<Extract<DispatchOrderTap, { mode: "replay" }>["next"]>,
+  ): void {
+    if (next === "wait" || this.#loggedKernelWaitDeadlineQueued) return;
+    const due = next === "open"
+      ? this.#kernelWaitDeadlineRefused
+      : next.entry === KERNEL_WAIT_DEADLINE_ENTRY;
+    if (!due) return;
+    this.#kernelWaitDeadlineRefused = false;
+    this.#loggedKernelWaitDeadlineQueued = true;
+    const timer = this.#registerTimeout(() => {
+      this.#runKernelWaitDeadline(true);
+    }, 0);
+    (timer as { unref?: () => void }).unref?.();
+  }
+
+  /**
+   * Schedule the alarm expiry the log names next.
+   *
+   * It runs whether or not this host's own timer for that alarm fired: the
+   * replica arms it later than the primary did. Once the replay stops
+   * following the order, the expiries its order refused run here instead.
+   */
+  #runLoggedAlarmExpiry(
+    next: ReturnType<Extract<DispatchOrderTap, { mode: "replay" }>["next"]>,
+  ): void {
+    if (next === "wait") return;
+    if (next === "open") {
+      for (const pid of this.#refusedAlarmExpiries) {
+        this.#queueLoggedAlarmExpiry(pid);
+      }
+      return;
+    }
+    const named = next.entry === undefined
+      ? null
+      : ALARM_EXPIRY_ENTRY.exec(next.entry);
+    if (named !== null) this.#queueLoggedAlarmExpiry(Number(named[1]));
+  }
+
+  #queueLoggedAlarmExpiry(pid: number): void {
+    if (this.#loggedAlarmExpiriesQueued.has(pid)) return;
+    this.#loggedAlarmExpiriesQueued.add(pid);
+    const timer = this.#registerTimeout(() => {
+      this.#loggedAlarmExpiriesQueued.delete(pid);
+      this.#runAlarmExpiry(pid, false);
+    }, 0);
+    (timer as { unref?: () => void }).unref?.();
+  }
+
+  #armAlarm(pid: number, seconds: number): void {
+    if (pid === 0) return;
+
+    this.cancelAlarmTimerForProcess(pid);
+
+    if (seconds > 0) {
+      const timer = this.#registerTimeout(() => {
+        if (this.alarmTimers.get(pid) !== timer) return;
+        this.alarmTimers.delete(pid);
+        this.#runAlarmExpiry(pid, true);
+      }, seconds * 1000);
+      this.alarmTimers.set(pid, timer);
+    }
+  }
+
+  /**
+   * Send the SIGALRM of an expired `alarm()`, where the replication order
+   * puts it.
+   *
+   * A replay refuses the expiry of this host's own timer and runs the one
+   * the log names, which also retires this host's timer for that alarm.
+   * Only an own timer's refusal waits for the replay to stop: a refused
+   * logged copy is one whose entry another attempt already took.
+   *
+   * A deferred own expiry finds a newer timer when the guest re-armed in
+   * the meantime, and that timer owns the alarm now.
+   */
+  #runAlarmExpiry(pid: number, own: boolean): void {
+    const label = alarmExpiryEntry(pid);
+    // WHY: the timer runs after the syscall import and its Rust entry have
+    // both returned. Open a fresh lexical scope instead of letting an
+    // asynchronous callback recover ambient Wasm authority.
+    this.#runOrDeferKernelEntry(label, (entry) => {
+      if (own && this.alarmTimers.has(pid)) return undefined;
+      if (!this.#admitMachineEntry(label)) {
+        if (own) this.#refusedAlarmExpiries.add(pid);
+        return undefined;
+      }
+      this.cancelAlarmTimerForProcess(pid);
+      this.sendSignalToProcess(pid, SIGALRM, true, entry);
+      return undefined;
+    });
+  }
+
+  /**
+   * Give up the order when the dispatch the log names next never runs.
+   *
+   * A restored machine can need host work the primary did elsewhere or not
+   * at all, such as the launch of a spawn that was in flight at the capture,
+   * and no turn the log holds will ever come for it. Waiting would stop the
+   * machine for good; the reader keeps the abandonment visible instead.
+   */
+  #watchOrderStall(tap: Extract<DispatchOrderTap, { mode: "replay" }>): void {
+    if (this.#orderStallTimer !== null) return;
+    const check = (): void => {
+      this.#orderStallTimer = null;
+      if (this.#dispatchOrderTap !== tap) return;
+      const next = this.#nextOrderedDispatch(tap);
+      if (next === "open" || next === "wait") return;
+      // The seal waits for this replica's own freeze, which only a take-over
+      // brings. Serving past it would replay the seal's freeze without one.
+      if (next.entry === REPLICATION_SEAL_ENTRY) return;
+      if (this.#holdsGlRestore(next.pid)) {
+        // The task waits for its display, which is this host's to give.
+        this.#orderedProgressAt = Date.now();
+      }
+      const stalledMs = Date.now() - this.#orderedProgressAt;
+      if (stalledMs < DISPATCH_ORDER_STALL_MS) {
+        this.#orderStallTimer = this.#registerTimeout(
+          check,
+          DISPATCH_ORDER_STALL_MS - stalledMs,
+        );
+        return;
+      }
+      tap.abandon();
+      console.warn(
+        `[kernel-worker] replication stopped following the dispatch order: `
+          + `the log named ${JSON.stringify(next)} next and it did not run `
+          + `for ${stalledMs} ms`,
+      );
+      this.releaseOrderedDispatches();
+    };
+    this.#orderStallTimer = this.#registerTimeout(check, DISPATCH_ORDER_STALL_MS);
+  }
+
+  /**
+   * Serve the parked channel whose turn the log has reached.
+   *
+   * Runs after every dispatch and whenever the log grows, because either can
+   * be what makes a parked task the next one the primary served.
+   */
+  releaseOrderedDispatches(): void {
+    const tap = this.#dispatchOrderTap;
+    // Asked even with nothing parked: that is what passes over the retries
+    // that end the primary's log, so a finished replay consumes all of it.
+    const next = tap?.mode === "replay"
+      ? this.#nextOrderedDispatch(tap)
+      : "open";
+    this.#runLoggedRetry(next);
+    this.#runLoggedVblankTick(next);
+    this.#runLoggedKernelWaitDeadline(next);
+    this.#runLoggedAlarmExpiry(next);
+    if (this.#parkedDispatches.size === 0) return;
+    if (next === "open") {
+      const parked = [...this.#parkedDispatches.values()];
+      this.#parkedDispatches.clear();
+      for (const { channel, label, operation } of parked) {
+        this.#runOrDeferChannelKernelEntry(channel, label, operation);
+      }
+      return;
+    }
+    if (tap?.mode !== "replay") return;
+    for (const parked of [...this.#parkedDispatches.values()]) {
+      const tid = this.guestTidForChannel(parked.channel);
+      const own = next !== "wait"
+        && next.entry === undefined
+        && next.pid === parked.channel.pid
+        && next.tid === tid;
+      if (own || this.#retryOutrunsLog(tap, parked.channel, tid)) {
+        this.#runOrDeferChannelKernelEntry(
+          parked.channel,
+          parked.label,
+          parked.operation,
+        );
+      }
+    }
+    if (next === "wait") this.#releaseOnLogArrival(tap.arrival());
   }
 
   #kernelInstanceForEntry(
@@ -15569,6 +17108,8 @@ export class CentralizedKernelWorker {
       [CH_ERRNO, prepared.errVal, true],
     );
 
+    this.#publishCheckpointUnwindRequest(channel, processView);
+
     // The copied signal record now belongs to the guest. A later syscall may
     // dequeue another signal after this boundary has actually been observed.
     this.resumePreparedSignals?.delete(channel);
@@ -15591,6 +17132,52 @@ export class CentralizedKernelWorker {
     if (prepared.relistenRequested && this.isRegisteredChannel(channel)) {
       this.relistenChannel(channel);
     }
+  }
+
+  /**
+   * Ask this thread to unwind at the post-syscall hook it is about to reach.
+   *
+   * The word lives inside the declared data buffer, so a syscall that transfers
+   * the whole buffer writes across it. Publishing here, on the completion the
+   * guest is about to observe, is the only placement that survives every
+   * syscall shape. Every completion writes the word, zero when nothing is
+   * asked, so a payload's bytes never reach the glue as a request.
+   *
+   * A deferred completion is not a legal checkpoint boundary. Its caller is
+   * ppoll's own timestamp read, and the guest's post-syscall hook runs for it
+   * exactly as it does for a real syscall, so an unwind there would leave the
+   * enclosing ppoll mid-computation. That is the same reason
+   * `#dequeueSignalForDelivery` declines to write the signal area, and the two
+   * decisions are deliberately made from the same flag. The request stays armed
+   * and the enclosing ppoll publishes it instead.
+   *
+   * A channel the freeze itself interrupted also carries the restart bit. The
+   * EINTR about to be published was the host's way of reaching this hook, not
+   * a caught signal, so the guest is told to make the call again once its
+   * rewind returns. The mark outlives this publication on purpose: a deferred
+   * completion declines above, and the enclosing ppoll — the call that is
+   * actually owed a restart — must still receive the bit.
+   */
+  #publishCheckpointUnwindRequest(
+    channel: ChannelInfo,
+    processView: DataView,
+  ): void {
+    const requestFlags = kernelEntryIntrinsicApply(
+      kernelEntryIntrinsicDataViewGetUint32,
+      processView,
+      [CH_REQUEST_FLAGS, true],
+    ) as number;
+    const deferred = (requestFlags & CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY) !== 0;
+    const request = !this.checkpointUnwindPids.has(channel.pid) || deferred
+      ? 0
+      : this.#checkpointRestartChannels.has(channel)
+        ? CH_CHECKPOINT_REQUEST_UNWIND | CH_CHECKPOINT_REQUEST_RESTART
+        : CH_CHECKPOINT_REQUEST_UNWIND;
+    kernelEntryIntrinsicApply(
+      kernelEntryIntrinsicDataViewSetUint32,
+      processView,
+      [CH_CHECKPOINT_REQUEST, request, true],
+    );
   }
 
   private materializePreparedChannelCompletion(
@@ -15968,9 +17555,10 @@ export class CentralizedKernelWorker {
    * Abort Rust state retained by a host-owned wait that cannot re-enter its
    * normal terminal syscall path.
    *
-   * WHY: SYS_THREAD_CANCEL is an idempotent kernel cleanup primitive for the
-   * exact TID. It releases FIFO rendezvous state and restores a ppoll/pselect
-   * temporary mask before the host publishes an unrelated EIO/EINTR result.
+   * WHY: `kernel_cancel_host_owned_wait` is an idempotent kernel cleanup
+   * primitive for the exact TID. It releases FIFO rendezvous state and
+   * restores a ppoll/pselect temporary mask before the host publishes an
+   * unrelated EIO/EINTR result.
    */
   #cancelHostOwnedKernelWait(
     channel: ChannelInfo,
@@ -16013,18 +17601,26 @@ export class CentralizedKernelWorker {
         entry,
       )
     ) return false;
-    try {
-      const result = this.runSyntheticMemorySyscall(
-        channel,
-        SYS_THREAD_CANCEL,
-        [this.guestTidForChannel(channel)],
-        entry,
+    // WHY: this names the target task rather than re-entering its channel.
+    // `kernel_handle_channel` activates a blocking retry for the calling task
+    // and refuses one that already holds a binding with EBUSY, which is every
+    // task whose wait this method exists to retire.
+    const cancelHostOwnedWait = this.#kernelInstanceForEntry(entry).exports
+      .kernel_cancel_host_owned_wait as
+        ((pid: number, tid: number) => number) | undefined;
+    if (typeof cancelHostOwnedWait !== "function") {
+      this.#failBlockingRetryProtocol(
+        "kernel host-owned wait cancellation export is unavailable",
       );
-      // WHY: THREAD_CANCEL's cleanup proof is the exact pair (0, 0).
-      // Treating errno alone as success would let a malformed (-1, 0) or
-      // positive return retire host state and publish EINTR even though the
+    }
+    try {
+      // WHY: the cleanup proof is an exact 0. Treating a negative errno as
+      // success would retire host state and publish EINTR even though the
       // kernel never confirmed exact-task cleanup.
-      return result.retVal === 0 && result.errVal === 0;
+      return cancelHostOwnedWait(
+        channel.pid,
+        this.guestTidForChannel(channel),
+      ) === 0;
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
       // Process/thread teardown also owns idempotent kernel-side cleanup.
@@ -17205,11 +18801,24 @@ export class CentralizedKernelWorker {
     this.#kernelWaitDueAt = dueAt;
     this.#kernelWaitTimer = this.#registerTimeout(() => {
       this.#kernelWaitTimer = undefined;
-      this.#runOrDeferKernelEntry("kernel wait deadline", (timerEntry) => {
-        this.#settleKernelWaitsWithinKernelEntry(timerEntry, true);
-        return undefined;
-      });
+      this.#runKernelWaitDeadline(false);
     }, delayMs);
+  }
+
+  /**
+   * Collect the parks whose deadline passed: `logged` names the drain a
+   * replay's log names, false this host's own timer.
+   */
+  #runKernelWaitDeadline(logged: boolean): void {
+    this.#runOrDeferKernelEntry(KERNEL_WAIT_DEADLINE_ENTRY, (timerEntry) => {
+      if (logged) this.#loggedKernelWaitDeadlineQueued = false;
+      if (!this.#admitMachineEntry(KERNEL_WAIT_DEADLINE_ENTRY)) {
+        this.#kernelWaitDeadlineRefused = true;
+        return undefined;
+      }
+      this.#settleKernelWaitsWithinKernelEntry(timerEntry, true);
+      return undefined;
+    });
   }
 
   /**
@@ -17768,7 +19377,23 @@ export class CentralizedKernelWorker {
         );
       }
       channel.waitHandle = handle;
-      return timeoutMs;
+    }
+    // A replica measures the wait against the primary's log rather than
+    // against this computer's clock. The primary already spent this wait, and
+    // its process read the clock on the far side of it; a replica that spends
+    // it again keeps the gap it joined with, and the gap is the whole
+    // machine's, because every decision the log carries after that read waits
+    // behind it. The readiness check itself is unchanged — the wait ends here
+    // only when the kernel reports nothing ready, which is the answer the
+    // primary's guest was given too. A replica that follows the dispatch order
+    // makes the primary's retries instead, when the log names them, and the
+    // kernel ends the wait on the retry whose replayed reading passes the
+    // deadline: ending it here would finish the syscall in fewer tries.
+    if (
+      !this.#followsDispatchOrder()
+      && (this.#replicationAheadProbe?.(channel.pid) ?? -1) >= timeoutMs
+    ) {
+      return 0;
     }
     return this.#waitRemainingMsForHandle(channel.waitHandle, entry);
   }
@@ -18058,18 +19683,57 @@ export class CentralizedKernelWorker {
     // the wait uses (cancelling the
     // retry timer, etc.) avoids racing against the handler's own
     // completion path — we never write the channel directly here.
+    if (this.#interruptParkedWait(target, entry, true)) return;
 
-    // 1) A kernel-owned park (futex, sleep): the exact-task cleanup above
+    // No tracked blocking state — the target either hasn't reached the
+    // blocking entry yet, or its handler is synchronous and will pick
+    // up pendingCancels the next time it enters a blocking operation.
+    // Do NOT write the channel here: the in-flight handleSyscall owns
+    // it and would race with our completeChannelRaw.
+  }
+
+  /**
+   * Retire whichever tracked blocking wait a channel is parked in, and
+   * complete it with EINTR.
+   *
+   * `onlyCancellationPoints` narrows which parked waits a caller may take.
+   * `pthread_cancel` may take only a frozen cancellation point, because a
+   * plain syscall that happens to use the same number must stay parked with
+   * its state unchanged. A checkpoint freeze takes every parked wait instead:
+   * a machine whose login shell sits in `wait4` reaches no syscall boundary at
+   * all, and the freeze needs one to publish its unwind request on.
+   *
+   * Clearing `pendingCancels` before each publication is what the cancellation
+   * caller needs, because the relisten that follows may re-dispatch the
+   * mailbox at once. The checkpoint caller never arms that guard, so the
+   * delete is a no-op for it.
+   *
+   * Returns true when a wait was retired. A kernel-owned park is collected
+   * from the kernel's wakeup events rather than published here, which still
+   * reaches the completion both callers are after.
+   */
+  #interruptParkedWait(
+    target: ChannelInfo,
+    entry: KernelWorkerEntryContext,
+    onlyCancellationPoints: boolean,
+  ): boolean {
+    const takes = <T extends FrozenCancellationPointIdentity>(
+      identity: T | undefined,
+    ): identity is T =>
+      identity !== undefined
+      && (!onlyCancellationPoints || isWakeableCancellationPoint(identity));
+
+    // 1) A kernel-owned park (futex, sleep): the caller's exact-task cleanup
     //    already ended it with EINTR inside the kernel. Collect that decision.
     if (target.kernelWaitGeneration !== undefined) {
       this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
-      return;
+      return true;
     }
 
     // 4) Poll/ppoll retry timer — retire the tracked retry and complete the
     //    exact cancellation point with EINTR.
     const pollEntry = this.pendingPollRetries.get(target);
-    if (isWakeableCancellationPoint(pollEntry)) {
+    if (takes(pollEntry)) {
       this.pendingCancels.delete(target);
       if (pollEntry.timer !== null) this.#cancelRegisteredTimeout(pollEntry.timer);
       this.pendingPollRetries.delete(target);
@@ -18079,12 +19743,12 @@ export class CentralizedKernelWorker {
         EINTR_ERRNO,
         entry,
       );
-      return;
+      return true;
     }
 
     // 6) Select/pselect retry timer.
     const selEntry = this.pendingSelectRetries.get(target);
-    if (isWakeableCancellationPoint(selEntry)) {
+    if (takes(selEntry)) {
       this.pendingCancels.delete(target);
       this.#cancelRegisteredTimeout(selEntry.timer);
       this.#cancelRegisteredImmediate(selEntry.timer);
@@ -18095,16 +19759,14 @@ export class CentralizedKernelWorker {
         EINTR_ERRNO,
         entry,
       );
-      return;
+      return true;
     }
 
     // 7) Pipe/socket reader/writer registration — unregister and wake.
     let wokePipe = false;
     for (const [pipeIdx, readers] of this.pendingPipeReaders) {
       const filtered = readers.filter(
-        (reader) =>
-          reader.channel !== target
-          || !isWakeableCancellationPoint(reader),
+        (reader) => reader.channel !== target || !takes(reader),
       );
       if (filtered.length !== readers.length) {
         if (filtered.length === 0) this.pendingPipeReaders.delete(pipeIdx);
@@ -18114,9 +19776,7 @@ export class CentralizedKernelWorker {
     }
     for (const [pipeIdx, writers] of this.pendingPipeWriters) {
       const filtered = writers.filter(
-        (writer) =>
-          writer.channel !== target
-          || !isWakeableCancellationPoint(writer),
+        (writer) => writer.channel !== target || !takes(writer),
       );
       if (filtered.length !== writers.length) {
         if (filtered.length === 0) this.pendingPipeWriters.delete(pipeIdx);
@@ -18133,14 +19793,10 @@ export class CentralizedKernelWorker {
         EINTR_ERRNO,
         entry,
       );
-      return;
+      return true;
     }
 
-    // 8) No tracked blocking state — the target either hasn't reached the
-    //    blocking entry yet, or its handler is synchronous and will pick
-    //    up pendingCancels the next time it enters a blocking operation.
-    //    Do NOT write the channel here: the in-flight handleSyscall owns
-    //    it and would race with our completeChannelRaw.
+    return false;
   }
 
   /**
@@ -18913,6 +20569,15 @@ export class CentralizedKernelWorker {
       return;
     }
     if (!this.isRegisteredChannel(channel)) return;
+    // A replica behind the log: the ring this guest is blocked on may hold
+    // audio the primary's listener already heard. Free it and retry instead
+    // of parking a wait the primary already served once.
+    if (this.#discardReplicaAudioBacklog(entry)) {
+      this.#registerImmediate(() => {
+        if (this.isRegisteredChannel(channel)) this.retrySyscall(channel);
+      });
+      return;
+    }
     const retainedRetrySnapshot =
       this.blockingRetrySnapshots.get(channel);
     const retainedGenericSnapshot =
@@ -28477,6 +30142,9 @@ export class CentralizedKernelWorker {
           | undefined;
         if (!inject) return;
         inject(dx, dy, buttons);
+        // Reported after the kernel took it, so a movement the kernel could
+        // not accept never appears in a log as one it did.
+        this.callbacks.onPointerInjected?.(dx, dy, buttons);
         this.scheduleWakeBlockedRetries(entry);
       },
     );
@@ -28499,19 +30167,10 @@ export class CentralizedKernelWorker {
   ): void {
     this.#runOrDeferKernelEntry(
       "evdev input and wake",
-      (entry) => {
-        const inject = entry.instance.exports.kernel_input_event as
-          | ((
-              device: number,
-              ev_type: number,
-              code: number,
-              value: number,
-            ) => void)
-          | undefined;
-        if (!inject) return;
-        inject(device, ev_type, code, value);
-        this.scheduleWakeBlockedRetries(entry);
-      },
+      (entry) => this.#injectInputEventsWithinKernelEntry(
+        entry,
+        [{ device, ev_type, code, value }],
+      ),
     );
   }
 
@@ -28524,33 +30183,40 @@ export class CentralizedKernelWorker {
    * one scan — the frame is atomic to the reader anyway (records before a
    * SYN_REPORT are an incomplete event).
    */
-  injectInputEventBatch(
-    records: ReadonlyArray<{
-      device: number;
-      ev_type: number;
-      code: number;
-      value: number;
-    }>,
-  ): void {
+  injectInputEventBatch(records: readonly InputEvent[]): void {
     if (records.length === 0) return;
     this.#runOrDeferKernelEntry(
       "evdev input batch and wake",
-      (entry) => {
-        const inject = entry.instance.exports.kernel_input_event as
-          | ((
-              device: number,
-              ev_type: number,
-              code: number,
-              value: number,
-            ) => void)
-          | undefined;
-        if (!inject) return;
-        for (const r of records) {
-          inject(r.device, r.ev_type, r.code, r.value);
-        }
-        this.scheduleWakeBlockedRetries(entry);
-      },
+      (entry) => this.#injectInputEventsWithinKernelEntry(entry, records),
     );
+  }
+
+  /**
+   * The kernel stamps each record with a monotonic reading. The injection is
+   * host work wherever it runs, so the reading is keyed to no guest: a
+   * replica applying the records inside some guest's dispatch reads the
+   * stamp the primary recorded for them.
+   */
+  #injectInputEventsWithinKernelEntry(
+    entry: KernelWorkerEntryContext,
+    records: readonly InputEvent[],
+  ): undefined {
+    const inject = entry.instance.exports.kernel_input_event as
+      | ((device: number, ev_type: number, code: number, value: number) => void)
+      | undefined;
+    if (!inject) return undefined;
+    const previousPid = this.currentHandlePid;
+    this.currentHandlePid = 0;
+    try {
+      for (const record of records) {
+        inject(record.device, record.ev_type, record.code, record.value);
+      }
+    } finally {
+      this.currentHandlePid = previousPid;
+    }
+    this.callbacks.onInputEventsInjected?.(records);
+    this.scheduleWakeBlockedRetries(entry);
+    return undefined;
   }
 
   /**
@@ -28667,16 +30333,20 @@ export class CentralizedKernelWorker {
     this.#exchangeInterest = Math.max(0, this.#exchangeInterest + delta);
   }
 
-  #initExchange(instance: WebAssembly.Instance): void {
+  #initExchange(instance: WebAssembly.Instance, adopted: boolean): void {
     const init = instance.exports.kernel_exchange_init as
       | ((lo: number, hi: number) => number)
       | undefined;
     if (typeof init !== "function") {
       throw new Error("kernel lacks kernel_exchange_init; rebuild the kernel for this ABI");
     }
-    const nonce = new Uint32Array(2);
-    globalThis.crypto.getRandomValues(nonce);
-    init(nonce[0]!, nonce[1]!);
+    // An adopted kernel already holds the captured machine's exchange state,
+    // ID issuer included; a fresh issuer would forget the IDs it handed out.
+    if (!adopted) {
+      const nonce = new Uint32Array(2);
+      globalThis.crypto.getRandomValues(nonce);
+      init(nonce[0]!, nonce[1]!);
+    }
     if (this.#exchangeByteLimit !== null) {
       const configure = instance.exports.kernel_exchange_configure as
         (lo: number, hi: number) => number;
@@ -29461,6 +31131,36 @@ export class CentralizedKernelWorker {
     return descriptor;
   }
 
+  /**
+   * Skip the audio backlog a behind replica is blocked on, if any.
+   *
+   * The physical sink drains the PCM ring at one second per second, which
+   * makes a full ring the one host wait a replica cannot run faster than:
+   * every blocked audio write serves out the primary's original cadence
+   * again, so the gap a replica joined with never closes. The primary's
+   * listener already heard these samples — raising the discard floor to the
+   * producer frees the ring the same way a chained vblank tick serves a
+   * frame-paced replica, and `kernel_pcm_clock_update(0)` reconciles the
+   * kernel's accounting and queues the writable wakeups without moving the
+   * consumer. Returns true when backlog was discarded.
+   */
+  #discardReplicaAudioBacklog(entry: KernelWorkerEntryContext): boolean {
+    if ((this.#replicationAheadProbe?.(0) ?? -1) <= 0) return false;
+    const descriptor = this.#pcmTransportDescriptor;
+    if (descriptor === null) return false;
+    const words = pcmControlWords(descriptor);
+    const producer = readProducerPosition(words);
+    if (readEffectiveConsumerPosition(words) >= producer) return false;
+    writeDiscardPosition(words, producer);
+    const clockUpdate = this.#kernelInstanceForEntry(entry).exports
+      .kernel_pcm_clock_update as ((frames: number) => number) | undefined;
+    if (typeof clockUpdate === "function") clockUpdate(0);
+    this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+    this.scheduleWakeBlockedRetries(entry);
+    Atomics.notify(words, PCM_CONTROL.wakeSeq);
+    return true;
+  }
+
   /** Advance Node's paced null sink and wake affected write/poll/drain calls. */
   pcmClockUpdate(requestedFrames: number): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
@@ -30002,6 +31702,107 @@ export class CentralizedKernelWorker {
   // ---------------------------------------------------------------------------
 
   /**
+   * Watch or replace the injections `sendHttpRequest` makes, for replication.
+   *
+   * An injected request is a machine input exactly like a keystroke: the
+   * guest observes the connection, the peer port this host drew, and the
+   * request bytes. A recording machine hands all three to the tap before the
+   * guest can observe them; a replaying machine refuses live injections
+   * outright, because an injection the primary never made is a machine that
+   * is silently no longer the same machine.
+   */
+  setHttpExchangeTap(tap: HttpExchangeTap | null): void {
+    this.httpExchangeTap = tap;
+  }
+
+  /**
+   * Deliver one recorded HTTP injection to a replaying machine.
+   *
+   * The primary's listener existed at the log position it recorded the
+   * injection; a replica applying the log can reach that position before its
+   * own guest has reached `listen()`, so the injection waits for the
+   * listener rather than refusing. Injections chain in log order — the
+   * guest must observe the primary's connections in the primary's order —
+   * while the response pumps overlap, exactly as the primary's did. The
+   * returned promise carries the response this machine computes: its own
+   * output, not the primary's.
+   */
+  replayHttpExchange(
+    exchange: { port: number; remotePort: number; request: Uint8Array },
+    opts: SendHttpRequestOptions = {},
+  ): Promise<HttpResponse> {
+    const method = parseRawRequestLine(exchange.request).method;
+    const label = opts.debugLabel
+      ?? `replayed ${method} on port ${exchange.port}`;
+    const timeoutMs = opts.timeoutMs ?? 60_000;
+    const injected = this.replayedInjectionChain.then(async () => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const target = this.pickListenerTarget(exchange.port);
+        if (target) {
+          return this.openInjectedHttpExchange(
+            target,
+            exchange.remotePort,
+            exchange.request,
+            label,
+          );
+        }
+        if (Date.now() > deadline) {
+          throw new Error(`No in-kernel listener for port ${exchange.port}`);
+        }
+        await new this.#promiseReceiver<void>((resolve) => {
+          this.#registerTimeout(resolve, 25);
+        });
+      }
+    });
+    this.replayedInjectionChain = injected.then(
+      () => undefined,
+      () => undefined,
+    );
+    return injected.then(({ sendPipeIdx, recvPipeIdx, connectionId }) =>
+      this.pumpHttpResponse(
+        0,
+        sendPipeIdx,
+        recvPipeIdx,
+        timeoutMs,
+        opts.maxResponseBytes ?? Number.MAX_SAFE_INTEGER,
+        method,
+        label,
+        new Uint8Array(0),
+        connectionId,
+      ));
+  }
+
+  /**
+   * Open one injected connection and deliver the whole request into it.
+   *
+   * Synchronous on purpose: this is the part of an HTTP exchange the guest
+   * observes, so a replaying machine applies it at the exact log position the
+   * recording machine made it. The response pump stays with the caller. A
+   * request larger than the connection's pipe would be delivered in pieces at
+   * times no log records, so it is refused.
+   */
+  private openInjectedHttpExchange(
+    target: { pid: number; fd: number },
+    remotePort: number,
+    rawRequest: Uint8Array,
+    label: string,
+  ): { sendPipeIdx: number; recvPipeIdx: number; connectionId: number } {
+    const { recvPipeIdx, connectionId } = this.#injectHttpConnection(target, remotePort, label);
+    const sendPipeIdx = recvPipeIdx + 1;
+    const written = this.writePipeData(0, recvPipeIdx, rawRequest);
+    if (written < rawRequest.byteLength) {
+      this.#retireHttpConnection(recvPipeIdx, sendPipeIdx, connectionId, true, () => {});
+      throw new Error(
+        `[in-kernel-http ${label}] a replicated request must fit the connection's pipe `
+          + `(${written}/${rawRequest.byteLength} bytes)`,
+      );
+    }
+    this.scheduleWakeBlockedRetries();
+    return { sendPipeIdx, recvPipeIdx, connectionId };
+  }
+
+  /**
    * Send an HTTP/1.1 request to a server running inside the kernel and
    * resolve with the parsed response. Bypasses real TCP — uses
    * `kernel_inject_connection` + `kernel_pipe_*` directly.
@@ -30050,6 +31851,13 @@ export class CentralizedKernelWorker {
     }
     const label = opts.debugLabel ?? `${request.method} ${request.url}`;
     const rawRequest = buildRawHttpRequest(request);
+    const tap = this.httpExchangeTap;
+    if (tap?.mode === "replay") {
+      throw new Error(
+        `[in-kernel-http ${label}] a replica cannot take a live HTTP `
+          + `request: an injection the primary never made diverges the machine`,
+      );
+    }
 
     const target = this.pickListenerTarget(port);
     if (!target) {
@@ -30059,6 +31867,23 @@ export class CentralizedKernelWorker {
     // Synthetic remote — picked from the ephemeral range so the kernel
     // doesn't think two simultaneous external calls share a 4-tuple.
     const remotePort = 1024 + Math.floor(Math.random() * 60_000);
+    if (tap?.mode === "record") {
+      // Recorded before it is delivered, so the log holds the injection at the
+      // position the guest observes it.
+      tap.record({ port, remotePort, request: rawRequest });
+      const opened = this.openInjectedHttpExchange(target, remotePort, rawRequest, label);
+      return await this.pumpHttpResponse(
+        0,
+        opened.sendPipeIdx,
+        opened.recvPipeIdx,
+        timeoutMs,
+        maxResponseBytes,
+        request.method,
+        label,
+        new Uint8Array(0),
+        opened.connectionId,
+      );
+    }
     const { recvPipeIdx, connectionId } = this.#injectHttpConnection(target, remotePort, label);
     const sendPipeIdx = recvPipeIdx + 1;
     const globalPipePid = 0;
@@ -32066,6 +33891,190 @@ export class CentralizedKernelWorker {
     return this.#kernel.kms;
   }
 
+  /** Replication's hand on `host_gl_query`; see `WasmPosixKernel.setGlQueryTap`. */
+  setGlQueryTap(tap: GlQueryTap | null): void {
+    this.#kernel.setGlQueryTap(tap);
+  }
+
+  /**
+   * Replication's hand on `host_accept_select`; see
+   * `WasmPosixKernel.setAcceptSelectionTap`.
+   */
+  setAcceptSelectionTap(tap: AcceptSelectionTap | null): void {
+    this.#kernel.setAcceptSelectionTap(tap);
+  }
+
+  /**
+   * Replication's hand on wait pacing.
+   *
+   * A guest's timeout is a duration on the machine's clock, and on a replica
+   * that clock is the primary's log. The probe reads the duration off the
+   * log: it answers how much machine time passed between the reading the
+   * named process was last served and its next recorded one. A wait no longer
+   * than that is one the primary already spent, so this machine completes it
+   * at once rather than serving it again at its original pace and keeping the
+   * gap it joined with.
+   *
+   * The probe is asked about the process that is about to wait, because the
+   * answer differs per process: one ticks on a timer while the others sit
+   * idle. Host work that belongs to no guest names 0 and asks whether the log
+   * carries anything this machine has not reached.
+   */
+  setReplicationAheadProbe(
+    probe: ((pid: number) => number | null) | null,
+  ): void {
+    this.#replicationAheadProbe = probe;
+  }
+
+  /**
+   * Replication's hand on the order channels are served in; see
+   * `DispatchOrderTap`. Clearing it serves every channel a replay parked.
+   */
+  setDispatchOrderTap(tap: DispatchOrderTap | null): void {
+    this.#dispatchOrderTap = tap;
+    this.#orderedProgressAt = Date.now();
+    this.#orderedTasksServed.clear();
+    this.releaseOrderedDispatches();
+  }
+
+  /**
+   * The process this machine is serving a syscall for, or 0 for host work.
+   *
+   * Replication logs a clock reading against it. Two computers schedule their
+   * process workers differently, so the order a machine's processes read their
+   * clocks in is not reproducible; which process read is.
+   */
+  currentGuestPid(): number {
+    return this.currentHandlePid;
+  }
+
+  /**
+   * The thread of that process, from the channel bound for this dispatch.
+   *
+   * The same scheduling freedom separates the threads of one process, so
+   * replication keys readings one level further down. Dispatch paths that
+   * bind no channel — host-driven work on a process's behalf — run as the
+   * process leader, whose tid is the pid; a bound task left over from an
+   * earlier dispatch of a different process answers the same way.
+   */
+  currentGuestTid(): number {
+    const pid = this.currentHandlePid;
+    if (pid === 0) return 0;
+    const bound = this.lastBoundTask;
+    return bound !== null && bound.pid === pid ? bound.tid : pid;
+  }
+
+  /** CRTCs whose canvas a GL context owns.
+   *
+   *  These are exactly the CRTCs whose frames never pass through a host
+   *  buffer: a GL guest paints the canvas directly and writes nothing back.
+   *  A mirror has no pixels to read for them; a checkpoint reads the
+   *  guest's GL context state instead and a restore repaints from it.
+   *
+   *  A CRTC the embedder declared `"webgl2"` is absent until GL claims it.
+   *  Until then the guest paints its GBM buffer object by CPU. */
+  glOwnedCrtcs(): number[] {
+    return [...this.kmsGlOwned];
+  }
+
+  /** The GL device, for a checkpoint to carry; see `webgl/snapshot.ts`.
+   *
+   *  Read under the freeze, like `kmsState`. The kernel does not know
+   *  which CRTC a canvas scans out, so a session's CRTC is matched here by
+   *  canvas identity — the same association `host_gl_create_context` used
+   *  when it marked the canvas GL-owned. */
+  captureGlForCheckpoint(): CheckpointGl {
+    if (this.pendingGlRestore) return this.pendingGlRestore.gl;
+    return getKernelGraphicsAccess(this.#kernel).captureGl((binding) => {
+      for (const [crtc, canvas] of this.kmsCanvases) {
+        if (canvas === binding.canvas) return crtc;
+      }
+      return null;
+    });
+  }
+
+  /** Adopt a checkpoint's GL device, rebuilding it once its canvases are
+   *  there.
+   *
+   *  The sessions are bound at once — a restored guest's next
+   *  `host_gl_submit` must find its session, or it fails with EIO on a
+   *  machine that was healthy when captured. The rest waits for every
+   *  canvas a session painted, and the carried boundary lines are reported
+   *  now: they describe what the capture already lost, not what this host
+   *  has yet to do. */
+  restoreGlFromCheckpoint(
+    gl: CheckpointGl,
+    onBoundary: (line: string) => void,
+  ): void {
+    const access = getKernelGraphicsAccess(this.#kernel);
+    access.bindGlSessions(gl);
+    for (const session of gl.sessions) {
+      for (const line of session.boundaries) {
+        onBoundary(`GL pid ${session.pid}: ${line}`);
+      }
+    }
+    const rendered = gl.sessions.filter((session) =>
+      session.context !== null || session.surface !== null || session.state !== null);
+    if (!rendered.length && !gl.gpuBos.length) return;
+    this.pendingGlRestore = {
+      gl,
+      crtcs: new Set(rendered.flatMap((session) => session.crtcId === null ? [] : [session.crtcId])),
+      pids: new Set(rendered.map((session) => session.pid)),
+      onBoundary,
+    };
+    this.rebuildPendingGl();
+  }
+
+  /** Rebuild the pending GL device once every canvas it waits for is
+   *  attached. A failed rebuild is reported and the held processes run on
+   *  without their GL state: holding them forever would hang the machine. */
+  private rebuildPendingGl(): void {
+    const pending = this.pendingGlRestore;
+    if (!pending || pending.refused) return;
+    for (const crtc of pending.crtcs) if (!this.kmsCanvases.has(crtc)) return;
+    try {
+      for (const line of getKernelGraphicsAccess(this.#kernel).rebuildGl(pending.gl)) {
+        pending.onBoundary(line);
+      }
+      this.pendingGlRestore = null;
+    } catch (error) {
+      pending.onBoundary(
+        `the GL device could not be rebuilt (${error instanceof Error ? error.message : String(error)}); `
+          + "its processes run without their GL state",
+      );
+      pending.refused = true;
+    }
+    for (const pid of pending.pids) this.#releaseGlRestoreHolds(pid);
+  }
+
+  /** Record that a live WebGL2 context now paints the CRTC's canvas.
+   *
+   *  Called by `host_gl_create_context` through the kernel's callbacks once
+   *  the context exists. Idempotent, and one-way: an OffscreenCanvas holds
+   *  one context type for its lifetime, so a destroyed GL context does not
+   *  give the pixels back. */
+  markKmsCanvasGlOwned(crtcId: number): void {
+    // A program GL context now owns the canvas (fires only after the
+    // context actually exists). If the pump's webgl2-scanout
+    // presenter was active on this CRTC, it holds state on the SAME
+    // WebGL2 context the program just inherited — stand it down and
+    // free what it owns (texture, program, vertex array; deletion also
+    // unbinds each); anything else the presenter set (viewport, clear
+    // color) is state the claiming session sets itself before drawing.
+    this.releaseKmsPresenter(crtcId);
+    this.kmsGlPresenters.delete(crtcId);
+    if (!this.kmsModeBeforeGlOwn.has(crtcId)) {
+      this.kmsModeBeforeGlOwn.set(crtcId, this.kmsContextMode.get(crtcId));
+    }
+    this.kmsContextMode.set(crtcId, "webgl2");
+    // Slot 7 = 3: program-owned WebGL2 (direct GL rendering; no pump
+    // presenter). Distinct from 2 (pump webgl2-scanout) so gates can
+    // tell GPU compositing from CPU-composite-then-GPU-present.
+    const stats = this.kmsStatsViews.get(crtcId);
+    if (stats && stats.length > 7) Atomics.store(stats, 7, 3);
+    this.kmsGlOwned.add(crtcId);
+  }
+
   /** Register an `OffscreenCanvas` (and optional stats SAB) as the
    *  scanout target for a CRTC. Starts the vblank pump on first
    *  attach.
@@ -32145,6 +34154,7 @@ export class CentralizedKernelWorker {
         this.hookKmsContextLoss(canvas);
       }
     }
+    if (mode !== "2d") this.rebuildPendingGl();
     this.startVblankPump();
   }
 
@@ -32284,26 +34294,42 @@ export class CentralizedKernelWorker {
     clock.start();
   }
 
-  /** One vblank at `timeMs` (the clock `#performanceNow` reads): a display
-   *  frame's timestamp, or the moment a timer tick fired. */
-  #tickVblank(clock: VblankClock, timeMs: number): void {
+  /**
+   * Run one vblank at `timeMs` (the clock `#performanceNow` reads). `clock`
+   * names the pump that ticked, at a display frame's timestamp or the moment
+   * its timer fired; null names the tick a replay's log names.
+   */
+  #tickVblank(clock: VblankClock | null, timeMs: number): void {
     this.#runOrDeferKernelEntry(
-      "vblank tick",
+      VBLANK_TICK_ENTRY,
       (entry) => {
-        if (this.vblankClock !== clock) return;
+        if (clock === null) this.#loggedVblankTickQueued = false;
+        else if (this.vblankClock !== clock) return;
         // The kernel stamps the vblank with its own CLOCK_MONOTONIC minus
         // the vblank's age, measured here at the call because a busy gate
         // can defer this entry past the frame. A kernel without
         // kernel_vblank_elapsed (an additive export) stamps the call time.
+        // The age is this host's measurement, so a replay takes the
+        // primary's from the log.
         const vblankElapsed = entry.instance.exports.kernel_vblank_elapsed as
           ((elapsedUs: number) => number) | undefined;
+        let ageUs: number | undefined;
         if (vblankElapsed) {
           const now = kernelEntryIntrinsicApply(
             this.#performanceNow, this.#performanceReceiver, [],
           ) as number;
-          vblankElapsed(Math.min(0xffff_ffff, Math.max(0, Math.round((now - timeMs) * 1000))));
-        } else {
+          ageUs = Math.min(0xffff_ffff, Math.max(0, Math.round((now - timeMs) * 1000)));
+        }
+        const admitted = this.#admitVblankTick(ageUs);
+        if (admitted === null) return;
+        if (admitted.ageUs === undefined) {
           (entry.instance.exports.kernel_vblank as (() => number) | undefined)?.();
+        } else if (vblankElapsed) {
+          vblankElapsed(admitted.ageUs);
+        } else {
+          throw new Error(
+            "the replication log ages a vblank, and this kernel has no kernel_vblank_elapsed",
+          );
         }
         // kernel_vblank just drained any pending page-flips into each open
         // card0 fd's `event_ring`. Wake blocked DRM poll() callers now
@@ -32519,7 +34545,7 @@ export class CentralizedKernelWorker {
           return { plane, width: size.width, height: size.height, composited: crtcGamma(crtcId) !== null };
         });
         entry.deferObserverEffect(() => {
-          if (this.vblankClock !== clock) return undefined;
+          if (clock !== null && this.vblankClock !== clock) return undefined;
           for (const { plane, width, height, composited } of cursorPlanes) {
             plane.present(cursorSnapshot, width, height, composited);
           }
@@ -32632,6 +34658,25 @@ export class CentralizedKernelWorker {
           }
           return undefined;
         });
+
+        // A replica behind the log: the primary's guest already saw these
+        // vblanks. Chain one immediate tick so a frame-paced replica consumes
+        // its backlog faster than 60 Hz; at the head the probe answers false
+        // and the pump falls back to its real pace.
+        if (this.kmsCanvases.size > 0 && (this.#replicationAheadProbe?.(0) ?? -1) > 0) {
+          entry.deferProtocolEffect(() => {
+            const chained = this.#registerTimeout(() => {
+              this.#runScheduledListenerRoot("vblank catch-up", () => {
+                if (clock !== null && this.vblankClock !== clock) return;
+                this.#tickVblank(clock, kernelEntryIntrinsicApply(
+                  this.#performanceNow, this.#performanceReceiver, [],
+                ) as number);
+              });
+            }, 0);
+            (chained as { unref?: () => void }).unref?.();
+            return undefined;
+          });
+        }
       },
     );
   }

@@ -834,6 +834,12 @@ speaker and microphone settings are never changed by the test policy.
   ([`WEBKIT-AUDIOWORKLET-CLOSE-LEAK`](../tests/runtime-workarounds/WEBKIT-AUDIOWORKLET-CLOSE-LEAK/entry.md));
   explicitly supplied private contexts are closed. A suspended or interrupted
   context is never resumed implicitly during teardown.
+- **A machine switch keeps the page's audio running.** When teardown suspended
+  a running context, the next machine that attaches resumes it: the user
+  already started that context, and without a consumer the new machine's ring
+  fills and its next `/dev/dsp` write blocks until the next gesture. While
+  another machine still renders through the context, teardown does not
+  suspend it at all. A context the user never started stays suspended.
 - **A user gesture is required.** Preparing the PCM driver may leave its
   `AudioContext` suspended. The application must call the session audio-resume
   path from a click, keypress, or other browser-recognized activation. A bare
@@ -862,6 +868,10 @@ speaker and microphone settings are never changed by the test policy.
   shared audio context synchronously without exposing kernel memory. Native
   demand then binds the normal worklet to the same already activated context;
   the existing 500 ms activity sample runs independently of UI subscriptions.
+  A restored machine's guest already holds the device open, so its demand
+  reaches the page before the ready message carries the PCM connection; the
+  page binds the worklet when that connection arrives. A guest blocked on a
+  full ring, such as fbDOOM writing `/dev/dsp`, would otherwise never resume.
   Explicit `prepareAudio()` still prepares the sink immediately. Shutdown
   stops automatic demand admission and suspends a primed, unused context
   without inventing a worklet detach acknowledgement. Actual attached
@@ -4325,6 +4335,17 @@ it for everyone, with the reason shown. The bare `/pages/peer-network/` page
 connects machines it boots itself, with the same transport, and exercises it
 with guest `nc` UDP and a PHP/curl HTTP exchange. Multiplayer games use the
 packages' session activities in the Kandelo app instead.
+
+A session also carries machine sharing. Each joiner opens a second peer
+connection to the host, `purpose: "sharing"`, which carries the checkpoint
+handover, the framebuffer and terminal mirrors and the replication log; the
+panel's sharing section shows one machine to one partner, follows it as a
+replica, or takes it over. A joiner gives up its copy of the session's machine
+to watch the host's. A computer kept in browser storage travels with its base
+image and journal, so the partner needs no copy of it; the partner's replica
+keeps that copy in memory, and nothing it writes reaches either computer's
+storage. A machine switch detaches only that computer's guest
+network: the session and its sharing links stay.
 
 Both use `purpose: "network-activities-v2"` peer connections, including a
 separate reliable `activity-data-v1` channel for explicitly offered data

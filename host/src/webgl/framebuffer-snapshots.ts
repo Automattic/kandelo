@@ -22,6 +22,9 @@ type DrawPlan={apply:NativeCall[];restore:NativeCall[];view:GlBinding;execute(wo
 type Capture={plan:DrawPlan|null;framebuffer:WebGLFramebuffer|null;source:WebGLFramebuffer;target:WebGLTexture;
   pin:GlImageGenerationPin|null;inputs:Input[];retirement:NativeRetirement|null;view:GlBinding|null;ready:boolean};
 type Cell={token:number;capture:Capture|null};
+/** A cell's token, and for a live capture the framebuffer it captured and
+ * the sampled textures it pinned, by guest name; framebuffer 0 for none. */
+export type CheckpointGlFramebufferSnapshot={token:number;framebuffer:number;inputs:{unit:number;texture:number}[]};
 
 export class GlFramebufferSnapshots {
   private readonly cells:Cell[]=Array.from({length:FRAMEBUFFER_SNAPSHOT_CAPACITY},()=>({token:0,capture:null}));
@@ -43,7 +46,7 @@ export class GlFramebufferSnapshots {
   }
   /** Return 1 for the completed capture, 0 for unavailable (no API error),
    * null for a failed effect. The caller seals this result before copyout. */
-  capture(index:number,token:number,name:number):number|null {
+  capture(index:number,token:number,name:number,source=this.binding.shadow.fbo,units=this.binding.shadow.textureUnits):number|null {
     const b=this.binding;
     if(!this.owns()||!Number.isInteger(index)||index<0||index>=this.cells.length||!Number.isInteger(token)||!token||token>0xffffffff||!Number.isInteger(name)||!name||name>0xffffffff){recordGlError(b,0x502);return null;}
     const cell=this.cells[index]!;
@@ -51,7 +54,7 @@ export class GlFramebufferSnapshots {
     if(cell.capture&&!this.retireCapture(cell.capture))return null;
     cell.token=token;cell.capture=null;
     try {
-    const source=b.shadow.fbo,points=source&&b.framebufferAttachments.get(source),image=points?.get(COLOR);
+    const points=source&&b.framebufferAttachments.get(source),image=points?.get(COLOR);
     if(!source||b.fbos.get(name)!==source||points?.size!==1||image?.kind!=="texture"||image.target!==TEX||image.level!==0)return 0;
     const level=textureLevel(image.object,TEX,0),view=b.textureViews.get(image.object);
     if(!level||level.width<=0||level.height<=0||level.compressed||level.gles?.colorRenderable!==true||view?.source||b.externallyOwnedTextures.has(view?.native??image.object))return 0;
@@ -66,8 +69,8 @@ export class GlFramebufferSnapshots {
     // pin would still let that peer manufacture feedback at execution time.
     const inputs:Input[]=[];
     for(const units of [b.shadow.cubeTextureUnits,b.shadow.externalTextureUnits])if(units.some(Boolean))return 0;
-    for(let unit=0;unit<b.shadow.textureUnits.length;unit++){
-      const object=b.shadow.textureUnits[unit];if(!object)continue;
+    for(let unit=0;unit<units.length;unit++){
+      const object=units[unit];if(!object)continue;
       if(unit>=16)return 0;
       const inputView=b.textureViews.get(object),native=textureNative(b,object);
       if(inputView?.source||b.externallyOwnedTextures.has(native)||native===target)return 0;
@@ -94,12 +97,12 @@ export class GlFramebufferSnapshots {
         if(!this.retireCapture(capture))return null;
         cell.capture=null;return 0;
       }
-      capture.view=this.executionView(capture,image.object,level);
+      capture.view=this.executionView(capture,image.object,level,units);
       capture.plan=this.prepareChanges(capture);
       capture.ready=true;return 1;
     }catch(error){rethrowNativeGlFault(error);recordCpuGlOutOfMemory(b);return null;}
   }
-  private executionView(capture:Capture,object:WebGLTexture,level:GlTextureLevel):GlBinding {
+  private executionView(capture:Capture,object:WebGLTexture,level:GlTextureLevel,captured:readonly (WebGLTexture|null)[]):GlBinding {
     const b=this.binding,framebuffer=capture.framebuffer!;
     // Private logical metadata describes the retained native attachment. Using
     // the public object's level record here would rederive size/write facts
@@ -108,7 +111,7 @@ export class GlFramebufferSnapshots {
     recordTextureLevel(descriptor,TEX,0,{...level,gles:level.gles&&{...level.gles}});
     const textures=new Map<WebGLTexture,GlTextureView>(),ordinaryGet=b.textureViews.get.bind(b.textureViews);
     textures.set(descriptor,{native:capture.target,source:null,read:null});
-    const units=[...b.shadow.textureUnits];
+    const units=[...captured];
     for(const input of capture.inputs){
       input.descriptor=input.pin!.descriptor!;
       units[input.unit]=input.object;
@@ -207,6 +210,40 @@ export class GlFramebufferSnapshots {
     for(let i=0;i<capture.inputs.length;i++)(plan.restore[i*2+1] as ["bindTexture",number,WebGLTexture|null])[2]=textureNative(b,capture.inputs[i].object);
     plan.restore[plan.restore.length-3][1]=0x84c0+b.shadow.activeTexture;
     return plan;
+  }
+  /** A capture is carried only while its pinned storage is still what its
+   * names hold: the restore pins the storage those names hold then. */
+  checkpoint(refuse:(reason:string)=>never,names:{framebuffer(object:WebGLFramebuffer):number;texture(object:WebGLTexture):number}):CheckpointGlFramebufferSnapshot[] {
+    const b=this.binding;
+    return this.cells.map(cell=>{
+      const capture=cell.capture;
+      if(!capture?.ready||!capture.pin?.active||capture.inputs.some(input=>!input.pin?.active))return {token:cell.token,framebuffer:0,inputs:[]};
+      const image=b.framebufferAttachments.get(capture.source)?.get(COLOR);
+      if(image?.kind!=="texture"||attachedNativeStorage(b,image)!==capture.target||capture.inputs.some(input=>textureNative(b,input.object)!==input.native))
+        refuse(`pid ${b.pid}'s framebuffer snapshot ${cell.token} holds storage its names no longer hold`);
+      return {token:cell.token,framebuffer:names.framebuffer(capture.source),
+        inputs:capture.inputs.map(input=>({unit:input.unit,texture:names.texture(input.object)}))};
+    });
+  }
+
+  /** Capture each carried cell again from its framebuffer and inputs. */
+  restore(cells:readonly CheckpointGlFramebufferSnapshot[]):boolean {
+    const b=this.binding;
+    if(cells.length!==this.cells.length)return false;
+    for(let i=0;i<cells.length;i++){
+      const from=cells[i]!,cell=this.cells[i]!,source=b.fbos.get(from.framebuffer);
+      if(!from.framebuffer){cell.token=from.token;continue;}
+      if(!source)return false;
+      const units:(WebGLTexture|null)[]=new Array(b.shadow.textureUnits.length).fill(null);
+      for(const input of from.inputs){
+        const texture=b.textures.get(input.texture);
+        if(!texture||input.unit>=units.length)return false;
+        units[input.unit]=texture;
+      }
+      cell.token=from.token-1;
+      if(this.capture(i,from.token,from.framebuffer,source,units)!==1)return false;
+    }
+    return true;
   }
   private retireCapture(capture:Capture):boolean {
     capture.ready=false;

@@ -15,10 +15,11 @@ import { ACTIVITY_CHANNEL, SessionActivityPeer, activityOffersMessage } from "..
  */
 import type { RemoteSegmentPeer } from "@host/networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "@host/networking/remote-segment-runtime";
-import type { PeerConnection } from "../../../web-libs/kandelo-session/src/peer-connection";
+import { peerSignalPurpose, type PeerConnection } from "../../../web-libs/kandelo-session/src/peer-connection";
 import * as signalling from "./peer-signalling";
 import { decodeSessionInvitation } from "../../../web-libs/kandelo-session/src/session-invitation";
 import type { SessionOffer } from "../../../web-libs/kandelo-session/src/package-sessions";
+import type { PeerAnswer, PeerInvite, PeerLink } from "./sharing-peer";
 
 /** A running machine's session controls, as BrowserKernel provides them. */
 export interface SessionMachine {
@@ -37,6 +38,24 @@ export interface SessionTransport {
   bridge(link: PeerConnection): NetworkBridge;
 }
 export type SessionSignalling = typeof signalling;
+/** The machine-sharing side of a session, injectable like the network transport. */
+export interface SharingTransport {
+  createInvite(): Promise<PeerInvite>;
+  answerInvite(code: string): Promise<PeerAnswer>;
+}
+
+/**
+ * A computer this one can share a machine with, over its own `sharing` link.
+ *
+ * A session is a star, so a joiner's one partner is the hosting computer and
+ * the host has one per joiner.
+ */
+export interface SharingPartner {
+  readonly id: string;
+  /** The name the session's network gives it: `host`, or `peer-N`. */
+  readonly name: string;
+  readonly link: PeerLink;
+}
 
 export interface SessionDependencies {
   /** The running machine, or null before one boots. */
@@ -44,6 +63,8 @@ export interface SessionDependencies {
   /** The signalling endpoint, or null when none is configured. */
   server(): string | null;
   transport: SessionTransport;
+  /** Without it, the session carries guest networking only. */
+  sharing?: SharingTransport;
   /** The page a shared link should open. */
   pageHref(): string;
   api?: SessionSignalling;
@@ -71,6 +92,19 @@ export interface SessionState {
   /** Only the room host publishes joinable activities. Null until received. */
   remoteActivities?: SessionOffer[] | null;
   activityError?: string | null;
+  /**
+   * Whether this computer's machine is on the session's guest network.
+   *
+   * Membership and the network are separate: a machine switch, such as
+   * giving this computer's machine up to watch another's, detaches the
+   * network and keeps the session and its sharing links.
+   */
+  networkAttached: boolean;
+  partners: readonly SharingPartner[];
+  /** Why a sharing link could not be made, while the session still runs. */
+  sharingError: string | null;
+  /** This computer joined the session rather than hosting it. */
+  joined: boolean;
 }
 
 /** The members a session admits, the hosting computer included. */
@@ -79,6 +113,12 @@ const HOST_POLL_MS = 1500;
 const SNAPSHOT_POLL_MS = 1000;
 const LINK_CONNECT_TIMEOUT_MS = 45_000;
 const NAME_MAX = 64;
+/**
+ * What follows a joiner's network join token in each of its `sharing` offers,
+ * then a few random letters so a reconnect never reuses a token.
+ */
+const SHARING_JOIN_SUFFIX = "sharing";
+const HOST_MEMBER_NAME = "host";
 
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -120,6 +160,15 @@ export function sessionLink(pageHref: string, room: string, name: string): strin
   return url.href;
 }
 
+/** Whether a joiner's offer is for `sharing`; any other code is a network join. */
+function isSharingOffer(code: string): boolean {
+  try {
+    return peerSignalPurpose(code) === "sharing";
+  } catch {
+    return false;
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
@@ -129,15 +178,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 }
 
 export class NetworkSessionController {
-  private state: SessionState = { phase: "offline", name: null, room: null, link: null, error: null, errorDetail: null, roomClosed: false, snapshot: null };
-  private joined = false;
+  private state: SessionState = { phase: "offline", name: null, room: null, link: null, error: null, errorDetail: null, roomClosed: false, snapshot: null, networkAttached: false, partners: [], sharingError: null, joined: false };
   private readonly dependencyPeers = new Map<PeerConnection, SessionDependencyPeer>();
   private sharedDependencies = new Map<string, Uint8Array>();
   private sharedActivities: SessionOffer[] = [];
   private readonly activityPeers = new Map<PeerConnection, SessionActivityPeer>();
 
   publishActivities(offers: SessionOffer[]): void {
-    if (this.joined) throw new Error("Only the hosting computer can advertise activities");
+    if (this.state.joined) throw new Error("Only the hosting computer can advertise activities");
     activityOffersMessage(offers);
     if (JSON.stringify(offers) === JSON.stringify(this.sharedActivities)) return;
     this.sharedActivities = structuredClone(offers);
@@ -150,7 +198,7 @@ export class NetworkSessionController {
   }
   receiveDependency(content: OfferedDependency, signal: AbortSignal, progress: (received: number) => void): Promise<Uint8Array> {
     const peer = this.dependencyPeers.values().next().value;
-    if (!peer || !this.joined) throw new Error("Connect to the hosting computer before receiving activity data");
+    if (!peer || !this.state.joined) throw new Error("Connect to the hosting computer before receiving activity data");
     return peer.receive(content, signal, progress);
   }
   private readonly listeners = new Set<(state: SessionState) => void>();
@@ -158,6 +206,10 @@ export class NetworkSessionController {
   private hostKey: string | null = null;
   private readonly bridges = new Set<NetworkBridge>();
   private readonly links = new Set<PeerConnection>();
+  /** The member name each admitted network join was given, by join token. */
+  private readonly memberNames = new Map<string, string>();
+  /** This joiner's network join token, which its sharing offers extend. */
+  private networkJoin: string | null = null;
   private readonly inFlight = new Set<string>();
   private readonly cancels = new Set<() => void>();
   private timers: ReturnType<typeof setTimeout>[] = [];
@@ -165,6 +217,7 @@ export class NetworkSessionController {
   private readonly machine: () => SessionMachine | null;
   private readonly server: () => string | null;
   private readonly transport: SessionTransport;
+  private readonly sharing: SharingTransport | null;
   private readonly pageHref: () => string;
   private readonly api: SessionSignalling;
   private readonly hostPollMs: number;
@@ -173,6 +226,7 @@ export class NetworkSessionController {
   constructor(deps: SessionDependencies) {
     this.machine = deps.machine; this.server = deps.server;
     this.transport = deps.transport; this.pageHref = deps.pageHref;
+    this.sharing = deps.sharing ?? null;
     this.api = deps.api ?? signalling;
     this.hostPollMs = deps.hostPollMs ?? HOST_POLL_MS;
     this.snapshotPollMs = deps.snapshotPollMs ?? SNAPSHOT_POLL_MS;
@@ -208,8 +262,7 @@ export class NetworkSessionController {
       const { machine, server } = this.requirements();
       const room = this.api.randomRoomToken();
       this.hostKey = this.api.randomRoomToken();
-      this.set({ phase: "hosting", name: trimmed, room, link: null, error: null, errorDetail: null, roomClosed: false });
-      this.joined = false;
+      this.set({ phase: "hosting", name: trimmed, room, link: null, error: null, errorDetail: null, roomClosed: false, joined: false });
       await machine.hostRemoteNetwork();
       try {
         await this.api.hostRoom(server, room, this.hostKey, trimmed);
@@ -218,7 +271,7 @@ export class NetworkSessionController {
         throw error;
       }
       if (generation !== this.generation) return;
-      this.set({ phase: "connected", link: sessionLink(this.pageHref(), room, trimmed) });
+      this.set({ phase: "connected", link: sessionLink(this.pageHref(), room, trimmed), networkAttached: true });
       this.pollSnapshot(generation);
       this.hostLoop(generation, server, room, trimmed);
     } catch (error) {
@@ -250,6 +303,10 @@ export class NetworkSessionController {
     const key = this.hostKey!;
     const machine = this.machine();
     try {
+      if (isSharingOffer(request.offer)) {
+        await this.admitSharing(generation, server, room, key, request);
+        return;
+      }
       // Joins being admitted right now count against the cap too.
       const members = (this.state.snapshot?.members.length ?? 1) + this.inFlight.size - 1;
       if (!machine || members >= SESSION_MEMBER_CAP) {
@@ -262,14 +319,114 @@ export class NetworkSessionController {
         await this.api.answerRoomJoin(server, room, key, request.join, answered.answer);
         const link = await withTimeout(answered.connected, LINK_CONNECT_TIMEOUT_MS, "the joining computer did not connect");
         if (generation !== this.generation) { link.close(); return; }
-        await this.adopt(link, (bridge) => machine.attachRemotePeer(bridge.peer), true);
+        const member = await this.adopt(link, (bridge) => machine.attachRemotePeer(bridge.peer), true);
+        this.memberNames.set(request.join, `peer-${String(member)}`);
       } finally { this.cancels.delete(answered.cancel); }
     } catch (error) {
       if (generation === this.generation) console.warn(`[network session] a computer could not join: ${describe(error)}`);
     }
   }
 
-  private adopt(link: PeerConnection, attach: (bridge: NetworkBridge) => Promise<unknown>, hosting = false): Promise<unknown> {
+  /** Answer a joiner's `sharing` offer, made after its network join. */
+  private async admitSharing(
+    generation: number, server: string, room: string, key: string, request: signalling.RoomJoinRequest,
+  ): Promise<void> {
+    if (!this.sharing) {
+      await this.api.refuseRoomJoin(server, room, key, request.join, "this computer does not share machines");
+      return;
+    }
+    // A sharing link extends a network join this host admitted, one per
+    // member; anyone else holding the room link gets no link to the machine.
+    const sharingJoin = ([join]: [string, string]) => join + SHARING_JOIN_SUFFIX;
+    const member = [...this.memberNames].find((entry) => request.join.startsWith(sharingJoin(entry)));
+    if (!member) {
+      await this.api.refuseRoomJoin(server, room, key, request.join, "the sharing link names no computer in this session");
+      return;
+    }
+    if (this.state.partners.some((partner) => partner.id.startsWith(sharingJoin(member)))) {
+      await this.api.refuseRoomJoin(server, room, key, request.join, "this computer already shares with that one");
+      return;
+    }
+    const answered = await this.sharing.answerInvite(request.offer);
+    this.cancels.add(answered.cancel);
+    try {
+      await this.api.answerRoomJoin(server, room, key, request.join, answered.answer);
+      const link = await withTimeout(answered.connected, LINK_CONNECT_TIMEOUT_MS, "the joining computer did not connect for sharing");
+      if (generation !== this.generation) { link.close(); return; }
+      this.addPartner({ id: request.join, name: member[1], link });
+    } finally { this.cancels.delete(answered.cancel); }
+  }
+
+  private addPartner(partner: SharingPartner): void {
+    this.set({ partners: [...this.state.partners, partner] });
+    partner.link.onClose(() => {
+      if (!this.state.partners.includes(partner)) return;
+      this.set({ partners: this.state.partners.filter((other) => other !== partner) });
+      this.sharingLinkClosed();
+    });
+  }
+
+  /**
+   * A computer with no partner left and no network has nothing left of the
+   * session, unless its room is still there. A host that switched machines
+   * leaves it, as it always did. A joiner asks the room: a closed room means
+   * the host left; an open one means only the sharing link went, and the
+   * joiner can connect it again.
+   */
+  private sharingLinkClosed(): void {
+    if (this.state.partners.length > 0 || this.state.networkAttached) return;
+    if (!this.state.joined) {
+      void this.leave();
+      return;
+    }
+    const generation = this.generation;
+    const server = this.server(), room = this.state.room;
+    const roomOpen = server && room
+      ? this.api.readRoom(server, room).then(() => true, () => false)
+      : Promise.resolve(false);
+    void roomOpen.then(async (open) => {
+      if (open || generation !== this.generation) return;
+      await this.teardown();
+      this.set({ phase: "error", link: null, roomClosed: true,
+        error: "The network session ended: the connection to the hosting computer closed. The host left, or the link between you failed.",
+        errorDetail: null });
+    });
+  }
+
+  /** Close the sharing link with one partner; the session stays. */
+  disconnectPartner(id: string): void {
+    this.state.partners.find((partner) => partner.id === id)?.link.close();
+  }
+
+  /** Open this joiner's sharing link to the host again, after it closed. */
+  async reconnectSharing(): Promise<void> {
+    const server = this.server(), room = this.state.room, join = this.networkJoin;
+    if (!this.state.joined || this.state.partners.length > 0 || !server || !room || !join) return;
+    this.set({ sharingError: null });
+    await this.joinSharing(this.generation, server, room, join);
+  }
+
+  /** Open this joiner's `sharing` link to the host, through the same room. */
+  private async joinSharing(generation: number, server: string, room: string, join: string): Promise<void> {
+    if (!this.sharing) return;
+    try {
+      const invite = await this.sharing.createInvite();
+      this.cancels.add(invite.cancel);
+      try {
+        const sharingJoin = join + SHARING_JOIN_SUFFIX + this.api.randomRoomToken(6);
+        await this.api.postRoomJoin(server, room, sharingJoin, invite.invite);
+        const answer = await this.api.waitForRoomAnswer(server, room, sharingJoin, () => generation === this.generation);
+        if (answer === null || generation !== this.generation) { invite.cancel(); return; }
+        const link = await withTimeout(invite.acceptAnswer(answer), LINK_CONNECT_TIMEOUT_MS, "the hosting computer did not connect for sharing");
+        if (generation !== this.generation) { link.close(); return; }
+        this.addPartner({ id: HOST_MEMBER_NAME, name: HOST_MEMBER_NAME, link });
+      } finally { this.cancels.delete(invite.cancel); }
+    } catch (error) {
+      if (generation === this.generation) this.set({ sharingError: describe(error) });
+    }
+  }
+
+  private adopt<T>(link: PeerConnection, attach: (bridge: NetworkBridge) => Promise<T>, hosting = false): Promise<T> {
     let bridge: NetworkBridge;
     try { bridge = this.transport.bridge(link); } catch (error) { link.close(); throw error; }
     const channel = link.channels.get(DEPENDENCY_CHANNEL);
@@ -291,7 +448,7 @@ export class NetworkSessionController {
     try {
       if (!this.api.validRoomToken(room)) throw new Error("This network link is not valid.");
       const { machine, server } = this.requirements();
-      this.set({ phase: "joining", room, name, link: null, error: null, errorDetail: null, roomClosed: false, remoteActivities: null, activityError: null });
+      this.set({ phase: "joining", room, name, link: null, error: null, errorDetail: null, roomClosed: false, remoteActivities: null, activityError: null, sharingError: null });
       const hosted = await this.api.readRoom(server, room);
       this.set({ name: hosted.name });
       const invite = await this.transport.createInvite();
@@ -304,10 +461,11 @@ export class NetworkSessionController {
         const link = await withTimeout(invite.acceptAnswer(answer), LINK_CONNECT_TIMEOUT_MS, "the hosting computer did not connect");
         if (generation !== this.generation) { link.close(); return; }
         await this.adopt(link, (bridge) => machine.joinRemoteNetwork(bridge.peer));
+        this.networkJoin = join;
+        await this.joinSharing(generation, server, room, join);
       } finally { this.cancels.delete(invite.cancel); }
       if (generation !== this.generation) return;
-      this.joined = true;
-      this.set({ phase: "connected", link: sessionLink(this.pageHref(), room, this.state.name ?? name) });
+      this.set({ phase: "connected", link: sessionLink(this.pageHref(), room, this.state.name ?? name), networkAttached: true, joined: true });
       this.pollSnapshot(generation);
     } catch (error) {
       if (generation === this.generation) {
@@ -321,18 +479,24 @@ export class NetworkSessionController {
   private pollSnapshot(generation: number): void {
     const tick = async () => {
       const machine = this.machine();
-      if (generation !== this.generation || !machine) return;
+      if (generation !== this.generation || !machine || !this.state.networkAttached) return;
       try {
         const snapshot = await machine.remoteNetworkSnapshot();
-        if (generation !== this.generation) return;
+        if (generation !== this.generation || !this.state.networkAttached) return;
+        if (snapshot.state === "offline" && this.state.partners.length > 0) {
+          // The guest network ended and the sharing links did not: the
+          // session goes on without its network.
+          this.set({ networkAttached: false, snapshot: null, errorDetail: snapshot.lastDisconnect });
+          return;
+        }
         if (snapshot.state === "offline") {
           // The session ended under this computer. A joiner cannot tell its
           // host leaving from the link failing — both close the link — so
           // say exactly that, with the worker's own reason as detail. The
           // host closes its room when it leaves, so a joiner's room is gone.
           await this.teardown();
-          this.set({ phase: "error", snapshot, link: null, roomClosed: this.joined,
-            error: this.joined
+          this.set({ phase: "error", snapshot, link: null, roomClosed: this.state.joined,
+            error: this.state.joined
               ? "The network session ended: the connection to the hosting computer closed. The host left, or the link between you failed."
               : "The network session ended.",
             errorDetail: snapshot.lastDisconnect });
@@ -361,19 +525,37 @@ export class NetworkSessionController {
     this.timers = [];
     for (const cancel of this.cancels) cancel();
     this.cancels.clear();
-    for (const bridge of this.bridges) bridge.close();
-    for (const link of this.links) link.close();
-    this.bridges.clear(); this.links.clear(); this.inFlight.clear();
+    // The room closes before the links do: a joiner that loses its link asks
+    // the room whether the host left, and must find it gone.
     const server = this.server(), key = this.hostKey, room = this.state.room;
     this.hostKey = null;
     if (server && key && room) await this.api.closeRoom(server, room, key).catch(() => {});
+    for (const bridge of this.bridges) bridge.close();
+    for (const link of this.links) link.close();
+    this.bridges.clear(); this.links.clear(); this.inFlight.clear(); this.memberNames.clear();
+    this.networkJoin = null;
+    const partners = this.state.partners;
+    this.set({ partners: [], networkAttached: false });
+    for (const partner of partners) partner.link.close();
     await this.machine()?.leaveRemoteNetwork().catch(() => {});
   }
 
   /** Leave the session. A host leaving ends it for every member. */
   async leave(): Promise<void> {
     await this.teardown();
-    this.joined = false;
-    this.set({ phase: "offline", name: null, room: null, link: null, error: null, errorDetail: null, roomClosed: false, snapshot: null, remoteActivities: null, activityError: null });
+    this.set({ phase: "offline", name: null, room: null, link: null, error: null, errorDetail: null, roomClosed: false, snapshot: null, remoteActivities: null, activityError: null, sharingError: null, joined: false });
+  }
+
+  /**
+   * This computer's machine stopped or was replaced. Its guest network went
+   * with it; the session and its sharing links stay.
+   */
+  async machineChanged(): Promise<void> {
+    if (!this.state.networkAttached) return;
+    for (const bridge of this.bridges) bridge.close();
+    for (const link of this.links) link.close();
+    this.bridges.clear(); this.links.clear();
+    this.set({ networkAttached: false, snapshot: null });
+    this.sharingLinkClosed();
   }
 }

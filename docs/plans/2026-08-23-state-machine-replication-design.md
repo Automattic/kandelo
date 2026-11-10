@@ -1,0 +1,1321 @@
+# State Machine Replication Design
+
+Kandelo shares a running machine today by streaming its screen. This
+document records the decision to replace that primitive: a shared
+Kandelo machine should be replicated, not filmed. Two computers should
+run the same machine from the same state, driven by the same ordered
+log of everything that can change it, and each should render locally.
+
+Nothing in this document is implemented. The pieces that exist today —
+`host/src/migration/` (checkpoint, restore, chunked network channel,
+framebuffer mirror, handover) and `apps/browser-demos/lib/peer-link.ts`
+(manually signalled WebRTC) — are the transport and the state-transfer
+half. What is missing is the deterministic machine that would let a
+second computer keep in step without being sent pixels.
+
+## The decision
+
+Replication is the target model for sharing a live Kandelo machine.
+Screen streaming stays only where replication cannot apply, and is
+treated as a fallback for spectating, not as the way two people share a
+computer.
+
+The decision is recorded now, before more syscall and host surface is
+built, because determinism is not a feature that can be added at the
+end. It is a constraint on every syscall, every host adapter, and every
+scheduling decision. Adding it later means auditing all of them.
+
+## The evidence that motivated it
+
+Measured on a real fbDOOM machine on 2026-08-23, captured through
+`NodeKernelHost.captureCheckpointBytes`:
+
+| What | Bytes |
+|---|---:|
+| Kernel memory | 19,136,512 |
+| Filesystem image | 16,777,216 |
+| fbDOOM process memory | 18,219,008 |
+| Framebuffer, 640x400 BGRA32 | 1,024,000 |
+| Whole checkpoint, codec-encoded | 56,092,857 |
+
+fbDOOM writes its whole framebuffer once per tic. At 35 tics per second
+the mirror publisher offers 35 MB/s — 286 Mbit/s — to the wire. No
+consumer network carries that, so the publisher must drop most frames
+whatever else is true.
+
+Deflate, added to `ChunkedMessageChannel` on the same day, reduces the
+traffic by roughly 15x (checkpoint 56,092,857 to 3,649,665 bytes; one
+frame message 1,024,088 to 61,317). That made a two-computer demo work
+on a local network. It does not make screen streaming the right answer
+over a long link: a stream is still lossy, still blurry under loss, and
+still costs bandwidth proportional to screen area and frame rate rather
+than to what the user did.
+
+Replication inverts that. Traffic becomes proportional to events, the
+far screen is rendered locally and therefore sharp, and text stays
+legible at any distance.
+
+## Goals
+
+- Two or more computers run one logical Kandelo machine, each holding a
+  full local copy of its state.
+- What crosses the network is the machine's input log, not its output
+  pixels.
+- Every replica renders locally, so text and graphics are exact rather
+  than reconstructed.
+- Divergence is detected, reported, and repaired, never silently
+  tolerated.
+- A replica that cannot keep up degrades to a documented boundary
+  instead of drifting.
+
+## Non-goals
+
+- Simultaneous consistency. Replicas are separated by network delay and
+  always will be. The goal is exactness, not simultaneity.
+- Replacing the framebuffer mirror. Spectating a machine you cannot or
+  should not run stays a legitimate mode with different trade-offs.
+- Multiplayer for a specific program. A guest with its own network
+  protocol — fbDOOM's netgame is the example — is better served by
+  connecting two Kandelo machines with a socket and letting the guest
+  synchronise itself. That needs no determinism and is a separate,
+  smaller piece of work.
+
+## Core model: replicate the kernel's decision log
+
+Most systems that want replication must first invent a serialisation
+point. Kandelo already has one. Every effect a guest can have crosses
+the syscall channel, and one kernel worker serves every process on the
+machine. That single ordered stream is the natural log.
+
+So the unit of replication is not the application's keyboard and mouse.
+It is the kernel's decision log: the ordered sequence of syscalls and
+of the values the host returned for them.
+
+```text
+replica state(n) = f(replica state(n-1), log entry n)
+```
+
+If `f` is deterministic and both replicas start from the same state and
+consume the same log, they are the same machine. The existing
+`MachineCheckpoint` is exactly "the same state": a replica joins by
+restoring a checkpoint, then follows the log from the sequence number
+that checkpoint was taken at.
+
+One replica is the primary. It decides the order of the log and the
+value of every nondeterministic result. Every other replica is a
+secondary that applies the log and originates nothing on its own.
+Secondaries send their user input to the primary as proposals; the
+primary places them in the log and that placement is what makes them
+real.
+
+## What must enter the log
+
+Everything a guest can observe that is not already a function of its
+own memory:
+
+- **Syscall order.** Which process's syscall the kernel served, and in
+  what order. That follows the host OS's scheduling of the process
+  workers, which differs on every machine. Since 2026-10-16 the log
+  carries it as `kind: "dispatch"`, one entry per channel the kernel
+  serves, and one per host entry the kernel runs for a process on the
+  host's own schedule (an exec step, an exited process's deactivation).
+  A replica serves a channel only when the log names its task next and
+  parks the rest; it refuses an out-of-turn host entry, whose caller
+  retries. See "Dispatch order, measured again" below.
+- **Time.** Every `clock_gettime`, `gettimeofday` and `times` result.
+  The guest clock becomes a value the log carries, not a value the host
+  reads. `MachineCheckpoint.monotonicNs` and the monotonic-floor work
+  already establish that the guest clock is something the platform
+  owns. Every reading also carries the process it was handed to, and a
+  replica serves each process its own readings. Before syscall order
+  entered the log, a machine with more than one process read its clocks
+  in an order the two computers never shared; without the reader's
+  identity such a machine diverged on its first reading. Threads of one process are the same boundary one level
+  down, and closed the same way since 2026-09-09: the kernel worker binds
+  the channel's thread before every dispatch, so readings and random
+  draws carry the tid alongside the pid and every task replays its own
+  stream. A byte-identical replica is what the take-over hash gate
+  requires, and same-clock readings swapped between two threads of one
+  pid would fail it without ever tripping a divergence check.
+- **Accept selection.** Which process took each connection off a shared
+  accept queue. A pre-fork server — nginx, php-fpm — leaves every worker
+  blocked in `accept` on one queue, and the connection goes to whichever
+  worker the host runs first. That choice is nowhere in the machine's
+  memory. It is one narrow, tractable case of the syscall-order item
+  above, and it is the one that decides which worker's heap serves a
+  request, so it is in the log: `kind: "accept"`, keyed by the listener's
+  accept readiness token, carrying the winning pid. The kernel asks the
+  host at the queue in `sys_accept`; a replaying host tells every other
+  worker `EAGAIN` and leaves the connection for the recorded one.
+- **Randomness.** Every `getrandom` result, or a seed the replicas
+  share and a deterministic generator on top of it.
+- **External bytes.** Socket reads, lazy file fetches, OPFS reads,
+  anything whose content or timing comes from outside the machine.
+- **User input.** Keystrokes, mouse, terminal input, window geometry —
+  the events the product thinks of as "sharing", and the smallest part
+  of this list.
+
+The log carries decisions, not contents, wherever both replicas already
+hold the data. If both booted the same VFS image, a 4 MB file read
+replicates as the fact of the read, not as 4 MB. That is what keeps the
+log small enough to be worth the trouble.
+
+## What determinism costs
+
+The kernel and host must become a deterministic function of state and
+log. Concretely:
+
+- The centralized kernel must dispatch by a logical clock, not by
+  arrival time. Two runnable processes must be served in an order the
+  log fixes.
+- Every host adapter must route its result through the log rather than
+  returning it directly.
+- pthreads and multi-process guests are where this is hardest. Each
+  process is a real worker on a real OS thread today, and a preemptive
+  schedule is not reproducible. Single-process, single-threaded guests
+  are reachable much sooner than the general case.
+- Every future nondeterminism is a bug whose symptom is silent
+  divergence on someone else's computer. That raises the cost of every
+  change to the syscall surface, permanently.
+
+This is the part of the decision that needs Brandon's agreement, not
+just mho's, because it constrains the kernel's design rather than the
+demo's.
+
+## Latency and authority
+
+A secondary is always at least one network delay behind the primary.
+Nothing changes that. What changes is what arrives: a correct frame
+rendered locally rather than a compressed approximation of one.
+
+If only one person drives, the input path is unaffected — the primary
+runs at full speed and the secondary trails. If both drive, the
+machine cannot advance past step N until every replica's input for step
+N is known, so everyone pays the round trip. That is the classic
+lockstep trade and it should be a mode, not the default.
+
+## Divergence detection and resync
+
+Silent divergence is the failure mode that makes replication hard to
+trust. Every replica must hash its state at fixed log positions and
+exchange the hash. A mismatch is a platform defect and must be reported
+as one, loudly, naming the log position.
+
+The repair is already built: ship a fresh `MachineCheckpoint` and
+restart the secondary from it. That path exists, is tested, and now
+costs about 3.5 MB deflated. Kandelo is unusually well placed to
+recover from divergence even before it is good at avoiding it.
+
+## Where this lands in the existing code
+
+| Concern | Today | Under replication |
+|---|---|---|
+| State transfer | `migration/checkpoint.ts`, `restore.ts` | Unchanged; becomes replica join and resync |
+| Wire | `migration/channel-chunked.ts` | Unchanged; carries the log |
+| Log transport | `replication/log-local.ts` | Carries the join and the log |
+| Log into a replica | `replication/log-queue.ts` | Shared ring a parked replica waits on |
+| Link | `apps/browser-demos/lib/sharing-peer.ts` on `web-libs/kandelo-session/src/peer-connection.ts` | A `sharing` link inside a network session |
+| Roles | `apps/browser-demos/pages/kandelo/app/machine-replication.ts` | User publishes, viewer replicates |
+| Screen | `migration/mirror-local.ts` | Fallback mode only |
+| Ownership | `migration/transport-local.ts` | Becomes primary election |
+| Dispatch order | host scheduling | Log-ordered in the kernel worker (`kind: "dispatch"`) |
+| Clock, random, host I/O | host adapters | Log-sourced |
+
+The log has a wire. `LocalReplicationLog` (`host/src/replication/log-local.ts`)
+publishes a running `ReplicationLogRecorder` and delivers its entries to a
+peer's sink, in order and without a hole, over the same
+`MessageChannelLike` contract the migration transports speak. A peer that
+joins after the recording started is sent the backlog, which is what the
+boot-and-replay join needs. The sharing link declares a fourth channel,
+`kandelo-replication-log`, and gives it the handover's deep-queue defaults
+rather than the mirror's shallow ones: a mirror frame may be skipped, a
+decision may not.
+
+Both ends are driven by `useMachineReplication`
+(`apps/browser-demos/pages/kandelo/app/machine-replication.ts`), which starts
+as soon as the sharing link opens and needs nothing pressed: the computer
+holding a machine serves, the computer holding none joins. A viewer holds a machine
+while it replicates and is still the viewer — it announces `holding: false` on
+the handover channel, so take-over goes on meaning the user's machine, and a
+take-over swaps the two roles with replication starting again the other way
+round. `apps/browser-demos/test/kandelo-machine-replication.spec.ts` covers
+both directions.
+
+A join that is refused is retried rather than reported as final. Most refusals
+name a condition that passes: a machine is read by freezing it, and a process
+that makes no syscall reaches no freeze hook, so a shell sitting at a prompt
+refuses to be read until something wakes it. The failure stays visible in the
+network session panel while the viewer keeps asking.
+
+**Sharing rides network sessions (2026-10-18).** Computers find each other
+through the network session main added: one hosts a session, the others open
+its invite link and join, through the piplet's rooms. The link boots the
+session's machine on the joiner, as it does for any session. Machine sharing
+is a second peer connection per joiner, `purpose: "sharing"`, with the four
+migration channels; the joiner offers it right after its network join, under
+the same join token plus `sharing`, and the host routes each join by the
+purpose its connect code declares. A session is a star, so a joiner shares
+with the host, and the host picks one joiner at a time in the panel. A
+joiner gives its copy of the session's machine up to watch the host's ("Watch
+host's machine"), which makes it the empty viewer the roles above expect.
+Membership is separate from the guest network: a machine switch detaches
+only the network, and the session and its sharing links stay. A host that
+switched machines no longer admits network joins, because its new machine
+hosts no segment; that boundary is open. The invite-code popup and its
+`peer-link.ts` are gone.
+
+### What a replica does when it drains the log
+
+**Decided and built on 2026-08-29.** A live replica runs the machine at its own
+speed, so it reaches the end of what the primary has recorded whenever it gets
+ahead. It stops there and waits.
+
+Waiting is not free to arrange. The guest read that drains the log is
+`clock_gettime`, which reaches `ReplayingTimeProvider` synchronously inside the
+kernel worker: there is no point in that path at which a promise can be awaited
+or a `message` event delivered. So the entries cannot arrive by `postMessage` —
+a worker parked in `Atomics.wait` does not run its message handler — and they
+travel through shared memory instead.
+
+`host/src/replication/log-queue.ts` is that ring. The thread holding the wire
+writes framed entries into a `SharedArrayBuffer` and never blocks, because in
+both hosts that thread is the main one. The kernel worker blocks on
+`Atomics.wait` until an entry is readable, which is the same primitive
+`fork-replay-gate.ts` and `checkpoint-freeze-gate.ts` use for the same reason.
+Nothing is dropped: entries a full ring cannot take stay with the writer until
+the reader makes room, so congestion costs delay and never a decision.
+
+Three consequences worth naming.
+
+**A parked replica serves nothing.** While the kernel worker waits, it answers
+no host request either — a spawn, a checkpoint, an `enumProcs`. That is correct
+rather than incidental: the machine has not advanced, so there is nothing new
+to answer with. It does mean a primary that stops recording without saying so
+leaves a replica that looks hung, which is why `end()` on the writer is part of
+the protocol and not a courtesy.
+
+**The primary keeps no log.** `ReplicationLogRecorder` retains what it records,
+because a replica joins at boot and needs sequence 0. A recorder built with
+`retain: false` — which `streamReplicationLog` on both hosts does — keeps
+nothing and hands each decision to the main thread as it is made, so the
+publisher is the single holder of a log that grows for as long as the machine
+runs.
+
+**The end of the log is not divergence.** A replica that reaches the end of a
+recording that has ended has finished its replay. It still refuses to read its
+own clock there, and says which of the two happened:
+`ReplicationLogReader.takeClock` names either "past the end of the log" or
+"after the primary stopped recording".
+
+Measured by `host/test/replication/live-join.test.ts`: a replica restored from
+the primary's checkpoint is asked to run the guest before the primary has
+recorded anything, does not finish, and then completes and prints the primary's
+seconds once the primary runs. `host/test/replication/log-queue.test.ts` holds
+the ring's own claims, with the reader on a real second thread.
+
+### What clock a replica measures a guest's wait against
+
+**Decided and built on 2026-09-05.** The log's, not this computer's. A guest's
+timeout — `poll`, `select`, `epoll_wait`, `nanosleep` — is a duration on the
+machine's clock, and on a replica the machine's clock is the primary's log. A
+replica that measured it against `Date.now()` serves the wait again at its
+original pace, so it never closes the gap it joined with.
+
+This was measured, not reasoned. A viewer following a WordPress machine showed
+the sharer's click 22 seconds late. The trace named the cause exactly: the
+replica consumed **three log entries per second** for thirteen seconds while
+three thousand entries sat unread in its ring. Those three were one
+supervisor's readings of `CLOCK_MONOTONIC`. The process spent each second
+parked in `epoll_wait(fds, 1000)`, on a deadline this host set from its own
+clock, and the injected request the viewer was waiting for sat in the log
+behind those readings. Nothing else was implicated: no wait in
+`ReplicationLogReader` ever ran, `borrowedClockReadings` stayed at zero, and
+the kernel worker never blocked for more than 400 ms.
+
+`ReplicationLogReader.aheadMs(pid)` is the answer, and the shape of it matters.
+It reports how much machine time passed between the reading a process was last
+served and its **own** next recorded one. The primary spent the wait and then
+read the clock on the far side of it, so that gap is the wait the primary
+actually served. A wait no longer than the gap is one the primary already
+spent, and the host completes it at once.
+
+Two coarser rules were built first and both are wrong, so neither should be
+tried again:
+
+- **Gating on the log head** (`entryReady`). The log grows the whole time a
+  machine runs, so the head is ahead of an idle process at every moment,
+  including when that process is at the head of its own stream. Every wait
+  collapses, the process spins, it spends readings the primary has not made,
+  and it borrows. Measured: `borrowedClockReadings` climbed to 41 and the
+  replica stopped serving pages at all.
+- **Gating on "this process has an unserved reading"**. True right up to the
+  last one recorded, so a spinning process runs off the end of its own stream
+  and borrows the same way. It cut the follow lag from 22 s to 7 s and then
+  wedged the machine on the second navigation.
+
+The duration is what makes the rule safe. A wait longer than the gap is one the
+primary had not finished, so the replica keeps waiting; the readiness check
+itself is untouched, and the wait still ends on whatever the kernel reports.
+
+Since the log carries the dispatch order (2026-10-16), a replica that follows
+it does not shorten readiness waits this way: it makes the primary's retries
+when the log names them, and the replayed clock ends the wait on the same
+retry. See "Dispatch order, measured again". The rule still applies to sleeps
+and to a replay that abandoned the order.
+
+Zero names the machine rather than a process, for a host wait that belongs to
+no guest — the audio backlog discard and the vblank pump — and answers whether
+the log carries anything this replica has not reached.
+
+`getReadinessDeadline` in `kernel-worker.ts` is the one place every timed
+readiness wait passes through, so the rule is stated once and covers `poll`,
+`ppoll`, `select`, `pselect`, `epoll_wait` and `epoll_pwait`; `handleSleepDelay`
+states it again for the sleep family. Measured end to end by
+`apps/browser-demos/test/repro-wp-sharer-click.spec.ts`: the follow lag went
+from 22.0 s to 0.15-2.0 s on the first navigation and under 150 ms after it,
+with `borrowedClockReadings` and `borrowedAcceptSelections` both zero.
+
+### How a replica joins a machine that is already running
+
+**Decided on 2026-08-29: by checkpoint, not by boot.** A replica adopts the
+primary's `MachineCheckpoint` over the migration transport that already
+carries one, then follows the log from there. Boot-and-replay stays the answer
+for a modeset guest that has taken GL ownership, whose pixels a checkpoint
+cannot read, and that case remains a reported gap rather than a second path.
+
+Joining this way needs the state and the log to meet at one instant. A caller
+that captured and then started recording would leave every decision the machine
+made between the read and the resume in neither: not in the state the replica
+adopts, and not in the log it replays. On a machine with a guest running, that
+is not a narrow window.
+
+So the two are one operation. `CheckpointFreezeOptions.onRead` runs inside the
+freeze, after `readMachine` and before anything resumes, and
+`captureAndStreamReplicationLog` on both hosts is what a caller uses. A capture
+that cannot start the log fails as a capture: handing back a checkpoint whose
+log never started would give a replica a state to adopt and no decisions to
+follow it with. Covered by `host/test/migration/checkpoint.test.ts`, which
+asserts the hook sees a parked machine with dispatch still held.
+
+The replica's side of that instant is symmetric, and it is not
+`startReplicationReplay`. A restored process resumes inside `init` — the worker
+entries relaunch it before they answer — so a replay installed once `init`
+returns is installed after that process has already read this computer's clock.
+The replay therefore travels on the init message as `replicationReplay`
+(`ReplicationReplaySpec` in `host/src/replication/worker.ts`), and both worker
+entries install it between the machine's own setup and the first restored
+process. `startReplicationReplay` remains the way to put a machine this host
+booted fresh onto a log. `host/test/replication/live-join.test.ts` covers the
+difference with a guest captured mid-loop: without the init-time install, the
+replica's readings drift from the primary's within a second.
+
+A replica lasts exactly as long as the machine it copies, and letting go of it
+is part of the contract rather than cleanup. The user launches another demo,
+which destroys the machine the replica copies and boots a different one from
+sequence 0; the recording ends, and `LocalReplicationLog` says so. A replica
+kept past that point is worse than a stopped one: `ReplicationLogReader`
+throws `ReplicationDivergence` at the next guest clock read, `kernel.ts`'s
+`#hostClockGettime` turns any throw into `-EIO`, the guest dies, `init` starts
+a fresh one, and what is left is a second machine wearing the first one's name
+on a computer that calls itself the viewer. So `KernelHost.stopReplicatingMachine`
+drops the machine to `idle` with the replay, and the viewer is a viewer again —
+which is also what sends it to join whatever the other computer is running now.
+`host/test/replication/log-local.test.ts` covers the wire, and
+`apps/browser-demos/test/kandelo-machine-replication.spec.ts` covers the
+product: a viewer running a replicated shell ends up running the fbDOOM the
+user launched next.
+
+Input follows the machine for the same reason. A keystroke on a replica is a
+decision its primary's log does not carry, so `LiveKernelHost` refuses local
+input while it holds one — PTY writes, PTY resizes, framebuffer input, and
+mouse events alike. A resize is refused because it is a decision too: it
+delivers `SIGWINCH` and a new `TIOCGWINSZ`, and a program that redraws on it
+takes a turn the primary's program never took. The viewer's screen stays live;
+the keyboard arrives with the take-over.
+
+The primary's side of the same rule is that its input is part of the log.
+Both kernel worker entries record a `pty_write` as an `input` decision and a
+`pty_resize` as a `resize` decision, named by the PTY's `/dev/pts/N` path
+(`ptsDevicePath` in `host/src/replication/log.ts`), and replay them into the
+same PTY master — the index is kernel state, so the checkpoint restored it.
+Without this the primary's shell runs commands its replica never sees, and
+what the viewer holds is a frozen transcript wearing a live machine's name.
+
+A pushed decision needs no guest request, so a replica whose guest sits at a
+prompt — reading no clock — would never pull it from the queue. The viewer's
+page therefore nudges after every batch it queues: `entries` →
+`KernelHost.drainReplicationReplay` → the kernel worker's
+`replication_replay_drain`, which takes what the ring already holds
+(`takeReady`, never blocking) and applies it. A guest that is parked inside a
+clock read needs no nudge; the blocking extender drains as entries arrive.
+
+A live join also softens the clock stream, in two bounded ways, because the
+two computers schedule their workers differently and a worker pool hands the
+same request to different processes on each of them. Both live in
+`ReplicationLogReader.takeClock` (`host/src/replication/log.ts`), both exist
+only while a bounded extender is installed, and a finished recording replayed
+locally keeps the strict order and the hard `ReplicationDivergence`.
+
+**A process whose counterpart stopped reading borrows.** Readings are served
+per process, so a replica process whose primary counterpart never reads the
+clock again has no next reading to wait for — and the wait runs on the kernel
+worker, which holds every process of the machine, silently. `takeClock`
+therefore waits a bounded time (`CLOCK_STREAM_WAIT_MS`, shortened once a
+process has borrowed) and then serves the machine-latest reading of that
+clock. The reading is still one the primary observed — the log stays the
+whole machine's clock — and it cannot step a monotonic clock backward,
+because entries append in recorded order. Every borrow is counted in
+`borrowedClockReadings` and surfaces in replay progress: a visible softening,
+not a silent one.
+
+**A process that interleaves its own clocks differently is served ahead.**
+The same scheduling difference reaches inside one process: a replica's
+process can read `CLOCK_REALTIME` and `CLOCK_MONOTONIC` in a different
+interleaving than its counterpart did, so its next recorded reading is of the
+wrong clock. Instead of diverging, `takeClock` scans ahead
+(`#findClockAhead`) for the process's next unserved reading of the clock it
+asked for, serves it out of order, and leaves the stepped-over reading where
+the process's own later read will find it. Every reading served this way is
+still one the primary recorded for this process, in order per clock. Only
+when no such reading exists does the read fall into the bounded wait and the
+borrow above.
+
+Nothing drains the recorder, and that is now deliberate rather than deferred.
+A replica joins at boot, so the entries from sequence 0 are the ones it needs
+most. The recorder growing without bound at the roughly 184 entries per second
+measured in the browser is therefore a real cost to budget, not a leak to
+close by forgetting the early log.
+
+`ShareMode` in `web-libs/kandelo-session/src/kernel-host.ts` already
+declares `"live"`, and `docs/plans/2026-05-11-shareable-computer-url-design.md`
+defines it as "Connect to a collaborative or server-backed state
+source". Replication is what that mode means. `"replay"` in the same
+list — "start from clean base and replay a command transcript" — is the
+same determinism requirement in single-machine form, so the two modes
+share the work.
+
+### How a replica survives a dropped link
+
+**Built 2026-09-09.** A recording used to last exactly as long as the peer
+link that carried it: the link died, `machine-replication.ts` stopped the
+recording on one side and dropped the replica on the other, and a reconnect
+paid a full checkpoint transfer for a machine the viewer had held one network
+hiccup earlier. Take-over makes that cost structural — promotion only works
+from a caught-up replica, and a scheme where one dropped link destroys the
+replica's lead destroys it exactly when the user reaches for it.
+
+What survives the link now lives in `ReplicationHistory`
+(`host/src/replication/log-local.ts`): a byte-bounded ring of the recently
+published entries and the digest chain over the whole stream. The recording
+pushes into it with or without a wire attached, and whichever wire currently
+serves the recording subscribes to it and folds digests out of it. On a link
+death the machine's side calls `suspend()` on its serve handle instead of
+`stop()`, keeps the returned `SuspendedRecording` for one resume window, and
+hands it to the next link's `serve`. The replica's side keeps its machine
+parked on its queue — the queue's writer is deliberately not ended — together
+with the position its watch last reported (`advanced` on the sink).
+
+The rejoin is a `resume(afterSeq)` instead of a `join`. A position the ring
+still holds is answered with the missed entries out of the ring, then the
+live stream, then `resumed` — no freeze, no checkpoint. The watcher continues
+its digest fold from the carried position, so the resumed stream stays
+verified end to end; the digest state travels in the history precisely so the
+chain survives the wire. A position the ring evicted is refused, and the
+refusal sends the viewer to the join it would have made anyway, which also
+stops the recording nobody could resume. A viewer that received nothing
+before the drop asks from `-1`: a recording that published nothing agrees and
+resumes empty, one that did publish refuses. Both halves give up after
+`RESUME_WINDOW_MS` (120 s): the machine must not record for nobody
+indefinitely, and a parked replica whose user never returns is let go. A
+replica whose own page clicked **Disconnect** is not parked at all: that
+person is not coming back, so the replica is let go at once. In a network
+session a closed sharing link leaves the session in place, so the joiner's
+page keeps its parked replica and **Connect to host again** offers a new
+sharing link through the same room; the resume runs over it.
+
+During the gap the viewer's page keeps calling itself the viewer — the parked
+replica still reports "running", but it is another computer's machine, so
+`replicating` survives the link in `useMachineReplication` and
+`KernelHost.holdsReplica()` is public so a page deciding roles on a new link
+can tell a parked replica from a machine of its own.
+
+`host/test/replication/log-local.test.ts` covers the wire — resume from the
+ring, digest continuity across the resume (a tampered ring replay is caught),
+eviction refusal with the join fallback, the empty-recording resume, and a
+recording handed across two dead links. `host/test/replication/live-join.test.ts`
+proves the platform claim with real machines: a wire dropped mid-follow, the
+workload finished into the ring alone, and the replica drained to a transcript
+equal to the primary's with one capture total and zero replay-tolerance
+borrows. `apps/browser-demos/test/kandelo-machine-replication.spec.ts` covers
+the product surface; its reconnect half skips where headless Chromium refuses
+a second loopback ICE pair, which is an environment boundary, not a platform
+one.
+
+### Take-over promotion: adopt the replica instead of transferring the machine
+
+**Built 2026-09-09; promotion succeeds on Node and in the browser shell
+demo. The modeset demo falls back at the mid-run seal boundary below.** A
+take-over was a checkpoint transfer even
+when the taker had been running a caught-up replica all along — the benchmark
+on this branch measured an 18.6 MB checkpoint and a ~245 ms restore against an
+~18 ms drain. Promotion replaces the transfer with a proof: seal → drain →
+hash → adopt, with the checkpoint take as the fallback, so the worst case
+equals the previous behavior plus one freeze.
+
+The platform half is two worker primitives. `replication_seal` (keeper) stops
+the streaming recorder inside a checkpoint freeze — the log's final entry and
+the frozen state name one instant — and hashes the captured state in the
+worker; only the seal position and hash reach the main thread, and the machine
+resumes unrecorded, its post-seal decisions discarded on adoption exactly as a
+checkpoint handover discards what follows its freeze.
+`replication_hash_replica` (taker) freezes the replica with a hook that
+refuses unless the replay stands exactly at the seal, then hashes. The gate is
+`comparePromotionStateHashes`: every filesystem and process region byte for
+byte, the kernel region exempt at the measured boundary restore-fidelity pins
+(a restore's own kernel calls move the kernel heap, so keeper and replica
+kernels never match even when they are one machine).
+
+The product half rides the replication wire — `promote` / `promotion_sealed`
+/ `adopt` / `promotion_released` / `promotion_refused`, `servePromotion` on
+the keeper and `requestPromotion`/`requestAdoption` on the taker — and the
+take button tries it first whenever the page runs a replica
+(`machine-handover.ts` falls through to the checkpoint take on any refusal,
+mismatch, or silence). On adoption the taker's host promotes the replica in
+place (`KernelHost.promoteReplicaMachine`: the replay ends, the input gate
+opens, the machine never stops running), the page flips roles by hand — the
+status never changes, so no status transition can flip them — and the
+released keeper walks the existing viewer path into the reverse join.
+
+`host/test/replication/promotion.test.ts` proves the protocol on real Node
+machines: sealed mid-workload recording, drained replica, hashes agreeing at
+the promotion boundary, and the machine running a fresh guest on its own
+clock afterward. The browser shell demo promotes by proof end to end
+(`kandelo-machine-replication.spec.ts` "gives the machine to the viewer");
+two browser-only findings made that true:
+
+- **A replica keeps the primary's trust store until promotion.** The
+  `filesystem:/` divergence that refused every browser gate was the MITM CA
+  install: the kernel worker wrote this page's `tlsBackend` CA into
+  `/etc/ssl/certs/ca-certificates.crt` on every boot, a replica's restore
+  included — host-generated bytes with a host-clock mtime over restored
+  machine state. A machine booted as a replica now defers the bundle; it is
+  installed in `replication_replay_stop`, the moment promotion makes the
+  machine this page's own and live TLS starts terminating against this
+  page's backend.
+- **The taker holds its replica through the adoption.** The keeper's
+  `adopt` handler releases its machine before the release answer travels,
+  releasing stops its recording, and the recording's `ended` reaches the
+  taker's watch before `requestAdoption` resolves. A taker that dropped its
+  replica on `ended` destroyed the machine mid-adoption; the page's
+  `adopting` guard keeps it. `log-local.test.ts` "ends the taker's watch
+  before the release answer arrives" pins the ordering. Open design
+  question: should the wire answer the release before the keeper stops its
+  recording instead? The current order keeps the one-owner invariant, and
+  the taker-side guard compensates.
+
+**A replica behind the seal is refused before it freezes (2026-10-18).** The
+hash's refusal was meant to cost nothing: the taker drains and asks again.
+It cost the replica. The seal's freeze leaves entries of its own at the end
+of the log — the syscall each process unwinds at, the capture arena it maps
+— and a replica repeats them only when its own freeze runs at the same place.
+A replica still behind froze early instead. Its unwind took the log turns of
+syscalls the primary made, the blocked call the freeze interrupted came back
+as a call the primary never made, and the replica ran on one syscall ahead
+until it parked on the order with no entry left. A task parked on the order
+has no syscall in flight, so no later freeze could reach it, and every hash
+timed out. In the browser this was the intermittent "hands a taken machine
+back … on disconnect" failure: about one run in a hundred under load,
+whenever the hand back's first hash found the replica behind. The seal now
+also reports `armSeq`, the log position where its freeze began, and a
+replica short of it is refused without a freeze. `promotion.test.ts`
+"refuses a replica short of the seal's freeze without freezing it" fails
+without the check, with the browser's symptom.
+
+**A replica holds at the seal's arm until its own freeze (2026-10-18).**
+The pre-check covered a replica behind the seal, not one ahead of it. The
+keeper posts `promotion_sealed` after the entries, so a live replica
+replayed the seal freeze's entries before it heard of the seal, without a
+freeze of its own. Measured on Node with two subshells looping on
+`: >/dev/null`: the seal reported `armSeq` 65289 and `seq` 65298, the
+replica stood at 65291 before its first hash, its loopers took the turns
+of their own unwind work, and the hash timed out with both loopers armed.
+The timed-out freeze also killed the replica's parent shell: its fork
+arena release failed with `munmap(...) failed errno=4` (EINTR). The seal's
+arm is now an entry of its own: the keeper records the `"replication seal"`
+host entry at `armSeq`, a replay holds every task there, the stall watch
+does not abandon the order for it, and the replica's freeze takes it once
+its unwind requests are armed. `promotion.test.ts` "hashes a replica sealed
+while two processes make syscalls" fails without the entry, with that
+timeout. Other captures of a recording machine record no such entry: no
+replica freeze repeats them.
+
+A taker that clicks **Disconnect** in the panel's sharing section, or leaves
+the session, hands the machine back first. The
+`hand_back` message on the replication wire (`LocalReplicationLog.handBack`)
+asks the computer the machine came from to take it, and that computer starts
+an ordinary take — by proof when it runs a replica, by checkpoint otherwise.
+It refuses while it runs or boots a machine of its own, boots a replica, or
+already takes: a take that starts while a boot is under way races it, and
+the machine can then arrive on neither computer. The taker asks again
+every second and closes the sharing link only once it has stopped running
+the machine and the peer says it holds it. After 20 seconds without a take
+the link stays open and the panel says so; a second **Disconnect** closes the
+link and the machine stays on the taker.
+`kandelo-machine-replication.spec.ts` covers both outcomes.
+
+The remaining open boundary: a seal under a still-running guest contends
+with the freeze exactly as any capture of a busy machine does — the modeset
+demo's guest never idles, keeper and replica freeze at different
+instructions between decisions, and `process:` regions differ (measured:
+5 of 171 chunks), so the modeset take-over lands on the checkpoint fallback
+today. A reader that parks post-seal reads for the freeze instead of
+borrowing is the sketched fix, and it touches the freeze gate, so it wants
+a design pass.
+
+## Surfaces, and what sharing each one needs
+
+The three machine surfaces are not equally shareable, and the reason is
+where their pixels live.
+
+**Terminal — shareable today.** Output bytes leave the kernel through
+one place, `LiveKernelHost.emitPtyData`, and input enters through
+`ptyWrite`. Nothing about it is pixels, so a peer renders locally and
+the traffic is proportional to what the machine printed.
+
+**`/dev/fb0` — mirrorable when the guest writes.** A write-based
+binding keeps its pixels in a host buffer and publishes every write,
+which is what `LocalFramebufferMirror` forwards. An mmap-based binding
+has no write stream and `publish` refuses it rather than showing a
+stale frame as live.
+
+**`/dev/dri/card0` — not shareable at all today.** The modeset surface
+never enters `FramebufferRegistry`, so neither the mirror nor the
+checkpoint can see it:
+
+- `LiveKernelHost.attachKmsDisplay` calls
+  `canvas.transferControlToOffscreen()` and passes the canvas into the
+  kernel worker with `mode: "webgl2"`.
+- The guest paints that OffscreenCanvas directly through the EGL to
+  WebGL2 bridge. The worker's vblank pump explicitly skips a GL-owned
+  canvas, so no CPU ever assembles a frame.
+- The only path that does assemble one is `mode: "2d"`, which a GL
+  guest cannot use: a 2d context cannot be painted by GL.
+- `MachineCheckpoint` carries `/dev/fb0` bindings and their pixels. It
+  now also carries KMS state, as `CheckpointKmsState`
+  (`host/src/migration/checkpoint.ts:107`), populated at
+  `checkpoint.ts:560`. GBM buffer contents travel too:
+  `GbmBoRegistry.snapshot` (`host/src/dri/registry.ts:334`) flushes each
+  buffer object out of process memory and copies its pixels, and both
+  worker entries wire that into `kmsState`.
+
+Making modeset shareable therefore needs three pieces of platform work.
+The first was decided against; the other two are done:
+
+1. **A KMS scanout stream.** Read the frame back where the guest
+   finishes it — at the EGL swap in the kernel worker — and publish
+   those bytes the way a write-based `/dev/fb0` binding publishes its
+   writes. A 1920x1080 BGRA frame is 8.3 MB, so the readback must be
+   throttled and it will cost GPU time. This makes modeset mirrorable.
+   **Decided against on 2026-08-25.** It is pixel streaming, which mho
+   rejected for the reason recorded in Goals: two distant computers
+   make it flicker. Under replication a viewer runs modeset in its own
+   replica and paints its own canvas, so no frame crosses the network.
+2. **KMS state in the checkpoint.** Add the CRTC, the framebuffer
+   objects and the GBM buffer contents to `MachineCheckpoint` and to
+   the restore path. This makes modeset handoverable, and it is also
+   what a replica needs to join. All three are done.
+3. **Refuse on real GL ownership, not on a declared mode.** Done.
+   `captureMachineCheckpoint` refuses whenever `glOwnedCrtcs()` names a
+   CRTC, and `glOwnedCrtcs` used to report every CRTC whose
+   `kmsContextMode` was `"webgl2"`. `attachKmsCanvas` sets that mode the
+   moment a caller asks for it, before the guest has run any GL, and
+   `KernelHost.attachKmsDisplay` defaults to `{ mode: "webgl2" }`, which
+   the Modeset pane takes. So a modeset guest that paints by CPU into a
+   GBM buffer object — whose pixels the checkpoint does carry — was
+   refused for a reason that was not true of it.
+
+   The two facts are now separate. `kmsContextMode` says what may paint
+   a CRTC's canvas and still stops the vblank pump from claiming 2D.
+   `kmsGlOwned` says what has painted it, and only
+   `markKmsCanvasGlOwned` writes it. `host_gl_create_context` calls that
+   once `getContext("webgl2")` has returned a context, rather than when
+   it merely found a canvas to attach. `glOwnedCrtcs` reads the second
+   set, so a checkpoint is refused exactly when the pixels are somewhere
+   it cannot read. Covered by `host/test/dri-kms-gl-ownership.test.ts`.
+
+None is a shim over the others: mirroring shows a modeset machine to
+someone, handover moves it to them, and replication needs the second and
+the third.
+
+### How a replica joins a GL machine
+
+**Decided on 2026-08-27: a replica joins at boot and replays from
+sequence 0.** Both peers run their own modeset from the start, so each
+builds its own GPU state by executing the same commands. No texture
+crosses the network and no frame is read back.
+
+The alternative was to carry GPU state in the checkpoint, which needs a
+readback of every texture. That is the pixel readback rejected on
+2026-08-25 and it stays rejected.
+
+The choice rests on an assumption that is now measured on the CPU side:
+replaying the same commands produces the same machine. Two replicas of a
+shell guest that replay one log reach byte-identical kernel memory and
+identical filesystems — see "What the instrument says today".
+
+The GPU side stays unproven and is a known boundary, not a claim. Two
+peers on different GPUs run different drivers and can round shader
+arithmetic differently, so their screens can drift. mho has accepted a
+viewer's screen differing by a few pixels. What this does not yet have
+is a divergence signal for the GPU: the state hash covers kernel,
+filesystems and process memory, and nothing it hashes can see a drifted
+texture.
+
+Two consequences for the rest of the path. A viewer cannot join a
+modeset machine that is already running — joining means booting the same
+machine, so the log must start at sequence 0 and be retained from there.
+And `ReplicationLogRecorder` retaining every entry stops being only a
+leak and becomes a requirement for the GL case, which changes what
+"drain the log when streaming lands" can mean.
+
+### What a checkpoint carries of a GL machine
+
+**Decided on 2026-11-09, on main's graphics model (#1594).** A checkpoint
+carries the GL device's guest-visible state, and a restore rebuilds it by
+replaying GLES commands through the ordinary bridge path. mho chose this
+over refusing every GL machine and over reporting a renderer reset to the
+restored guest.
+
+The capture (`host/src/webgl/snapshot.ts`, called from the kernel's
+graphics scope) reads the host's model of the guest, and reads WebGL2 only
+for what lives nowhere else:
+
+- every GPU-tier GBM buffer, its RGBA8 texels and the texture id the host
+  numbered it with, because a GBM window surface renders into those
+  buffers and KMS scans them out;
+- each kernel GL session: its session id, display file, cmdbuf range, EGL
+  surface (and the GPU buffer it renders into now), context and current
+  drawable;
+- each session's buffers with their bytes, 2D textures with their levels in
+  the guest's own GLES 2 format, renderbuffer storage, shaders with the
+  guest's original source bytes, programs with their attachments,
+  attribute bindings, uniform numbering and uniform values, vertex arrays,
+  framebuffer attachments, and the context state in the shadow;
+- each session's foreign textures (`DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`):
+  the guest name, the GBM buffer, the sampler parameters, and for a
+  CPU-tier buffer the texture's RGBA8 texels, plus the name the next
+  foreign texture takes.
+
+The rebuild (`host/src/webgl/rebuild.ts`, driven by the kernel) runs the
+same surface, context and make-current steps the guest's calls took, then
+submits the generated commands as ordinary frames. Main's bridge therefore
+builds every record it keeps about the guest — buffer stores, texture
+levels, uniform layouts, vertex arrays, attachments — exactly as for a
+live guest. Before a program links, its captured uniform numbering becomes
+the relink template (`seedUniformTemplate`), so the guest's uniform
+locations hold when the new GPU reflects the same active uniforms.
+
+A foreign texture has no GLES 2 command. Between the object and state
+commands the kernel binds it again through the ioctl's own functions
+(`bindForeignTexture`, `bindGpuForeignTexture` in
+`host/src/webgl/foreign-texture.ts`), under the name the guest holds: a
+CPU-tier texture from its captured texels, a GPU-tier one as a view of the
+rebuilt GPU buffer. A GPU-tier foreign texture takes its buffer's texture
+id as its name, so a rebuilt GPU buffer keeps the id it had. A name that
+comes back different fails the rebuild.
+
+What the rebuild cannot reproduce refuses the checkpoint with the reason
+(`GlCaptureRefusal`): a share group, an EGLImage, a foreign texture the
+guest respecified, a cube-map or external texture, texture zero's storage,
+a live fence, a staged upload, queued commands, a multisampled surface, an
+object the guest deleted but still uses, and different draw and read
+framebuffers.
+
+What is carried but not exactly becomes a boundary line that travels with
+the checkpoint: renderbuffer contents and texture levels WebGL2 cannot read
+back (depth, stencil, byte luminance and alpha) restore uninitialized, and
+a GPU that numbers a program's uniforms differently is reported.
+
+**The program journal is carried too (2026-11-15).** Since #1594 the guest
+GL driver opens a host program journal (`host/src/webgl/program-journal.ts`)
+at its first `glUseProgram`, and its memory keeps the journal's id, the
+generation tokens, the cell tickets and the last transaction number. A
+restore without the journal killed the replica's kernel at its next draw
+("Program journal selector has no exact accepted context/ticket owner").
+At a syscall boundary every cell is free, so a checkpoint carries:
+
+- the capture handles the guest holds (`program-captures.ts`) and the
+  object group's publication sequence and next journal id;
+- the journal's id, capacity, counters, current generation, and each
+  cached generation's token and program name;
+- the receipt of the last journal transaction, which numbers the next one;
+- each buffer snapshot cell's private bytes (`buffer-snapshots.ts`), and
+  each framebuffer snapshot cell's framebuffer and sampled textures
+  (`framebuffer-snapshots.ts`), which the restore captures again;
+- each owned draw cell's operands. Its proof is prepared again at the
+  guest's next draw with it, against the state that draw runs in, because
+  the guest uses a proof only where its own cache says that state holds.
+
+The kernel restores the journal after the state commands and before it
+deletes the delete-pending programs, which a generation may still pin. A
+journal with work in flight refuses the checkpoint, and so does a
+generation, capture or framebuffer snapshot whose names no longer hold the
+storage it pinned: the restore pins what those names hold then.
+
+### How a viewer follows the web preview
+
+The web preview is a fourth surface, and it is neither pixels nor a
+PTY: it is HTTP. The primary's page routes every `/app/` request
+through the service worker to the bridge, and the bridge injects it
+into the machine as a synthetic connection. An injection is host
+input — the accept, the randomly drawn peer port, and the request
+bytes are all host-produced — so it enters the log as
+`ReplicationHttpExchange` (`host/src/replication/log.ts`). The
+response does not travel: it is the machine's own output, and a
+replica that runs the same machine computes it again.
+
+A viewer's page asks for the same resources, and its machine must not
+see those asks — a live injection on a replica is an input the
+primary's log does not carry, and it diverges the machine. The
+pairing happens outside the machine instead (`ReplayedHttpExchanges`
+in `host/src/replication/worker.ts`): each replayed exchange deposits
+the response this replica computed, keyed by request line, and the
+viewer's fetch takes the copy. Latest wins per request line, because
+the two browsers cache differently.
+
+That cache difference is also the surface's open hole. What the
+primary's browser never asks for, the primary's machine never serves.
+WordPress marks its static assets cacheable, so a font or script that
+loaded once comes from the primary's HTTP cache afterward; no
+injection happens, nothing enters the log, and the viewer's identical
+request waits out its park and reports "unrecorded" — a 502 whose
+cause is a cache asymmetry between two browsers, not a divergence.
+
+The cache hole has a sibling: the late joiner. A checkpoint joiner
+follows the log from the join instant; an exchange served before that
+instant is in the state it adopted, not in the entries it replays, so
+its response never lands in the viewer's store — and re-injecting it
+on the replica would make that machine serve a request the primary's
+machine never served again. The publisher reloading its preview when
+recording starts (`previewReloadToken`) narrows this to what the
+reload's own cache hits swallow, which is the same hole again.
+
+**Built 2026-09-04: a viewer's miss becomes the primary's request.**
+When a viewer's fetch finds no replay of its
+request line coming, it does not give up and does not inject. It
+forwards the request line over the peer link to the primary's page,
+and that page fetches it through its own service worker with `cache:
+"no-store"` — past its browser cache, into its bridge, into the
+machine. The injection is a primary input like any other: it enters
+the log, every replica replays it, and the replica's own computed
+response resolves the viewer's parked fetch through the
+`expect`/`deliver` pairing that already exists. Both holes close at
+once. No response bytes cross the wire, the checkpoint does not grow,
+and the primary's browser keeps its cache — the blanket
+`Cache-Control: no-store` header considered first is not needed,
+because the one fetch that must skip the cache says so itself.
+
+The boundaries of the mechanism:
+
+- Only GET and HEAD forward. Any other method is a mutation, and the
+  viewer that cannot type cannot POST either; those stay refused.
+- The viewer forwards after a short park, not after the full 30 s
+  deadline `ReplayedHttpExchanges.take` waits today — "unrecorded" is
+  only knowable by waiting, and a viewer that waited the full
+  deadline before asking would read as a broken page. A forward that
+  races a replay already in flight costs one redundant injection, and
+  latest-wins absorbs it.
+- The viewer dedups misses per request line while one is in flight,
+  so a page asking for the same font four ways costs the primary one
+  injection, not four.
+- A forwarded GET still runs guest code — nginx logs it, PHP may
+  touch a session — which is true of every request the primary's own
+  page makes. The viewer sees the machine as the primary's browser,
+  cookie jar included; that is what viewing one session means.
+- A primary that is gone cannot serve, and the miss stays "never
+  served" — which is then true.
+
+The alternative, kept as the fallback: the primary retains the latest
+response per request line and ships that store with the checkpoint,
+pre-seeding the viewer's `ReplayedHttpExchanges`. It answers misses
+with no round trip, but it grows the join payload by a page's worth
+of assets and it puts recomputable machine output on the wire — the
+data the log's whole design keeps off it. It becomes worth building
+only if miss-forwarding's round trip reads as a broken page in
+practice.
+
+Forwarding delivered the request and then exposed what was behind it.
+The viewer's WordPress replica served the same injected request as a
+500 while the primary served it 200, with no divergence raised and a
+clean log replay — uncaptured nondeterminism rather than a log fault.
+Its cause was accept selection. The demo runs php-fpm with
+`pm.max_children = 6`, all six workers blocked on one shared accept
+queue, and the connection went to whichever worker each host ran
+first; the replica handed the request to a worker whose own heap
+fatalled on it. A single-worker ablation rendered byte-identical on
+home, `?p=1` and wp-login, which named the cause. The fix is the
+`kind: "accept"` decision described under "What must enter the log":
+all six workers stay, and each one does what its counterpart did.
+
+## Implementation Path
+
+The order is chosen so each step is useful on its own, and so the
+expensive determinism work is entered last and with evidence.
+
+1. Replicate terminals. PTY output one way, keystrokes the other. No
+   determinism, no pixels, exact text, small traffic. This covers most
+   Kandelo demos and is the first thing a colleague at distance should
+   get.
+2. Move the peer link and both migration transports out of
+   `apps/browser-demos/lib/` into `web-libs/kandelo-session`, so any
+   machine can be shared rather than one demo page.
+3. Put a network option in the product dock, with the manual signalling
+   that exists today.
+4. Replace the manual paste with a signalling service: a plain Node
+   `ws` process exchanging the same two strings.
+5. Reduce the framebuffer mirror to changed regions instead of whole
+   frames. Still a stream, far smaller, and it makes the fallback mode
+   respectable.
+6. Put KMS state in the checkpoint so a modeset machine can be handed
+   over. The scanout-stream half of this step was dropped on
+   2026-08-25: see the decision recorded above.
+7. Make the guest clock log-sourced. Deterministic time is the single
+   largest source of divergence and is useful alone: it makes replay
+   debugging possible. Done, at the one interface every guest clock
+   read already crosses (`TimeProvider`). A machine records with
+   `RecordingTimeProvider` and replays with `ReplayingTimeProvider`
+   (`host/src/replication/clock.ts`); both hosts drive them from their
+   kernel-worker entry, and `NodeKernelHost` exposes the four calls
+   `startReplicationRecording`, `stopReplicationRecording`,
+   `startReplicationReplay` and `stopReplicationReplay`. Measured: a
+   replica restored from a checkpoint and fed the log prints the
+   recorded timestamps, not its own.
+
+   The clock is the machine's, not the guest's. SharedFS stamped inode
+   atime, mtime and ctime from `Date.now()`, which is why the first
+   measurement still showed `filesystem:/` diverging under replay.
+   Those stamps now cross the same provider: `SharedFS.setClock`
+   replaces the wall clock a filesystem writes from,
+   `MemoryFileSystem.setTimeProvider` converts a provider reading to
+   the milliseconds the inode fields hold, and `VirtualPlatformIO`
+   hands its clock to every mount that keeps its own file times.
+   Measured: two replicas replaying one log now agree on
+   `filesystem:/`, and two replicas on their own clocks still do not.
+8. Make randomness log-sourced.
+9. Add state hashing at fixed log positions, and a divergence report.
+   Build this before the machine is deterministic — it is the
+   instrument that tells you how far from deterministic it is. Done,
+   and it has produced its first measurement. See "What the instrument
+   says today" below.
+10. Give the kernel worker a logical dispatch clock, and make
+    single-process single-threaded guests deterministic. Prove it with
+    a record-and-replay conformance suite. The dispatch clock is not
+    yet justified: byte-diffing two replicas showed the kernel already
+    reproduces for a single-process single-threaded guest, and located
+    the only remaining difference in dead call-stack scratch. Build the
+    conformance suite first and let it say whether a logical clock is
+    needed. See "What the instrument says today".
+11. Route external I/O through the log, primary-authoritative.
+12. Replicate a live machine end to end for a single-process guest,
+    with resync-on-divergence.
+13. Extend to multi-process and pthread guests, or document the
+    boundary if the cost is not worth paying.
+
+## What the instrument says today
+
+Measured on 2026-08-27 with `host/test/replication/replay-determinism.test.ts`.
+The machine is a Node Kandelo booted from the default rootfs image. The guest
+is `sh -c` running `date +%s` five times: five guest clock reads, no
+randomness, no external bytes. Every replica adopts one checkpoint of the same
+idle machine.
+
+| Comparison | Regions that differ |
+|---|---|
+| Two replicas that run nothing | none |
+| Two replicas replaying one log | none, or `kernel` by a few dead stack bytes |
+| Two replicas reading their own clocks | `kernel`, `filesystem:/` |
+
+Five things follow.
+
+**The log-sourced clock works.** A replica prints the recorded seconds, not the
+seconds its own host would have read. The test waits two seconds before the
+replay so a match cannot be two runs landing in the same second.
+
+**The log removes the `filesystem:/` divergence.** Inode atime, mtime and
+ctime now cross the machine's `TimeProvider` rather than `Date.now()`, so two
+replicas replaying one log write identical file metadata. Two replicas reading
+their own clocks still diverge there, which is what says the log is why the
+first pair agrees rather than luck.
+
+**The kernel reproduces too, and dispatch order is not the cause.** This was
+step 10's suspicion and the measurement does not support it. Byte-diffing the
+two 14 MB `kernelMemory` regions over thirteen replayed pairs: twelve were
+identical byte for byte, and the one that was not differed by three bytes at
+`0xffffc`.
+
+That address names the cause. The kernel Wasm is linked stack-first with
+`global[0]`, its `__stack_pointer`, starting at `0x100000`; `__data_end` is
+`0x116acc`. So `[0, 0x100000)` is call-stack scratch and the data segment and
+heap sit above it. `0xffffc` is four bytes below the stack top — residue from a
+call that had already returned, not state a replica must reproduce. The region
+hash reports it because it covers the whole linear memory. Every divergence
+measured under replay, and every one measured on live clocks, was below that
+line; none was in the data segment or the heap.
+
+The same byte-diff locates the live-clock divergence exactly: two replicas on
+their own clocks differ at `0xefcb8`, which holds a `timespec` whose seconds
+field reads as the wall-clock second of the run. Replicas fed the log hold the
+same bytes there.
+
+**The log is the whole machine's clock, not the guest's.** Recording the
+five-`date` guest yields nine entries: the guest's five reads plus the
+filesystem's four inode stamps. A replica asks for exactly nine, which is
+itself a determinism check — a shortfall or an overrun would mean the two runs
+took different paths. A guest transcript is therefore a subsequence of the
+logged readings, not the whole of it.
+
+**A region hash over raw linear memory is coarser than the machine.** It calls
+dead stack scratch a divergence. Deciding a byte is dead needs the stack
+pointer, which the checkpoint does not carry today, so the test bounds the
+difference by the stack line rather than asserting a byte count. This is the
+next thing to settle about the instrument, and it is a question about the hash,
+not about the machine.
+
+This measurement is for one guest: a single-process, single-threaded shell that
+reads the clock and nothing else. It says dispatch order does not diverge that
+workload. It does not say the kernel is deterministic, which is what step 10's
+conformance suite is for.
+
+### Dispatch order, measured again
+
+**Measured on 2026-10-16.** The filesystems now live in kernel memory, so the
+guest's shell and the `date` children it forks allocate in one kernel heap.
+Two replicas replaying one log then differed above the stack line in every
+pair measured: 1 to 147 bytes, in the heap around `0x195350` and `0x197070`.
+One differing word sat just before a dlmalloc free-chunk header, so the
+allocator's own state followed the order the syscalls were served in.
+
+A log of every host-to-kernel export call on each replica showed the same
+calls in a different order: the parent shell's syscalls interleaved with its
+child's exec and exit at different points. Recording the order closed it in
+three steps, each measured with that call log:
+
+1. Channel dispatches (`#runOrDeferChannelKernelEntry`). The children's exec
+   loading and exit cleanup still moved against the parent.
+2. Process deactivation, which the host runs when a process worker exits.
+3. Exec target prepare, size, read, and commit, which the host runs while it
+   loads a child's program.
+
+A fourth entry joined them on the Omarchy desktop: the vblank tick. Each tick
+moves the page flips the guests queued into their DRM fds' event rings, and a
+compositor reads that completion and answers its clients. The log names every
+tick of the primary's pump, and a replica runs a tick only where the log names
+one; its own pump's ticks do nothing.
+
+A fifth entry is the expiry of a process's `alarm()` timer. **Measured on
+2026-11-15.** Every fbDOOM take-over fell back to a checkpoint: the drained
+replica's state differed from the keeper's seal in one 32-bit word of the
+syslog daemon, the nanoseconds of sysklogd's cached `CLOCK_MONOTONIC`
+reading. sysklogd reads that clock after its mark timer's SIGALRM, and each
+computer's own timer sent the signal at a different log position. The
+replica's daemon read the clock where its primary counterpart did not, and was
+served a borrowed reading. The log now names every alarm expiry, and a replica
+sends SIGALRM only there. Its own timer's expiry is refused, and runs only
+once the order no longer applies. POSIX timer expirations (`timer_create`)
+still fire on each computer's own timer: a known gap.
+
+The restore had a second share in the same word. Re-arming a restored
+process's alarm reads `CLOCK_MONOTONIC` to schedule this host's timer, and it
+ran after the replay was installed. That read took the primary's next reading
+for the daemon, so every later read of the daemon was served one reading late.
+The restore now re-arms host timers before it installs the replay, so the
+re-arm reads this host's clock.
+
+After the third step the call logs agree except for the reap query of a
+guest-owned child, which reads its parent pid and changes nothing. Kernel
+memory above the stack line matched in 5 of 5 runs of
+`replay-determinism.test.ts`, where it had differed in 6 of 6 before.
+
+Machine-level host queries (process enumeration, filesystem inspection) stay
+unordered: their callers need an answer at once, and a replica asks them at
+its own times. An entry that a caller needs at once and that changes the
+kernel heap is the next thing to order if a measurement finds one.
+
+Some dispatches are the host's own timing, and a replica cannot repeat them.
+The order treats each one as follows:
+
+- **Retries.** The host retries a blocked syscall on its own timers and
+  wakeups, and on readiness it does not share with a replica, such as a lazy
+  file arriving. The log marks them `retry: true`. A replica makes the logged
+  retry itself when the log names it: a wait parked on a host timer runs at
+  once, so the replica neither keeps the primary's pace nor waits for a
+  wakeup that a task held behind the retry would cause. A timed wait then ends
+  on the retry whose replayed clock reading passes its deadline, as it did on
+  the primary; the `aheadMs` shortcut applies only once the order is
+  abandoned. A replica passes over a logged retry for a task that has no
+  syscall in flight, because that task finished the syscall in fewer tries.
+  The exception is a task's first dispatch after the restore, which is the
+  syscall the capture caught in flight, issued afresh. A replica runs a retry
+  of its own without a turn when the task's next logged dispatch is a new
+  syscall, including when that syscall's turn is the one the log names next:
+  a retry never takes a turn the log records as a fresh dispatch.
+- **Host entries the log does not hold.** The replica runs them at once and
+  passes over the matching entry if it arrives later.
+- **Dispatches into an exited process.** musl's `SYS_EXIT` after
+  `SYS_EXIT_GROUP` only settles a transport handshake, and whether it lands
+  before the process is deactivated is a race. It is neither logged nor
+  ordered.
+- **Trailing host work at stop.** When the replay stops, retries and host
+  entries after the last logged syscall are passed over. The replica does that
+  work unordered once the order no longer applies.
+- **The clock at stop.** The replica's own clock reverts to this host's, which
+  is behind the primary's by the capture-to-restore journey. The stop raises
+  the monotonic floor to the highest `CLOCK_MONOTONIC`/`CLOCK_BOOTTIME`
+  reading the replay served, so a promoted machine's clock never runs
+  backwards.
+
+When the dispatch the log names next does not run for 5 s, the replica stops
+following the order for the rest of the replay and logs why. The replay stop
+result reports it as `dispatchOrderAbandoned`.
+
+The Omarchy replication spec reached that fallback within seconds of every
+join. The stall named Quickshell inside `posix_spawn`, but the spawn was a
+consequence. A per-syscall result log of Quickshell on both computers found
+four earlier differences, each closed at its own layer:
+
+1. **The GL context arrived after the restored process ran.** A restored
+   binding gets its WebGL2 context only when the embedder attaches the CRTC's
+   canvas. Quickshell's first `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` after the
+   restore returned 0 on the primary and `EIO` on the replica. The kernel
+   worker now holds the syscalls of a process whose captured context painted
+   a canvas until that context is rebuilt; a canvas that refuses WebGL2
+   releases them, with the boundary reported. The browser app showed the
+   arriving pane instead of the machine view while a replica joined, so the
+   canvas came only after the boot's 5 s display-size wait; the machine view
+   now stays laid out, hidden and inert, behind the arriving pane.
+2. **The viewer's own pointer reached its replica.** `sendPointerAbs` lacked
+   the replica guard `sendMouseEvent` has, and the display appeared under a
+   resting pointer when the join ended.
+3. **Pushed input arrived early.** A task's clock, random, GL or accept read
+   delivered every pushed decision up to that task's own next entry, which can
+   sit far past the dispatch the replica is serving, and moved the delivery
+   cursor there. The primary's `Ctrl+K` reached Quickshell 16 syscalls after
+   the restore instead of about 1,270. While the order holds, only the
+   dispatches deliver pushed decisions, between the same two dispatches as on
+   the primary.
+4. **Vblank ticks**, ordered as above.
+
+With the four closed, Quickshell's syscalls and their results match the
+primary's one for one, and the spec asserts that the viewer never stops
+following the order. The single-shell replay above and the Node live joins
+keep the order to the end.
+
+**Measured again on 2026-10-17.** Under load — six spec runs in parallel —
+the replica still left the order, in about one run in six, always inside
+Quickshell's `posix_spawn`. The same per-syscall result log found two more
+differences:
+
+5. **A retry took a fresh syscall's turn.** Quickshell's `poll` ended on a
+   logged retry on the primary and needed one try more on the replica. That
+   extra retry matched the task's next turn by pid and tid alone, so it took
+   the turn of the syscall after the `poll`, and every later Quickshell
+   syscall ran one turn early, until the spawn's resolution found its turn
+   gone. A retry now takes only a turn the log records as a retry, and runs
+   without a turn otherwise.
+6. **A keystroke arrived one dispatch late.** The replica delivers a pushed
+   decision when it takes the turn of the dispatch the decision preceded, and
+   that happens inside the dispatch's kernel entry, so the injection was
+   queued behind the dispatch itself. Quickshell's `read` of its keyboard
+   returned the `K` press and release together on the primary and one at a
+   time on the replica, so the replica made one `read` more. A dispatch whose
+   turn delivered decisions now queues itself behind their injections, on
+   the turn it already took.
+
+With both closed, the spec passed 12 of 12 runs one at a time and 36 of 36
+runs six at a time. The join stall recorded here before, a viewer left
+booting with no output, did not appear in about 250 runs on 2026-10-17.
+Under six-at-a-time load the viewer's boot failed three times: twice with
+"Timed out waiting for service worker control", a boot step of the page and
+not of replication, and once ending idle with no cause recorded.
+
+The cost is one log entry per syscall. A live replica's queue ring filled up
+with them, which exposed a writer defect: `ReplicationLogQueueWriter.end()`
+published the end with entries still pending, so a replica behind the primary
+read the end early. The writer now keeps offering pending entries after the
+end and publishes it once they are in the ring, or once the replica has taken
+nothing for 30 s.
+
+## What a checkpoint carries across its mounts
+
+**Decided on 2026-08-27, built on 2026-08-27.** A checkpoint asks every
+mount for its bytes and carries every mount that can answer. A mount
+that cannot — a Node `HostFileSystem` backed by a real directory —
+refuses, and the refusal is recorded in the checkpoint so a restore
+reports what it did not get.
+
+Before this, both worker entries built `checkpointMounts` by filtering
+`specMounts` to `MemoryFileSystem`. The two hosts then disagreed about
+what a machine is, because their mount topologies differ rather than
+their code: in the browser every mount is a `MemoryFileSystem`, while on
+Node every mount except `/` is a `HostFileSystem` under the per-boot
+session directory (`host/src/vfs/default-mounts-node.ts:96`). So a Node
+checkpoint carried `/` alone and said nothing about the rest.
+
+Carrying nothing is defensible for a host directory. Saying nothing
+about it is not: a restore presents a machine missing `/tmp` as if it
+were whole, which is the convenient illusion the platform values
+contract forbids.
+
+### How it is built
+
+`FileSystemBackend.checkpointBytes()` is the question, and it is
+optional: a backend that does not implement it is recorded as unreadable
+rather than dropped. `MemoryFileSystem` answers with its
+SharedArrayBuffer. `HostFileSystem` refuses, naming the backing kind and
+not the sandbox path — a checkpoint travels to another computer, and the
+path is this computer's business.
+
+`askMountsForCheckpointBytes` (`host/src/migration/checkpoint.ts`) asks
+the list, and both worker entries build `filesystemBuffers` from it, so
+one code path decides what a machine is on both hosts. The mounts asked
+are `specMounts` alone. `/dev` and `/dev/shm` are device surfaces the
+host provides and a restore rebuilds, so they are not machine state to
+hand away and never appear as gaps.
+
+`MachineCheckpoint.unreadableFilesystems` carries the refusals, and
+`MachineCheckpointSummary` repeats them so a caller holding no bytes
+still sees them. The layout version `MACHINE_CHECKPOINT_FORMAT` went
+from 3 to 4; a restore refuses format 3 outright rather than guessing at
+the missing field. The checkpoint is not part of the kernel ABI, so
+`ABI_VERSION` did not move.
+
+A restore reports the gap through `describeCheckpointMountGaps`
+(`host/src/migration/restore.ts`), which both entries send to
+`reportHostDiagnostic` at `warn`. It reports two directions: mounts the
+sender could not read, and mounts the sender carried that this receiver
+has nowhere memory-backed to put. A gap never refuses the checkpoint — a
+machine short `/tmp` is still worth moving — but it is never silent.
+
+Today a Node checkpoint records seven gaps (`/tmp`, `/var/tmp`,
+`/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`) and a browser
+checkpoint records none. The asymmetry is now visible in the artifact
+rather than implied by the host it came from.
+
+## Open Questions
+
+- Should the log be a first-class ABI artifact, versioned like
+  `abi/snapshot.json`, or a host-runtime concern outside the ABI?
+- Where does primary authority live when the primary's browser tab
+  closes: elect a new primary from the log, or end the session?
+- Does a secondary run the machine at full speed and buffer ahead, or
+  strictly follow the log position the primary has confirmed?
+- What is the state hash over: kernel memory and every process memory,
+  or a cheaper summary that still catches real divergence?
+- Can Asyncify-instrumented fork continuations be made deterministic,
+  or does fork stay outside the replicated subset?
+- Is a deterministic scheduler compatible with the performance contract
+  in `docs/agent-guidance/performance.md`, or does it need an explicit
+  exemption when replication is on?
+- Should replication and the framebuffer mirror be selectable per
+  machine, or should the platform pick based on whether the guest is in
+  the deterministic subset?

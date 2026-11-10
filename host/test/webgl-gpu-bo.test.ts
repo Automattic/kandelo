@@ -343,3 +343,13 @@ it("faults when the live renderer refuses an unheld GPU BO framebuffer retiremen
   expect(()=>reg.destroyGpuBo(41)).toThrow(/live renderer refused deleteFramebuffer/);
   expect(reg.gpuBo(41)).toBeUndefined();
 });
+it("keeps a restored BO's texture id and numbers later BOs above it",()=>{
+  const {gl}=makeFakeGl(),reg=new GlContextRegistry();
+  expect(reg.createGpuBo(41,gl,2,2,0x34324241,0x6000_0010)).toBe(0x6000_0010);
+  expect(reg.gpuBo(41)!.drmFormat).toBe(0x34324241);
+  expect(reg.createGpuBo(42,gl,2,2)).toBe(0x6000_0011);
+  expect(reg.createGpuBo(43,gl,2,2,0x34324241,0x8000_0000)).toBeNull();
+  expect(reg.gpuBoIds()).toEqual([41,42]);
+  expect(reg.destroyGpuBo(41)).toBe(true);
+  expect(reg.gpuBoIds()).toEqual([42]);
+});

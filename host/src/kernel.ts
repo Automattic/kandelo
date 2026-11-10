@@ -1,6 +1,6 @@
 import {prepareScalarState} from "./webgl/scalar-state.js";
 import {validProgramJournalRequest,validProgramJournalBarrierRequest} from "./webgl/program-journal-query.js";
-import { QOP_GET_ERROR } from "./webgl/ops.js";
+import { QOP_GET_ERROR, WPK_SURFACE_CONFIG_RGBA8_D24S8 } from "./webgl/ops.js";
 import { withNativeBatch } from "./webgl/native-batch.js";
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
@@ -13,7 +13,12 @@ import { observeRendererLoss, rendererLossCount, rendererLost, rendererResetScop
 import { contextWriteEpoch } from "./webgl/context-writes.js";
 import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
-import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
+import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES, type GlSurfaceCreation } from "./webgl/surface-create.js";
+import { captureGlSession, captureGpuBo, GlCaptureRefusal, type CheckpointGl, type CheckpointGlForeignTexture, type CheckpointGlSession } from "./webgl/snapshot.js";
+import { glDeletionCommands, glObjectCommands, glStateCommands } from "./webgl/rebuild.js";
+import { GlProgramJournal, restoreProgramJournalOrder } from "./webgl/program-journal.js";
+import { restoreGlProgramCaptures } from "./webgl/program-captures.js";
+import { seedUniformTemplate, uniformLayout } from "./webgl/uniform-layout.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer, validSurfaceCapabilitiesLength } from "./webgl/surface-capabilities.js";
 import { QOP_ERROR_DRAIN_RECEIPT, GL_ERROR_DRAIN_RECEIPT_BYTES, QOP_PROGRAM_JOURNAL_BARRIER, QOP_PROGRAM_JOURNAL, QOP_PROGRAM_CAPTURE, QOP_CONTEXT_RESET_SCOPE, QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE, QOP_RELEASE_FENCE } from "./webgl/ops.js";
 import { validProgramCaptureRequest } from "./webgl/program-capture-query.js";
@@ -129,6 +134,11 @@ interface WasmPosixKernelRuntimeAccess {
 
 interface KernelGraphicsAccess {
   readonly withGraphicsState: <T>(gl: WebGL2RenderingContext, work: () => T) => T;
+  /** Machine checkpoints: read the GL device, bind its sessions on restore,
+   *  and rebuild it once the renderer's canvases exist. */
+  readonly captureGl: (crtcOf: (binding: GlBinding) => number | null) => CheckpointGl;
+  readonly bindGlSessions: (checkpoint: CheckpointGl) => void;
+  readonly rebuildGl: (checkpoint: CheckpointGl) => string[];
   /** `commits`: the CRTC's kernel commit count, part of what a reused
    *  direct presentation must match. */
   readonly gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number,
@@ -937,6 +947,42 @@ export interface KernelCallbacks {
   onKmsScanoutFb?: (crtcId: number, width: number, height: number) => void;
 }
 
+/**
+ * Replication's seam on `host_gl_query`.
+ *
+ * Record mode observes the guest-visible result — the raw return and the
+ * bytes written — after the query ran. Replay mode supplies both instead,
+ * and the local query still runs for its side effects; `take` may throw
+ * to refuse a replay that has diverged from the recording.
+ */
+export type GlQueryTap =
+  | {
+    readonly mode: "record";
+    readonly record: (op: number, rc: number, bytes: Uint8Array) => void;
+  }
+  | {
+    readonly mode: "replay";
+    readonly take: (op: number) => { rc: number; bytes: Uint8Array };
+  };
+
+/**
+ * Replication's seam on `host_accept_select`.
+ *
+ * Record mode notes which process the kernel is about to hand the connection
+ * to. Replay mode answers instead: `false` leaves the connection queued and
+ * turns that worker's `accept` into `EAGAIN`, so the worker the primary chose
+ * still finds it. `select` may throw to refuse a replay that has diverged.
+ */
+export type AcceptSelectionTap =
+  | {
+    readonly mode: "record";
+    readonly record: (listener: number, pid: number) => void;
+  }
+  | {
+    readonly mode: "replay";
+    readonly select: (listener: number, pid: number) => boolean;
+  };
+
 export class WasmPosixKernel {
   private config: KernelConfig;
   private io: PlatformIO;
@@ -1555,6 +1601,33 @@ export class WasmPosixKernel {
   }
 
   /**
+   * Replication's hand on `host_gl_query`; null when this machine is
+   * neither recording nor replaying.
+   *
+   * A GL query answer is a host-produced value the guest consumes, like a
+   * clock reading: two GPUs answer differently, so a primary records what
+   * its guest was handed and a replica hands its guest the recorded bytes,
+   * running its own query only for the side effects that keep its context
+   * following along. See `replication/log.ts`.
+   */
+  private glQueryTap: GlQueryTap | null = null;
+  /**
+   * Replication's hand on `host_accept_select`; null when this machine is
+   * neither recording nor replaying, and then every process that asks may
+   * take the connection it found — the behaviour of a machine that is not
+   * being replicated.
+   */
+  private acceptSelectionTap: AcceptSelectionTap | null = null;
+
+  setGlQueryTap(tap: GlQueryTap | null): void {
+    this.glQueryTap = tap;
+  }
+
+  setAcceptSelectionTap(tap: AcceptSelectionTap | null): void {
+    this.acceptSelectionTap = tap;
+  }
+
+  /**
    * Merge additional callbacks into the existing set.
    * Existing callbacks not specified in the argument are preserved.
    */
@@ -1638,6 +1711,328 @@ export class WasmPosixKernel {
     const identity = BigInt.asUintN(64, value);
     if (identity === 0n) throw new Error(`Missing ${label}`);
     return identity;
+  }
+
+  /** EGL context creation on a bound session, after the kernel's wire is
+   * decoded; also rebuilds a checkpoint's context. */
+  #createGlContext(b: GlBinding, ctxId: number, shareContextId: number, robustAccess: boolean): number {
+    const source = shareContextId ? this.gl.getContext(b.pid, shareContextId) : undefined;
+    if (shareContextId && (!source || source === b)) return -22;
+    // A reset share group's objects are gone (EXT_robustness issue 6).
+    if (source && rendererLost(source)) return RENDERER_LOST;
+    const previousCanvas = b.canvas;
+    let failure = -19;
+    try {
+      if (!b.canvas) {
+        const shared = source?.gl ?? this.#sharedGlContext();
+        if (shared && !shared.isContextLost()) {
+          b.gl = shared;
+          this.gl.applyRenderTarget(b);
+        }
+      }
+      b.contextId = ctxId;
+      // EGL robust buffer access: draws keep fetches in range (robust-access.ts).
+      b.robustAccess = robustAccess;
+      this.tryAttachKmsGlCanvas(b);
+      if (b.gl && !b.gl.isContextLost() && (!b.surface.gl || b.surface.gl === b.gl)) {
+        // Scalar prediction also applies without a program journal.
+        // Reserve its receiver/capabilities before context success,
+        // while CPU preparation can still refuse this cold admission.
+        prepareScalarState(b,true);
+        // Losses of this renderer before now belong to earlier owners.
+        observeRendererLoss(b);
+        if (!source) return 0;
+        else if (b.gl === source.gl) {
+          if (this.gl.shareObjects(b.pid,b.sessionId,source.sessionId)) return 0;
+          failure = -22;
+        }
+      }
+    } catch (caught) { rethrowNativeGlFault(caught);
+      // An unacknowledged target must not retain membership or names.
+    }
+    this.releaseClaimedKmsCanvas(b.pid, b.sessionId);
+    this.gl.destroyContext(b.pid, b.sessionId);
+    b.canvas = previousCanvas;
+    return failure;
+  }
+
+  /** EGL surface creation on a bound session; `publish` acknowledges the
+   * granted size before the surface commits. Also rebuilds a checkpoint's
+   * surface. */
+  #createGlSurface(b: GlBinding, creation: GlSurfaceCreation, publish: (width: number, height: number) => void): number {
+    if (b.surfaceId !== null || this.gl.getSurface(b.pid,creation.surfaceId)) return -16;
+    let canvas = b.canvas;
+    if (!canvas && this.#isMasterGlBinding(b)) {
+      const crtc = this.kms.masterCrtcForFile(b.displayFileId) ?? this.callbacks.getKmsCrtcIds?.()[0];
+      if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
+    }
+    const result = prepareSurfaceCreation(b, creation, this.gl.gpuBo(creation.targetBoId) ?? undefined, canvas, gl => {
+      this.gl_muxers.get(gl)?.captureCurrentErrors();
+    }, () => this.#sharedGlContext());
+    const prepared = result.prepared;
+    if (!prepared) return result.rc;
+    try {
+      publish(prepared.width, prepared.height);
+      prepared.commit();
+      if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+      return 0;
+    } finally { prepared.cancel(); }
+  }
+
+  /** eglMakeCurrent for a kernel session; also makes a rebuilt checkpoint
+   * session current again. */
+  #makeGlCurrent(pid: number, ctxId: number, drawId: number, readId: number, sessionId: number): number {
+    ctxId >>>= 0; drawId >>>= 0; readId >>>= 0;
+    const b = this.gl.get(pid, sessionId);
+    if (b?.gl && glSubmitExecuting(this.gl_muxers.get(b.gl))) return -5;
+    const operation = b?.operations.tryBeginImmediate("make-current");
+    if (b && !operation) return -5;
+    try {
+    if (b && interruptUniformUpload(b)) return -5;
+    if (ctxId === 0) {
+      if (drawId !== 0 || readId !== 0) return -22;
+      // Revoking a kernel binding does not alter the cached native
+      // context or wait on a renderer.
+      try {
+        if (b) {
+          const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
+          const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
+          const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer);
+          releaseSurfaceResources(b); b.currentDrawable = null;
+          if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) muxer!.invalidateFramebuffers(b);
+        }
+        return 0;
+      } catch (caught) { if (b?.gl) this.glMuxerFor(b.gl).invalidateCurrent(); rethrowNativeGlFault(caught); return -5; }
+    }
+    if (!b || b.contextId !== ctxId || !b.gl) return -5;
+    if ((drawId === 0) !== (readId === 0)) return -22;
+    const surfaces = drawId === 0 ? null : resolveDrawableSurfaces(this.gl,b,drawId,readId);
+    if (drawId !== 0 && !surfaces) return -22;
+    // EGL 1.5 section 3.7.3: EGL_CONTEXT_LOST after a renderer loss.
+    if (rendererLost(b)) return RENDERER_LOST;
+    const size = surfaces?.draw.surfaceSize;
+    const target = this.gl.gpuBo(surfaces?.draw.pendingRenderTargetBoId ?? 0);
+    const drawable = {
+      drawSurfaceId: drawId, readSurfaceId: readId,
+      width: drawId === 0 ? 0 : size?.width ?? target?.w ?? b.canvas?.width ?? 0,
+      height: drawId === 0 ? 0 : size?.height ?? target?.h ?? b.canvas?.height ?? 0,
+    };
+    if (!validCurrentDrawable(drawable)) return -22;
+    try {
+      const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
+      const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
+      const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer,drawable);
+      if (!applyCurrentDrawable(b, drawable, surfaces ?? undefined)) {
+        muxer?.invalidateCurrent();
+        return -12;
+      }
+      if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) muxer!.invalidateFramebuffers(b);
+    } catch (caught) { if (b.gl) this.glMuxerFor(b.gl).invalidateCurrent(); rethrowNativeGlFault(caught); return -5; }
+    return 0;
+    } finally { operation?.finish(); }
+  }
+
+  /** Move a GBM window surface onto another GPU buffer
+   * (`host_gl_update_surface`); also restores a checkpoint's current buffer. */
+  #retargetGlSurface(b: GlBinding, targetId: number, width: number, height: number): number {
+    const target = this.gl.gpuBo(targetId);
+    if (!target || !b.pendingRenderTargetBoId || b.presentTarget
+        || (b.contextId !== null && !b.gl) || target.gl.isContextLost()
+        || (b.gl && b.gl !== target.gl)) return -5;
+    if ((width !== 0 && width !== target.w) || (height !== 0 && height !== target.h)) return -22;
+    if (b.surface.gl && b.surface.gl !== target.gl) return -5;
+    // A multisampled window keeps its multisampled storage while the
+    // BO it resolves into keeps its size; a resized BO needs storage
+    // of the new size, allocated before anything is published.
+    const previous = b.surface.multisample;
+    let multisample = previous;
+    if (b.surface.samples && (!previous || previous.w !== target.w || previous.h !== target.h)) {
+      this.glMuxerFor(target.gl).captureCurrentErrors();
+      const owner = {gl:target.gl,errors:[] as number[]};
+      multisample = allocateMultisampleTarget(owner,b.surface.samples,target.w,target.h);
+      if (!multisample) return !hasNativeRepair(target.gl) && owner.errors.includes(0x505) ? -12 : -5;
+    }
+    let published = false;
+    try {
+      const commit = prepareBorrowedSurfaceTarget(b,target,targetId,multisample);
+      this.gl_muxers.get(target.gl)?.invalidateCurrent();
+      commit(); published = true;
+    } finally {
+      if (!published && multisample && multisample !== previous) retireNativeRetirement(multisample.retirement);
+    }
+    if (previous && previous !== multisample) retireNativeRetirement(previous.retirement);
+    return 0;
+  }
+
+  /** Admit and run one command frame for a session: a guest's cmdbuf span,
+   * or a rebuilt checkpoint's generated commands. */
+  #submitGlCommands(b: GlBinding, source: Uint8Array, offset: number, length: number): number {
+    let frame: SubmitFrame;
+    try { frame = new SubmitFrame(source,offset,length); }
+    catch (caught) { rethrowNativeGlFault(caught); return -12; } // ENOMEM: no submission has been admitted.
+    const validation = frame.validate(validateCommandBuffer);
+    if (validation < 0) { frame.discard(); return validation; }
+    if (!this.prepareForeignRetirements(b)) { frame.discard(); return -5; }
+    try { this.gl_submit_queue.enqueue(b,frame); }
+    catch (caught) { frame.discard(); rethrowNativeGlFault(caught); return -12; }
+    return this.drainGlSubmits();
+  }
+
+  /** The GL device for a machine checkpoint (`webgl/snapshot.ts`), read
+   * under the freeze. `crtcOf` names the CRTC whose canvas a session
+   * paints, which only the worker's canvas table knows. */
+  #captureGl(crtcOf: (binding: GlBinding) => number | null): CheckpointGl {
+    if (!this.gl_submit_queue.isEmpty()) throw new GlCaptureRefusal("GL commands are still queued");
+    const boIds = this.gl.gpuBoIds();
+    const gpuBos = boIds.map(boId => {
+      const bo = this.gl.gpuBo(boId)!;
+      return this.withGraphicsState(bo.gl, () => captureGpuBo(bo.gl, boId, bo));
+    });
+    const sessions = this.gl.list().map(b => {
+      const borrowed = b.surface.borrowedTarget;
+      const borrowedBoId = borrowed ? boIds.find(boId => this.gl.gpuBo(boId)!.fbo === borrowed.fbo) : 0;
+      if (borrowedBoId === undefined) {
+        throw new GlCaptureRefusal(`pid ${b.pid}'s GL session ${b.sessionId} renders into a buffer that is not a GPU BO`);
+      }
+      const gl = b.gl;
+      return gl ? this.withGraphicsState(gl, () => captureGlSession(b, crtcOf(b), borrowedBoId))
+        : captureGlSession(b, crtcOf(b), borrowedBoId);
+    });
+    return { gpuBos, sessions };
+  }
+
+  /** Bind a checkpoint's GL sessions at once, as `host_gl_bind` did: a
+   * restored guest's next submit must find its session. */
+  #bindGlSessions(checkpoint: CheckpointGl): void {
+    for (const session of checkpoint.sessions) {
+      this.gl.bind({
+        pid: session.pid,
+        sessionId: session.sessionId,
+        displayFileId: session.displayFileId === null ? null : BigInt(session.displayFileId),
+        cmdbufAddr: session.cmdbufAddr,
+        cmdbufLen: session.cmdbufLen,
+      });
+    }
+  }
+
+  /** Rebuild a checkpoint's GL device on this host's renderer, once its
+   * canvases exist: GPU BOs with their texels, then each session through
+   * the same surface, context and current-drawable steps the guest's
+   * calls took, then the session's objects and state as generated
+   * commands (`webgl/rebuild.ts`). Returns what the rebuild could not
+   * reproduce; throws when a step the guest already saw succeed fails. */
+  #rebuildGl(checkpoint: CheckpointGl): string[] {
+    const device = checkpoint.gpuBos.length ? this.#sharedGlContext() : null;
+    for (const bo of checkpoint.gpuBos) {
+      if (!device) throw new Error(`GPU BO ${bo.boId} has no renderer to live on`);
+      this.glMuxerFor(device).captureCurrentErrors();
+      if (this.gl.createGpuBo(bo.boId, device, bo.width, bo.height, bo.format, bo.texId) === null) {
+        throw new Error(`GPU BO ${bo.boId} could not be allocated`);
+      }
+      const allocation = this.gl.gpuBo(bo.boId)!;
+      this.withGraphicsState(device, () => {
+        device.bindTexture(0x0de1, allocation.tex);
+        device.pixelStorei(0x0cf5, 1);
+        device.texSubImage2D(0x0de1, 0, 0, 0, bo.width, bo.height, 0x1908, 0x1401, bo.pixels);
+      });
+    }
+    return checkpoint.sessions.flatMap(session => this.#rebuildGlSession(session));
+  }
+
+  #rebuildGlSession(session: CheckpointGlSession): string[] {
+    const where = `GL pid ${session.pid} session ${session.sessionId}`;
+    const b = this.gl.get(session.pid, session.sessionId);
+    if (!b) throw new Error(`${where} is not bound`);
+    const check = (step: string, rc: number): void => {
+      if (rc < 0) throw new Error(`${where}: rebuilding its ${step} failed with ${rc}`);
+    };
+    const surface = session.surface;
+    if (surface) {
+      check("surface", this.#createGlSurface(b, {
+        surfaceId: surface.surfaceId, kind: surface.kind, width: surface.width, height: surface.height,
+        configId: WPK_SURFACE_CONFIG_RGBA8_D24S8, targetBoId: surface.targetBoId,
+      }, () => {}));
+    }
+    if (session.context) {
+      check("context", this.#createGlContext(b, session.context.contextId, 0, session.context.robustAccess));
+    }
+    if (surface && surface.borrowedBoId && surface.borrowedBoId !== surface.targetBoId) {
+      check("surface buffer", this.#retargetGlSurface(b, surface.borrowedBoId, 0, 0));
+    }
+    if (session.context && session.drawable) {
+      const drawable = session.drawable;
+      check("current drawable", this.#makeGlCurrent(b.pid, session.context.contextId,
+        drawable.drawSurfaceId, drawable.readSurfaceId, b.sessionId));
+    }
+    if (session.state === null) return [];
+    if (!b.gl) throw new Error(`${where} had a renderer when captured and has none here`);
+    const submit = (step: string, frames: readonly Uint8Array[]): void => {
+      for (const frame of frames) check(step, this.#submitGlCommands(b, frame, 0, frame.byteLength));
+    };
+    submit("objects", glObjectCommands(session));
+    for (const program of session.programs) {
+      const executable = b.programs.get(program.name);
+      if (executable && program.uniforms.length) seedUniformTemplate(executable, program.uniforms);
+    }
+    for (const foreign of session.foreignTextures) {
+      const name = this.#rebindForeignTexture(b, foreign);
+      check(`foreign texture ${foreign.name}`, name);
+      if (name !== foreign.name) throw new Error(`${where}: foreign texture ${foreign.name} came back as ${name}`);
+    }
+    b.nextForeignTexId = session.nextForeignTexId;
+    submit("state", glStateCommands(session));
+    this.#restoreGlProgramJournal(b, session, where);
+    submit("deletions", glDeletionCommands(session));
+    const lines = [...new Set(b.errors)].map(error =>
+      `${where}: rebuilding raised GL error 0x${error.toString(16)}`);
+    b.errors = [...session.errors];
+    for (const program of session.programs) {
+      const executable = b.programs.get(program.name);
+      if (!program.linked || !executable) continue;
+      const layout = uniformLayout(b, executable);
+      if (program.uniforms.some(entry => layout?.entry(entry.name)?.location !== entry.location)) {
+        lines.push(`${where}: program ${program.name} numbers its uniforms differently on this GPU`);
+      }
+    }
+    return lines;
+  }
+
+  /** Restore the program journal state a session carries, under the
+   * capture handles, journal id, tokens and tickets its guest holds. */
+  #restoreGlProgramJournal(b: GlBinding, session: CheckpointGlSession, where: string): void {
+    b.programJournalControl.receipt.set(session.programJournalReceipt);
+    if (session.programJournalOrder) restoreProgramJournalOrder(b, session.programJournalOrder);
+    if (!session.programCaptures && !session.programJournal) return;
+    const muxer = this.glMuxerFor(b.gl!);
+    muxer.switchTo(b);
+    const execution = this.gl.retainContextExecution(b.pid, b.sessionId, muxer);
+    if (!execution) throw new Error(`${where}: its program journal has no context to run on`);
+    try {
+      withNativeBatch(b, "program journal restore", () => {
+        if (session.programCaptures && !restoreGlProgramCaptures(execution, session.programCaptures)) {
+          throw new Error(`${where}: rebuilding its program captures failed`);
+        }
+        if (session.programJournal && !GlProgramJournal.restore(execution, session.programJournal)) {
+          throw new Error(`${where}: rebuilding its program journal failed`);
+        }
+      });
+    } finally { execution.release(); }
+  }
+
+  /** Bind a checkpoint's foreign texture as `host_gl_bind_foreign_texture`
+   * did, under the name the guest holds: a CPU-tier buffer's texture from
+   * its captured texels, a GPU-tier one as a view of the rebuilt GPU BO. */
+  #rebindForeignTexture(b: GlBinding, foreign: CheckpointGlForeignTexture): number {
+    if (!b.gl || !this.prepareForeignRetirements(b)) return -5;
+    const gpu = foreign.pixels === null ? this.gl.gpuBo(foreign.boId) : undefined;
+    if (foreign.pixels === null && gpu?.gl !== b.gl) return -5;
+    b.nextForeignTexId = foreign.name;
+    this.glMuxerFor(b.gl).switchTo(b);
+    const name = gpu ? bindGpuForeignTexture(b, foreign.boId, gpu)
+      : bindForeignTexture(b, foreign.boId, foreign.pixels!,
+        { w: foreign.width, h: foreign.height, stride: foreign.width * 4 });
+    if (name <= 0) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+    return name;
   }
 
   private tryAttachKmsGlCanvas(b: GlBinding): void {
@@ -1932,6 +2327,9 @@ export class WasmPosixKernel {
     );
     intrinsicApply(intrinsicWeakMapSet, kernelGraphicsAccess, [this, intrinsicObjectFreeze({
       withGraphicsState: <T>(gl: WebGL2RenderingContext, work: () => T) => this.withGraphicsState(gl, work),
+      captureGl: (crtcOf: (binding: GlBinding) => number | null) => this.#captureGl(crtcOf),
+      bindGlSessions: (checkpoint: CheckpointGl) => this.#bindGlSessions(checkpoint),
+      rebuildGl: (checkpoint: CheckpointGl) => this.#rebuildGl(checkpoint),
       gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number, commits?: number) =>
         this.gpuScanout(fb, canvas, allowDirect, crtcId, commits),
       presentCrtcOutput: (crtcId: number) => this.presentCrtcOutput(crtcId),
@@ -3066,11 +3464,18 @@ export class WasmPosixKernel {
             );
             // Bound the backing allocation, not just the view passed to
             // Crypto. A short host result is legal; Rust owns read progress.
+            // The owned temporary ensures no host callback retains a live
+            // view of kernel memory. The platform draws the bytes so a
+            // replicated machine serves its recorded ones; a platform
+            // without its own randomness draws from the host.
             const random = new IntrinsicUint8Array(Math.min(destination.capacity, 65_536));
-            if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
+            if (this.io.getRandomBytes !== undefined) {
+              const drawn = this.io.getRandomBytes(random.length);
+              if (drawn.byteLength !== random.length) return -5; // EIO
+              random.set(drawn);
+            } else if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
               // crypto.getRandomValues rejects SharedArrayBuffer-backed views
-              // in browsers. The owned temporary also ensures no host callback
-              // retains a live view of kernel memory.
+              // in browsers.
               // Web Crypto caps each call at 65,536 bytes, independently of
               // the guest read size. Each import publishes one bounded window.
               // https://www.w3.org/TR/webcrypto/#Crypto-method-getRandomValues
@@ -3180,6 +3585,15 @@ export class WasmPosixKernel {
         },
         host_net_listen: (fd: number, port: number, addrA: number, addrB: number, addrC: number, addrD: number): number => {
           return this.#hostNetListen(fd, port, addrA, addrB, addrC, addrD);
+        },
+        host_accept_select: (listener: number, pid: number): number => {
+          const tap = this.acceptSelectionTap;
+          if (tap === null) return 1;
+          if (tap.mode === "record") {
+            tap.record(listener, pid);
+            return 1;
+          }
+          return tap.select(listener, pid) ? 1 : 0;
         },
         host_udp_bind: (handle: number, addrA: number, addrB: number, addrC: number, addrD: number, port: number): number => {
           return this.#hostUdpBind(handle, addrA, addrB, addrC, addrD, port);
@@ -3432,44 +3846,7 @@ export class WasmPosixKernel {
               robustAccess = (view.getUint32(8,true) & 1) !== 0;
             }
           } catch (caught) { rethrowNativeGlFault(caught); return -22; }
-          const source = shareContextId ? this.gl.getContext(pid, shareContextId) : undefined;
-          if (shareContextId && (!source || source === b)) return -22;
-          // A reset share group's objects are gone (EXT_robustness issue 6).
-          if (source && rendererLost(source)) return RENDERER_LOST;
-          const previousCanvas = b.canvas;
-          let failure = -19;
-          try {
-            if (!b.canvas) {
-              const shared = source?.gl ?? this.#sharedGlContext();
-              if (shared && !shared.isContextLost()) {
-                b.gl = shared;
-                this.gl.applyRenderTarget(b);
-              }
-            }
-            b.contextId = ctxId;
-            // EGL robust buffer access: draws keep fetches in range (robust-access.ts).
-            b.robustAccess = robustAccess;
-            this.tryAttachKmsGlCanvas(b);
-            if (b.gl && !b.gl.isContextLost() && (!b.surface.gl || b.surface.gl === b.gl)) {
-              // Scalar prediction also applies without a program journal.
-              // Reserve its receiver/capabilities before context success,
-              // while CPU preparation can still refuse this cold admission.
-              prepareScalarState(b,true);
-              // Losses of this renderer before now belong to earlier owners.
-              observeRendererLoss(b);
-              if (!source) return 0;
-              else if (b.gl === source.gl) {
-                if (this.gl.shareObjects(pid,b.sessionId,source.sessionId)) return 0;
-                failure = -22;
-              }
-            }
-          } catch (caught) { rethrowNativeGlFault(caught);
-            // An unacknowledged target must not retain membership or names.
-          }
-          this.releaseClaimedKmsCanvas(pid, b.sessionId);
-          this.gl.destroyContext(pid, b.sessionId);
-          b.canvas = previousCanvas;
-          return failure;
+          return this.#createGlContext(b, ctxId, shareContextId, robustAccess);
         },
         host_gl_destroy_context: (pid: number, ctxId: number): void => {
           const b = this.gl.getContext(pid, ctxId);
@@ -3495,24 +3872,10 @@ export class WasmPosixKernel {
             const creation = {surfaceId, kind:view.getUint32(0,true), width:view.getUint32(4,true),
               height:view.getUint32(8,true), configId:view.getUint32(12,true), targetBoId:view.getUint32(16,true)};
             if (!validSurfaceCreation(creation)) return -22;
-            if (b.surfaceId !== null || this.gl.getSurface(pid,surfaceId)) return -16;
-            let canvas = b.canvas;
-            if (!canvas && this.#isMasterGlBinding(b)) {
-              const crtc = this.kms.masterCrtcForFile(b.displayFileId) ?? this.callbacks.getKmsCrtcIds?.()[0];
-              if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
-            }
-            const result = prepareSurfaceCreation(b, creation, this.gl.gpuBo(creation.targetBoId) ?? undefined, canvas, gl => {
-              this.gl_muxers.get(gl)?.captureCurrentErrors();
-            }, () => this.#sharedGlContext());
-            const prepared = result.prepared;
-            if (!prepared) return result.rc;
-            try {
-              view.setUint32(4,prepared.width,true); view.setUint32(8,prepared.height,true);
+            return this.#createGlSurface(b, creation, (width, height) => {
+              view.setUint32(4,width,true); view.setUint32(8,height,true);
               this.#writeKernelBytes(destination, bytes);
-              prepared.commit();
-              if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
-              return 0;
-            } finally { prepared.cancel(); }
+            });
           } catch (caught) { rethrowNativeGlFault(caught); return -5; }
         },
         host_gl_update_surface: (
@@ -3580,34 +3943,7 @@ export class WasmPosixKernel {
               } finally { if (!published) muxer.invalidateCurrent(); }
             }
             if (format || pitch) return -22;
-            const target = this.gl.gpuBo(targetId);
-            if (!target || !b.pendingRenderTargetBoId || b.presentTarget
-                || (b.contextId !== null && !b.gl) || target.gl.isContextLost()
-                || (b.gl && b.gl !== target.gl)) return -5;
-            const width = view.getUint32(4, true), height = view.getUint32(8, true);
-            if ((width !== 0 && width !== target.w) || (height !== 0 && height !== target.h)) return -22;
-            if (b.surface.gl && b.surface.gl !== target.gl) return -5;
-            // A multisampled window keeps its multisampled storage while the
-            // BO it resolves into keeps its size; a resized BO needs storage
-            // of the new size, allocated before anything is published.
-            const previous = b.surface.multisample;
-            let multisample = previous;
-            if (b.surface.samples && (!previous || previous.w !== target.w || previous.h !== target.h)) {
-              this.glMuxerFor(target.gl).captureCurrentErrors();
-              const owner = {gl:target.gl,errors:[] as number[]};
-              multisample = allocateMultisampleTarget(owner,b.surface.samples,target.w,target.h);
-              if (!multisample) return !hasNativeRepair(target.gl) && owner.errors.includes(0x505) ? -12 : -5;
-            }
-            let published = false;
-            try {
-              const commit = prepareBorrowedSurfaceTarget(b,target,targetId,multisample);
-              this.gl_muxers.get(target.gl)?.invalidateCurrent();
-              commit(); published = true;
-            } finally {
-              if (!published && multisample && multisample !== previous) retireNativeRetirement(multisample.retirement);
-            }
-            if (previous && previous !== multisample) retireNativeRetirement(previous.retirement);
-            return 0;
+            return this.#retargetGlSurface(b, targetId, view.getUint32(4, true), view.getUint32(8, true));
           } catch (caught) { rethrowNativeGlFault(caught); return -5; }
         },
         host_gl_destroy_surface: (pid: number, surfaceId: number, sessionId?: number): void => {
@@ -3620,54 +3956,7 @@ export class WasmPosixKernel {
         host_gl_make_current: (
           pid: number, ctxId: number, drawId: number, readId: number, sessionId: number,
         ): number => {
-          ctxId >>>= 0; drawId >>>= 0; readId >>>= 0;
-          const b = this.gl.get(pid, sessionId);
-          if (b?.gl && glSubmitExecuting(this.gl_muxers.get(b.gl))) return -5;
-          const operation = b?.operations.tryBeginImmediate("make-current");
-          if (b && !operation) return -5;
-          try {
-          if (b && interruptUniformUpload(b)) return -5;
-          if (ctxId === 0) {
-            if (drawId !== 0 || readId !== 0) return -22;
-            // Revoking a kernel binding does not alter the cached native
-            // context or wait on a renderer.
-            try {
-              if (b) {
-                const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
-                const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
-                const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer);
-                releaseSurfaceResources(b); b.currentDrawable = null;
-                if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) muxer!.invalidateFramebuffers(b);
-              }
-              return 0;
-            } catch (caught) { if (b?.gl) this.glMuxerFor(b.gl).invalidateCurrent(); rethrowNativeGlFault(caught); return -5; }
-          }
-          if (!b || b.contextId !== ctxId || !b.gl) return -5;
-          if ((drawId === 0) !== (readId === 0)) return -22;
-          const surfaces = drawId === 0 ? null : resolveDrawableSurfaces(this.gl,b,drawId,readId);
-          if (drawId !== 0 && !surfaces) return -22;
-          // EGL 1.5 section 3.7.3: EGL_CONTEXT_LOST after a renderer loss.
-          if (rendererLost(b)) return RENDERER_LOST;
-          const size = surfaces?.draw.surfaceSize;
-          const target = this.gl.gpuBo(surfaces?.draw.pendingRenderTargetBoId ?? 0);
-          const drawable = {
-            drawSurfaceId: drawId, readSurfaceId: readId,
-            width: drawId === 0 ? 0 : size?.width ?? target?.w ?? b.canvas?.width ?? 0,
-            height: drawId === 0 ? 0 : size?.height ?? target?.h ?? b.canvas?.height ?? 0,
-          };
-          if (!validCurrentDrawable(drawable)) return -22;
-          try {
-            const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
-            const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
-            const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer,drawable);
-            if (!applyCurrentDrawable(b, drawable, surfaces ?? undefined)) {
-              muxer?.invalidateCurrent();
-              return -12;
-            }
-            if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) muxer!.invalidateFramebuffers(b);
-          } catch (caught) { if (b.gl) this.glMuxerFor(b.gl).invalidateCurrent(); rethrowNativeGlFault(caught); return -5; }
-          return 0;
-          } finally { operation?.finish(); }
+          return this.#makeGlCurrent(pid, ctxId, drawId, readId, sessionId);
         },
         host_gl_submit: (
           pid: number, offset: KernelPointer, length: KernelPointer, sessionId?: number,
@@ -3711,15 +4000,7 @@ export class WasmPosixKernel {
               return -5; // EIO
             }
           }
-          let frame: SubmitFrame;
-          try { frame = new SubmitFrame(b.cmdbufView,submission.offset,submission.length); }
-          catch (caught) { rethrowNativeGlFault(caught); return -12; } // ENOMEM: no submission has been admitted.
-          const validation = frame.validate(validateCommandBuffer);
-          if (validation < 0) { frame.discard(); return validation; }
-          if (!this.prepareForeignRetirements(b)) { frame.discard(); return -5; }
-          try { this.gl_submit_queue.enqueue(b,frame); }
-          catch (caught) { frame.discard(); rethrowNativeGlFault(caught); return -12; }
-          return this.drainGlSubmits();
+          return this.#submitGlCommands(b, b.cmdbufView, submission.offset, submission.length);
         },
         host_gl_present: (pid: number, sessionId?: number): number => {
           // A lost WebGL context silently no-ops every GL call, so a
@@ -3800,6 +4081,7 @@ export class WasmPosixKernel {
           inPtr: KernelPointer, inLen: KernelPointer,
           outPtr: KernelPointer, outLen: KernelPointer, sessionId?: number,
         ): number => {
+          const query = (): number => {
           const b = this.gl.get(pid, sessionId);
           if (!b || (!b.gl && op !== QOP_SURFACE_CAPABILITIES && !isFenceQuery(op)
             && op !== QOP_EXPORT_FENCE)) return -1;
@@ -3978,6 +4260,33 @@ export class WasmPosixKernel {
             return written;
           } finally { preparedFence?.candidate?.cancel(); }
           } finally { operation.finish(); }
+          };
+          const tap = this.glQueryTap;
+          if (tap === null) return query();
+          if (tap.mode === "record") {
+            const rc = query();
+            tap.record(
+              op,
+              rc,
+              rc > 0 ? this.#readKernelBytes(outPtr, rc) : new IntrinsicUint8Array(0),
+            );
+            return rc;
+          }
+          // The recorded answer is the guest-visible one. The local query
+          // still runs, when this replica has a context, for what it changes
+          // in that context; a replica without one answers from the log.
+          const answer = tap.take(op);
+          if (this.gl.get(pid, sessionId)?.gl) query();
+          if (answer.rc > 0) {
+            if (answer.rc > this.#checkedKernelIndex(outLen, "host_gl_query output length")) {
+              throw new Error(`replayed GL query 0x${op.toString(16)} answers ${answer.rc} bytes, more than the guest asked for`);
+            }
+            this.#writeKernelBytes(
+              this.#rustLentKernelDestination(outPtr, outLen, "host_gl_query destination"),
+              subarrayUint8Array(answer.bytes, 0, answer.rc),
+            );
+          }
+          return answer.rc;
         },
         // DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: upload a CPU-tier bo's
         // pixels (canonical storage: the DRI registry SAB) into a

@@ -417,6 +417,118 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
     expect(events.at(-1)).toBe("100:1:destroy");
     expect(reg.pixelView(1)).toBeUndefined();
   });
+
+  it("snapshot flushes the writer's memory before copying the pixels out", () => {
+    const mem = newMemory();
+    const reg = new GbmBoRegistry({
+      getProcessMemory: (pid) => pid === 100 ? mem : undefined,
+    });
+    reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, mem);
+    new Uint8Array(mem.buffer, BO_ADDR, BO_SIZE).fill(0xab);
+
+    const [snapshot] = reg.snapshot();
+
+    expect(snapshot!.bo_id).toBe(1);
+    expect(snapshot!.pids).toEqual([100]);
+    expect(snapshot!.bindings).toEqual([{ pid: 100, addr: BO_ADDR, len: BO_SIZE }]);
+    expect(snapshot!.pixels.byteLength).toBe(BO_SIZE);
+    expect(snapshot!.pixels[0]).toBe(0xab);
+
+    // The copy leaves the running machine's canonical storage in place.
+    new Uint8Array(mem.buffer, BO_ADDR, BO_SIZE).fill(0xcd);
+    expect(snapshot!.pixels[0]).toBe(0xab);
+    expect(reg.pixelView(1)![0]).toBe(0xab);
+  });
+
+  it("restore rebuilds the bo, its binding, and its pixels", () => {
+    const mem = newMemory();
+    const source = new GbmBoRegistry({
+      getProcessMemory: (pid) => pid === 100 ? mem : undefined,
+    });
+    source.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    source.bind(100, 1, BO_ADDR, BO_SIZE);
+    source.primeBindFromSab(100, 1, mem);
+    new Uint8Array(mem.buffer, BO_ADDR, BO_SIZE).fill(0xab);
+
+    const target = new GbmBoRegistry({
+      getProcessMemory: (pid) => pid === 100 ? newMemory() : undefined,
+    });
+    target.restore(source.snapshot());
+
+    expect(target.get(100, 1)).toEqual({
+      pid: 100,
+      bo_id: 1,
+      size: BO_SIZE,
+      w: 16,
+      h: 16,
+      stride: 64,
+      binding: { addr: BO_ADDR, len: BO_SIZE },
+    });
+    expect(target.pixelView(1)![0]).toBe(0xab);
+  });
+
+  it("restore lets a restored mapping publish its next write and unbind", () => {
+    const mem = newMemory();
+    const source = new GbmBoRegistry({
+      getProcessMemory: (pid) => pid === 100 ? mem : undefined,
+    });
+    source.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    source.bind(100, 1, BO_ADDR, BO_SIZE);
+    source.primeBindFromSab(100, 1, mem);
+    new Uint8Array(mem.buffer, BO_ADDR, BO_SIZE).fill(0xab);
+    source.syncToSab(1);
+
+    const restoredMem = newMemory();
+    new Uint8Array(restoredMem.buffer).set(new Uint8Array(mem.buffer));
+    const target = new GbmBoRegistry({
+      getProcessMemory: (pid) => pid === 100 ? restoredMem : undefined,
+    });
+    target.restore(source.snapshot());
+    new Uint8Array(restoredMem.buffer, BO_ADDR, 1).fill(0xcd);
+
+    target.unbind(100, 1);
+
+    expect(target.pixelView(1)![0]).toBe(0xcd);
+    expect(target.pixelView(1)![1]).toBe(0xab);
+  });
+
+  it("restore refuses a mapping whose process has no memory", () => {
+    const mem = newMemory();
+    const source = new GbmBoRegistry({
+      getProcessMemory: (pid) => pid === 100 ? mem : undefined,
+    });
+    source.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    source.bind(100, 1, BO_ADDR, BO_SIZE);
+
+    expect(() => new GbmBoRegistry().restore(source.snapshot())).toThrow(
+      "GBM BO 1: restored pid 100 has no process memory to map",
+    );
+  });
+
+  it("restore replaces every bo the target already held", () => {
+    const target = new GbmBoRegistry();
+    target.create({ pid: 7, bo_id: 9, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+
+    target.restore([]);
+
+    expect(target.get(7, 9)).toBeUndefined();
+    expect(target.pixelView(9)).toBeUndefined();
+  });
+
+  it("restore gives each bo its own storage, unshared with the snapshot", () => {
+    const source = new GbmBoRegistry();
+    source.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    const snapshot = source.snapshot();
+
+    const target = new GbmBoRegistry();
+    target.restore(snapshot);
+    target.pixelView(1)!.fill(0xab);
+
+    expect(snapshot[0]!.pixels[0]).toBe(0);
+    expect(source.pixelView(1)![0]).toBe(0);
+  });
 });
 
 describe("GbmBoRegistry — foreign-texture coherence helpers", () => {

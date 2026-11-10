@@ -140,23 +140,35 @@ export function encodePeerSignal(
   return code;
 }
 
+function readPeerSignal(code: string): Signal {
+  const trimmed = code.trim();
+  if (trimmed.length > MAX_CODE_LENGTH || !trimmed.startsWith(CODE_PREFIX)) {
+    throw new Error("this is not a bounded Kandelo connect code");
+  }
+  try {
+    const bytes = Uint8Array.from(atob(trimmed.slice(CODE_PREFIX.length)), (c) => c.charCodeAt(0));
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new Error("the Kandelo connect code is malformed");
+  }
+}
+
+/** The purpose a connect code declares, so a receiver can route it to its consumer. */
+export function peerSignalPurpose(code: string): string {
+  const signal = readPeerSignal(code);
+  if (!signal || typeof signal.purpose !== "string") {
+    throw new Error("the Kandelo connect code declares no purpose");
+  }
+  return signal.purpose;
+}
+
 export function decodePeerSignal(
   code: string,
   declaration: PeerConnectionDeclaration,
   type: "offer" | "answer",
 ): RTCSessionDescriptionInit {
   validateDeclaration(declaration);
-  const trimmed = code.trim();
-  if (trimmed.length > MAX_CODE_LENGTH || !trimmed.startsWith(CODE_PREFIX)) {
-    throw new Error("this is not a bounded Kandelo connect code");
-  }
-  let signal: Signal;
-  try {
-    const bytes = Uint8Array.from(atob(trimmed.slice(CODE_PREFIX.length)), (c) => c.charCodeAt(0));
-    signal = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  } catch {
-    throw new Error("the Kandelo connect code is malformed");
-  }
+  const signal = readPeerSignal(code);
   if (!signal || signal.type !== type || typeof signal.sdp !== "string" || !signal.sdp) {
     throw new Error(`the connect code must contain a ${type} with SDP`);
   }

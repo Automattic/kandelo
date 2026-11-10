@@ -7,7 +7,7 @@ import { resolveBinary } from "../src/binary-resolver";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { addIncompatibleForkFixture, addInitialLaunchFixtures } from "./fixtures/program-compatibility";
 
-const directory = new URL("../../abi/program-fixtures/v56/", import.meta.url);
+const directory = new URL("../../abi/program-fixtures/v57/", import.meta.url);
 const manifest = JSON.parse(readFileSync(new URL("manifest.json", directory), "utf8")) as {
   version: number;
   programAbi: number;
@@ -30,9 +30,9 @@ describe("supported program baseline: unchanged previously compiled programs", (
   const retired = readFileSync(new URL("echo.wasm", retiredDirectory));
   beforeAll(async () => {
     expect(manifest.version).toBe(1);
-    expect(manifest.programAbi).toBe(56);
+    expect(manifest.programAbi).toBe(57);
     const baseline = JSON.parse(readFileSync(new URL("../../abi/supported-program-baseline.json", import.meta.url), "utf8"));
-    expect(baseline.abi_version).toBe(56);
+    expect(baseline.abi_version).toBe(57);
     expect(manifest.programContractDigest).toBe(baseline.program_contract_digest);
     expect(manifest.fixtures.map(fixture => fixture.name).sort()).toEqual(Object.keys(markers).sort());
     const image = KandeloImageFs.create();

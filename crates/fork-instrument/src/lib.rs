@@ -51,9 +51,18 @@ pub struct Options {
     /// every function import and unresolved reference dispatch becomes a
     /// possible cross-instance fork boundary.
     pub entry_import: String,
+    /// A second seed import, added to the closure beside `entry_import`
+    /// rather than replacing it. Format: `module.field` (e.g.
+    /// `kernel.kernel_checkpoint`). A program that never forks has no other
+    /// seed. Discovery walks a seed's callers only, so naming the checkpoint
+    /// import through `entry_import` would drop `kernel_fork` from the
+    /// closure and leave its call site without unwind transport. The fork
+    /// capability claim never sees this seed. See [`streaming::checkpoint`].
+    pub checkpoint_import: Option<String>,
     /// Stop the unwind at fork boundaries (sinks) and leave the frames above
-    /// them uninstrumented; see [`sink`]. `--no-sinks` restores the full
-    /// closure (for comparison and diagnosis).
+    /// them uninstrumented; see [`sink`]. Also instrument only the frames a
+    /// checkpoint unwinds. `--no-sinks` restores the full closure (for
+    /// comparison and diagnosis).
     pub sinks: bool,
     /// Use the compiler facts in the module's [`facts::SECTION`] for the
     /// sink analysis when present. `false` (`--no-facts`) ignores them, for
@@ -99,6 +108,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             entry_import: "kernel.kernel_fork".into(),
+            checkpoint_import: None,
             sinks: true,
             facts: true,
             effective_types: true,

@@ -25,7 +25,7 @@ test("isolates Rust metadata allocation failure and recovers offline", async ({ 
   });
   // Exercise preparation limits with an admitted program. A retired ABI-55
   // input would fail version admission first and leave these paths untested.
-  const source = Array.from(readFileSync(new URL("../../../abi/program-fixtures/v56/raw-fork.wasm", import.meta.url)));
+  const source = Array.from(readFileSync(new URL("../../../abi/program-fixtures/v57/raw-fork.wasm", import.meta.url)));
   const run = (bytes: number[], changes = {}) => page.evaluate(async ({ bytes, changes }) => {
     return (window as Window & { __programPolicy: ProgramPolicyFixture }).__programPolicy.inspect(bytes, changes);
   }, { bytes, changes });

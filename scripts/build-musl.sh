@@ -444,7 +444,7 @@ echo "==> Building __main_void wrapper..."
 # when __main_void is undefined (a non-standard `void main()`), keeping its
 # void-typed `main` reference out of every int-main program's link.
 "$CC" --target=$TARGET -O2 -c \
-    "$OVERLAY_DIR/src/env/__main_void_adapter.c" \
+    src/env/__main_void_adapter.c \
     -o "$SYSROOT/lib/__main_void_adapter.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/__main_void_adapter.o"
 
