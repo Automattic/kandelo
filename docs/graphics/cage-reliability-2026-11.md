@@ -1,20 +1,20 @@
 # Cage reliability follow-up — 2026-11-09
 
-Status: draft follow-up. Startup and terminal-handoff repairs are implemented.
-At the maintainer's request, Cage now chooses a modest guest display bounded
-by 1280×720 reference pixels, including on HiDPI displays. The new normal
-image passes rendering/input/resize/exit checks at browser densities 1 and 2
-in all three engines. Cursor observations support this pixel-quality tradeoff;
-they do not establish a same-resolution renderer speedup. The underlying
-high-resolution whole-buffer coherence cost and the earlier intermittent
-WebKit audio-retirement finding remain open. The default development-relay
-memory gate now passes 15/18; all three mixed cases stop at a required DOS
-archive fetch returning HTTP 502. A direct production-proxy run passes 12/18
-and fails browser boot-data fetches. The verified same-origin relay
-configuration passes the complete 18/18 browser memory gate, with all
-source/ownership/Node/Bun checks green. Each transport retains its separate
-verdict. The original broader graphical
-run is retained at 32/36; corrected affected cases pass 12/12.
+Status (2026-11-10): draft follow-up. Startup and terminal-handoff repairs,
+shared graphics-buffer comparison/copy corrections, and a CSS-sized Cage
+display are implemented. Cage now uses one guest pixel per CSS pixel instead
+of the earlier fixed 1280×720 cap. A frozen partial development image passes
+15/15 Cage checks across Chromium, Firefox and WebKit, including density 1/2
+and six live restarts per engine. Actual Steel Sky rendering and a visible
+game-menu response pass in both Cage and Sway on Chromium.
+
+The final canonical builds, destination-main comparison, broad Node/browser
+benchmarks and complete memory gate remain in progress. These partial-image
+results are not canonical-product or native-feel acceptance. The earlier
+cap-only same-origin-relay memory result was 18/18; its default-relay 15/18,
+direct-public-relay 12/18, broader graphics 32/36 and corrected affected
+12/12 results below remain separate historical observations. Earlier
+intermittent unpacking, Sway and WebKit audio-retirement findings are retained.
 
 This delivery investigates work package R1 after #1594. It does not activate
 B2–B6/C1–C3 or claim full graphics/native-feel acceptance.
@@ -1029,3 +1029,91 @@ screenshots and qualifications are retained in
 `.context/cage-sway-20261109/`. No served source, package, ABI or display policy
 was changed during this investigation. Shared-buffer coherence repair and a
 matched Steel Sky gameplay measurement remain outstanding.
+
+
+## Shared-buffer repair and CSS-sized development preview — 2026-11-10
+
+The implementation at `b5727e7cdb` reuses the worker's existing quiescent
+mutation epochs: a mapping comparison is reusable only while its exact
+original address space and every thread remain parked. Running or unknown
+writers still compare. Readers track canonical revisions and import only
+changed byte runs. Their baselines come from stable canonical bytes, including
+when a device publishes pixels, so a guest store made during a copy remains
+visible at the next publication boundary. Unrestricted mutable canonical
+views keep conservative refresh behavior.
+
+Large mappings use the existing read-only multi-memory Wasm comparator on
+64 KiB blocks. Each mapping has an independent nonshared baseline whose
+initial and maximum sizes equal its actual rounded allocation. Dirty blocks
+retain exact byte-run publication. Instances and exports are synchronous
+locals, never cached owners of process memories. Small or unknown-provenance
+mappings keep the original JavaScript comparison; the separate loop-unrolling
+experiment was removed. No guest/kernel ABI, global memory ceiling, Cage,
+wlroots or other ported-program behavior is patched.
+
+Cage's image metadata now declares `displayScale: 1`, with shell recipe
+revision 90 after integration of pinned main
+`e053470fd8140073d811b64eaa6f62cf90978a5c`. Its initial mode follows the CSS pane
+within existing connector bounds. There is no Retina supersampling or fixed
+1280×720 enlargement. Existing active-mode resize behavior and the generic
+optional `displayMaxSize` API remain unchanged.
+
+The running development preview is an immutable checkout of that source,
+composed through `./run.sh partial shell cage wayland-demo bibata-cursor-theme
+scummvm curl unzip sway swaybg foot`. It carries the rootfs base and those
+nine packages, with Cage/wlterm, Sway/Foot and the ordinary
+`scummvm-play steel-sky` path; other canonical activities are omitted.
+
+| Development artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Partial shell image | 730,625 | `0a7688378b9261802d419280d31b57312025e0161a94f5d4f12b3491236570c9` |
+
+The HTTP-served image matches that identity. The local preview is
+`http://127.0.0.1:56512/?vfs=%2F%40kandelo-partial%2Fimage.vfs.zst&profile=cage`;
+changing `profile` to `sway` selects its Sway session. Earlier published
+previews remain frozen and available.
+
+Current checks, with zero test retries:
+
+- Focused source selection: 429/429 pass; the separate native/coherence
+  selection passes 13/13, including real memory32/memory64, concurrent stores
+  and partial-unmap baseline ownership. These selections overlap.
+- Development-image Chromium smoke: 1/1 pass, visible 1920×972 shell and
+  keyboard repaint, no page errors.
+- The tracked Cage spec against explicit development-image URLs: 15/15 pass
+  on Chromium, Firefox and WebKit, including rendering/input/resize/exit and
+  six live restart cycles per engine. Guest mode is 1920×972 at browser
+  density 1 and 2. Chromium and Firefox independently report native widths
+  1920 and 3840 respectively for the same 1920-CSS-pixel pane; WebKit's test
+  checks emulated density without that native-box proof.
+- Actual Steel Sky: Chromium Cage and Sway both run
+  `/usr/libexec/scummvm --config=/home/maker/scummvm.ini sky`, paint the game
+  and open the visible ScummVM menu through trusted Ctrl+F5 input, 2/2 pass.
+  The original menu-observer run failed 2/2 because it acted while the game
+  window was still loading. The corrected fixture waits for assets and actual
+  colored game pixels, then focuses that native window. No runtime change or
+  retry allowance was used to obtain the corrected result.
+
+These are functional checks under concurrent build load, not gameplay FPS or
+native latency measurements. An earlier Chromium screen counted 16 versus 60
+cursor updates during roughly one-second 1920-wide pointer sweeps, but used
+an older compatible image and a candidate before removal of the JavaScript
+unrolling experiment. It remains preliminary evidence rather than the final
+pinned-main performance comparison. WebKit's differently timed input sweeps
+cannot support an FPS comparison.
+
+The first unmodified main control at `3cc6e753e8` failed a NetHack guest build
+with `make: duping jobs pipe: Resource temporarily unavailable`. A separate
+scalar-completion diagnostic got past that step without reproducing it; its
+unneeded finalization was intentionally interrupted and earns no full-build
+pass. The fresh uninstrumented control at pinned main `e053470fd8` also got
+past NetHack and is preparing the remaining normal SDK/benchmark inputs.
+Neither observation diagnoses or repairs the original failure. Earlier
+experimental Steel Sky unpacking write errors also remain recorded; they did
+not recur in the current four development-image launches.
+
+Raw commands, exact case reports, source/image/HTTP receipts and inspected
+screenshots are retained under `.context/cage-coherence-20261109/`. Canonical
+product checks, all nine enabled benchmark suites on both hosts, full current
+memory/lifecycle validation and the remaining R1 acceptance work are pending.
+B2–B6/C1–C3 remain paused; this does not close V1/P1 or establish native feel.
