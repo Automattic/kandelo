@@ -1,0 +1,602 @@
+--- a/js/public/Id.h
++++ b/js/public/Id.h
+@@ -130,6 +130,7 @@
+   }
+ 
+   bool isPrivateName() const;
++  bool isEmbeddingPrivateName() const;
+ 
+   bool isWellKnownSymbol(JS::SymbolCode code) const;
+ 
+@@ -361,6 +362,7 @@
+   JS::Symbol* toSymbol() const { return id().toSymbol(); }
+ 
+   bool isPrivateName() const { return id().isPrivateName(); }
++  bool isEmbeddingPrivateName() const { return id().isEmbeddingPrivateName(); }
+ 
+   bool isWellKnownSymbol(JS::SymbolCode code) const {
+     return id().isWellKnownSymbol(code);
+--- a/js/public/Symbol.h
++++ b/js/public/Symbol.h
+@@ -30,6 +30,17 @@
+  */
+ extern JS_PUBLIC_API Symbol* NewSymbol(JSContext* cx,
+                                        Handle<JSString*> description);
++
++/**
++ * Create a fresh, engine-owned embedding-private key. Ordinary JavaScript
++ * cannot manufacture this kind through Symbol() or the symbol registry.
++ * Properties named by it are own-only, omitted from public key collection,
++ * and independent of object seal/freeze state. It is distinct from #private.
++ * Native DefineProperty can initialize a scripted proxy's hidden entry;
++ * ordinary assignment must not create that entry on a proxy.
++ */
++extern JS_PUBLIC_API Symbol* NewEmbeddingPrivateSymbol(
++    JSContext* cx, Handle<JSString*> description);
+ 
+ /**
+  * Symbol.for as specified in ES6.
+@@ -74,6 +85,7 @@
+ #undef JS_DEFINE_SYMBOL_ENUM
+   Limit,
+   WellKnownAPILimit = JS::shadow::Symbol::WellKnownAPILimit,
++  EmbeddingPrivateSymbol = 0xfffffffc,  // native embedding keys, not #fields.
+   PrivateNameSymbol = 0xfffffffd,  // created by the #PrivateName syntax.
+   InSymbolRegistry =
+       0xfffffffe,            // created by Symbol.for() or JS::GetSymbolFor()
+--- a/js/src/jit/CacheIR.cpp
++++ b/js/src/jit/CacheIR.cpp
+@@ -371,7 +371,7 @@
+   }
+ 
+   // Private fields are defined on a separate expando object.
+-  if (id.isPrivateName()) {
++  if (id.isPrivateName() || id.isEmbeddingPrivateName()) {
+     return ProxyStubType::Generic;
+   }
+ 
+--- a/js/src/jsapi.cpp
++++ b/js/src/jsapi.cpp
+@@ -3610,6 +3610,16 @@
+   return Symbol::new_(cx, SymbolCode::UniqueSymbol, description);
+ }
+ 
++JS_PUBLIC_API JS::Symbol* JS::NewEmbeddingPrivateSymbol(
++    JSContext* cx, HandleString description) {
++  AssertHeapIsIdle();
++  CHECK_THREAD(cx);
++  if (description) {
++    cx->check(description);
++  }
++  return Symbol::new_(cx, SymbolCode::EmbeddingPrivateSymbol, description);
++}
++
+ JS_PUBLIC_API JS::Symbol* JS::GetSymbolFor(JSContext* cx, HandleString key) {
+   AssertHeapIsIdle();
+   CHECK_THREAD(cx);
+--- a/js/src/proxy/Proxy.cpp
++++ b/js/src/proxy/Proxy.cpp
+@@ -38,7 +38,7 @@
+ static bool ProxySetOnExpando(JSContext* cx, HandleObject proxy, HandleId id,
+                               HandleValue v, HandleValue receiver,
+                               ObjectOpResult& result) {
+-  MOZ_ASSERT(id.isPrivateName());
++  MOZ_ASSERT(id.isPrivateName() || id.isEmbeddingPrivateName());
+ 
+   // For BaseProxyHandler, private names are stored in the expando object.
+   RootedObject expando(cx, proxy->as<ProxyObject>().expando().toObjectOrNull());
+@@ -87,6 +87,11 @@
+   // For BaseProxyHandler, private names are stored in the expando object.
+   RootedObject expando(cx, proxy->as<ProxyObject>().expando().toObjectOrNull());
+ 
++  // Missing embedding-private entries are undefined, unlike #private fields.
++  if (!expando && id.isEmbeddingPrivateName()) {
++    vp.setUndefined();
++    return true;
++  }
+   // We must have the expando, or GetPrivateElemOperation didn't call
+   // hasPrivate first.
+   if (!expando) {
+@@ -102,6 +107,10 @@
+   if (!GetOwnPropertyDescriptor(cx, expando, id, &desc)) {
+     return false;
+   }
++  if (desc.isNothing() && id.isEmbeddingPrivateName()) {
++    vp.setUndefined();
++    return true;
++  }
+   // We must have the object, same reasoning as the expando.
+   if (desc.isNothing()) {
+     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+@@ -139,7 +148,7 @@
+ static bool ProxyDefineOnExpando(JSContext* cx, HandleObject proxy, HandleId id,
+                                  Handle<PropertyDescriptor> desc,
+                                  ObjectOpResult& result) {
+-  MOZ_ASSERT(id.isPrivateName());
++  MOZ_ASSERT(id.isPrivateName() || id.isEmbeddingPrivateName());
+ 
+   // For BaseProxyHandler, private names are stored in the expando object.
+   RootedObject expando(cx, proxy->as<ProxyObject>().expando().toObjectOrNull());
+@@ -215,7 +224,8 @@
+     return policy.returnValue();
+   }
+ 
+-  if (handler->useProxyExpandoObjectForPrivateFields() && id.isPrivateName()) {
++  if (handler->useProxyExpandoObjectForPrivateFields() &&
++      (id.isPrivateName() || id.isEmbeddingPrivateName())) {
+     return ProxyGetOwnPropertyDescriptorFromExpando(cx, proxy, id, desc);
+   }
+   return handler->getOwnPropertyDescriptor(cx, proxy, id, desc);
+@@ -229,6 +239,12 @@
+     return false;
+   }
+   const BaseProxyHandler* handler = proxy->as<ProxyObject>().handler();
++
++  if (id.isEmbeddingPrivateName() && handler->throwOnPrivateField()) {
++    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
++                              JSMSG_ILLEGAL_PRIVATE_EXOTIC);
++    return false;
++  }
+ 
+   // We shouldn't be definining a private field if we are supposed to throw;
+   // this ought to have been caught by CheckPrivateField.
+@@ -246,7 +262,8 @@
+   // of proxy involved, and so take a different path compared to regular
+   // [[Get]] operations. For example, scripted handlers don't fire traps
+   // when accessing private fields (because of the WeakMap semantics)
+-  if (id.isPrivateName() && handler->useProxyExpandoObjectForPrivateFields()) {
++  if ((id.isPrivateName() || id.isEmbeddingPrivateName()) &&
++      handler->useProxyExpandoObjectForPrivateFields()) {
+     return ProxyDefineOnExpando(cx, proxy, id, desc, result);
+   }
+ 
+@@ -283,6 +300,15 @@
+       result.succeed();
+     }
+     return ok;
++  }
++
++  if (id.isEmbeddingPrivateName() &&
++      handler->useProxyExpandoObjectForPrivateFields()) {
++    RootedObject expando(cx, proxy->as<ProxyObject>().expando().toObjectOrNull());
++    if (!expando) {
++      return result.succeed();
++    }
++    return DeleteProperty(cx, expando, id, result);
+   }
+ 
+   // Private names shouldn't take this path, as deleting a private name
+@@ -394,6 +420,11 @@
+     return policy.returnValue();
+   }
+ 
++  if (id.isEmbeddingPrivateName() &&
++      handler->useProxyExpandoObjectForPrivateFields()) {
++    return ProxyHasOnExpando(cx, proxy, id, bp);
++  }
++
+   // Private names shouldn't take this path, but only hasOwn;
+   MOZ_ASSERT(!id.isPrivateName());
+ 
+@@ -442,7 +473,8 @@
+   // If the handler is supposed to throw, we'll never have a private field so
+   // simply return, as we shouldn't throw an invalid security error when
+   // checking for the presence of a private field (WeakMap model).
+-  if (id.isPrivateName() && handler->throwOnPrivateField()) {
++  if ((id.isPrivateName() || id.isEmbeddingPrivateName()) &&
++      handler->throwOnPrivateField()) {
+     return true;
+   }
+ 
+@@ -455,7 +487,8 @@
+   // of proxy involved, and so take a different path compared to regular
+   // [[Get]] operations. For example, scripted handlers don't fire traps
+   // when accessing private fields (because of the WeakMap semantics)
+-  if (id.isPrivateName() && handler->useProxyExpandoObjectForPrivateFields()) {
++  if ((id.isPrivateName() || id.isEmbeddingPrivateName()) &&
++      handler->useProxyExpandoObjectForPrivateFields()) {
+     return ProxyHasOnExpando(cx, proxy, id, bp);
+   }
+ 
+@@ -493,6 +526,12 @@
+   }
+   const BaseProxyHandler* handler = proxy->as<ProxyObject>().handler();
+ 
++  if (id.isEmbeddingPrivateName() && handler->throwOnPrivateField()) {
++    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
++                              JSMSG_ILLEGAL_PRIVATE_EXOTIC);
++    return false;
++  }
++
+   // Shouldn't have gotten here, as this should have been caught earlier.
+   MOZ_ASSERT_IF(id.isPrivateName(), !handler->throwOnPrivateField());
+ 
+@@ -506,7 +545,8 @@
+   // of proxy involved, and so take a different path compared to regular
+   // [[Get]] operations. For example, scripted handlers don't fire traps
+   // when accessing private fields (because of the WeakMap semantics)
+-  if (id.isPrivateName() && handler->useProxyExpandoObjectForPrivateFields()) {
++  if ((id.isPrivateName() || id.isEmbeddingPrivateName()) &&
++      handler->useProxyExpandoObjectForPrivateFields()) {
+     return ProxyGetOnExpando(cx, proxy, receiver, id, vp);
+   }
+ 
+@@ -571,6 +611,12 @@
+ 
+   const BaseProxyHandler* handler = proxy->as<ProxyObject>().handler();
+ 
++  if (id.isEmbeddingPrivateName() && handler->throwOnPrivateField()) {
++    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
++                              JSMSG_ILLEGAL_PRIVATE_EXOTIC);
++    return false;
++  }
++
+   // Should have been handled already.
+   MOZ_ASSERT_IF(id.isPrivateName(), !handler->throwOnPrivateField());
+ 
+@@ -588,7 +634,8 @@
+   //
+   // This doesn't interact with hasPrototype, as PrivateFields are always
+   // own propertiers, and so we never deal with prototype traversals.
+-  if (id.isPrivateName() && handler->useProxyExpandoObjectForPrivateFields()) {
++  if ((id.isPrivateName() || id.isEmbeddingPrivateName()) &&
++      handler->useProxyExpandoObjectForPrivateFields()) {
+     return ProxySetOnExpando(cx, proxy, id, v, receiver, result);
+   }
+ 
+--- a/js/src/vm/Id.cpp
++++ b/js/src/vm/Id.cpp
+@@ -23,6 +23,10 @@
+ 
+ bool JS::PropertyKey::isPrivateName() const {
+   return isSymbol() && toSymbol()->isPrivateName();
++}
++
++bool JS::PropertyKey::isEmbeddingPrivateName() const {
++  return isSymbol() && toSymbol()->isEmbeddingPrivateName();
+ }
+ 
+ bool JS::PropertyKey::isWellKnownSymbol(JS::SymbolCode code) const {
+--- a/js/src/vm/Iteration.cpp
++++ b/js/src/vm/Iteration.cpp
+@@ -212,7 +212,10 @@
+     if (!(flags_ & JSITER_SYMBOLS)) {
+       return true;
+     }
+-    if (!(flags_ & JSITER_PRIVATE) && id.isPrivateName()) {
++    // Even the debugger's class-private enumeration must not reveal native
++    // embedding identities. Ordinary Symbols and #private retain their rules.
++    if (id.isEmbeddingPrivateName() ||
++        (!(flags_ & JSITER_PRIVATE) && id.isPrivateName())) {
+       return true;
+     }
+   } else {
+--- a/js/src/vm/JSObject.cpp
++++ b/js/src/vm/JSObject.cpp
+@@ -677,7 +677,7 @@
+            iter->writable())) {
+         // Private fields on objects don't participate in the frozen state, and
+         // so should be elided from checking for frozen state.
+-        if (iter->key().isPrivateName()) {
++        if (iter->key().isPrivateName() || iter->key().isEmbeddingPrivateName()) {
+           continue;
+         }
+ 
+@@ -1719,7 +1719,10 @@
+     return Proxy::hasOwn(cx, obj, id, result);
+   }
+ 
+-  if (GetOwnPropertyOp op = obj->getOpsGetOwnPropertyDescriptor()) {
++  if (GetOwnPropertyOp op =
++          (!id.isEmbeddingPrivateName() || !obj->is<NativeObject>())
++              ? obj->getOpsGetOwnPropertyDescriptor()
++              : nullptr) {
+     Rooted<mozilla::Maybe<PropertyDescriptor>> desc(cx);
+     if (!op(cx, obj, id, &desc)) {
+       return false;
+@@ -2007,7 +2010,10 @@
+ bool js::GetOwnPropertyDescriptor(
+     JSContext* cx, HandleObject obj, HandleId id,
+     MutableHandle<Maybe<PropertyDescriptor>> desc) {
+-  if (GetOwnPropertyOp op = obj->getOpsGetOwnPropertyDescriptor()) {
++  if (GetOwnPropertyOp op =
++          (!id.isEmbeddingPrivateName() || !obj->is<NativeObject>())
++              ? obj->getOpsGetOwnPropertyDescriptor()
++              : nullptr) {
+     bool ok = op(cx, obj, id, desc);
+     if (ok && desc.isSome()) {
+       desc->assertComplete();
+@@ -2029,7 +2035,10 @@
+                         Handle<PropertyDescriptor> desc,
+                         ObjectOpResult& result) {
+   desc.assertValid();
+-  if (DefinePropertyOp op = obj->getOpsDefineProperty()) {
++  if (DefinePropertyOp op =
++          (!id.isEmbeddingPrivateName() || !obj->is<NativeObject>())
++              ? obj->getOpsDefineProperty()
++              : nullptr) {
+     return op(cx, obj, id, desc, result);
+   }
+   return NativeDefineProperty(cx, obj.as<NativeObject>(), id, desc, result);
+@@ -2043,7 +2052,10 @@
+               getter ? mozilla::Some(getter) : mozilla::Nothing(),
+               setter ? mozilla::Some(setter) : mozilla::Nothing(), attrs));
+ 
+-  if (DefinePropertyOp op = obj->getOpsDefineProperty()) {
++  if (DefinePropertyOp op =
++          (!id.isEmbeddingPrivateName() || !obj->is<NativeObject>())
++              ? obj->getOpsDefineProperty()
++              : nullptr) {
+     return op(cx, obj, id, desc, result);
+   }
+   return NativeDefineProperty(cx, obj.as<NativeObject>(), id, desc, result);
+@@ -2053,7 +2065,10 @@
+                             HandleValue value, unsigned attrs,
+                             ObjectOpResult& result) {
+   Rooted<PropertyDescriptor> desc(cx, PropertyDescriptor::Data(value, attrs));
+-  if (DefinePropertyOp op = obj->getOpsDefineProperty()) {
++  if (DefinePropertyOp op =
++          (!id.isEmbeddingPrivateName() || !obj->is<NativeObject>())
++              ? obj->getOpsDefineProperty()
++              : nullptr) {
+     return op(cx, obj, id, desc, result);
+   }
+   return NativeDefineProperty(cx, obj.as<NativeObject>(), id, desc, result);
+@@ -2135,6 +2150,9 @@
+       return true;
+     }
+ 
++    if (id.isEmbeddingPrivateName()) {
++      break;
++    }
+     if (!GetPrototype(cx, pobj, &pobj)) {
+       return false;
+     }
+--- a/js/src/vm/NativeObject-inl.h
++++ b/js/src/vm/NativeObject-inl.h
+@@ -747,6 +747,13 @@
+     return true;
+   }
+ 
++  // Embedding-private keys are own-only and bypass JSClass resolve hooks.
++  // Report the stop condition to pure lookups as well as get/set/has callers.
++  if (id.isEmbeddingPrivateName()) {
++    propp->setEmbeddingPrivateNotFound();
++    return true;
++  }
++
+   // Some callers explicitily want us to ignore the resolve hook entirely. In
+   // that case, we report the property as NotFound.
+   if constexpr (resolveMode == LookupResolveMode::IgnoreResolve) {
+--- a/js/src/vm/NativeObject.cpp
++++ b/js/src/vm/NativeObject.cpp
+@@ -1170,6 +1170,9 @@
+                                                   Handle<NativeObject*> obj,
+                                                   HandleId id,
+                                                   HandleValue value) {
++  if (id.isEmbeddingPrivateName()) {
++    return true;
++  }
+   JSAddPropertyOp addProperty = obj->getClass()->getAddProperty();
+   if (MOZ_UNLIKELY(addProperty)) {
+     if (!CallJSAddPropertyOp(cx, addProperty, obj, id, value)) {
+@@ -1404,9 +1407,12 @@
+                                               HandleId id, HandleValue v) {
+   MOZ_ASSERT(!id.isInt());
+ 
++  PropertyFlags flags = PropertyFlags::defaultDataPropFlags;
++  if (id.isEmbeddingPrivateName()) {
++    flags.clearFlag(PropertyFlag::Enumerable);
++  }
+   uint32_t slot;
+-  if (!NativeObject::addProperty(cx, obj, id,
+-                                 PropertyFlags::defaultDataPropFlags, &slot)) {
++  if (!NativeObject::addProperty(cx, obj, id, flags, &slot)) {
+     return false;
+   }
+ 
+@@ -1622,12 +1628,16 @@
+   // does not explicitly do this, but the end result is the same. Search for
+   // "fill in" below for places where the filling-in actually occurs.
+   Rooted<PropertyDescriptor> desc(cx, desc_);
++  if (id.isEmbeddingPrivateName()) {
++    desc.setEnumerable(false);
++  }
+ 
+   // Step 2.
+   if (prop.isNotFound()) {
+     // Note: We are sharing the property definition machinery with private
+     //       fields. Private fields may be added to non-extensible objects.
+-    if (!obj->isExtensible() && !id.isPrivateName()) {
++    if (!obj->isExtensible() && !id.isPrivateName() &&
++        !id.isEmbeddingPrivateName()) {
+       return result.fail(JSMSG_CANT_DEFINE_PROP_OBJECT_NOT_EXTENSIBLE);
+     }
+ 
+@@ -1897,7 +1907,7 @@
+   // Step 1 is a redundant assertion, step 3 and later don't apply here.
+ 
+   // Step 2.
+-  if (!obj->isExtensible()) {
++  if (!obj->isExtensible() && !id.isEmbeddingPrivateName()) {
+     return result.fail(JSMSG_CANT_DEFINE_PROP_OBJECT_NOT_EXTENSIBLE);
+   }
+ 
+@@ -2526,6 +2536,9 @@
+   // Pure optimization for the common case. There's no point performing the
+   // lookup in step 2.c again, as our caller just did it for us.
+   if (IsQualified && receiver.isObject() && obj == &receiver.toObject()) {
++    if (id.isEmbeddingPrivateName()) {
++      return DefineNonexistentProperty(cx, obj, id, v, result);
++    }
+     // Ensure that a custom GetOwnPropertyOp, if present, doesn't
+     // introduce additional properties which weren't previously found by
+     // LookupOwnProperty.
+@@ -2772,6 +2785,20 @@
+     return false;
+   }
+ 
++  // Embedding-private deletion never invokes class hooks or author code.
++  if (id.isEmbeddingPrivateName()) {
++    if (prop.isNotFound()) {
++      return result.succeed();
++    }
++    if (!GetPropertyAttributes(obj, prop).configurable()) {
++      return result.failCantDelete();
++    }
++    if (!NativeObject::removeProperty(cx, obj, id)) {
++      return false;
++    }
++    return result.succeed();
++  }
++
+   // Step 2.
+   if (prop.isNotFound()) {
+     // If no property call the class's delProperty hook, passing succeeded
+--- a/js/src/vm/ObjectOperations-inl.h
++++ b/js/src/vm/ObjectOperations-inl.h
+@@ -82,7 +82,10 @@
+  */
+ inline bool HasProperty(JSContext* cx, JS::Handle<JSObject*> obj,
+                         JS::Handle<jsid> id, bool* foundp) {
+-  if (HasPropertyOp op = obj->getOpsHasProperty()) {
++  if (HasPropertyOp op =
++          (!id.isEmbeddingPrivateName() || !obj->is<NativeObject>())
++              ? obj->getOpsHasProperty()
++              : nullptr) {
+     return op(cx, obj, id, foundp);
+   }
+ 
+@@ -106,7 +109,10 @@
+ inline bool GetProperty(JSContext* cx, JS::Handle<JSObject*> obj,
+                         JS::Handle<JS::Value> receiver, JS::Handle<jsid> id,
+                         JS::MutableHandle<JS::Value> vp) {
+-  if (GetPropertyOp op = obj->getOpsGetProperty()) {
++  if (GetPropertyOp op =
++          (!id.isEmbeddingPrivateName() || !obj->is<NativeObject>())
++              ? obj->getOpsGetProperty()
++              : nullptr) {
+     return op(cx, obj, receiver, id, vp);
+   }
+ 
+@@ -290,7 +296,8 @@
+                         JS::Handle<jsid> id, JS::Handle<JS::Value> v,
+                         JS::Handle<JS::Value> receiver,
+                         JS::ObjectOpResult& result) {
+-  if (obj->getOpsSetProperty()) {
++  if (obj->getOpsSetProperty() &&
++      (!id.isEmbeddingPrivateName() || !obj->is<NativeObject>())) {
+     return JSObject::nonNativeSetProperty(cx, obj, id, v, receiver, result);
+   }
+ 
+@@ -353,7 +360,10 @@
+  */
+ inline bool DeleteProperty(JSContext* cx, JS::Handle<JSObject*> obj,
+                            JS::Handle<jsid> id, JS::ObjectOpResult& result) {
+-  if (DeletePropertyOp op = obj->getOpsDeleteProperty()) {
++  if (DeletePropertyOp op =
++          (!id.isEmbeddingPrivateName() || !obj->is<NativeObject>())
++              ? obj->getOpsDeleteProperty()
++              : nullptr) {
+     return op(cx, obj, id, result);
+   }
+ 
+--- a/js/src/vm/PropMap.cpp
++++ b/js/src/vm/PropMap.cpp
+@@ -439,7 +439,7 @@
+                                                  PropertyFlags flags,
+                                                  IntegrityLevel level) {
+   // Private fields are not visible to SetIntegrityLevel.
+-  if (key.isSymbol() && key.toSymbol()->isPrivateName()) {
++  if (key.isPrivateName() || key.isEmbeddingPrivateName()) {
+     return flags;
+   }
+ 
+--- a/js/src/vm/PropertyResult.h
++++ b/js/src/vm/PropertyResult.h
+@@ -25,6 +25,7 @@
+     No,
+     RecursiveResolve,
+     TypedArrayOutOfRange,
++    EmbeddingPrivate,
+   };
+   union {
+     // Set if kind is NativeProperty.
+@@ -46,6 +47,7 @@
+   // prototype chain should be ignored. This occurs for:
+   //  - An out-of-range numeric property on a TypedArrayObject.
+   //  - A resolve hook recursively calling itself as it sets the property.
++  //  - An absent embedding-private key, which is never inherited.
+   bool isNotFound() const { return kind_ == Kind::NotFound; }
+   bool shouldIgnoreProtoChain() const {
+     MOZ_ASSERT(isNotFound());
+@@ -100,6 +102,10 @@
+     kind_ = Kind::NotFound;
+     ignoreProtoChain_ = IgnoreProtoChain::TypedArrayOutOfRange;
+   }
++  void setEmbeddingPrivateNotFound() {
++    kind_ = Kind::NotFound;
++    ignoreProtoChain_ = IgnoreProtoChain::EmbeddingPrivate;
++  }
+   void setRecursiveResolve() {
+     kind_ = Kind::NotFound;
+     ignoreProtoChain_ = IgnoreProtoChain::RecursiveResolve;
+--- a/js/src/vm/Shape.cpp
++++ b/js/src/vm/Shape.cpp
+@@ -330,7 +330,7 @@
+   // extensible, but allow private fields and sparsifying dense elements.
+   MOZ_ASSERT(!id.isVoid());
+   MOZ_ASSERT(!obj->containsPure(id));
+-  MOZ_ASSERT_IF(!id.isPrivateName(),
++  MOZ_ASSERT_IF(!id.isPrivateName() && !id.isEmbeddingPrivateName(),
+                 obj->isExtensible() ||
+                     (id.isInt() && obj->containsDenseElement(id.toInt())));
+   if (!Watchtower::watchPropertyAdd(cx, obj, id)) {
+--- a/js/src/vm/SymbolType.cpp
++++ b/js/src/vm/SymbolType.cpp
+@@ -110,6 +110,9 @@
+     case JS::SymbolCode::WellKnownAPILimit:
+       known("WellKnownAPILimit");
+       break;
++    case JS::SymbolCode::EmbeddingPrivateSymbol:
++      known("EmbeddingPrivateSymbol");
++      break;
+     case JS::SymbolCode::PrivateNameSymbol:
+       known("PrivateNameSymbol");
+       break;
+@@ -158,7 +161,8 @@
+     // All the well-known symbol names are ASCII.
+     description()->dumpCharsNoQuote(out);
+   } else if (code_ == SymbolCode::InSymbolRegistry ||
+-             code_ == SymbolCode::UniqueSymbol) {
++             code_ == SymbolCode::UniqueSymbol ||
++             code_ == SymbolCode::EmbeddingPrivateSymbol) {
+     out.printf(code_ == SymbolCode::InSymbolRegistry ? "Symbol.for("
+                                                      : "Symbol(");
+ 
+--- a/js/src/vm/SymbolType.h
++++ b/js/src/vm/SymbolType.h
+@@ -88,6 +88,11 @@
+   // Symbol created for the #PrivateName syntax.
+   bool isPrivateName() const { return code_ == SymbolCode::PrivateNameSymbol; }
+ 
++  // Nonstandard embedding keys must never acquire language #private semantics.
++  bool isEmbeddingPrivateName() const {
++    return code_ == SymbolCode::EmbeddingPrivateSymbol;
++  }
++
+   static const JS::TraceKind TraceKind = JS::TraceKind::Symbol;
+ 
+   void traceChildren(JSTracer* trc);
+--- a/js/src/vm/ToSource.cpp
++++ b/js/src/vm/ToSource.cpp
+@@ -73,7 +73,8 @@
+   }
+ 
+   MOZ_ASSERT(code == SymbolCode::InSymbolRegistry ||
+-             code == SymbolCode::UniqueSymbol);
++             code == SymbolCode::UniqueSymbol ||
++             code == SymbolCode::EmbeddingPrivateSymbol);
+ 
+   JSStringBuilder buf(cx);
+   if (code == SymbolCode::InSymbolRegistry ? !buf.append("Symbol.for(")

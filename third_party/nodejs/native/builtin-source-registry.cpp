@@ -1,7 +1,7 @@
-#include "builtin-source-registry.h"
-
 #include <algorithm>
 #include <iterator>
+
+#include "builtin-source-registry.h"
 
 namespace kandelo::node {
 namespace {
@@ -19,7 +19,7 @@ struct NodeBuiltinSourceEntry {
 
 // Generated from sources.json only after every input hash has been verified.
 // No JavaScript algorithms or source text are rewritten by this packaging.
-#include "node-source-registry.generated.inc"
+#include "node-source-registry.generated.h"
 
 BuiltinSourceView View(const NodeBuiltinSourceEntry& entry) {
   return {entry.id, entry.sourcePath, kNodeBuiltinBytes + entry.offset,

@@ -25,7 +25,7 @@ clang++ -std=c++20 \
 python3 scripts/generate-nodejs-source-registry.py \
   --manifest third_party/nodejs/sources.json \
   --metadata-tool "$NODE_REGISTRY_WORK/nodejs-builtin-metadata" \
-  --output "$NODE_REGISTRY_WORK/node-source-registry.generated.inc"
+  --output "$NODE_REGISTRY_WORK/node-source-registry.generated.h"
 ```
 
 The generator verifies builtin byte lengths/hashes and the original metadata

@@ -1,6 +1,8 @@
-#include "builtin-compiler.h"
+#include "shell/node-upstream/builtin-compiler.h"
 
 #include "mozilla/Utf8.h"
+
+#include "builtin-source-registry.h"
 
 #include "js/CompilationAndEvaluation.h"
 #include "js/CompileOptions.h"
@@ -8,8 +10,6 @@
 #include "js/ErrorReport.h"
 #include "js/Modules.h"
 #include "js/SourceText.h"
-
-#include "builtin-source-registry.h"
 
 namespace kandelo::node {
 namespace {

@@ -18,9 +18,13 @@ node_objects="$object_dir/node-upstream"
 
 mkdir -p "$shell_sources" "$node_objects"
 cp "$node_import/native/builtin-source-registry.cpp" \
-    "$node_import/native/builtin-source-registry.h" \
     "$node_consumer/builtin-compiler.cpp" \
-    "$node_consumer/builtin-compiler.h" "$shell_sources/"
+    "$node_consumer/builtin-compiler.h" \
+    "$node_consumer/private-key-test-api.cpp" \
+    "$node_consumer/private-key-test-api.h" "$shell_sources/"
+# Keep the portable registry's include names independent of Mozilla shell paths.
+# Mozilla's checker treats js/src as the root of internal header include names.
+cp "$node_import/native/builtin-source-registry.h" "$mozilla_source/js/src/"
 
 host_sdk_flags=()
 if [ -n "$host_sdk" ]; then
@@ -40,4 +44,4 @@ clang++ -std=c++20 "${host_sdk_flags[@]}" \
 python3 "$repo_root/scripts/generate-nodejs-source-registry.py" \
     --manifest "$node_import/sources.json" \
     --metadata-tool "$node_objects/nodejs-builtin-metadata" \
-    --output "$shell_sources/node-source-registry.generated.inc"
+    --output "$mozilla_source/js/src/node-source-registry.generated.h"

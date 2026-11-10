@@ -4,10 +4,12 @@
 
 This is an inactive source import for the planned SpiderMonkey guest
 runtime. The prior runtime still uses its existing compatibility bootstrap.
-The new library has not been activated, linked into the guest engine or
-executed on any host. The native compiler and source registry have compiled
-as wasm32 objects against configured Mozilla headers. Object compilation
-does not establish startup or compatibility.
+The new library has not been activated or executed on any host. Its compiler
+and source registry translation units build in the selected engine package,
+but their runtime calls and the presence of the full builtin payload in the
+linked artifact remain unverified. Focused embedding-private key controls
+have run in the SpiderMonkey guest on the Node host. Those controls do not
+establish upstream startup or module compatibility.
 
 The target remains Node.js 26.13.0, Lithium LTS, source commit
 `18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. Verification on November 10,
@@ -81,8 +83,9 @@ simple script, real output/error handling, asynchronous job draining and
 correct exit status. Track CommonJS and ES-module entrypaths separately
 across Node, Chromium, Firefox and WebKit hosts.
 
-Startup does not establish module compatibility. No linked guest engine or
-runtime artifact has been built or run for this import. Full product and
+Startup does not establish module compatibility. A selected SpiderMonkey
+artifact has been built and run for private-key controls; it does not execute
+the imported Node bootstrap. Full product and
 successor-ABI artifact rebuilds remain deferred. Immutable ABI 55 history
 and the separate Bun standalone extraction/launch work remain preserved.
 
@@ -126,9 +129,12 @@ The source import is still inactive. An immutable native source registry and
 build-time wrapper metadata producer now exist, along with a SpiderMonkey
 function/module compilation consumer. The registry and metadata were compiled
 and checked on the development host. The SpiderMonkey consumer and registry
-have since compiled as real wasm32 objects against configured engine headers;
-neither has been linked or executed. No upstream bootstrap has run on any of
-the four hosts. See `engine-object-compilation.json` for that separate check.
+have since compiled as real wasm32 objects against configured engine headers
+and participated in a selected package build. No calls through these helpers
+or upstream bootstrap have run on any of the four hosts. Linked builtin
+payload presence remains unverified. See `engine-object-compilation.json`
+for the earlier object check and `private-key-engine-check.json` for the
+separate package and private-key control evidence.
 
 The metadata producer compiles the original Node `builtin_info.cc/.h` rather
 than duplicating its classification and parameter map. The guest compiler
@@ -170,11 +176,14 @@ is incomplete. No full product or successor-ABI build ran.
 The source recipe now includes both native compiler/registry translation units
 in Mozilla's non-unified shell source list, declares their source/host-tool
 inputs and prepares their generated include in the recipe-owned source/object
-roots. Initial wiring used package revision 16; revision 17 fixes the actual
-compiler-header integration and adds the focused object check below. This does not
+roots. Initial wiring used package revision 16; revision 17 fixed the actual
+compiler-header integration and added the focused object check below. Revision
+18 adds the distinct embedding-private engine kind and privileged controls,
+and fixes the include paths/generated header layout required by Mozilla's
+normal package checks. This does not
 activate upstream Node or turn an older engine artifact into evidence for the
-new code. The compiler and registry translation units now compile; a linked
-guest package remains unbuilt.
+new code. The selected package now builds; imported-library execution and
+startup remain unimplemented.
 
 The focused preparation check ran the actual recipe helper, built the host-only
 original-Node metadata producer using the declared SDK, verified all four staged
@@ -213,15 +222,18 @@ create fresh per-context table objects with exact descriptors, preserve the
 original three-script initialization order, and keep failure terminal. A
 GC-traced canonical state per global is required; a publicly reflected Symbol
 or self-rooting native cycle is insufficient. None of this initializer or
-hidden-key behavior is runtime-validated yet.
+hidden-key behavior was runtime-validated by that source review. The initializer
+remains unimplemented; the distinct key primitive now has the focused guest
+evidence below, which does not establish its complete Node contract.
 
 A subsequent focused native control confirmed eleven covered hidden-key
 expectations against the exact pinned Node26.13.0 Darwin arm64 binary,
 including both public untransferable-marker cases. Its flags/hash/outcomes and
 coverage limits are in `private-key-native-reference.json`; the unchanged
 control source is `private-key-native-controls.cjs`. These are reference
-results only. No guest engine, browser host or current-candidate startup was
-run, and the missing private-key implementation is not counted as supported.
+results only. That reference run exercised no guest engine, browser host or
+current-candidate startup. The later guest controls below remain separate
+evidence and do not establish complete Node-equivalent private-key behavior.
 
 ## Focused compiler object check
 
@@ -248,3 +260,50 @@ The guest engine is not linked, optimized, instrumented, installed or published.
 An object compile result does not establish runtime source positions, GC ownership,
 error behavior or startup on any host. For long runs, use `scripts/agent-job`
 and retain its command and log alongside the resulting object identities.
+
+## Embedding-private key prerequisite
+
+The guest engine now has a distinct `EmbeddingPrivateSymbol` kind and native
+factory. It leaves the existing class-private name kind unchanged. Native
+object lookups are own-only and bypass resolve hooks; new private entries
+can be added after nonextensibility, remain nonenumerable, and are omitted
+from public and class-private key collection and integrity-level changes.
+Storage uses the engine's traced property slots and supported proxy handlers'
+traced expando. Proxy policy and realm forwarding remain in the normal path.
+Missing proxy reads yield undefined; ordinary first writes still reject;
+native definition initializes an entry and deletion bypasses script traps.
+
+The source primitive has focused execution evidence on the Node host only:
+23 guest controls passed, including proxy initialization/deletion, revoked
+scripted proxies, cross-compartment forwarding, value retention across a GC,
+frozen objects, and ordinary Symbol/class-private controls. Two additional
+driver checks passed: normal shell mode exposes no test API, and Node mode
+rejects the test flag. Each execution used a dedicated kernel worker and real
+guest output and exit status. Program/kernel/fixture identities and raw results
+are in `tests/nodejs/upstream/private-key-engine-check.json` and
+`tests/nodejs/upstream/private-key-engine-result.json`.
+
+The diagnostic API is available only with `js --kandelo-test-upstream`. It
+creates genuine native keys and performs native initialization; it is not a
+runtime binding substitute. Reproduce the focused Node-host controls with an
+admitted selected-package artifact:
+
+```sh
+scripts/dev-shell.sh node_modules/.bin/tsx \
+  scripts/run-nodejs-private-key-controls.ts /absolute/path/to/js.wasm \
+  /absolute/path/to/new-report.json
+```
+
+The complete native-V8 differential contract, security-wrapper admission,
+OOM/finalization behavior and browser hosts remain unproven. The native
+reference's earlier eleven controls remain separate reference evidence.
+There is still no canonical per-runtime symbol owner or per-context
+initializer; no Node binding exposes the new keys yet.
+
+The selected build passed Mozilla's include-style, macroassembler and opcode
+checks. It emitted 16 compiler warnings; the retained log includes ICU
+thread-safety/deprecation and unused linker-option diagnostics. Its existing
+pre-instrumentation optimization invalidates compiler-fact code hashes, so
+the instrumenter reported its bounded native baseline fallback. Preserve that
+diagnostic: these runs do not validate fork behavior. No full product,
+successor-ABI campaign rebuild, overall suite or upstream startup ran.

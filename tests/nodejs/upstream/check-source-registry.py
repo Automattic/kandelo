@@ -14,7 +14,7 @@ def run(args,name,stdout=None):
    with (work/(name+'.stdout')).open('wb') as stream:subprocess.run([str(x) for x in args],stdout=stream,stderr=err,check=True)
 node=stage/'third_party/nodejs';upstream=node/'upstream/src';tool=work/'nodejs-builtin-metadata'
 run(['clang++','-std=c++20','-Wall','-Wextra','-Werror','-I',upstream,stage/'scripts/nodejs-builtin-metadata.cpp',upstream/'builtin_info.cc','-o',tool],'metadata-build')
-include=work/'node-source-registry.generated.inc'
+include=work/'node-source-registry.generated.h'
 run([sys.executable,stage/'scripts/generate-nodejs-source-registry.py','--manifest',node/'sources.json','--metadata-tool',tool,'--output',include],'registry-generate')
 control=work/'source-registry-controls';native=node/'native'
 run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-I',native,'-I',work,native/'builtin-source-registry.cpp',stage/'tests/nodejs/upstream/source-registry-controls.cpp','-o',control],'registry-build')
