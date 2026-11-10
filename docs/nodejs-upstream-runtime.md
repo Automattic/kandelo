@@ -4,8 +4,10 @@
 
 This is an inactive source import for the planned SpiderMonkey guest
 runtime. The prior runtime still uses its existing compatibility bootstrap.
-The new library has not been activated, compiled into the guest engine or
-executed on any host. No compatibility claim follows from this import.
+The new library has not been activated, linked into the guest engine or
+executed on any host. The native compiler and source registry have compiled
+as wasm32 objects against configured Mozilla headers. Object compilation
+does not establish startup or compatibility.
 
 The target remains Node.js 26.13.0, Lithium LTS, source commit
 `18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. Verification on November 10,
@@ -79,7 +81,7 @@ simple script, real output/error handling, asynchronous job draining and
 correct exit status. Track CommonJS and ES-module entrypaths separately
 across Node, Chromium, Firefox and WebKit hosts.
 
-Startup does not establish module compatibility. No new guest engine or
+Startup does not establish module compatibility. No linked guest engine or
 runtime artifact has been built or run for this import. Full product and
 successor-ABI artifact rebuilds remain deferred. Immutable ABI 55 history
 and the separate Bun standalone extraction/launch work remain preserved.
@@ -123,9 +125,10 @@ Unicode punctuation normalization; that distinction is recorded explicitly.
 The source import is still inactive. An immutable native source registry and
 build-time wrapper metadata producer now exist, along with a SpiderMonkey
 function/module compilation consumer. The registry and metadata were compiled
-and checked on the development host. The SpiderMonkey consumer has not been
-compiled against the guest engine, linked, or executed. No upstream bootstrap
-has run on any of the four hosts.
+and checked on the development host. The SpiderMonkey consumer and registry
+have since compiled as real wasm32 objects against configured engine headers;
+neither has been linked or executed. No upstream bootstrap has run on any of
+the four hosts. See `engine-object-compilation.json` for that separate check.
 
 The metadata producer compiles the original Node `builtin_info.cc/.h` rather
 than duplicating its classification and parameter map. The guest compiler
@@ -167,9 +170,11 @@ is incomplete. No full product or successor-ABI build ran.
 The source recipe now includes both native compiler/registry translation units
 in Mozilla's non-unified shell source list, declares their source/host-tool
 inputs and prepares their generated include in the recipe-owned source/object
-roots. Package revision 16 invalidates earlier engine builds. This does not
+roots. Initial wiring used package revision 16; revision 17 fixes the actual
+compiler-header integration and adds the focused object check below. This does not
 activate upstream Node or turn an older engine artifact into evidence for the
-new code. No actual engine translation unit or guest package was compiled.
+new code. The compiler and registry translation units now compile; a linked
+guest package remains unbuilt.
 
 The focused preparation check ran the actual recipe helper, built the host-only
 original-Node metadata producer using the declared SDK, verified all four staged
@@ -178,11 +183,18 @@ checks passed. The new Mozilla patch applied without fuzz against the exact
 verified source archive's moz.build; no earlier main patch modifies that file.
 Exact identities and scope are in `engine-build-wiring-check.json`.
 
-The next actual-header check requires a clean-branch checkout, normal wasm32
-SDK-core provisioning and Mozilla configure/export generation, followed by the
-selected native objects or SpiderMonkey package build. A full product rebuild
-is not required for that check and remains deferred. Existing cached Wasm files
-contain neither the new source nor usable generated headers.
+The actual-header check now runs in the Port Vila clean-branch checkout with
+normal wasm32 SDK-core provisioning and Mozilla configure/pre-export/export
+generation. Both selected native objects compiled with zero compiler warnings.
+The first attempts exposed missing header installation in the check and
+unannotated JSAPI forward declarations in the compiler; both were corrected.
+The parameter-count conversion now uses a checked round trip without the
+wasm32 always-false comparison warning. Exact inputs, configuration, headers,
+objects and failed-attempt history are in `engine-object-compilation.json`.
+This is object-only evidence, not link or execution evidence. Full product
+and successor-ABI campaign rebuilds remain deferred. The existing recipe's
+Linux target triplet/defines remain targeting debt and do not establish
+finished Kandelo runtime metadata or conformance.
 
 Source investigation also found that V8's internal private keys and
 SpiderMonkey's class-private names differ in observable operations: own-only
@@ -210,3 +222,29 @@ coverage limits are in `private-key-native-reference.json`; the unchanged
 control source is `private-key-native-controls.cjs`. These are reference
 results only. No guest engine, browser host or current-candidate startup was
 run, and the missing private-key implementation is not counted as supported.
+
+## Focused compiler object check
+
+The SpiderMonkey recipe accepts `--check-upstream-compiler` for a standalone
+development check. Supply an existing, absolute private work directory and
+leave `WASM_POSIX_DEP_OUT_DIR` unset. Run through the development shell after
+provisioning the wasm32 SDK core:
+
+```sh
+scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only
+mkdir -p .scratch
+compiler_work=$(mktemp -d "$PWD/.scratch/node-upstream-objects.XXXXXX")
+scripts/dev-shell.sh env WASM_POSIX_DEP_WORK_DIR="$compiler_work" \
+  bash packages/registry/spidermonkey/build-spidermonkey.sh \
+  --check-upstream-compiler
+```
+
+The check uses the recipe's verified Mozilla source, patches, declared native
+dependencies, private sysroot and target configuration. It runs Mozilla
+configure, `pre-export` to install public headers, `export` for generated
+headers, then the compiler and registry object targets. Resolver output roots
+are rejected so this diagnostic cannot stand in for a complete package build.
+The guest engine is not linked, optimized, instrumented, installed or published.
+An object compile result does not establish runtime source positions, GC ownership,
+error behavior or startup on any host. For long runs, use `scripts/agent-job`
+and retain its command and log alongside the resulting object identities.

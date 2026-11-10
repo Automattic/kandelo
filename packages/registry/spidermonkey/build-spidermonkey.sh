@@ -6,6 +6,19 @@
 
 set -euo pipefail
 
+UPSTREAM_OBJECT_CHECK=0
+if [ "$#" -eq 1 ] && [ "$1" = "--check-upstream-compiler" ]; then
+    # A diagnostic must never satisfy a resolver request for a linked package.
+    if [ -z "${WASM_POSIX_DEP_WORK_DIR:-}" ] || [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        echo "ERROR: --check-upstream-compiler requires a private WASM_POSIX_DEP_WORK_DIR and no output directory." >&2
+        exit 2
+    fi
+    UPSTREAM_OBJECT_CHECK=1
+elif [ "$#" -ne 0 ]; then
+    echo "usage: build-spidermonkey.sh [--check-upstream-compiler]" >&2
+    exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/scripts/package-build-roots.sh"
@@ -406,6 +419,20 @@ if [ -n "$JSRUST_FINGERPRINT" ] && ! grep -q 'target-feature=+atomics' "$JSRUST_
     echo "==> Rebuilding stale SpiderMonkey Rust archive for wasm atomics..."
     rm -f "$RUST_RELEASE_DIR/libjsrust.a"
     rm -rf "$RUST_RELEASE_DIR/.fingerprint"/jsrust-*
+fi
+
+if [ "$UPSTREAM_OBJECT_CHECK" -eq 1 ]; then
+    echo "==> Configuring/exporting SpiderMonkey and compiling upstream Node objects only..."
+    (
+        cd "$SRC_DIR"
+        ./mach --no-interactive configure
+        # pre-export installs the real public headers; export alone only runs
+        # generators and leaves dist/include incomplete for selected objects.
+        ./mach --no-interactive build pre-export export
+        ./mach --no-interactive build js/src/shell/builtin-compiler.o js/src/shell/builtin-source-registry.o
+    )
+    echo "==> Upstream Node object check complete; no package linked or installed."
+    exit 0
 fi
 
 echo "==> Building SpiderMonkey JS shell for wasm32..."

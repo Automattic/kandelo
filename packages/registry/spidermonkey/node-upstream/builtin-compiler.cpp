@@ -1,7 +1,5 @@
 #include "builtin-compiler.h"
 
-#include <limits>
-
 #include "mozilla/Utf8.h"
 
 #include "js/CompilationAndEvaluation.h"
@@ -45,7 +43,8 @@ JSFunction* CompileBuiltinFunction(JSContext* cx, std::string_view id) {
     JS_ReportErrorASCII(cx, "Source-text builtin requires native module compilation");
     return nullptr;
   }
-  if (source->parameterCount > std::numeric_limits<unsigned>::max()) {
+  const auto parameterCount = static_cast<unsigned>(source->parameterCount);
+  if (static_cast<std::size_t>(parameterCount) != source->parameterCount) {
     JS_ReportErrorASCII(cx, "Node builtin parameter count exceeds the engine limit");
     return nullptr;
   }
@@ -65,7 +64,7 @@ JSFunction* CompileBuiltinFunction(JSContext* cx, std::string_view id) {
   // scope chain. A null name also avoids CompileFunction's Latin-1 name API.
   const JS::EnvironmentChain environment(cx, JS::SupportUnscopables::No);
   return JS::CompileFunction(cx, environment, options, nullptr,
-                             static_cast<unsigned>(source->parameterCount),
+                             parameterCount,
                              source->parameters, text);
 }
 

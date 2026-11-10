@@ -22,13 +22,13 @@
       "area": "immutable native source registry and original C++ wrapper metadata",
       "sourceStatus": "implemented, host-native composition verified",
       "evidence": "source-registry-composition.json",
-      "remaining": "source recipe preparation and Mozilla references now wired; actual guest package build remains pending"
+      "remaining": "source recipe preparation and wasm32 object compilation verified; actual guest package link and execution remain pending"
     },
     {
       "area": "SpiderMonkey builtin function/module compiler",
-      "sourceStatus": "implemented and registered in source recipe; uncompiled and inactive",
-      "evidence": "packages/registry/spidermonkey/node-upstream/builtin-compiler.cpp",
-      "remaining": "real generated engine headers and actual TU build; realm/rooting/source-position/error/GC validation; builtin-binding connection"
+      "sourceStatus": "compiled as a real wasm32 object against configured Mozilla headers; unlinked and inactive",
+      "evidence": "engine-object-compilation.json",
+      "remaining": "guest engine link; realm/rooting/source-position/error/GC validation; builtin-binding connection"
     },
     {
       "area": "per-context/per-realm state and shared binding loader",
@@ -102,8 +102,10 @@
     }
   },
   "validationLimits": {
-    "hostNativeCompositionOnly": true,
+    "hostNativeCompositionOnly": false,
     "guestCompilerBuilt": false,
+    "guestCompilerObjectsBuilt": true,
+    "guestEngineLinked": false,
     "guestStartupRun": false,
     "overallSuitesRun": false,
     "fullProductRebuildDeferred": true,
@@ -116,13 +118,16 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 16,
+    "packageRevision": 17,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
-    "engineTranslationUnitsCompiled": false,
+    "engineTranslationUnitsCompiled": true,
     "packageBuilt": false,
-    "evidence": "engine-build-wiring-check.json"
+    "evidence": "engine-object-compilation.json",
+    "priorPreparationEvidence": "engine-build-wiring-check.json",
+    "objectCheckOnly": true,
+    "targetingDebt": "existing Linux triplet and __linux__/__unix__ defines are unchanged; target metadata/conformance remain unestablished"
   },
   "startupPrerequisites": {
     "nodePrivateKeySemantics": {

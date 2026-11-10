@@ -3,9 +3,9 @@
 
 #include <string_view>
 
-struct JSContext;
-class JSFunction;
-class JSObject;
+// Mozilla's build defaults to hidden visibility. Its own declarations carry
+// the JS_PUBLIC_API attributes that must agree across every including header.
+#include "js/TypeDecls.h"
 
 namespace kandelo::node {
 

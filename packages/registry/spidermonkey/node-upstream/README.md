@@ -20,15 +20,17 @@ The metadata build tool reuses original Node C++ classification instead of
 replicating source-kind policy in Python or JavaScript.
 
 The source recipe now registers this component in the real Mozilla shell
-build. It remains uncompiled against SpiderMonkey and inactive in the runtime.
+build. Both translation units have compiled as wasm32 objects against the
+configured SpiderMonkey headers; they remain unlinked and inactive in the runtime.
 A host-native registry composition check does not validate these JSAPI calls,
 source line offsets, error propagation, realm identity, GC or guest startup.
 The source-derived API/ownership review is in
 `tests/nodejs/upstream/compiler-api-contracts.md`.
 
 The recipe declares the preparation helper, inputs/tools and Mozilla source
-list. Actual compilation/link verification is pending. Runtime integration
-still needs real per-context/per-realm state,
+list. Object compilation evidence is in
+`tests/nodejs/upstream/engine-object-compilation.json`; link verification is
+pending. Runtime integration still needs real per-context/per-realm state,
 private symbols, binding admission, structured stack hooks, job lifecycle and
 the startup binding closure. The existing adapter/bootstrap remains active.
 Do not wire placeholder bindings merely to advance bootstrap. Full product
