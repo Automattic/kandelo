@@ -258,16 +258,7 @@ impl VirtualDevice {
     }
 }
 
-/// Encode a `dev_t` the way musl's `sys/sysmacros.h` `makedev` does, so
-/// userspace `major()`/`minor()` decode the same `(major, minor)` back.
-const fn makedev(major: u32, minor: u32) -> u64 {
-    let major = major as u64;
-    let minor = minor as u64;
-    ((major & 0xffff_f000) << 32)
-        | ((major & 0x0000_0fff) << 8)
-        | ((minor & 0xffff_ff00) << 12)
-        | (minor & 0x0000_00ff)
-}
+use crate::device_id::make as makedev;
 
 /// Check if a resolved path is a virtual device node.
 ///
@@ -298,10 +289,10 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
 /// Static `/etc` policy and data, including OpenSSL configuration and trust
 /// roots, belong to the mounted image. `/etc/mtab` is the exception because it
 /// reports the running kernel's mount state rather than immutable image data.
-fn synthetic_file_content(path: &[u8]) -> Option<&'static [u8]> {
+fn synthetic_file_content(path: &[u8]) -> Result<crate::IoBuffer<u8>, Errno> {
     match path {
-        b"/etc/mtab" => Some(crate::procfs::MOUNTS_CONTENT),
-        _ => None,
+        b"/etc/mtab" => crate::procfs::generate_mounts(false),
+        _ => Err(Errno::EBADF),
     }
 }
 
@@ -314,10 +305,13 @@ fn synthetic_file_object_id(path: &[u8]) -> Option<u64> {
     }
 }
 
-fn synthetic_file_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
+fn synthetic_file_stat(path: &[u8], uid: u32, gid: u32) -> Result<Option<WasmStat>, Errno> {
+    if synthetic_file_object_id(path).is_none() {
+        return Ok(None);
+    }
     let content = synthetic_file_content(path)?;
-    Some(WasmStat {
-        st_dev: 0,
+    Ok(Some(WasmStat {
+        st_dev: crate::rootfs::ROOTFS_DEV,
         st_ino: 0x45544300, // "ETC\0"
         st_mode: S_IFREG | 0o444,
         st_nlink: 1,
@@ -332,7 +326,7 @@ fn synthetic_file_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
         st_ctime_nsec: 0,
         _pad: 0,
         st_rdev: 0,
-    })
+    }))
 }
 
 /// Check if path is a /dev/fd/N or /dev/stdin|stdout|stderr alias.
@@ -3671,7 +3665,7 @@ fn namespace_lstat_raw(
     if match_dev_fd(path).is_some() {
         return Ok(dev_fd_path_stat(proc));
     }
-    if let Some(st) = synthetic_file_stat(path, proc.effective_uid(), proc.effective_gid()) {
+    if let Some(st) = synthetic_file_stat(path, proc.effective_uid(), proc.effective_gid())? {
         return Ok(st);
     }
     // Like procfs, kernel devfs owns its namespace. `/dev/shm` is the one
@@ -4244,7 +4238,7 @@ fn ensure_host_mutable_namespace_path(path: &[u8]) -> Result<(), Errno> {
     if is_procfs_namespace_path(path)
         || crate::sysfs::is_namespace_path(path)
         || (is_devfs_namespace_path(path) && !is_delegated_devfs_path(path))
-        || synthetic_file_content(path).is_some()
+        || synthetic_file_object_id(path).is_some()
     {
         return Err(Errno::EROFS);
     }
@@ -4965,7 +4959,7 @@ pub fn sys_open(
 
     // Read-only synthetic files that should exist even when the mounted VFS
     // image does not provide the specific file.
-    if synthetic_file_content(&resolved).is_some() {
+    if synthetic_file_object_id(&resolved).is_some() {
         if oflags & O_DIRECTORY != 0 {
             return Err(Errno::ENOTDIR);
         }
@@ -7132,7 +7126,7 @@ pub fn sys_read(
                     ofd.offset(),
                 )?;
                 let offset = usize::try_from(current).map_err(|_| Errno::EOVERFLOW)?;
-                let data = synthetic_file_content(&ofd.path).ok_or(Errno::EBADF)?;
+                let data = synthetic_file_content(&ofd.path)?;
                 if offset >= data.len() {
                     return Ok(0);
                 }
@@ -7856,7 +7850,7 @@ pub fn sys_lseek(
     }
 
     if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
-        let size = synthetic_file_content(&ofd.path).map_or(0, |d| d.len() as i64);
+        let size = synthetic_file_content(&ofd.path)?.len() as i64;
         let current =
             crate::descriptor_backing::current_offset(
                 ofd.file_type,
@@ -8033,7 +8027,7 @@ pub fn sys_pread(
     }
 
     if crate::descriptor_backing::is_synthetic_regular_handle(host_handle) {
-        let data = synthetic_file_content(&ofd.path).ok_or(Errno::EBADF)?;
+        let data = synthetic_file_content(&ofd.path)?;
         let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
         if start >= data.len() {
             return Ok(0);
@@ -9142,7 +9136,7 @@ fn fstat_ofd(proc: &Process, host: &mut dyn HostIO, ofd_idx: usize) -> Result<Wa
     } else if ofd.file_type == FileType::Regular && crate::executable_backing::is_executable_handle(ofd.host_handle) {
         crate::executable_backing::stat(ofd.host_handle, host)
     } else if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
-        synthetic_file_stat(&ofd.path, proc.effective_uid(), proc.effective_gid())
+        synthetic_file_stat(&ofd.path, proc.effective_uid(), proc.effective_gid())?
             .ok_or(Errno::EBADF)
     } else if matches!(ofd.file_id, Some(FileId::Kernel { kind: KernelFileKind::SysFsRegular, .. }))
         || ofd.host_handle == crate::sysfs::SYSFS_DIR_HANDLE
@@ -9949,7 +9943,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
             return Ok(st);
         }
     }
-    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid()) {
+    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid())? {
         return Ok(st);
     }
     if let Some(st) = fifo_path_stat(proc, host, &resolved, true)? {
@@ -9998,7 +9992,7 @@ pub fn sys_lstat(
             return Ok(st);
         }
     }
-    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid()) {
+    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid())? {
         return Ok(st);
     }
     if let Some(st) = fifo_path_stat(proc, host, &resolved, false)? {
@@ -10742,7 +10736,7 @@ pub fn sys_access(
     if amode & W_OK != 0
         && (is_procfs_namespace_path(&resolved.path)
             || crate::sysfs::is_namespace_path(&resolved.path)
-            || synthetic_file_content(&resolved.path).is_some())
+            || synthetic_file_object_id(&resolved.path).is_some())
     {
         return Err(Errno::EACCES);
     }
@@ -18167,7 +18161,7 @@ pub fn sys_openat(
 
     // Read-only synthetic files that should exist even when the mounted VFS
     // image does not provide the specific file.
-    if synthetic_file_content(&resolved).is_some() {
+    if synthetic_file_object_id(&resolved).is_some() {
         if oflags & O_DIRECTORY != 0 {
             return Err(Errno::ENOTDIR);
         }
@@ -18298,7 +18292,7 @@ pub fn sys_fstatat(
             return Ok(st);
         }
     }
-    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid()) {
+    if let Some(st) = synthetic_file_stat(&resolved, proc.effective_uid(), proc.effective_gid())? {
         return Ok(st);
     }
     if let Some(st) = fifo_path_stat(proc, host, &resolved, flags & AT_SYMLINK_NOFOLLOW == 0)? {
@@ -21462,7 +21456,7 @@ pub fn sys_pathconf(
     // rootfs overlay that owns `/` are all kernel-owned filesystems. Their
     // limits are the kernel's own, and asking a host that no longer owns `/`
     // would be asking the wrong authority.
-    if synthetic_file_content(&resolved).is_some()
+    if synthetic_file_object_id(&resolved).is_some()
         || crate::tmpfs::claims_path(&resolved)
         || crate::rootfs::claims_path(&resolved)
     {
@@ -21502,7 +21496,7 @@ pub fn sys_fpathconf(
         return Ok(Some(1));
     }
 
-    if synthetic_file_content(&path).is_some() {
+    if synthetic_file_object_id(&path).is_some() {
         // Synthetic dynamic files live in the root mount's namespace even
         // though they have no host handle of their own. `/` is owned by the
         // in-kernel rootfs overlay, so its limits are the kernel's own — the
@@ -22171,7 +22165,7 @@ pub fn sys_faccessat(
     if amode & W_OK != 0
         && (is_procfs_namespace_path(&resolved.path)
             || crate::sysfs::is_namespace_path(&resolved.path)
-            || synthetic_file_content(&resolved.path).is_some())
+            || synthetic_file_object_id(&resolved.path).is_some())
     {
         return Err(Errno::EACCES);
     }
@@ -22833,7 +22827,7 @@ pub fn sys_statfs(
     if let Some(statfs) = virtual_statfs_for_path(&resolved, proc.pid) {
         return Ok(statfs);
     }
-    if synthetic_file_content(&resolved).is_some() {
+    if synthetic_file_object_id(&resolved).is_some() {
         // `/` is overlay-owned; a synthetic file's filesystem is the kernel's.
         return crate::rootfs::statfs(b"/");
     }
@@ -22866,7 +22860,7 @@ pub fn sys_fstatfs(
     if let Some(statfs) = virtual_statfs_for_path(&ofd.path, proc.pid) {
         return Ok(statfs);
     }
-    if synthetic_file_content(&ofd.path).is_some() {
+    if synthetic_file_object_id(&ofd.path).is_some() {
         // `/` is overlay-owned; a synthetic file's filesystem is the kernel's.
         return crate::rootfs::statfs(b"/");
     }
@@ -23435,7 +23429,7 @@ mod tests {
         let text = core::str::from_utf8(&bytes[..length]).unwrap();
         assert!(text.starts_with("version 1\nunits admission_credits\nlifetime kernel\n"));
         assert!(text.contains("journal_writeback live="));
-        let mounts = crate::procfs::MOUNTS_CONTENT;
+        let mounts = crate::procfs::generate_mounts(false).unwrap();
         let length = inspect_namespace_read_file(inspector, &mut host, b"/proc/self/mounts", 7, &mut bytes[..13]).unwrap();
         assert_eq!(&bytes[..length], &mounts[7..20]);
         assert_eq!(inspect_namespace_read_file(inspector, &mut host, b"/proc/mounts", i64::MAX, &mut bytes).unwrap(), 0);
@@ -50225,16 +50219,30 @@ impl HostIO for RelSymlinkMock {
         let mut host = MockHostIO::new();
 
         let fd = sys_open(&mut proc, &mut host, b"/etc/mtab", O_RDONLY, 0).unwrap();
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; 1024];
         let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
         let content = core::str::from_utf8(&buf[..n]).unwrap();
-        assert!(content.contains("kandelo-root / kandelo-vfs rw 0 0"));
+        assert!(content.contains("kandelo-root / kandelo-vfs rw"));
         assert!(content.contains("proc /proc proc rw,nosuid,nodev,noexec 0 0"));
         assert!(content.contains("devfs /dev devfs rw,nosuid 0 0"));
 
         let st = sys_stat(&mut proc, &mut host, b"/etc/mtab").unwrap();
         assert_eq!(st.st_mode & S_IFMT, S_IFREG);
-        assert_eq!(st.st_size as usize, crate::procfs::MOUNTS_CONTENT.len());
+        let expected = crate::procfs::generate_mounts(false).unwrap();
+        assert_eq!(st.st_size as usize, expected.len());
+        assert_eq!(st.st_dev, crate::rootfs::ROOTFS_DEV);
+        assert_eq!(sys_fstat(&mut proc, &mut host, fd).unwrap().st_size, st.st_size);
+        assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_END).unwrap(), st.st_size as i64);
+        assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET).unwrap(), 0);
+        let mut pieces = Vec::new();
+        loop {
+            let n = sys_read(&mut proc, &mut host, fd, &mut buf[..7]).unwrap();
+            if n == 0 { break; }
+            pieces.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!(pieces.as_slice(), expected.as_slice());
+        let n = sys_pread(&mut proc, &mut host, fd, &mut buf[..13], 7).unwrap();
+        assert_eq!(&buf[..n], &expected[7..20]);
         assert!(sys_access(&mut proc, &mut host, b"/etc/mtab", R_OK).is_ok());
         assert_eq!(
             sys_access(&mut proc, &mut host, b"/etc/mtab", W_OK),

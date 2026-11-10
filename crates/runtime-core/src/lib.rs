@@ -76,6 +76,7 @@ pub mod process;
 pub mod process_snapshot_wire;
 pub mod process_table;
 pub mod process_wire;
+pub mod device_id;
 pub mod program_preparation;
 pub mod procfs;
 pub mod pshared;

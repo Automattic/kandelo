@@ -4057,6 +4057,18 @@ the bounded positioned path below. Archives may be sealed into atomic
 activation cohorts (`seal.rs`); the kernel verifies the cohort digests when it
 loads the image.
 
+`df` reports guest filesystem allocation, not download traffic or host free
+storage. On a persistent root, resolving a digest-declared lazy file or archive
+member leaves its deferred description in place, so reading or executing it
+alone does not charge its downloaded length to guest disk usage. The transport
+spools downloaded bytes into a temporary host file: an unlinked file in the
+Node session directory, or an OPFS scratch file in the browser. That cache can
+consume host storage (and browser origin quota) without reducing guest `df`
+availability. Copying the content into a guest-owned file or modifying a
+lazy file charges the resulting guest allocation normally. Ephemeral rootfs
+and unlimited scratch mounts currently report nominal, constant capacity and
+free space; they do not measure live allocation or available host memory.
+
 Persistent digest-declared reads do not turn deferred descriptors into embedded
 checkpoint content. The Rust verified-read cache authenticates the complete
 file in 1 MiB windows, retaining at most 8 MiB of per-chunk SHA-256 tables
@@ -4682,7 +4694,16 @@ real files inside `host/wasm/rootfs.vfs.zst`, served through `/`. Any program
 that calls `getpwnam`, `gethostbyname`, `getservbyname`, or OpenSSL's default
 configuration/trust lookup reads the same image bytes that `cat` would. The
 kernel synthesizes `/etc/mtab` because it reports live mount state; it does
-not synthesize static `/etc` policy or trust data.
+not synthesize static `/etc` policy or trust data. `/etc/mtab`, `/proc/mounts`
+and `/proc/self/mounts` share one generated list of kernel-owned mounts:
+rootfs, procfs, devfs, sysfs and every scratch mount from the tmpfs routing
+registry. `/proc/self/mountinfo` describes the same mounts with device numbers
+matching `stat().st_dev` and `statx` device fields, the parent mount IDs for
+nested scratch mounts, and
+the root's configured `nosuid` option. Coreutils `df` enumerates these mounts
+and obtains their space statistics through the ordinary `statvfs` path. Host
+directory mounts on Node are still absent from these lists; an explicit
+`df /path/to/host/mount` obtains that filesystem's statistics.
 
 The rootfs data defines the canonical interactive image account as
 `maker` at uid/gid 1000 with home `/home/maker`. Its password hash, wheel
