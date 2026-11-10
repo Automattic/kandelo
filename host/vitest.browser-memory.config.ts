@@ -14,6 +14,8 @@ const include = [
   "test/channel-listener-reclamation.test.ts",
   "test/process-view-teardown.test.ts",
   "test/dri-bo-teardown.test.ts",
+  "test/gbm-coherence-cache.test.ts",
+  "test/gbm-native-snapshot.test.ts",
   "test/kernel-teardown-pipe-entry.test.ts",
   "test/exec-retirement-marker.test.ts",
   "test/fork-worker-import-exceptions.test.ts",

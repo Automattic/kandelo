@@ -1,5 +1,6 @@
 import { mergeChangedByteRuns } from "../shared-byte-runs";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
+import { allocateByteSnapshot, publishMappedBytes } from "./byte-snapshot";
 
 const mappingMemoryBufferGetter = Object.getOwnPropertyDescriptor(WebAssembly.Memory.prototype,"buffer")!.get!;
 const mappingApply = Reflect.apply;
@@ -94,6 +95,8 @@ type InternalBinding = GbmBoBinding & {
   boOffset: number;
   /** Independent baseline; never a guest memory view. */
   snapshot: Uint8Array;
+  /** Independent bounded baseline storage; never imports a guest memory. */
+  snapshotMemory?: WebAssembly.Memory;
   primed: boolean;
   /** One admission identity; splits retain it, replacements never do. */
   lineage: MappingLineage;
@@ -311,9 +314,9 @@ export class GbmBoRegistry {
             aliases.delete(binding.addr);
             const fragment = (offset: number, length: number) => {
               const source = binding.snapshot.subarray(offset, offset + length);
-              const snapshot = new Uint8Array(source.byteLength);
+              const baseline = allocateByteSnapshot(source.byteLength, binding.lineage.memory);
               const child = {...binding, cleanEpoch: undefined, addr: binding.addr + offset,
-                len: length, boOffset: binding.boOffset + offset, snapshot};
+                len: length, boOffset: binding.boOffset + offset, ...baseline};
               aliases.set(child.addr, child);
               fragments.push({binding:child,source});
             };
@@ -334,7 +337,7 @@ export class GbmBoRegistry {
         fragments:new Set()};
       if (lineage.memory) mappingMemoryBuffer(lineage.memory);
       const admitted: InternalBinding = {pid,addr,len,boOffset,primed:false,lineage,
-        snapshot:new Uint8Array(Math.max(0,Math.min(len,entry.size-boOffset)))};
+        ...allocateByteSnapshot(Math.max(0,Math.min(len,entry.size-boOffset)),lineage.memory)};
       target.bindingsByPid.get(pid)!.set(addr, admitted);
       const stagedLineages = this.stageLineages(retiring.map(value => value.binding),
         [...fragments.map(value => value.binding), admitted]);
@@ -416,7 +419,7 @@ export class GbmBoRegistry {
         const fragment = (offset: number, length: number) => {
           const source = binding.snapshot.subarray(offset,offset+length);
           const child = {...binding,cleanEpoch:undefined,addr:binding.addr+offset,len:length,boOffset:binding.boOffset+offset,
-            snapshot:new Uint8Array(source.length)};
+            ...allocateByteSnapshot(source.length,binding.lineage.memory)};
           aliases.set(child.addr,child); added.push(child); baselines.push({binding:child,source});
         };
         if (start > binding.addr) fragment(0,start-binding.addr);
@@ -586,12 +589,10 @@ export class GbmBoRegistry {
     const epoch = this.getProcessQuiescentEpoch?.(binding.pid, mem) ?? -1n;
     if (epoch >= 0n && binding.cleanEpoch === epoch && (binding.cleanBytes ?? 0) >= copyLen) return;
     const dst = new Uint8Array(e.sab, Math.min(binding.boOffset,e.size), copyLen);
-    const src = new Uint8Array(mappingMemoryBuffer(mem), binding.addr, copyLen);
-    const snapshot = binding.snapshot;
     // Publish and advance the baseline together, using only the bytes that
     // reached canonical storage. Reading src again here could swallow stores
     // made by a still-running producer after its changed run was copied.
-    if (mergeChangedByteRuns(src, 0, snapshot, 0, dst, 0, copyLen, true)) {
+    if (publishMappedBytes(mem, binding.addr, binding, dst, copyLen)) {
       e.writes++;
       // A reader must consume the final publication even if this writer's
       // mapping disappears before the reader's next poll/epoll/select return.
