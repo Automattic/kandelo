@@ -130,15 +130,8 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
     .poll(() => chipText(page), { timeout: 30_000 })
     .toMatch(/webgl2-gl/i);
 
-  // Gate 3. An all-black canvas compresses to a few KB.
-  await expect
-    .poll(
-      async () => (await canvas.screenshot()).byteLength,
-      { timeout: 60_000, intervals: [1_000, 2_000, 5_000] },
-    )
-    .toBeGreaterThan(8_000);
-
-  // Gate 4.
+  // Gate 3. PNG size varies with mode and browser encoder; prove real shell
+  // pixels rather than rejecting a valid lower-resolution frame by byte size.
   // The first committed frame is an empty grid. Wait for actual shell
   // output before testing idle stability: loading the shell and drawing its
   // prompt is a legitimate change after WLTERM_READY, without any input.
@@ -207,8 +200,7 @@ test("Cage resizes, releases its display on exit and survives repeated live rest
     const canvas = canvasLocator(page);
     await expect.poll(() => chipText(page), { timeout: 120_000 }).toMatch(/webgl2-gl/i);
     await expect.poll(owner, { timeout: 60_000 }).toBeGreaterThan(0);
-    await expect.poll(async () => (await canvas.screenshot()).byteLength,
-      { timeout: 60_000 }).toBeGreaterThan(8_000);
+    // A small valid frame may compress below the old PNG-size heuristic.
     // Why: WLTERM_READY marks the first committed grid, before its shell has
     // necessarily loaded. Early keys can precede the PTY's initial setup.
     const mode = (await chipText(page)).match(/(\d+)×(\d+)/)!;
@@ -249,16 +241,66 @@ test("Cage resizes, releases its display on exit and survives repeated live rest
 
 for (const density of [1, 2]) {
   test.describe(`Cage modest display at browser density ${density}`, () => {
-    test.use({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: density });
-    test(`Cage keeps a modest guest display at browser density ${density}`, async ({ page }) => {
+    test.use({
+      viewport: { width: 1920, height: 1080 }, deviceScaleFactor: density,
+      page: async ({ page, playwright, browserName, channel, launchOptions,
+        contextOptions, baseURL, viewport, extraHTTPHeaders, proxy }, use, testInfo) => {
+        if (density !== 2 || browserName === "webkit") { await use(page); return; }
+        // The native device-pixel box is an independent input from context DPR.
+        // Exercise it too, using the same launch scaling as the Sway checks.
+        const browser = await playwright[browserName].launch({
+          ...launchOptions, channel, headless: true,
+          ...(browserName === "chromium" ? {
+            args: [...(launchOptions.args ?? []), "--force-device-scale-factor=2"],
+          } : {
+            firefoxUserPrefs: { ...launchOptions.firefoxUserPrefs, "layout.css.devPixelsPerPx": "2.0" },
+          }),
+        });
+        try {
+          const context = await browser.newContext({
+            ...contextOptions, baseURL, viewport, deviceScaleFactor: density, extraHTTPHeaders, proxy,
+          });
+          const nativePage = await context.newPage();
+          try { await use(nativePage); }
+          finally {
+            if (testInfo.status !== testInfo.expectedStatus) {
+              try { await testInfo.attach("native-density-page", {
+                body: await nativePage.screenshot({ timeout: 5_000 }), contentType: "image/png",
+              }); } catch (error) {
+                testInfo.annotations.push({ type: "screenshot unavailable", description: String(error) });
+              }
+            }
+          }
+        } finally { await browser.close(); }
+      },
+    });
+    test(`Cage keeps a modest guest display at browser density ${density}`, async ({ page, browserName }) => {
       test.setTimeout(240_000);
       await gotoMachine(page, "cage");
       await expectTerminal(page, /WLTERM_READY/, 120_000);
       await openSurface(page, "Graphics");
       const canvas = canvasLocator(page);
+      await expect(canvas).toBeVisible({ timeout: 30_000 });
+      const pixels = await canvas.evaluate(element => new Promise<{
+        cssWidth: number; nativeWidth?: number; dpr: number;
+      }>(resolve => {
+        const observer = new ResizeObserver(([entry]) => {
+          if (entry.contentRect.width < 1) return;
+          observer.disconnect();
+          resolve({ cssWidth: entry.contentRect.width,
+            nativeWidth: entry.devicePixelContentBoxSize?.[0]?.inlineSize, dpr: devicePixelRatio });
+        });
+        observer.observe(element);
+      }));
+      expect(pixels.dpr).toBe(density);
+      if (browserName !== "webkit") {
+        expect(pixels.nativeWidth, "measure the actual native pixel box").toBeDefined();
+        expect(pixels.nativeWidth! / pixels.cssWidth).toBeCloseTo(density, 1);
+      }
       await expect.poll(() => chipText(page), { timeout: 120_000 }).toMatch(/webgl2-gl/i);
       const mode = (await chipText(page)).match(/([0-9]+)×([0-9]+)/)!;
       const output = { width: Number(mode[1]), height: Number(mode[2]) };
+      console.log("CAGE_MODE_DENSITY", JSON.stringify({ browserName, density, ...pixels, guest: output }));
       expect(output.width).toBeLessThanOrEqual(1280);
       expect(output.height).toBeLessThanOrEqual(720);
       await expect.poll(async () => cageShellTextColumns(page, await canvas.screenshot(), output),

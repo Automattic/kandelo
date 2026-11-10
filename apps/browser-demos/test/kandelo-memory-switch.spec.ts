@@ -125,8 +125,8 @@ test("@slow games, Freeciv, LÖVE, cage, sway, labwc, DOS, tmux and WordPress su
     await expect(cageCanvas).toBeVisible({ timeout: 180_000 });
     await expect.poll(() => page.locator(".kdemo-surface-controls").allTextContents()
       .then(text => text.join(" ")), { timeout: 180_000 }).toMatch(/webgl2-gl/);
-    await expect.poll(async () => (await cageCanvas.screenshot()).byteLength,
-      { timeout: 120_000 }).toBeGreaterThan(8_000);
+    // PNG size depends on the guest mode and encoder. The shell-pixel check
+    // below proves content even when a valid modest display compresses well.
     const cageMode = (await page.locator(".kdemo-surface-controls").allTextContents())
       .join(" ").match(/(\d+)×(\d+)/)!;
     await expect.poll(async () => cageShellTextColumns(page, await cageCanvas.screenshot(),

@@ -515,15 +515,22 @@ test("Sway Activity from shell opens another tiled Foot with Alt+Enter and exits
     const rows = page.locator(".ktable tbody tr").filter({
       has: page.locator("td:last-child", { hasText: /^(?:\/\S*\/)?foot(?:\s|$)/ }),
     });
-    await expect(rows).toHaveCount(count, { timeout: 120_000 });
-    const pids: number[] = [];
-    for (const row of await rows.all()) {
-      const text = await row.locator("td:first-child").innerText();
-      const pid = text.match(/\b\d+\b/);
+    // Process events replace the table with Loading while enumProcs refreshes.
+    // Read count and PID cells in one DOM turn so a later refresh cannot turn
+    // an already-proven pair of real Foot rows into an empty PID collection.
+    let snapshot: Array<{ pid: number | null; row: string }> = [];
+    await expect.poll(async () => {
+      snapshot = await rows.evaluateAll(elements => elements.map(element => {
+        const pid = element.querySelector("td:first-child")?.textContent?.match(/\b\d+\b/);
+        return { pid: pid ? Number(pid[0]) : null, row: (element as HTMLElement).innerText };
+      }));
+      return snapshot.length;
+    }, { timeout: 120_000 }).toBe(count);
+    const pids = snapshot.map(({ pid }) => {
       expect(pid, "actual process row has a PID").not.toBeNull();
-      pids.push(Number(pid![0]));
-    }
-    await testInfo.attach(attachment, { body: JSON.stringify({ pids, rows: await rows.allInnerTexts() }, null, 2), contentType: "application/json" });
+      return pid!;
+    });
+    await testInfo.attach(attachment, { body: JSON.stringify({ pids, rows: snapshot.map(({ row }) => row) }, null, 2), contentType: "application/json" });
     await openSurface(page, "Graphics");
     await canvasLocator(page).focus();
     await expect(canvasLocator(page)).toBeFocused();
