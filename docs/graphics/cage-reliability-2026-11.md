@@ -28,6 +28,14 @@ intermittent unpacking, Sway and WebKit audio-retirement findings are retained.
 This delivery investigates work package R1 after #1594. It does not activate
 B2–B6/C1–C3 or claim full graphics/native-feel acceptance.
 
+Maintainer feedback from the frozen rendering preview: in Firefox, cursor
+responsiveness feels decent and `scummvm-play steel-sky` works much better.
+Cage still looks blurrier than Sway, whose performance feels similar. The
+maintainer favors landing the current improvement and iterating on sharpness
+afterward. This is subjective Firefox feedback, not a benchmark or a waiver
+of the remaining correctness, memory and integration checks. Text sharpness
+relative to Sway remains follow-up work rather than a completed claim.
+
 ## Historical control and startup cause
 
 The shipped runtime source is `567dd52debd150f6ad0037b42c2b137be1f980e1`.
