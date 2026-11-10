@@ -1,7 +1,9 @@
 /** Merge only writes relative to this mapping's last published snapshot.
  * Unchanged readers must never overwrite newer canonical bytes. When advancing
  * the snapshot, copy the exact published bytes from the host-owned destination:
- * a concurrent producer may already have changed the live source again. */
+ * a concurrent producer may already have changed the live source again.
+ * "source" is for importing stable canonical bytes into a concurrently writable
+ * guest destination; its baseline must never capture later guest stores. */
 export function mergeChangedByteRuns(
   source: Uint8Array,
   sourceOffset: number,
@@ -10,7 +12,7 @@ export function mergeChangedByteRuns(
   destination: Uint8Array,
   destinationOffset: number,
   len: number,
-  updateSnapshot = false,
+  updateSnapshot: boolean | "source" = false,
 ): boolean {
   // These views belong to this synchronous call only. Both callers recreate
   // their byte views from the current memory buffer; never retain guest views
@@ -41,7 +43,19 @@ export function mergeChangedByteRuns(
             snapshotWords = new Uint32Array(snapshot.buffer, snapshotStart + lead, count);
           }
           let word = (i - lead) / 4;
-          while (word < sourceWords.length && sourceWords[word] === snapshotWords[word]) word++;
+          const end = sourceWords.length;
+          // Compare a bounded group before returning to the byte-level merge.
+          // A differing word still receives the original exact-byte treatment.
+          while (len >= 4096 && word + 8 <= end
+            && sourceWords[word] === snapshotWords[word]
+            && sourceWords[word + 1] === snapshotWords[word + 1]
+            && sourceWords[word + 2] === snapshotWords[word + 2]
+            && sourceWords[word + 3] === snapshotWords[word + 3]
+            && sourceWords[word + 4] === snapshotWords[word + 4]
+            && sourceWords[word + 5] === snapshotWords[word + 5]
+            && sourceWords[word + 6] === snapshotWords[word + 6]
+            && sourceWords[word + 7] === snapshotWords[word + 7]) word += 8;
+          while (word < end && sourceWords[word] === snapshotWords[word]) word++;
           i = lead + word * 4;
           if (i >= len) break;
           // A differing word still needs byte comparison: only genuinely
@@ -57,7 +71,8 @@ export function mergeChangedByteRuns(
     );
     destination.set(source.subarray(sourceOffset + start, sourceOffset + i), destinationOffset + start);
     if (updateSnapshot) snapshot.set(
-      destination.subarray(destinationOffset + start, destinationOffset + i), snapshotOffset + start,
+      updateSnapshot === "source" ? source.subarray(sourceOffset + start, sourceOffset + i)
+        : destination.subarray(destinationOffset + start, destinationOffset + i), snapshotOffset + start,
     );
     changed = true;
   }
@@ -74,7 +89,7 @@ function mergeChangedByteRunsScalar(
   destination: Uint8Array,
   destinationOffset: number,
   len: number,
-  updateSnapshot: boolean,
+  updateSnapshot: boolean | "source",
 ): boolean {
   let changed = false;
   let i = 0;
@@ -87,7 +102,8 @@ function mergeChangedByteRunsScalar(
     );
     destination.set(source.subarray(sourceOffset + start, sourceOffset + i), destinationOffset + start);
     if (updateSnapshot) snapshot.set(
-      destination.subarray(destinationOffset + start, destinationOffset + i), snapshotOffset + start,
+      updateSnapshot === "source" ? source.subarray(sourceOffset + start, sourceOffset + i)
+        : destination.subarray(destinationOffset + start, destinationOffset + i), snapshotOffset + start,
     );
     changed = true;
   }

@@ -1944,6 +1944,13 @@ export class WasmPosixKernel {
     this.bos.setProcessMemoryResolver((pid) =>
       this.callbacks.getProcessMemory?.(pid),
     );
+    this.bos.setProcessMemoryCoherence(
+      (pid, memory) => this.callbacks.getProcessMemory?.(pid) === memory
+        ? this.callbacks.getProcessQuiescentEpoch?.(pid) ?? -1n : -1n,
+      (pid, memory) => {
+        if (this.callbacks.getProcessMemory?.(pid) === memory) this.callbacks.onProcessMemoryChanged?.(pid);
+      },
+    );
     if (arguments[3] === wasmPosixKernelTestCapability) {
       intrinsicObjectDefineProperty(this, "testAuthority", {
         configurable: false,
@@ -3536,7 +3543,7 @@ export class WasmPosixKernel {
                 if (rc !== 0) muxer.invalidateCurrent();
                 return rc;
               }
-              const dimensions = this.bos.dims(copyId), canonical = this.bos.pixelView(copyId);
+              const dimensions = this.bos.dims(copyId), canonical = this.bos.readPixelView(copyId);
               const rowBytes = size.width * 4;
               if (!dimensions || !canonical || (format !== 0x34324241 && format !== 0x34325241) || pitch !== dimensions.stride ||
                   dimensions.w !== size.width || dimensions.h !== size.height ||
@@ -4076,7 +4083,7 @@ export class WasmPosixKernel {
           }
           if (glTarget === WPK_IMAGE_SOURCE_TARGET) return -22;
           const dims = this.bos.dims(boId);
-          const bytes = this.bos.pixelView(boId);
+          const bytes = this.bos.readPixelView(boId);
           if (!dims || !bytes) return -2;                       // ENOENT
           // Publish all writers at this submission boundary. Allocation
           // identity does not tell us which process wrote the pixels.
