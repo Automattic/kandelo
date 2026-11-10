@@ -257,11 +257,27 @@ Additional strict-native checks fail on pinned Bun 1.3.3's unavailable
 multi-memory/Memory64 capabilities; standalone probes retain that boundary
 without a product workaround. The complete source/memory gate is pending.
 
-Pinned main `e053470fd8140073d811b64eaa6f62cf90978a5c` has completed its own
-normal SDK/program/image preparation. The candidate's full preparation,
-canonical preview, paired application benchmarks, normal desktop checks
-and complete three-engine memory gate remain in progress. PR #1678 stays
-a draft. See its current `docs/graphics/cage-reliability-2026-11.md` for
+Pinned main `e053470fd8140073d811b64eaa6f62cf90978a5c` and the candidate have
+completed normal SDK/program/image preparation. Their published host ABI is
+5, while the older archived controls above use host ABI 4; program ABI 56
+is unchanged. The candidate's default ABI check encountered a later moving
+main reference. Its snapshot and frozen-program baseline matched its own
+source, and the explicit comparison with pinned `e053470fd8` passed.
+
+The frozen canonical candidate passes 15/15 Cage checks across all three
+engines and three actual Steel Sky checks under Cage, with compositor display
+ownership preserved. The first Sway observer confused Foot's title bar with
+the game. A corrected interior-pixel/window check passes Chromium and Firefox;
+WebKit still fails and retains a visibly corrupted Foot frame for investigation.
+These are separate results, not six passing game checks.
+
+The fix branch now includes newly pinned main
+`8161769ed9d2394e7793bfd82be08cbf890e7145`, inheriting its published host ABI
+6 without changing program ABI 56. The merged source ownership/lifecycle
+selection passes 267/267. Normal preparation and the full browser, memory
+and paired benchmark gates for that combined tree remain in progress.
+The previous full preview stays frozen at host ABI 5. PR #1678 stays a draft.
+See its current `docs/graphics/cage-reliability-2026-11.md` for
 artifact identities, original failures and exact evidence scopes. The
 broader B2–B6/C1–C3 campaign and full native acceptance remain paused/open.
 
@@ -545,7 +561,7 @@ assertion or overrule maintainer decisions.
 | Field | Current value |
 | --- | --- |
 | Selected next work | Validate shared-buffer coherence repair and CSS-sized Cage output; retain transport, Sway, unpack and PCM retirement findings |
-| Implementation/release scope | Browser storage diagnostics, terminal visibility/fit, shared-buffer synchronization and image-owned Cage display policy; preserve ABI 56/4/17/21 |
+| Implementation/release scope | Browser storage diagnostics, terminal visibility/fit, shared-buffer synchronization and image-owned Cage display policy; preserve published program/graphics/fork contracts and inherit pinned main's host ABI 6 |
 | Research inputs | Preserved shipment controls, current-main-based normal reproduction, standalone OPFS/xterm controls and frozen Cage copy/native-call profiles |
 | Main risk | Startup failure and reported runtime crashes/slowness may have different causes |
 | Exit from investigation | Current partial rendering/input checks pass; canonical preparation, paired performance and full memory validation remain pending. Historical configured memory passes do not validate this revision. Default transport, Sway, unpack, PCM, M1/M2, D1/D2, L1 and V1/P1 remain open |
