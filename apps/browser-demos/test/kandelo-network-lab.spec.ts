@@ -187,6 +187,6 @@ test("a computer on another network joins through both NATs with STUN only", asy
     if (!sent.output.includes("sent=0")) return sent.output;
     return (await runTerminalCommand(joiner, "cat /tmp/across.txt")).output;
   }, { timeout: 60_000 }).toContain("hello from another network");
-  await host.screenshot({ path: "../../.context/network-lab-host.png" });
-  await joiner.screenshot({ path: "../../.context/network-lab-joiner.png" });
+  await host.screenshot({ path: "../../.scratch/network-lab-host.png" });
+  await joiner.screenshot({ path: "../../.scratch/network-lab-joiner.png" });
 });

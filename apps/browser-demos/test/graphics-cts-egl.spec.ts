@@ -59,7 +59,7 @@ test("rebuilt upstream EGL surfaceless and context query subsets cover every adv
       timeout: 60_000,
     }).toMatchObject({ exit: expect.any(Number) });
     const { output, exit, diagnostics } = await page.evaluate(() => (globalThis as any).__graphicsCtsState);
-    writeFileSync(new URL(`../../../.context/graphics-cts-guest-${browserName}.json`, import.meta.url), JSON.stringify({
+    writeFileSync(new URL(`../../../.scratch/graphics-cts-guest-${browserName}.json`, import.meta.url), JSON.stringify({
       engine: browserName, version: browser.version(),
       programSha256: createHash("sha256").update(program).digest("hex"),
       kernelSha256: createHash("sha256").update(kernelBytes).digest("hex"), output, exit, diagnostics,

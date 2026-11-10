@@ -2450,7 +2450,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 4,
+      "required_host_adapter_version": 5,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2614,6 +2614,7 @@
       "kernel_reap_exited_child",
       "kernel_remove_process",
       "kernel_reset_tcp_connection",
+      "kernel_rootfs_take_compaction_request",
       "kernel_set_current_tid",
       "kernel_set_cwd",
       "kernel_set_main_channel_addr",
@@ -2635,7 +2636,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 4,
+    "version": 5,
     "worker_features": [
       {
         "bit": 2,
@@ -4973,6 +4974,11 @@
     {
       "kind": "func",
       "name": "kernel_rootfs_sync_persistence",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_take_compaction_request",
       "signature": "() -> (i32)"
     },
     {

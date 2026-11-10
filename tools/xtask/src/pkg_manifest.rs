@@ -469,6 +469,10 @@ pub struct License {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Build {
+    /// Whether this recipe uses the Kandelo compiler/sysroot. `none` is an
+    /// author assertion, checked by removing SDK directories from recipe PATH.
+    #[serde(default)]
+    pub toolchain: PackageToolchain,
     /// DEPRECATED. Package-dir-relative filename of the build script.
     /// Source `package.toml` files must use `script_path` instead;
     /// `validate_source` rejects this legacy field on the source parse
@@ -500,10 +504,28 @@ pub struct Build {
 impl Default for Build {
     fn default() -> Self {
         Self {
+            toolchain: PackageToolchain::Sdk,
             script: None,
             script_path: None,
             repo_url: None,
             commit: None,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PackageToolchain {
+    #[default]
+    Sdk,
+    None,
+}
+
+impl PackageToolchain {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sdk => "sdk",
+            Self::None => "none",
         }
     }
 }
@@ -1592,6 +1614,7 @@ impl DepsManifest {
         // unpack path must continue to parse them. The required-ness is
         // enforced only on the source path.
         let has_build_block = raw.build.script_path.is_some()
+            || raw.build.toolchain != PackageToolchain::Sdk
             || raw.build.repo_url.is_some()
             || raw.build.commit.is_some()
             || raw.build.script.is_some();
@@ -2863,6 +2886,18 @@ spdx = "MIT"
 "#;
         let err = DepsManifest::parse(text, PathBuf::from("/x")).unwrap_err();
         assert!(err.contains("kind"), "got: {err}");
+    }
+
+    #[test]
+    fn package_toolchain_defaults_to_sdk_and_rejects_unknown_values() {
+        let parse = |extra: &str| {
+            DepsManifest::parse(&format!("kernel_abi = 55\n{EXAMPLE}\n{extra}"), PathBuf::from("/x"))
+        };
+        assert_eq!(parse("").unwrap().build.toolchain, PackageToolchain::Sdk);
+        assert_eq!(parse("[build]\ntoolchain = \"sdk\"\n").unwrap().build.toolchain, PackageToolchain::Sdk);
+        assert_eq!(parse("[build]\ntoolchain = \"none\"\n").unwrap().build.toolchain, PackageToolchain::None);
+        let error = parse("[build]\ntoolchain = \"noen\"\n").unwrap_err();
+        assert!(error.contains("unknown variant"), "{error}");
     }
 
     #[test]

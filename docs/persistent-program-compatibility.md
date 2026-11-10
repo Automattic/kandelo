@@ -79,11 +79,13 @@ together without forcing user programs to be rebuilt.
 
 This first gate is deliberately exact. It refuses new program-surface fields
 as well as changed or removed fields, even if the ordinary snapshot classifier
-calls the change additive. A required-extension mechanism is not implemented;
-do not work around that by accepting arbitrary old digests or giving new
-requirements the old identity. Future extensions need explicit admission and
-negative tests before this restriction can be relaxed. Existing syscall IDs,
-structures and directly accessed libc layouts retain their meaning.
+calls the change additive. Independently versioned [program extensions](program-extensions.md)
+use exact Wasm import namespaces and typed admission instead of changing the
+base digest. Programs without extension imports retain their existing base
+identity; unknown required versions are refused. This does not permit new
+fields in the base snapshot, arbitrary old digests, or giving new requirements
+an old extension identity. Existing syscall IDs, structures and directly
+accessed libc layouts retain their meaning.
 
 The maintainer deliberately retired the initial ABI-55 baseline before
 release: nothing deployed relies on those binaries. This is an explicit

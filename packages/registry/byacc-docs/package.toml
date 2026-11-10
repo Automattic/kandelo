@@ -18,6 +18,7 @@ spdx = "LicenseRef-Public-Domain"
 url = "https://invisible-island.net/byacc/byacc.html"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/byacc-docs/build-byacc-docs.sh"
 
 [[outputs]]

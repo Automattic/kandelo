@@ -35,9 +35,9 @@ async function checkDirectory(directory, prefix = "") {
 }
 await checkDirectory(source);
 const app = fileURLToPath(new URL("./", import.meta.url));
-const context = fileURLToPath(new URL("../../.context/", import.meta.url));
-await mkdir(context, { recursive: true });
-const output = await mkdtemp(join(context, "spacefast-kandelo-build-"));
+const scratch = fileURLToPath(new URL("../../.scratch/", import.meta.url));
+await mkdir(scratch, { recursive: true });
+const output = await mkdtemp(join(scratch, "spacefast-kandelo-build-"));
 await cp(source, output, {
   recursive: true,
   // The portable piplet mutates its PHP file on WP Cloud. Spacefast instead

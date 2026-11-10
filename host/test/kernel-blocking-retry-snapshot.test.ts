@@ -89,6 +89,7 @@ const RUST_TARGETED_RETRY_OPERATIONS = [
   "Connect",
   "CopyFileRange",
   "Fcntl",
+  "FileMetadata",
   "Flock",
   "MqReceive",
   "MqSend",
@@ -188,6 +189,7 @@ function createRetryHarness(
   const hostOnlyRetrySyscalls = new Set<number>([
     ABI_SYSCALLS.Open,
     ABI_SYSCALLS.Openat,
+    ABI_SYSCALLS.Rename,
     ABI_SYSCALLS.Poll,
     ABI_SYSCALLS.Ppoll,
     ABI_SYSCALLS.Select,
@@ -214,6 +216,7 @@ function createRetryHarness(
     kernel_generate_host_signal: () => 0,
     kernel_handle_channel: () => 0,
     kernel_owned_mapping_finish: vi.fn(() => 0),
+    kernel_rootfs_take_compaction_request: () => 0,
     kernel_is_fd_nonblock: () => 0,
     kernel_pick_signal_target_tid: vi.fn(() => pid),
     kernel_set_current_tid: () => 0,
@@ -661,7 +664,7 @@ describe("blocking retry snapshot contract", () => {
     }
   });
 
-  it("keeps token zero exclusive to seven reviewed host-only snapshot families", () => {
+  it("keeps token zero exclusive to reviewed namespace and readiness snapshots", () => {
     const hostOnlyClassifier = BLOCKED_RETRY_SOURCE.match(
       /fn is_explicit_host_only_snapshot_syscall\(syscall: u32\) -> bool \{([\s\S]*?)\n\}/,
     )?.[1];
@@ -676,12 +679,33 @@ describe("blocking retry snapshot contract", () => {
       (match) => match[1],
     ).sort();
     expect(hostOnlyFamilies).toEqual([
+      "Syscall::Chmod as u32",
+      "Syscall::Chown as u32",
+      "Syscall::Fchmodat as u32",
+      "Syscall::Fchownat as u32",
+      "Syscall::Link as u32",
+      "Syscall::Linkat as u32",
+      "Syscall::Mkdir as u32",
+      "Syscall::Mkdirat as u32",
       "Syscall::Open as u32",
       "Syscall::Openat as u32",
       "Syscall::Poll as u32",
+      "Syscall::Rename as u32",
+      "Syscall::Renameat as u32",
+      "Syscall::Rmdir as u32",
       "Syscall::Select as u32",
+      "Syscall::Symlink as u32",
+      "Syscall::Symlinkat as u32",
+      "Syscall::Truncate as u32",
+      "Syscall::Unlink as u32",
+      "Syscall::Unlinkat as u32",
+      "Syscall::Utimensat as u32",
+      "extended_syscalls::SYS_FCHMODAT2",
+      "extended_syscalls::SYS_MKNOD",
+      "extended_syscalls::SYS_MKNODAT",
       "extended_syscalls::SYS_PPOLL",
       "extended_syscalls::SYS_PSELECT6",
+      "extended_syscalls::SYS_RENAMEAT2",
     ]);
 
     const fromSyscall = BLOCKED_RETRY_SOURCE.match(
@@ -825,6 +849,120 @@ afterEach(() => {
 });
 
 describe("blocking retry request snapshots", () => {
+  it.each(WIDTHS)("%s waits for requested compaction without polling or rereading a write payload", async (_name, pointerWidth) => {
+    const harness = createRetryHarness(pointerWidth);
+    const source = 0x1000;
+    harness.processBytes.set([1, 2, 3], source);
+    writeRequest(harness, ABI_SYSCALLS.Write, [7n, BigInt(source), 3n]);
+    let started!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>(done => { started = done; });
+    const compacted = new Promise<void>(done => { release = done; });
+    const compact = vi.fn(async () => { started(); await compacted; });
+    // Maintenance must start before an already queued readiness worker turn;
+    // that turn could otherwise replace the pending retry before startup.
+    const beforeReadinessWake = new Promise<boolean>(done => {
+      setImmediate(() => done(compact.mock.calls.length === 1));
+    });
+    harness.worker.setRootfsCompactionHandler(compact);
+    const attempts: number[][] = [];
+    harness.kernelExports.kernel_rootfs_take_compaction_request = () => 1;
+    // Regular-file O_NONBLOCK must not leak the private EAGAIN sentinel.
+    harness.kernelExports.kernel_is_fd_nonblock = () => 1;
+    harness.kernelExports.kernel_handle_channel = vi.fn((rawPointer: number | bigint) => {
+      const view = kernelView(harness, rawPointer);
+      const pointer = Number(kernelArg(view, 1));
+      attempts.push(Array.from(harness.kernelBytes.slice(pointer, pointer + 3)));
+      publishKernelResult(view, attempts.length === 1 ? -1 : 3, attempts.length === 1 ? EAGAIN : 0);
+      return 0;
+    });
+    harness.worker.handleSyscall(harness.channel);
+    await reached;
+    expect(await beforeReadinessWake).toBe(true);
+    expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
+    expect(harness.worker.pendingPollRetries.get(harness.channel).timer).toBeNull();
+    expect(attempts).toHaveLength(1);
+    harness.processBytes.fill(99, source, source + 3);
+    writeRequest(harness, ABI_SYSCALLS.Write, [88n, 0n, 0n]);
+    release();
+    await vi.waitFor(() => expect(requestStatus(harness)).toBe(CHANNEL_STATUS_COMPLETE));
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(attempts).toEqual([[1, 2, 3], [1, 2, 3]]);
+    expect(requestResult(harness).returnValue).toBe(3);
+    expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Write);
+  });
+
+  it("returns a real compaction quota error to the waiter", async () => {
+    const harness = createRetryHarness(4);
+    writeRequest(harness, ABI_SYSCALLS.Write, [7n, 0x1000n, 1n]);
+    harness.kernelExports.kernel_rootfs_take_compaction_request = () => 1;
+    harness.kernelExports.kernel_handle_channel = vi.fn((rawPointer: number | bigint) => {
+      publishKernelResult(kernelView(harness, rawPointer), -1, EAGAIN);
+      return 0;
+    });
+    const compact = vi.fn(async () => { throw Object.assign(new Error("quota exceeded"), { code: "ENOSPC" }); });
+    harness.worker.setRootfsCompactionHandler(compact);
+    harness.worker.handleSyscall(harness.channel);
+    await vi.waitFor(() => expect(requestStatus(harness)).toBe(CHANNEL_STATUS_COMPLETE));
+    expect(requestResult(harness)).toEqual({ status: CHANNEL_STATUS_COMPLETE, returnValue: -1, errno: 28 });
+    expect(harness.kernelExports.kernel_handle_channel).toHaveBeenCalledOnce();
+    expect(harness.kernelExports.kernel_blocking_retry_release).toHaveBeenCalledWith(harness.channel.pid, harness.channel.pid, 1n);
+    expect(compact).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves O_NONBLOCK if a retry still would block after compaction", async () => {
+    const harness = createRetryHarness(4);
+    writeRequest(harness, ABI_SYSCALLS.Write, [7n, 0x1000n, 1n]);
+    let attempts = 0;
+    harness.kernelExports.kernel_is_fd_nonblock = () => 1;
+    harness.kernelExports.kernel_rootfs_take_compaction_request = () => attempts === 1 ? 1 : 0;
+    harness.kernelExports.kernel_handle_channel = vi.fn((rawPointer: number | bigint) => {
+      attempts++;
+      publishKernelResult(kernelView(harness, rawPointer), -1, EAGAIN);
+      return 0;
+    });
+    const compact = vi.fn(async () => {});
+    harness.worker.setRootfsCompactionHandler(compact);
+    harness.worker.handleSyscall(harness.channel);
+    await vi.waitFor(() => expect(requestStatus(harness)).toBe(CHANNEL_STATUS_COMPLETE));
+    expect(requestResult(harness).errno).toBe(EAGAIN);
+    expect(attempts).toBe(2);
+    expect(compact).toHaveBeenCalledOnce();
+    expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Write);
+  });
+
+  it("retains both rename paths while metadata waits for compaction", async () => {
+    const harness = createRetryHarness(4);
+    const encoder = new TextEncoder();
+    harness.processBytes.set(encoder.encode("/home/maker/before\0"), 0x1000);
+    harness.processBytes.set(encoder.encode("/home/maker/after\0"), 0x2000);
+    writeRequest(harness, ABI_SYSCALLS.Rename, [0x1000n, 0x2000n]);
+    let release!: () => void;
+    let started!: () => void;
+    const reached = new Promise<void>(done => { started = done; });
+    const compacted = new Promise<void>(done => { release = done; });
+    harness.worker.setRootfsCompactionHandler(async () => { started(); await compacted; });
+    harness.kernelExports.kernel_rootfs_take_compaction_request = () => 1;
+    const paths: string[][] = [];
+    harness.kernelExports.kernel_handle_channel = (rawPointer: number | bigint) => {
+      const view = kernelView(harness, rawPointer);
+      paths.push([0, 1].map(index => {
+        const pointer = Number(kernelArg(view, index));
+        const end = harness.kernelBytes.indexOf(0, pointer);
+        return new TextDecoder().decode(harness.kernelBytes.slice(pointer, end));
+      }));
+      publishKernelResult(view, paths.length === 1 ? -1 : 0, paths.length === 1 ? EAGAIN : 0);
+      return 0;
+    };
+    harness.worker.handleSyscall(harness.channel);
+    await reached;
+    harness.processBytes.fill(99, 0x1000, 0x2020);
+    release();
+    await vi.waitFor(() => expect(requestStatus(harness)).toBe(CHANNEL_STATUS_COMPLETE));
+    expect(paths).toEqual(Array(2).fill(["/home/maker/before", "/home/maker/after"]));
+    expect(requestResult(harness).errno).toBe(0);
+  });
+
   it.each(WIDTHS)(
     "%s retains a scalar write's fd, source range, length, and payload",
     async (_name, pointerWidth) => {

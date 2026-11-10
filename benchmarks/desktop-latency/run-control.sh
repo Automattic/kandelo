@@ -14,8 +14,8 @@ if [[ -n "${1:-}" ]]; then
   # Refuse to overwrite a previous run, including its compiler and inputs.
   mkdir "$out"
 else
-  mkdir -p "$root/.context"
-  out="$(mktemp -d "$root/.context/native-display-control-XXXXXXXX")"
+  mkdir -p "$root/.scratch"
+  out="$(mktemp -d "$root/.scratch/native-display-control-XXXXXXXX")"
 fi
 printf 'Native display control output: %s\n' "$out"
 # This auxiliary observer uses Apple's installed SDK and frameworks. Resolve

@@ -101,5 +101,4 @@
 
 # ── Shells ─────────────────────────────────────────────────────────
 # /bin/sh is provided by the generated package manifest as a symlink to
-# /bin/bash. The rootfs/bin/sh file is a legacy source-tree stub and is
-# intentionally no longer declared here.
+# /bin/bash.

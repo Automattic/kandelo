@@ -30,6 +30,7 @@ import {
   shellLazySpecDependency,
   shellLazySpecMode,
 } from "../lib/init/shell-binaries";
+import { registerShellRustSdkManifest } from "./shell-rust-sdk-manifest";
 import {
   displacePosixUtilsLiteManApplet,
   installNethackGames,
@@ -491,6 +492,7 @@ export function populateShellEnvironment(
   installNethackGames(fs);
   populateDemoExtendedSymlinks(fs);
   if (opts.eagerBinaries) populateDemoExtendedBinaries(fs, resolveArtifact);
+  registerShellRustSdkManifest(fs, resolveArtifact);
 }
 
 // ── System layout ───────────────────────────────────────────────

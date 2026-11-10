@@ -13,6 +13,7 @@ guide for the contract your change touches.
 | `host-runtime.md` | Node/browser parity, worker protocols, host runtime failures |
 | `packages-and-builds.md` | Package recipes, build scripts, resolver/cache behavior |
 | `browser-and-user.md` | Browser demos, `KernelHost`, sharing, VFS image metadata |
+| `images.md` | Filesystem hierarchy, image builders and installed guest paths |
 | `performance.md` | Benchmark claims, performance evidence, hot-path restrictions |
 | `build-docs-and-prs.md` | Dev shell, build commands, documentation, PR/final report scope |
 | `spacefast-deployment.md` | Optional Spacefast builds, explicit targets, publication and reusable deployment examples |

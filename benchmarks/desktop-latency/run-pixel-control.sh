@@ -7,7 +7,7 @@ if [[ -n "${1:-}" ]];then
   case "$1" in /*) out="$1";; *) out="$PWD/$1";; esac
   mkdir -p "$(dirname "$out")"; mkdir "$out"
 else
-  mkdir -p "$root/.context";out="$(mktemp -d "$root/.context/pixel-control-XXXXXXXX")"
+  mkdir -p "$root/.scratch";out="$(mktemp -d "$root/.scratch/pixel-control-XXXXXXXX")"
 fi
 printf 'Headless pixel control output: %s\n' "$out"
 mac_tool() { /usr/bin/env -u DEVELOPER_DIR -u SDKROOT /usr/bin/xcrun "$@"; }

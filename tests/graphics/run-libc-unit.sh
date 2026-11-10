@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
-output_dir="$(mktemp -d "$repo_root/.context/graphics-libc.XXXXXX")"
+mkdir -p "$repo_root/.scratch"
+output_dir="$(mktemp -d "$repo_root/.scratch/graphics-libc.XXXXXX")"
 trap 'rm -rf "$output_dir"' EXIT
 mkdir -p "$output_dir/include" "$output_dir/glue"
 for name in EGL GLES2 KHR; do

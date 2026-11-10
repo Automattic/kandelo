@@ -2304,6 +2304,11 @@ pub extern "C" fn kernel_rootfs_journal_state_memory_pressure() -> u32 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_take_compaction_request() -> u32 {
+    u32::from(crate::rootfs::take_compaction_request())
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_set_io_budget_bytes(limit: u32) -> i32 {
     match crate::rootfs::set_io_budget_bytes(limit as usize) {
         Ok(()) => 0,
@@ -5231,7 +5236,8 @@ fn retain_blocking_retry_target(syscall_nr: u32, args: &[i64; 6]) -> Result<(), 
         // retries, so a pin taken now would never be released.
         crate::blocked_retry::BlockingRetryOperation::Fcntl
         | crate::blocked_retry::BlockingRetryOperation::Flock => {}
-        crate::blocked_retry::BlockingRetryOperation::Read
+        crate::blocked_retry::BlockingRetryOperation::FileMetadata
+        | crate::blocked_retry::BlockingRetryOperation::Read
         | crate::blocked_retry::BlockingRetryOperation::Write
         | crate::blocked_retry::BlockingRetryOperation::Pread
         | crate::blocked_retry::BlockingRetryOperation::Pwrite
@@ -5343,6 +5349,11 @@ fn handle_owned_channel_allocation(
     transport: ChannelTransport,
 ) -> i32 {
     use wasm_posix_shared::channel::*;
+
+    // A partial successful transfer (or a privileged host mutation) can leave
+    // a tail request behind. Only this attempt's EAGAIN may ask the host to
+    // compact; otherwise an unrelated pipe/socket EAGAIN could inherit it.
+    let _ = crate::rootfs::take_compaction_request();
 
     if offset == 0 || allocation_capacity < MIN_CHANNEL_SIZE {
         unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
@@ -14366,7 +14377,7 @@ fn kernel_sendfile_with_count(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, coun
 
 /// statx -- extended file stat.
 /// Delegates to fstatat and fills the statx buffer from WasmStat.
-/// statx struct layout: we write a simplified version compatible with musl expectations.
+/// Serializes Kandelo's fixed-width statx layout for both guest data models.
 /// Returns 0 on success, negative errno on error.
 pub fn kernel_statx(
     dirfd: i32,
@@ -14382,48 +14393,11 @@ pub fn kernel_statx(
 
     let result = match syscalls::sys_statx(proc, &mut host, dirfd, path, flags, mask) {
         Ok(st) => {
-            // Fill statx struct (256 bytes)
-            // We fill the key fields that musl expects
             let buf = unsafe { slice::from_raw_parts_mut(statx_ptr, 256) };
-            // Zero out first
-            for b in buf.iter_mut() {
-                *b = 0;
+            match crate::process_wire::write_statx(buf, &st) {
+                Ok(()) => 0,
+                Err(error) => -(error as i32),
             }
-            // stx_mask (u32 @ 0): STATX_BASIC_STATS = 0x07ff
-            buf[0..4].copy_from_slice(&0x07ffu32.to_le_bytes());
-            // stx_blksize (u32 @ 4): default 4096
-            buf[4..8].copy_from_slice(&4096u32.to_le_bytes());
-            // stx_attributes (u64 @ 8): 0
-            // stx_nlink (u32 @ 16)
-            buf[16..20].copy_from_slice(&st.st_nlink.to_le_bytes());
-            // stx_uid (u32 @ 20)
-            buf[20..24].copy_from_slice(&st.st_uid.to_le_bytes());
-            // stx_gid (u32 @ 24)
-            buf[24..28].copy_from_slice(&st.st_gid.to_le_bytes());
-            // stx_mode (u16 @ 28)
-            buf[28..30].copy_from_slice(&(st.st_mode as u16).to_le_bytes());
-            // stx_ino (u64 @ 32)
-            buf[32..40].copy_from_slice(&st.st_ino.to_le_bytes());
-            // stx_size (u64 @ 40)
-            buf[40..48].copy_from_slice(&st.st_size.to_le_bytes());
-            // stx_blocks (u64 @ 48): size / 512
-            let blocks = (st.st_size + 511) / 512;
-            buf[48..56].copy_from_slice(&blocks.to_le_bytes());
-            // stx_attributes_mask (u64 @ 56): 0
-            // stx_atime (statx_timestamp @ 64): tv_sec(i64) + tv_nsec(u32) + pad(i32) = 16 bytes
-            buf[64..72].copy_from_slice(&st.st_atime_sec.to_le_bytes());
-            buf[72..76].copy_from_slice(&st.st_atime_nsec.to_le_bytes());
-            // stx_btime (@ 80): 0 (birth time not tracked)
-            // stx_ctime (@ 96)
-            buf[96..104].copy_from_slice(&st.st_ctime_sec.to_le_bytes());
-            buf[104..108].copy_from_slice(&st.st_ctime_nsec.to_le_bytes());
-            // stx_mtime (@ 112)
-            buf[112..120].copy_from_slice(&st.st_mtime_sec.to_le_bytes());
-            buf[120..124].copy_from_slice(&st.st_mtime_nsec.to_le_bytes());
-            // stx_rdev_major (u32 @ 128), stx_rdev_minor (u32 @ 132)
-            // stx_dev_major (u32 @ 136), stx_dev_minor (u32 @ 140)
-            buf[136..140].copy_from_slice(&(st.st_dev as u32).to_le_bytes());
-            0
         }
         Err(e) => -(e as i32),
     };

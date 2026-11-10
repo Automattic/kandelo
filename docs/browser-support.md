@@ -2983,61 +2983,20 @@ Pages presentation membership is a separate reviewed authority at
 It maps every selected Pages product to the preset IDs that present that image.
 The Pages registry check requires exact product-ID parity, requires every
 declared preset to exist in `presets.ts`, and verifies the preset's VFS-image
-mapping in `live-setup.ts`. The retained Pages composer derives site metadata
-from those exact current-main authorities and the built site tree, and binds
-each normalized `vfs_image` mapping into the site identity; workflows do not
-supply self-authorizing gallery or file inventories.
+mapping in `live-setup.ts`.
 
-Hosted Pages publication is disabled, but its registry, producer, and local
-fixtures remain reviewable and continue to fail closed. Before disablement,
-protected main workflows invoked `scripts/abi-staging-pages-producer.ts produce`
-with a bounded handoff naming the exact clean checkout, runtime bundle/root,
-built site root, run identity, and current package/archive/program-index roots.
-The producer discovered immutable candidate and admission records anonymously,
-recaptured package inputs, and executed the normal VFS builders plus both host
-evidence supervisors. Every selected product had to carry its exact
-current-main recapture. Embedded recaptures remained path-only builder inputs;
-only lazy recaptures received Pages input URLs. Embedded product dependencies
-used the distinct ABI-, product-, digest-, and byte-bound Pages product URL.
-During pre-deployment evidence, canonical Pages and prior-product lazy URLs
-remained the image authority while authenticated current bytes were supplied
-through a closed local transport.
-The exact browser runtime used a dedicated evidence build of the real root UI.
-That build kept the exact kernel asset but mapped ordinary demo rootfs and
-program fallbacks to unavailable URLs. Candidate VFS and lazy inputs therefore
-came only from the protected evidence handoff; an accidental fallback fetch
-was observed as a failed, unexpected request instead of making runtime
-preparation depend on unrelated package archives before product composition.
-An incomplete product set emitted only `readiness.json`; a complete set
-emitted the canonical artifacts, site manifest, and inert source tree for the
-Pages job.
-The canary validated that record before selecting its artifact protocol. A
-hold had exactly that one file, reported its digest and blockers, and used
-ordinary bounded artifact retention; it never invoked the Pages artifact
-action. Only a ready result validated and uploaded the complete inert Pages
-source tree.
-
-That hosted rollout remains dormant. Re-enabling it requires a separate
-reviewed change that revalidates package-backed product inputs and restores an
-explicit deployment trigger; retained readiness files are not authorization.
+The product catalog and registries remain local build inputs and validation
+authorities. Hosted GitHub Pages publication is disabled; the old producer,
+canary and atomic deployment gate are no longer in this checkout. Historical
+workflow implementations and their evidence remain in Git history. Restoring
+a hosted publisher requires a reviewed implementation and fresh evidence for
+its package-backed inputs and deployment behavior.
 
 Selection preserves both lazy boundaries. A consumer may lazily compose a
 whole VFS product, and a selected product may in turn retain lazy package
 layers. Product-derived package roots are not copied into either consumer
 registry. This prevents a product from placing itself on Pages and prevents
 Pages or tests from becoming competing software dependency authorities.
-
-The atomic local snapshot gate also drives the one producer-returned, assembled
-seven-product tree through the production `/kandelo/` Vite base, service
-worker, cross-origin isolation headers, and `BrowserKernel` in Chromium. It
-holds the two eager VFS responses, proves no lazy request starts before their
-release, then proves each lazy product is fetched only by its representative
-profile. It hashes every VFS response and rejects external requests plus
-noncanonical identity, load, ABI, length, and digest mutations. The
-hidden deployment manifest is only the test's observation ledger; the sealed
-build map remains browser authority. This is bounded fixture evidence, not a
-claim about hosted candidate publication, a real pull request, canonical
-promotion, or production Pages deployment.
 
 Browser demos use pre-built **VFS images** — binary snapshots of a filesystem tree containing all runtime files, directory structure, configs, and symlinks needed by a demo. At runtime the kernel parses the image in place and serves it as `/`, replacing what would otherwise be hundreds or thousands of individual file creation operations. The format (a `VFSI` container holding a KIFS tree plus `SDEF`/`KLZY` sections describing deferred files) is read and written only by Rust: the kernel reads it (`crates/runtime-core/src/rootfs.rs`) and the image writer (`crates/runtime-core/src/kandelo_image_write.rs`) produces it.
 
@@ -3886,9 +3845,8 @@ metadata. A revision bump on the shell therefore changes the cache key of
 through the
 normal dependency graph.
 
-Hosted GitHub Pages publication is disabled. Its retained workflow is outside
-the active workflow directory, and package activation no longer dispatches a
-deployment. The normal `run.sh browser` path and pull-request browser suite
+Hosted GitHub Pages publication is disabled, and package activation does not
+dispatch a deployment. The normal `run.sh browser` path and pull-request browser suite
 remain active consumers of the same package-built VFS products. Re-enabling a
 hosted site requires separate review and fresh package-backed deployment
 evidence; an older hosted site is not evidence for the current source or

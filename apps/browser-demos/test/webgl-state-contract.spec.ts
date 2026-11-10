@@ -18,8 +18,8 @@ const refusedDeletion = (method: string) => `the live renderer refused ${method}
 for (const kind of ["client", "fixed", "max-byte", "max-short", "bound-byte", "bound-short"] as const) {
   test(`actual C encoder renders ${kind.startsWith("bound-") ? `bound ${kind.slice(6)} indices with client attributes` : kind.startsWith("max-") ? `maximum ${kind.slice(4)} indices` : `a large ${kind === "fixed" ? "fixed-point" : "float"} client array`} through WebGL`, async ({ page }) => {
     const root = fileURLToPath(new URL("../../../",import.meta.url));
-    mkdirSync(join(root,".context"),{recursive:true});
-    const temporary = mkdtempSync(join(root,".context/graphics-client-trace-"));
+    mkdirSync(join(root,".scratch"),{recursive:true});
+    const temporary = mkdtempSync(join(root,".scratch/graphics-client-trace-"));
     let trace: number[];
     try {
       const path = join(temporary,"commands.bin");
@@ -93,7 +93,7 @@ for (const kind of ["client", "fixed", "max-byte", "max-short", "bound-byte", "b
 
 test("actual C display generations keep their command streams and rendered targets independent", async ({ page }) => {
   const root = fileURLToPath(new URL("../../../",import.meta.url));
-  const temporary = mkdtempSync(join(root,".context/graphics-generation-trace-"));
+  const temporary = mkdtempSync(join(root,".scratch/graphics-generation-trace-"));
   let trace: number[];
   try {
     const path = join(temporary,"sessions.bin");
@@ -375,7 +375,7 @@ for (const cube of [false,true]) {
 }
 
 test(`actual C shader source upload crosses query chunks and renders after commit`, async ({ page }) => {
-  const root = fileURLToPath(new URL("../../../",import.meta.url)), temporary = mkdtempSync(join(root,".context/graphics-shader-trace-"));
+  const root = fileURLToPath(new URL("../../../",import.meta.url)), temporary = mkdtempSync(join(root,".scratch/graphics-shader-trace-"));
   let frames: number[];
   try {
     const path = join(temporary,"protocol.bin");
@@ -1348,7 +1348,7 @@ for(const scenario of ["sync-khr-render","sync-render","core-image-render","shar
 for (const mode of ["native"] as const) {
   test(`actual C ${scenario.startsWith("pbuffer-") ? `${scenario === "pbuffer-zero" ? "zero-sized" : "rendered"} pbuffers preserve the visible canvas` : scenario === "sync-khr-render" ? "KHR fence aliases retain completion and public identity" : scenario === "sync-render" ? "EGL client fences retain completed pixels after creator retirement" : scenario === "core-image-render" ? "core EGL images retain sibling pixels through destruction and respecification" : scenario === "completion-render" ? "completion waits finish before pixels are read" : scenario === "platform-window-render" ? "GBM platform windows preserve pixels around surface operations" : scenario === "surface-limits-render" ? "surface limits preserve current rendering across display generations" : scenario === "raw-discard-render" ? "unpublished raw candidate cleanup permits fresh cube pixels" : scenario === "shared-records-render" ? "public shared contexts retain texture storage after source retirement" : scenario === "records-basic" ? "independent EGL records preserve draw/read pixels" : scenario === "names-render" ? "implicit and generated texture names retain independent storage" : scenario === "image-bind-render" ? "native binding allocation failure preserves binding and dimensionality" : scenario === "image-target-render" ? "a rejected texture target preserves binding and storage" : `client draws retain the original buffer across renderer peer deletion${scenario.includes("legacy") ? " using large legacy staging" : " using an owned private draw"}${scenario.includes("index") ? " with separate index/vertex views" : ""}`} through ${mode} dispatch`, async ({page}) => {
     const root=fileURLToPath(new URL("../../../",import.meta.url));
-    const temporary=mkdtempSync(join(root,".context/graphics-egl-record-trace-"));
+    const temporary=mkdtempSync(join(root,".scratch/graphics-egl-record-trace-"));
     let trace:number[];
     try {
       const path=join(temporary,"egl.bin");

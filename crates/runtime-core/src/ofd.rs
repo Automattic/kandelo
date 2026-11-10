@@ -1047,7 +1047,8 @@ pub struct OpenFileDesc {
     pub dir_host_handle: i64,
     /// Synthetic "." / ".." state for getdents64: 0 = emit ".", 1 = emit "..", 2 = host entries
     pub dir_synth_state: u8,
-    /// Cumulative entry count across getdents64 calls — used as d_off cookie for seekdir.
+    /// Opaque next-record cookie for getdents64/seekdir. Kernel-backed trees
+    /// retain sparse creation cookies when earlier directory entries disappear.
     pub dir_entry_offset: i64,
     /// Shared-position generation represented by this process-local iterator.
     pub dir_position_generation: u64,

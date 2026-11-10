@@ -643,7 +643,7 @@ for (const scenario of [
     test.skip(kernelPath === null, "kernel artifact is required");
     const image = await imageWithState("large-image", scenario.fileBytes);
     expect(image.byteLength).toBeGreaterThan(scenario.budgetBytes);
-    const fixtureDir = mkdtempSync(join(repoRoot, ".context/large-source-"));
+    const fixtureDir = mkdtempSync(join(repoRoot, ".scratch/large-source-"));
     const imagePath = join(fixtureDir, "image.vfs");
     writeFileSync(imagePath, image);
     const server = createServer((_request, response) => {

@@ -143,8 +143,14 @@ binary; it does not relicense other libraries the binary also links (e.g.
 Record which shipped binaries link GPL `readline` so each binary's aggregate
 license is known.
 
-Builds must use the worktree-local SDK. Source `sdk/activate.sh` from package
-scripts; do not rely on `npm link` or a globally installed wrapper. If a build
+Builds that use the SDK must use the worktree-local SDK. Source
+`sdk/activate.sh` from those package scripts; do not rely on `npm link` or a
+globally installed wrapper. When adding or revising a recipe, review its
+script and sourced helpers. If they never use the SDK or sysroot, declare
+`[build].toolchain = "none"`; this retains packaging and declared
+inputs while removing SDK paths from the recipe environment. It is a
+reviewed input assertion with a PATH check, not a sandbox. See the
+[recipe contract](../package-management.md#cache-key-hashing). If a build
 only works because the host PATH leaks a tool, fix `flake.nix` or the build
 inputs, not the user's shell.
 

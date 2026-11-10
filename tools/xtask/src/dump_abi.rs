@@ -201,6 +201,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             clipboard_header_out.display()
         );
         println!("abi TS bindings up-to-date: {}", ts_out.display());
+        crate::program_extensions::run(vec!["--check".to_owned()])?;
         return Ok(());
     }
 
@@ -228,6 +229,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     println!("wrote {}", ts_out.display());
     write_file(&host_imports_out, &host_imports)?;
     println!("wrote {}", host_imports_out.display());
+    crate::program_extensions::run(Vec::new())?;
     Ok(())
 }
 

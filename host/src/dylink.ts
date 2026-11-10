@@ -6,6 +6,7 @@
  * https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md
  */
 
+import { describeProgramExtensionFailures } from "./program-extensions";
 import {
   checkSideModuleForkContract,
   type ForkSideModuleContract,
@@ -789,6 +790,8 @@ export interface DylinkForkReconcileOptions {
  * Options for loading a shared library.
  */
 export interface LoadSharedLibraryOptions {
+  programExtensionImports?: WebAssembly.Imports;
+  withModuleInstantiation?: <T>(operation: () => T) => T;
   /** The shared Wasm.Memory used by the process */
   memory: WebAssembly.Memory;
   /** The process's indirect function table */
@@ -1234,6 +1237,11 @@ function* instantiateSharedLibrarySteps(
     ) as ArrayBuffer,
   );
   const functionImportsByName = new Map<string, WasmFunctionImportType[]>();
+  const extensionFailures = describeProgramExtensionFailures(
+    moduleImports, functionImports, [options.ptrWidth ?? 4],
+    new Set(Object.keys(options.programExtensionImports ?? {})),
+  );
+  if (extensionFailures.length) throw new Error(`${name}: ${extensionFailures.join("; ")}`);
   for (const imported of functionImports) {
     const key = `${imported.module.length}:${imported.module}${imported.name}`;
     const entries = functionImportsByName.get(key) ?? [];
@@ -1827,6 +1835,7 @@ function* instantiateSharedLibrarySteps(
 
     // Construct imports
     const imports: WebAssembly.Imports = {
+      ...options.programExtensionImports,
       env: new Proxy({} as Record<string, WebAssembly.ImportValue>, {
         get(_target, prop: string) {
           let value: WebAssembly.ImportValue | WebAssembly.Tag | undefined;
@@ -1932,7 +1941,9 @@ function* instantiateSharedLibrarySteps(
     }
 
     // Instantiate synchronously after validating the side-module fork contract.
-    instance = new WebAssembly.Instance(module, instanceImports);
+    instance = options.withModuleInstantiation
+      ? options.withModuleInstantiation(() => new WebAssembly.Instance(module, instanceImports))
+      : new WebAssembly.Instance(module, instanceImports);
     noteProcessMemoryInstance(instance);
     preparedActivation?.register(instance);
     const ownedModuleBytes = wasmBytes.slice();

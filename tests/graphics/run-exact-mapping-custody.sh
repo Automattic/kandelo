@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-out="$(mktemp -d "$root/.context/exact-mapping.XXXXXX")"
+mkdir -p "$root/.scratch"
+out="$(mktemp -d "$root/.scratch/exact-mapping.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 flags=(-std=gnu11 -O1 -g -pthread -fsanitize=undefined -fno-sanitize-recover=all -I"$root/libc/glue" -I"$root/tests/graphics/libc")
 clang "${flags[@]}" "$root/tests/graphics/libc/exact-mapping-custody.c" "$root/tests/graphics/libc/native-graphics-optional.c" -o "$out/receiver"

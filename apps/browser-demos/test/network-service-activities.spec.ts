@@ -78,7 +78,7 @@ for (const [profile, pkg, title, marker, joinTitle = "website"] of [
         await page.getByRole("button", { name: "Reload preview", exact: true }).click();
         await expect(page.frameLocator("iframe.kweb-frame").locator("body")).toContainText("Added through a Kandelo invitation");
       }
-      await guest.screenshot({ path: `../../.context/activity-${pkg}-client.png` });
+      await guest.screenshot({ path: `../../.scratch/activity-${pkg}-client.png` });
       await terminal(guest);
       await guest.getByRole("button", { name: "New terminal", exact: true }).click();
       await expect.poll(() => terminal(guest)).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
@@ -120,7 +120,7 @@ test("Redis voting board shares real Redis data with a separate web client", asy
     });
     expect(invalid.status).toBe(400);
     expect(invalid.body.error).toContain("nonempty");
-    await guest.screenshot({ path: "../../.context/activity-redis-board-client.png" });
+    await guest.screenshot({ path: "../../.scratch/activity-redis-board-client.png" });
     // Exercise the actual upstream PHP application across the invited network,
     // including its session cookie/CSRF flow, command errors and real writes.
     await board.getByRole("link", { name: "Explore Redis", exact: true }).click();
@@ -154,7 +154,7 @@ test("Redis voting board shares real Redis data with a separate web client", asy
       document.head.appendChild(script);
     }));
     expect(policy).toEqual({ directive: "script-src-elem", ran: false });
-    await guest.screenshot({ path: "../../.context/activity-redis-command-console.png" });
+    await guest.screenshot({ path: "../../.scratch/activity-redis-command-console.png" });
     await board.getByRole("link", { name: "Keys", exact: true }).click();
     await expect(board.locator("body")).toContainText("board:ideas");
     await board.getByRole("link", { name: "Go to homepage", exact: true }).click();
@@ -204,7 +204,7 @@ test("WordPress MySQL connection opens a real interactive client on the website 
     await page.getByRole("button", { name: "Web", exact: true }).click();
     await page.getByRole("button", { name: "Reload preview", exact: true }).click();
     await expect(page.frameLocator("iframe.kweb-frame").locator("body")).toContainText("Shared SQL website", { timeout: 120_000 });
-    await guest.screenshot({ path: "../../.context/activity-wordpress-mysql-client.png" });
+    await guest.screenshot({ path: "../../.scratch/activity-wordpress-mysql-client.png" });
     await enter(guest, "quit");
     await expect.poll(() => terminal(guest)).toContain("Bye");
     const room = new URL(link).searchParams.get("network");
@@ -214,7 +214,7 @@ test("WordPress MySQL connection opens a real interactive client on the website 
     await expect(activities.locator("option")).toHaveText(["Keep current activity", "WordPress website"]);
     await expect(guest.getByRole("form", { name: "Host activity" })).toHaveCount(0);
     await activities.selectOption("wordpress-family-vfs/service");
-    await guest.screenshot({ path: "../../.context/session-remote-activities.png" });
+    await guest.screenshot({ path: "../../.scratch/session-remote-activities.png" });
     await guest.getByRole("button", { name: "Join and open website", exact: true }).click();
     await expect(guest.frameLocator("iframe.kweb-frame").locator("body")).toContainText("Shared SQL website", { timeout: 120_000 });
     await guest.getByRole("button", { name: "Network session: connected", exact: true }).click();

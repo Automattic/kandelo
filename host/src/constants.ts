@@ -1,3 +1,5 @@
+import { describeProgramExtensionFailures } from "./program-extensions";
+import { RESERVED_MODULE_PREFIX, STACK_IMPORT } from "./generated/program-extensions";
 import {
   ABI_VERSION,
   PROCESS_MEMORY_DEFAULT_MAX_PAGES,
@@ -2585,6 +2587,17 @@ export function describeWasmArtifactPolicyFailures(
 
   const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exports.has(name));
   const importNames = readWasmImportNames(programBytes);
+  if (importNames.some(name => name.startsWith(RESERVED_MODULE_PREFIX) || name.endsWith(`.${STACK_IMPORT}`))) {
+    try {
+      const facts = readWasmForkArtifactFacts(programBytes);
+      failures.push(...describeProgramExtensionFailures(
+        readWasmImportDescriptors(programBytes), facts.functionImportEntries,
+        facts.memoryPointerWidths,
+      ));
+    } catch (error) {
+      failures.push(`cannot validate required program extensions: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const customSections = readWasmCustomSectionNames(programBytes);
   const presentWpkImports = WPK_FORK_REQUIRED_IMPORTS.filter(({ module, name }) =>
     importNames.includes(`${module}.${name}`)

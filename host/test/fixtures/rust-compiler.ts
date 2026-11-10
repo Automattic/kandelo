@@ -12,10 +12,7 @@ export const rustCompilerArgs = [
   "rustc", "-Zunstable-options", "--sysroot", "/usr",
   "--target", "wasm32-unknown-kandelo-std", "/home/maker/hello.rs",
 ];
-export const rustCompilerEnv = [
-  "HOME=/home/maker", "TMPDIR=/tmp", "PATH=/usr/bin:/bin",
-  "RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1",
-];
+export { rustCompilerEnv } from "./rust-guest-env";
 
 export async function createRustCompilerImage(compiler: Uint8Array, std: Uint8Array, sdk: Uint8Array) {
   const fs = KandeloImageFs.create();

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
-output_dir="$(mktemp -d "$repo_root/.context/graphics-gbm.XXXXXX")"
+mkdir -p "$repo_root/.scratch"
+output_dir="$(mktemp -d "$repo_root/.scratch/graphics-gbm.XXXXXX")"
 trap 'rm -rf "$output_dir"' EXIT
 # Use public DRM headers from the current resolver-owned package, not sysroot
 # libc headers or a legacy dependency install that a fresh checkout lacks.

@@ -434,3 +434,38 @@ describe.skipIf(!available)("persistent root filesystem statistics", () => {
     }
   }, 120_000);
 });
+
+describe("df filesystem enumeration", () => {
+  it.each([false, true])("prints df filesystem rows as uid 1000 (persistent: %s)", async (persistent) => {
+    expect([shellImage, coreutils, bash, kernel].filter(path => !existsSync(path)),
+      "Build the canonical shell and kernel before running df coverage").toEqual([]);
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-df-"));
+    const script = readFileSync(join(import.meta.dirname, "fixtures/df-filesystems.sh"), "utf8");
+    try {
+      for (const recovered of persistent ? [false, true] : [false]) {
+        const output: string[] = [];
+        const host = new NodeKernelHost({
+          rootfsImage: new Uint8Array(readFileSync(shellImage)),
+          ...(persistent ? {
+            experimentalResizablePersistencePath: join(directory, "journal"),
+            requireExistingRootfsPersistence: recovered,
+          } : {}),
+          onStdout: (_pid, bytes) => output.push(new TextDecoder().decode(bytes)),
+          onStderr: (_pid, bytes) => output.push(new TextDecoder().decode(bytes)),
+        });
+        try {
+          await host.init(new Uint8Array(readFileSync(kernel)).buffer);
+          const { exit } = await host.spawnFromVfs("/bin/bash", ["bash", "-c", script], {
+            env: ["PATH=/usr/bin:/bin", "HOME=/home/maker"], uid: 1000, gid: 1000,
+          });
+          expect(await exit, output.join("")).toBe(0);
+          expect(output.join("")).toContain("DF_FILESYSTEMS_OK");
+        } finally {
+          await host.destroy();
+        }
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
+});

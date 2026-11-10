@@ -18,6 +18,7 @@ spdx = "GPL-2.0-or-later"
 url = "https://sourceforge.net/projects/netcat/files/netcat/0.7.1/"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/netcat-docs/build-netcat-docs.sh"
 
 [[outputs]]

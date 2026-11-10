@@ -808,7 +808,7 @@ export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
 export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
-export const HOST_ADAPTER_VERSION = 4 as const;
+export const HOST_ADAPTER_VERSION = 5 as const;
 export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
 export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;
 export const HOST_ADAPTER_MANIFEST_SIZE = 40 as const;
@@ -910,6 +910,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_reap_exited_child",
   "kernel_remove_process",
   "kernel_reset_tcp_connection",
+  "kernel_rootfs_take_compaction_request",
   "kernel_set_current_tid",
   "kernel_set_cwd",
   "kernel_set_main_channel_addr",

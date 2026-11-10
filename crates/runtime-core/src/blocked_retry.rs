@@ -40,6 +40,7 @@ pub enum BlockingRetryOperation {
     MsgSend,
     MsgReceive,
     Semop,
+    FileMetadata,
 }
 
 impl BlockingRetryOperation {
@@ -54,6 +55,7 @@ impl BlockingRetryOperation {
             3 | 82 => Ok(Self::Read),
             4 | 81 => Ok(Self::Write),
             10 => Ok(Self::Fcntl),
+            79 | 87 | 88 | extended_syscalls::SYS_FALLOCATE => Ok(Self::FileMetadata),
             53 => Ok(Self::Accept),
             54 => Ok(Self::Connect),
             55 => Ok(Self::Send),
@@ -85,7 +87,8 @@ impl BlockingRetryOperation {
     pub fn is_single_ofd(self) -> bool {
         matches!(
             self,
-            Self::Read
+            Self::FileMetadata
+                | Self::Read
                 | Self::Write
                 | Self::Fcntl
                 | Self::Pread
@@ -120,6 +123,27 @@ fn is_explicit_host_only_snapshot_syscall(syscall: u32) -> bool {
 
     syscall == Syscall::Open as u32
         || syscall == Syscall::Openat as u32
+        || syscall == Syscall::Mkdir as u32
+        || syscall == Syscall::Rmdir as u32
+        || syscall == Syscall::Unlink as u32
+        || syscall == Syscall::Rename as u32
+        || syscall == Syscall::Link as u32
+        || syscall == Syscall::Symlink as u32
+        || syscall == Syscall::Chmod as u32
+        || syscall == Syscall::Chown as u32
+        || syscall == Syscall::Truncate as u32
+        || syscall == Syscall::Unlinkat as u32
+        || syscall == Syscall::Mkdirat as u32
+        || syscall == Syscall::Renameat as u32
+        || syscall == Syscall::Fchmodat as u32
+        || syscall == Syscall::Fchownat as u32
+        || syscall == Syscall::Linkat as u32
+        || syscall == Syscall::Symlinkat as u32
+        || syscall == Syscall::Utimensat as u32
+        || syscall == extended_syscalls::SYS_MKNOD
+        || syscall == extended_syscalls::SYS_MKNODAT
+        || syscall == extended_syscalls::SYS_RENAMEAT2
+        || syscall == extended_syscalls::SYS_FCHMODAT2
         || syscall == Syscall::Poll as u32
         || syscall == Syscall::Select as u32
         || syscall == extended_syscalls::SYS_PPOLL

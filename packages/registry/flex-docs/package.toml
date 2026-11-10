@@ -18,6 +18,7 @@ spdx = "BSD-3-Clause-flex"
 url = "https://github.com/westes/flex/blob/v2.6.4/COPYING"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/flex-docs/build-flex-docs.sh"
 
 [[outputs]]

@@ -13,6 +13,7 @@ use wasm_posix_program_abi::abi::{
 pub mod artifact_io;
 pub mod call_graph;
 pub mod contract_inventory;
+pub mod debug_info;
 pub mod facts;
 pub mod instrument;
 mod limits;

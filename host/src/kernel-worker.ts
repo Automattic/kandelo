@@ -1229,6 +1229,32 @@ export const GENERIC_BLOCKING_SNAPSHOT_SYSCALLS = new Set<number>([
   ABI_SYSCALLS.Connect,
   ABI_SYSCALLS.Poll,
   ABI_SYSCALLS.Openat,
+  // Persistent namespace mutations can wait for a journal checkpoint too.
+  ABI_SYSCALLS.Mkdir,
+  ABI_SYSCALLS.Rmdir,
+  ABI_SYSCALLS.Unlink,
+  ABI_SYSCALLS.Rename,
+  ABI_SYSCALLS.Link,
+  ABI_SYSCALLS.Symlink,
+  ABI_SYSCALLS.Chmod,
+  ABI_SYSCALLS.Chown,
+  ABI_SYSCALLS.Truncate,
+  ABI_SYSCALLS.Ftruncate,
+  ABI_SYSCALLS.Fchmod,
+  ABI_SYSCALLS.Fchown,
+  ABI_SYSCALLS.Unlinkat,
+  ABI_SYSCALLS.Mkdirat,
+  ABI_SYSCALLS.Renameat,
+  ABI_SYSCALLS.Fchmodat,
+  ABI_SYSCALLS.Fchownat,
+  ABI_SYSCALLS.Linkat,
+  ABI_SYSCALLS.Symlinkat,
+  ABI_SYSCALLS.Utimensat,
+  ABI_SYSCALLS.Mknod,
+  ABI_SYSCALLS.Mknodat,
+  ABI_SYSCALLS.Renameat2,
+  ABI_SYSCALLS.Fchmodat2,
+  ABI_SYSCALLS.Fallocate,
   ABI_SYSCALLS.Ppoll,
   ABI_SYSCALLS.MqTimedsend,
   ABI_SYSCALLS.MqTimedreceive,
@@ -2130,6 +2156,7 @@ interface FlattenedTransferRequest {
 }
 
 interface BlockingRetryDisposition extends FrozenCancellationPointIdentity {
+  readonly persistenceBackpressure?: boolean;
   /** Request-local flags such as MSG_DONTWAIT forbid a host-owned park. */
   readonly retryForbiddenByCallFlags: boolean;
   /** Exact first-attempt descriptor policy; never re-resolve after fd reuse. */
@@ -2839,6 +2866,7 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
 }
 
 function preservePersistentOverlayQuotaCode(error: Error, cause: unknown): Error {
+  if (typeof cause === "number" && cause < 0) Object.assign(error, { errno: -cause });
   if (cause === -ERRNO.ENOSPC || (typeof cause === "object" && cause !== null
     && "code" in cause && cause.code === "ENOSPC")) {
     Object.assign(error, { code: "ENOSPC" });
@@ -2847,6 +2875,59 @@ function preservePersistentOverlayQuotaCode(error: Error, cause: unknown): Error
 }
 
 export class CentralizedKernelWorker {
+  #rootfsCompactionHandler: (() => Promise<void>) | null = null;
+  #rootfsCompactionWait: Promise<number> | null = null;
+
+  setRootfsCompactionHandler(handler: () => Promise<void>): void {
+    this.#rootfsCompactionHandler = handler;
+  }
+
+  #takeRootfsCompactionRequest(entry: KernelWorkerEntryContext): boolean {
+    const take = this.#kernelInstanceForEntry(entry).exports.kernel_rootfs_take_compaction_request as (() => number) | undefined;
+    return take?.() === 1;
+  }
+
+  #waitForRootfsCompaction(channel: ChannelInfo, syscallNr: number, origArgs: number[], entry: KernelWorkerEntryContext): void {
+    const pending = { ...this.#cancellationPointIdentity(channel), timer: null, channel, pipeIndices: [] };
+    this.pendingPollRetries.set(channel, pending);
+    // The detached effect only schedules a fresh host microtask. Promise
+    // construction and I/O begin after entry/scratch revocation, before an
+    // ordinary readiness wake can retire this maintenance wait.
+    entry.deferProtocolEffect(() => {
+      this.#scheduleMicrotaskListenerRoot("persistent compaction", () => {
+        if (this.pendingPollRetries.get(channel) !== pending || this.#kernelFatalError !== null) return;
+        let wait = this.#rootfsCompactionWait;
+        if (wait === null) {
+          let resolve!: (errno: number) => void;
+          wait = new Promise<number>(done => { resolve = done; });
+          this.#rootfsCompactionWait = wait;
+          const finish = (errno: number) => { this.#rootfsCompactionWait = null; resolve(errno); };
+          void Promise.resolve().then(() => {
+            if (this.#rootfsCompactionHandler === null) throw new Error("persistent overlay has no compactor");
+            return this.#rootfsCompactionHandler();
+          }).then(() => finish(0), error => {
+            const errno = typeof error === "object" && error !== null
+              ? "code" in error && error.code === "ENOSPC" ? ERRNO.ENOSPC
+                : "errno" in error && typeof error.errno === "number" && error.errno > 0 && error.errno !== EAGAIN
+                  ? error.errno : ERRNO.EIO
+              : ERRNO.EIO;
+            finish(errno);
+          });
+        }
+        void wait.then(errno => {
+          // A signal, cancellation or teardown may have retired this exact wait.
+          if (this.pendingPollRetries.get(channel) !== pending) return;
+          this.pendingPollRetries.delete(channel);
+          if (!this.isRegisteredChannel(channel) || this.#kernelFatalError !== null) return;
+          if (errno === 0) this.retrySyscall(channel);
+          else this.#runOrDeferChannelKernelEntry(channel, "persistent compaction failure", failureEntry => {
+            this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, errno, [], undefined, failureEntry);
+          });
+        });
+      });
+    });
+  }
+
   #kernel: WasmPosixKernel;
   #kernelEntryGate: KernelEntryGate;
   #kernelInstance: WebAssembly.Instance | null = null;
@@ -14801,6 +14882,7 @@ export class CentralizedKernelWorker {
               origArgs,
               entry,
               plannedDispatch.retryForbiddenByCallFlags,
+              errVal === EAGAIN && this.#takeRootfsCompactionRequest(entry),
             )
           : undefined;
       const deliveredSignal = this.#dequeueSignalForDelivery(
@@ -14867,7 +14949,7 @@ export class CentralizedKernelWorker {
               entry,
             )
           ) return;
-          if (retryDisposition.retryForbiddenByCallFlags) {
+          if (retryDisposition.retryForbiddenByCallFlags && !retryDisposition.persistenceBackpressure) {
             // The first pass created a stable Rust pin before returning
             // EAGAIN. Complete through the normal boundary so that exact pin
             // is released even though the request's immutable flags forbid
@@ -14894,6 +14976,8 @@ export class CentralizedKernelWorker {
           entry,
           false,
           deliveredSignal,
+          undefined,
+          retryDisposition?.persistenceBackpressure === true,
         );
         return;
       }
@@ -18653,6 +18737,7 @@ export class CentralizedKernelWorker {
         true,
         deliveredSignal,
         isFinalReadinessCheck ? 0 : undefined,
+        this.#takeRootfsCompactionRequest(entry),
       );
       return;
     }
@@ -18787,9 +18872,12 @@ export class CentralizedKernelWorker {
     origArgs: readonly number[],
     entry: KernelWorkerEntryContext,
     retryForbiddenByCallFlags: boolean,
+    persistenceBackpressure = false,
   ): BlockingRetryDisposition {
-    const cancellationIdentity =
-      this.#cancellationPointIdentity(channel);
+    const cancellationIdentity = {
+      ...this.#cancellationPointIdentity(channel),
+      persistenceBackpressure,
+    };
     if (retryForbiddenByCallFlags) {
       return {
         ...cancellationIdentity,
@@ -18884,6 +18972,7 @@ export class CentralizedKernelWorker {
     replayingDetachedSnapshot = false,
     deliveredSignal = 0,
     effectiveReadinessTimeoutMs?: number,
+    persistenceBackpressure = false,
   ): void {
     const testHook = this.#scratchBoundaryTestHooks?.handleBlockingRetry;
     if (testHook) {
@@ -19101,9 +19190,12 @@ export class CentralizedKernelWorker {
         `syscall ${syscallNr} retry has no frozen blocking disposition`,
       );
     }
+    // Maintenance may wait even for O_NONBLOCK regular-file transfers. Keep
+    // the original policy, though: a later retry may block on a pipe/socket
+    // instead, in which case its public EAGAIN must still complete immediately.
     if (
-      retryDisposition?.retryForbiddenByCallFlags
-      || retryDisposition?.fdWasNonblocking
+      !persistenceBackpressure
+      && (retryDisposition?.retryForbiddenByCallFlags || retryDisposition?.fdWasNonblocking)
     ) {
       this.completeChannel(
         channel,
@@ -19171,6 +19263,11 @@ export class CentralizedKernelWorker {
     // it with EAGAIN, as POSIX and Linux report an expired socket timeout
     // (ETIMEDOUT means a connection timed out). A kernel pipe-backed socket
     // parks in the kernel, which answers the same.
+    if (persistenceBackpressure) {
+      this.#waitForRootfsCompaction(channel, syscallNr, origArgs, entry);
+      return;
+    }
+
     const socketTimeoutMs =
       retryDisposition?.applicableSocketTimeoutMs ?? 0;
     if (

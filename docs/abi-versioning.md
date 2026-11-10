@@ -18,17 +18,20 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
-Program ABI 55 is the first declared supported baseline. The separate
-`abi/supported-program-baseline.json` gate preserves its program digest across
+Program ABI 56 is the supported baseline; ABI 55 was retired before release.
+The separate `abi/supported-program-baseline.json` gate preserves the current program digest across
 kernel/host rebuilds; ordinary snapshot regeneration or a program version bump
-does not bypass it. The current gate also refuses additive program changes
-until an explicit required-extension contract is implemented. Kernel-host-only
-changes remain independently versioned and do not affect this baseline.
+does not bypass it. The gate also refuses additive changes to the base
+program surface. New interfaces use independently versioned, explicitly
+required [program imports](program-extensions.md) with their own admission
+checks. Kernel-host-only changes remain independently versioned and do not
+affect this baseline.
 
 Run `cargo xtask check-program-baseline` for the focused check. The ordinary
 ABI check and package/build/stamping entry points enforce it as well.
-Already-built fixtures under `abi/program-fixtures/v55` must not be rebuilt to
-make compatibility tests pass. See the [persistent-program compatibility
+Already-built fixtures under `abi/program-fixtures/v56` must not be rebuilt to
+make compatibility tests pass; the archived ABI-55 cohort remains a refusal
+control. See the [persistent-program compatibility
 contract](persistent-program-compatibility.md) for exact scope and remaining
 release validation.
 
@@ -130,6 +133,26 @@ restamped or admitted as ABI 51. See the [epoll contract](epoll.md) for the
 behavior matrix and remaining boundaries.
 
 ## What counts as an ABI change
+
+### Persistent journal tail backpressure
+
+Program ABI 56 is retained for the correction of false `ENOSPC` at the
+active journal tail bound. Regular-file operations already permit waiting:
+for example, writing a deferred base file can return the kernel's internal
+`EAGAIN` while copy-on-write obtains its original bytes. The guest already
+waits through the host-owned retry protocol. The tail bound is another
+internal readiness condition, not a guest-visible capacity limit or a new
+nonblocking guarantee. `ENOSPC` continues to mean actual capacity or quota
+exhaustion; its erroneous use for maintenance pressure is corrected.
+
+This does not change syscall arguments, return-value meanings, channel
+layouts, or the existing permission to block for regular-file storage.
+The frozen ABI-56 program cohort and declared program digest stay unchanged.
+The new required `kernel_rootfs_take_compaction_request` export does change
+the kernel-host capability contract, so `HOST_ADAPTER_VERSION` advances
+from 4 to 5 and both hosts are rebuilt with the kernel. A genuinely new
+guest blocking or interruption contract would still require a program ABI
+bump under the rules below.
 
 ### Scheduled optional kernel exports
 

@@ -54,7 +54,7 @@ test("normal GBM device aliases retain GEM names after peer retirement", async (
     expect(result.stdout.trim()).toBe("OK GBM file aliases retain shared GEM names and independent files stay separate");
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);
-    const evidence = fileURLToPath(new URL("../../../.context/gbm-file-aliases-guests/", import.meta.url));
+    const evidence = fileURLToPath(new URL("../../../.scratch/gbm-file-aliases-guests/", import.meta.url));
     mkdirSync(evidence, { recursive: true });
     const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
     writeFileSync(`${evidence}/${Date.now()}-${test.info().project.name}.json`, JSON.stringify({

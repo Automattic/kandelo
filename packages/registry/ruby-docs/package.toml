@@ -18,6 +18,7 @@ spdx = "Ruby OR BSD-2-Clause"
 url = "https://github.com/ruby/ruby/blob/master/COPYING"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/ruby-docs/build-ruby-docs.sh"
 
 [[outputs]]

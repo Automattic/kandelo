@@ -13,6 +13,7 @@ pub mod process_layout;
 // The program ABI is owned separately so host-only edits do not rebuild
 // fork-instrumented programs. Keep the Rust API stable for existing callers.
 pub use wasm_posix_program_abi::ABI_VERSION;
+pub use wasm_posix_program_abi::program_extensions;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -2246,7 +2247,7 @@ pub mod abi {
     ///    and exact DRM file/grant identities across kernel-host imports.
     /// 4: main's initial-process launch and persistent-storage interfaces,
     ///    combined with the unpublished graphics contracts above.
-    pub const HOST_ADAPTER_VERSION: u32 = 4;
+    pub const HOST_ADAPTER_VERSION: u32 = 5;
     pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
 
     pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;
@@ -2451,6 +2452,7 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_reserve_host_region"),
         HostAdapterKernelExport::optional("kernel_reserve_host_region_at"),
         HostAdapterKernelExport::required("kernel_reset_tcp_connection"),
+        HostAdapterKernelExport::required("kernel_rootfs_take_compaction_request"),
         HostAdapterKernelExport::required("kernel_set_current_tid"),
         HostAdapterKernelExport::required("kernel_set_cwd"),
         HostAdapterKernelExport::required("kernel_set_main_channel_addr"),

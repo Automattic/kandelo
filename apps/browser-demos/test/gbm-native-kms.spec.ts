@@ -39,7 +39,7 @@ for (const arch of ["wasm32", "wasm64"] as const) {
       fs.mkdir("/bin", 0o755);
       fs.writeFile("/bin/probe", program, 0o755);
       const bytes = await fs.saveImage();
-      const evidence = fileURLToPath(new URL("../../../.context/gbm-native-kms-guests/", import.meta.url));
+      const evidence = fileURLToPath(new URL("../../../.scratch/gbm-native-kms-guests/", import.meta.url));
       mkdirSync(evidence, { recursive: true });
       const identity = `${Date.now()}-${test.info().project.name}-${arch}-${mode}-${usage}`;
       writeFileSync(`${evidence}/${identity}.wasm`, program);

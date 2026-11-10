@@ -18,6 +18,7 @@ spdx = "ISC"
 url = "https://github.com/tmux/tmux/blob/3.8/COPYING"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/tmux-docs/build-tmux-docs.sh"
 
 [[outputs]]

@@ -712,6 +712,35 @@ pub fn write_siginfo(
     write_native_sigval(bytes, value_offset, info.value_bits, model)
 }
 
+/// Serialize Kandelo's fixed-width guest statx record for either data model.
+pub fn write_statx(bytes: &mut [u8], stat: &WasmStat) -> Result<(), Errno> {
+    require_len_mut(bytes, 256)?;
+    bytes.fill(0);
+    write_u32(bytes, 0, 0x07ff)?; // STATX_BASIC_STATS
+    write_u32(bytes, 4, 4096)?;
+    write_u32(bytes, 16, stat.st_nlink)?;
+    write_u32(bytes, 20, stat.st_uid)?;
+    write_u32(bytes, 24, stat.st_gid)?;
+    bytes[28..30].copy_from_slice(&(stat.st_mode as u16).to_le_bytes());
+    write_u64(bytes, 32, stat.st_ino)?;
+    write_u64(bytes, 40, stat.st_size)?;
+    // Preserve the existing logical-length estimate; allocated block reporting
+    // remains the separate gap documented in docs/posix-status.md (#928).
+    write_u64(bytes, 48, stat.st_size.div_ceil(512))?;
+    write_u64(bytes, 64, stat.st_atime_sec as u64)?;
+    write_u32(bytes, 72, stat.st_atime_nsec)?;
+    write_u64(bytes, 96, stat.st_ctime_sec as u64)?;
+    write_u32(bytes, 104, stat.st_ctime_nsec)?;
+    write_u64(bytes, 112, stat.st_mtime_sec as u64)?;
+    write_u32(bytes, 120, stat.st_mtime_nsec)?;
+    // statx splits dev_t into major/minor numbers. Copying the raw dev_t into
+    // its major field makes statx consumers disagree with stat/fstat/procfs.
+    write_u32(bytes, 128, crate::device_id::major(stat.st_rdev))?;
+    write_u32(bytes, 132, crate::device_id::minor(stat.st_rdev))?;
+    write_u32(bytes, 136, crate::device_id::major(stat.st_dev))?;
+    write_u32(bytes, 140, crate::device_id::minor(stat.st_dev))
+}
+
 /// Serialize the complete guest-native stat record.
 ///
 /// WHY: [`WasmStat`] is the kernel/host canonical metadata record and stops at
@@ -1276,6 +1305,33 @@ mod tests {
             st_ctime_nsec: 0x4142_4344,
             _pad: 0,
             st_rdev: 0x5152_5354_5556_5758,
+        }
+    }
+
+    #[test]
+    fn statx_device_fields_match_stat_and_keep_reserved_bytes_zero() {
+        for (device, special) in [
+            (0x7300_0000, crate::device_id::make(13, 64)),
+            (crate::device_id::make(0x1234_5678, 0x9abc_def0),
+                crate::device_id::make(u32::MAX, u32::MAX)),
+        ] {
+            let mut stat = sample_stat();
+            stat.st_dev = device;
+            stat.st_rdev = special;
+            let mut guarded = [0x5a; 258];
+            write_statx(&mut guarded[1..257], &stat).unwrap();
+            assert_eq!((guarded[0], guarded[257]), (0x5a, 0x5a));
+            let bytes = &guarded[1..257];
+            assert_eq!(crate::device_id::make(read_u32(bytes, 136).unwrap(),
+                read_u32(bytes, 140).unwrap()), stat.st_dev);
+            assert_eq!(crate::device_id::make(read_u32(bytes, 128).unwrap(),
+                read_u32(bytes, 132).unwrap()), stat.st_rdev);
+            assert_eq!(read_u64(bytes, 32).unwrap(), stat.st_ino);
+            assert_eq!(read_u64(bytes, 40).unwrap(), stat.st_size);
+            assert!(bytes[144..].iter().all(|byte| *byte == 0));
+            let mut short = [0x5a; 255];
+            assert_eq!(write_statx(&mut short, &stat), Err(Errno::EINVAL));
+            assert!(short.iter().all(|byte| *byte == 0x5a));
         }
     }
 

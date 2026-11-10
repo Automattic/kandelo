@@ -3,7 +3,7 @@ name = "kandelo-rust-sdk"
 version = "1.97.0-nightly-2026-04-27"
 kernel_abi = 55
 arches = ["wasm32"]
-depends_on = ["rustc@1.97.0-nightly-2026-04-27", "cargo@1.97.0-nightly-2026-04-27", "kandelo-rustc@0.1.0", "wasm-fork-instrument@0.1.0", "kandelo-sdk-browser-bundle@21.1.7"]
+depends_on = ["rustc@1.97.0-nightly-2026-04-27", "cargo@1.97.0-nightly-2026-04-27", "kandelo-rustc@0.1.0", "wasm-fork-instrument@0.1.0", "kandelo-sdk-browser-bundle@21.1.7", "rust-profiler-runtime-bundle@1.97.0-nightly-2026-04-27", "rust-coverage-tools@22.1.2"]
 
 [source]
 provider = "repository"

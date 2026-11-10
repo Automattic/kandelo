@@ -55,7 +55,7 @@ test(`normal ${arch} GBM guest retains its retired device file across caller fd 
     expect(result.stdout.trim()).toBe("OK GBM buffers retain their retired device file");
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);
-    const evidence = fileURLToPath(new URL("../../../.context/gbm-device-retirement-guests/", import.meta.url));
+    const evidence = fileURLToPath(new URL("../../../.scratch/gbm-device-retirement-guests/", import.meta.url));
     mkdirSync(evidence, { recursive: true });
     const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
     writeFileSync(`${evidence}/${Date.now()}-${test.info().project.name}-${arch}.json`, JSON.stringify({

@@ -143,6 +143,8 @@ import {
 import { ForkHostImportWorkerRuntime } from "./fork-host-import-runtime";
 import { trapProcessWorker } from "./fork-worker-import-exceptions";
 import { createHeapSafepointImport } from "./heap-safepoint";
+import { createStackCaptureImport } from "./wasm-stack-capture";
+import { STACK_MODULE, STACK_IMPORT } from "./generated/program-extensions";
 import { waitForChannelCompletion } from "./channel-completion-wait";
 import {
   ForkImportedGlobalCapture,
@@ -655,6 +657,7 @@ export function buildKernelImportsForTest(
 
 export interface DlopenSupport {
   imports: Record<string, WebAssembly.ExportValue>;
+  readonly extensionImports: WebAssembly.Imports;
   /** Validate and return the compact copied live-module closure. */
   readForkState: () => DylinkForkState;
   /** Recreate the parent's live module and handle state from linear memory. */
@@ -1149,6 +1152,7 @@ export function buildDlopenImports(
   workerIdentity = 1,
   memoryOwnership: "copied" | "borrowed" = "copied",
   forkSideModuleContract?: ForkSideModuleContract,
+  stackProgramBytes?: ArrayBuffer | (() => ArrayBuffer),
 ): DlopenSupport {
   if (
     !Number.isInteger(workerIdentity) ||
@@ -1161,6 +1165,13 @@ export function buildDlopenImports(
   }
   let linker: DynamicLinker | null = null;
   const loadedLibraries = new Map<string, LoadedSharedLibrary>();
+  let instantiatingModules = 0;
+  const extensionImports: WebAssembly.Imports = stackProgramBytes === undefined ? {} : {
+    [STACK_MODULE]: {
+      [STACK_IMPORT]: createStackCaptureImport(memory, ptrWidth, stackProgramBytes,
+        () => loadedLibraries.size === 0 && instantiatingModules === 0),
+    },
+  };
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number =>
@@ -1871,6 +1882,11 @@ export function buildDlopenImports(
       globalSymbolOwners,
       got: new Map(),
       loadedLibraries,
+      programExtensionImports: extensionImports,
+      withModuleInstantiation: <T>(operation: () => T): T => {
+        instantiatingModules++;
+        try { return operation(); } finally { instantiatingModules--; }
+      },
       resolveLibrarySync,
       longjmpTag: canonicalLongjmpTag,
       cppExceptionTag: canonicalCppExceptionTag,
@@ -2315,6 +2331,7 @@ export function buildDlopenImports(
 
   return {
     imports,
+    extensionImports,
     readForkState,
     replayDlopens,
     resetForkChildLock,
@@ -2387,6 +2404,7 @@ function buildImportObject(
     seconds: number,
   ) => void,
   forkEnvImports?: Record<string, WebAssembly.ImportValue>,
+  programExtensionImports?: WebAssembly.Imports,
 ): WebAssembly.Imports {
   assertSupportedKernelFunctionImports(module, kernelImports);
   // Refuse, before instantiation, a program that imports from env anything
@@ -2551,7 +2569,7 @@ function buildImportObject(
     };
   }
 
-  const importObject: WebAssembly.Imports = { env: envImports };
+  const importObject: WebAssembly.Imports = { ...programExtensionImports, env: envImports };
   if (Object.keys(kernelImports).length > 0) {
     importObject.kernel = kernelImports;
   }
@@ -3752,6 +3770,7 @@ export async function centralizedWorkerMain(
         pid,
         forkMemoryOwnership,
         readForkSideModuleContract(module),
+        programBytes,
       );
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
@@ -3935,6 +3954,7 @@ export async function centralizedWorkerMain(
           } satisfies WorkerToHostMessage);
         },
         forkEnvImports,
+        dlopenSupport.extensionImports,
       );
       const routedImportObject = processHostImportRuntime.routeImportObject(
         programBytes,
@@ -4306,6 +4326,7 @@ export async function centralizedWorkerMain(
         pid,
         undefined,
         readForkSideModuleContract(module),
+        programBytes,
       );
       const importObject = buildImportObject(
         module,
@@ -4326,6 +4347,8 @@ export async function centralizedWorkerMain(
             seconds,
           } satisfies WorkerToHostMessage);
         },
+        undefined,
+        dlopenSupport.extensionImports,
       );
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
@@ -5734,6 +5757,7 @@ export async function centralizedThreadWorkerMain(
       tid,
       undefined,
       readForkSideModuleContract(module),
+      () => programBytes ?? patchWasmForThread(initData.programBytes),
     );
     if (threadActivationRegistry) {
       threadTableReplication = createProcessTableReplicationOwner({
@@ -5807,6 +5831,7 @@ export async function centralizedThreadWorkerMain(
         } satisfies WorkerToHostMessage);
       },
       threadForkEnvImports,
+      threadDlopenSupport.extensionImports,
     );
     const routedThreadImportObject = threadHostImportRuntime
       ? threadHostImportRuntime.routeImportObject(

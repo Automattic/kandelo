@@ -175,6 +175,12 @@ computers. Installing a replacement must retain ownership, verify its
 bytes and preserve the last bootable generation through publication.
 
 Automatic journal compaction creates a separate journal/index/seal target.
+New writes and metadata mutations wait for immediate host compaction when the
+active tail reaches its admission bound. This maintenance pressure is not
+reported as `ENOSPC`; logical filesystem capacity and actual host quota still
+produce `ENOSPC`. Waiting does not acknowledge data or alter the existing
+checkpoint/activation publication order. Already accepted dirty data can
+still flush while new mutations wait.
 Activation controls identify the acknowledged writable generation. A valid
 older archive is not necessarily a fresh recovery copy. Damage to the latest
 activated generation must not silently select stale acknowledged state;

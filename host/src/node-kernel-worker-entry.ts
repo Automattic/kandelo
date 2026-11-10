@@ -1463,6 +1463,10 @@ async function handleInit(msg: InitMessage) {
   processMemoryCreators.assertOpen("kernel readiness");
   initReady = true;
   liveOverlayCompactor?.start();
+  if (liveOverlayCompactor !== null) {
+    const compactor = liveOverlayCompactor;
+    kernelWorker.setRootfsCompactionHandler(() => compactor.compactNow());
+  }
   post({ type: "ready" });
 }
 

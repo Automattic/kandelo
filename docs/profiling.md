@@ -56,7 +56,7 @@ validation, publication and checksums, excluding Binaryen and guest execution:
 
 ```bash
 scripts/dev-shell.sh target/aarch64-apple-darwin/instrumenter/examples/memory_comparison \
-  measure instrument .context/package-inputs/bash.wasm .context/bash-native.wasm
+  measure instrument .scratch/package-inputs/bash.wasm .scratch/bash-native.wasm
 ```
 
 `scripts/profile-fork-instrument-cache.py` compares cache budgets using fresh

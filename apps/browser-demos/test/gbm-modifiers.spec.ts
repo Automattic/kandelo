@@ -52,7 +52,7 @@ test("normal GBM guest rejects bad modifiers and reports its actual linear forma
     expect(result.stdout.trim()).toBe("OK GBM modifier admission and public format queries");
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);
-    const evidence = fileURLToPath(new URL("../../../.context/gbm-modifier-guests/", import.meta.url));
+    const evidence = fileURLToPath(new URL("../../../.scratch/gbm-modifier-guests/", import.meta.url));
     mkdirSync(evidence, { recursive: true });
     const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
     writeFileSync(`${evidence}/${Date.now()}-${test.info().project.name}.json`, JSON.stringify({

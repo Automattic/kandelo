@@ -313,6 +313,11 @@ another port.
   archive, and mount it at `/usr/`, yielding
   `/usr/share/man/man<section>/<name>.<section>`. Preserve page aliases and
   any included man-page sources so lookup and rendering work.
+- For recipes that only copy pages, substitute literal template values,
+  and write archives, declare `[build].toolchain = "none"`. The resolver
+  removes SDK paths and excludes automatic compiler/sysroot inputs from
+  their keys. This is a reviewed input contract with a PATH check, not a
+  sandbox; see [package management](package-management.md#cache-key-hashing).
 - Use `images/vfs/scripts/create-deterministic-zip.sh`, declare the ZIP
   output with `fork_instrumentation = "disabled"`, and install it through
   `install_local_binary`. Honor the normal resolver work/output roots,
@@ -1417,7 +1422,9 @@ directories. Staging does not publish that image.
 SQLite's upstream `test/testrunner.tcl` permutations can be run through
 Kandelo with `scripts/run-sqlite-project-unit-tests.sh`. The wrapper runs the
 existing official test runner on the Node host, the browser host, or both, and
-writes per-host artifacts plus `combined-summary.md` under `test-runs/`.
+writes per-host artifacts plus `combined-summary.md` under the ignored
+`test-runs/` directory. Copy selected evidence to retained storage when needed;
+do not commit raw runner databases or logs.
 
 Build the Tcl and SQLite testfixture prerequisites first:
 

@@ -2,7 +2,7 @@
 """Real browsers in ordinary Git worktrees; no IDE or shared-registry changes.
 
 Run through scripts/dev-shell.sh. The fixture repository, registry, logs and
-barriers all belong to a new .context directory and never touch peers' jobs.
+barriers all belong to a new .scratch directory and never touch peers' jobs.
 """
 import json
 import os
@@ -14,8 +14,8 @@ import tempfile
 import time
 
 REPO = Path(__file__).resolve().parents[2]
-(REPO / '.context').mkdir(exist_ok=True)
-evidence = Path(tempfile.mkdtemp(prefix='artifact-lifecycle-', dir=REPO / '.context'))
+(REPO / '.scratch').mkdir(exist_ok=True)
+evidence = Path(tempfile.mkdtemp(prefix='artifact-lifecycle-', dir=REPO / '.scratch'))
 print(f'Evidence: {evidence}', flush=True)
 registry = evidence / 'registry'
 env = dict(os.environ, KANDELO_AGENT_JOBS_DIR=str(registry),
@@ -111,6 +111,9 @@ try:
     prepare(peer)
     a, a_info = start(first, 'first')
     b, b_info = start(peer, 'peer')
+    assert Path(a_info['tmp']).is_relative_to(first / '.scratch')
+    assert not Path(a_info['path']).is_relative_to(first / '.context')
+    assert Path(b_info['tmp']).is_relative_to(peer / '.scratch')
     refused = command(first, 'cleanup', expected=1)
     assert 'active writers' in refused.stderr
     assert Path(a_info['path']).exists() and Path(b_info['path']).exists()
@@ -128,9 +131,14 @@ try:
     assert c_info['workspace'] != a_info['workspace']
     complete(c, 'reused')
     before_removal = payload_bytes(c_info)
+    (first / '.context' / 'notes.md').write_text('retain this decision')
+    archived = evidence / 'archived-context'
+    (first / '.context').rename(archived)
     git('worktree', 'remove', '--force', str(first))
     assert not Path(c_info['path']).exists() and not Path(c_info['tmp']).exists()
     assert payload_bytes(c_info) == 0
+    assert (archived / 'notes.md').read_text() == 'retain this decision'
+    assert not list(archived.rglob('owned.txt'))
     command(peer, 'gc', '--dry-run')
     command(peer, 'gc')
     assert Path(b_info['path']).read_text() == 'peer'
@@ -141,6 +149,7 @@ try:
     result = {'active_cleanup_refused':True, 'finished_release_preserved_live_peer':True,
               'worktree_removal_removed_all_new_payload':True, 'reused_path_has_new_identity':True,
               'orphan_collection_preserved_live_peer':True, 'plain_git_cleanup':True,
+              'context_archive_retained_notes_without_browser_payload':True,
               'bytes_before_release':before_release, 'bytes_after_release':0,
               'bytes_before_worktree_removal':before_removal, 'bytes_after_worktree_removal':0}
     (evidence / 'result.json').write_text(json.dumps(result, indent=2)+'\n')

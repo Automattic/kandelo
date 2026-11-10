@@ -38,6 +38,11 @@ impl Default for EmitLimits {
 /// provided limit while building a body. No helper may be declared here:
 /// later declarations could invalidate earlier emitted function indices.
 pub trait FunctionTransform: Reencode {
+    /// The actual body offset in the Code payload, after its encoded length.
+    /// Optional debug recorders use this instead of guessing LEB widths.
+    fn place_function(&mut self, _code_relative_body_start: u64) -> Result<()> {
+        Ok(())
+    }
     /// Module bootstrap owns active segments and the original start. Segment
     /// indices stay unchanged; data payloads still pass through the disk spool.
     /// The caller must install the corresponding frozen bootstrap helpers.
@@ -535,6 +540,7 @@ where
                 let bytes = function.into_raw_body();
                 let spool = code.as_mut().context("function without code section")?;
                 write_u32(spool, u32::try_from(bytes.len())?)?;
+                transform.place_function(spool.stream_position()?)?;
                 spool.write_all(&bytes)?;
                 report.functions += 1;
                 remaining = remaining.checked_sub(1).context("excess function body")?;
@@ -549,6 +555,7 @@ where
                 if s.name() == crate::facts::SECTION
                     || s.name() == crate::facts::CODE_HASH_SECTION
                     || s.name().starts_with(".debug")
+                    || s.name() == crate::debug_info::SECTION
                 {
                     continue;
                 }

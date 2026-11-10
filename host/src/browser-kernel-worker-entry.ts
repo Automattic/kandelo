@@ -1458,6 +1458,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   processMemoryCreators.assertOpen("kernel readiness");
   initReady = true;
   liveOverlayCompactor?.start();
+  if (liveOverlayCompactor !== null) {
+    const compactor = liveOverlayCompactor;
+    kernelWorker.setRootfsCompactionHandler(() => compactor.compactNow());
+  }
 
   const pcmTransport = kernelWorker.claimPcmTransport(true);
   pcmMirror = new BrowserPcmMirror(pcmTransport);
