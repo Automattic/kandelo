@@ -5,10 +5,15 @@
 #include "js/CallArgs.h"
 #include "js/Conversions.h"
 #include "js/ErrorReport.h"
+#include "js/friend/WindowProxy.h"
 #include "js/GlobalObject.h"
 #include "js/PropertyAndElement.h"
+#include "js/Realm.h"
 #include "js/RootingAPI.h"
 #include "js/Symbol.h"
+#include "js/Wrapper.h"
+#include "shell/jsshell.h"
+#include "shell/node-upstream/per-context.h"
 
 namespace kandelo::node {
 namespace {
@@ -52,12 +57,78 @@ bool InitializePrivateKey(JSContext* cx, unsigned argc, JS::Value* vp) {
   return true;
 }
 
+enum class ContextOperation { Initialize, GetExports, Inspect };
+
+bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
+                          ContextOperation operation) {
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject runtime(cx, EnsureRuntimeState(
+      cx, js::shell::GetShellContext(cx)->upstreamNodeRuntime));
+  if (!runtime) return false;
+  JS::RootedObject target(cx, JS::CurrentGlobalOrNull(cx));
+  if (argc) {
+    if (argc != 1 || !args[0].isObject()) {
+      JS_ReportErrorASCII(cx, "context control requires a global object");
+      return false;
+    }
+    target = js::CheckedUnwrapDynamic(&args[0].toObject(), cx, false);
+    if (!target) {
+      JS_ReportErrorASCII(cx, "context global access denied");
+      return false;
+    }
+    target = js::ToWindowIfWindowProxy(target);
+    if (!JS_IsGlobalObject(target)) {
+      JS_ReportErrorASCII(cx, "context control requires a genuine global");
+      return false;
+    }
+  }
+  JS::RootedValue result(cx);
+  bool ok;
+  {
+    JSAutoRealm realm(cx, target);
+    ok = operation != ContextOperation::Initialize ||
+         InitializeCurrentContext(cx, runtime);
+    if (ok) {
+      JS::RootedObject value(cx, operation == ContextOperation::Inspect
+          ? InspectCurrentContextForTesting(cx, runtime)
+          : GetCurrentContextExports(cx, runtime));
+      ok = bool(value);
+      if (ok) result.setObject(*value);
+    }
+  }
+  if (!ok) {
+    // GetPendingException performs the engine's checked exception wrapping
+    // into the caller realm, preserving the original exception and stack.
+    if (JS_IsExceptionPending(cx)) {
+      JS::RootedValue exception(cx);
+      if (!JS_GetPendingException(cx, &exception)) return false;
+    }
+    return false;
+  }
+  if (!JS_WrapValue(cx, &result)) return false;
+  args.rval().set(result);
+  return true;
+}
+
+bool InitializeContext(JSContext* cx, unsigned argc, JS::Value* vp) {
+  return ContextOperationCall(cx, argc, vp, ContextOperation::Initialize);
+}
+bool GetContextExports(JSContext* cx, unsigned argc, JS::Value* vp) {
+  return ContextOperationCall(cx, argc, vp, ContextOperation::GetExports);
+}
+bool InspectContext(JSContext* cx, unsigned argc, JS::Value* vp) {
+  return ContextOperationCall(cx, argc, vp, ContextOperation::Inspect);
+}
+
 }  // namespace
 
 bool DefinePrivateKeyTestAPI(JSContext* cx) {
   static const JSFunctionSpec functions[] = {
       JS_FN("newPrivateKey", NewPrivateKey, 0, 0),
       JS_FN("initializePrivateKey", InitializePrivateKey, 3, 0),
+      JS_FN("initializeContext", InitializeContext, 0, 0),
+      JS_FN("getContextExports", GetContextExports, 0, 0),
+      JS_FN("inspectContext", InspectContext, 0, 0),
       JS_FS_END,
   };
   JS::RootedObject api(cx, JS_NewPlainObject(cx));

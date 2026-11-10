@@ -48,7 +48,8 @@ def select_sources(members, prefix):
                       ['LICENSE', 'README.md', 'node.gyp', 'configure.py',
                        'tools/js2c.cc', 'src/node_builtins.cc', 'src/node_builtins.h',
                        'src/node_realm.cc', 'src/node_realm.h',
-                       'src/builtin_info.cc', 'src/builtin_info.h']})
+                       'src/builtin_info.cc', 'src/builtin_info.h',
+                       'src/env_properties.h']})
     dependency_roots = {str(PurePosixPath(name).parents[len(PurePosixPath(name).parts)-3])
                         for name in dependencies}
     # Include dependency licensing at original paths. Node's top-level LICENSE

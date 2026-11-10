@@ -1,0 +1,365 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-10T23:55:02.989142+00:00",
+  "scope": "Complete unchanged upstream per-context initializers in the guest engine on the Node host; no Node realm/bootstrap or CJS/ESM startup",
+  "sourceHeadAtBuild": "94debe69b29137bd0b97dc4c84dc32bcb94bc018",
+  "testedInputs": [
+    {
+      "path": "packages/registry/spidermonkey/package.toml",
+      "bytes": 2553,
+      "sha256": "53c1df3b5e6b5d851eb90df02b3ab2e023f1577a0a8535493f25efbe95b250cf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build.toml",
+      "bytes": 769,
+      "sha256": "18acede10dfe7956b917161e51c4c70a824de8fc8981b160976bbc245c394095"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build-spidermonkey.sh",
+      "bytes": 20665,
+      "sha256": "2c64a4569d382019b9e37860a0e96cc657a0bc6ed450c40917052afc4833835b"
+    },
+    {
+      "path": "third_party/nodejs/sources.json",
+      "bytes": 116767,
+      "sha256": "7e131abb50f48efbfd1503d09f99934f399a1c82fcdc567fc39395425dcab8fd"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/env_properties.h",
+      "bytes": 42469,
+      "sha256": "891cb90ba1164eecc1ae5eef69ef3102369eeebc7630dccda2ca5737a2a097ad"
+    },
+    {
+      "path": "scripts/import-nodejs-library.py",
+      "bytes": 6765,
+      "sha256": "229d1a96d53a3c326e1598470d270b811622cdc5d4bcafb26be41fa49a60d76d"
+    },
+    {
+      "path": "scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 5587,
+      "sha256": "ec09177fb51afb53ddb5cd20702659eb968ab51f08d3c5a14e36bfdee05f12c7"
+    },
+    {
+      "path": "tests/nodejs/upstream/per-context-engine-controls.js",
+      "bytes": 9898,
+      "sha256": "62e1fac223138750d8da88568a2afd5bcb214a8180fabb1099ccd7c3888a0998"
+    },
+    {
+      "path": "tests/nodejs/upstream/private-key-engine-controls.js",
+      "bytes": 9022,
+      "sha256": "2448424edbbed3eb2776eb64148ac6a8e42fa372d357a133910b2c5c3b20210c"
+    },
+    {
+      "path": "scripts/generate-nodejs-source-registry.py",
+      "bytes": 11468,
+      "sha256": "c4a23b02b681a8c7ee0119b002ff3eff3adfa01bac9e08a42f7d2101e61ce165"
+    },
+    {
+      "path": "scripts/nodejs-builtin-metadata.cpp",
+      "bytes": 1972,
+      "sha256": "74a60d09dce591adf01c779a8788ccabccdbe498f93b0487f54a609428324348"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/README.md",
+      "bytes": 2383,
+      "sha256": "1d4d20dfb2d615f9520af0444b02a685942e84f4f5721add48f30c2dd2e4a592"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.cpp",
+      "bytes": 3597,
+      "sha256": "276bb35c7e077939924671f1ddd86037c6a0ec2addd47dbae93b877605fd7faa"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.h",
+      "bytes": 870,
+      "sha256": "1edb63c5fdd933ab1d0466e079803d47f7e3fd747ccc2f59469cf900c5c1a409"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/per-context.cpp",
+      "bytes": 11162,
+      "sha256": "c6a026df8d34ed7751dfb593a68bae515a2782702279a4728a8ae09f2dab1693"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/per-context.h",
+      "bytes": 983,
+      "sha256": "224512298112f35910469e919cfb42aff935d4942261b8b968121f86e38f5c01"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/prepare-build.sh",
+      "bytes": 2655,
+      "sha256": "503e5f69de5f6c09aad696f6d52491963c017cfb2aa589ddf337d252656eb4ea"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/private-key-test-api.cpp",
+      "bytes": 4874,
+      "sha256": "4046fcc52fe1e053a6f09d965153b9fd8c2db0983126debf57d75523c9429a64"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/private-key-test-api.h",
+      "bytes": 383,
+      "sha256": "62f4b86bcb98b3c7c5fdf7053ef567199040c5e64fb1274a94d859d5fd9deaa8"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0024-kandelo-embedding-private-keys.patch",
+      "bytes": 22700,
+      "sha256": "8e4953df9f64be060696d470c4ed8ca1ca3cc245514262b1630be986301800e7"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0025-kandelo-upstream-test-controls.patch",
+      "bytes": 1577,
+      "sha256": "59792e25d914a05677c209e216e498ffe445505231953b6658f1350af7b38783"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0026-kandelo-node-context-owner.patch",
+      "bytes": 1028,
+      "sha256": "fa6303afdbbf37dc14aaea7d45f6bb000a203ab3548623649d82d59401be7631"
+    }
+  ],
+  "package": {
+    "name": "spidermonkey",
+    "revision": 19,
+    "architecture": "wasm32",
+    "cacheKey": "ddbccc90af93e504838147d1ef7b198665c7a04e48dc35ac989839fb6e0b7e3b",
+    "mozillaVersion": "140.11.0esr",
+    "mozillaArchiveSha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028"
+  },
+  "jobs": {
+    "objectCheckFirst": {
+      "id": "node-context-objects-1110-183555-2d39",
+      "exit": 1,
+      "failure": "Mozilla source list must sort per-context before private-key-test-api; failed configure before C++ compile"
+    },
+    "objectCheckFixed": {
+      "id": "node-context-objects-fixed-1110-183826-5fc1",
+      "exit": 0,
+      "scope": "Four real wasm32 objects, before the final fresh-exports assertion was added; final package validates that addition"
+    },
+    "packageBuild": {
+      "id": "node-context-engine-1110-184945-241b",
+      "exit": 0,
+      "seconds": 199
+    },
+    "guestControls": {
+      "id": "node-context-controls-1110-185314-269a",
+      "exit": 0,
+      "seconds": 7
+    },
+    "privateKeyRegression": {
+      "id": "node-context-key-regression-1110-185337-0112",
+      "exit": 0,
+      "seconds": 6
+    }
+  },
+  "executedOriginalSources": [
+    {
+      "path": "lib/internal/per_context/domexception.js",
+      "role": "library",
+      "bytes": 9452,
+      "sha256": "3c920df8a551ca84bcc571dd70df334cb10bd0f3088fa423a784f9f608cef6f7",
+      "builtinId": "internal/per_context/domexception"
+    },
+    {
+      "path": "lib/internal/per_context/messageport.js",
+      "role": "library",
+      "bytes": 995,
+      "sha256": "28bf223a668ddaa3ac43fdc84b7196e3c8e689d9d6c5d845d0d525a2fcb5410c",
+      "builtinId": "internal/per_context/messageport"
+    },
+    {
+      "path": "lib/internal/per_context/primordials.js",
+      "role": "library",
+      "bytes": 22777,
+      "sha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+      "builtinId": "internal/per_context/primordials"
+    }
+  ],
+  "owner": {
+    "lifetime": "ShellContext externally owns one PersistentRootedObject, destroyed before JSContext; never by a JS finalizer",
+    "canonicalContextAssociation": "Genuine embedding-private key on each actual global; exact native class/realm/global/wrapped-owner admission",
+    "edges": "JS::Value reserved slots with engine tracing/write barriers, wrapped cross-compartment runtime owner",
+    "privateIdentities": 22,
+    "ordinarySymbolIdentities": 27,
+    "inventory": "Original pinned env_properties.h macros; no duplicate list or Symbol.for",
+    "phases": [
+      "Initializing",
+      "Ready",
+      "Failed"
+    ],
+    "failure": "After canonical publication, failures are terminal and preserve original exception; before publication no observable carrier exists and clean retry is allowed",
+    "normalGet": "Returns stable exports only after Ready; explicit repeat initialize rejects"
+  },
+  "checks": {
+    "mozillaIncludeStyle": "passed",
+    "macroassemblerStyle": "passed",
+    "opcodeCheck": "passed",
+    "generatorIntegrityCases": 12,
+    "importedFilesHashesVerified": 493,
+    "hostRegistrySources": 443,
+    "hostRegistryExactSourceBytes": 10993403,
+    "allHostRegistryBytesAndMetadataMatched": true,
+    "contextCases": 14,
+    "contextFailures": 0,
+    "notRun": 0,
+    "originalScriptFailureStagesCovered": [
+      0,
+      1,
+      2
+    ],
+    "contextDriverRuns": 4,
+    "contextDriverFailures": 0,
+    "normalShellHidesAPI": true,
+    "nodeModeRejectsAPI": true,
+    "contextSuccessHostDiagnostics": 0,
+    "fatalInvariant": {
+      "exit": 132,
+      "guestStderr": "[100] Assertion failure: !hasPrimordials (Node per-context exports invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/per-context.cpp:205\nMOZ_REALLY_CRASH\n",
+      "hostDiagnostics": [
+        {
+          "pid": 100,
+          "source": "worker-main error message",
+          "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c2d7e02:wasm-function[102]:0x5acb7\n    at wasm://wasm/0c2d7e02:wasm-function[101]:0x579e3\n    at wasm://wasm/0c2d7e02:wasm-function[21430]:0x134bb65\n    at wasm://wasm/0c2d7e02:wasm-function[7209]:0x50b957\n    at wasm://wasm/0c2d7e02:wasm-function[7208]:0x4f947d\n    at wasm://wasm/0c2d7e02:wasm-function[7217]:0x50d8cb\n    at wasm://wasm/0c2d7e02:wasm-function[7218]:0x50db38\n    at wasm://wasm/0c2d7e02:wasm-function[8076]:0x5dbc38\n    at wasm://wasm/0c2d7e02:wasm-function[87]:0x51115\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)",
+          "status": 132
+        }
+      ],
+      "catchOrReturnMarkerObserved": false
+    },
+    "privateKeyRegressionCases": 23,
+    "privateKeyRegressionFailures": 0,
+    "privateKeyRegressionDriverRuns": 3,
+    "privateKeyRegressionDriverFailures": 0
+  },
+  "artifacts": [
+    {
+      "kind": "program",
+      "original": {
+        "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev19-wasm32-abi56-ddbccc90af93e504838147d1ef7b198665c7a04e48dc35ac989839fb6e0b7e3b/js.wasm",
+        "bytes": 51076992,
+        "sha256": "24a1a23682e78a59e743a105f7ac4c6e03832920dca0a6fa2cf84f048eea31e3"
+      },
+      "retainedCompressed": {
+        "path": ".context/node-per-context/program.24a1a23682e78a59e743a105f7ac4c6e03832920dca0a6fa2cf84f048eea31e3.wasm.gz",
+        "bytes": 16802195,
+        "sha256": "edc78937bd9658d20b5c3d8eb3d63d30e83b74feae117089489d704d5fc13299"
+      },
+      "roundTripVerified": true
+    },
+    {
+      "kind": "kernel",
+      "original": {
+        "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+        "bytes": 2958224,
+        "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+      },
+      "retainedCompressed": {
+        "path": ".context/node-per-context/kernel.f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c.wasm.gz",
+        "bytes": 847370,
+        "sha256": "b76f2c58fc2e76f053b466c4b81618deca938d6bbe5e30c59f09c45495ea3791"
+      },
+      "roundTripVerified": true
+    }
+  ],
+  "retainedLogs": [
+    {
+      "path": ".context/node-per-context/source-check.log",
+      "bytes": 2307,
+      "sha256": "e05a4ad7faa898cae98e9b9ac34a9354ab88db9cd03779f0157f9571b4437894"
+    },
+    {
+      "path": ".context/node-per-context/all-source-identities.log",
+      "bytes": 570,
+      "sha256": "f8a16a4b5d388900c813da2f2e0a6a8a0fc38f9a6d682f81211be1b92c650267"
+    },
+    {
+      "path": ".context/node-per-context/header-fetch.log",
+      "bytes": 755,
+      "sha256": "bc39dc6e786ff202abc61427adec145b9c44e9e95e43d726d23ab010def0f7d5"
+    },
+    {
+      "path": ".context/node-per-context/style-check-first-failure.log",
+      "bytes": 2168,
+      "sha256": "7e616e62c91597fc50584ea31bbbe2ef84aed26657ba4b55c50a3ea00a32b268"
+    },
+    {
+      "path": ".context/node-per-context/style-check-second-failure.log",
+      "bytes": 1960,
+      "sha256": "d473141a180c9d025b12b96d0710c38cf5628925f1dfe82625f7d8f61a27b1f8"
+    },
+    {
+      "path": ".context/node-per-context/style-check-passed.log",
+      "bytes": 1265,
+      "sha256": "eaf6d46dc147472e6b13dca6ec4f14dda57fb3d9363ac88e6a527c50029b7706"
+    },
+    {
+      "path": ".context/node-per-context/source-registry-composition.json",
+      "bytes": 1768,
+      "sha256": "c54d43c3993801837971bd5c6d48dd6216347cfe4b01884ce51f2906f4331643"
+    },
+    {
+      "path": ".context/node-per-context/objects-first-failure.log",
+      "bytes": 97271,
+      "sha256": "0ec0d553eaceb548242ad646faf77b3fc8697df6e80d0aade08a19cc86d9b556"
+    },
+    {
+      "path": ".context/node-per-context/objects-passed.log",
+      "bytes": 89052,
+      "sha256": "35892017c0c26a5d303bed9eda89ec787fbc7e6e27bd0ba4622f0a4f2705e54d"
+    },
+    {
+      "path": ".context/node-per-context/package-job.log",
+      "bytes": 366,
+      "sha256": "3076b8fa46fd56751688d4599f14e75f5b977d62026f347f6c2b67f5e55b792f"
+    },
+    {
+      "path": ".context/node-per-context/guest-control-job.log",
+      "bytes": 1277,
+      "sha256": "30cdd84bc75be6aae782131368243ad99027e2bf1c79a641f90a068ce9025fa8"
+    },
+    {
+      "path": ".context/node-per-context/key-regression-job.log",
+      "bytes": 575,
+      "sha256": "754e10ba21aad5d9a4e53e122defeffe26ca47403717368e789a17658d279be4"
+    },
+    {
+      "path": ".context/node-per-context/package-build.log",
+      "bytes": 256443,
+      "sha256": "539f8cfdb81aaca31d2359f1e38a4ceb87e8dca4c8b9d7a089eb6b1aa4b59e7b"
+    }
+  ],
+  "resultReceipts": [
+    {
+      "path": "tests/nodejs/upstream/per-context-engine-result.json",
+      "bytes": 32936,
+      "sha256": "6fa87357b038a8976227658933233495ec74c1684c1e41bb207acfcef12925c9"
+    },
+    {
+      "path": "tests/nodejs/upstream/per-context-private-key-regression.json",
+      "bytes": 42228,
+      "sha256": "2c6ccc8bac6143c8c6d56c43ca0a591e3d65f5f5006fd4046bc8afb8ec173873"
+    }
+  ],
+  "buildDiagnostics": {
+    "mozillaReportedCompilerWarnings": 16,
+    "notes": "Full log retains ICU, Rust, shell and unused linker-option warnings; no clean-warning claim",
+    "compilerFacts": "Existing recipe optimizes before instrumentation, invalidating code-hash correlation; bounded native baseline fallback reported. No fork behavior claim."
+  },
+  "limits": {
+    "builtinFunctionCompilerRuntimeCallsExercised": true,
+    "threeOriginalInitializersExecuted": true,
+    "full443SourcePayloadReadBackInGuest": false,
+    "sourceTextModuleCompilerExercised": false,
+    "upstreamRealmBootstrapExecuted": false,
+    "upstreamNodeStartup": false,
+    "cjsEntry": false,
+    "esmEntry": false,
+    "chromium": false,
+    "firefox": false,
+    "webkit": false,
+    "completeNativeV8Differential": false,
+    "securityWrapperOOMAndFullFinalizationProof": false,
+    "forkBehaviorValidated": false,
+    "fullProductBuild": false,
+    "successorAbiCampaignRebuild": false,
+    "overallSuitesRun": false
+  },
+  "targetingDebt": "Existing Linux triplet/__linux__/__unix__ defines unchanged; target metadata and full conformance remain unestablished."
+}

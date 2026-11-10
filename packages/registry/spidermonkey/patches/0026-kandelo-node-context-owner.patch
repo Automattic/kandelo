@@ -1,0 +1,32 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3266,6 +3266,7 @@
+       lastWarning(cx, NullValue()),
+       promiseRejectionTrackerCallback(cx, NullValue()),
+       unhandledRejectedPromises(cx),
++      upstreamNodeRuntime(cx),
+       watchdogLock(mutexid::ShellContextWatchdog),
+       exitCode(0),
+       quitting(false),
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -211,6 +211,9 @@
+   // report unhandled rejections in the rejected order.
+   JS::PersistentRooted<SetObject*> unhandledRejectedPromises;
+ 
++  // External owner root released with this runtime, never by a JS finalizer.
++  JS::PersistentRootedObject upstreamNodeRuntime;
++
+ #ifdef SINGLESTEP_PROFILING
+   Vector<StackChars, 0, SystemAllocPolicy> stacks;
+ #endif
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -30,6 +30,7 @@
+ SOURCES += [
+     "node-upstream/builtin-compiler.cpp",
+     "node-upstream/builtin-source-registry.cpp",
++    "node-upstream/per-context.cpp",
+     "node-upstream/private-key-test-api.cpp",
+ ]
+ 

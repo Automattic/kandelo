@@ -21,10 +21,22 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/builtin-compiler.cpp" \
     "$node_consumer/builtin-compiler.h" \
     "$node_consumer/private-key-test-api.cpp" \
-    "$node_consumer/private-key-test-api.h" "$shell_sources/"
+    "$node_consumer/private-key-test-api.h" \
+    "$node_consumer/per-context.cpp" \
+    "$node_consumer/per-context.h" "$shell_sources/"
 # Keep the portable registry's include names independent of Mozilla shell paths.
 # Mozilla's checker treats js/src as the root of internal header include names.
 cp "$node_import/native/builtin-source-registry.h" "$mozilla_source/js/src/"
+python3 - "$node_import" "$mozilla_source/js/src/node-env-properties.h" <<'PY'
+import hashlib, json, pathlib, sys
+root, output = map(pathlib.Path, sys.argv[1:])
+record = next(r for r in json.loads((root/'sources.json').read_bytes())['files']
+              if r['path'] == 'src/env_properties.h')
+source = (root/'upstream'/record['path']).read_bytes()
+if len(source) != record['bytes'] or hashlib.sha256(source).hexdigest() != record['sha256']:
+    raise ValueError('original Node env_properties.h identity mismatch')
+output.write_bytes(source)
+PY
 
 host_sdk_flags=()
 if [ -n "$host_sdk" ]; then

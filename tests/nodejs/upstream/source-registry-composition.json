@@ -6,9 +6,9 @@
     "third_party/nodejs/native/builtin-source-registry.h": "1b84c5c99de447402c382429df731e1f0def761a9586f6545828043b585296a9",
     "tests/nodejs/upstream/source-registry-controls.cpp": "b2dfb1fc0b34e7b1054123f467df4a78a84ea5a7ea47d450d473338287ca752f"
   },
-  "completedAt": "2026-11-10T23:02:45.370112+00:00",
+  "completedAt": "2026-11-10T23:50:12.532481+00:00",
   "scope": "host-native source registry/metadata composition only; not SpiderMonkey compilation or guest startup",
-  "sourceManifestSha256": "512816907bd18ef06c377d2961ce9341557fb503cc149e20a5172242ca327645",
+  "sourceManifestSha256": "7e131abb50f48efbfd1503d09f99934f399a1c82fcdc567fc39395425dcab8fd",
   "sources": 443,
   "exactSourceBytes": 10993403,
   "kinds": {

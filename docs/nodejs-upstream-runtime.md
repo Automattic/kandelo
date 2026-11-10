@@ -2,14 +2,14 @@
 
 ## Current state
 
-This is an inactive source import for the planned SpiderMonkey guest
-runtime. The prior runtime still uses its existing compatibility bootstrap.
-The new library has not been activated or executed on any host. Its compiler
-and source registry translation units build in the selected engine package,
-but their runtime calls and the presence of the full builtin payload in the
-linked artifact remain unverified. Focused embedding-private key controls
-have run in the SpiderMonkey guest on the Node host. Those controls do not
-establish upstream startup or module compatibility.
+The normal guest runtime still uses its existing compatibility bootstrap.
+The selected SpiderMonkey package now executes the complete, unchanged
+upstream primordials, DOMException and messageport context initializers through
+privileged diagnostic controls on the Node host. A native runtime owner shares
+the original symbol inventory across fresh per-global state. The upstream realm
+loader and Node bootstrap are not connected; startup, CJS/ESM entrypaths and
+browser execution remain unrun. This prerequisite does not establish module
+compatibility or guest readback of all 443 builtin sources.
 
 The target remains Node.js 26.13.0, Lithium LTS, source commit
 `18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. Verification on November 10,
@@ -48,10 +48,12 @@ configuration and V8 identity must not be copied to manufacture support.
 
 ## Source inventory
 
-`third_party/nodejs/sources.json` records 492 unchanged archive files:
+`third_party/nodejs/sources.json` records 493 unchanged archive files:
 427 library JavaScript files, 16 dependency JavaScript files, one library
-support file, 37 dependency license files and eleven provenance files. Its
+support file, 37 dependency license files and twelve provenance files. Its
 443 builtin source records cover more than the public module list.
+The original `src/env_properties.h` now supplies the native symbol inventory;
+its bytes are verified before staging into Mozilla's source tree.
 
 `scripts/index-nodejs-bindings.mjs` traverses every builtin source using the
 repository-declared Babel parser. The initial index has 443 parsed files,
@@ -84,8 +86,8 @@ correct exit status. Track CommonJS and ES-module entrypaths separately
 across Node, Chromium, Firefox and WebKit hosts.
 
 Startup does not establish module compatibility. A selected SpiderMonkey
-artifact has been built and run for private-key controls; it does not execute
-the imported Node bootstrap. Full product and
+artifact has been built and run for private-key and original per-context
+initializer controls; it does not execute the imported Node bootstrap. Full product and
 successor-ABI artifact rebuilds remain deferred. Immutable ABI 55 history
 and the separate Bun standalone extraction/launch work remain preserved.
 
@@ -125,14 +127,15 @@ Unicode punctuation normalization; that distinction is recorded explicitly.
 
 ## Native compiler foundation checkpoint
 
-The source import is still inactive. An immutable native source registry and
+The normal upstream Node entrypath is still inactive. An immutable native source registry and
 build-time wrapper metadata producer now exist, along with a SpiderMonkey
 function/module compilation consumer. The registry and metadata were compiled
 and checked on the development host. The SpiderMonkey consumer and registry
 have since compiled as real wasm32 objects against configured engine headers
-and participated in a selected package build. No calls through these helpers
-or upstream bootstrap have run on any of the four hosts. Linked builtin
-payload presence remains unverified. See `engine-object-compilation.json`
+and participated in a selected package build. The function compiler now runs
+the three original per-context bodies on the Node host. The source-text module
+compiler and upstream bootstrap remain unexercised. Guest readback of the full
+builtin payload remains unverified. See `engine-object-compilation.json`
 for the earlier object check and `private-key-engine-check.json` for the
 separate package and private-key control evidence.
 
@@ -182,8 +185,9 @@ compiler-header integration and added the focused object check below. Revision
 and fixes the include paths/generated header layout required by Mozilla's
 normal package checks. This does not
 activate upstream Node or turn an older engine artifact into evidence for the
-new code. The selected package now builds; imported-library execution and
-startup remain unimplemented.
+new code. Revision 19 adds the native runtime/context owner and executes the
+three complete original initializers through diagnostic controls. The selected
+package builds; upstream realm/bootstrap integration remains unimplemented.
 
 The focused preparation check ran the actual recipe helper, built the host-only
 original-Node metadata producer using the declared SDK, verified all four staged
@@ -223,8 +227,8 @@ original three-script initialization order, and keep failure terminal. A
 GC-traced canonical state per global is required; a publicly reflected Symbol
 or self-rooting native cycle is insufficient. None of this initializer or
 hidden-key behavior was runtime-validated by that source review. The initializer
-remains unimplemented; the distinct key primitive now has the focused guest
-evidence below, which does not establish its complete Node contract.
+now has the focused guest evidence below. Neither those controls nor the
+distinct key controls establish the complete Node engine contract.
 
 A subsequent focused native control confirmed eleven covered hidden-key
 expectations against the exact pinned Node26.13.0 Darwin arm64 binary,
@@ -254,7 +258,7 @@ scripts/dev-shell.sh env WASM_POSIX_DEP_WORK_DIR="$compiler_work" \
 The check uses the recipe's verified Mozilla source, patches, declared native
 dependencies, private sysroot and target configuration. It runs Mozilla
 configure, `pre-export` to install public headers, `export` for generated
-headers, then the compiler and registry object targets. Resolver output roots
+headers, then the compiler, registry, per-context and diagnostic API object targets. Resolver output roots
 are rejected so this diagnostic cannot stand in for a complete package build.
 The guest engine is not linked, optimized, instrumented, installed or published.
 An object compile result does not establish runtime source positions, GC ownership,
@@ -297,8 +301,8 @@ scripts/dev-shell.sh node_modules/.bin/tsx \
 The complete native-V8 differential contract, security-wrapper admission,
 OOM/finalization behavior and browser hosts remain unproven. The native
 reference's earlier eleven controls remain separate reference evidence.
-There is still no canonical per-runtime symbol owner or per-context
-initializer; no Node binding exposes the new keys yet.
+The canonical owner and per-context initializer now exist as described below;
+no Node runtime binding exposes their tables yet.
 
 The selected build passed Mozilla's include-style, macroassembler and opcode
 checks. It emitted 16 compiler warnings; the retained log includes ICU
@@ -307,3 +311,54 @@ pre-instrumentation optimization invalidates compiler-fact code hashes, so
 the instrumenter reported its bounded native baseline fallback. Preserve that
 diagnostic: these runs do not validate fork behavior. No full product,
 successor-ABI campaign rebuild, overall suite or upstream startup ran.
+
+## Original per-context initialization
+
+The native owner expands the unchanged pinned `env_properties.h` macros to
+create 22 embedding-private and 27 ordinary, nonregistry symbol identities
+once per guest `ShellContext`. An externally owned engine root holds the runtime
+carrier and is destroyed before its JSContext. Each global privately retains
+one canonical context carrier through a genuine embedding-private key. Its
+reserved slots contain traced JS values; cross-compartment owner references
+use engine wrappers. No JS finalizer owns a persistent root back to itself.
+
+Each context receives fresh null-prototype symbol tables with writable,
+enumerable, configurable properties, ordinary exports and null-prototype
+primordials. The exact original three scripts compile and run in order with
+their original four arguments and an undefined receiver. Native state moves
+through Initializing to Ready or terminal Failed. Normal getters expose exports
+only after Ready, repeated getters preserve identity, and explicit repeat or
+reentrant initialization rejects. Failure after canonical publication preserves
+the original exception and prevents retry; allocation failure before publication
+has no exposed state and may retry. Node's fresh-exports Has/CHECK invariant
+remains a native fatal assertion.
+
+On the Node host, 14 focused guest controls passed: all three original scripts,
+descriptors and freeze state, shared identities with fresh realm tables,
+realm-owned exports/constructors, original DOMException/QuotaExceededError and
+messageport behavior, stable getters, repeat/reentry rejection, terminal failure
+in each of the three initializer stages, global admission and identity across GC.
+Two API-exposure driver controls passed. A separate inherited-primordials
+invariant control produced the expected assertion, exit 132 and one host
+unreachable diagnostic; it returned neither a catch nor success marker. The
+successful initializer run had no host diagnostics. The same revision-19
+artifact also passed all 23 existing private-key controls and their two driver
+checks. Exact source/artifact identities, raw outputs and retained logs are in
+`tests/nodejs/upstream/per-context-engine-check.json` and the linked result receipts.
+
+Reproduce against the identified selected-package engine:
+
+```sh
+scripts/dev-shell.sh node_modules/.bin/tsx \
+  scripts/run-nodejs-private-key-controls.ts /absolute/path/to/js.wasm \
+  /absolute/path/to/new-report.json per-context
+```
+
+These are JS-shell diagnostics behind `--kandelo-test-upstream`; Node mode
+rejects the flag. They exercise the native owner and unchanged JavaScript,
+not a substitute bootstrap. Full security-wrapper, OOM, teardown/finalization
+and native-V8 differential contracts remain open, as do source-text modules,
+Node realm/bootstrap, CJS/ESM startup, browsers and the complete backend catalog.
+The package emitted 16 compiler warnings and the existing fork-facts mismatch
+diagnostic. Full products, successor-ABI campaign rebuilds and overall suites
+remain deferred; ABI 55 history is unchanged.

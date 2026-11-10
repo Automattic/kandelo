@@ -3453,6 +3453,13 @@
       "builtinId": null
     },
     {
+      "path": "src/env_properties.h",
+      "role": "provenance",
+      "bytes": 42469,
+      "sha256": "891cb90ba1164eecc1ae5eef69ef3102369eeebc7630dccda2ca5737a2a097ad",
+      "builtinId": null
+    },
+    {
       "path": "src/node_builtins.cc",
       "role": "provenance",
       "bytes": 37013,

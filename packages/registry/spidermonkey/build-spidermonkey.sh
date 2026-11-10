@@ -429,7 +429,9 @@ if [ "$UPSTREAM_OBJECT_CHECK" -eq 1 ]; then
         # pre-export installs the real public headers; export alone only runs
         # generators and leaves dist/include incomplete for selected objects.
         ./mach --no-interactive build pre-export export
-        ./mach --no-interactive build js/src/shell/builtin-compiler.o js/src/shell/builtin-source-registry.o
+        ./mach --no-interactive build js/src/shell/builtin-compiler.o \
+            js/src/shell/builtin-source-registry.o js/src/shell/per-context.o \
+            js/src/shell/private-key-test-api.o
     )
     echo "==> Upstream Node object check complete; no package linked or installed."
     exit 0

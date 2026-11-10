@@ -9,7 +9,8 @@
     "registeredSources": 443,
     "literalBindingNames": 72,
     "computedReferences": 14,
-    "completeBindingContractCatalog": false
+    "completeBindingContractCatalog": false,
+    "importedFiles": 493
   },
   "implementation": [
     {
@@ -20,26 +21,32 @@
     },
     {
       "area": "immutable native source registry and original C++ wrapper metadata",
-      "sourceStatus": "implemented, host-native composition verified",
+      "sourceStatus": "implemented; full host-native composition verified and three original context bodies used by the guest compiler",
       "evidence": "source-registry-composition.json",
-      "remaining": "registry runtime binding and linked payload identity; builtin compilation and evaluation through the real owner"
+      "remaining": "full 443-source guest payload readback and native runtime builtin binding connection"
     },
     {
       "area": "SpiderMonkey builtin function/module compiler",
-      "sourceStatus": "compiled in the selected guest package; builtin runtime calls unexercised",
-      "evidence": "engine-object-compilation.json",
-      "remaining": "linked builtin payload admission, realm/rooting/source-position/error/GC validation and builtin-binding connection"
+      "sourceStatus": "selected package built; function compiler executes three complete original per-context initializers on the Node host",
+      "evidence": "per-context-engine-check.json",
+      "remaining": "source-text module execution, full source-position/error/GC coverage and builtin-binding connection"
     },
     {
       "area": "embedding-private engine key kind and property operations",
-      "sourceStatus": "implemented; selected guest engine built and 23 focused controls passed on the Node host",
-      "evidence": "private-key-engine-check.json",
-      "remaining": "canonical per-runtime identity owner and bindings; complete native-V8 differential, security-wrapper, OOM/finalization and browser validation"
+      "sourceStatus": "implemented; selected revision-19 guest engine passes 23 focused controls and real upstream DOMException hidden marker behavior on the Node host",
+      "evidence": "per-context-engine-check.json",
+      "remaining": "runtime bindings; complete native-V8 differential, security-wrapper, OOM/finalization and browser validation"
     },
     {
-      "area": "per-context/per-realm state and shared binding loader",
+      "area": "per-runtime symbols and canonical per-context initialization",
+      "sourceStatus": "implemented; complete unchanged primordials/domexception/messageport sources execute, 14 focused Node-host controls pass",
+      "remaining": "connect real Node realm and binding owners; full security/OOM/teardown/finalization and browser contracts remain unproven",
+      "evidence": "per-context-engine-check.json"
+    },
+    {
+      "area": "shared Node realm and native binding loader",
       "sourceStatus": "not implemented in new architecture",
-      "remaining": "use the genuine engine primitive in canonical GC-owned per-context state and a shared per-runtime identity owner; execute unchanged initializer scripts"
+      "remaining": "real initial process, builtin/module_wrap/errors binding owners and unchanged internal/bootstrap/realm; preserve upstream loader identity/caches/cycles"
     },
     {
       "area": "structured Error stack/CallSite/limit contracts",
@@ -111,13 +118,15 @@
     "hostNativeCompositionOnly": false,
     "guestCompilerObjectsBuilt": true,
     "guestEngineLinked": true,
-    "builtinCompilerRuntimeCallsExercised": false,
+    "builtinCompilerRuntimeCallsExercised": true,
     "linkedBuiltinPayloadPresenceVerified": false,
     "guestStartupRun": false,
     "overallSuitesRun": false,
     "fullProductRebuildDeferred": true,
     "successorAbiArtifactsDeferred": true,
-    "abi55HistoryUnchanged": true
+    "abi55HistoryUnchanged": true,
+    "threeOriginalContextInitializersExecuted": true,
+    "sourceTextModuleCompilerExercised": false
   },
   "preservation": {
     "frozenCheckoutUnchanged": true,
@@ -125,25 +134,25 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 18,
+    "packageRevision": 19,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "private-key-engine-check.json",
+    "evidence": "per-context-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "privileged JS-shell private-key controls only; no upstream Node startup",
+    "packageRuntimeScope": "privileged JS-shell original per-context initializer and private-key controls on Node host; no upstream Node startup",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "existing Linux triplet and __linux__/__unix__ defines are unchanged; target metadata/conformance remain unestablished"
   },
   "startupPrerequisites": {
     "nodePrivateKeySemantics": {
       "classification": "distinct owning-engine primitive implemented with focused Node-host guest evidence; complete Node-equivalent contract remains unproven",
-      "implementationEvidence": "private-key-engine-check.json",
-      "canonicalSymbolOwnerImplemented": false,
+      "implementationEvidence": "per-context-engine-check.json",
+      "canonicalSymbolOwnerImplemented": true,
       "sourceComparison": "private-key-semantics.md",
       "differencesDescribe": "class-private-only baseline; the new distinct kind addresses covered paths, with complete equivalence still unproven",
       "differences": [
@@ -159,7 +168,18 @@
       "sourceContracts": "per-context-state-contracts.md",
       "privateIdentities": 22,
       "ordinarySymbolIdentities": 27,
-      "initializerImplemented": false
+      "initializerImplemented": true,
+      "implementationEvidence": "per-context-engine-check.json",
+      "canonicalAssociation": "genuine embedding-private per-global key; traced carrier and wrapped runtime-owner edge",
+      "phases": [
+        "Initializing",
+        "Ready",
+        "Failed"
+      ],
+      "failedInitializerIsTerminal": true,
+      "readyGetterPreservesIdentity": true,
+      "explicitRepeatedInitialize": "reject",
+      "originalInitializerSourcesExecuted": 3
     }
   },
   "nativeDifferentialControls": {
@@ -174,15 +194,29 @@
   },
   "focusedGuestEngineControls": {
     "Node": {
-      "evidence": "private-key-engine-result.json",
+      "evidence": "per-context-engine-result.json",
+      "perContextCases": 14,
+      "perContextFailures": 0,
+      "perContextDriverRuns": 4,
+      "perContextDriverFailures": 0,
+      "perContextSuccessHostDiagnostics": 0,
+      "fatalInvariantExit": 132,
+      "fatalInvariantHostDiagnostics": 1,
+      "fatalInvariantDiagnosticIsExpected": true,
+      "privateKeyRegressionEvidence": "per-context-private-key-regression.json",
       "privateKeyCases": 23,
       "privateKeyFailures": 0,
-      "driverRuns": 3,
-      "driverFailures": 0,
+      "privateKeyDriverRuns": 3,
+      "privateKeyDriverFailures": 0,
       "upstreamStartup": "not run"
     },
     "Chromium": "not run",
     "Firefox": "not run",
     "WebKit": "not run"
-  }
+  },
+  "nextWork": [
+    "Implement genuine realm/process/native binding ownership, including the eager builtins/module_wrap/errors closure; execute internal/bootstrap/realm unchanged",
+    "Preserve source/engine failures; do not substitute public modules or native-reference configuration",
+    "Continue complete backend catalog while integrating startup; CJS/ESM and four-host startup remain unrun"
+  ]
 }
