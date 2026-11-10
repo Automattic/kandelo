@@ -26,6 +26,7 @@
     "vitepress": "^1.6.4"
   },
   "dependencies": {
+    "@noble/hashes": "2.4.0",
     "fflate": "^0.8.3",
     "fzstd": "^0.1.1",
     "vite": "^8.3.1"
