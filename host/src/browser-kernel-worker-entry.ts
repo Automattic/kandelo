@@ -4617,7 +4617,11 @@ async function handleDestroy(
     // every creator already in flight, and runs this terminal sweep only once.
     // Browser main still terminates this whole worker realm on timeout.
     const destroy = processMemoryCreators.closeAndRunAfterDrain(performDestroy);
-    processMemoryFactory?.dispose();
+    // Carry the gate's terminal refusal through pending allocation rollback;
+    // genuine construction or worker-retirement failures keep their diagnostics.
+    processMemoryFactory?.dispose(
+      processMemoryCreators.closedAdmissionCancellation("process memory construction"),
+    );
     deferredByteSpool?.cancelTransfers();
     const result = await destroy;
     respond(msg.requestId, result);

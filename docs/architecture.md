@@ -2767,6 +2767,12 @@ graceful detach attempt fails or times out. That realm boundary is the final
 release fallback; a false graceful result never asks the main thread to keep a
 partially detached kernel Worker alive.
 
+Browser destroy carries the closed creator gate's terminal cancellation into
+pending disposable memory allocations. Fork rollback still removes the exact
+uncommitted child and inherited host handles before accepting that disposition.
+Constructor errors, copied cancellation text and failed allocation-worker
+termination retain their failure identity and remain diagnostic.
+
 Every main generation prepares its own exact-handle absence proof before
 publication or deferred start. Cold exit, exec and destroy paths may accept that
 sealed never-attempted proof instead of waiting for a message from a realm that
