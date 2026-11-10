@@ -113,6 +113,8 @@ depends_on = [
   "rust-profiler-runtime-bundle@1.97.0-nightly-2026-04-27",
   "rust-coverage-tools@22.1.2",
   "rust-docs@1.97.0-nightly-2026-04-27",
+  "toybox@0.8.15",
+  "sysklogd@2.8.0",
 ]
 
 # Composite VFS image for the browser shell demo: the rootfs package plus exact

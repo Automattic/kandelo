@@ -2,6 +2,8 @@
 export const RESERVED_MODULE_PREFIX = "kandelo." as const;
 export const STACK_MODULE = "kandelo.stack.v1" as const;
 export const STACK_IMPORT = "__kandelo_stack_capture_v1" as const;
+export const KLOG_MODULE = "kandelo.klog.v1" as const;
+export const KLOG_IMPORT = "__kandelo_klogctl_v1" as const;
 export const STACK_MAX_PACKET_BYTES = 65536 as const;
 export const STACK_MAX_FRAMES = 128 as const;
 export const STACK_MAX_NAME_BYTES = 4096 as const;
@@ -31,3 +33,6 @@ export const STACK_FRAME_FILE_LENGTH_OFFSET = 28 as const;
 export const STACK_INVALID_ARGUMENT = -22 as const;
 export const STACK_INVALID_ADDRESS = -14 as const;
 export const STACK_BUFFER_TOO_SMALL = -105 as const;
+export const KLOG_INVALID_ARGUMENT = -22 as const;
+export const KLOG_INVALID_ADDRESS = -14 as const;
+export const KLOG_PERMISSION_DENIED = -1 as const;

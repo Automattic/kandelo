@@ -1,5 +1,6 @@
 import type { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { ensureDirRecursive, writeVfsFile } from "./vfs-image-helpers";
+import { addSyslogService, renderService } from "./dinit-image-helpers";
 import { COMPUTER_SERVICES_PATH, parseComputerServices } from "../../../web-libs/kandelo-session/src/computer-services";
 import type { DemoGuideConfig } from "../../../web-libs/kandelo-session/src/demo-config";
 
@@ -10,7 +11,7 @@ export interface ServiceActivity {
   shortcuts?: DemoGuideConfig;
 }
 
-export function installServiceActivities(fs: KandeloImageFs, activities: readonly ServiceActivity[], control: Uint8Array, preflight = ""): void {
+export function installServiceActivities(fs: KandeloImageFs, activities: readonly ServiceActivity[], control: Uint8Array, preflight = "", syslogd?: Uint8Array): void {
   if (!activities.length || new Set(activities.map(activity => activity.target)).size !== activities.length) throw new Error("Service activities must be nonempty and unique");
   for (const activity of activities) {
     if (!/^[a-z][a-z0-9-]{0,63}$/.test(activity.target) || !Number.isInteger(activity.port) || activity.port < 1 || activity.port > 65535) throw new Error("Invalid service activity");
@@ -27,7 +28,39 @@ export function installServiceActivities(fs: KandeloImageFs, activities: readonl
   writeVfsFile(fs, COMPUTER_SERVICES_PATH, JSON.stringify({ version: 1, services }));
   fs.writeFile("/usr/bin/kandelo-service", control, 0o4755);
   fs.chmod("/usr/bin/kandelo-service", 0o4755);
-  writeVfsFile(fs, "/etc/dinit.d/machine", "type = internal\nrestart = false\n");
+  // The syslog daemon is infrastructure, not an activity: it has no port and
+  // no page, and it must be running before the activity it collects messages
+  // from. `machine` is what kandelo-init always starts, so waiting for it here
+  // means it runs on every boot whichever activity is enabled.
+  //
+  // `waits-for`, not `depends-on`: a machine whose logging failed should still
+  // serve. Losing the log is worth reporting, not worth refusing to boot.
+  const syslogService = syslogd === undefined ? undefined : addSyslogService(fs, { binary: syslogd });
+  if (syslogService !== undefined) {
+    writeVfsFile(fs, `/etc/dinit.d/${syslogService.name}`, renderService(syslogService));
+    // Each activity waits for the daemon too, not just `machine`. kandelo-init
+    // passes both `machine` and the enabled activity as dinit targets, so they
+    // start in parallel: without this, nginx or PHP-FPM can log before the
+    // daemon has bound /dev/log, and those messages are dropped silently --
+    // syslog(3) cannot report a missing receiver. The earliest messages are
+    // the ones worth having when a service fails to come up.
+    for (const activity of activities) {
+      const path = `/etc/dinit.d/${activity.target}`;
+      const current = new TextDecoder().decode(fs.readFile(path));
+      if (!/^waits-for = syslogd$/m.test(current)) {
+        writeVfsFile(
+          fs,
+          path,
+          `${current.endsWith("\n") ? current : `${current}\n`}waits-for = ${syslogService.name}\n`,
+        );
+      }
+    }
+  }
+  writeVfsFile(
+    fs,
+    "/etc/dinit.d/machine",
+    `type = internal\nrestart = false\n${syslogService ? `waits-for = ${syslogService.name}\n` : ""}`,
+  );
   writeVfsFile(fs, "/usr/libexec/kandelo-service", `#!/bin/sh
 set -eu
 action=\${1:-}

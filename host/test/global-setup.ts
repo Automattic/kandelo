@@ -202,6 +202,12 @@ const TEST_PROGRAMS = [
   "getpwent_smoke.c",
   "initial-credentials-test.c",
   "locale_info_test.c",
+  "klogctl_test.c",
+  "enosys_report_test.c",
+  "kmsg_tail_test.c",
+  "honest_stub_returns_test.c",
+  "unix_dgram_cross_process_test.c",
+  "syslog_client_test.c",
   "thread-exit-group.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
@@ -231,6 +237,12 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "orphan_reparent_test.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
+  // Forks the poker that makes the record its reader waits for.
+  "kmsg_tail_test.c",
+  // Forks to get a sender that never bound the path it sends to.
+  "unix_dgram_cross_process_test.c",
+  // Forks a client so the daemon half is a different process.
+  "syslog_client_test.c",
 ]);
 
 /** WAT fixtures used by host runtime tests. */

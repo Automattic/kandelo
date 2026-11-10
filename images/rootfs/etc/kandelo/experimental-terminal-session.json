@@ -2,8 +2,8 @@
   "kind": "kandelo-experimental-terminal-session",
   "version": 1,
   "initial": {
-    "path": "/bin/login",
-    "argv": ["login", "-p", "-f", "maker"],
+    "path": "/bin/sh",
+    "argv": ["sh", "/sbin/kandelo-shell-init"],
     "uid": 0,
     "gid": 0
   },

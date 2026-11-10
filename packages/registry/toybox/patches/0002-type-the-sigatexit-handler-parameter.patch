@@ -1,0 +1,105 @@
+# Upstream defect: xexit handlers are called through the wrong type
+#
+# `sigatexit()` takes its handler as a bare `void *`, and `xexit()` calls it
+# back as a function of one `int` -- deliberately, per its own comment, so a
+# handler can tell a real signal from a normal exit:
+#
+#     // typecast xexit->arg to a function pointer, then call it using invalid
+#     // signal 0 to let signal handlers tell actual signal from regular exit.
+#     ((void (*)(int))(al->arg))(0);
+#
+# Both handlers that reach it are declared to take nothing:
+# `dmesg_cleanup(void)` in toys/lsb/dmesg.c and `tempfile_handler(void)` in
+# lib/lib.c. Calling a function through an incompatible pointer type is
+# undefined behaviour. On x86 and ARM the extra argument is ignored, so the
+# bug is invisible; WebAssembly type-checks `call_indirect` against the table
+# entry at run time and traps instead, which Kandelo reports as SIGILL -- a
+# shell prints "Illegal instruction".
+#
+# `dmesg` reaches it only on a terminal, under
+# `if (TT.use_color) sigatexit(dmesg_cleanup)` where `use_color` is
+# `isatty(1)`, so `dmesg | cat` is fine and `dmesg` at a prompt dies after
+# printing every record it was asked for.
+#
+# This fixes the two handlers AND the API that allowed them. Declaring the
+# parameter as `void (*)(int)` rather than `void *` makes a mis-shaped handler
+# a compile error everywhere, with no extra warning flags:
+#
+#     error: incompatible function pointer types passing 'void (void)' to
+#            parameter of type 'void (*)(int)'
+#            [-Wincompatible-function-pointer-types]
+#
+# which clang treats as an error by default. That is the reason to prefer this
+# over just correcting the two handlers: it fixes the class rather than the
+# instances, and it would have caught this at build time on any host.
+#
+# `sigatexit(0)` still clears the list, through the same `if (handler)` branch
+# as before. The list stores `char *`, so the now-typed pointer needs an
+# explicit cast; that conversion already happened implicitly when the
+# parameter was `void *`, so this names it rather than introducing it.
+#
+# Not specific to Kandelo or to wasm: undefined behaviour that wasm merely
+# enforces. Offered upstream; see
+# .context/dmesg-build/toybox-upstream-sigatexit.patch for the submission form.
+#
+# Upstream: toybox 0.8.15 (https://landley.net/toybox/downloads/).
+diff --git a/lib/lib.c b/lib/lib.c
+index 1bfed02..1f520e2 100644
+--- a/lib/lib.c
++++ b/lib/lib.c
+@@ -769,7 +769,7 @@ int wfchmodat(int fd, char *name, mode_t mode)
+ }
+ 
+ static char *tempfile2zap;
+-static void tempfile_handler(void)
++static void tempfile_handler(int signo)
+ {
+   if (1 < (long)tempfile2zap) unlink(tempfile2zap);
+ }
+@@ -905,7 +905,7 @@ void exit_signal(int sig)
+ // that defaults to killing the process, calling the handler on the way out.
+ // Calling multiple times adds the handlers to a list, to be called in LIFO
+ // order.
+-void sigatexit(void *handler)
++void sigatexit(void (*handler)(int))
+ {
+   struct arg_list *al = 0;
+ 
+@@ -913,7 +913,10 @@ void sigatexit(void *handler)
+   if (handler) {
+     al = xmalloc(sizeof(struct arg_list));
+     al->next = toys.xexit;
+-    al->arg = handler;
++    // The list stores char *, and xexit() casts this back to the same type
++    // the parameter declares. The conversion already happened implicitly when
++    // the parameter was void *; naming it keeps that in one visible place.
++    al->arg = (char *)handler;
+   } else llist_traverse(toys.xexit, free);
+   toys.xexit = al;
+ }
+diff --git a/lib/lib.h b/lib/lib.h
+index 3b6ac80..5c2062e 100644
+--- a/lib/lib.h
++++ b/lib/lib.h
+@@ -405,7 +405,7 @@ struct mtab_list *xgetmountlist(char *path);
+ 
+ void generic_signal(int signal);
+ void exit_signal(int signal);
+-void sigatexit(void *handler);
++void sigatexit(void (*handler)(int));
+ void list_signals(void);
+ 
+ unsigned string_to_mode(char *mode_str, unsigned base);
+diff --git a/toys/lsb/dmesg.c b/toys/lsb/dmesg.c
+index cd58019..baecff2 100644
+--- a/toys/lsb/dmesg.c
++++ b/toys/lsb/dmesg.c
+@@ -110,7 +110,7 @@ static int xklogctl(int type, char *buf, int len)
+   return rc;
+ }
+ 
+-static void dmesg_cleanup(void)
++static void dmesg_cleanup(int signo)
+ {
+   color(0);
+ }

@@ -1,6 +1,7 @@
 __c_longjmp
 __channel_base
 __cpp_exception
+__kandelo_klogctl_v1
 __kandelo_stack_capture_v1
 __wasm_dlclose
 __wasm_dlerror

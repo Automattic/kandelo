@@ -47,6 +47,19 @@ export interface VfsBinarySpec {
   dependency?: string;
 }
 
+/**
+ * The syslog daemon the shell image's init starts at boot (see
+ * `/sbin/kandelo-shell-init`). /usr/sbin because it is a service daemon
+ * rather than boot administration; see docs/filesystem-layout.md.
+ */
+export const SHELL_SYSLOGD_PATH = "/usr/sbin/syslogd";
+
+/**
+ * The shell image's init: it starts the system log daemon and then becomes the
+ * login session. /sbin because starting the machine is boot administration.
+ */
+export const SHELL_INIT_PATH = "/sbin/kandelo-shell-init";
+
 export const SHELL_LAZY_URL_PREFIX = "kandelo-lazy:";
 
 /** The package whose output provides `spec`'s file. */
@@ -518,4 +531,18 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "quake-activity", dependency: "tyrquake", resolverPath: "programs/tyrquake/quake-activity", vfsPath: "/usr/bin/quake-activity", symlinks: [], mode: 0o755 },
   { id: "quake-load-pak", dependency: "tyrquake", resolverPath: "programs/tyrquake/quake-load-pak", vfsPath: "/usr/libexec/kandelo/quake-load-pak", symlinks: [], mode: 0o755 },
   { id: "elinks", resolverPath: "programs/elinks.wasm", vfsPath: "/usr/bin/elinks", symlinks: [] },
+  // Reading and writing the system log. `dmesg` reads the kernel message
+  // ring through /dev/kmsg and klogctl; `logger` writes through musl's
+  // syslog(3) to /dev/log, so it reaches whatever daemon is listening and
+  // fails honestly when none is. Both are toybox applets of a few hundred
+  // lines, but lazy like the rest: a machine that never inspects its log
+  // should not carry them in the eager image every visitor downloads.
+  { id: "dmesg", dependency: "toybox", resolverPath: "programs/toybox/dmesg.wasm", vfsPath: "/usr/bin/dmesg", symlinks: [] },
+  { id: "logger", dependency: "toybox", resolverPath: "programs/toybox/logger.wasm", vfsPath: "/usr/bin/logger", symlinks: [] },
+  // The syslog daemon /sbin/kandelo-shell-init starts at boot. Lazy, not
+  // eager: Bash is the shell image's one eager program, and the eager budget
+  // (packages/registry/shell/eager-budget.json) is what every visitor
+  // downloads before the first prompt. The cost is a fetch on the boot path;
+  // a machine that cannot fetch it boots without logging and says so.
+  { id: "syslogd", dependency: "sysklogd", resolverPath: "programs/syslogd.wasm", vfsPath: "/usr/sbin/syslogd", symlinks: [] },
 ] as const satisfies readonly VfsBinarySpec[];

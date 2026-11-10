@@ -320,6 +320,21 @@ binary = "programs/wasm32/diffutils/sdiff.wasm"
 path = "/usr/bin/sdiff"
 
 [[packages]]
+name = "toybox"
+
+# Reading and writing the system log. dmesg needs no daemon -- the kernel
+# message ring behind /dev/kmsg and klogctl is a kernel surface -- so it works
+# in every image. logger writes through musl's syslog(3), which reaches
+# whatever daemon an image runs, and is silently dropped where none does.
+[[packages.outputs]]
+binary = "programs/wasm32/toybox/dmesg.wasm"
+path = "/usr/bin/dmesg"
+
+[[packages.outputs]]
+binary = "programs/wasm32/toybox/logger.wasm"
+path = "/usr/bin/logger"
+
+[[packages]]
 name = "posix-utils-lite"
 
 [[packages.outputs]]
@@ -389,10 +404,6 @@ path = "/usr/bin/ipcs"
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/locale.wasm"
 path = "/usr/bin/locale"
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/logger.wasm"
-path = "/usr/bin/logger"
 
 [[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/man.wasm"

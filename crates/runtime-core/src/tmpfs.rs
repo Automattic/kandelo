@@ -118,6 +118,8 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
     ScratchMount { prefix: b"/tmp", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE, magic: TMPFS_MAGIC, fs_type: "tmpfs", layout: NO_LAYOUT, byte_limit: None },
     // /var/log and /var/tmp belong to the persistent root filesystem. /run
     // starts with directory metadata supplied by the image, never its files.
+    // The rootfs journal also bounds /var/log, so a machine cannot be filled
+    // by its own logs; see `rootfs::VAR_LOG_BYTE_LIMIT`.
     ScratchMount { prefix: b"/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, fs_type: "tmpfs", layout: NO_LAYOUT, byte_limit: None },
     // POSIX shared memory. Sticky and world-writable like `/tmp`, and served
     // here for the same reason: the kernel owns `/` and every other scratch
@@ -2439,6 +2441,20 @@ mod tests {
         // Freeing the file returns everything.
         remove_tree(dir).unwrap();
         assert_eq!(byte_usage(path).unwrap().0, before);
+    }
+
+    #[test]
+    fn var_log_is_not_a_scratch_mount() {
+        // `/var/log` is served by the rootfs journal, so the tmpfs must not
+        // claim it: a claim would shadow the durable directory with RAM, and
+        // the logs a crash left behind would be the first thing lost.
+        // `ownership_matches_scratch_prefixes_only` covers the bare path; what
+        // is pinned here is the table that decides it, and the nested paths a
+        // daemon actually writes.
+        assert!(SCRATCH_MOUNTS.iter().all(|mount| mount.prefix != b"/var/log"));
+        assert!(!owns_path(b"/var/log/messages"));
+        assert!(!owns_path(b"/var/log/nginx/error.log"));
+        // The rootfs bounds it instead; see `rootfs::VAR_LOG_BYTE_LIMIT`.
     }
 
     #[test]

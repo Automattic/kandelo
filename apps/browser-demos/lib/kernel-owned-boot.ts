@@ -156,7 +156,7 @@ export async function restoreVerifiedImageForBuild(
 }
 
 /** Create a fresh, empty build-time image filesystem for assembling an image
- *  that the kernel worker will own. Scratch mounts (/tmp, /var/log,
+ *  that the kernel worker will own. Scratch mounts (/tmp, /var/run,
  *  …) are served by the in-kernel tmpfs, so only the image's `/` content
  *  (e.g. /etc, /bin) needs to live here. */
 export async function createEmptyBuildFs(

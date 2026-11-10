@@ -140,9 +140,12 @@ const REQUIRED_BASH_ALIASES = [
  * Every other program is a lazy file (SHELL_LAZY_BINARY_SPECS).
  * WHY enforce it: each eager byte is downloaded by every visitor before the
  * machine boots, and eager programs accumulate one convenient addition at a
- * time — 2.4 MB of compressed image had grown to 4.1 MB this way.
+ * time — 2.4 MB of compressed image had grown to 4.1 MB this way. Adding to
+ * this set needs that boot-path argument, not convenience.
  */
-const EAGER_SHELL_PROGRAMS: ReadonlySet<string> = new Set(["/bin/bash"]);
+const EAGER_SHELL_PROGRAMS: ReadonlySet<string> = new Set([
+  "/bin/bash",
+]);
 const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d] as const;
 export const SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES = [
   ...readSourceRootfsShellResolverDependencies(),
@@ -181,6 +184,12 @@ function readSourceRootfsShellResolverDependencies(
   }
   const contract = value as SourceRootfsShellDependencyContract;
   const dependencies = contract.dependencies
+    // The roles this composer's resolver may be asked for. `eager-program` is
+    // excluded deliberately: that role means the base image already carries
+    // the program, and resolving one would be a provenance error the bridge
+    // suite tests for by name ("does not resolve a resident base-owned
+    // program as an undeclared dependency"). A program this composer resolves
+    // and writes eagerly itself is `eager-file`, as ncurses' terminfo is.
     .filter(
       ({ role }) =>
         role === "lazy-file" || role === "lazy-archive" || role === "eager-file",
