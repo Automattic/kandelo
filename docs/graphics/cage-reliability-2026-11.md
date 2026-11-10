@@ -976,3 +976,56 @@ candidate is based on a3490ca0; the later main updates fetched at e9b8788767
 were inspected for workflow guidance and were not merged into this runtime.
 No combined-latest-main, full API-conformance, performance-suite or native
 Safari acceptance is claimed. B2–B6/C1–C3 remain paused.
+
+
+## Matched Sway and ScummVM investigation
+
+The maintainer reported both blur after the resolution cap and better ScummVM
+performance as a Sway tile, identifying `scummvm-play steel-sky` as the game
+command. The cap is a quality tradeoff, not a repair for buffer coherence.
+The following diagnostics exercise the **ScummVM launcher**, not Steel Sky
+playback; no game-frame-rate or native-display-latency claim follows.
+
+The uncapped frozen normal preview at source
+`4bde403bd0573ce8b036197e9e6150098a88eb24` supplies both compositors, with
+Chromium 153.0.8010.12, DPR 1, one test worker and the same source-only shell
+image (`1024edcac14dac7620070ee90a45d6bd2a62fbc36f56f1bd008ff31568f8075b`).
+Each observation injects 60 trusted pointer moves paced over approximately
+one second, then observes a 1.5-second drain. The counters below are reported
+KMS flips, including pointer presentation; they are not calibrated display FPS.
+
+| Active output | ScummVM session | Reported flips | Logical mapped spans scanned |
+| --- | --- | ---: | ---: |
+| 1280×612 | Launched from Cage's wlterm | 18 | 4.17 GB |
+| 1280×612 | Launched from Sway's Foot, tiled | 60 | 0 in this GBM path |
+| 1280×612 | Sway, full-screen launcher | 60 | 0 in this GBM path |
+| 3840×2052 | Launched from Cage's wlterm | 1 | 7.94 GB |
+| 3840×2052 | Cage launched directly with ScummVM, after wlterm exit | 60 | 0 in this GBM path |
+
+Both compositor presets use wlroots 0.20.2's GLES2 renderer through the same
+Kandelo WebGL bridge. The important observed difference is mapped-buffer
+ownership. `examples/libs/libkwl/src/kwl.c:kwl_buffer_init` allocates a GBM BO,
+keeps it CPU-mapped and shares its PRIME fd through `wl_shm`. The Cage run
+retains three full-output BOs mapped by wlterm and Cage, including while the
+ScummVM window covers the terminal. Readiness and receive completions invoke
+`syncImportsForPid`, scanning every writer and copying the calling process's
+view and baseline. At 1280×612, Cage spends about 638 ms inclusively in import
+synchronization during the launcher observation. The Sway/Foot observations
+invoke none of this GBM mapping synchronization; that does not imply zero
+rendering, ordinary shared-memory or upload cost. Removing wlterm from the
+Cage session removes the measured scans without reducing the 3840×2052 mode.
+This isolates an expensive Kandelo sharing path, not an inherent requirement
+for Cage to render at low resolution.
+
+Retained qualifications: the first 3840-wide Sway tests satisfied a fixed wait
+but their screenshots contain only wallpaper. They are excluded from app
+comparisons despite test-runner success. A corrected 1280-wide full-screen
+Sway control requires actual Foot and launcher pixels and passes 1/1. The
+three-case replacement-client control passes 2/3: Cage/Foot fails with a real
+Wayland protocol/connection error and returns to Terminal; its later canvas
+focus times out. No Cage/Foot performance result or repair is claimed. The
+wallpaper-only Sway case is also excluded. Raw results, sources, inspected
+screenshots and qualifications are retained in
+`.context/cage-sway-20261109/`. No served source, package, ABI or display policy
+was changed during this investigation. Shared-buffer coherence repair and a
+matched Steel Sky gameplay measurement remain outstanding.
