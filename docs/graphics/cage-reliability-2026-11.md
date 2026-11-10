@@ -1,12 +1,14 @@
 # Cage reliability follow-up — 2026-11-09
 
-Status: draft follow-up. Startup and terminal-handoff repairs are implemented,
-and the latest complete memory-gate execution passed 18/18 browser cases.
-**Cage interactive performance remains blocked:** the current normal build
-reproduces severe cursor stalls at larger output sizes. Fresh profiles trace
-substantial CPU time to whole-buffer graphics coherence on input/readiness
-traffic. No performance correction has been made. The earlier intermittent
-WebKit audio retirement also remains an unexplained open finding.
+Status: draft follow-up. Startup and terminal-handoff repairs are implemented.
+At the maintainer's request, Cage now chooses a modest guest display bounded
+by 1280×720 reference pixels, including on HiDPI displays. The new normal
+image passes rendering/input/resize/exit checks at browser densities 1 and 2
+in all three engines. Cursor observations support this pixel-quality tradeoff;
+they do not establish a same-resolution renderer speedup. The underlying
+high-resolution whole-buffer coherence cost and the earlier intermittent
+WebKit audio-retirement finding remain open. The previous full memory gate
+passed 18/18; the new resolution candidate's full gate is still pending.
 
 This delivery investigates work package R1 after #1594. It does not activate
 B2–B6/C1–C3 or claim full graphics/native-feel acceptance.
@@ -680,3 +682,120 @@ producing summaries (`Execution context was destroyed`); no fresh Firefox
 performance result is claimed. Separate Firefox profile-directory EACCES
 cleanup warnings remain retained. None of these diagnostics replaces or
 reclassifies the earlier functional/host/memory acceptance results.
+
+
+## Modest default display requested by the maintainer
+
+The maintainer explicitly prefers a responsive modest-resolution Wayland demo
+rather than a native HiDPI output. The Cage profile now declares optional
+`presentation.displayMaxSize: { width: 1280, height: 720 }` in the normal
+shell image. The reusable session contract chooses CSS-reference guest
+pixels, fits the preferred mode proportionally within the limit and connector
+minimum, and reports 96 DPI. Smaller panes are not supersampled on Retina.
+The browser fits the actual guest scanout; this reduces guest buffer allocation
+rather than only changing CSS/font scale. Other profiles retain their existing
+native defaults. Explicit display scale composes before the size limit.
+
+The limit selects the preferred mode, not a new global graphics capacity.
+Programs can still select the connector's other supported modes. A running
+Cage compositor keeps its selected mode on host layout resize; no live output
+hotplug is claimed. A presentation change invalidates an old pane measurement
+before the next client starts. The parser validates the optional object and
+the session returns defensive copies. This is browser presentation policy;
+Node's layout-free host adapter, guest binaries, kernel, shared graphics
+coherence and published ABI are unchanged. Shell build revision is 86.
+
+The original 56501 preview was first relocated into a detached external
+worktree at source `4bde403bd0573ce8b036197e9e6150098a88eb24` with its own
+normal products and dependencies. HTTP image and required runtime hashes match
+the former preview; real Cage smoke checks passed before and after relocation.
+It remains the separate high-resolution control. The six earlier external
+Moscow previews were not changed.
+
+The new full normal engine/SDK/rootfs/host closure completed through the
+canonical dev shell with `cargo run --release -p xtask --target
+aarch64-apple-darwin -- bootstrap --jobs 1`, followed by
+`bash scripts/check-abi-version.sh`, job
+`cage-resolution-normal-release-1109-190944-7481`, exit 0 after 5m41s.
+This is the same full normal bootstrap graph, not a partial image. The initial
+`./run.sh setup` attempt was intentionally terminated at projection
+finalization after 44m16s (exit 143), after completing its package nodes.
+A native sample located its CPU cost in debug-tool dependency-identity hashing;
+that incomplete attempt is retained and is not reported as a successful setup.
+The optimized native tool reused the completed outputs and finished the full
+closure, freshness and ABI checks. No build-script or compiler override was
+committed, and no package output or fixture was substituted.
+
+| Product | Bytes | SHA-256 |
+| --- | ---: | --- |
+| New normal shell image | 1,076,137 | `44687dd36b9710933356c6846bd29c1e30e9fc09759593db76385a38ccd93152` |
+| Unchanged kernel | 2,919,292 | `0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc` |
+
+A fresh 50-entry source/product/original-fixture receipt verifies the normal
+products and both manifest-bound program fixture cohorts. Program 56 / host 4 /
+GL 17 / fork 21 remain unchanged. The new preview on 56507 serves that exact
+normal SourceOnly projection with HMR disabled; downloaded image bytes match
+the table. Availability was reported separately from full acceptance.
+
+The new real-browser cap cases pass **6/6**: two densities each in Chromium,
+Firefox and WebKit, zero skips/retries/flaky outcomes. They observe actual
+guest mode dimensions, GLES2 shell pixels, keyboard repaint, stable active
+mode across a host viewport resize and real wlterm exit 0. The old frozen
+normal control fails the new density-1 cap assertion as expected: width 1920
+exceeds 1280. Source-only session/image-activity units pass 208/208; browser
+TypeScript checks pass 144 browser roots and 46 Node unit roots. A separately
+committed stale login assertion now matches the unchanged fixture's `/bin/login`;
+the frozen old test reproduced the same failure before that correction.
+
+### Cursor observations with fewer guest pixels
+
+A new light-observer run compares the preserved normal control with the new
+normal image at CSS viewport 3840×2160. The actual display pane is 3840×2052.
+Both use 60 trusted mouse moves aimed at 60 Hz, followed by a 1.5s drain.
+Only cursor-plane paint callbacks are observed, with no BO/copy timing hooks.
+The eight cases passed with zero retries. Chromium was 153.0.8010.12 and
+Playwright WebKit 26.6. An independent normal-entry preparation was active;
+this is not a quiet, alternating repeated benchmark or destination-main
+comparison. The intentional quality/pixel-count difference is the product
+change: 3840×2052 becomes 1280×684, one ninth as many guest pixels.
+
+| Engine | Image / browser density | Actual guest mode | Sweep delivery | Cursor paints, including drain | First changed paint after first move |
+| --- | --- | --- | ---: | ---: | ---: |
+| Chromium | old / 1 | 3840×2052 | 1.035s | 2 | 541ms |
+| Chromium | capped / 1 | 1280×684 | 1.018s | 32 | 17ms |
+| Chromium | capped / 2 | 1280×684 | 1.017s | 32 | 19ms |
+| WebKit | old / 1 | 3840×2052 | 2.040s | 15 | 67ms |
+| WebKit | capped / 1 | 1280×684 | 2.197s | 39 | 19ms |
+| WebKit | capped / 2 | 1280×684 | 2.245s | 32 | 12ms |
+
+At CSS 1280×720, the capped mode is 1280×612: Chromium recorded 34 paints
+and WebKit 45. WebKit's mouse-event delivery stretches to about two seconds
+in the large cases, so these counts are not comparable FPS measurements.
+Cursor callbacks are not calibrated physical input-to-visible-display latency.
+The small plane remains painted and the final tip reaches the mapped endpoint.
+The large Retina screenshot was inspected: the lower-resolution shell and
+cursor are visible and fitted to the pane. A second visible review through
+actual `./run.sh browser --host 127.0.0.1 --port 56505 --strictPort` passed
+1/1 on Chromium at density 2: real physical-key input repainted the terminal,
+host resize fitted the active 1280×648 mode, and exit selected Terminal with
+`WLTERM_EXIT code=0` and the foreground `CAGE_EXIT_STATUS=0`. Both rendering
+and exit screenshots were inspected. The exit screenshot also retains a
+libinput warning of 25ms keyboard-event lag during this loaded run; passing
+completion does not establish zero latency. There is no same-resolution
+coherence correction or native-feel claim, and no fresh Firefox cursor-timing
+claim. The six real-browser functional checks include Firefox at both densities.
+
+Navigation through rendered shell/download readiness still takes roughly
+6.2–7.7s for the capped cases, versus 7.7–8.6s for these old controls. These
+are single fresh-app observations including persistence/kernel/guest startup
+and diagnostic work, not isolated rendering times or a startup speedup claim.
+The default is smaller and measurably more responsive in this workload;
+first-load separation, high-resolution coherence and the unexplained earlier
+WebKit audio-retirement failure remain open. Broader B2–B6/C1–C3 remain paused.
+
+Current evidence is Sydney `.context/cage-resolution-20261109/`: normal build
+and ABI logs, source/product receipts, image HTTP verification, cap results,
+light-observer sources/results/review, and inspected visible screenshots.
+Bulk original test traces remain under their registered run directories.
+The broader selected graphical, prepared-product, host and full memory checks
+for this new normal image are pending and will be recorded separately.

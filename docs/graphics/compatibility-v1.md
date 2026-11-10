@@ -28249,3 +28249,32 @@ records raw scope, observer controls, failed diagnostic attempts and the
 unpartitioned startup time. Functional green does not establish acceptable
 interactive latency; R1 and draft PR #1678 remain open. Broader campaign
 work remains paused.
+
+
+### R1 modest default display — 2026-11-09
+
+The maintainer requested a modest-resolution Cage demo instead of native
+HiDPI Wayland. Cage's normal image now declares a 1280×720 preferred-mode
+limit in image-owned presentation metadata. The generic session contract
+uses CSS-reference pixels, preserves aspect within connector bounds and
+avoids Retina supersampling; other profiles retain native defaults. The
+actual guest buffers are smaller, while the browser fits them into its pane.
+Higher standard connector modes remain available, and live Cage output
+hotplug is not added. The shared high-resolution BO coherence inefficiency
+is still open; this is an explicit quality/pixel-count tradeoff.
+
+The new normal shell SHA is
+`44687dd36b9710933356c6846bd29c1e30e9fc09759593db76385a38ccd93152`.
+Rendering/input/resize/exit checks pass 6/6 across Chromium, Firefox and
+WebKit at browser densities 1 and 2. At a 3840×2160 CSS viewport, the actual
+capped mode is 1280×684. Chromium's cursor observer records 32 paints during
+60 mouse moves plus a drain versus two on the 3840×2052 preserved control;
+WebKit records 39 versus 15, with different actual event-delivery durations.
+These are scoped cursor callbacks with intentionally different guest pixel
+counts, not equal-quality renderer speedups or native-display latency.
+The [R1 follow-up report](cage-reliability-2026-11.md#modest-default-display-requested-by-the-maintainer)
+records exact products, commands, observer limits and remaining checks.
+The old preview remains preserved separately, the earlier unexplained
+WebKit audio retirement stays open, and the PR remains a draft. Full new
+memory/selected-graphical acceptance is pending; broader campaign work stays
+paused.
