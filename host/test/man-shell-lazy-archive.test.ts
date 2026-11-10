@@ -150,17 +150,26 @@ describe.skipIf(!available)(
       expect(pages.length, "no pages under /usr/share/man").toBeGreaterThan(0);
       const indexed = imageHasIndex(imageBytes());
 
-      const script = pages
-        .map(
-          ({ section, name }) =>
-            `printf '\\n@@BEGIN %s %s\\n' ${section} '${name}'; ` +
-            `man ${section} '${name}' 2>/tmp/man.err; rc=$?; ` +
-            `printf '\\n@@ERR\\n'; cat /tmp/man.err; ` +
-            `printf '\\n@@END %s\\n' "$rc"`,
-        )
-        .join("\n");
-      const { stdout, stderr, exitCode } = await runInShell(imageBytes(), script);
-      expect(exitCode, `stderr:\n${stderr}`).toBe(0);
+      // The commands go to bash as its -c argument, so they run in batches to
+      // stay under the argument-size limit (several hundred pages fail with
+      // E2BIG as one script).
+      const BATCH = 100;
+      let stdout = "";
+      for (let start = 0; start < pages.length; start += BATCH) {
+        const script = pages
+          .slice(start, start + BATCH)
+          .map(
+            ({ section, name }) =>
+              `printf '\\n@@BEGIN %s %s\\n' ${section} '${name}'; ` +
+              `man ${section} '${name}' 2>/tmp/man.err; rc=$?; ` +
+              `printf '\\n@@ERR\\n'; cat /tmp/man.err; ` +
+              `printf '\\n@@END %s\\n' "$rc"`,
+          )
+          .join("\n");
+        const batch = await runInShell(imageBytes(), script);
+        expect(batch.exitCode, `stderr:\n${batch.stderr}`).toBe(0);
+        stdout += batch.stdout;
+      }
 
       const rendered = new Map<string, string>();
       const failures: string[] = [];
@@ -209,6 +218,9 @@ describe.skipIf(!available)(
         ["1 grep", /print lines that match patterns/],
         ["1 unxz", /Compress or decompress \.xz and\s+\.lzma files/],
         ["1 man", /display manual pages/],
+        ["1 curl", /transfer a URL/],
+        ["1 wget", /The non-interactive network downloader/],
+        ["1 perlfunc", /Perl builtin functions/],
       ];
       const present = probes.filter(([page]) => pages.has(page));
       expect(present.length).toBeGreaterThan(0);
