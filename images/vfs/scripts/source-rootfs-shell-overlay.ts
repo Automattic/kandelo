@@ -45,20 +45,6 @@ export function populateSourceRootfsShellOverlay(
   // from boot rather than fetched lazily like the archives below.
   populateTerminfoDatabase(fs, resolveArtifact);
 
-  // WHY eager, when every other program here is lazy: /sbin/kandelo-shell-init
-  // starts this daemon before it execs the login shell, so a deferred copy
-  // would be fetched during boot -- a network round trip on the boot path, and
-  // no logging at all on a machine that is offline. The same argument the
-  // eager-program guard makes for Bash.
-  if (includes("sysklogd")) {
-    const source = resolveArtifact("programs/syslogd.wasm", "sysklogd");
-    const daemon = registerResolvedProgramOriginal(
-      fs, "programs/syslogd.wasm", "sysklogd", source, SHELL_SYSLOGD_PATH, options.resolveOriginal,
-    );
-    fs.writeFile(SHELL_SYSLOGD_PATH, daemon, 0o755);
-    fs.chmod(SHELL_SYSLOGD_PATH, 0o755);
-  }
-
   // The image's init. /sbin because starting the machine is boot
   // administration, alongside dinit and kandelo-init.
   //

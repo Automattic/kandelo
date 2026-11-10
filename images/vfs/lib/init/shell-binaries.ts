@@ -48,10 +48,9 @@ export interface VfsBinarySpec {
 }
 
 /**
- * The syslog daemon, eager rather than lazy because the shell image's init
- * starts it at boot (see `/sbin/kandelo-shell-init`). /usr/sbin because it is
- * a service daemon rather than boot administration; see
- * docs/filesystem-layout.md.
+ * The syslog daemon the shell image's init starts at boot (see
+ * `/sbin/kandelo-shell-init`). /usr/sbin because it is a service daemon
+ * rather than boot administration; see docs/filesystem-layout.md.
  */
 export const SHELL_SYSLOGD_PATH = "/usr/sbin/syslogd";
 
@@ -519,4 +518,10 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // should not carry them in the eager image every visitor downloads.
   { id: "dmesg", dependency: "toybox", resolverPath: "programs/toybox/dmesg.wasm", vfsPath: "/usr/bin/dmesg", symlinks: [] },
   { id: "logger", dependency: "toybox", resolverPath: "programs/toybox/logger.wasm", vfsPath: "/usr/bin/logger", symlinks: [] },
+  // The syslog daemon /sbin/kandelo-shell-init starts at boot. Lazy, not
+  // eager: Bash is the shell image's one eager program, and the eager budget
+  // (packages/registry/shell/eager-budget.json) is what every visitor
+  // downloads before the first prompt. The cost is a fetch on the boot path;
+  // a machine that cannot fetch it boots without logging and says so.
+  { id: "syslogd", dependency: "sysklogd", resolverPath: "programs/syslogd.wasm", vfsPath: "/usr/sbin/syslogd", symlinks: [] },
 ] as const satisfies readonly VfsBinarySpec[];

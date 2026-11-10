@@ -32,7 +32,6 @@ import {
 } from "./vfs-image-helpers";
 import {
   SHELL_LAZY_BINARY_SPECS,
-  SHELL_SYSLOGD_PATH,
   shellLazySpecDependency,
 } from "../lib/init/shell-binaries";
 import {
@@ -138,9 +137,6 @@ const REQUIRED_BASH_ALIASES = [
  * The only Wasm programs this composer may write eagerly, together with every
  * hard link to them (Bash is also /bin/sh). Bash is the account shell: login
  * execs it on every boot, before any machine could benefit from deferring it.
- * The syslog daemon qualifies on the same test and only on that test: the
- * image's init starts it before the login shell, so a deferred copy would be
- * fetched on the boot path and an offline machine could not log at all.
  * Every other program is a lazy file (SHELL_LAZY_BINARY_SPECS).
  * WHY enforce it: each eager byte is downloaded by every visitor before the
  * machine boots, and eager programs accumulate one convenient addition at a
@@ -149,7 +145,6 @@ const REQUIRED_BASH_ALIASES = [
  */
 const EAGER_SHELL_PROGRAMS: ReadonlySet<string> = new Set([
   "/bin/bash",
-  SHELL_SYSLOGD_PATH,
 ]);
 const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d] as const;
 export const SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES = [
