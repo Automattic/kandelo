@@ -257,6 +257,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "game-import",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
       "name": "vim-browser-bundle",
       "version": "9.1.0900",
       "role": "lazy-archive"
@@ -305,6 +310,11 @@
       "name": "lsof-docs",
       "version": "0.1.0",
       "role": "lazy-archive"
+    },
+    {
+      "name": "man-index",
+      "version": "1.14.6",
+      "role": "lazy-file"
     },
     {
       "name": "attr-docs",

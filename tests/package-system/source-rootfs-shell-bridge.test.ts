@@ -29,9 +29,10 @@ import {
   loadScummvmFreewareCatalog,
   scummvmFreewareMenuEntries,
   SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES,
+  SUPERVISE_FUNCTION,
 } from "../../images/vfs/scripts/build-source-rootfs-shell-image";
 import { SHELL_LAZY_BINARY_SPECS, shellLazySpecDependency } from "../../images/vfs/lib/init/shell-binaries";
-import { SHELL_SESSION_PACKAGES, SHELL_SESSION_HELPERS } from "../../images/vfs/scripts/package-session-files";
+import { SHELL_SESSION_PACKAGES } from "../../images/vfs/scripts/package-session-files";
 import {
   NCURSES_TERMINFO_RUNTIME_FILE,
   SHELL_CA_BUNDLE,
@@ -336,9 +337,7 @@ function fixturePaths(root: string) {
     writeFileSync(artifact, `${spec.id} fixture`);
   }
   for (const name of SHELL_SESSION_PACKAGES) {
-    for (const artifact of ["sessions.json", ...SHELL_SESSION_HELPERS[name] ?? []]) {
-      writeFileSync(join(dependencyRoots.get(name)!, artifact), readFileSync(join(repoRoot, "packages/registry", name, artifact)));
-    }
+    writeFileSync(join(dependencyRoots.get(name)!, "sessions.json"), readFileSync(join(repoRoot, "packages/registry", name, "sessions.json")));
   }
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
     const prefix = `programs/${spec.dependency}/`;
@@ -526,7 +525,6 @@ describe("canonical source-rootfs shell", () => {
       "packages/registry/shell/eager-budget.json",
       "images/vfs/scripts/build-source-rootfs-shell-image.ts",
       "images/vfs/scripts/image-eager-budget.ts",
-      "images/vfs/runtime/game-import.py",
       "images/vfs/scripts/source-rootfs-shell-overlay.ts",
       "images/vfs/scripts/shell-lazy-archives.ts",
       "images/vfs/lib/init/shell-binaries.ts",
@@ -1030,17 +1028,37 @@ describe("canonical source-rootfs shell", () => {
         .match(/^run (\S+)$/m)![1]!;
       expect(fs.stat(handler).mode & 0o777, handler).toBe(0o755);
     }
-    expect(fs.stat("/usr/bin/game-play").mode & 0o777).toBe(0o755);
-    expect(fs.stat("/usr/libexec/kandelo/game-import.py").mode & 0o777).toBe(0o644);
-    expect(readVfsFile(fs, "/usr/libexec/kandelo/game-import.py")).toEqual(
-      new Uint8Array(readFileSync(join(repoRoot, "images/vfs/runtime/game-import.py"))),
-    );
+    // The game launchers and exchange handlers are lazy files their packages
+    // ship, fetched on first use; only the rules above are eager.
+    for (const [path, mode, uri] of [
+      ["/usr/bin/fbdoom", 0o755, "programs/fbdoom/fbdoom-wrapper"],
+      ["/usr/bin/doom-launch", 0o755, "programs/fbdoom/doom-launch"],
+      ["/usr/bin/doom-activity", 0o755, "programs/fbdoom/doom-activity"],
+      ["/usr/libexec/kandelo/doom-load-wad", 0o755, "programs/fbdoom/doom-load-wad"],
+      ["/usr/bin/quake", 0o755, "programs/tyrquake/quake-launch"],
+      ["/usr/bin/quake-data", 0o755, "programs/tyrquake/quake-data"],
+      ["/usr/bin/quake-activity", 0o755, "programs/tyrquake/quake-activity"],
+      ["/usr/libexec/kandelo/quake-load-pak", 0o755, "programs/tyrquake/quake-load-pak"],
+      ["/usr/bin/retro-run", 0o755, "programs/retro-emulators/bin/retro-run"],
+      ["/usr/libexec/kandelo/retro-load-rom", 0o755, "programs/retro-emulators/libexec/retro-load-rom"],
+      ["/usr/bin/game-play", 0o755, "programs/game-import/game-play"],
+      ["/usr/libexec/kandelo/game-import", 0o755, "programs/game-import/game-import"],
+      ["/usr/libexec/kandelo/game-import.py", 0o644, "programs/game-import/game-import.py"],
+    ] as const) {
+      expect(fs.isPathDeferred(path), path).toBe(true);
+      expect(fs.stat(path).mode & 0o777, path).toBe(mode);
+      expect(composed.files.find((file) => file.path === path)?.uri, path).toContain(uri);
+    }
     // Doom's wrapper seeds a missing user config with the full-width view
     // and execs the lazy engine, so the engine stays the display's owner.
-    const fbdoomWrapper = text(readVfsFile(fs, "/usr/bin/fbdoom"));
-    expect(fs.stat("/usr/bin/fbdoom").mode & 0o777).toBe(0o755);
+    const fbdoomWrapper = readFileSync(join(repoRoot, "packages/registry/fbdoom/fbdoom-wrapper"), "utf8");
     expect(fbdoomWrapper).toContain(`printf 'screenblocks 10\\n' > "$HOME/.fdoom.tar/default.cfg"`);
     expect(fbdoomWrapper).toContain('exec /usr/libexec/fbdoom "$@"');
+    // The DOOM and Quake wrappers carry a copy of the shell's supervisor.
+    for (const wrapper of ["fbdoom/doom-launch", "tyrquake/quake-launch"]) {
+      expect(readFileSync(join(repoRoot, "packages/registry", wrapper), "utf8"), wrapper)
+        .toContain(SUPERVISE_FUNCTION);
+    }
     // The desktops' launchers are eager scripts on PATH (the programs they
     // exec are the lazy files above), and wlcompositor's statically linked
     // libinput finds its device quirks at LIBINPUT_QUIRKS_DIR.
@@ -1157,7 +1175,7 @@ describe("canonical source-rootfs shell", () => {
     expect(resolveDemoInit(demo!, "doom")).toEqual({
       shellCommand: "/usr/bin/doom-launch",
     });
-    const doomLaunch = text(readVfsFile(fs, "/usr/bin/doom-launch"));
+    const doomLaunch = readFileSync(join(repoRoot, "packages/registry/fbdoom/doom-launch"), "utf8");
     expect(doomLaunch).toContain("wad=/usr/share/doom/doom1.wad");
     // The engine reads the keyboard from the terminal the supervisor saved
     // on fd 3, not the /dev/null a background command would get.

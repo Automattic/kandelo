@@ -1980,7 +1980,7 @@ a temporary one):
   loaded at start, so a game begins from its title screen or its own save;
   `retro-run ROM --state FILE` starts from a snapshot.
 
-`retro-run ROM` (eager, `/usr/bin/retro-run`) chooses the emulator from
+`retro-run ROM` (a lazy file, `/usr/bin/retro-run`) chooses the emulator from
 the ROM's own bytes, not its name: the iNES magic, the Mega Drive `SEGA`
 header, the Master System and Game Gear `TMR SEGA` header, or a SNES
 header checksum. A file that matches none of them is refused with a

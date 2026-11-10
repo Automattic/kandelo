@@ -26,6 +26,11 @@ echo "==> Staging man.zip tree..."
 cp "$MANDOC_DIR/mandoc.wasm" "$STAGING/bin/mandoc"
 chmod 755 "$STAGING/bin/mandoc"
 ln -s mandoc "$STAGING/bin/man"
+# mandoc is one program that acts on the name it runs as: the index search
+# front-ends (apropos, whatis) and the indexer (makewhatis) are the same binary.
+for name in apropos whatis makewhatis; do
+    ln -s mandoc "$STAGING/bin/$name"
+done
 printf 'manpath /usr/share/man\n' > "$STAGING/etc/man.conf"
 
 # Exactly one regular executable named bin/mandoc is required by the loader.

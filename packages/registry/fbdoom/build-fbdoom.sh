@@ -197,3 +197,6 @@ install_local_binary fbdoom "$OUT_BIN" fbdoom.wasm
 install_local_runtime_file fbdoom "$HERE/sessions.json" sessions.json
 
 install_local_runtime_file fbdoom "${HERE}/doom-activity" doom-activity
+install_local_runtime_file fbdoom "${HERE}/fbdoom-wrapper" fbdoom-wrapper
+install_local_runtime_file fbdoom "${HERE}/doom-launch" doom-launch
+install_local_runtime_file fbdoom "${HERE}/doom-load-wad" doom-load-wad

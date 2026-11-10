@@ -12,8 +12,6 @@ export const SHELL_SESSION_PACKAGES = ["fbdoom", "termchat", "tyrquake", "freeci
 
 export const SHELL_SESSION_IMAGE_PACKAGES = ["nginx-vfs", "nginx-php-vfs", "nginx-python-vfs", "wordpress", "lamp", "ruby-todo-vfs", "redis-vfs", "web-stack-vfs", "wordpress-family-vfs"] as const;
 
-export const SHELL_SESSION_HELPERS: Record<string, string[]> = { fbdoom: ["doom-activity"], tyrquake: ["quake-data", "quake-activity"] };
-
 export function installPackageSessionFiles(
   fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
@@ -24,11 +22,8 @@ export function installPackageSessionFiles(
   for (const name of SHELL_SESSION_PACKAGES) {
     // A partial shell carries only its selected packages' activities.
     if (!includesPackage(name)) continue;
-    for (const artifact of SHELL_SESSION_HELPERS[name] ?? []) {
-      const file = readPackageRuntimeFileContract(root, name, artifact);
-      ensureDirRecursive(fs, file.guestPath.slice(0, file.guestPath.lastIndexOf("/")));
-      writeVfsBinary(fs, file.guestPath, new Uint8Array(readFileSync(resolveArtifact(`programs/${file.mirrorPath}`, name))), file.mode);
-    }
+    // Activity helper programs (doom-activity, quake-data, ...) are lazy files
+    // in SHELL_LAZY_BINARY_SPECS; only the session manifest is eager.
     const contract = readPackageRuntimeFileContract(root, name, "sessions.json");
     const bytes = new Uint8Array(readFileSync(resolveArtifact(`programs/${contract.mirrorPath}`, name)));
     const manifest = parsePackageSessions(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
