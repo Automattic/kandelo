@@ -5,6 +5,7 @@
   (global $entries (export "entries") (mut i32) (i32.const 0))
   (tag $a (param i32))
   (tag $b (param i64 i32))
+  (tag $nested)
   (func $root (export "root") (param $mode i32) (result i32)
     (local $payload i32) (local $fork_result i32)
     global.get $entries i32.const 1 i32.add global.set $entries
@@ -38,6 +39,7 @@
       i32.wrap_i64 local.get $payload i32.add
     end
     local.set $payload
+    @NESTED_TRY@
     @AFTER_FORK@
     local.get $fork_result
     local.get $payload i32.add

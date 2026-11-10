@@ -551,6 +551,22 @@ from user handlers. Replay reconstructs the selected catch inside its original
 try; normal results bypass all capture tails. The dispatcher tracks these
 added labels when remapping source branches and handler destinations.
 
+A catch selection belongs to one dynamic entry of its try. Re-entering that
+try during ordinary execution retires its previous selector and retained
+exception recipe; entering a different try preserves the current selection.
+This matters for input loops using `setjmp`/`longjmp`: a later fork must resume
+the current loop iteration rather than repeatedly replaying an earlier jump.
+The frame format and program ABI are unchanged. Rebuild affected prepared
+programs with the corrected instrumenter through the normal package build.
+
+Nested re-entry fixtures keep two aliases to each of an outer and inner
+exception alive while their tries are re-entered. They capture after a catch,
+after ordinary re-entry, and after rethrowing an alias and re-entering again.
+Fresh-instance replay and live allocation-failure recovery check the exact
+catch selection, alias recipes, vector payloads, externref identity and call
+sequence on both pointer widths with shared and inline frame codecs.
+Successive fresh child generations also restore and recapture these aliases.
+
 Node component fixtures execute scalar `catch` and `catch_ref` ownership on
 both pointer widths, with shared and inline frame codecs, empty or multi-value
 try inputs, normal try results, and forks inside the try or after its handlers.

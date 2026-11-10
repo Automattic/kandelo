@@ -30,6 +30,7 @@ const examplesDir = join(repoRoot, "examples");
 const fixturesDir = join(__dirname, "fixtures");
 
 const C_TEST_FIXTURES = [
+  { src: join(examplesDir, "sleep-kernel-wait.c"), out: join(examplesDir, "sleep-kernel-wait.wasm"), forkInstrument: true },
   { src: join(fixturesDir, "offline-listener.c"), out: join(fixturesDir, "offline-listener.wasm") },
   {
     src: join(repoRoot, "programs/exec-caller.c"),
