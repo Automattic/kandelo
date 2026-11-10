@@ -189,6 +189,40 @@ open. The accidentally expanded Freeciv run also retains three direct-display
 failures for D1/V1/P1 investigation, rather than silently treating its
 unexecuted cases as passing.
 
+
+### R1 current-main validation checkpoint — 2026-11-10
+
+Sydney's authorized follow-up integrates pinned main `8161769ed9d2`
+(program 56 / host 6). Source ownership/lifecycle 267/267, source graphics
+2,353/2,353, prepared-product host 239/239 and frozen-program compatibility
+6/6 pass before the latest browser shutdown repair. The original desktop
+matrix completes 104/120, including all 15 Cage and 12 Sway cases. Twelve
+cursor fixtures omitted active primary scanout, two WebKit fixtures failed
+OPFS setup, and two archive-import cases report SDL video-driver failure;
+the Chromium archive case reproduces on main. Corrected private cursor
+checks pass 12/12; tracked final browser validation remains required.
+
+The combined browser-memory run is 17/18, with four mixed-machine cycles
+completed on Chromium and Firefox. WebKit retains a generic allocation
+cancellation during WordPress retirement. The owning browser factory now
+preserves the creator gate's private terminal-cancellation identity, while
+worker-termination failures stay diagnostic. The focused final source
+selection passes 125/125; full repeated-machine validation is pending.
+
+Actual Steel Sky Cage checks pass all three engines; the Sway checks and
+controls have mixed outcomes. A fixed two-case WebKit main control fails
+0/2, with the second reproducing the candidate's detached-byte allocation
+OOM, followed by a fatal kernel diagnostic. Its resource cause remains
+open; a main failure is not a green allowance. Rejected diagnostic-only
+baseline and short-copy variants do not change the delivered runtime.
+
+The maintainer's Firefox trial reports decent responsiveness and improved
+Steel Sky, with Cage blur accepted as subsequent work. No other gate is
+waived. All nine Node/browser benchmark comparisons, current normal-build
+validation and final R1 acceptance remain open; B2–B6/C1–C3 remain paused.
+The detailed current report and PR #1678 retain original failures and exact
+revision-specific results. No merge has been authorized.
+
 ### Maintainer-requested modest display, 2026-11-09
 
 The maintainer prefers a usable modest-resolution Wayland demo rather than
