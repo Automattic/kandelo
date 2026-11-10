@@ -49,23 +49,29 @@ may cause `main` and `develop` to diverge: reconcile main back into develop
 through a reviewed PR before resuming ancestry-checked daily promotion.
 Record the reason and any skipped validation with an emergency merge.
 
-The promotion App has not yet been identified or added. The current GitHub
-login cannot enumerate Automattic installations: the organization endpoint
-requires `admin:org`, and the user-installation endpoint requires App user
-authentication. Until a dedicated App is configured, only the named human
-account can update main through the update restriction; daily promotion is
-not operational. Do not substitute a personal token or blanket admin bypass
-for the dedicated promotion identity.
+## Manual promotion before automation
 
-Once the App is identified, install it with access limited to Kandelo and
-contents-write permission, arrange its credentials through private secret
-storage, and add its numeric App ID as an `Integration` bypass actor on the
-update rule. Grant no bypass on the deletion/history protections. The
-existing classic main protection also requires a PR (with admin enforcement
-off); configure an App-specific PR-requirement bypass for its direct
-fast-forward operation, or replace that protection deliberately. An update
-ruleset bypass alone does not bypass another rule or classic protection.
-Validate the App path before claiming automatic promotion is enabled.
+The selected first phase uses read-only daily validation followed by a human
+promotion. No GitHub App installation or automation credential is required.
+The report must identify the exact tested develop SHA, captured main SHA,
+all required job results and evidence URLs. After verifying the report,
+`brandonpayton` fast-forwards main to that tested SHA with ancestry checks
+and an explicit lease against the captured main SHA. The guarded command is
+in the policy proposed by [PR #1689](https://github.com/Automattic/kandelo/pull/1689).
+Do not substitute the latest develop tip or a squash/rebase merge.
+
+The live update restriction already permits this operator. Existing classic
+main protection requires PRs with admin enforcement off, so the named admin
+can perform the direct fast-forward. No branch was promoted to test this
+configuration, and no passing daily report exists yet. The writer rule does
+not itself verify tests; the human operator must inspect the full report.
+
+Automatic promotion is deferred. If it is wanted later, evaluate a write
+deploy key scoped to Kandelo, private credential storage, key rotation,
+existing deploy keys, the ruleset's deploy-key bypass scope, and interaction
+with classic PR protection. Retain the named human emergency bypass and the
+separate deletion/history protections. No App, deploy key, or personal token
+is created as part of this phase.
 
 ## Review decisions by workflow
 
@@ -134,7 +140,7 @@ and incomplete jobs cannot become successful validation.
 
 1. Land the branch policy and route change PRs to `develop`. Existing main
    rules prevent deletion and non-fast-forward updates; the new main update
-   rule admits only the named emergency actor until the App is added. Classic
+   rule admits the named human operator for normal and emergency promotion. Classic
    protection requires PRs but excludes admins. No daily tests are enforced.
 2. Implement a read-only daily candidate build/test workflow, scheduled from
    `main` with an explicit captured `develop` checkout. Skip the build only
@@ -142,20 +148,21 @@ and incomplete jobs cannot become successful validation.
 3. Validate the whole required inventory on a capable runner and retain
    commit-linked counts and logs. Measure whether separate jobs or runners
    are needed; the compiler acceptance lane alone has a six-hour timeout.
-4. Add a separate writer job that depends on every required check. Require
-   their actual results to be successful, recheck the captured main SHA and
-   fast-forward only to the tested candidate. Test no-change, failure,
-   missing/skipped job, cancellation, stale-main, divergent-history and
-   develop-advances-during-test cases in disposable repositories.
+4. Produce a report only when every required job actually succeeds. A human
+   verifies it and promotes the exact tested candidate using the captured
+   main SHA and ancestry guards. Test no-change, failure, missing/skipped job,
+   cancellation, stale-main, divergent-history and develop-advances cases
+   before relying on the report for routine promotion.
 5. Install the reviewed scheduler on `main` as an explicit bootstrap step:
    GitHub schedules use the default branch, so YAML present only on develop
    cannot start the first daily promotion. Record bootstrap validation;
    never infer it from an untested develop workflow or bypass the test gate
    to promote a whole batch.
-6. Review branch enforcement and writer credentials, then enable only the
+6. Review branch enforcement and the manual promotion procedure, then enable only the
    replacement workflows. Keep all legacy entries disabled. Stable artifact
    publication is a subsequent consumer of the promoted SHA, never a
-   prerequisite write side effect of testing it.
+   prerequisite write side effect of testing it. Automatic promotion and
+   deploy-key credentials remain a separate later decision.
 
 No source/runtime tests were run for this review and Dependabot routing
 change. It does not establish daily runner readiness, a passing full suite,
