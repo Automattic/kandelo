@@ -19,14 +19,16 @@ helper introduces no std::string/vector allocations into the engine entrypath.
 The metadata build tool reuses original Node C++ classification instead of
 replicating source-kind policy in Python or JavaScript.
 
-This component is currently unintegrated and uncompiled against SpiderMonkey.
+The source recipe now registers this component in the real Mozilla shell
+build. It remains uncompiled against SpiderMonkey and inactive in the runtime.
 A host-native registry composition check does not validate these JSAPI calls,
 source line offsets, error propagation, realm identity, GC or guest startup.
 The source-derived API/ownership review is in
 `tests/nodejs/upstream/compiler-api-contracts.md`.
 
-Package integration still needs actual declared build inputs/tools, generated
-include ownership, compilation/link wiring, real per-context/per-realm state,
+The recipe declares the preparation helper, inputs/tools and Mozilla source
+list. Actual compilation/link verification is pending. Runtime integration
+still needs real per-context/per-realm state,
 private symbols, binding admission, structured stack hooks, job lifecycle and
 the startup binding closure. The existing adapter/bootstrap remains active.
 Do not wire placeholder bindings merely to advance bootstrap. Full product

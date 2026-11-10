@@ -93,7 +93,7 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-for required_tool in python3 rustc cargo cbindgen node curl make; do
+for required_tool in python3 rustc cargo cbindgen node curl make clang++; do
     if ! command -v "$required_tool" >/dev/null 2>&1; then
         echo "ERROR: required host tool '$required_tool' not found in PATH." >&2
         exit 1
@@ -380,6 +380,11 @@ PROBE
     fi
     rm -rf "$PREFLIGHT_DIR"
 fi
+# Compile the new upstream builtin compiler in the real Mozilla shell build.
+# It remains inactive until the genuine per-realm/native binding owner exists.
+bash "$SCRIPT_DIR/node-upstream/prepare-build.sh" \
+    "$REPO_ROOT" "$SRC_DIR" "$OBJ_DIR" "$MACOS_SDK_DIR"
+
 export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
 export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
 export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a -Wl,-z,stack-size=16777216"

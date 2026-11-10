@@ -47,5 +47,5 @@ compared to the source manifest and independently reviewed source registration;
 a successful process exit by itself is insufficient.
 
 The SpiderMonkey-specific compiler consumer is under
-`packages/registry/spidermonkey/node-upstream/`. It has not been wired into the
-package build, compiled against the guest engine or exercised as a guest.
+`packages/registry/spidermonkey/node-upstream/`. The source recipe now stages/registers it in the Mozilla shell build.
+It has not been compiled against the guest engine or exercised as a guest.

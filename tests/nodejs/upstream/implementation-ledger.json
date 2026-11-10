@@ -22,18 +22,18 @@
       "area": "immutable native source registry and original C++ wrapper metadata",
       "sourceStatus": "implemented, host-native composition verified",
       "evidence": "source-registry-composition.json",
-      "remaining": "declare package build inputs/tools and wire generated include into actual guest engine"
+      "remaining": "source recipe preparation and Mozilla references now wired; actual guest package build remains pending"
     },
     {
       "area": "SpiderMonkey builtin function/module compiler",
-      "sourceStatus": "implemented source only, uncompiled, unintegrated",
+      "sourceStatus": "implemented and registered in source recipe; uncompiled and inactive",
       "evidence": "packages/registry/spidermonkey/node-upstream/builtin-compiler.cpp",
-      "remaining": "actual engine build; realm/rooting/source position/error/GC checks; internalBinding(builtins) connection"
+      "remaining": "real generated engine headers and actual TU build; realm/rooting/source-position/error/GC validation; builtin-binding connection"
     },
     {
       "area": "per-context/per-realm state and shared binding loader",
       "sourceStatus": "not implemented in new architecture",
-      "remaining": "real private keys and process/primordial state; execute complete upstream per-context scripts and realm bootstrap"
+      "remaining": "genuine Node-compatible hidden key semantics first; then canonical GC-owned per-context state, shared identities and unchanged script calls"
     },
     {
       "area": "structured Error stack/CallSite/limit contracts",
@@ -114,5 +114,44 @@
     "frozenCheckoutUnchanged": true,
     "bunAutoUnpackingBranch": "brandonpayton/bun-auto-unpacking",
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
+  },
+  "buildIntegration": {
+    "packageRevision": 16,
+    "sourceInputsAndHostToolDeclared": true,
+    "mozillaSourceListPatched": true,
+    "actualPreparationHelperChecked": true,
+    "engineTranslationUnitsCompiled": false,
+    "packageBuilt": false,
+    "evidence": "engine-build-wiring-check.json"
+  },
+  "startupPrerequisites": {
+    "nodePrivateKeySemantics": {
+      "classification": "implementation gap in owning guest engine, not an approved platform exclusion",
+      "sourceComparison": "private-key-semantics.md",
+      "differences": [
+        "own-only inheritance",
+        "new private writes on nonextensible native objects",
+        "missing private proxy reads",
+        "private proxy deletion",
+        "private property default descriptors"
+      ],
+      "cloneMarkerDoesNotEstablishEquivalence": true
+    },
+    "perContextState": {
+      "sourceContracts": "per-context-state-contracts.md",
+      "privateIdentities": 22,
+      "ordinarySymbolIdentities": 27,
+      "initializerImplemented": false
+    }
+  },
+  "nativeDifferentialControls": {
+    "privateKeys": {
+      "reference": "Node26.13.0Darwinarm64",
+      "cases": 11,
+      "failures": 0,
+      "evidence": "private-key-native-reference.json",
+      "guestRun": false,
+      "limits": "native reference only; missing native initialization/cross-realm/GC cases remain"
+    }
   }
 }

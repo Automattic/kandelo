@@ -4,6 +4,10 @@ inputs = [
   "packages/registry/spidermonkey/node-compat/adapter.js",
   "packages/registry/spidermonkey/node-compat/suffix.js",
   "packages/registry/spidermonkey/patches",
+  "packages/registry/spidermonkey/node-upstream",
+  "third_party/nodejs",
+  "scripts/generate-nodejs-source-registry.py",
+  "scripts/nodejs-builtin-metadata.cpp",
   "packages/registry/node-compat/bootstrap.js",
   "scripts/package-build-roots.sh",
   "scripts/install-local-binary.sh",
@@ -12,4 +16,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 15
+revision    = 16

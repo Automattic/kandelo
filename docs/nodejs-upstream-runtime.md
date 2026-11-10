@@ -161,3 +161,52 @@ identified-artifact evidence.
 per-host startup/conformance. Next integrate genuine per-realm state and
 binding ownership, then the eager startup closure. The full backend catalog
 is incomplete. No full product or successor-ABI build ran.
+
+## Real engine build wiring and hidden-key prerequisite
+
+The source recipe now includes both native compiler/registry translation units
+in Mozilla's non-unified shell source list, declares their source/host-tool
+inputs and prepares their generated include in the recipe-owned source/object
+roots. Package revision 16 invalidates earlier engine builds. This does not
+activate upstream Node or turn an older engine artifact into evidence for the
+new code. No actual engine translation unit or guest package was compiled.
+
+The focused preparation check ran the actual recipe helper, built the host-only
+original-Node metadata producer using the declared SDK, verified all four staged
+C++/header copies and generated the 443-source include. Shell/TOML/Python syntax
+checks passed. The new Mozilla patch applied without fuzz against the exact
+verified source archive's moz.build; no earlier main patch modifies that file.
+Exact identities and scope are in `engine-build-wiring-check.json`.
+
+The next actual-header check requires a clean-branch checkout, normal wasm32
+SDK-core provisioning and Mozilla configure/export generation, followed by the
+selected native objects or SpiderMonkey package build. A full product rebuild
+is not required for that check and remains deferred. Existing cached Wasm files
+contain neither the new source nor usable generated headers.
+
+Source investigation also found that V8's internal private keys and
+SpiderMonkey's class-private names differ in observable operations: own-only
+inheritance, new writes on nonextensible objects, missing proxy reads, private
+proxy deletion and default enumerability. Existing clone-marker code does not
+establish the required behavior. First ordinary proxy writes reject in both
+engines; native initialization is a distinct operation and must not be weakened.
+The recommended owning design is a distinct embedding-private engine identity
+and operation contract that leaves ordinary Symbols and class #private
+semantics intact. This is an implementation prerequisite, not an approved
+engine-boundary exclusion or permission to rewrite upstream JavaScript.
+
+See `private-key-semantics.md` and `per-context-state-contracts.md`. The native
+owner must share 22 private and 27 ordinary symbol identities per guest runtime,
+create fresh per-context table objects with exact descriptors, preserve the
+original three-script initialization order, and keep failure terminal. A
+GC-traced canonical state per global is required; a publicly reflected Symbol
+or self-rooting native cycle is insufficient. None of this initializer or
+hidden-key behavior is runtime-validated yet.
+
+A subsequent focused native control confirmed eleven covered hidden-key
+expectations against the exact pinned Node26.13.0 Darwin arm64 binary,
+including both public untransferable-marker cases. Its flags/hash/outcomes and
+coverage limits are in `private-key-native-reference.json`; the unchanged
+control source is `private-key-native-controls.cjs`. These are reference
+results only. No guest engine, browser host or current-candidate startup was
+run, and the missing private-key implementation is not counted as supported.
