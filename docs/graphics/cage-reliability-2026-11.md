@@ -1112,6 +1112,17 @@ Neither observation diagnoses or repairs the original failure. Earlier
 experimental Steel Sky unpacking write errors also remain recorded; they did
 not recur in the current four development-image launches.
 
+An additional strict native-only run on pinned Bun 1.3.3 failed 2/13 cases:
+its native comparison was unavailable and its memory64 constructor rejected
+BigInt limits. Standalone probes containing no Kandelo code confirm that this
+Bun version does not validate multi-memory or memory64 modules; Node 24.15.0
+validates and instantiates both. The existing owned-array/JavaScript fallback
+remains the supported path there. A new explicit unavailable-capability test
+preserves stale canonical bytes and concurrent stores. The separate Node
+native/coherence/fallback selection passes 14/14; the Bun coherence/fallback
+selection passes 9/9. These different scopes do not erase the original strict
+native-probe failure or claim native execution on Bun.
+
 Raw commands, exact case reports, source/image/HTTP receipts and inspected
 screenshots are retained under `.context/cage-coherence-20261109/`. Canonical
 product checks, all nine enabled benchmark suites on both hosts, full current

@@ -187,6 +187,7 @@ host/test/gallery-descriptor.test.ts	source-only
 host/test/gbm-coherence-cache.test.ts	source-only
 host/test/gbm-cpu-map.test.ts	prepared-product
 host/test/gbm-device-retirement.test.ts	prepared-product
+host/test/gbm-fallback.test.ts	source-only
 host/test/gbm-file-aliases.test.ts	prepared-product
 host/test/gbm-fork-ownership.test.ts	prepared-product
 host/test/gbm-import-lifetime.test.ts	prepared-product
