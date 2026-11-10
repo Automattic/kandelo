@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use wasm_posix_shared::abi;
-use wasm_posix_shared::program_extensions::{RESERVED_MODULE_PREFIX, stack_v1};
+use wasm_posix_shared::program_extensions::{
+    is_extension_import_name, RESERVED_MODULE_PREFIX,
+};
 use wasmparser::{FuncType, Parser, Payload, TypeRef};
 
 type KernelContract =
@@ -63,7 +65,7 @@ fn imports(bytes: &[u8]) -> Result<Imports, String> {
     }
     if !facts.relocatable
         && facts.entries.iter().any(|(module, name, _)| {
-            module.starts_with(RESERVED_MODULE_PREFIX) || name == stack_v1::IMPORT
+            module.starts_with(RESERVED_MODULE_PREFIX) || is_extension_import_name(name)
         })
     {
         // Publication and runtime loading must use the same typed extension
@@ -315,6 +317,7 @@ fn startup_failures(facts: &Imports) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_posix_shared::program_extensions::stack_v1;
 
     #[test]
     fn published_programs_use_the_same_versioned_extension_policy_as_runtime_loading() {

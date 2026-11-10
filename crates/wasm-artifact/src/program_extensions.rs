@@ -1,22 +1,29 @@
 //! Admission for interfaces explicitly required by versioned Wasm imports.
 use crate::facts::{ArtifactFacts, DescriptorKind};
 use alloc::{format, string::String, vec::Vec};
-use wasm_posix_program_abi::program_extensions::{RESERVED_MODULE_PREFIX, stack_v1 as stack};
+use wasm_posix_program_abi::program_extensions::{
+    extension_import, is_extension_import_name, klog_v1 as klog, stack_v1 as stack,
+    RESERVED_MODULE_PREFIX,
+};
 
-pub const IMPLEMENTED: &[&str] = &[stack::MODULE];
+pub const IMPLEMENTED: &[&str] = &[stack::MODULE, klog::MODULE];
 
 pub fn describe_failures(facts: &ArtifactFacts, supported: &[&str]) -> Vec<String> {
     let mut failures = Vec::new();
     for import in &facts.import_descriptors {
-        if !import.module.starts_with(RESERVED_MODULE_PREFIX) && import.name != stack::IMPORT {
+        if !import.module.starts_with(RESERVED_MODULE_PREFIX)
+            && !is_extension_import_name(&import.name)
+        {
             continue;
         }
         let identity = format!("{}.{}", import.module, import.name);
-        if import.module != stack::MODULE || !supported.contains(&import.module.as_str()) {
+        let Some(expected_name) = extension_import(&import.module)
+            .filter(|_| supported.contains(&import.module.as_str()))
+        else {
             failures.push(format!("unsupported required program extension {identity}"));
             continue;
-        }
-        if import.name != stack::IMPORT || import.kind != DescriptorKind::Function {
+        };
+        if import.name != expected_name || import.kind != DescriptorKind::Function {
             failures.push(format!(
                 "unsupported import in program extension {identity}"
             ));
@@ -57,9 +64,12 @@ mod tests {
     fn extensions_are_explicit_and_do_not_change_base_admission() {
         let plain = read_artifact_facts(&wat::parse_str("(module)").unwrap()).unwrap();
         assert!(describe_failures(&plain, &[]).is_empty());
-        for wide in [false, true] {
+        for ((module, name), wide) in [(stack::MODULE, stack::IMPORT), (klog::MODULE, klog::IMPORT)]
+            .into_iter()
+            .flat_map(|extension| [(extension, false), (extension, true)])
+        {
             let (pointer, memory) = if wide { ("i64", "i64") } else { ("i32", "") };
-            let bytes = wat::parse_str(format!(r#"(module (import "{}" "{}" (func (param {pointer} i32 i32) (result i32))) (memory {memory} 1))"#, stack::MODULE, stack::IMPORT)).unwrap();
+            let bytes = wat::parse_str(format!(r#"(module (import "{module}" "{name}" (func (param {pointer} i32 i32) (result i32))) (memory {memory} 1))"#)).unwrap();
             let facts = read_artifact_facts(&bytes).unwrap();
             assert!(describe_failures(&facts, IMPLEMENTED).is_empty());
             assert!(!describe_failures(&facts, &[]).is_empty());
@@ -79,6 +89,16 @@ mod tests {
                 "func (param i32 i32 i32) (result i32)",
             ),
             (stack::MODULE, "unknown", "func"),
+            (
+                klog::MODULE,
+                stack::IMPORT,
+                "func (param i32 i32 i32) (result i32)",
+            ),
+            (
+                "kandelo.klog.v2",
+                klog::IMPORT,
+                "func (param i32 i32 i32) (result i32)",
+            ),
             (stack::MODULE, stack::IMPORT, "global i32"),
             (
                 stack::MODULE,

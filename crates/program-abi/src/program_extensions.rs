@@ -66,3 +66,45 @@ pub mod stack_v1 {
         ("BUFFER_TOO_SMALL", BUFFER_TOO_SMALL),
     ];
 }
+
+/// The kernel message ring, read the way `klogctl(type, buf, len)` reads it.
+///
+/// WHY an extension and not a base syscall: musl's `klogctl` issues
+/// `SYS_syslog` (304), which the frozen base program surface does not
+/// declare, and adding it would change the digest every supported program
+/// carries. A program that calls `klogctl` imports this instead, so it is
+/// refused on a host that cannot serve it rather than handed a silent answer,
+/// and programs that never call it keep their base identity.
+pub mod klog_v1 {
+    pub const MODULE: &str = "kandelo.klog.v1";
+    pub const IMPORT: &str = "__kandelo_klogctl_v1";
+    /// (buffer: pointer, capacity: u32, action: i32) -> i32. The arguments are
+    /// `klogctl`'s, reordered to the extension family's (pointer, i32, i32)
+    /// shape. A non-negative return is `klogctl`'s result; an error is a
+    /// negative errno and does not set the caller's `errno`.
+    pub const ERRORS: &[(&str, i32)] = &[
+        ("INVALID_ARGUMENT", -22),
+        ("INVALID_ADDRESS", -14),
+        ("PERMISSION_DENIED", -1),
+    ];
+}
+
+/// Every implemented extension, by module and its single function import.
+/// Each has the signature `(pointer, i32, i32) -> i32`.
+pub const EXTENSIONS: &[(&str, &str)] = &[
+    (stack_v1::MODULE, stack_v1::IMPORT),
+    (klog_v1::MODULE, klog_v1::IMPORT),
+];
+
+/// The function import a known extension module supplies.
+pub fn extension_import(module: &str) -> Option<&'static str> {
+    EXTENSIONS
+        .iter()
+        .find(|(candidate, _)| *candidate == module)
+        .map(|(_, import)| *import)
+}
+
+/// Whether a name is one of the extension functions, imported from any module.
+pub fn is_extension_import_name(name: &str) -> bool {
+    EXTENSIONS.iter().any(|(_, import)| *import == name)
+}

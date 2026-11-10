@@ -59,6 +59,7 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  EXTENSION_REQUEST_KLOG_V1,
   HOST_INTERCEPTED_SYSCALLS,
   POSIX_ARG_MAX_BYTES,
   PROCESS_FORK_MODE_FORK,
@@ -144,7 +145,13 @@ import { ForkHostImportWorkerRuntime } from "./fork-host-import-runtime";
 import { trapProcessWorker } from "./fork-worker-import-exceptions";
 import { createHeapSafepointImport } from "./heap-safepoint";
 import { createStackCaptureImport } from "./wasm-stack-capture";
-import { STACK_MODULE, STACK_IMPORT } from "./generated/program-extensions";
+import {
+  KLOG_IMPORT,
+  KLOG_INVALID_ARGUMENT,
+  KLOG_MODULE,
+  STACK_IMPORT,
+  STACK_MODULE,
+} from "./generated/program-extensions";
 import { waitForChannelCompletion } from "./channel-completion-wait";
 import {
   ForkImportedGlobalCapture,
@@ -1166,11 +1173,27 @@ export function buildDlopenImports(
   let linker: DynamicLinker | null = null;
   const loadedLibraries = new Map<string, LoadedSharedLibrary>();
   let instantiatingModules = 0;
-  const extensionImports: WebAssembly.Imports = stackProgramBytes === undefined ? {} : {
-    [STACK_MODULE]: {
-      [STACK_IMPORT]: createStackCaptureImport(memory, ptrWidth, stackProgramBytes,
-        () => loadedLibraries.size === 0 && instantiatingModules === 0),
-    },
+  // `kandelo.klog.v1`: the kernel owns the message ring, so the import is a
+  // request on this worker's own channel rather than host logic. The kernel
+  // stages `buffer` with the request's kernel-host descriptor exactly as it
+  // stages a syscall's, so no bytes pass through here.
+  const klogImport = (buffer: number | bigint, capacity: number, action: number): number => {
+    if (capacity < 0) return KLOG_INVALID_ARGUMENT;
+    const { result, errno } = invokeChannelSyscall(EXTENSION_REQUEST_KLOG_V1, [
+      action,
+      buffer,
+      capacity,
+    ]);
+    return errno !== 0 ? -errno : result;
+  };
+  const extensionImports: WebAssembly.Imports = {
+    [KLOG_MODULE]: { [KLOG_IMPORT]: klogImport },
+    ...(stackProgramBytes === undefined ? {} : {
+      [STACK_MODULE]: {
+        [STACK_IMPORT]: createStackCaptureImport(memory, ptrWidth, stackProgramBytes,
+          () => loadedLibraries.size === 0 && instantiatingModules === 0),
+      },
+    }),
   };
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();

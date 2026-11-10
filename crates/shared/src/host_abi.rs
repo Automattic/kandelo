@@ -251,6 +251,44 @@ macro_rules! entry {
     };
 }
 
+/// Pointer argument descriptors for kernel requests that serve a program
+/// extension (`crate::extension_requests`). They stage exactly like
+/// [`SYSCALL_ARG_DESCRIPTORS`], but they are a kernel-host contract rather
+/// than base program surface: no program's libc marshals these numbers, the
+/// process worker issues them on the program's behalf.
+pub const EXTENSION_REQUEST_DESCRIPTORS: &[SyscallArgDescriptor] = &[
+    entry!(
+        // klogctl(action, buf, len). The size and clear actions take no buffer
+        // at all, so the pointer is nullable; the kernel decides from the
+        // action whether a buffer is needed, permitted, or neither. The return
+        // value is a byte count for the read actions but a ring-size count for
+        // the size actions, which write nothing, so the copy-back bound is the
+        // ring size. The kernel refuses a non-empty buffer for the actions
+        // that produce no bytes, so a claimed transfer never exceeds the
+        // staged capacity.
+        crate::extension_requests::KLOG_V1,
+        [desc!(1, Out, arg!(2), nullable)
+            .with_copy_out_return_value(
+                1,
+                crate::extension_requests::KMSG_CAPACITY_BYTES as u32,
+            )]
+    ),
+];
+
+/// The descriptor entry for a channel request: a base syscall first, then an
+/// extension request. The two number spaces are disjoint (checked in tests).
+pub fn request_arg_descriptor(number: u32) -> Option<&'static SyscallArgDescriptor> {
+    SYSCALL_ARG_DESCRIPTORS
+        .binary_search_by_key(&number, |entry| entry.syscall_number)
+        .ok()
+        .map(|index| &SYSCALL_ARG_DESCRIPTORS[index])
+        .or_else(|| {
+            EXTENSION_REQUEST_DESCRIPTORS
+                .iter()
+                .find(|entry| entry.syscall_number == number)
+        })
+}
+
 const WASM_TIMESPEC_SIZE: u32 = size_of::<WasmTimespec>() as u32;
 
 const RLIMIT_SIZE: u32 = 16;
@@ -1238,6 +1276,35 @@ mod tests {
     use self::std::vec::Vec;
     use super::*;
     use crate::channel_scalar::{self, ChannelScalarKind};
+
+    #[test]
+    fn extension_requests_never_shadow_a_base_syscall() {
+        // A request number that a base syscall also used would make the
+        // extension reachable without its import, and the base syscall's
+        // descriptor would silently govern the extension's buffer.
+        for entry in EXTENSION_REQUEST_DESCRIPTORS {
+            assert!(
+                SYSCALL_ARG_DESCRIPTORS
+                    .iter()
+                    .all(|base| base.syscall_number != entry.syscall_number),
+                "extension request {} reuses a base descriptor",
+                entry.syscall_number,
+            );
+            assert!(
+                crate::Syscall::from_u32(entry.syscall_number).is_none()
+                    && crate::abi::extended_syscalls::SYSCALLS
+                        .iter()
+                        .all(|base| base.number != entry.syscall_number)
+                    && entry.syscall_number != crate::abi::host_intercepted::SYS_SPAWN,
+                "extension request {} reuses a base syscall number",
+                entry.syscall_number,
+            );
+            assert_eq!(
+                request_arg_descriptor(entry.syscall_number).map(|found| found.syscall_number),
+                Some(entry.syscall_number),
+            );
+        }
+    }
 
     #[test]
     fn syscall_arg_descriptors_are_sorted_and_unique() {

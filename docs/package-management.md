@@ -1916,7 +1916,7 @@ The contract:
 - The workspace is mounted read-write at `/build` and must be a copy under
   `WASM_POSIX_DEP_WORK_DIR`, never the checkout. `--input` mounts are
   read-only. Neither may sit under a path the in-kernel tmpfs owns (`/tmp`,
-  `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`); the
+  `/var/tmp`, `/var/run`, `/home/maker`, `/root`, `/srv`); the
   runner refuses them.
 - The command runs as root with an exact environment: `PATH=/usr/bin:/bin`,
   `HOME=/build/.home`, `TMPDIR=/build/.tmp`, `LC_ALL=C`, `TZ=UTC0`,

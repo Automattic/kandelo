@@ -45,6 +45,24 @@
         "VERSION": 1,
         "VERSION_OFFSET": 4
       }
+    },
+    {
+      "errors": {
+        "INVALID_ADDRESS": -14,
+        "INVALID_ARGUMENT": -22,
+        "PERMISSION_DENIED": -1
+      },
+      "kind": "function",
+      "module": "kandelo.klog.v1",
+      "name": "__kandelo_klogctl_v1",
+      "params": [
+        "pointer",
+        "i32",
+        "i32"
+      ],
+      "results": [
+        "i32"
+      ]
     }
   ],
   "format": 1,

@@ -6,8 +6,11 @@ import { installPackageSessionFiles } from "./package-session-files";
 import { registerShellRustSdkManifest } from "./shell-rust-sdk-manifest";
 import { imageFileStat, registerResolvedProgramOriginal, type ProgramOriginalImageOptions } from "./program-originals";
 import { symlink } from "../../../host/src/vfs/image-helpers";
+import { ensureDirRecursive, writeVfsFile } from "./vfs-image-helpers";
 import {
+  SHELL_INIT_PATH,
   SHELL_LAZY_BINARY_SPECS,
+  SHELL_SYSLOGD_PATH,
   shellLazyPlaceholderUrl,
   shellLazySpecDependency,
   shellLazySpecMode,
@@ -41,6 +44,38 @@ export function populateSourceRootfsShellOverlay(
   // /usr/share/terminfo on every run, so the shared database must be present
   // from boot rather than fetched lazily like the archives below.
   populateTerminfoDatabase(fs, resolveArtifact);
+
+  // The image's init. /sbin because starting the machine is boot
+  // administration, alongside dinit and kandelo-init.
+  //
+  // This image has no supervisor, so the daemon is started without -F and
+  // daemonizes itself, which keeps it alive past the exec below. Userspace
+  // logging stays optional: a machine built without sysklogd has no daemon,
+  // the test keeps the boot going, and syslog(3) silently drops messages as
+  // POSIX says it must. A daemon that fails to start is reported rather than
+  // allowed to stop the boot -- a machine the user cannot log into would be a
+  // far worse failure than one that is not logging.
+  ensureDirRecursive(fs, "/sbin");
+  writeVfsFile(
+    fs,
+    SHELL_INIT_PATH,
+    [
+      "#!/bin/sh",
+      "set -eu",
+      // The pidfile makes this safe to run more than once: sysklogd unlinks
+      // /dev/log before binding, so a second daemon would steal the socket
+      // and orphan the first. /run is a fresh tmpfs every boot, so a stale
+      // pidfile cannot survive a restart and lock logging out.
+      `if [ -x ${SHELL_SYSLOGD_PATH} ] && [ ! -e /run/syslogd.pid ]; then`,
+      // -s: no remote senders. Without it syslogd opens *:514 for peers a
+      // browser machine does not have.
+      `  ${SHELL_SYSLOGD_PATH} -s || echo 'kandelo: the system log daemon failed to start' >&2`,
+      "fi",
+      "exec /bin/login -p -f maker",
+      "",
+    ].join("\n"),
+    0o755,
+  );
 
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     const dependency = shellLazySpecDependency(spec);

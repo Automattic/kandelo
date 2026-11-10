@@ -24,6 +24,7 @@ inputs = [
   "packages/registry/shell/eager-budget.json",
   "packages/registry/shell/scummvm-freeware-games.json",
   "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+  "images/vfs/scripts/shell-selection.ts",
   "images/vfs/scripts/image-eager-budget.ts",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
   "images/vfs/scripts/program-originals.ts",

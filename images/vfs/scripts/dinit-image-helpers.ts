@@ -183,7 +183,9 @@ export interface DinitService {
   restartDelay?: number;
   /** Seconds before dinit cancels startup; 0 disables dinit's start timeout. */
   startTimeout?: number;
-  /** Where to log stdout/stderr (default: /var/log/<name>.log). */
+  /** Where to log stdout/stderr. Omitted by default, which is dinit's NONE
+   *  log type: service output goes to /dev/null. Set it explicitly to keep
+   *  a service's output (typically a path under /var/log). */
   logfile?: string;
   /** Working directory for the command. */
   workingDir?: string;
@@ -237,7 +239,7 @@ function renderDinitEnvFile(env: Readonly<Record<string, string>>): string {
  * is a `key = value` line; multiple `depends-on` lines for multi-dep
  * services.
  */
-function renderService(svc: DinitService): string {
+export function renderService(svc: DinitService): string {
   const lines: string[] = [];
   lines.push(`type = ${svc.type ?? "process"}`);
   if (svc.command) lines.push(`command = ${svc.command}`);
@@ -427,6 +429,69 @@ function shellSingleQuote(value: string): string {
  * ["/sbin/dinit", "--container", "nginx"].
  * With boot=false, demos must pass the target service name explicitly.
  */
+/** Options for {@link addSyslogService}. */
+export interface SyslogServiceOptions {
+  /**
+   * Exact staged `syslogd.wasm` bytes. Required rather than resolved here:
+   * an image must not pick up a daemon binary ambiently, for the same reason
+   * {@link AddDinitInitOptions.binaries} exists.
+   */
+  binary: Uint8Array;
+}
+
+/**
+ * Stage sysklogd's `syslogd` and return the dinit service that supervises it.
+ *
+ * Logging is optional per image. A product that calls this gets a daemon
+ * bound to `/dev/log`, so `syslog(3)` from any process reaches
+ * `/var/log/messages`; a product that does not gets no `/dev/log` receiver,
+ * and `syslog(3)` still succeeds silently because POSIX gives it no way to
+ * report a failure. `dmesg` and the kernel ring behind it work either way --
+ * they are kernel surfaces, not daemon ones.
+ *
+ * The caller adds the returned service to {@link addDinitInit}'s list. Order
+ * matters for anything that logs early: a supervisor starts services in
+ * parallel, so a service whose first messages matter needs
+ * `waitsFor: ["syslogd"]`, which is what `installServiceActivities` does for
+ * every activity.
+ *
+ * Configuration is NOT written here. `/etc/syslog.conf` comes from the image
+ * (the rootfs declares it in `MANIFEST`), and that is deliberately the only
+ * copy: rotation is set there, a user can read and change it inside the
+ * machine, and two generators for one file would drift. This refuses an image
+ * that has no config rather than quietly supplying a second one, because a
+ * daemon with no rules writes nothing and reports nothing.
+ */
+export function addSyslogService(
+  fs: VfsImageFilesystem,
+  opts: SyslogServiceOptions,
+): DinitService {
+  if (!(opts.binary instanceof Uint8Array) || opts.binary.byteLength === 0) {
+    throw new Error("syslogd requires exact staged package bytes");
+  }
+  // Loud, because the alternative is a daemon that starts and collects
+  // nothing.
+  if (residentRegularFile(fs, "/etc/syslog.conf") === "missing") {
+    throw new Error(
+      "an image that supervises syslogd must carry /etc/syslog.conf; the" +
+        " rootfs declares it in MANIFEST",
+    );
+  }
+
+  // /usr/sbin: a service daemon, not boot or recovery administration. dinit
+  // itself is the /sbin case; see docs/filesystem-layout.md.
+  ensureDirRecursive(fs, "/usr/sbin");
+  writeVfsBinary(fs, "/usr/sbin/syslogd", opts.binary, 0o755);
+  ensureDirRecursive(fs, "/var/log");
+  fs.chmod("/var/log", 0o755);
+
+  return {
+    name: "syslogd",
+    command: "/usr/sbin/syslogd -F -s",
+    restart: true,
+  };
+}
+
 export function addDinitInit(
   fs: VfsImageFilesystem,
   services: DinitService[],

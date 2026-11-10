@@ -102,11 +102,6 @@ wasm = "locale.wasm"
 fork_instrumentation = "disabled"
 
 [[outputs]]
-name = "logger"
-wasm = "logger.wasm"
-fork_instrumentation = "disabled"
-
-[[outputs]]
 name = "man"
 wasm = "man.wasm"
 fork_instrumentation = "disabled"

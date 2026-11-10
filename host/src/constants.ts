@@ -1,5 +1,5 @@
-import { describeProgramExtensionFailures } from "./program-extensions";
-import { RESERVED_MODULE_PREFIX, STACK_IMPORT } from "./generated/program-extensions";
+import { describeProgramExtensionFailures, isProgramExtensionImportName } from "./program-extensions";
+import { RESERVED_MODULE_PREFIX } from "./generated/program-extensions";
 import {
   ABI_VERSION,
   PROCESS_MEMORY_DEFAULT_MAX_PAGES,
@@ -2587,7 +2587,7 @@ export function describeWasmArtifactPolicyFailures(
 
   const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exports.has(name));
   const importNames = readWasmImportNames(programBytes);
-  if (importNames.some(name => name.startsWith(RESERVED_MODULE_PREFIX) || name.endsWith(`.${STACK_IMPORT}`))) {
+  if (importNames.some(name => name.startsWith(RESERVED_MODULE_PREFIX) || isProgramExtensionImportName(name.slice(name.lastIndexOf(".") + 1)))) {
     try {
       const facts = readWasmForkArtifactFacts(programBytes);
       failures.push(...describeProgramExtensionFailures(

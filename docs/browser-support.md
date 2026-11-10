@@ -282,6 +282,63 @@ pipe pair.
   RAM-only scratch mounts. `/var/log` and `/var/tmp` also use the persistent
   rootfs; `/tmp`, `/run`, and `/dev/shm` remain volatile. `/var/run` links to
   `/run`. Memory-only computers lose all changes on shutdown.
+- A durable `/var/log` includes the service logs images already write there:
+  the dinit logs for nginx, MariaDB, PHP-FPM, Redis and the Ruby to-do app
+  (for example `/var/log/nginx.log` and `/var/log/php-fpm.log`) survive a
+  reload, where they used to start empty on every boot. Those are the logs you
+  want after a crash, so this is intended, but it changes what those products
+  leave behind: a saved computer keeps its service logs until something
+  removes them, and they spend the computer's storage. Temporary and
+  memory-only computers still lose them on shutdown.
+- `/var/log` is bounded. The regular files under it (the whole subtree, by
+  apparent size, holes included) may total at most 64 MiB
+  (`VAR_LOG_BYTE_LIMIT` in `crates/runtime-core/src/rootfs.rs`). A write that
+  would pass the cap is cut short at it, and the next write that grows a file
+  fails with `ENOSPC`; so does an `ftruncate` that would grow past it. That is
+  deliberate: a daemon must be able to see the failure instead of believing it
+  logged. Overwriting bytes a file already holds spends nothing, and removing
+  or truncating a log frees room. The cap bounds the directory and
+  rotates nothing: rotation is left to whatever owns each file, and a log
+  nothing rotates hits the cap and stops growing until something frees
+  space. Files outside `/var/log` are not affected, a file renamed out of it stops counting, and a file renamed
+  into it is counted from then on but is not itself refused. It is a rule over
+  the live tree, with nothing recorded in the journal, and the same on Node.js
+  and in the browser. Only files that have had a name under `/var/log` pay for
+  the check; a growing write to a home directory or any other file never
+  touches the directory.
+- **The image provides `/var/log`; the kernel no longer does.** While it was a
+  scratch mount, every machine had a `/var/log` whether or not its image
+  shipped one. Now the directory is part of the root filesystem, so an image
+  that does not contain it has no `/var/log`, and a daemon opening
+  `/var/log/messages` there fails with `ENOENT` until something creates it. The
+  image still mounts cleanly, and nothing is capped until the directory exists.
+  The kernel does not create it at boot: persistence is enabled after the image
+  loads, and its recovery expects the loaded tree to be unmodified, so a
+  boot-time `mkdir` would have to be a separate, journaled step on every host.
+  Instead the producers provide it: the canonical rootfs `MANIFEST` declares
+  it, `addDinitInit` (every dinit-based image) creates it, and the Ruby to-do
+  builder creates it directly. `host/test/var-log-image-contract.test.ts` and
+  `host/test/dinit-image-helpers.test.ts` pin that. An image built by other
+  means, such as a bare-bones image with no dinit and no syslog daemon, has
+  no `/var/log` unless its builder adds one.
+- Reading the log. `dmesg` prints the kernel's own message ring -- boot
+  details, device first-opens, processes killed by a signal, and every syscall
+  a program asked for that Kandelo does not implement. It needs no daemon and
+  works on every machine, because the ring is a kernel surface: `dmesg` reads
+  it through `/dev/kmsg`, or through `klogctl` with `-S` (served by the
+  `kandelo.klog.v1` program extension), which returns the whole buffer in
+  one call as `<pri>[seconds.microseconds] text` lines.
+  Several readers can follow `/dev/kmsg` at once without taking records from
+  each other, so `dmesg -w` and a log daemon coexist.
+- Writing to the log. `logger` sends a message through `syslog(3)` to
+  `/dev/log`, which is where any ported program's own logging goes. Whether
+  anything receives it depends on the image: one that runs the `syslogd`
+  service collects messages into `/var/log/messages`, rotated so they stay
+  inside `/var/log`'s budget; one that does not has no receiver, and the
+  message is dropped. That silence is the specified behaviour rather than a
+  gap -- POSIX declares `syslog(3)` to return `void`, so neither `logger` nor
+  any other program can be told the message went nowhere. Use `logger -s` to
+  see it locally regardless: that also writes it to standard error.
 - The Kandelo page creates temporary, resizable, OPFS-backed computers by default.
   **Release compatibility warning:** saved computers from this release will not
   work in the next release. Export important files before updating Kandelo.

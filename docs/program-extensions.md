@@ -1,6 +1,6 @@
 # Required program extensions
 
-The supported ABI-55 base program snapshot and digest remain unchanged.
+The supported ABI-56 base program snapshot and digest remain unchanged.
 New independently versioned interfaces use reserved Wasm import modules
 beginning with `kandelo.`. An import is a **required interface declaration**;
 it is not advisory metadata that a host may ignore. Old base programs import
@@ -88,6 +88,46 @@ retains named frames when a native engine omits the PC. Source filenames are
 diagnostic strings only: no source file is opened or fetched by capture or
 resolution. Worker memory and guest views are neither transferred to a
 persistent browser realm nor retained across an asynchronous operation.
+
+## Kernel log version 1
+
+Module `kandelo.klog.v1` supplies `__kandelo_klogctl_v1`:
+
+```text
+(buffer: pointer, capacity: i32, action: i32) -> i32
+```
+
+It is `klogctl(action, buffer, capacity)` over the kernel message ring, with
+the arguments reordered to the `(pointer, i32, i32)` shape every extension
+uses. musl's `klogctl()` is replaced in the overlay
+(`libc/musl-overlay/src/linux/klogctl.c`) to call it, so a program imports
+the interface only if it links `klogctl()`; every other program keeps its
+base identity. A non-negative return is `klogctl`'s result. An error is a
+negative errno (`-22` invalid action, length or missing buffer, `-1` a
+clear by a non-root caller, `-14` an unusable buffer), and the libc wrapper
+turns it into `-1` with `errno` set. Actions 2–5, 9 and 10 are served.
+Every other action is refused with `-22`, including the console-level
+actions 6–8, because Kandelo has no console log level. The read actions render
+`<pri>[seconds.microseconds] text` lines.
+
+**Why an extension.** musl issues `SYS_syslog` (304), which the frozen
+base program surface does not declare. Declaring it would add a syscall
+number, a buffer descriptor and a scalar contract to that surface and so
+change the digest every supported program carries. The kernel therefore
+answers 304 with `ENOSYS`, and a program that needs the ring says so
+through this import. A host that cannot serve it refuses the program
+instead of handing it an empty answer.
+
+**How the call reaches the kernel.** The ring is kernel state, so the
+process worker serves the import by issuing kernel-host request
+`extension_requests::KLOG_V1` (600) on the calling thread's own channel.
+The kernel stages the buffer through that request's descriptor in
+`host_abi::EXTENSION_REQUEST_DESCRIPTORS`, the same way it stages a
+syscall's, so no log bytes pass through host code. The request number
+and descriptor are kernel-host surface (`extension_requests` in
+`abi/snapshot.json`), versioned by `HOST_ADAPTER_VERSION`, not by the
+program digest. They are reachable only through this import: no
+program's libc marshals 600.
 
 See [optional source-line maps](fork-instrumentation.md#optional-source-line-maps)
 and the [Rust debugging workflow](rust-target.md#source-diagnostics-and-backtraces).
