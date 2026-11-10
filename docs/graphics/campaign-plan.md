@@ -157,8 +157,8 @@ scrollback or modifying Cage/wlroots.
 The normal Sydney candidate, exact commands/products, validation results,
 unsuccessful controls and profiling limitations are recorded in the follow-up
 PR and its `docs/graphics/cage-reliability-2026-11.md` report. See [draft PR #1678](https://github.com/Automattic/kandelo/pull/1678) and
-its [frozen reliability report](https://github.com/Automattic/kandelo/blob/4bde403bd0573ce8b036197e9e6150098a88eb24/docs/graphics/cage-reliability-2026-11.md).
-Normal graphics pass 30/30 (10 per engine), terminal UI 12/12 and host
+its [frozen reliability report](https://github.com/Automattic/kandelo/blob/130239b54f3086e4de4d6f5b7ff004b6dbb428d4/docs/graphics/cage-reliability-2026-11.md).
+Before the modest-display change, normal graphics passed 30/30 (10 per\nengine), terminal UI 12/12 and host
 sessions/PTYs 15/15; normal products, original fixtures and ABI 56/4/17/21
 are verified. The maintainer approved the reviewed shared-cache collection;
 18.1 GiB logical was collected with all six protected projection keys and
@@ -181,13 +181,52 @@ Full diagnostics record 8.32 GB of mapped spans, 8.32 GB of copies and 1.16s
 inside import synchronization in the 4K case. Readiness/receive handling
 couples pointer input to full-image BO scans/imports in the worker that also
 services cursor/vblank presentation. WebKit also degrades with output size.
-This is an open R1 performance blocker; no correction or speedup is claimed.
+This remains an open high-resolution performance finding. The requested\nmode policy below reduces the workload.
 The runtime stayed frozen, and the report retains failed diagnostic attempts
 and observer-cost limits. First-load time still needs separation.
 The broad B2–B6/C1–C3 campaign remains paused; the full Q/D/L/V/P gates stay
 open. The accidentally expanded Freeciv run also retains three direct-display
 failures for D1/V1/P1 investigation, rather than silently treating its
 unexecuted cases as passing.
+
+### Maintainer-requested modest display, 2026-11-09
+
+The maintainer prefers a usable modest-resolution Wayland demo rather than
+native HiDPI output. Sydney now implements an image-owned Cage preferred-mode
+limit of 1280×720 CSS-reference pixels, with no Retina supersampling. This
+reduces actual guest buffers; it is an explicit pixel-count/sharpness tradeoff,
+not a same-resolution repair of the shared graphics coherence path. Other
+profiles retain native defaults, and higher standard connector modes remain
+available. The prior high-resolution finding stays open. A separate native-scale-2
+Chromium probe measures a 7680-pixel native box for CSS width 3840 and the
+same 1280×684 guest mode: 21 cursor paints in a 1.021s sweep plus drain,
+first change after 34ms. This is a scoped worker-paint observation, not
+physical-display latency.
+
+A full normal bootstrap and ABI check pass with unchanged kernel and fixture
+cohorts. The normal shell SHA is
+44687dd36b9710933356c6846bd29c1e30e9fc09759593db76385a38ccd93152.
+New browser cap/input/resize/exit checks pass 6/6 (three engines, densities
+1 and 2). Eight scoped cursor observations support the requested tradeoff:
+at CSS width 3840, Chromium records 32 cursor paints with guest mode 1280×684
+versus two with the preserved 3840×2052 control. These callbacks are not
+physical-display latency, and background preparation was active. Actual
+normal-entry visible review passes physical keyboard repaint, resize and
+foreground exit 0. Initial startup still takes several seconds. The original
+graphical matrix is retained at 32/36. Corrected fixture observations pass
+12/12 affected cases; a separate Firefox main-Sway case passes 1/1, while
+the original intermittent Sway input/workspace findings remain open.
+Prepared-product/session checks pass 333/333, host sessions/PTYs 15/15,
+and TypeScript checks pass. The default-relay memory gate passes 15/18 but
+cannot fetch Keen; a direct public-proxy run passes 12/18 but fails Doom
+browser boot-data fetches. A verified same-origin relay preflight passes
+6/6; its complete gate then passes 18/18, four mixed cycles per engine,
+with source 7, ownership 253, Node 3 and Bun 7 passing, zero skips/retries/flaky outcomes,
+exit 0 after 34m11s. All 50 normal source/product/original-fixture identities
+match afterward. Each transport keeps its own verdict; no proxy/runtime
+code or resource-limit change was used. The earlier unexplained WebKit audio
+retirement remains open, so the PR remains a draft. This does not resume the
+broader campaign.
 
 ## M1/M2: measurement and frozen consumer workloads
 
@@ -468,11 +507,11 @@ assertion or overrule maintainer decisions.
 
 | Field | Current value |
 | --- | --- |
-| Selected next work | Repair reproduced Cage pointer-performance blocker; retain PCM retirement investigation |
-| Implementation/release scope | Browser storage bootstrap diagnostics, persistent Cage test fixture, terminal visibility/fit ordering and regressions; preserve ABI 56/4/17/21 |
+| Selected next work | Requested modest Cage display implemented and validated; retain high-resolution coherence, transport, Sway and PCM retirement findings |
+| Implementation/release scope | Browser storage diagnostics, terminal visibility/fit, image-owned modest Cage display and regressions; preserve ABI 56/4/17/21 |
 | Research inputs | Preserved shipment controls, current-main-based normal reproduction, standalone OPFS/xterm controls and frozen Cage copy/native-call profiles |
 | Main risk | Startup failure and reported runtime crashes/slowness may have different causes |
-| Exit from investigation | Focused repair and diagnosis published; full mixed-memory acceptance remains open, alongside unclassified Cage reports and M1/M2, D1/D2, L1 and V1/P1 |
+| Exit from investigation | Focused repairs and modest display validated; configured four-cycle memory gate passes, while default transport, Sway, PCM, unclassified Cage reports and M1/M2, D1/D2, L1 and V1/P1 remain open |
 | Broader campaign state | Paused pending intentional delivery selection; no blanket activation by this plan |
 
 Completion of the baseline campaign requires Q/D/L closure, accepted B/C
