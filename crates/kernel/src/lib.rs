@@ -356,7 +356,7 @@ mod wasm_api_source_guards {
     fn channel_dispatch_never_calls_a_diverging_function() {
         let source = include_str!("wasm_api.rs");
         let start = source
-            .find("fn handle_owned_channel_allocation(")
+            .find("fn handle_owned_channel_allocation<")
             .expect("channel dispatcher start");
         let end = source[start..]
             .find("\n// ---------------------------------------------------------------------------\n// SysV IPC kernel exports")

@@ -69250,7 +69250,7 @@ impl HostIO for RelSymlinkMock {
             let mut host = host_at(9);
             let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
             let create = |proc: &mut Process, host: &mut MockHostIO| {
-                let req = WpkDrmGpuBoCreate { width: 8, height: 8, format: 0, usage: 0 };
+                let req = WpkDrmGpuBoCreate { width: 8, height: 8, format: DRM_FORMAT_XRGB8888, usage: 0 };
                 let mut buf = [0u8; core::mem::size_of::<WpkDrmGpuBoCreate>()];
                 unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGpuBoCreate, req) };
                 sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut buf)
