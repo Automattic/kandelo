@@ -64,7 +64,7 @@ Unverified old drafts must be reconciled against current main before use.
 
 | ID | Deliverable | Status at this checkpoint | Principal dependency / acceptance |
 | --- | --- | --- | --- |
-| R1 | Cage crashes, startup and performance diagnosis | Focused repairs verified; draft #1678, full mixed-memory gate not accepted | Normal candidate, all-engine regressions, retained failures; other crashes and native-feel work remain open |
+| R1 | Cage crashes, startup and performance diagnosis | Focused repairs verified; draft #1678, memory 18/18 and desktop 117/120; comparisons pending | Normal candidate, all-engine regressions, retained failures; other crashes and native-feel work remain open |
 | M1 | Trustworthy input-to-visible measurement | Open; tooling exists, qualification unfinished | Selected-display qualification, original input identity, overhead and uncertainty |
 | M2 | Frozen desktop and game baselines | Open; historical probes retained | M1 for visible latency; pinned workloads, main and native controls |
 | Q1 | Stage A production policy and native-operation audit closure | Production increment shipped; closure open | Exact audit inventory, graphics gate, shader harness and full per-case comparisons |
@@ -695,3 +695,32 @@ observations remain unfinished. PR #1678 remains draft. Blur is the approved
 follow-up; no other gate is waived, no complete R1/native-feel acceptance
 is claimed, and B2–B6/C1–C3 remain paused. Detailed current evidence is in
 `docs/graphics/cage-reliability-2026-11.md` at `13920f98bf`.
+
+
+### R1 completed memory and desktop inventories — 2026-11-10 late evening
+
+Reviewed runtime `8ddcdcedc7` completes the unchanged canonical memory gate:
+300/300 source checks, Node teardown 3/3, Bun teardown 7/7 and all 18 browser
+cases pass. Each engine completes four mixed application cycles in the same
+page. No retries or skips are added. This supersedes the earlier 15/18
+readiness count; the original failed run remains retained.
+
+The complete desktop inventory finishes 117/120, including Cage 15/15 and
+Sway 12/12. Chromium/WebKit archive import report SDL initialization failure;
+Firefox inherited render-node 2D pixel observation times out. The archive
+failure and exact Firefox inheritance selection separately reproduce on
+pinned main with its own normally built SDK and artifacts. Baseline records
+are evidence, not allowances. All failed candidate and control media survive.
+Actual `scummvm-play steel-sky` passes on Cage in all three engines; the full
+six-case Cage/Sway run is 5/6, with Firefox Sway failing to open the menu while
+an intro logo is visible. A separate ordinary Escape-to-skip-intro check is
+in progress, preserving that original failure.
+
+Normal full-graph publication (253 nodes, 11 products), literal browser-entry
+smoke, actual graphics baseline growth, native fork, Node/Chromium POSIX kill,
+frozen-program compatibility and ABI checks also pass as recorded in the
+[reviewed runtime report](https://github.com/Automattic/kandelo/blob/6505c6d331/docs/graphics/cage-reliability-2026-11.md).
+The 12 paired pointer observations and all nine Node/Chromium benchmark
+comparisons remain unfinished. PR #1678 remains draft; no full R1 or native
+feel acceptance is claimed. The maintainer's blur follow-up remains the only
+explicitly approved visual deferral. B2–B6/C1–C3 remain paused.
