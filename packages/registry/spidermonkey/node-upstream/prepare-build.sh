@@ -46,6 +46,8 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/codecs.h" \
     "$node_consumer/codec-native-api.h" \
     "$node_consumer/decoder-upstream.cpp" \
+    "$node_consumer/icu-upstream.cpp" \
+    "$node_consumer/encoding-upstream.cpp" \
     "$node_consumer/string-bytes-upstream.cpp" \
     "$node_consumer/options.cpp" \
     "$node_consumer/options.h" \

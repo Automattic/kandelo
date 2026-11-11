@@ -1,0 +1,247 @@
+{
+  "schema": 1,
+  "binding": "icu",
+  "status": "complete original ICU/encoding units linked; 23 focused controls per host pass, with explicit Buffer and legacy-conversion build gaps; startup incomplete",
+  "sourceFiles": [
+    {
+      "upstreamPath": "src/node_i18n.cc",
+      "path": "third_party/nodejs/upstream/src/node_i18n.cc",
+      "bytes": 24681,
+      "sha256": "92609fad1107071d39f8211ccac9536257a63752db95e1160ae345d6618f76ff"
+    },
+    {
+      "upstreamPath": "src/node_i18n.h",
+      "path": "third_party/nodejs/upstream/src/node_i18n.h",
+      "bytes": 3925,
+      "sha256": "d12a93e25f89fd6e59cc75257553db262a874e32e44add7e5ecd8b88b7a12a3b"
+    },
+    {
+      "upstreamPath": "src/api/encoding.cc",
+      "path": "third_party/nodejs/upstream/src/api/encoding.cc",
+      "bytes": 5371,
+      "sha256": "83bdf541f5f835716291b01b4b31c51feea0a2d5a760e5be274ab95e4cc9c664"
+    },
+    {
+      "upstreamPath": "src/util-inl.h",
+      "path": "third_party/nodejs/upstream/src/util-inl.h",
+      "bytes": 27698,
+      "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561"
+    },
+    {
+      "upstreamPath": "src/node_internals.h",
+      "path": "third_party/nodejs/upstream/src/node_internals.h",
+      "bytes": 18334,
+      "sha256": "3674f02a2b459ee579815761816bc450349aef9ff231349f39bca7b6c19ae0c7"
+    }
+  ],
+  "compiledWholeTranslationUnits": [
+    "src/node_i18n.cc",
+    "src/api/encoding.cc"
+  ],
+  "provenanceOnlyHelpers": [
+    "src/util-inl.h",
+    "src/node_internals.h"
+  ],
+  "originalJavaScriptModified": false,
+  "nativeAlgorithmExcerptsUsed": false,
+  "exports": [
+    {
+      "name": "getStringWidth",
+      "signature": "(string, ambiguousAsFullWidth?, expandEmojiSequence?)",
+      "result": "uint32 column width from complete original algorithm and actual ICU property data",
+      "errors": "original CHECK string invariant remains fatal; booleans use IsTrue/IsBoolean, not JS coercion",
+      "scheduling": "synchronous; no queued JS work, native callback or ref-counted event-loop handle",
+      "state": "per-call owned UTF16 input; actual ICU Unicode properties",
+      "consumers": [
+        "internal/util/inspect.js:2958-2975"
+      ],
+      "owner": "complete original Node C++ over rooted SpiderMonkey marshalling and guest ICU/simdutf"
+    },
+    {
+      "name": "icuErrName",
+      "signature": "(int32 status)",
+      "result": "actual u_errorName string",
+      "errors": "original CHECK IsInt32 remains fatal",
+      "scheduling": "synchronous; no queued JS work, native callback or ref-counted event-loop handle",
+      "state": "no retained state",
+      "consumers": [
+        "buffer.js:1422-1441"
+      ],
+      "owner": "complete original Node C++ over rooted SpiderMonkey marshalling and guest ICU/simdutf"
+    },
+    {
+      "name": "transcode",
+      "signature": "(ArrayBufferView input, fromEncoding, toEncoding)",
+      "result": "original Buffer or integer ICU status; successful Buffer allocation currently explicitly unsupported",
+      "errors": "unknown encodings return U_ILLEGAL_ARGUMENT_ERROR; actual conversion errors preserved; Buffer allocation throws ERR_KANDELO_NOT_IMPLEMENTED",
+      "scheduling": "synchronous; no queued JS work, native callback or ref-counted event-loop handle",
+      "state": "retained per-call view, original ParseEncoding, guest ICU/simdutf, caller-owned MaybeStackBuffer",
+      "consumers": [
+        "buffer.js:1423-1443"
+      ],
+      "owner": "complete original Node C++ over rooted SpiderMonkey marshalling and guest ICU/simdutf"
+    },
+    {
+      "name": "hasConverter",
+      "signature": "(label)",
+      "result": "boolean from actual ucnv_open success, resource closed on return",
+      "errors": "original minimum-arity CHECK; label conversion may throw",
+      "scheduling": "synchronous; no queued JS work, native callback or ref-counted event-loop handle",
+      "state": "per-call actual temporary UConverter",
+      "consumers": [
+        "no literal original JS consumer found; source export retained"
+      ],
+      "owner": "complete original Node C++ over rooted SpiderMonkey marshalling and guest ICU/simdutf"
+    },
+    {
+      "name": "getConverter",
+      "signature": "(label, uint32 flags)",
+      "result": "real native Converter object, or undefined when ICU cannot open the label",
+      "errors": "original minimum-arity CHECK; actual label then flags coercion/errors",
+      "scheduling": "synchronous; no queued JS work, native callback or ref-counted event-loop handle",
+      "state": "actual UConverter with STOP callback for fatal mask0x2; ignore BOM mask0x4; strong root during construction, weak after MakeWeak",
+      "consumers": [
+        "internal/encoding.js:415-468"
+      ],
+      "owner": "complete original Node C++ over rooted SpiderMonkey marshalling and guest ICU/simdutf"
+    },
+    {
+      "name": "decode",
+      "signature": "(Converter, ArrayBuffer|SharedArrayBuffer|ArrayBufferView input, uint32 flags, string encoding)",
+      "result": "JS UTF16 string from original streaming conversion and StringBytes::Encode",
+      "errors": "original arity/encoding CHECKs; ERR_INVALID_ARG_TYPE for input; TypeError ERR_ENCODING_INVALID_ENCODED_DATA with original message; owning or calling failed realm rejected",
+      "scheduling": "synchronous; no queued JS work, native callback or ref-counted event-loop handle",
+      "state": "flush mask0x1 resets BOM and converter state by scope guard on success/error; pending code units retained by real ICU resource",
+      "consumers": [
+        "internal/encoding.js:416-541"
+      ],
+      "owner": "complete original Node C++ over rooted SpiderMonkey marshalling and guest ICU/simdutf"
+    }
+  ],
+  "literalConsumers": [
+    {
+      "path": "lib/buffer.js",
+      "line": 1424,
+      "text": "  } = internalBinding('icu');"
+    },
+    {
+      "path": "lib/buffer.js",
+      "line": 1437,
+      "text": "    const result = _transcode(source, fromEncoding, toEncoding);"
+    },
+    {
+      "path": "lib/buffer.js",
+      "line": 1441,
+      "text": "    const code = icuErrName(result);"
+    },
+    {
+      "path": "lib/internal/encoding.js",
+      "line": 417,
+      "text": "  } = internalBinding('icu'));"
+    },
+    {
+      "path": "lib/internal/encoding.js",
+      "line": 468,
+      "text": "      const handle = icuGetConverter(icuEncoding, this[kFlags]);"
+    },
+    {
+      "path": "lib/internal/encoding.js",
+      "line": 541,
+      "text": "      return icuDecode(this[kHandle], input, flags, this[kEncoding]);"
+    },
+    {
+      "path": "lib/internal/util/inspect.js",
+      "line": 2958,
+      "text": "  const icu = internalBinding('icu');"
+    },
+    {
+      "path": "lib/internal/util/inspect.js",
+      "line": 2959,
+      "text": "  // icu.getStringWidth(string, ambiguousAsFullWidth, expandEmojiSequence)"
+    },
+    {
+      "path": "lib/internal/util/inspect.js",
+      "line": 2975,
+      "text": "        width += icu.getStringWidth(StringPrototypeNormalize(StringPrototypeSlice(str, i), 'NFC'));"
+    }
+  ],
+  "coverage": {
+    "originalJsFiles": 443,
+    "literalNativeConsumerFiles": 3,
+    "completePublicInternalGraphReconciled": false,
+    "aliasesConditionalLazyWorkerExceptionalPathsComplete": false
+  },
+  "ownership": {
+    "converter": "real JS constructor/template and native BaseObject pointer; original ConverterObject owns UConverter through unique_ptr; foreground GC finalizer clears pointer then deletes exactly once",
+    "realm": "reserved traced owner-realm slot survives moving GC; active foreign converters accepted, failed owner rejected even through live foreign decode",
+    "state": "shared native codec State retained until resource retirement; no borrowed stack Environment retained; per-call rooted wrappers",
+    "buffers": "actual ArrayBuffer/SAB/view allocation, offset and length retained and pinned during native call; previous pin states restored; no copied substitute buffers",
+    "callbacks": "source synchronous entrypoints; original ICU STOP conversion callback is native; no user callback ownership or event-loop ref state",
+    "cancellation": "no asynchronous request; GC closes native converter; terminal realm admission is enforced",
+    "errors": "original error types verified from whole source; actual engine exception values; real pending exception snapshot/restore in TryCatch",
+    "template": "own binding properties bypass inherited setters; actual constructor prototype and class Converter; direct construction without native owner does not fabricate a resource"
+  },
+  "prerequisites": [
+    "SpiderMonkey GC/root/string/typed-array/private native class APIs",
+    "guest ICU77.1 Unicode16/CLDR47 data, simdutf7.7 and nbytes0.1.4",
+    "whole original StringBytes implementation, native error factories and whole ParseEncoding",
+    "complete Buffer allocation/prototype backend for successful transcode; still missing"
+  ],
+  "implementationGaps": [
+    {
+      "area": "legacy conversion build configuration",
+      "evidence": "Mozilla config/external/icu/defs.mozbuild UCONFIG_NO_LEGACY_CONVERSION=1",
+      "labels": [
+        "windows-1252",
+        "shift_jis",
+        "gb18030",
+        "koi8-r",
+        "big5"
+      ],
+      "nativeReference": true,
+      "guest": false,
+      "classification": "build gap; not fundamental browser boundary; public TextDecoder support incomplete"
+    },
+    {
+      "area": "Buffer allocation",
+      "classification": "missing owning native Buffer backend; explicit error, no fake Uint8Array"
+    },
+    {
+      "area": "snapshot external references",
+      "classification": "RegisterExternalReferences compiled but not invoked by source-mode embedding; serialization registry explicitly unsupported"
+    }
+  ],
+  "validationObligations": [
+    "full data-version Unicode differential beyond selected width matrix",
+    "complete public Buffer/transcode and TextDecoder source closure, legacy converter configuration/data",
+    "reentrant flags coercion or inherited error setters combined with resize/detach; pinned input is not proof of V8 equivalence",
+    "invalid native object/type/wrapper/security handling; OOM, full thread/process teardown and resource accounting",
+    "full api/encoding.cc Encode/DecodeBytes/DecodeWrite and StringBytes Write/Size helper paths; compiling whole source is not behavioral evidence",
+    "InitializeICUDirectory and SetDefaultTimeZone embedding adoption and effects; not exercised by binding tests",
+    "complete alias/scope/dataflow/lazy/conditional/worker/exceptional catalog and public conformance"
+  ],
+  "archivedReuse": {
+    "index": ".context/node-icu/reuse-audit.md",
+    "rejected": "PR1605 handwritten codec/public replacements and extracted Node width algorithm",
+    "retained": "BOM/malformed/split/fatal/view test requirements; native rooted ownership and callbacks reviewed against BACKEND-SALVAGE",
+    "decision": "compile whole original translation units; no archived public shims"
+  },
+  "startup": {
+    "principalNextGap": "trace_events",
+    "stackLimitNextGap": "mksnapshot",
+    "accepted": false
+  },
+  "validation": {
+    "evidence": "icu-engine-check.json",
+    "casesPerHost": 23,
+    "sharedNativeCases": 15,
+    "widthRecords": 68,
+    "streamingRecords": 8,
+    "priorNodeCases": 287,
+    "guestCaseObservations": 379,
+    "driverRuns": 104,
+    "expectedFatalExits": 27,
+    "sourceIntegrityCases": 6,
+    "fullConformance": false
+  }
+}

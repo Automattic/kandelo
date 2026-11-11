@@ -13,10 +13,10 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry now calls complete `internal/bootstrap/node`
 with protected state, passes native configuration and reaches the missing
-`icu` binding in original `internal/util/inspect`, after executing the
+`trace_events` binding in original `internal/trace_events`, after executing the
 original async-hooks module, native constants initializer and engine type
 predicates, native options, the original string-decoder binding and native process
-version metadata through real backends.
+version metadata and complete original native ICU through real backends.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -66,7 +66,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 527 files after complete native source/header additions; every
+manifest has 532 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -1072,3 +1072,59 @@ product, image, successor-ABI rebuild or overall suite ran. See
 [process-versions-contracts.json](../tests/nodejs/upstream/process-versions-contracts.json),
 [process-versions-consumers.json](../tests/nodejs/upstream/process-versions-consumers.json)
 and [process-versions-engine-check.json](../tests/nodejs/upstream/process-versions-engine-check.json).
+
+
+## Complete original native ICU binding
+
+Revision 35 compiles the whole unchanged `src/node_i18n.cc` and
+`src/api/encoding.cc` against the private rooted SpiderMonkey API. The original
+per-isolate initializer installs all six binding exports and the actual
+Converter template; the original per-context initializer runs too. The width
+algorithm, encoding parser and streaming/BOM/error policy remain upstream C++.
+Five complete source/header additions bring the manifest to 532 files; all 527
+previous records and all 443 JavaScript sources remain unchanged. Original
+`util-inl.h` and `node_internals.h` are provenance for helper contracts, rather
+than claimed executed factories.
+
+Each Converter is a real engine object owning the original native
+`ConverterObject` and guest ICU `UConverter`. Its construction root becomes weak,
+its owning realm remains traced, and foreground finalization retires its pointer
+before deleting it and closing ICU state. Moving GC preserves live converters;
+a failed owner cannot be bypassed through another realm's active decode
+function. Binding callbacks retain their actual realm and template. Per-call
+buffer roots retain actual views, offsets and shared/resizable storage; previous
+pin states are restored. Logical stack-buffer lengths now follow the complete
+original helper contract. Callback return slots start as undefined after rooting
+the engine callee, preserving original early returns.
+
+Twenty-three controls pass on each of Node, Chromium, Firefox and WebKit using
+identical engine/kernel bytes. Fifteen shared controls, 68 selected width records
+and eight streaming records match the authenticated native reference. All 287
+prior Node cases pass on this artifact. The aggregate is 379 selected case
+observations, 104 process drivers and 27 expected fatal exits. Six source-stage
+integrity controls pass. The browser harness retains its separate macOS
+permission warning removing its owned Firefox Downloads directory.
+
+This is partial ICU binding support. Mozilla's selected ICU configuration sets
+`UCONFIG_NO_LEGACY_CONVERSION=1`: windows-1252, shift_jis, gb18030, koi8-r and big5
+are unavailable where the native reference supports them. These five differences
+are recorded as build gaps, not browser limits or matching controls. Successful
+transcode needs the missing original Buffer allocation/prototype backend and
+throws an explicit unsupported error; no Uint8Array substitutes for Buffer.
+Unexercised encoding helper paths, reentrant resize/detach, OOM/security/full
+teardown, data-version coverage and complete public TextDecoder/Buffer
+compatibility remain open. Snapshot external-reference serialization is not
+implemented by this source-mode embedding.
+
+The first build failed on missing declaration glue. Runtime checks then exposed
+an incorrect width expectation, an uninitialized callback return slot and a
+failed-owner admission bypass; the native comparison and pre-fix failures remain
+retained. Original `internal/util/inspect` now executes, including its ANSI/NFC
+width helper. Principal bootstrap stops honestly on missing `trace_events` at
+`internal/trace_events:8` through `internal/util/debuglog:25`; original stack-limit
+policy still stops on `mksnapshot` at `internal/v8/startup_snapshot:19`. Typed
+original Node errors return. Complete empty/simple and separate CJS/ESM startup,
+full graph catalog and ordered roadmap remain unfinished. No image, full product,
+successor-ABI campaign or overall suite ran. See
+[icu-contracts.json](../tests/nodejs/upstream/icu-contracts.json) and
+[icu-engine-check.json](../tests/nodejs/upstream/icu-engine-check.json).

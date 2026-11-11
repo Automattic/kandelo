@@ -4,7 +4,7 @@
     "version": "26.13.0",
     "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
   },
-  "sourceManifestSha256": "e5fbd7ebc8c0f03de45ea5b72c5cd8ff3f937729f066b51352e99e512671916a",
+  "sourceManifestSha256": "f7d404ce79b85fa81c48c3e12388e6c1ee10c92046be1c6358f3b7b3ef189ab0",
   "method": "Babel syntax traversal of every registered source; literal and computed loader/binding calls retained",
   "limitations": [
     "No execution or transitive reachability proof",

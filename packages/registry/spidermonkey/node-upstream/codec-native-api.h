@@ -10,9 +10,10 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <utility>
 
 namespace kandelo_node_codec_api {
-class Value; class Object; class String; class Isolate;
+class Value; class Object; class String; class Isolate; class ObjectTemplate; class FunctionTemplate;
 struct Cell; struct Frame; struct View; struct MemoryAccount; struct State;
 [[noreturn]] void Crash(const char*);
 template<class T> class Local {
@@ -44,6 +45,7 @@ template<class T> class Maybe {
   explicit Maybe(T value):present_(true),value_(value) {}
   bool To(T* out) const { if(present_) *out=value_;return present_; }
   T FromJust() const { if(!present_) Crash("Empty native codec result");return value_; }
+  T FromMaybe(T fallback) const { return present_?value_:fallback; }
   void Check() const { if(!present_ || !value_) Crash("Failed native codec result"); }
 };
 template<> class Maybe<void> {
@@ -65,6 +67,13 @@ class Value {
   Cell& cell() const;
   bool IsString() const;
   bool IsArrayBufferView() const;
+  bool IsArrayBuffer() const;
+  bool IsSharedArrayBuffer() const;
+  bool IsInt32() const;
+  bool IsUint32() const;
+  bool IsBoolean() const;
+  bool IsTrue() const;
+  Maybe<uint32_t> Uint32Value(Local<Context>);
   MaybeLocal<String> ToString(Local<Context>);
 };
 class Object : public Value {
@@ -85,7 +94,19 @@ class Uint8Array : public ArrayBufferView {
   using ArrayBufferView::ArrayBufferView;
   static const size_t kMaxLength;
 };
-class Integer : public Value { public: using Value::Value;static Local<Integer> New(Isolate*,int); };
+class Integer : public Value { public: using Value::Value;static Local<Integer> New(Isolate*,int);int64_t Value() const; };
+using Int32=Integer;
+using Uint32=Integer;
+class ObjectTemplate : public Object {
+ public: using Object::Object;
+  void SetInternalFieldCount(int);
+  MaybeLocal<Object> NewInstance(Local<Context>);
+};
+class FunctionTemplate : public Object {
+ public: using Object::Object;
+  Local<ObjectTemplate> InstanceTemplate();
+  void SetClassName(Local<String>);
+};
 enum class NewStringType { kNormal };
 class String : public Value {
  public:
@@ -137,18 +158,30 @@ class ExternalMemoryAccounter {
 };
 Local<Value> Argument(Isolate*,int);
 void Return(Isolate*,Local<Value>);
+void ReturnNumber(Isolate*,double);
+void ReturnBoolean(Isolate*,bool);
+int ArgumentCount(Isolate*);
 template<class T> class ReturnValue {
   Isolate* isolate_;
  public: explicit ReturnValue(Isolate* isolate):isolate_(isolate) {}
   void Set(Local<T> value) const { Return(isolate_,value); }
+  void Set(bool value) const { ReturnBoolean(isolate_,value); }
+  void Set(int32_t value) const { ReturnNumber(isolate_,value); }
+  void Set(uint32_t value) const { ReturnNumber(isolate_,value); }
 };
 template<class T> class FunctionCallbackInfo {
   Isolate* isolate_;
  public:
   explicit FunctionCallbackInfo(Isolate* isolate):isolate_(isolate) {}
   Isolate* GetIsolate() const { return isolate_; }
+  int Length() const { return ArgumentCount(isolate_); }
   Local<Value> operator[](int index) const { return Argument(isolate_,index); }
   ReturnValue<T> GetReturnValue() const { return ReturnValue<T>(isolate_); }
+};
+struct CatchScope;
+class TryCatch {
+  std::unique_ptr<CatchScope> scope_;
+ public: explicit TryCatch(Isolate*);~TryCatch();
 };
 }
 namespace kandelo_node_codec_impl {
@@ -159,29 +192,82 @@ template<class T,size_t N=1024> class MaybeStackBuffer {
   MaybeStackBuffer();explicit MaybeStackBuffer(size_t);~MaybeStackBuffer();
   MaybeStackBuffer(const MaybeStackBuffer&)=delete;
   T* out();const T* out() const;T* operator*();
+  T& operator[](size_t index) { CHECK_INDEX(index);return data_[index]; }
+  const T& operator[](size_t index) const { CHECK_INDEX(index);return data_[index]; }
+  const T* operator*() const { return data_; }
   size_t length() const;void SetLength(size_t);void AllocateSufficientStorage(size_t);
   bool IsAllocated() const;void Release();
+  bool IsInvalidated() const { return data_==nullptr; }
+  void Invalidate() { if(IsAllocated()) Crash("Invalidate allocated native storage");data_=nullptr;length_=0;capacity_=0; }
+ private: void CHECK_INDEX(size_t index) const { if(index>=length_) Crash("Native stack buffer index"); }
 };
 template<class T> T* UncheckedMalloc(size_t);
 inline constexpr bool IsBigEndian() { return std::endian::native==std::endian::big; }
 class TwoByteValue : public MaybeStackBuffer<uint16_t> {
  public: explicit TwoByteValue(Isolate*,Local<Value>);
 };
+class Utf8Value : public MaybeStackBuffer<char> {
+ public: explicit Utf8Value(Isolate*,Local<Value>);
+};
 struct SpanOwner;
 template<class T,size_t N=64> class ArrayBufferViewContents {
   std::unique_ptr<SpanOwner> owner_;
  public:
   explicit ArrayBufferViewContents(Local<ArrayBufferView>);~ArrayBufferViewContents();
+  explicit ArrayBufferViewContents(Local<Value>);
   T* data() const;size_t length() const;
 };
 class Environment {
- public: static Environment* GetCurrent(Local<Context>);Isolate* isolate();
+ public: static Environment* GetCurrent(Local<Context>);
+  static Environment* GetCurrent(const FunctionCallbackInfo<Value>&);
+  Isolate* isolate();Local<Context> context();Local<ObjectTemplate> i18n_converter_template();
 };
+class IsolateData {
+ public: Isolate* isolate();void set_i18n_converter_template(Local<ObjectTemplate>);
+};
+struct NativeObjectOwner;
+class BaseObject {
+  std::unique_ptr<NativeObjectOwner> owner_;
+ public:
+  static constexpr int kInternalFieldCount=2;
+  BaseObject(Environment*,Local<Object>);virtual ~BaseObject();
+  void MakeWeak();static BaseObject* Unwrap(Local<Object>);
+};
+template<class T> bool Unwrap(T** output,Local<Object> object) {
+  *output=static_cast<T*>(BaseObject::Unwrap(object));return *output!=nullptr;
+}
+template<class T> class ScopeLeave {
+  T callback_;
+ public: explicit ScopeLeave(T callback):callback_(std::move(callback)){}~ScopeLeave(){callback_();}
+  ScopeLeave(const ScopeLeave&)=delete;
+};
+template<class T> auto OnScopeLeave(T callback) { return ScopeLeave<T>(std::move(callback)); }
+Local<String> OneByteString(Isolate*,const char*);
+Local<FunctionTemplate> NewFunctionTemplate(Isolate*,std::nullptr_t);
+bool StringEqualNoCase(const char*,const char*);
+void THROW_ERR_INVALID_ARG_TYPE(Isolate*,const char*);
+void THROW_ERR_ENCODING_INVALID_ENCODED_DATA(Isolate*,const char*,const char*);
+namespace Buffer {
+MaybeLocal<Object> MissingAllocation(Environment*);
+template<class T,size_t N> MaybeLocal<Object> New(Environment* env,MaybeStackBuffer<T,N>*) { return MissingAllocation(env); }
+}
 Local<Value> ERR_STRING_TOO_LONG(Isolate*);
 Local<Value> ERR_BUFFER_TOO_LARGE(Isolate*);
 Local<Value> ERR_MEMORY_ALLOCATION_FAILED(Isolate*);
 void SetMethod(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&));
-class ExternalReferenceRegistry { public: template<class T> void Register(T); };
+void SetMethod(Isolate*,Local<ObjectTemplate>,const char*,void(*)(const FunctionCallbackInfo<Value>&));
+class ExternalReferenceRegistry {
+ public:
+  void Register(void(*)(const FunctionCallbackInfo<Value>&)) { Crash("Native snapshot external-reference registry is not implemented"); }
+  template<class T> void Register(T);
+};
+}
+namespace kandelo_icu_adapter {
+using namespace kandelo_node_codec_api;
+using PerIsolateInitializer=void(*)(kandelo_node_codec_impl::IsolateData*,Local<ObjectTemplate>);
+using ContextInitializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
+extern PerIsolateInitializer initializer;
+extern ContextInitializer context_initializer;
 }
 namespace kandelo_codec_adapter {
 using namespace kandelo_node_codec_api;
@@ -195,6 +281,7 @@ extern Initializer initializer;
 #define CHECK_NE(x,y) CHECK((x)!=(y))
 #define CHECK_LE(x,y) CHECK((x)<=(y))
 #define CHECK_LT(x,y) CHECK((x)<(y))
+#define CHECK_GE(x,y) CHECK((x)>=(y))
 #define CHECK_NOT_NULL(x) CHECK((x)!=nullptr)
 #ifdef DEBUG
 #define DCHECK(x) CHECK(x)
@@ -209,4 +296,12 @@ extern Initializer initializer;
 #define FIXED_ONE_BYTE_STRING(isolate,text) kandelo_node_codec_api::String::NewFromOneByte(isolate,reinterpret_cast<const uint8_t*>(text),kandelo_node_codec_api::NewStringType::kNormal,sizeof(text)-1).ToLocalChecked()
 #define NODE_BINDING_CONTEXT_AWARE_INTERNAL(name,callback) namespace kandelo_codec_adapter { Initializer initializer=::callback; }
 #define NODE_BINDING_EXTERNAL_REFERENCE(name,callback)
+#define ABORT() kandelo_node_codec_api::Crash("Original native abort")
+#define ASSIGN_OR_RETURN_UNWRAP(output,object) do { if(!kandelo_node_codec_impl::Unwrap(output,object)) return; } while(false)
+#define SET_NO_MEMORY_INFO()
+#define SET_MEMORY_INFO_NAME(name)
+#define SET_SELF_SIZE(name)
+#define SPREAD_BUFFER_ARG(value,name) \
+  char* name##_data=kandelo_node_codec_impl::Buffer::Data(value); \
+  size_t name##_length=kandelo_node_codec_impl::Buffer::Length(value)
 #endif

@@ -4,6 +4,7 @@
 namespace kandelo::node {
 JSObject* CreateCodecState(JSContext* cx);
 JSObject* CreateStringDecoderBinding(JSContext* cx, JS::HandleObject realm);
+JSObject* CreateIcuBinding(JSContext* cx, JS::HandleObject realm);
 JSObject* InspectCodecState(JSContext* cx, JS::HandleObject runtime);
 bool SetCodecGcStress(JSContext* cx, JS::HandleObject runtime, bool enabled);
 }

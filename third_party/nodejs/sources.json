@@ -3488,6 +3488,13 @@
       "builtinId": null
     },
     {
+      "path": "src/api/encoding.cc",
+      "role": "provenance",
+      "bytes": 5371,
+      "sha256": "83bdf541f5f835716291b01b4b31c51feea0a2d5a760e5be274ab95e4cc9c664",
+      "builtinId": null
+    },
+    {
       "path": "src/async_wrap.cc",
       "role": "provenance",
       "bytes": 27422,
@@ -3583,6 +3590,27 @@
       "role": "provenance",
       "bytes": 3271,
       "sha256": "7f1429f80db6bf171f1b17133268a141b4dcef7cc4dcb33483fa9e3f24f7957d",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_i18n.cc",
+      "role": "provenance",
+      "bytes": 24681,
+      "sha256": "92609fad1107071d39f8211ccac9536257a63752db95e1160ae345d6618f76ff",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_i18n.h",
+      "role": "provenance",
+      "bytes": 3925,
+      "sha256": "d12a93e25f89fd6e59cc75257553db262a874e32e44add7e5ecd8b88b7a12a3b",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_internals.h",
+      "role": "provenance",
+      "bytes": 18334,
+      "sha256": "3674f02a2b459ee579815761816bc450349aef9ff231349f39bca7b6c19ae0c7",
       "builtinId": null
     },
     {
@@ -3716,6 +3744,13 @@
       "role": "provenance",
       "bytes": 67693,
       "sha256": "aa836d5ae233057253903fed0bc69044df3220ffdccbabb2d2af671f8532b48a",
+      "builtinId": null
+    },
+    {
+      "path": "src/util-inl.h",
+      "role": "provenance",
+      "bytes": 27698,
+      "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561",
       "builtinId": null
     },
     {

@@ -1,0 +1,35 @@
+{
+  "program": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/icu-native-controls.cjs",
+    "bytes": 461,
+    "sha256": "d6bc3e4437b0a5a31f240d2bc5611215deb4fd9c29d4c3da3aba384feceb6aba"
+  },
+  "sharedFixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/icu-shared-controls.js",
+    "bytes": 6594,
+    "sha256": "8825bbdb8b5dcaeff29a6fd96ada0ee6c4b09e073dce090d31ef2f3c76b35507"
+  },
+  "cases": 15,
+  "observationsSha256": "3fe687b72a26518ea9b2185701c3c27dc3f891d3b659658ee9b5658d3e922301",
+  "widthRecords": 68,
+  "widthMatrixSha256": "e095dfe344a418fa2c157963133a317ab29ab4dce33a39cadd3667941f4ca46d",
+  "decodeRecords": 8,
+  "decodeMatrixSha256": "b15c89d5b073111f6065b5453c8e9e57f4d03ce49323bc3cd0e121709b201571",
+  "legacyConverterAvailability": {
+    "windows-1252": true,
+    "shift_jis": true,
+    "gb18030": true,
+    "koi8-r": true,
+    "big5": true
+  },
+  "rawReport": {
+    "path": ".context/node-icu/native-reference.json",
+    "sha256": "78fa91c233343abdd110216d793d0eb7bb106d0d981999fcb8e61251b98cd41a"
+  },
+  "scope": "Selected native binding controls and matrices; legacy converter availability is compared separately as an implementation gap"
+}

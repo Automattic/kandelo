@@ -3,7 +3,10 @@
 #include "mozilla/Assertions.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
+#include <locale.h>
+#include <strings.h>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -12,14 +15,18 @@
 #include "jsfriendapi.h"
 
 #include "js/Array.h"
+#include "js/ArrayBuffer.h"
+#include "js/CallAndConstruct.h"
 #include "js/CallArgs.h"
 #include "js/CharacterEncoding.h"
 #include "js/Conversions.h"
 #include "js/ErrorReport.h"
+#include "js/Exception.h"
 #include "js/experimental/TypedData.h"
 #include "js/GCAPI.h"
 #include "js/Object.h"
 #include "js/PropertyAndElement.h"
+#include "js/SharedArrayBuffer.h"
 #include "js/Stack.h"
 #include "js/String.h"
 #include "js/Wrapper.h"
@@ -42,11 +49,14 @@
 namespace api = kandelo_node_codec_api;
 namespace native = kandelo_node_codec_impl;
 namespace kandelo_node_codec_api {
+const JSClass icuBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct State {
   Isolate isolate;
   std::atomic<size_t> externalBytes{0}, created{0}, released{0}, spans{0}, collections{0};
   bool stressGc=false;
+  std::atomic<size_t> icuCreated{0},icuReleased{0};
 };
+enum class Domain { Decoder, Icu };
 struct Cell {
   JS::PersistentRootedValue value;
   Cell(JSContext* cx, JS::HandleValue input) : value(cx, input) {}
@@ -54,16 +64,18 @@ struct Cell {
 struct Frame {
   JSContext* cx;
   JS::RootedObject realm;
+  JS::RootedObject binding;
   std::shared_ptr<State> state;
   JS::CallArgs* arguments;
+  Domain domain;
   std::vector<std::unique_ptr<Value>> roots;
   std::vector<std::unique_ptr<native::SpanOwner>> spans;
   native::Environment environment;
   Frame* previous;
   inline static thread_local Frame* current = nullptr;
   Frame(JSContext* cx, JS::HandleObject realm, std::shared_ptr<State> state,
-        JS::CallArgs* arguments = nullptr)
-      : cx(cx), realm(cx, realm), state(std::move(state)), arguments(arguments),
+        JS::CallArgs* arguments = nullptr, Domain domain = Domain::Decoder)
+      : cx(cx), realm(cx, realm), binding(cx), state(std::move(state)), arguments(arguments), domain(domain),
         previous(current) { current = this; }
   ~Frame();
   template<class T> Local<T> Own(JS::HandleValue value) {
@@ -101,6 +113,16 @@ static JSObject* UnwrapView(JSContext* cx, JS::HandleValue input) {
   object = js::CheckedUnwrapDynamic(object, cx, false);
   return object && JS_IsArrayBufferViewObject(object) ? object.get() : nullptr;
 }
+static JSObject* UnwrapObject(JSContext* cx, JS::HandleValue input) {
+  if (!input.isObject()) return nullptr;
+  JS::RootedObject object(cx,&input.toObject());
+  return js::CheckedUnwrapDynamic(object,cx,false);
+}
+static JSObject* UnwrapBytes(JSContext* cx, JS::HandleValue input) {
+  JSObject* object=UnwrapObject(cx,input);
+  return object && (JS_IsArrayBufferViewObject(object) || JS::IsArrayBufferObject(object) ||
+                    JS::IsSharedArrayBufferObject(object)) ? object : nullptr;
+}
 Value::Value(std::unique_ptr<Cell> cell) : cell_(std::move(cell)) {}
 Value::~Value() = default;
 Cell& Value::cell() const { return *cell_; }
@@ -108,12 +130,35 @@ bool Value::IsString() const { return cell().value.isString(); }
 bool Value::IsArrayBufferView() const {
   return UnwrapView(Frame::current->cx, cell().value) != nullptr;
 }
+bool Value::IsArrayBuffer() const { auto* o=UnwrapObject(Frame::current->cx,cell().value);return o && JS::IsArrayBufferObject(o); }
+bool Value::IsSharedArrayBuffer() const { auto* o=UnwrapObject(Frame::current->cx,cell().value);return o && JS::IsSharedArrayBufferObject(o); }
+bool Value::IsBoolean() const { return cell().value.isBoolean(); }
+bool Value::IsTrue() const { return cell().value.isBoolean() && cell().value.toBoolean(); }
+bool Value::IsInt32() const {
+  auto value=cell().value.get();if (!value.isNumber()) return false;
+  double n=value.toNumber();return std::isfinite(n) && !(n==0 && std::signbit(n)) &&
+      n>=INT32_MIN && n<=INT32_MAX && std::trunc(n)==n;
+}
+bool Value::IsUint32() const {
+  auto value=cell().value.get();if (!value.isNumber()) return false;
+  double n=value.toNumber();return std::isfinite(n) && !(n==0 && std::signbit(n)) &&
+      n>=0 && n<=UINT32_MAX && std::trunc(n)==n;
+}
+Maybe<uint32_t> Value::Uint32Value(Local<Context> context) {
+  auto& f=Current(context->isolate);uint32_t value;
+  if (!JS::ToUint32(f.cx,cell().value,&value)) return {};return Just(value);
+}
 Local<Value> Frame::OwnValue(JS::HandleValue value) {
   // Source Local::As must refer to the actual C++ wrapper type as well as the
   // actual engine value. A string-tagged base object is not a String object.
   if (value.isString()) return Own<String>(value);
   if (UnwrapView(cx, value)) return Own<ArrayBufferView>(value);
   if (value.isObject()) return Own<Object>(value);
+  if (value.isNumber()) {
+    double n=value.toNumber();
+    if (std::isfinite(n) && !(n==0 && std::signbit(n)) && n>=INT32_MIN && n<=UINT32_MAX && std::trunc(n)==n)
+      return Own<Integer>(value);
+  }
   return Own<Value>(value);
 }
 Local<Value> Argument(Isolate* isolate, int index) {
@@ -124,6 +169,16 @@ void Return(Isolate* isolate, Local<Value> value) {
   auto& f = Current(isolate); MOZ_RELEASE_ASSERT(f.arguments);
   if (!value.IsEmpty() && !JS_IsExceptionPending(f.cx)) f.arguments->rval().set(Input(value));
 }
+void ReturnNumber(Isolate* isolate,double value) { auto& f=Current(isolate);if (!JS_IsExceptionPending(f.cx))f.arguments->rval().setNumber(value); }
+void ReturnBoolean(Isolate* isolate,bool value) { auto& f=Current(isolate);if (!JS_IsExceptionPending(f.cx))f.arguments->rval().setBoolean(value); }
+int ArgumentCount(Isolate* isolate) { auto& f=Current(isolate);CHECK(f.arguments);return int(f.arguments->length()); }
+struct CatchScope {
+  JS::AutoSaveExceptionState saved;
+  explicit CatchScope(JSContext* cx):saved(cx) {}
+  ~CatchScope() { saved.restore(); }
+};
+TryCatch::TryCatch(Isolate* isolate):scope_(std::make_unique<CatchScope>(Current(isolate).cx)) {}
+TryCatch::~TryCatch()=default;
 Local<Context> Isolate::GetCurrentContext() { Current(this); return Local<Context>(&context); }
 void Isolate::ThrowException(Local<Value> value) {
   auto& f = Current(this);
@@ -168,6 +223,7 @@ Maybe<bool> Array::Set(Local<Context> context, int32_t index, Local<Value> input
 Local<Integer> Integer::New(Isolate* isolate, int input) {
   auto& f = Current(isolate); JS::RootedValue value(f.cx, JS::Int32Value(input)); return f.Own<Integer>(value);
 }
+int64_t Integer::Value() const { CHECK(IsInt32() || IsUint32());return int64_t(cell().value.toNumber()); }
 const size_t String::kMaxLength = JS::MaxStringLength;
 const size_t Uint8Array::kMaxLength = js::ArrayBufferObject::ByteLengthLimit;
 Local<String> String::Empty(Isolate* isolate) {
@@ -279,9 +335,10 @@ struct SpanOwner {
   std::shared_ptr<State> state;
   bool pinned=false; size_t size=0; uint8_t* bytes=nullptr; uint8_t empty=0;
   SpanOwner(Frame& frame, JS::HandleObject input) : object(frame.cx, input), state(frame.state) {
+    bool view=JS_IsArrayBufferViewObject(input);
+    bool shared=JS::IsSharedArrayBufferObject(input);
     { JSAutoRealm home(frame.cx, input);
-      bool shared=false;
-      JS::RootedObject buffer(frame.cx,JS_GetArrayBufferViewBuffer(frame.cx,input,&shared)); CHECK_NOT_NULL(buffer);
+      JS::RootedObject buffer(frame.cx,view?JS_GetArrayBufferViewBuffer(frame.cx,input,&shared):input.get()); CHECK_NOT_NULL(buffer);
       buffer=js::CheckedUnwrapDynamic(buffer,frame.cx,false); CHECK_NOT_NULL(buffer);
       // ensureNonInline rejects an already pinned buffer, including a second
       // view of our state allocation. Its existing out-of-line storage is
@@ -291,9 +348,10 @@ struct SpanOwner {
         Crash("Native codec backing allocation stabilization failed");
       pinned=JS::PinArrayBufferOrViewLength(input, true);
     }
-    size=JS_GetArrayBufferViewByteLength(object);
-    bool shared=false; JS::AutoCheckCannotGC nogc;
-    bytes=static_cast<uint8_t*>(JS_GetArrayBufferViewData(object, &shared, nogc));
+    size=view?JS_GetArrayBufferViewByteLength(object):shared?JS::GetSharedArrayBufferByteLength(object):JS::GetArrayBufferByteLength(object);
+    JS::AutoCheckCannotGC nogc;
+    bytes=view?static_cast<uint8_t*>(JS_GetArrayBufferViewData(object, &shared, nogc)):
+        shared?JS::GetSharedArrayBufferData(object,&shared,nogc):JS::GetArrayBufferData(object,&shared,nogc);
     if (!bytes) { MOZ_RELEASE_ASSERT(size==0); bytes=&empty; }
     state->spans.fetch_add(1);
   }
@@ -305,6 +363,10 @@ struct SpanOwner {
 template<class T,size_t N> ArrayBufferViewContents<T,N>::ArrayBufferViewContents(Local<ArrayBufferView> input) {
   auto& frame=*Frame::current; JS::RootedObject object(frame.cx, UnwrapView(frame.cx, Input(input)));
   CHECK_NOT_NULL(object); owner_=std::make_unique<SpanOwner>(frame, object);
+}
+template<class T,size_t N> ArrayBufferViewContents<T,N>::ArrayBufferViewContents(Local<Value> input) {
+  auto& frame=*Frame::current;JS::RootedObject object(frame.cx,api::UnwrapBytes(frame.cx,Input(input)));
+  CHECK_NOT_NULL(object);owner_=std::make_unique<SpanOwner>(frame,object);
 }
 template<class T,size_t N> ArrayBufferViewContents<T,N>::~ArrayBufferViewContents()=default;
 template<class T,size_t N> T* ArrayBufferViewContents<T,N>::data() const { return reinterpret_cast<T*>(owner_->bytes); }
@@ -319,17 +381,22 @@ template<class T,size_t N> T* MaybeStackBuffer<T,N>::operator*() { return data_;
 template<class T,size_t N> size_t MaybeStackBuffer<T,N>::length() const { return length_; }
 template<class T,size_t N> void MaybeStackBuffer<T,N>::SetLength(size_t length) { CHECK_LE(length,capacity_); length_=length; }
 template<class T,size_t N> void MaybeStackBuffer<T,N>::AllocateSufficientStorage(size_t length) {
-  if (length<=capacity_) return;
-  CHECK_LE(length,std::numeric_limits<size_t>::max()/sizeof(T));
-  auto* data=static_cast<T*>(std::malloc(length*sizeof(T))); CHECK_NOT_NULL(data);
-  std::memcpy(data,data_,length_*sizeof(T)); if (data_!=stack_) std::free(data_);
-  data_=data; capacity_=length;
+  if (length>capacity_) {
+    CHECK_LE(length,std::numeric_limits<size_t>::max()/sizeof(T));
+    auto* data=static_cast<T*>(std::malloc(length*sizeof(T))); CHECK_NOT_NULL(data);
+    std::memcpy(data,data_,length_*sizeof(T)); if (data_!=stack_) std::free(data_);
+    data_=data; capacity_=length;
+  }
+  // The original utility sets logical length even when existing storage fits.
+  length_=length;
 }
 template<class T,size_t N> bool MaybeStackBuffer<T,N>::IsAllocated() const { return data_!=stack_; }
 template<class T,size_t N> void MaybeStackBuffer<T,N>::Release() { CHECK(data_!=stack_); data_=stack_; length_=0; capacity_=N; }
 template class MaybeStackBuffer<char,512>;
+template class MaybeStackBuffer<char,1024>;
 template class MaybeStackBuffer<char,4096>;
 template class MaybeStackBuffer<char16_t,1024>;
+template class MaybeStackBuffer<char16_t,256>;
 template class MaybeStackBuffer<uint16_t,256>;
 template class MaybeStackBuffer<uint16_t,1024>;
 template<class T> T* UncheckedMalloc(size_t length) {
@@ -344,8 +411,81 @@ TwoByteValue::TwoByteValue(Isolate* isolate, Local<Value> input) {
   AllocateSufficientStorage(string->Length()); string->WriteV2(isolate,0,string->Length(),out());
   if (!JS_IsExceptionPending(f.cx)) SetLength(string->Length());
 }
+Utf8Value::Utf8Value(Isolate* isolate,Local<Value> input) {
+  auto& f=Current(isolate);Local<String> string;
+  if (!input->ToString(isolate->GetCurrentContext()).ToLocal(&string)) { Invalidate();return; }
+  JS::RootedString value(f.cx,string->cell().value.toString());
+  auto bytes=JS_EncodeStringToUTF8(f.cx,value);if (!bytes) { Invalidate();return; }
+  JSLinearString* linear=value->ensureLinear(f.cx);if (!linear) { Invalidate();return; }
+  size_t length=JS::GetDeflatedUTF8StringLength(linear);
+  AllocateSufficientStorage(length+1);std::memcpy(out(),bytes.get(),length+1);SetLength(length);
+}
 Environment* Environment::GetCurrent(Local<Context> context) { return &Current(context->isolate).environment; }
+Environment* Environment::GetCurrent(const FunctionCallbackInfo<Value>& args) { return GetCurrent(args.GetIsolate()->GetCurrentContext()); }
 Isolate* Environment::isolate() { return &Frame::current->state->isolate; }
+Local<Context> Environment::context() { return isolate()->GetCurrentContext(); }
+Isolate* IsolateData::isolate() { return &Frame::current->state->isolate; }
+void IsolateData::set_i18n_converter_template(Local<ObjectTemplate> value) {
+  auto& f=*Frame::current;CHECK(f.binding && JS::GetClass(f.binding)==&api::icuBindingClass);
+  JS::SetReservedSlot(f.binding,0,Input(value));
+}
+Local<ObjectTemplate> Environment::i18n_converter_template() {
+  auto& f=*Frame::current;CHECK(f.binding && JS::GetClass(f.binding)==&api::icuBindingClass);
+  JS::RootedValue value(f.cx,JS::GetReservedSlot(f.binding,0));CHECK(value.isObject());
+  return f.Own<ObjectTemplate>(value);
+}
+struct NativeObjectOwner {
+  std::shared_ptr<State> state;
+  std::unique_ptr<JS::PersistentRootedObject> root;
+  NativeObjectOwner(Frame& frame,JS::HandleObject object):state(frame.state),
+      root(std::make_unique<JS::PersistentRootedObject>(frame.cx,object)) {}
+};
+void FinalizeConverter(JS::GCContext*,JSObject* object) {
+  auto value=JS::GetReservedSlot(object,0);
+  if (!value.isUndefined()) {
+    // Retire the pointer before the native resource's destructor runs.
+    JS::SetReservedSlot(object,0,JS::UndefinedValue());
+    delete static_cast<BaseObject*>(value.toPrivate());
+  }
+}
+const JSClassOps converterOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,FinalizeConverter};
+const JSClass converterClass={"Converter",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
+BaseObject::BaseObject(Environment*,Local<Object> input) {
+  auto& f=*Frame::current;JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
+  CHECK(object && JS::GetClass(object)==&converterClass && JS::GetReservedSlot(object,0).isUndefined());
+  owner_=std::make_unique<NativeObjectOwner>(f,object);
+  // Keep ownership in the traced graph after MakeWeak drops the native root.
+  JS::SetReservedSlot(object,1,JS::ObjectValue(*f.realm));
+  JS::SetReservedSlot(object,0,JS::PrivateValue(this));owner_->state->icuCreated.fetch_add(1);
+}
+BaseObject::~BaseObject() { owner_->state->icuReleased.fetch_add(1); }
+void BaseObject::MakeWeak() { CHECK(owner_->root);owner_->root.reset(); }
+BaseObject* BaseObject::Unwrap(Local<Object> input) {
+  auto& f=*Frame::current;JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
+  if (!object || JS::GetClass(object)!=&converterClass) return nullptr;
+  auto value=JS::GetReservedSlot(object,0);if (value.isUndefined()) return nullptr;
+  JS::RootedObject realm(f.cx,&JS::GetReservedSlot(object,1).toObject());
+  if (!kandelo::node::CheckRealmLibraryActive(f.cx,realm)) return nullptr;
+  return static_cast<BaseObject*>(value.toPrivate());
+}
+Local<String> OneByteString(Isolate* isolate,const char* text) {
+  return String::NewFromOneByte(isolate,reinterpret_cast<const uint8_t*>(text),NewStringType::kNormal,int(std::strlen(text))).ToLocalChecked();
+}
+bool StringEqualNoCase(const char* a,const char* b) {
+  // The encoding parser requires ASCII folding independent of guest locale.
+  locale_t ascii=newlocale(LC_CTYPE_MASK,"C",nullptr);CHECK_NOT_NULL(ascii);
+  bool same=strcasecmp_l(a,b,ascii)==0;freelocale(ascii);return same;
+}
+void THROW_ERR_INVALID_ARG_TYPE(Isolate* isolate,const char* text) {
+  auto error=api::Error(isolate,JSEXN_TYPEERR,"ERR_INVALID_ARG_TYPE",text);
+  if (!error.IsEmpty()) isolate->ThrowException(error);
+}
+void THROW_ERR_ENCODING_INVALID_ENCODED_DATA(Isolate* isolate,const char* format,const char* encoding) {
+  int length=std::snprintf(nullptr,0,format,encoding);CHECK_GE(length,0);
+  std::vector<char> text(size_t(length)+1);std::snprintf(text.data(),text.size(),format,encoding);
+  auto error=api::Error(isolate,JSEXN_TYPEERR,"ERR_ENCODING_INVALID_ENCODED_DATA",text.data());
+  if (!error.IsEmpty()) isolate->ThrowException(error);
+}
 Local<Value> ERR_STRING_TOO_LONG(Isolate* isolate) {
   const auto& metadata=kandelo_codec_metadata::StringTooLong;
   char text[128]; std::snprintf(text,sizeof(text),metadata.text,unsigned(String::kMaxLength));
@@ -361,6 +501,10 @@ Local<Value> ERR_MEMORY_ALLOCATION_FAILED(Isolate* isolate) {
   return Error(isolate,metadata.range?JSEXN_RANGEERR:JSEXN_ERR,metadata.code,metadata.text);
 }
 namespace Buffer {
+MaybeLocal<Object> MissingAllocation(Environment* env) {
+  auto error=api::Error(env->isolate(),JSEXN_ERR,"ERR_KANDELO_NOT_IMPLEMENTED","Original Buffer allocation/prototype backend is not implemented");
+  if (!error.IsEmpty()) env->isolate()->ThrowException(error);return {};
+}
 bool HasInstance(Local<Value> input) { return input->IsArrayBufferView(); }
 bool HasInstance(Local<Object> input) { return HasInstance(Local<Value>(input)); }
 char* Data(Local<Value> input) { CHECK(input->IsArrayBufferView()); return reinterpret_cast<char*>(Frame::current->Borrow(input).bytes); }
@@ -379,13 +523,53 @@ native::SpanOwner& Frame::Borrow(Local<Value> input) {
   spans.push_back(std::make_unique<native::SpanOwner>(*this, object)); return *spans.back();
 }
 namespace {
+bool ConverterConstructor(JSContext* cx,unsigned argc,JS::Value* vp) {
+  auto args=JS::CallArgsFromVp(argc,vp);
+  if (!args.isConstructing()) {
+    JS::RootedObject receiver(cx,args.thisv().isNullOrUndefined()?JS::CurrentGlobalOrNull(cx):JS::ToObject(cx,args.thisv()));
+    if (!receiver) return false;args.rval().setObject(*receiver);return true;
+  }
+  JS::RootedObject object(cx,JS_NewObjectForConstructor(cx,&native::converterClass,args));
+  if (!object) return false;args.rval().setObject(*object);return true;
+}
+}
+Local<FunctionTemplate> CreateConverterTemplate(Isolate* isolate,std::nullptr_t) {
+  auto& f=Current(isolate);
+  JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,ConverterConstructor,0,JSFUN_CONSTRUCTOR,""));if (!function) return {};
+  JS::RootedObject object(f.cx,JS_GetFunctionObject(function));js::SetFunctionNativeReserved(object,0,JS::Int32Value(0));
+  JS::RootedObject prototype(f.cx,JS_NewPlainObject(f.cx));
+  if (!prototype || !JS_DefineProperty(f.cx,prototype,"constructor",object,0) ||
+      !JS_DefineProperty(f.cx,object,"prototype",prototype,JSPROP_PERMANENT)) return {};
+  JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<FunctionTemplate>(value);
+}
+Local<ObjectTemplate> FunctionTemplate::InstanceTemplate() {
+  auto& f=*Frame::current;JS::RootedValue value(f.cx,cell().value);return f.Own<ObjectTemplate>(value);
+}
+void FunctionTemplate::SetClassName(Local<String> name) {
+  auto& f=*Frame::current;JS::RootedFunction function(f.cx,&cell().value.toObject().as<JSFunction>());
+  JS::RootedString string(f.cx,name->cell().value.toString());
+  JS::Rooted<JSAtom*> atom(f.cx,js::AtomizeString(f.cx,string));CHECK_NOT_NULL(atom);function->setAtom(atom);
+}
+void ObjectTemplate::SetInternalFieldCount(int count) {
+  CHECK(count==native::BaseObject::kInternalFieldCount);
+  js::SetFunctionNativeReserved(&cell().value.toObject(),0,JS::Int32Value(count));
+}
+MaybeLocal<Object> ObjectTemplate::NewInstance(Local<Context> context) {
+  auto& f=Current(context->isolate);if (JS_IsExceptionPending(f.cx)) return {};
+  JS::RootedObject constructor(f.cx,&cell().value.toObject());
+  CHECK(js::GetFunctionNativeReserved(constructor,0).toInt32()==native::BaseObject::kInternalFieldCount);
+  JS::RootedValue callable(f.cx,JS::ObjectValue(*constructor));JS::RootedObject object(f.cx);
+  if (!JS::Construct(f.cx,callable,JS::HandleValueArray::empty(),&object)) return {};
+  JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Object>(value);
+}
+namespace {
 using Callback=void(*)(const FunctionCallbackInfo<Value>&);
-struct CallbackOwner { Callback callback; };
+struct CallbackOwner { Callback callback;Domain domain; };
 void FinalizeCallback(JS::GCContext*,JSObject* object) {
   auto value=JS::GetReservedSlot(object,0); if (!value.isUndefined()) delete static_cast<CallbackOwner*>(value.toPrivate());
 }
 const JSClassOps callbackOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,FinalizeCallback};
-const JSClass callbackClass={"NodeCodecCallback",JSCLASS_HAS_RESERVED_SLOTS(1)|JSCLASS_FOREGROUND_FINALIZE,&callbackOps};
+const JSClass callbackClass={"NodeCodecCallback",JSCLASS_HAS_RESERVED_SLOTS(2)|JSCLASS_FOREGROUND_FINALIZE,&callbackOps};
 void Finalize(JS::GCContext*,JSObject* object) {
   auto value=JS::GetReservedSlot(object,0); if (!value.isUndefined()) delete static_cast<std::shared_ptr<State>*>(value.toPrivate());
 }
@@ -398,37 +582,55 @@ std::shared_ptr<State> Data(JSContext* cx,JS::HandleObject runtime) {
   return *static_cast<std::shared_ptr<State>*>(JS::GetReservedSlot(state,0).toPrivate());
 }
 bool Invoke(JSContext* cx,unsigned argc,JS::Value* vp) {
-  auto args=JS::CallArgsFromVp(argc,vp); JS::RootedObject realm(cx,&js::GetFunctionNativeReserved(&args.callee(),0).toObject());
+  auto args=JS::CallArgsFromVp(argc,vp);JS::RootedObject callee(cx,&args.callee());
+  JS::RootedObject realm(cx,&js::GetFunctionNativeReserved(callee,0).toObject());
+  JS::RootedObject closure(cx,&js::GetFunctionNativeReserved(callee,1).toObject());
+  // The engine return slot aliases the callee. V8 callbacks start undefined,
+  // including source paths that return without setting a result.
+  args.rval().setUndefined();
   if (!kandelo::node::CheckRealmLibraryActive(cx,realm)) return false;
   JS::RootedObject runtime(cx,kandelo::node::GetRealmRuntime(cx,realm)); if (!runtime) return false;
-  auto state=Data(cx,runtime); if (!state) return false; Frame frame(cx,realm,state,&args);
-  auto input=Argument(&state->isolate,0); CHECK(input->IsArrayBufferView());
-  auto& span=frame.Borrow(input);
+  CHECK(JS::GetClass(closure)==&callbackClass);
+  auto* callback=static_cast<CallbackOwner*>(JS::GetReservedSlot(closure,0).toPrivate());
+  auto state=Data(cx,runtime); if (!state) return false; Frame frame(cx,realm,state,&args,callback->domain);
+  frame.binding=&JS::GetReservedSlot(closure,1).toObject();
+  if (callback->domain==Domain::Decoder) {
+    auto input=Argument(&state->isolate,0); CHECK(input->IsArrayBufferView());
+    auto& span=frame.Borrow(input);
   // The private source assumes its complete native state allocation. Guard
   // that trust boundary before handing its real writable bytes to the source.
   CHECK(span.size>=sizeof(native::StringDecoder));
   CHECK(span.bytes[native::StringDecoder::kBufferedBytes]+span.bytes[native::StringDecoder::kMissingBytes]<=native::StringDecoder::kIncompleteCharactersEnd);
-  JS::RootedObject closure(cx,&js::GetFunctionNativeReserved(&args.callee(),1).toObject()); CHECK(JS::GetClass(closure)==&callbackClass);
-  auto* callback=static_cast<CallbackOwner*>(JS::GetReservedSlot(closure,0).toPrivate());
+  }
   FunctionCallbackInfo<Value> call(&state->isolate); callback->callback(call); return !JS_IsExceptionPending(cx);
 }
 }
 }  // namespace kandelo_node_codec_api
 
 namespace kandelo_node_codec_impl {
+Local<FunctionTemplate> NewFunctionTemplate(Isolate* isolate,std::nullptr_t empty) {
+  return api::CreateConverterTemplate(isolate,empty);
+}
 void SetMethod(Local<Context> context,Local<Object> target,const char* name,void(*callback)(const FunctionCallbackInfo<Value>&)) {
   auto& f=Current(context->isolate);
-  JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,api::Invoke,0,0,"")); CHECK_NOT_NULL(function);
+  bool ownProperties=f.domain==Domain::Icu;
+  JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,api::Invoke,0,0,ownProperties?name:"")); CHECK_NOT_NULL(function);
   JS::RootedObject object(f.cx,JS_GetFunctionObject(function)),binding(f.cx,&target->cell().value.toObject());
   // Each actual function owns its typed callback metadata. No process-global
   // mutable callback table can race between independently created runtimes.
   JS::RootedObject closure(f.cx,JS_NewObject(f.cx,&api::callbackClass)); CHECK_NOT_NULL(closure);
-  JS::SetReservedSlot(closure,0,JS::PrivateValue(new api::CallbackOwner{callback}));
+  JS::SetReservedSlot(closure,0,JS::PrivateValue(new api::CallbackOwner{callback,f.domain}));
+  JS::SetReservedSlot(closure,1,JS::ObjectValue(*binding));
   js::SetFunctionNativeReserved(object,0,JS::ObjectValue(*f.realm));
   js::SetFunctionNativeReserved(object,1,JS::ObjectValue(*closure));
-  JS::RootedValue value(f.cx,JS::ObjectValue(*object)); CHECK(JS_SetProperty(f.cx,binding,name,value));
+  JS::RootedValue value(f.cx,JS::ObjectValue(*object));
+  if (ownProperties) { CHECK(JS_DefineProperty(f.cx,binding,name,value,JSPROP_ENUMERATE));return; }
+  CHECK(JS_SetProperty(f.cx,binding,name,value));
   CHECK(!function->hasResolvedName());
   JS::Rooted<JSAtom*> atom(f.cx,js::Atomize(f.cx,name,std::strlen(name))); CHECK_NOT_NULL(atom); function->setAtom(atom);
+}
+void SetMethod(Isolate* isolate,Local<ObjectTemplate> target,const char* name,void(*callback)(const FunctionCallbackInfo<Value>&)) {
+  SetMethod(isolate->GetCurrentContext(),Local<Object>(target),name,callback);
 }
 }
 namespace kandelo::node {
@@ -445,12 +647,24 @@ JSObject* CreateStringDecoderBinding(JSContext* cx,JS::HandleObject realm) {
   kandelo_codec_adapter::initializer(frame.Own<api::Object>(value),frame.OwnValue(unused),state->isolate.GetCurrentContext(),nullptr);
   if (JS_IsExceptionPending(cx)) return nullptr; return object;
 }
+JSObject* CreateIcuBinding(JSContext* cx,JS::HandleObject realm) {
+  JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if (!runtime) return nullptr;
+  auto state=api::Data(cx,runtime);if (!state) return nullptr;api::Frame frame(cx,realm,state,nullptr,api::Domain::Icu);
+  JS::RootedObject object(cx,JS_NewObject(cx,&api::icuBindingClass));if (!object) return nullptr;frame.binding=object;
+  JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
+  native::IsolateData data;
+  kandelo_icu_adapter::initializer(&data,frame.Own<api::ObjectTemplate>(value));
+  if (JS_IsExceptionPending(cx)) return nullptr;
+  kandelo_icu_adapter::context_initializer(frame.Own<api::Object>(value),frame.OwnValue(unused),state->isolate.GetCurrentContext(),nullptr);
+  if (JS_IsExceptionPending(cx)) return nullptr;return object;
+}
 JSObject* InspectCodecState(JSContext* cx,JS::HandleObject runtime) {
   auto state=api::Data(cx,runtime); if (!state) return nullptr;
   JS::RootedObject object(cx,JS_NewPlainObject(cx)); if (!object) return nullptr;
   for (const auto& item:std::initializer_list<std::pair<const char*,size_t>>{
       {"externalBytes",state->externalBytes.load()},{"created",state->created.load()},
-      {"released",state->released.load()},{"spans",state->spans.load()},{"collections",state->collections.load()}}) {
+      {"released",state->released.load()},{"spans",state->spans.load()},{"collections",state->collections.load()},
+      {"icuCreated",state->icuCreated.load()},{"icuReleased",state->icuReleased.load()}}) {
     JS::RootedValue value(cx,JS::DoubleValue(double(item.second)));
     if (!JS_DefineProperty(cx,object,item.first,value,JSPROP_ENUMERATE)) return nullptr;
   }

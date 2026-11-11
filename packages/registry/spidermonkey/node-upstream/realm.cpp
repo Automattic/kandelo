@@ -49,7 +49,7 @@ namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3, NodeComplete = 4 };
-enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -253,6 +253,14 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
       binding = CreateOptionsBinding(cx, state);
       if (!binding) return false;
       JS::SetReservedSlot(state, Options, JS::ObjectValue(*binding));
+    }
+  }
+  else if (name == "icu") {
+    JS::Value cached=JS::GetReservedSlot(state,Icu);
+    if (cached.isObject()) binding=&cached.toObject();
+    else {
+      binding=CreateIcuBinding(cx,state);if (!binding) return false;
+      JS::SetReservedSlot(state,Icu,JS::ObjectValue(*binding));
     }
   }
   else if (name == "string_decoder") {

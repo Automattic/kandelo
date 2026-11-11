@@ -456,5 +456,11 @@
     },
     "typedOriginalNodeError": "returned",
     "emptySimpleCjsEsm": "unproven"
+  },
+  "currentStartup": {
+    "evidence": "icu-engine-check.json",
+    "principalNextBinding": "trace_events",
+    "stackLimitPolicyNextBinding": "mksnapshot",
+    "startupAccepted": false
   }
 }
