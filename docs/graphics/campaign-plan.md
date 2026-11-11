@@ -668,3 +668,30 @@ memory/browser validation and all nine Node/browser performance pairs are
 still required. PR #1678 stays draft; no R1 completion or merge is claimed.
 B2–B6/C1–C3 remain paused, and the maintainer's blur follow-up decision
 remains unchanged.
+
+
+### R1 reviewed preview available — 2026-11-10 evening
+
+Reviewed runtime `8ddcdcedc7` has a coherent normal preview at
+http://127.0.0.1:56522/?vfs=%2F__kandelo_source_only_assets__%2F64632122b267b4936b3fbc370eac5c2010002b7a8a800cebf75f5a777c6c6211%2Fshell.vfs.zst&profile=cage.
+The normal full graph completes 253/253 nodes and 11 products. A freshly
+checked release xtask completes the same full bootstrap after an unpublished
+debug finalization was intentionally stopped; the literal normal browser
+entry then passes its cached checks and serves the preview. Earlier public
+previews remain independently frozen.
+
+Current checks: boot/shifted-input/repaint/exit smoke 1/1; actual baseline
+publication through memory growth 3/3 browser engines plus real Bun; native
+fork programs 16/16 across wasm32/64; Open POSIX kill 5/5 each on Node and
+Chromium; offline frozen-program compatibility 6/6; ABI snapshot/baseline
+check against pinned main passes and all 18 cohort hashes match. The new
+full memory gate passes 300 source checks, Node teardown 3/3 and Bun 7/7.
+Its 18 browser cases and a fresh complete 120-case desktop matrix are
+running. The previous 15/18 and 114/120 verdicts remain adverse until
+complete newer results are available.
+
+All nine Node/Chromium before/after benchmark pairs and the 12 matched cursor
+observations remain unfinished. PR #1678 remains draft. Blur is the approved
+follow-up; no other gate is waived, no complete R1/native-feel acceptance
+is claimed, and B2–B6/C1–C3 remain paused. Detailed current evidence is in
+`docs/graphics/cage-reliability-2026-11.md` at `13920f98bf`.
