@@ -33,6 +33,8 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/timers.h" \
     "$node_consumer/task-queue.cpp" \
     "$node_consumer/task-queue.h" \
+    "$node_consumer/async-wrap.cpp" \
+    "$node_consumer/async-wrap.h" \
     "$node_consumer/per-context.h" "$shell_sources/"
 # Keep the portable registry's include names independent of Mozilla shell paths.
 # Mozilla's checker treats js/src as the root of internal header include names.
@@ -49,6 +51,9 @@ for source_name, output_name in [('src/env_properties.h', 'node-env-properties.h
         raise ValueError('original Node header identity mismatch: ' + source_name)
     (output_dir/output_name).write_bytes(source)
 PY
+python3 "$repo_root/scripts/generate-nodejs-async-metadata.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$mozilla_source/js/src/node-async-metadata.generated.h"
 
 host_sdk_flags=()
 if [ -n "$host_sdk" ]; then

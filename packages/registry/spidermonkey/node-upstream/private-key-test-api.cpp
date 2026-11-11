@@ -17,6 +17,7 @@
 #include "js/Symbol.h"
 #include "js/Wrapper.h"
 #include "shell/jsshell.h"
+#include "shell/node-upstream/async-wrap.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
 #include "shell/ShellModuleObjectWrapper.h"
@@ -64,7 +65,7 @@ bool InitializePrivateKey(JSContext* cx, unsigned argc, JS::Value* vp) {
 }
 
 enum class ContextOperation { Initialize, GetExports, Inspect, ModuleWrapBinding,
-                              ErrorBinding, InitializeRealm, GetRealm, InspectRealm, RunNode, InspectTimers };
+                              ErrorBinding, InitializeRealm, GetRealm, InspectRealm, RunNode, InspectTimers, InspectAsync };
 
 bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
                           ContextOperation operation) {
@@ -108,6 +109,8 @@ bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
           ? GetErrorStackBinding(cx)
           : operation == ContextOperation::InspectTimers
           ? InspectCurrentTimerState(cx, runtime)
+          : operation == ContextOperation::InspectAsync
+          ? InspectRuntimeAsyncState(cx, runtime)
           : operation == ContextOperation::InitializeRealm || operation == ContextOperation::GetRealm ||
             operation == ContextOperation::InspectRealm || operation == ContextOperation::RunNode
           ? GetCurrentRealmLibrary(cx, runtime, operation == ContextOperation::InspectRealm)
@@ -156,6 +159,9 @@ bool RunNode(JSContext* cx, unsigned argc, JS::Value* vp) {
 }
 bool InspectTimers(JSContext* cx, unsigned argc, JS::Value* vp) {
   return ContextOperationCall(cx, argc, vp, ContextOperation::InspectTimers);
+}
+bool InspectAsync(JSContext* cx, unsigned argc, JS::Value* vp) {
+  return ContextOperationCall(cx, argc, vp, ContextOperation::InspectAsync);
 }
 bool InspectRealm(JSContext* cx, unsigned argc, JS::Value* vp) {
   return ContextOperationCall(cx, argc, vp, ContextOperation::InspectRealm);
@@ -263,6 +269,7 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
       JS_FN("inspectRealm", InspectRealm, 0, 0),
       JS_FN("runNodeBootstrap", RunNode, 0, 0),
       JS_FN("inspectTimers", InspectTimers, 0, 0),
+      JS_FN("inspectAsync", InspectAsync, 0, 0),
       JS_FN("enhanceFatalStack", EnhanceFatalStack, 2, 0),
       JS_FN("newSyntheticModule", NewSyntheticModule, 2, 0),
       JS_FN("setSyntheticExport", SetSyntheticExport, 3, 0),

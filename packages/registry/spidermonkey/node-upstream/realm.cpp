@@ -31,6 +31,7 @@
 #include "js/String.h"
 #include "js/ValueArray.h"
 #include "shell/jsshell.h"
+#include "shell/node-upstream/async-wrap.h"
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
@@ -42,7 +43,7 @@ namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3 };
-enum Slot { Status, Global, Process, Primordials, Builtins, Util, Config, Timers, TaskQueue, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, Builtins, Util, Config, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -238,6 +239,17 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
       binding = CreateTaskQueueBinding(cx, runtime, state);
       if (!binding) return false;
       JS::SetReservedSlot(state, TaskQueue, JS::ObjectValue(*binding));
+    }
+  }
+  else if (name == "async_wrap" || name == "symbols") {
+    unsigned slot = name == "async_wrap" ? AsyncWrap : Symbols;
+    JS::Value cached = JS::GetReservedSlot(state, slot);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = name == "async_wrap" ? CreateAsyncWrapBinding(cx, runtime, state)
+                                    : CreateRuntimeSymbolsBinding(cx, runtime);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, slot, JS::ObjectValue(*binding));
     }
   }
   else if (name == "module_wrap") binding = GetCurrentContextModuleWrapBinding(cx, runtime);

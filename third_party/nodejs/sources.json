@@ -3439,6 +3439,20 @@
       "builtinId": null
     },
     {
+      "path": "src/async_wrap.cc",
+      "role": "provenance",
+      "bytes": 27422,
+      "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709",
+      "builtinId": null
+    },
+    {
+      "path": "src/async_wrap.h",
+      "role": "provenance",
+      "bytes": 12578,
+      "sha256": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6",
+      "builtinId": null
+    },
+    {
       "path": "src/builtin_info.cc",
       "role": "provenance",
       "bytes": 1447,
@@ -3450,6 +3464,13 @@
       "role": "provenance",
       "bytes": 1899,
       "sha256": "f81573ce5068e4d2d36a7b46b3ff58c0c86d2832814424b3216ef8ef89cdedc5",
+      "builtinId": null
+    },
+    {
+      "path": "src/env.h",
+      "role": "provenance",
+      "bytes": 53128,
+      "sha256": "2727db70801cd3d154790795f52aac30909279cfbbec5beab1c0b463a4aa55b8",
       "builtinId": null
     },
     {

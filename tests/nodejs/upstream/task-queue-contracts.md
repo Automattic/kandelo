@@ -190,3 +190,16 @@ native executable recorded in the receipt:
 scripts/dev-shell.sh node_modules/.bin/tsx scripts/run-nodejs-job-queue-gap.ts \
   <revision-27-js.wasm> <pinned-native-node> <report.json>
 ```
+
+
+## Subsequent async-state integration
+
+Revision 29 implements the assigned Promise rejection context seam described
+above using actual shared IDs and the actual Promise resource. Conditional pop
+also runs after callback errors and respects stack reset. Complete native
+callback scopes, engine Promise lifecycle hooks, continuation frames and fatal
+exit remain incomplete. The original principal body now passes internal/async_hooks
+and stops on constants. See [async-wrap-contracts.md](async-wrap-contracts.md) and
+[async-wrap-engine-check.json](async-wrap-engine-check.json) for current identified
+artifacts, shared native controls and four-host evidence. Earlier revision-28
+observations above remain historical evidence.

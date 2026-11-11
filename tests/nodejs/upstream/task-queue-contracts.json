@@ -94,7 +94,7 @@
       }
     ],
     "engineSourceLimit": "Retained original-source context from the earlier revision15 resolver workspace; individual hashes retained, not a fresh whole-Mozilla-archive verification or revision27 generated-source identity claim. Current behavior is separately probed on the identified revision27 artifact.",
-    "literalSearchScope": "All494current imported files rehashed, including one added native enum header; prior443registered JS sources and all literal consumer anchors unchanged. Not complete dynamic/lazy graph coverage.",
+    "literalSearchScope": "All497current imported files rehashed; prior494records and all443registered JS sources unchanged. Current async-wrap-contracts.json adds43literal consumer anchors; not complete dynamic/lazy graph coverage.",
     "directBindingConsumers": [
       {
         "path": "lib/internal/async_hooks.js",
@@ -249,7 +249,7 @@
       "nativeAuthority": "src/node_task_queue.cc SetPromiseRejectCallback and PromiseRejectCallback",
       "owner": "environment retained handler; actual promise/reason and assigned async IDs",
       "errors": "original function CHECK; engine callback cannot leak pending exception; native best-effort handler-error report",
-      "status": "implemented actual promise/reason/event delivery and best-effort callback diagnostics; assigned async contexts remain explicit missing behavior"
+      "status": "Actual event/promise/reason and assigned-ID/resource entry/conditional restoration implemented; complete engine Promise lifecycle/frame/native scopes remain incomplete"
     }
   ],
   "prerequisites": [
@@ -261,7 +261,7 @@
     {
       "id": "async-wrap",
       "owner": "native environment/engine",
-      "state": "Actual IDs/resources, shared hook fields, callback trampoline, before/after/destroy and promise hooks required; not implemented"
+      "state": "Actual shared fields/IDs/stack/resources, registration and assigned Promise rejection context implemented; engine Promise lifecycle, frames, destroy delivery and common scopes incomplete. See async-wrap-contracts.json."
     },
     {
       "id": "async-context-frame",
@@ -346,7 +346,7 @@
     }
   ],
   "startupOrder": [
-    "Actual async_wrap shared hook/ID/resource/frame and common native callback-scope prerequisites; original principal body now stops on async_wrap",
+    "Original principal body now passes internal/async_hooks and stops on constants; implement genuine startup-required native constants/closure, then remaining engine/frame/common callback scopes",
     "Complete original tick/rejection callbacks and native fatal/exit policy through common shell/libuv resource scopes",
     "Reexecute original principal body and record its next actual blocker without substitute modules or fabricated bindings",
     "Identified-artifact startup checks on all four hosts; separate CJS/ESM, full graph reconciliation and later user review gate"
@@ -363,9 +363,9 @@
   "limits": [
     "Literal consumers are not complete lazy/computed/conditional/worker/exception graph coverage",
     "Partial raw task queue binding only; original public queue/rejection/fatal policy and successful Node startup remain incomplete",
-    "Active module evaluation and assigned promise async contexts are explicit gaps; full fatal/exit/at-exit and native async scopes incomplete",
-    "Current26taskqueue cases per host plus162priorNodecases; earlier shell-gap receipt and older browser timer artifact remain historical evidence",
-    "No kernel/libc/SDK/host/ABI change; one unchanged native enum header added, every original JS record unchanged",
+    "Active module evaluation remains an explicit gap; assigned Promise rejection contexts are implemented, full lifecycle/frame/fatal/exit/at-exit and common native scopes incomplete",
+    "Historical revision28 evidence:26taskqueue cases per host and162priorNodecases. Current revision29 evidence in async-wrap-engine-check.json:20async cases per host and188priorNodecases",
+    "No kernel/libc/SDK/host/ABI change; complete native enum/async headers and implementation retained, every original JS record unchanged",
     "No product image, successor-ABI campaign or overall suite"
   ],
   "attempts": [
@@ -427,5 +427,6 @@
     "implementedConstants": 14,
     "nativeValuesAndAttributesCompared": true,
     "processExitBackendComplete": false
-  }
+  },
+  "currentAsyncIntegrationEvidence": "async-wrap-engine-check.json"
 }

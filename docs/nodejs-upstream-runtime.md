@@ -13,8 +13,8 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry now calls complete `internal/bootstrap/node`
 with protected state, passes native configuration and stops on missing
-`async_wrap` through original internal/async_hooks, after admitting the
-real timer/task queue backends and original native exit-code constants.
+`constants` through original internal/util and validators, after executing the
+original internal/async_hooks module through real shared async state and symbols.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -795,3 +795,38 @@ raw binding/checkpoint results, not successful empty/simple or CJS/ESM startup.
 Full product/images/ABI campaigns and overall suites remain deferred. See
 [task-queue-engine-check.json](../tests/nodejs/upstream/task-queue-engine-check.json)
 for exact identities, per-host results, failures and limits.
+
+## Native async state and original internal hooks
+
+Revision 29 adds partial native `async_wrap` state and the canonical `symbols`
+binding. The complete original internal/async_hooks body executes through the
+existing realm loader. Actual runtime-owned fields, IDs, stack and resources
+support native and original-JS stack operations; registered hook/trampoline
+functions and owners are traced. The existing Promise rejection callback now
+pushes actual assigned IDs and the actual Promise resource, then conditionally
+restores context, including after callback failures or stack reset.
+
+The importer adds complete original src/env.h, src/async_wrap.h and
+src/async_wrap.cc. All previous 494 records and all 443 registered JavaScript
+bodies (10,993,403 bytes) remain unchanged; the import now contains 497 files.
+Thirteen API enum constants and the provider names come from verified complete
+native declarations. Constructor state follows the native constructor, not a
+post-bootstrap native snapshot. Provider names are not resource implementations.
+
+Twenty selected controls pass on each of Node, Chromium, Firefox and WebKit
+using identical engine/kernel bytes. The same artifact passes 188 prior Node
+cases. Nine shared assertions pass on the verified pinned native Node executable;
+thirteen constants and 69 provider values match. Nineteen expected fatal Node
+controls retain diagnostic/error exits across 73 process drivers. The first
+18-of-20 result, failed rooting build and copied browser count assertion remain
+recorded separately. Browser cleanup retains its macOS permission warning.
+
+Requested Promise lifecycle hooks, GC destroy observers and observer-enabled
+destroy delivery still fail explicitly. Common native callback scopes,
+continuation frames, complete fatal/exit lifecycle and full async resource classes
+remain unfinished. Original principal bootstrap now reaches missing constants in
+internal/util:62 through internal/validators:35 and internal/timers:120. Complete
+empty/simple/CJS/ESM startup and the full catalog remain unproven. No product images,
+full product/successor-ABI campaigns or overall suites ran. Exact artifacts and
+limits are in [async-wrap-engine-check.json](../tests/nodejs/upstream/async-wrap-engine-check.json);
+contracts and next work are in [async-wrap-contracts.md](../tests/nodejs/upstream/async-wrap-contracts.md).

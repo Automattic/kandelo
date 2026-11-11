@@ -111,5 +111,5 @@ reset();
 print(JSON.stringify({kind:'native-task-queue-controls',cases:observations.length,failures,observations,bootstrapFailure,exitCodes:realm.internalBinding('errors').exitCodes,
   limits:['Raw binding/checkpoint controls, not original public task queue modules or successful Node startup',
     'Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete',
-    'Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures',
+    'Active module-evaluation checkpoints remain explicit failures; assigned Promise rejection contexts use actual native state',
     'Per-host artifact identities and fatal/diagnostic controls belong to the external runner']}));

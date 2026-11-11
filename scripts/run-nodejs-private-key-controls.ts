@@ -7,8 +7,8 @@ import { runCentralizedProgram } from "../host/test/centralized-test-helper";
 
 const [programArgument, reportArgument, modeArgument = "private-keys"] = process.argv.slice(2);
 if (!programArgument || !reportArgument || process.argv.length > 5 ||
-    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config", "timers", "task-queue"].includes(modeArgument)) {
-  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config|timers|task-queue]");
+    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config", "timers", "task-queue", "async-wrap"].includes(modeArgument)) {
+  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config|timers|task-queue|async-wrap]");
 }
 const perContext = modeArgument === "per-context";
 const synthetic = modeArgument === "synthetic-modules";
@@ -16,17 +16,19 @@ const moduleWrap = modeArgument === "module-wrap";
 const dynamicImport = modeArgument === "dynamic-import";
 const errorStack = modeArgument === "error-stack";
 const nativeTimers = modeArgument === "timers";
+const nativeAsync = modeArgument === "async-wrap";
 const nativeTasks = modeArgument === "task-queue";
 const processConfig = modeArgument === "process-config";
 const realmLibrary = modeArgument === "realm-library";
-const expectedKind = nativeTasks ? "native-task-queue-controls" : nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
-const expectedCases = nativeTasks ? 26 : nativeTimers ? 27 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
+const expectedKind = nativeAsync ? "native-async-wrap-controls" : nativeTasks ? "native-task-queue-controls" : nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
+const expectedCases = nativeAsync ? 20 : nativeTasks ? 26 : nativeTimers ? 27 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
 const program = resolve(programArgument);
 const reportPath = resolve(reportArgument);
 const kernel = resolveBinary("kernel.wasm");
-const fixturePath = resolve(nativeTasks ? "tests/nodejs/upstream/task-queue-engine-controls.js" : nativeTimers ? "tests/nodejs/upstream/timers-engine-controls.js" : processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
+const fixturePath = resolve(nativeAsync ? "tests/nodejs/upstream/async-wrap-engine-controls.js" : nativeTasks ? "tests/nodejs/upstream/task-queue-engine-controls.js" : nativeTimers ? "tests/nodejs/upstream/timers-engine-controls.js" : processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
   : "tests/nodejs/upstream/private-key-engine-controls.js");
-const fixture = readFileSync(fixturePath, "utf8");
+const fixture = readFileSync(fixturePath, "utf8").replace("// @shared-controls",
+  nativeAsync ? readFileSync("tests/nodejs/upstream/async-wrap-shared-controls.js", "utf8") : "// no shared controls");
 function identity(path: string) {
   const bytes = readFileSync(path);
   return { path, bytes: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") };
@@ -77,6 +79,7 @@ await run("node-mode-refuses-native-test-controls", ["node", "--kandelo-test-ups
 await run(modeArgument + "-controls", ["js", "--kandelo-test-upstream",
   ...(synthetic ? ["--enable-import-attributes"] : []), "-e", fixture], (result) => {
   expect(result.exitCode === 0, JSON.stringify(result));
+  if (nativeAsync) expect(result.stderr === "" && result.hostDiagnostics.length === 0, JSON.stringify(result));
   const rows = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   expect(rows.length === 1, "expected one complete engine result");
   const row = rows[0];
@@ -115,6 +118,26 @@ if (realmLibrary) {
       expect(!result.stdout.includes("UNEXPECTED_"), JSON.stringify(result));
     });
 }
+if (nativeAsync) {
+  const setup="__kandeloUpstreamTest.initializeContext();const realm=__kandeloUpstreamTest.initializeRealm();const binding=realm.internalBinding('async_wrap');";
+  for (const [name, operation, assertion] of [
+    ["setup-object-invariant", "binding.setupHooks(null)", "Node async hooks object invariant"],
+    ["setup-callable-invariant", "binding.setupHooks({})", "Node async hook function invariant"],
+    ["setup-once-invariant", "binding.setupHooks(realm.require('internal/async_hooks').nativeHooks);binding.setupHooks({})", "Node async hooks once invariant"],
+    ["push-id-invariant", "binding.pushAsyncContext(-2,0)", "Node async IDs invariant"],
+    ["push-conversion-invariant", "binding.pushAsyncContext(Symbol(),0)", "Node async ID conversion invariant"],
+    ["pop-corruption-invariant", "binding.pushAsyncContext(7,0);binding.popAsyncContext(9)", "Node async stack corruption invariant"],
+    ["destroy-id-invariant", "binding.queueDestroyAsyncId('1')", "Node destroy async ID invariant"],
+    ["destroy-registration-invariant", "binding.registerDestroyHook(null,1)", "Node GC destroy registration invariant"],
+  ]) {
+    await run(name,["js","--kandelo-test-upstream","-e",setup+"try{"+operation+";print('UNEXPECTED_RETURN')}catch(error){print('UNEXPECTED_CATCH')}"],result=>{
+      expect(result.exitCode===132 && result.stderr.includes(assertion) && result.hostDiagnostics.length===1 && !result.stdout.includes('UNEXPECTED_'),JSON.stringify(result));
+    });
+  }
+  await run("detached-native-async-state-is-an-error",["js","--kandelo-test-upstream","-e",setup+"detachArrayBuffer(binding.async_id_fields.buffer);try{binding.pushAsyncContext(1,0);throw new Error('unexpected success')}catch(error){if(!error.message.includes('backing array'))throw error;print('DETACHED_ASYNC_STATE_REJECTED')}"],result=>{
+    expect(result.exitCode===0 && result.stdout.trim()==='DETACHED_ASYNC_STATE_REJECTED' && result.stderr==='' && result.hostDiagnostics.length===0,JSON.stringify(result));
+  });
+}
 if (nativeTasks) {
   const setup = "__kandeloUpstreamTest.initializeContext();const realm=__kandeloUpstreamTest.initializeRealm();const queue=realm.internalBinding('task_queue');";
   for (const [name, operation, assertion] of [
@@ -141,8 +164,8 @@ if (nativeTasks) {
   await run("promise-handler-exceptions-are-reported-without-false-exit", ["js", "--kandelo-test-upstream", "-e", setup + "let calls=0;queue.setPromiseRejectCallback(()=>{calls++;throw new Error('PROMISE_REJECT_HANDLER_SENTINEL')});const promise=Promise.reject({});promise.catch(()=>{});queue.runMicrotasks();if(calls!==2)throw new Error('callback count');print('REJECTION_DIAGNOSTIC_ONLY')"], (result) => {
     expect(result.exitCode === 0 && result.stdout.trim() === "REJECTION_DIAGNOSTIC_ONLY" && result.stderr.includes("PROMISE_REJECT_HANDLER_SENTINEL") && result.hostDiagnostics.length === 0, JSON.stringify(result));
   });
-  await run("assigned-promise-async-context-remains-explicit", ["js", "--kandelo-test-upstream", "-e", setup + "let calls=0,reject;queue.setPromiseRejectCallback(()=>calls++);const symbols=__kandeloUpstreamTest.inspectContext().perIsolateSymbols;const promise=new Promise((resolve,r)=>reject=r);promise[symbols.async_id_symbol]=1;promise[symbols.trigger_async_id_symbol]=0;reject({});promise.catch(()=>{});queue.runMicrotasks();if(calls!==0)throw new Error('fabricated async context');print('ASSIGNED_ASYNC_CONTEXT_GAP')"], (result) => {
-    expect(result.exitCode === 0 && result.stdout.trim() === "ASSIGNED_ASYNC_CONTEXT_GAP" && result.stderr.includes("Native promise async-context entry is not implemented") && result.hostDiagnostics.length === 0, JSON.stringify(result));
+  await run("assigned-promise-handler-exception-restores-real-context", ["js", "--kandelo-test-upstream", "-e", setup + "const binding=realm.internalBinding('async_wrap'),c=binding.constants,s=realm.internalBinding('symbols');let calls=0,reject;queue.setPromiseRejectCallback(()=>{calls++;if(binding.async_id_fields[c.kExecutionAsyncId]!==71)throw new Error('WRONG_ASYNC_ID');throw new Error('ASSIGNED_CALLBACK_SENTINEL')});const promise=new Promise((resolve,r)=>reject=r);promise[s.async_id_symbol]=71;promise[s.trigger_async_id_symbol]=33;reject({});promise.catch(()=>{});queue.runMicrotasks();if(calls!==2||binding.async_id_fields[c.kExecutionAsyncId]!==0||binding.async_hook_fields[c.kStackLength]!==0)throw new Error('context restore');print('ASSIGNED_ASYNC_CONTEXT_RESTORED')"], (result) => {
+    expect(result.exitCode === 0 && result.stdout.trim() === "ASSIGNED_ASYNC_CONTEXT_RESTORED" && result.stderr.includes("ASSIGNED_CALLBACK_SENTINEL") && !result.stderr.includes("WRONG_ASYNC_ID") && result.hostDiagnostics.length === 0, JSON.stringify(result));
   });
 }
 if (nativeTimers) {
@@ -175,6 +198,7 @@ const report = {
   host: { version: process.version, platform: process.platform, arch: process.arch },
   program: identity(program), kernel: identity(kernel), fixture: identity(fixturePath),
   runner: identity(resolve("scripts/run-nodejs-private-key-controls.ts")),
+  ...(nativeAsync ? { sharedFixture: identity(resolve("tests/nodejs/upstream/async-wrap-shared-controls.js")), executedFixtureSha256: createHash("sha256").update(fixture).digest("hex") } : {}),
   runs, failures,
   limits: ["No Chromium/Firefox/WebKit execution", "No upstream startup or module compatibility evidence", "No complete native-V8 differential proof", "No security-wrapper/OOM or complete symbol-owner teardown/finalization proof"],
 };

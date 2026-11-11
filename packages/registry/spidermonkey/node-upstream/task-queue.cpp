@@ -21,6 +21,7 @@
 #include "js/ValueArray.h"
 #include "js/Wrapper.h"
 #include "shell/jsshell.h"
+#include "shell/node-upstream/async-wrap.h"
 #include "shell/node-upstream/per-context.h"
 #include "shell/node-upstream/realm.h"
 #include "vm/JSContext.h"
@@ -36,9 +37,6 @@ const JSClass kBinding = {"NodeTaskQueueBinding", JSCLASS_HAS_RESERVED_SLOTS(Bin
 bool Report(JSContext* cx, const char* message) {
   if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "%s", message);
   return false;
-}
-bool Missing(JSContext* cx, const char* message) {
-  return Report(cx, message);
 }
 bool Flag(JSObject* state, unsigned slot) {
   return JS::GetReservedSlot(state, slot).isTrue();
@@ -156,9 +154,9 @@ bool RunMicrotasks(JSContext* cx, unsigned argc, JS::Value* vp) {
   if (!Binding(cx, args) || !RunRuntimeMicrotasks(cx)) return false;
   args.rval().setUndefined(); return true;
 }
-bool AssignedAsyncIds(JSContext* cx, JS::HandleObject promise, bool* assigned) {
+bool AssignedAsyncIds(JSContext* cx, JS::HandleObject promise, double* ids) {
   JS::RootedObject runtime(cx, Runtime(cx));
-  double ids[2]; size_t i = 0;
+  size_t i = 0;
   for (const char* name : {"async_id_symbol", "trigger_async_id_symbol"}) {
     JS::RootedSymbol symbol(cx, GetRuntimeSymbol(cx, runtime, name));
     if (!symbol) return false;
@@ -167,7 +165,6 @@ bool AssignedAsyncIds(JSContext* cx, JS::HandleObject promise, bool* assigned) {
     if (!JS_GetPropertyById(cx, promise, key, &value)) return false;
     ids[i++] = value.isNumber() ? value.toNumber() : -1;
   }
-  *assigned = ids[0] != -1 && ids[1] != -1;
   return true;
 }
 }  // namespace
@@ -320,10 +317,9 @@ bool ForwardRuntimePromiseRejection(JSContext* cx, JS::HandleObject promise,
       "Node promise rejection callback was not registered");
   JS::RootedObject wrappedPromise(cx, promise);
   JS::RootedValue result(cx);
-  bool assigned = false;
+  double ids[2];
   auto deliver = [&]() -> bool {
-    if (!JS_WrapObject(cx, &wrappedPromise) || !AssignedAsyncIds(cx, wrappedPromise, &assigned)) return false;
-    if (assigned) return Missing(cx, "Native promise async-context entry is not implemented");
+    if (!JS_WrapObject(cx, &wrappedPromise) || !AssignedAsyncIds(cx, wrappedPromise, ids)) return false;
     JS::RootedValueArray<3> args(cx);
     bool rejected = event == JS::PromiseRejectionHandlingState::Unhandled;
     args[0].setInt32(rejected ? 0 : 1); args[1].setObject(*wrappedPromise);
@@ -335,7 +331,21 @@ bool ForwardRuntimePromiseRejection(JSContext* cx, JS::HandleObject promise,
       args[2].set(rejected ? JS::GetPromiseResult(rawPromise) : JS::UndefinedValue());
     }
     if (!JS_WrapValue(cx, args[2])) return false;
-    return CallOwned(cx, state, RejectCallback, RejectOwner, JS::UndefinedHandleValue, args, &result);
+    bool assigned = ids[0] != -1 && ids[1] != -1;
+    if (assigned && !PushRuntimeAsyncContext(cx, runtime, ids[0], ids[1], wrappedPromise)) return false;
+    bool called = CallOwned(cx, state, RejectCallback, RejectOwner, JS::UndefinedHandleValue, args, &result);
+    if (assigned) {
+      // Native PromiseRejectCallback unwinds even when its callback throws,
+      // unless the callback has already reset/changed the current async ID.
+      bool pending = JS_IsExceptionPending(cx);
+      JS::AutoSaveExceptionState saved(cx);
+      double current; bool more;
+      bool restored = RuntimeExecutionAsyncId(cx, runtime, &current) &&
+          (current != ids[0] || PopRuntimeAsyncContext(cx, runtime, ids[0], &more));
+      if (pending) saved.restore(); else saved.drop();
+      if (!restored) return false;
+    }
+    return called;
   };
   if (!deliver() && JS_IsExceptionPending(cx)) PrintCallbackException(cx);
   return true;

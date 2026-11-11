@@ -22,6 +22,7 @@
 #include "js/Symbol.h"
 #include "js/ValueArray.h"
 #include "js/Wrapper.h"
+#include "shell/node-upstream/async-wrap.h"
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/module-wrap.h"
@@ -45,7 +46,7 @@ static constexpr SymbolSpec kSymbols[] = {
 static_assert(std::size(kSymbols) == 49);
 
 enum Phase { Initializing = 1, Ready = 2, Failed = 3 };
-enum RuntimeSlot { RuntimePhase, ContextKey, ExitInfo, TimerBase, TimerState, TaskState,
+enum RuntimeSlot { RuntimePhase, ContextKey, ExitInfo, TimerBase, TimerState, TaskState, AsyncState,
                    PrincipalRealm, PrincipalProcess, FirstSymbol };
 static const JSClass kRuntimeClass = {
     "KandeloNodeRuntime", JSCLASS_HAS_RESERVED_SLOTS(FirstSymbol + std::size(kSymbols))};
@@ -284,6 +285,20 @@ JSObject* CreateRuntimePrivateSymbolTable(JSContext* cx, JS::HandleObject runtim
   return table;
 }
 
+JSObject* CreateRuntimeSymbolsBinding(JSContext* cx, JS::HandleObject runtime) {
+  if (!RuntimeReady(cx, runtime)) return nullptr;
+  JS::RootedObject table(cx, JS_NewPlainObject(cx));
+  if (!table) return nullptr;
+  for (size_t i = 0; i < std::size(kSymbols); i++) {
+    if (kSymbols[i].isPrivate) continue;
+    JS::RootedValue value(cx, JS::GetReservedSlot(runtime, FirstSymbol + i));
+    // Native symbols.cc exports description strings, unlike the per-context
+    // initializer's C++ accessor names. Both publish the same actual symbols.
+    if (!JS_DefineProperty(cx, table, kSymbols[i].description, value, JSPROP_ENUMERATE)) return nullptr;
+  }
+  return table;
+}
+
 JSObject* GetRuntimeExitInfo(JSContext* cx, JS::HandleObject runtime) {
   if (!RuntimeReady(cx, runtime)) return nullptr;
   JS::RootedObject array(cx);
@@ -338,6 +353,22 @@ JSObject* GetRuntimeTaskState(JSContext* cx, JS::HandleObject runtime, bool crea
       state = CreateRuntimeTaskState(cx);
       if (!state) return nullptr;
       JS::SetReservedSlot(runtime, TaskState, JS::ObjectValue(*state));
+    }
+  }
+  if (state && !JS_WrapObject(cx, &state)) return nullptr;
+  return state;
+}
+JSObject* GetRuntimeAsyncState(JSContext* cx, JS::HandleObject runtime, bool create) {
+  if (!RuntimeReady(cx, runtime)) return nullptr;
+  JS::RootedObject state(cx);
+  {
+    JSAutoRealm home(cx, runtime);
+    JS::Value value = JS::GetReservedSlot(runtime, AsyncState);
+    if (value.isObject()) state = &value.toObject();
+    else if (create) {
+      state = CreateRuntimeAsyncState(cx);
+      if (!state) return nullptr;
+      JS::SetReservedSlot(runtime, AsyncState, JS::ObjectValue(*state));
     }
   }
   if (state && !JS_WrapObject(cx, &state)) return nullptr;

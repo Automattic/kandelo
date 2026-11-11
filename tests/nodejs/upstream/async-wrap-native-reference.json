@@ -1,0 +1,149 @@
+{
+  "program": {
+    "path": ".scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixture": {
+    "path": "tests/nodejs/upstream/async-wrap-native-controls.cjs",
+    "bytes": 1033,
+    "sha256": "81c4bc7ac6a59b66e3e352aee7de92c5c5d5e035a04df99210cd872f388bc98a"
+  },
+  "shared": {
+    "path": "tests/nodejs/upstream/async-wrap-shared-controls.js",
+    "bytes": 5962,
+    "sha256": "085efa299943bf60348c90c953151d09bb4727c07265c63857b436f53bf1c8dc"
+  },
+  "exitCode": 0,
+  "stdout": "{\"kind\":\"native-async-wrap-reference\",\"cases\":9,\"failures\":0,\"observations\":[{\"name\":\"native-stack-push-pop-restores-live-ids\",\"status\":\"pass\"},{\"name\":\"native-stack-growth-publishes-three-times-the-backing\",\"status\":\"pass\"},{\"name\":\"native-id-conversion-and-disabled-checks-use-live-fields\",\"status\":\"pass\"},{\"name\":\"native-resource-vector-has-no-array-prototype-fallback\",\"status\":\"pass\"},{\"name\":\"clear-resets-stack-resources-without-resetting-counter-or-default\",\"status\":\"pass\"},{\"name\":\"unchanged-internal-module-allocates-ids-and-restores-default-scope\",\"status\":\"pass\"},{\"name\":\"unchanged-internal-module-uses-js-and-native-growing-stack\",\"status\":\"pass\"},{\"name\":\"promise-hook-empty-registration-is-an-actual-fresh-array\",\"status\":\"pass\"},{\"name\":\"assigned-promise-rejections-enter-actual-ids-and-resource\",\"status\":\"pass\"}],\"constants\":{\"kInit\":0,\"kBefore\":1,\"kAfter\":2,\"kDestroy\":3,\"kPromiseResolve\":4,\"kTotals\":5,\"kCheck\":6,\"kExecutionAsyncId\":0,\"kTriggerAsyncId\":1,\"kAsyncIdCounter\":2,\"kDefaultTriggerAsyncId\":3,\"kUsesExecutionAsyncResource\":8,\"kStackLength\":7},\"providers\":{\"NONE\":0,\"DIRHANDLE\":1,\"DNSCHANNEL\":2,\"ELDHISTOGRAM\":3,\"FILEHANDLE\":4,\"FILEHANDLECLOSEREQ\":5,\"BLOBREADER\":6,\"FSEVENTWRAP\":7,\"FSREQCALLBACK\":8,\"FSREQPROMISE\":9,\"GETADDRINFOREQWRAP\":10,\"GETNAMEINFOREQWRAP\":11,\"HEAPSNAPSHOT\":12,\"HTTP2SESSION\":13,\"HTTP2STREAM\":14,\"HTTP2PING\":15,\"HTTP2SETTINGS\":16,\"HTTPINCOMINGMESSAGE\":17,\"HTTPCLIENTREQUEST\":18,\"LOCKS\":19,\"DTLS_ENDPOINT\":20,\"DTLS_SESSION\":21,\"JSSTREAM\":22,\"MESSAGEPORT\":23,\"PIPECONNECTWRAP\":24,\"PIPESERVERWRAP\":25,\"PIPEWRAP\":26,\"PROCESSWRAP\":27,\"PROMISE\":28,\"QUERYWRAP\":29,\"QUIC_ENDPOINT\":30,\"QUIC_LOGSTREAM\":31,\"QUIC_SESSION\":32,\"QUIC_STREAM\":33,\"QUIC_UDP\":34,\"SHUTDOWNWRAP\":35,\"SIGNALWRAP\":36,\"STATWATCHER\":37,\"STREAMPIPE\":38,\"TCPCONNECTWRAP\":39,\"TCPSERVERWRAP\":40,\"TCPWRAP\":41,\"TTYWRAP\":42,\"UDPSENDWRAP\":43,\"UDPWRAP\":44,\"SIGINTWATCHDOG\":45,\"WORKER\":46,\"WORKERCPUPROFILE\":47,\"WORKERCPUUSAGE\":48,\"WORKERHEAPPROFILE\":49,\"WORKERHEAPSNAPSHOT\":50,\"WORKERHEAPSTATISTICS\":51,\"WRITEWRAP\":52,\"ZLIB\":53,\"CHECKPRIMEREQUEST\":54,\"PBKDF2REQUEST\":55,\"KEYPAIRGENREQUEST\":56,\"KEYGENREQUEST\":57,\"KEYEXPORTREQUEST\":58,\"ARGON2REQUEST\":59,\"CIPHERREQUEST\":60,\"DERIVEBITSREQUEST\":61,\"HASHREQUEST\":62,\"RANDOMBYTESREQUEST\":63,\"RANDOMPRIMEREQUEST\":64,\"SCRYPTREQUEST\":65,\"SIGNREQUEST\":66,\"TLSWRAP\":67,\"VERIFYREQUEST\":68}}\n",
+  "stderr": "",
+  "detail": {
+    "kind": "native-async-wrap-reference",
+    "cases": 9,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "native-stack-push-pop-restores-live-ids",
+        "status": "pass"
+      },
+      {
+        "name": "native-stack-growth-publishes-three-times-the-backing",
+        "status": "pass"
+      },
+      {
+        "name": "native-id-conversion-and-disabled-checks-use-live-fields",
+        "status": "pass"
+      },
+      {
+        "name": "native-resource-vector-has-no-array-prototype-fallback",
+        "status": "pass"
+      },
+      {
+        "name": "clear-resets-stack-resources-without-resetting-counter-or-default",
+        "status": "pass"
+      },
+      {
+        "name": "unchanged-internal-module-allocates-ids-and-restores-default-scope",
+        "status": "pass"
+      },
+      {
+        "name": "unchanged-internal-module-uses-js-and-native-growing-stack",
+        "status": "pass"
+      },
+      {
+        "name": "promise-hook-empty-registration-is-an-actual-fresh-array",
+        "status": "pass"
+      },
+      {
+        "name": "assigned-promise-rejections-enter-actual-ids-and-resource",
+        "status": "pass"
+      }
+    ],
+    "constants": {
+      "kInit": 0,
+      "kBefore": 1,
+      "kAfter": 2,
+      "kDestroy": 3,
+      "kPromiseResolve": 4,
+      "kTotals": 5,
+      "kCheck": 6,
+      "kExecutionAsyncId": 0,
+      "kTriggerAsyncId": 1,
+      "kAsyncIdCounter": 2,
+      "kDefaultTriggerAsyncId": 3,
+      "kUsesExecutionAsyncResource": 8,
+      "kStackLength": 7
+    },
+    "providers": {
+      "NONE": 0,
+      "DIRHANDLE": 1,
+      "DNSCHANNEL": 2,
+      "ELDHISTOGRAM": 3,
+      "FILEHANDLE": 4,
+      "FILEHANDLECLOSEREQ": 5,
+      "BLOBREADER": 6,
+      "FSEVENTWRAP": 7,
+      "FSREQCALLBACK": 8,
+      "FSREQPROMISE": 9,
+      "GETADDRINFOREQWRAP": 10,
+      "GETNAMEINFOREQWRAP": 11,
+      "HEAPSNAPSHOT": 12,
+      "HTTP2SESSION": 13,
+      "HTTP2STREAM": 14,
+      "HTTP2PING": 15,
+      "HTTP2SETTINGS": 16,
+      "HTTPINCOMINGMESSAGE": 17,
+      "HTTPCLIENTREQUEST": 18,
+      "LOCKS": 19,
+      "DTLS_ENDPOINT": 20,
+      "DTLS_SESSION": 21,
+      "JSSTREAM": 22,
+      "MESSAGEPORT": 23,
+      "PIPECONNECTWRAP": 24,
+      "PIPESERVERWRAP": 25,
+      "PIPEWRAP": 26,
+      "PROCESSWRAP": 27,
+      "PROMISE": 28,
+      "QUERYWRAP": 29,
+      "QUIC_ENDPOINT": 30,
+      "QUIC_LOGSTREAM": 31,
+      "QUIC_SESSION": 32,
+      "QUIC_STREAM": 33,
+      "QUIC_UDP": 34,
+      "SHUTDOWNWRAP": 35,
+      "SIGNALWRAP": 36,
+      "STATWATCHER": 37,
+      "STREAMPIPE": 38,
+      "TCPCONNECTWRAP": 39,
+      "TCPSERVERWRAP": 40,
+      "TCPWRAP": 41,
+      "TTYWRAP": 42,
+      "UDPSENDWRAP": 43,
+      "UDPWRAP": 44,
+      "SIGINTWATCHDOG": 45,
+      "WORKER": 46,
+      "WORKERCPUPROFILE": 47,
+      "WORKERCPUUSAGE": 48,
+      "WORKERHEAPPROFILE": 49,
+      "WORKERHEAPSNAPSHOT": 50,
+      "WORKERHEAPSTATISTICS": 51,
+      "WRITEWRAP": 52,
+      "ZLIB": 53,
+      "CHECKPRIMEREQUEST": 54,
+      "PBKDF2REQUEST": 55,
+      "KEYPAIRGENREQUEST": 56,
+      "KEYGENREQUEST": 57,
+      "KEYEXPORTREQUEST": 58,
+      "ARGON2REQUEST": 59,
+      "CIPHERREQUEST": 60,
+      "DERIVEBITSREQUEST": 61,
+      "HASHREQUEST": 62,
+      "RANDOMBYTESREQUEST": 63,
+      "RANDOMPRIMEREQUEST": 64,
+      "SCRYPTREQUEST": 65,
+      "SIGNREQUEST": 66,
+      "TLSWRAP": 67,
+      "VERIFYREQUEST": 68
+    }
+  }
+}

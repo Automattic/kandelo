@@ -1,0 +1,416 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "upstreamJavaScriptChanged": false,
+  "bindingImplemented": true,
+  "bindingComplete": false,
+  "upstreamStartup": false,
+  "scope": "Partial async_wrap and canonical symbols catalog; static literal consumers are not complete transitive/lazy/worker/platform/exceptional graph coverage",
+  "nativeSourceFiles": [
+    {
+      "path": ".context/node-async-wrap/source/src/async_wrap.cc",
+      "bytes": 27422,
+      "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709"
+    },
+    {
+      "path": ".context/node-async-wrap/source/src/async_wrap.h",
+      "bytes": 12578,
+      "sha256": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6"
+    },
+    {
+      "path": ".context/node-async-wrap/source/src/env.cc",
+      "bytes": 99205,
+      "sha256": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8"
+    },
+    {
+      "path": ".context/node-async-wrap/source/src/env.h",
+      "bytes": 53128,
+      "sha256": "2727db70801cd3d154790795f52aac30909279cfbbec5beab1c0b463a4aa55b8"
+    },
+    {
+      "path": ".context/node-async-wrap/source/src/env-inl.h",
+      "bytes": 31879,
+      "sha256": "f1849fd70267de7467ad49f06b67fb63bddd29f01cfc208e01c9776b54be8f41"
+    },
+    {
+      "path": ".context/node-async-wrap/source/src/api/callback.cc",
+      "bytes": 13742,
+      "sha256": "0488c28167ecd95e8406bfd86bf1d226acb17a5e6b547b573873de8777305c36"
+    },
+    {
+      "path": ".context/node-async-wrap/source/src/node_task_queue.cc",
+      "bytes": 6692,
+      "sha256": "f4f00a90ad1f4e0520b86b19c9f13538c25d3badb9d342d8792b5cd5e4aca951"
+    },
+    {
+      "path": ".context/node-async-wrap/source/src/async_context_frame.cc",
+      "bytes": 2750,
+      "sha256": "6de1a1e6c0eb2abf910628ffcb5722e5e33234d3725a2df27ce36349e091f9cc"
+    },
+    {
+      "path": ".context/node-async-wrap/source/src/async_context_frame.h",
+      "bytes": 903,
+      "sha256": "e2f173c35a8ea6b9afb670b1bbfb126890e29b8188108aa60c572bfe68345e92"
+    },
+    {
+      "path": ".context/node-async-wrap/source/src/node_symbols.cc",
+      "bytes": 991,
+      "sha256": "6989872c8ca1426cd63b85e26ba8c0d5ea87a7bd8c96c0dfad28767e7e55d2b0"
+    }
+  ],
+  "literalBindingConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/lib/vm.js",
+      "line": 70,
+      "text": "} = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/pre_execution.js",
+      "line": 94,
+      "text": "  } = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/trace_events_async_hooks.js",
+      "line": 18,
+      "text": "const async_wrap = internalBinding('async_wrap');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/blocklist.js",
+      "line": 42,
+      "text": "const { owner_symbol } = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/async_hooks.js",
+      "line": 14,
+      "text": "const async_wrap = internalBinding('async_wrap');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/async_hooks.js",
+      "line": 85,
+      "text": "const { resource_symbol, owner_symbol } = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/async_hooks.js",
+      "line": 97,
+      "text": "        trigger_async_id_symbol } = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/bootstrap/node.js",
+      "line": 227,
+      "text": "internalBinding('async_wrap').setupHooks(nativeHooks);"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/worker/js_transferable.js",
+      "line": 17,
+      "text": "} = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/webworker.js",
+      "line": 77,
+      "text": "} = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/worker/io.js",
+      "line": 31,
+      "text": "} = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/tls/wrap.js",
+      "line": 81,
+      "text": "const { onpskexchange: kOnPskExchange } = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vm.js",
+      "line": 20,
+      "text": "} = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/promise_hooks.js",
+      "line": 11,
+      "text": "const { setPromiseHooks } = internalBinding('async_wrap');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/cjs/loader.js",
+      "line": 195,
+      "text": "} = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/loader.js",
+      "line": 24,
+      "text": "const { imported_cjs_symbol } = internalBinding('symbols');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/utils.js",
+      "line": 24,
+      "text": "} = internalBinding('symbols');"
+    }
+  ],
+  "literalInternalModuleConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/lib/async_hooks.js",
+      "line": 31,
+      "text": "const internal_async_hooks = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/zlib.js",
+      "line": 70,
+      "text": "const { owner_symbol } = require('internal/async_hooks').symbols;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/_http_client.js",
+      "line": 63,
+      "text": "const { defaultTriggerAsyncIdScope } = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/_http_agent.js",
+      "line": 49,
+      "text": "} = require('internal/async_hooks').symbols;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/domain.js",
+      "line": 51,
+      "text": "const { useDomainTrampoline } = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/_http_outgoing.js",
+      "line": 51,
+      "text": "} = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/_http_server.js",
+      "line": 72,
+      "text": "} = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/dgram.js",
+      "line": 76,
+      "text": "} = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/timers.js",
+      "line": 70,
+      "text": "} = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/execution.js",
+      "line": 40,
+      "text": "} = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/net.js",
+      "line": 89,
+      "text": "} = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/cluster/child.js",
+      "line": 16,
+      "text": "const { owner_symbol } = require('internal/async_hooks').symbols;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/promises.js",
+      "line": 34,
+      "text": "} = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/bootstrap/node.js",
+      "line": 226,
+      "text": "const { nativeHooks } = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/task_queues.js",
+      "line": 36,
+      "text": "} = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/child_process.js",
+      "line": 61,
+      "text": "const { owner_symbol } = require('internal/async_hooks').symbols;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/end-of-stream.js",
+      "line": 49,
+      "text": "const { enabledHooksExist } = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/async_local_storage/async_hooks.js",
+      "line": 19,
+      "text": "} = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/tls/wrap.js",
+      "line": 58,
+      "text": "const { owner_symbol } = require('internal/async_hooks').symbols;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/heap_utils.js",
+      "line": 11,
+      "text": "const { owner_symbol } = require('internal/async_hooks').symbols;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/worker_thread.js",
+      "line": 312,
+      "text": "  const { clearAsyncIdStack } = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/timers.js",
+      "line": 106,
+      "text": "} = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/http2/core.js",
+      "line": 65,
+      "text": "} = require('internal/async_hooks');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/js_stream_socket.js",
+      "line": 18,
+      "text": "const { owner_symbol } = require('internal/async_hooks').symbols;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/stream_base_commons.js",
+      "line": 21,
+      "text": "const { owner_symbol } = require('internal/async_hooks').symbols;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/fs/watchers.js",
+      "line": 49,
+      "text": "} = require('internal/async_hooks');"
+    }
+  ],
+  "methods": [
+    {
+      "name": "setupHooks",
+      "functionLength": 0,
+      "arguments": "object containing five callable init/before/after/destroy/promise_resolve properties; once per runtime",
+      "resultAndErrors": "undefined; malformed/repeated registration remains fatal",
+      "implementation": "Retains actual functions and owner; common native callback dispatch remains incomplete",
+      "owner": "SpiderMonkey Node embedding; runtime state with per-realm binding admission"
+    },
+    {
+      "name": "setCallbackTrampoline",
+      "functionLength": 0,
+      "arguments": "callable or any non-callable to clear",
+      "resultAndErrors": "undefined",
+      "implementation": "Retains actual function and owner; complete native callback scope dispatch remains incomplete",
+      "owner": "SpiderMonkey Node embedding; runtime state with per-realm binding admission"
+    },
+    {
+      "name": "pushAsyncContext",
+      "functionLength": 0,
+      "arguments": "NumberValue(asyncId), NumberValue(triggerId); checks enabled by live kCheck",
+      "resultAndErrors": "undefined; conversion/check failures remain fatal",
+      "implementation": "Saves previous IDs in real shared stack, grows threefold and sets live execution/trigger IDs",
+      "owner": "SpiderMonkey Node embedding; runtime state with per-realm binding admission"
+    },
+    {
+      "name": "popAsyncContext",
+      "functionLength": 0,
+      "arguments": "NumberValue(expectedId)",
+      "resultAndErrors": "boolean: remaining depth; empty returns false; mismatch remains fatal",
+      "implementation": "Restores saved IDs, drops resources and truncates original JS resource array",
+      "owner": "SpiderMonkey Node embedding; runtime state with per-realm binding admission"
+    },
+    {
+      "name": "executionAsyncResource",
+      "functionLength": 0,
+      "arguments": "Uint32Value(index)",
+      "resultAndErrors": "actual native resource or undefined; conversion exceptions propagate",
+      "implementation": "Private native resource vector has no prototype lookup; actual PromiseRejectCallback stores actual Promise",
+      "owner": "SpiderMonkey Node embedding; runtime state with per-realm binding admission"
+    },
+    {
+      "name": "clearAsyncIdStack",
+      "functionLength": 0,
+      "arguments": "no arguments",
+      "resultAndErrors": "undefined",
+      "implementation": "Clears resources/depth/current IDs; preserves counter/default/hooks/backing capacity",
+      "owner": "SpiderMonkey Node embedding; runtime state with per-realm binding admission"
+    },
+    {
+      "name": "queueDestroyAsyncId",
+      "functionLength": 0,
+      "arguments": "number asyncId",
+      "resultAndErrors": "undefined only when real destroy observer count is zero; malformed input remains fatal",
+      "implementation": "Observer-enabled event delivery is explicit missing behavior, not a registration/queue success",
+      "owner": "SpiderMonkey Node embedding; runtime state with per-realm binding admission"
+    },
+    {
+      "name": "setPromiseHooks",
+      "functionLength": 0,
+      "arguments": "four callable-or-empty hook slots",
+      "resultAndErrors": "undefined for all-empty clear; any requested callable fails explicitly",
+      "implementation": "No engine promise lifecycle hook installation yet; rejected registrations are not stored",
+      "owner": "SpiderMonkey Node embedding; runtime state with per-realm binding admission"
+    },
+    {
+      "name": "getPromiseHooks",
+      "functionLength": 0,
+      "arguments": "no arguments",
+      "resultAndErrors": "fresh four-element array containing current real empty registration",
+      "implementation": "No manufactured callbacks; full lifecycle integration remains missing",
+      "owner": "SpiderMonkey Node embedding; runtime state with per-realm binding admission"
+    },
+    {
+      "name": "registerDestroyHook",
+      "functionLength": 0,
+      "arguments": "object target, number id, optional object property bag; exact native assertion shape",
+      "resultAndErrors": "malformed input remains fatal; valid request fails explicitly",
+      "implementation": "GC weak observation/deferred JS destroy delivery not implemented",
+      "owner": "SpiderMonkey Node embedding; runtime state with per-realm binding admission"
+    }
+  ],
+  "sharedState": {
+    "async_hook_fields": "Live Uint32Array[9], constructor kCheck=1; all other fields zero",
+    "async_id_fields": "Live Float64Array[4], execution=0 trigger=0 counter=1 default=-1 from actual native constructor, not reference snapshot",
+    "async_ids_stack": "Live Float64Array[32] initially; triple growth; actual principal binding publication updated",
+    "execution_async_resources": "Original JS-owned array, shared by runtime, truncated on native pop/clear",
+    "native_execution_async_resources": "Private traced JS array of actual native-entered resource objects, retained until pop/clear",
+    "nativeHooks": "Five actual retained callables plus realm owner; not automatic event emission",
+    "callbackTrampoline": "Actual callable plus realm owner or cleared empty state",
+    "promiseHooks": "Actual empty registration; callable installation rejected",
+    "constants": "13 original native hook/ID enum indices, generated from hash-verified complete native declarations",
+    "Providers": "69 original native provider enum names/IDs with linked OpenSSL; names are not implemented resource factories"
+  },
+  "symbols": {
+    "exports": 27,
+    "identity": "same runtime symbols as per-context initialization; ordinary symbol descriptions are native export keys",
+    "privateSymbolsExposed": false,
+    "ownership": "per-realm cached publication, per-runtime canonical identity",
+    "prototypeLimit": "Native reference reports a non-null prototype from a different realm; complete cross-realm prototype equivalence not established"
+  },
+  "scheduling": {
+    "promiseRejection": "Actual assigned IDs push actual Promise resource; call actual registered callback; conditional pop after callback including exceptions/reset; best-effort error diagnostics",
+    "promiseLifecycle": "init/before/after/settled engine notifications not yet connected",
+    "destroy": "Observer-enabled queues and GC observers explicitly missing; no success stubs",
+    "commonCallbackScopes": "libuv/tick/native callback scopes, hooks, continuation frames and fatal unwind remain incomplete"
+  },
+  "ownershipAndLifecycle": {
+    "roots": "All actual arrays/resources/callbacks/owners stored in traced reserved slots; access wraps into owning realm",
+    "retiredBindings": "CheckRealmLibraryActive refuses methods after failure",
+    "remaining": [
+      "Full common native scope ownership/clearing epochs/reentrant restoration",
+      "Promise lifecycle/continuation frame propagation including cross-realm and module jobs",
+      "GC destroy observers with deferred JS outside collector",
+      "Cancellation, complete ref/close/teardown/finalization, OOM and security wrappers",
+      "ShadowRealm stack publication and full prototype equivalence",
+      "Full async resource classes/constructors and native-handle integration"
+    ]
+  },
+  "archivedReuseIndex": "task-queue-contracts.json archivedReuseCandidates; frozen callback-execution-stack.h/callback-scope.h mechanisms only, no former public JS adapters",
+  "validationObligations": [
+    "Shared real native-reference and guest stack/internal module assertions",
+    "Same identified engine/kernel on Node Chromium Firefox WebKit",
+    "Moving GC and cross-realm state/resources/owner admission",
+    "Original assertions fatal and real unsupported operations explicit",
+    "Genuine complete original bootstrap; no observer success equated to startup",
+    "Future promise lifecycle, callbacks, frames, GC destroy scheduling, error unwind, liveness and exit with actual resources"
+  ],
+  "orderedNextSteps": [
+    "Run complete original principal bootstrap and identify actual next missing backend",
+    "Implement only startup-required real constants/util/process/options and remaining native binding closure",
+    "Connect engine promise lifecycle/context and common native callback scopes when required by unchanged startup",
+    "Establish genuine empty/simple output/error/jobs/exit separately for CJS and ESM on four hosts",
+    "Complete entire public/internal/lazy/conditional/worker/platform/exception graph catalog, nested guest Wasm last unless startup needs it",
+    "Stop for user review before broader backend roadmap implementation"
+  ]
+}
