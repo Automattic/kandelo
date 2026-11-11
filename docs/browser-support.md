@@ -3319,10 +3319,11 @@ filename, guest `path`, byteLength, sha256) — not the raw descriptor
 `boot.inputs`/`boot.parameters` fields verbatim. When `boot.parameters.runScript`
 names the "script" input, Bash runs it before displaying the initial shell's
 first prompt, using the interpreter recorded in `runScriptShell` (default
-`bash`). The terminal shows the script's source and output without echoing
-the filename or launch commands. The execution command is added to Bash
-history, so Up Arrow recalls it for editing or rerunning. The startup hook clears itself before
-execution and runs only in the first terminal. The file remains available
+`bash`). A blank line separates the terminal intro from the script's source
+and output, without echoing the filename or launch commands. The execution
+command is added to Bash history, so Up Arrow recalls it for editing or
+rerunning. The startup hook clears itself before execution and runs only in
+the first terminal. The file remains available
 for editing after boot. The script takes the image's own `init.shellCommand`'s
 place in the launch sequence. Navigating to a different machine from the
 gallery drops the fragment.

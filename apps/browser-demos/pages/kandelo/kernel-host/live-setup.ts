@@ -1546,7 +1546,7 @@ function bootLinkPromptCommand(path: string, recordedShell: BootJsonValue | unde
   // Bash runs this before displaying its first prompt, without echoing a typed
   // command. Unset before execution so child shells cannot replay the setup.
   // Every new terminal uses the initial policy; only the first PTY runs it.
-  return `unset PROMPT_COMMAND; if [ "$(tty)" = /dev/pts/0 ]; then cat ${quote(path)}; history -s ${quote(command)}; ${command}; fi`;
+  return `unset PROMPT_COMMAND; if [ "$(tty)" = /dev/pts/0 ]; then printf '\\n'; cat ${quote(path)}; history -s ${quote(command)}; ${command}; fi`;
 }
 
 function persistenceIdentity(
