@@ -73,6 +73,12 @@ code-bound `kandelo.debug.lines` map. A code offset is not a linear-memory
 address or a function-table index. Missing offsets, names and source locations
 remain missing; consumers must not invent substitute addresses or paths.
 
+The worker builds that metadata from the program bytes on the first capture.
+A process worker therefore keeps its program bytes for the process's
+lifetime when the main module imports `kandelo.stack.v1`; every other
+process releases them before it reports ready. Rust's standard library
+imports this module, so every Rust process keeps them.
+
 The worker captures actual VM frames, excluding JavaScript frames. Native
 stack formats and depth limits differ across engines. If an engine supplies
 function indices without offsets, function names remain usable but lines
