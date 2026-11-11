@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -24,6 +24,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: develop
           token: ${{ secrets.CHANGELOG_BOT_TOKEN || github.token }}
       - name: Check for pending entries and an open update PR
         id: pending
@@ -31,7 +32,7 @@ jobs:
           GH_TOKEN: ${{ secrets.CHANGELOG_BOT_TOKEN || github.token }}
         run: |
           set -euo pipefail
-          open_updates=$(gh pr list --state open --json headRefName --limit 1000 \
+          open_updates=$(gh pr list --base develop --state open --json headRefName --limit 1000 \
             --jq '[.[] | select(.headRefName | startswith("changelog/update-"))] | length')
           if [[ "$open_updates" == 0 ]] && find changelog.d -type f ! -name README.md | grep -q .; then
             echo 'prepare=true' >> "$GITHUB_OUTPUT"
@@ -73,7 +74,7 @@ jobs:
 
           - Collect pending entries into a dated update pinned to its source and compatibility versions.
           - Review nominated highlights and choose a descriptive title before merging.
-          - Merge publishes a GitHub update release.
+          - Promotion to stable main publishes a GitHub update release.
 
           ## Validation
 
@@ -81,5 +82,5 @@ jobs:
           - Not run: runtime tests; this update only changes changelog text.
           - With the default Actions token, downstream PR workflows do not start automatically; arrange any other required checks before merging.
           BODY
-          gh pr create --draft --base main --head "$branch" \
+          gh pr create --draft --base develop --head "$branch" \
             --title "Docs: Publish Kandelo update $UPDATE_ID" --body-file "$body_file"

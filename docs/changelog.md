@@ -193,10 +193,18 @@ The documentation page includes that index rather than keeping
 a separate copy. Metadata is checked against the pinned source snapshot.
 These checks verify publication bookkeeping, not runtime conformance.
 
-The weekly **Prepare changelog update** workflow runs on Mondays and can also
-be dispatched manually on `main`. With pending fragments and no open update
-PR, it prepares a dated update, checks it, and opens a draft PR. Review the
-text and merge the PR to publish. It never merges a PR automatically.
+The **Prepare changelog update** workflow is configured for Mondays and
+manual dispatch from `main` or `develop`. It checks out `develop` and, with
+pending fragments and no open update PR, prepares a dated update, checks it,
+and opens a draft PR against `develop`. Review and merge the text there;
+publication waits for promotion to stable `main`. It never merges a PR.
+
+GitHub schedules workflows from the repository's default branch, `main`.
+The scheduled definition must therefore reach `main` before it can run;
+manual dispatch can select `develop` once the workflow is discoverable.
+Execution also depends on the repository Actions settings and the
+[CI transition](development-workflow.md#transition-order-and-current-limits).
+These workflow definitions do not enable Actions or perform a promotion.
 
 GitHub must allow Actions to create pull requests. An optional
 `CHANGELOG_BOT_TOKEN` secret may hold an appropriately scoped bot token so
@@ -211,8 +219,9 @@ as GitHub Releases under `kandelo-update-YYYY.MM.DD`. Tags point to the pinned
 source commit, and update releases do not replace GitHub's latest software
 release. Existing tags/releases are checked rather than overwritten; reruns
 can finish an interrupted publication. A manual dispatch retries a selected
-update. These workflows become available only after landing on `main`;
-their hosted behavior must still be verified there.
+update. Promotion must preserve the pinned source ancestry, as required by
+the development workflow. Hosted behavior still needs verification after
+the CI transition and operator enablement.
 
 The documentation page ships with the normal guide publication. This change
 does not introduce a separate website deployment. The existing
