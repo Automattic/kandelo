@@ -1,16 +1,15 @@
 {
-  "projection": "Only stdoutBytes/stderrBytes arrays omitted; full raw harness report retained",
   "rawReport": {
-    "path": ".context/node-timers/bootstrap-gap-probe.json",
+    "path": ".context/node-uv-integration/bootstrap-gap-probe.json",
     "bytes": 41703,
-    "sha256": "a1f2d955f4edd469497929f1a8e865487b0163698a2da16571b262a5fb7bab2f"
+    "sha256": "20d7a103b80a355331b6d64694bb3f3c39f1dc76ac7fefad135de0d66bfe4a3b"
   },
   "report": {
     "scope": "Diagnostic complete-body calls; actual missing backends, not startup success",
     "program": {
-      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev26-wasm32-abi56-bcc7158f8c82da763f4f146515ddc111d7d8efdcca7561bf5bbc5d676a791581/js.wasm",
-      "bytes": 51236375,
-      "sha256": "70d19a3117db7044821cebe339c4d05e279f637bf719c4e854030cf6b85bd1ef"
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+      "bytes": 51286498,
+      "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
     },
     "kernel": {
       "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",

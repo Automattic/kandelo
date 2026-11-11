@@ -3,7 +3,12 @@ const assert=require('assert/strict'),{writeSync}=require('fs');
 const {internalBinding}=require('internal/test/binding');
 const timers=internalBinding('timers'),info=timers.immediateInfo,timeout=timers.timeoutInfo;
 const mode=process.argv[2];
-if(mode==='initial-phases'){
+if(mode==='zero-reentrant'){
+  let calls=0;
+  timers.setupTimers(()=>{throw new Error('unexpected immediate')},()=>{if(++calls===1)timers.scheduleTimer(0);return 0});
+  timers.getLibuvNow();timers.scheduleTimer(0);timers.toggleTimerRef(true);
+  process.on('beforeExit',()=>writeSync(1,JSON.stringify({kind:'native-timer-zero-reentrant-control',mode,calls})+'\n'));
+}else if(mode==='initial-phases'){
   const order=[];timers.setupTimers(()=>{order.push('immediate');info.fill(0);writeSync(1,JSON.stringify({kind:'native-timer-initial-phase-control',mode,order})+'\n')},()=>{order.push('timer');info[0]=1;info[1]=1;timers.toggleImmediateRef(true);Promise.resolve().then(()=>order.push('microtask'));return 0});
   info[0]=1;info[1]=1;timers.toggleImmediateRef(true);timers.getLibuvNow();timers.scheduleTimer(0);timers.toggleTimerRef(true);
 }else if(mode==='unref-timer'||mode==='unref-immediate'){
@@ -34,6 +39,11 @@ if(mode==='initial-phases'){
     await check('native-method-owner-is-independent-of-this-value',async()=>{assert.equal(typeof timers.getLibuvNow.call(null),'number');await new Promise(resolve=>{setup(()=>{resolve();return 0});timers.scheduleTimer.call({},0);timers.toggleTimerRef.call(null,true)})});
     await check('native-callback-replacement-and-gc-retention',async()=>{let first=0,second=0;await new Promise(resolve=>{setup(()=>{first++;return 0});setup(()=>{second++;resolve();return 0});gc();timers.getLibuvNow();timers.scheduleTimer(0);timers.toggleTimerRef(true)});assert.equal(first,0);assert.equal(second,1)});
     await check('native-foreign-function-keeps-principal-process-receiver',async()=>{const vm=require('vm'),context=vm.createContext({principal:process,complete:null,called:false,correct:false});await new Promise(resolve=>{context.complete=resolve;const callback=vm.runInContext('(function(){called=true;correct=this===principal;complete();return 0})',context);setup(callback);gc();timers.getLibuvNow();timers.scheduleTimer(0);timers.toggleTimerRef(true)});assert.equal(context.called,true);assert.equal(context.correct,true)});
+    await check('native-outstanding-immediates-have-microtask-checkpoints',async()=>{
+      const order=[];let calls=0;
+      await new Promise(resolve=>{setup(()=>0,()=>{const index=++calls;order.push('immediate'+index);Promise.resolve().then(()=>order.push('microtask'+index));if(index===3){info.fill(0);resolve()}else info[2]=1});info[0]=1;info[1]=1;timers.toggleImmediateRef(true)});
+      assert.equal(calls,3);assert.deepEqual(order,['immediate1','microtask1','immediate2','microtask2','immediate3','microtask3']);
+    });
     writeSync(1,JSON.stringify({kind:'native-timers-reference-only',version:process.version,platform:process.platform,arch:process.arch,v8:process.versions.v8,cases:observations.length,failures,observations,limits:['Native runtime already bootstrapped; direct binding controls only','Foreign function uses a VM context, not a fresh Node native Realm/Environment','No complete async/tick/fatal/native phase/lifecycle/security/OOM differential','Unref-only natural-exit controls run in separate processes']})+'\n');
     if(failures)process.exitCode=1;
   }

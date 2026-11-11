@@ -10,6 +10,7 @@
 #include <limits>
 #include <time.h>
 #include <utility>
+#include <uv.h>
 
 #include "jsapi.h"
 #include "jsfriendapi.h"
@@ -22,6 +23,7 @@
 #include "js/Object.h"
 #include "js/PropertyAndElement.h"
 #include "js/Realm.h"
+#include "js/Utility.h"
 #include "js/ValueArray.h"
 #include "js/Wrapper.h"
 #include "shell/node-upstream/per-context.h"
@@ -29,20 +31,65 @@
 
 namespace kandelo::node {
 namespace {
-enum StateSlot { Base, Current, DeadlineLow, DeadlineHigh, Armed, TimerRef, ImmediateRef,
-                 ImmediateInfo, TimeoutInfo, ImmediateCallback, TimerCallback,
-                 CallbackProcess, CallbackOwner, Inside, PreferImmediate, StateSlots };
+enum StateSlot { NativeLoop, Base, ImmediateInfo, TimeoutInfo,
+                 ImmediateCallback, TimerCallback, CallbackProcess,
+                 CallbackOwner, StateSlots };
 enum BindingSlot { Loop, RealmOwner, PrincipalOwner, PrincipalProcess, BindingSlots };
-const JSClass kState = {"NodeTimerState", JSCLASS_HAS_RESERVED_SLOTS(StateSlots)};
+struct TimerLoop {
+  uv_loop_t loop{};
+  uv_timer_t timer{};
+  uv_check_t check{};
+  uv_idle_t idle{};
+  uv_prepare_t checkpointBridge{};
+  bool initialized = false;
+  bool timerInitialized = false;
+  bool checkInitialized = false;
+  bool idleInitialized = false;
+  bool bridgeInitialized = false;
+  // Borrowed only during uv_run from a stack root in DispatchRuntimeTimers.
+  // No untraced JS edge or persistent/finalizer root is stored in native data.
+  JSContext* cx = nullptr;
+  JS::RootedObject* state = nullptr;
+  RuntimeTimerCheckpoint checkpoint = nullptr;
+  bool running = false;
+  bool okay = true;
+  bool yielded = false;
+  bool externalReferences = false;
+  int dispatched = 0;
+};
+void Finalize(JS::GCContext*, JSObject* state) {
+  JS::Value value = JS::GetReservedSlot(state, NativeLoop);
+  if (value.isUndefined()) return;
+  auto* data = static_cast<TimerLoop*>(value.toPrivate());
+  MOZ_RELEASE_ASSERT(!data->running && !data->cx && !data->state);
+  // Foreground finalization closes every initialized owned handle, suppressing
+  // future JS callbacks. Closing callbacks are null and cannot enter the GC.
+  for (const auto& entry : {
+      std::pair{reinterpret_cast<uv_handle_t*>(&data->timer), data->timerInitialized},
+      std::pair{reinterpret_cast<uv_handle_t*>(&data->check), data->checkInitialized},
+      std::pair{reinterpret_cast<uv_handle_t*>(&data->idle), data->idleInitialized},
+      std::pair{reinterpret_cast<uv_handle_t*>(&data->checkpointBridge), data->bridgeInitialized}}) {
+    if (entry.second) uv_close(entry.first, nullptr);
+  }
+  if (data->initialized) {
+    uv_run(&data->loop, UV_RUN_DEFAULT);
+    MOZ_RELEASE_ASSERT(uv_loop_close(&data->loop) == 0, "Node libuv loop cleanup invariant");
+  }
+  js_delete(data);
+}
+const JSClassOps kStateOps = {
+    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    Finalize, nullptr, nullptr, nullptr};
+const JSClass kState = {"NodeTimerState",
+    JSCLASS_HAS_RESERVED_SLOTS(StateSlots) | JSCLASS_FOREGROUND_FINALIZE, &kStateOps};
 const JSClass kBinding = {"NodeTimersBinding", JSCLASS_HAS_RESERVED_SLOTS(BindingSlots)};
-uint64_t Deadline(JSObject* state) {
-  return uint64_t(uint32_t(JS::GetReservedSlot(state, DeadlineLow).toInt32())) |
-      (uint64_t(uint32_t(JS::GetReservedSlot(state, DeadlineHigh).toInt32())) << 32);
+TimerLoop* Native(JSObject* state) {
+  return static_cast<TimerLoop*>(JS::GetReservedSlot(state, NativeLoop).toPrivate());
 }
-void SetDeadline(JSObject* state, uint64_t value) {
-  JS::SetReservedSlot(state, DeadlineLow, JS::Int32Value(int32_t(uint32_t(value))));
-  JS::SetReservedSlot(state, DeadlineHigh, JS::Int32Value(int32_t(uint32_t(value >> 32))));
-}
+void OnTimer(uv_timer_t* handle);
+void OnCheck(uv_check_t* handle);
+void OnCheckpointBridge(uv_prepare_t* handle);
+void OnIdle(uv_idle_t*) {}  // Like Node: keep poll nonblocking for live immediates.
 
 bool Report(JSContext* cx, const char* message) {
   if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "%s", message);
@@ -61,14 +108,22 @@ JSObject* Binding(JSContext* cx, const JS::CallArgs& args) {
   if (!CheckRealmLibraryActive(cx, owner)) return nullptr;
   return binding;
 }
+bool UvResult(JSContext* cx, int status) {
+  if (status == 0) return true;
+  JS_ReportErrorASCII(cx, "Native libuv operation failed: %s", uv_strerror(status));
+  return false;
+}
 bool RefreshClock(JSContext* cx, JS::HandleObject state) {
-  uint64_t milliseconds;
-  if (!ReadGuestMonotonicMillis(cx, &milliseconds)) return false;
-  double now = double(milliseconds);
+  auto* data = Native(state);
+  uv_update_time(&data->loop);
+  uint64_t now = uv_now(&data->loop);
+  if (now > (uint64_t(1) << 53))
+    return Report(cx, "Guest monotonic clock exceeds the supported exact millisecond range");
   if (now < JS::GetReservedSlot(state, Base).toNumber())
     return Report(cx, "Guest monotonic clock moved before the environment base");
-  JS::SetReservedSlot(state, Current, JS::DoubleValue(now)); return true;
+  return true;
 }
+
 bool IntegerValue(JSContext* cx, JS::HandleValue value, int64_t* result) {
   // Native Value::IntegerValue is a saturating signed-64 conversion, not the
   // modulo conversion used by ECMAScript typed arrays or WebIDL long long.
@@ -82,16 +137,12 @@ bool IntegerValue(JSContext* cx, JS::HandleValue value, int64_t* result) {
   else *result = int64_t(number);
   return true;
 }
-void Schedule(JS::HandleObject state, int64_t duration) {
-  // uv_timer_start accepts the signed binding duration as uint64_t, and
-  // saturates overflow in the absolute deadline. Preserve that native protocol.
-  uint64_t timeout = uint64_t(duration);
-  uint64_t now = uint64_t(JS::GetReservedSlot(state, Current).toNumber());
-  uint64_t expiry = now + timeout;
-  if (expiry < timeout) expiry = std::numeric_limits<uint64_t>::max();
-  SetDeadline(state, expiry);
-  JS::SetReservedSlot(state, Armed, JS::BooleanValue(true));
+bool Schedule(JSContext* cx, JS::HandleObject state, int64_t duration) {
+  // The actual libuv timer owns the cached-clock deadline and saturation.
+  return UvResult(cx, uv_timer_start(&Native(state)->timer, OnTimer,
+                                   uint64_t(duration), 0));
 }
+
 bool Info(JSContext* cx, JS::HandleObject state, unsigned index, uint32_t* count,
           uint32_t* refs, uint32_t* outstanding) {
   JS::RootedObject array(cx, &JS::GetReservedSlot(state, index).toObject());
@@ -137,7 +188,7 @@ bool Now(JSContext* cx, unsigned argc, JS::Value* vp) {
   if (!state) return false;
   JSAutoRealm home(cx, state);
   if (!RefreshClock(cx, state)) return false;
-  args.rval().setNumber(JS::GetReservedSlot(state, Current).toNumber() - JS::GetReservedSlot(state, Base).toNumber()); return true;
+  args.rval().setNumber(double(uv_now(&Native(state)->loop)) - JS::GetReservedSlot(state, Base).toNumber()); return true;
 }
 bool ScheduleTimer(JSContext* cx, unsigned argc, JS::Value* vp) {
   auto args = JS::CallArgsFromVp(argc, vp);
@@ -146,20 +197,28 @@ bool ScheduleTimer(JSContext* cx, unsigned argc, JS::Value* vp) {
   if (!IntegerValue(cx, args.get(0), &duration)) return false;
   JS::RootedObject state(cx, UnwrapState(cx, &JS::GetReservedSlot(binding, Loop).toObject()));
   if (!state) return false;
-  JSAutoRealm home(cx, state); Schedule(state, duration);
+  JSAutoRealm home(cx, state);
+  if (!Schedule(cx, state, duration)) return false;
   args.rval().setUndefined(); return true;
 }
-bool Toggle(JSContext* cx, unsigned argc, JS::Value* vp, unsigned slot) {
+bool Toggle(JSContext* cx, unsigned argc, JS::Value* vp, bool immediate) {
   auto args = JS::CallArgsFromVp(argc, vp);
   JS::RootedObject binding(cx, Binding(cx, args)); if (!binding) return false;
   JS::RootedObject state(cx, UnwrapState(cx, &JS::GetReservedSlot(binding, Loop).toObject()));
   if (!state) return false;
-  JSAutoRealm home(cx, state);
-  JS::SetReservedSlot(state, slot, JS::BooleanValue(args.get(0).isTrue()));
+  auto* data = Native(state);
+  bool ref = args.get(0).isTrue();
+  if (immediate) {
+    if (!UvResult(cx, ref ? uv_idle_start(&data->idle, OnIdle) : uv_idle_stop(&data->idle))) return false;
+  } else {
+    auto* handle = reinterpret_cast<uv_handle_t*>(&data->timer);
+    if (ref) uv_ref(handle); else uv_unref(handle);
+  }
   args.rval().setUndefined(); return true;
 }
-bool ToggleTimer(JSContext* cx, unsigned argc, JS::Value* vp) { return Toggle(cx, argc, vp, TimerRef); }
-bool ToggleImmediate(JSContext* cx, unsigned argc, JS::Value* vp) { return Toggle(cx, argc, vp, ImmediateRef); }
+bool ToggleTimer(JSContext* cx, unsigned argc, JS::Value* vp) { return Toggle(cx, argc, vp, false); }
+bool ToggleImmediate(JSContext* cx, unsigned argc, JS::Value* vp) { return Toggle(cx, argc, vp, true); }
+
 JSObject* Function(JSContext* cx, JS::HandleObject binding, JSNative native, unsigned nargs, const char* name) {
   JS::RootedFunction function(cx, js::NewFunctionWithReserved(cx, native, nargs, 0, name));
   if (!function) return nullptr;
@@ -176,7 +235,7 @@ bool Call(JSContext* cx, JS::HandleObject state, bool immediate,
   JS::RootedValue callback(cx, JS::GetReservedSlot(state, immediate ? ImmediateCallback : TimerCallback));
   MOZ_RELEASE_ASSERT(callback.isObject() && JS::IsCallable(&callback.toObject()), "Node timer callbacks were not registered");
   JS::RootedValue process(cx, JS::GetReservedSlot(state, CallbackProcess));
-  JS::RootedValue now(cx, JS::DoubleValue(JS::GetReservedSlot(state, Current).toNumber() - JS::GetReservedSlot(state, Base).toNumber()));
+  JS::RootedValue now(cx, JS::DoubleValue(double(uv_now(&Native(state)->loop)) - JS::GetReservedSlot(state, Base).toNumber()));
   {
     JSAutoRealm realm(cx, owner);
     if (!CheckRealmLibraryActive(cx, owner) || !JS_WrapValue(cx, &callback) ||
@@ -185,6 +244,71 @@ bool Call(JSContext* cx, JS::HandleObject state, bool immediate,
         : JS::HandleValueArray(now), result)) return false;
   }
   return JS_WrapValue(cx, result);
+}
+void Fail(TimerLoop* data) {
+  data->okay = false;
+  uv_stop(&data->loop);
+}
+void Checkpoint(TimerLoop* data) {
+  if (!data->okay) return;
+  bool yield = false;
+  if (!data->checkpoint(data->cx, &yield)) Fail(data);
+  else if (yield) {
+    data->yielded = !data->externalReferences;
+    uv_stop(&data->loop);
+  }
+}
+void OnTimer(uv_timer_t* handle) {
+  auto* data = static_cast<TimerLoop*>(handle->data);
+  if (!data->okay || data->yielded) return;
+  MOZ_RELEASE_ASSERT(data->cx && data->state);
+  JSContext* cx = data->cx;
+  JS::RootedObject& state = *data->state;
+  JS::RootedValue result(cx);
+  ++data->dispatched;
+  if (!RefreshClock(cx, state) || !Call(cx, state, false, &result)) { Fail(data); return; }
+  int64_t expiry;
+  if (!IntegerValue(cx, result, &expiry)) { Fail(data); return; }
+  if (expiry == std::numeric_limits<int64_t>::min()) {
+    Report(cx, "Native timer expiry is outside the supported signed range"); Fail(data); return;
+  }
+  if (expiry) {
+    uint64_t magnitude = uint64_t(expiry < 0 ? -expiry : expiry);
+    uint64_t elapsed = uv_now(&data->loop) - uint64_t(JS::GetReservedSlot(state, Base).toNumber());
+    int64_t duration = magnitude > elapsed ? int64_t(magnitude - elapsed) : 1;
+    if (!Schedule(cx, state, duration)) { Fail(data); return; }
+  }
+  // Preserve reentrant scheduling when expiry is zero; only unref the handle.
+  auto* timer = reinterpret_cast<uv_handle_t*>(handle);
+  if (expiry > 0) uv_ref(timer); else uv_unref(timer);
+  Checkpoint(data);
+}
+void OnCheck(uv_check_t* handle) {
+  auto* data = static_cast<TimerLoop*>(handle->data);
+  if (!data->okay || data->yielded) return;
+  MOZ_RELEASE_ASSERT(data->cx && data->state);
+  JS::RootedObject& state = *data->state;
+  uint32_t count, refs, outstanding;
+  if (!Info(data->cx, state, ImmediateInfo, &count, &refs, &outstanding)) { Fail(data); return; }
+  if (!count) return;
+  do {
+    JS::RootedValue result(data->cx);
+    ++data->dispatched;
+    if (!Call(data->cx, state, true, &result)) { Fail(data); return; }
+    Checkpoint(data);
+    if (!data->okay) return;
+    if (!Info(data->cx, state, ImmediateInfo, &count, &refs, &outstanding)) { Fail(data); return; }
+    if (data->yielded) {
+      if (!refs && !UvResult(data->cx, uv_idle_stop(&data->idle))) Fail(data);
+      return;
+    }
+  } while (outstanding);
+  if (!refs && !UvResult(data->cx, uv_idle_stop(&data->idle))) Fail(data);
+}
+void OnCheckpointBridge(uv_prepare_t* handle) {
+  // A real engine-job checkpoint services existing non-libuv native watches
+  // while the shell polls them. Its reference is scoped to that actual work.
+  Checkpoint(static_cast<TimerLoop*>(handle->data));
 }
 }  // namespace
 
@@ -204,6 +328,29 @@ bool ReadGuestMonotonicMillis(JSContext* cx, uint64_t* result) {
 JSObject* CreateRuntimeTimerState(JSContext* cx, double base) {
   JS::RootedObject state(cx, JS_NewObject(cx, &kState));
   if (!state) return nullptr;
+  auto* data = js_new<TimerLoop>();
+  if (!data) { JS_ReportOutOfMemory(cx); return nullptr; }
+  JS::SetReservedSlot(state, NativeLoop, JS::PrivateValue(data));
+  // Detect a consumer header/layout mismatch before libuv can write the object.
+  MOZ_RELEASE_ASSERT(sizeof(uv_loop_t) == uv_loop_size() &&
+      sizeof(uv_timer_t) == uv_handle_size(UV_TIMER) &&
+      sizeof(uv_check_t) == uv_handle_size(UV_CHECK) &&
+      sizeof(uv_idle_t) == uv_handle_size(UV_IDLE) &&
+      sizeof(uv_prepare_t) == uv_handle_size(UV_PREPARE), "Node libuv public layout invariant");
+  if (!UvResult(cx, uv_loop_init(&data->loop))) return nullptr;
+  data->initialized = true;
+  if (!UvResult(cx, uv_timer_init(&data->loop, &data->timer))) return nullptr;
+  data->timerInitialized = true; data->timer.data = data;
+  uv_unref(reinterpret_cast<uv_handle_t*>(&data->timer));
+  if (!UvResult(cx, uv_check_init(&data->loop, &data->check))) return nullptr;
+  data->checkInitialized = true; data->check.data = data;
+  uv_unref(reinterpret_cast<uv_handle_t*>(&data->check));
+  if (!UvResult(cx, uv_check_start(&data->check, OnCheck))) return nullptr;
+  if (!UvResult(cx, uv_idle_init(&data->loop, &data->idle))) return nullptr;
+  data->idleInitialized = true; data->idle.data = data;
+  if (!UvResult(cx, uv_prepare_init(&data->loop, &data->checkpointBridge))) return nullptr;
+  data->bridgeInitialized = true; data->checkpointBridge.data = data;
+  uv_unref(reinterpret_cast<uv_handle_t*>(&data->checkpointBridge));
   JS::RootedObject immediate(cx, JS_NewUint32Array(cx, 3));
   if (!immediate) return nullptr;
   JS::RootedObject timeout(cx, JS_NewInt32Array(cx, 1));
@@ -211,12 +358,10 @@ JSObject* CreateRuntimeTimerState(JSContext* cx, double base) {
   JS::SetReservedSlot(state, Base, JS::DoubleValue(base));
   JS::SetReservedSlot(state, ImmediateInfo, JS::ObjectValue(*immediate));
   JS::SetReservedSlot(state, TimeoutInfo, JS::ObjectValue(*timeout));
-  for (unsigned slot : {Armed, TimerRef, ImmediateRef, Inside, PreferImmediate})
-    JS::SetReservedSlot(state, slot, JS::BooleanValue(false));
-  SetDeadline(state, 0);
   if (!RefreshClock(cx, state)) return nullptr;
   return state;
 }
+
 JSObject* CreateTimersBinding(JSContext* cx, JS::HandleObject runtime,
                              JS::HandleObject realm, JS::HandleObject process) {
   JS::RootedObject state(cx, GetRuntimeTimerState(cx, runtime, true));
@@ -246,79 +391,64 @@ JSObject* CreateTimersBinding(JSContext* cx, JS::HandleObject runtime,
   return binding;
 }
 bool DispatchRuntimeTimers(JSContext* cx, JS::HandleObject runtime,
-                           bool externalReferences, int* dispatched, int64_t* nextDelay) {
+                           bool externalReferences, RuntimeTimerCheckpoint checkpoint,
+                           int* dispatched, int64_t* nextDelay) {
   *dispatched = 0; *nextDelay = -1;
   JS::RootedObject wrapped(cx, GetRuntimeTimerState(cx, runtime, false));
   if (!wrapped) return !JS_IsExceptionPending(cx);
   JS::RootedObject state(cx, UnwrapState(cx, wrapped)); if (!state) return false;
   JSAutoRealm home(cx, state);
-  if (JS::GetReservedSlot(state, Inside).isTrue()) return Report(cx, "Reentrant native timer dispatch");
-  if (!RefreshClock(cx, state)) return false;
+  auto* data = Native(state);
+  if (data->running) return Report(cx, "Reentrant native timer dispatch");
   uint32_t count, refs, outstanding;
   if (!Info(cx, state, ImmediateInfo, &count, &refs, &outstanding)) return false;
-  bool timerLive = JS::GetReservedSlot(state, Armed).isTrue() && JS::GetReservedSlot(state, TimerRef).isTrue();
-  bool immediateLive = JS::GetReservedSlot(state, ImmediateRef).isTrue();
-  if (!timerLive && !immediateLive && !externalReferences) {
-    JS::SetReservedSlot(state, PreferImmediate, JS::BooleanValue(false));
-    return true;
+  MOZ_RELEASE_ASSERT(checkpoint);
+  data->running = true; data->okay = true; data->dispatched = 0;
+  data->yielded = false; data->externalReferences = externalReferences;
+  data->cx = cx; data->state = &state; data->checkpoint = checkpoint;
+  auto leave = mozilla::MakeScopeExit([&] {
+    uv_prepare_stop(&data->checkpointBridge);
+    uv_unref(reinterpret_cast<uv_handle_t*>(&data->checkpointBridge));
+    data->cx = nullptr; data->state = nullptr; data->checkpoint = nullptr;
+    data->running = false;
+  });
+  if (externalReferences) {
+    if (!UvResult(cx, uv_prepare_start(&data->checkpointBridge, OnCheckpointBridge))) return false;
+    uv_ref(reinterpret_cast<uv_handle_t*>(&data->checkpointBridge));
   }
-  bool due = JS::GetReservedSlot(state, Armed).isTrue() &&
-             Deadline(state) <= uint64_t(JS::GetReservedSlot(state, Current).toNumber());
-  bool immediate = count != 0 && (JS::GetReservedSlot(state, PreferImmediate).isTrue() || !due);
-  JS::SetReservedSlot(state, PreferImmediate, JS::BooleanValue(false));
-  if (due || immediate) {
-    JS::SetReservedSlot(state, Inside, JS::BooleanValue(true));
-    auto leave = mozilla::MakeScopeExit([&] { JS::SetReservedSlot(state, Inside, JS::BooleanValue(false)); });
-    JS::RootedValue result(cx);
-    if (!immediate) JS::SetReservedSlot(state, Armed, JS::BooleanValue(false));
-    if (!Call(cx, state, immediate, &result)) return false;
-    *dispatched = 1;
-    if (immediate) {
-      if (!Info(cx, state, ImmediateInfo, &count, &refs, &outstanding)) return false;
-      if (!refs) JS::SetReservedSlot(state, ImmediateRef, JS::BooleanValue(false));
-      JS::SetReservedSlot(state, PreferImmediate, JS::BooleanValue(outstanding == 1));
-    } else {
-      int64_t expiry;
-      if (!IntegerValue(cx, result, &expiry)) return false;
-      if (expiry == std::numeric_limits<int64_t>::min()) return Report(cx, "Native timer expiry is outside the supported signed range");
-      if (expiry) {
-        uint64_t magnitude = uint64_t(expiry < 0 ? -expiry : expiry);
-        uint64_t elapsed = uint64_t(JS::GetReservedSlot(state, Current).toNumber()) -
-                           uint64_t(JS::GetReservedSlot(state, Base).toNumber());
-        int64_t duration = magnitude > elapsed ? int64_t(magnitude - elapsed) : 1;
-        Schedule(state, duration);
-      }
-      JS::SetReservedSlot(state, TimerRef, JS::BooleanValue(expiry > 0));
-      JS::SetReservedSlot(state, PreferImmediate, JS::BooleanValue(true));
-    }
-  }
-  timerLive = JS::GetReservedSlot(state, Armed).isTrue() && JS::GetReservedSlot(state, TimerRef).isTrue();
-  immediateLive = JS::GetReservedSlot(state, ImmediateRef).isTrue();
-  if (!timerLive && !immediateLive && !externalReferences) {
-    JS::SetReservedSlot(state, PreferImmediate, JS::BooleanValue(false));
-    return true;
-  }
-  if (!Info(cx, state, ImmediateInfo, &count, &refs, &outstanding)) return false;
-  if (count || immediateLive) *nextDelay = 0;
-  else if (JS::GetReservedSlot(state, Armed).isTrue()) {
-    uint64_t now = uint64_t(JS::GetReservedSlot(state, Current).toNumber());
-    uint64_t expiry = Deadline(state);
-    *nextDelay = int64_t(std::min(expiry > now ? expiry - now : 0, uint64_t(INT32_MAX)));
-  }
+  // libuv owns deadlines, poll blocking, ref liveness and phase progression.
+  // Existing non-libuv native watches are serviced by the shell between NOWAIT
+  // steps; otherwise DEFAULT drains the real loop with callback checkpoints.
+  uv_run(&data->loop, externalReferences ? UV_RUN_NOWAIT : UV_RUN_DEFAULT);
+  *dispatched = data->dispatched;
+  if (!data->okay) return false;
+  if (!UvResult(cx, uv_prepare_stop(&data->checkpointBridge))) return false;
+  uv_unref(reinterpret_cast<uv_handle_t*>(&data->checkpointBridge));
+  if (uv_loop_alive(&data->loop)) *nextDelay = std::max(0, uv_backend_timeout(&data->loop));
   return true;
 }
+
 JSObject* InspectRuntimeTimers(JSContext* cx, JS::HandleObject runtime) {
   JS::RootedObject wrapped(cx, GetRuntimeTimerState(cx, runtime, false));
   if (!wrapped) { Report(cx, "Native timers have not been initialized"); return nullptr; }
   JS::RootedObject state(cx, UnwrapState(cx, wrapped)); if (!state) return nullptr;
   JS::RootedObject snapshot(cx, JS_NewPlainObject(cx)); if (!snapshot) return nullptr;
-  for (const auto& field : {std::pair{"armed", Armed}, std::pair{"timerReferenced", TimerRef},
-      std::pair{"immediateReferenced", ImmediateRef}, std::pair{"base", Base},
-      std::pair{"now", Current}}) {
-    JS::RootedValue value(cx, JS::GetReservedSlot(state, field.second));
-    if (!JS_DefineProperty(cx, snapshot, field.first, value, JSPROP_ENUMERATE)) return nullptr;
+  auto* data = Native(state);
+  struct Field { const char* name; JS::Value value; };
+  for (const auto& field : {
+      Field{"armed", JS::BooleanValue(uv_is_active(reinterpret_cast<uv_handle_t*>(&data->timer)))},
+      Field{"timerReferenced", JS::BooleanValue(uv_has_ref(reinterpret_cast<uv_handle_t*>(&data->timer)))},
+      Field{"immediateReferenced", JS::BooleanValue(uv_is_active(reinterpret_cast<uv_handle_t*>(&data->idle)))},
+      Field{"base", JS::GetReservedSlot(state, Base)},
+      Field{"now", JS::DoubleValue(double(uv_now(&data->loop)))},
+      Field{"libuvVersion", JS::Int32Value(int32_t(uv_version()))},
+      Field{"loopSize", JS::Int32Value(int32_t(sizeof(uv_loop_t)))},
+      Field{"nativeLoopSize", JS::Int32Value(int32_t(uv_loop_size()))}}) {
+    JS::RootedValue value(cx, field.value);
+    if (!JS_DefineProperty(cx, snapshot, field.name, value, JSPROP_ENUMERATE)) return nullptr;
   }
-  JS::Rooted<JS::BigInt*> deadline(cx, JS::NumberToBigInt(cx, Deadline(state)));
+
+  JS::Rooted<JS::BigInt*> deadline(cx, JS::NumberToBigInt(cx, data->timer.timeout));
   if (!deadline) return nullptr;
   JS::RootedValue value(cx, JS::BigIntValue(deadline));
   if (!JS_DefineProperty(cx, snapshot, "deadline", value, JSPROP_ENUMERATE)) return nullptr;

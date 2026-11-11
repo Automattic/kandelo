@@ -19,7 +19,7 @@ const nativeTimers = modeArgument === "timers";
 const processConfig = modeArgument === "process-config";
 const realmLibrary = modeArgument === "realm-library";
 const expectedKind = nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
-const expectedCases = nativeTimers ? 23 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
+const expectedCases = nativeTimers ? 27 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
 const program = resolve(programArgument);
 const reportPath = resolve(reportArgument);
 const kernel = resolveBinary("kernel.wasm");
@@ -115,6 +115,10 @@ if (realmLibrary) {
     });
 }
 if (nativeTimers) {
+  await run("timer-callback-quit-preserves-requested-shell-exit", ["js", "--kandelo-test-upstream", "-e",
+    "__kandeloUpstreamTest.initializeContext();const realm=__kandeloUpstreamTest.initializeRealm();const timers=realm.internalBinding('timers');timers.setupTimers(()=>{},()=>quit(23));timers.getLibuvNow();timers.scheduleTimer(0);timers.toggleTimerRef(true);"], (result) => {
+      expect(result.exitCode === 23 && result.stderr === "" && result.hostDiagnostics.length === 0, JSON.stringify(result));
+  });
   for (const mode of ["timer", "immediate"]) {
     await run("unreferenced-native-" + mode + "-permits-natural-guest-exit", ["js", "--kandelo-test-upstream", "-e",
       "__kandeloUpstreamTest.initializeContext(); const realm=__kandeloUpstreamTest.initializeRealm(); const timers=realm.internalBinding('timers'); timers.setupTimers(()=>{throw new Error('UNEXPECTED_IMMEDIATE_CALLBACK')},()=>{throw new Error('UNEXPECTED_TIMER_CALLBACK')}); " +

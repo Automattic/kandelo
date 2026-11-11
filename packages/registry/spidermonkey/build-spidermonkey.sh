@@ -184,6 +184,17 @@ fi
 }
 export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
 
+LIBUV_PREFIX="${WASM_POSIX_DEP_LIBUV_DIR:-}"
+if [ -z "$LIBUV_PREFIX" ]; then
+    echo "==> Resolving libuv via cargo xtask build-deps..."
+    LIBUV_PREFIX="$(resolve_dep libuv)"
+fi
+[ -f "$LIBUV_PREFIX/lib/libuv.a" ] && [ -f "$LIBUV_PREFIX/include/uv.h" ] || {
+    echo "ERROR: libuv resolve missing archive/headers at $LIBUV_PREFIX" >&2
+    exit 1
+}
+export WASM_POSIX_DEP_LIBUV_DIR="$LIBUV_PREFIX"
+
 if [ "$RESOLVER_BUILD" -eq 1 ]; then
     export WASM_POSIX_DEP_WORK_DIR="$WORK_DIR"
     export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
@@ -192,7 +203,7 @@ if [ "$RESOLVER_BUILD" -eq 1 ]; then
     export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
     SYSROOT="$(
         kandelo_package_prepare_private_sysroot spidermonkey "$SYSROOT" \
-            libcxx openssl zlib libzstd
+            libcxx openssl zlib libzstd libuv
     )"
     export WASM_POSIX_SYSROOT="$SYSROOT"
 fi
@@ -398,9 +409,9 @@ fi
 bash "$SCRIPT_DIR/node-upstream/prepare-build.sh" \
     "$REPO_ROOT" "$SRC_DIR" "$OBJ_DIR" "$MACOS_SDK_DIR"
 
-export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
-export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
-export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a -Wl,-z,stack-size=16777216"
+export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -DUV_PLATFORM_KANDELO=1"
+export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -DUV_PLATFORM_KANDELO=1"
+export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a $LIBUV_PREFIX/lib/libuv.a -lpthread -Wl,-z,stack-size=16777216"
 
 if [ -f "$OBJ_DIR/config.status" ] && {
     ! grep -q 'getrandom_backend' "$OBJ_DIR/config.status" ||

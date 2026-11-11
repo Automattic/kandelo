@@ -62,3 +62,12 @@ CLOCK_MONOTONIC and actual engine checkpoints, bypassing public compatibility
 timer hooks. Native callback-scope/async/tick/fatal recovery and complete Node
 phase ordering remain separate unfinished contracts. This backend does not
 implement JavaScript timer lists; those belong to unchanged internal/timers.
+
+The timer owner's native source uses an actual libuv loop, timer, check and idle
+handles. Callbacks remain traced in the JS state; native data borrows only a
+stack root during uv_run. Foreground finalization closes initialized handles and
+drains their native close lifecycle without invoking JS. The shell supplies real
+job checkpoints at callback boundaries. Existing non-libuv native watches use a
+bounded NOWAIT bridge; the native-only path blocks in libuv's poller. Public
+layout invariants are checked before libuv writes allocated state. Full async
+callback scopes, fatal recovery and wider startup remain separate unfinished work.

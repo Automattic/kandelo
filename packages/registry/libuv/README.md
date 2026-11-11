@@ -2,8 +2,9 @@
 
 This initial wasm32 library builds the exact libuv 1.52.1 sources in the
 verified Node.js 26.13.0 archive through upstream CMake and Kandelo's normal
-SDK/resolver/cache. It is groundwork for the unchanged upstream Node runtime;
-Node's SpiderMonkey embedding does not use this library yet.
+SDK/resolver/cache. The SpiderMonkey embedding's native Node timer backend
+uses this library for its loop and timer/check/idle handles. Wider Node I/O
+integration remains incomplete; see the upstream runtime evidence ledger.
 
 The standalone libuv 1.52.1 release differs from Node's copy in
 src/unix/fs.c, src/uv-common.c, src/win/fs-event.c and src/win/tcp.c.
@@ -15,6 +16,9 @@ Consumers must use the installed CMake target libuv::uv_a or
 pkg-config --cflags --libs libuv-static. Both supply
 UV_PLATFORM_KANDELO=1, which selects the matching public uv_loop_t layout.
 Omitting it creates an incompatible layout; it is a required compile flag.
+The explicit Kandelo selector takes precedence over ambient legacy OS macros
+in embedding translation units. The library itself builds as Kandelo without
+Linux identity flags.
 
 The thread-entry patch replaces upstream's incompatible function-pointer
 cast with a real pointer-returning pthread wrapper. A successful creation

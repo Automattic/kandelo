@@ -1,0 +1,49 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3731,6 +3731,16 @@
+   return fired;
+ }
+ 
++static bool UpstreamNodeJobCheckpoint(JSContext* cx, bool* yield) {
++  ShellContext* sc = GetShellContext(cx);
++  if (sc->quitting) return false;
++  js::RunJobs(cx);
++  if (sc->quitting) return false;
++  MaybeRunFinalizationRegistryCleanupTasks(cx);
++  *yield = KandeloSocketHasWatches();
++  return !JS_IsExceptionPending(cx);
++}
++
+ static bool RunShellJobs(JSContext* cx) {
+   ShellContext* sc = GetShellContext(cx);
+   if (sc->quitting) {
+@@ -3752,12 +3762,14 @@
+     // timer keeps the loop alive just like a pending native watch.
+     int64_t nextTimerDelay = -1;
+     int ranTimers = 0;
+-    if (kandelo::node::HasRuntimeTimerState(sc->upstreamNodeRuntime.get())) {
++    bool upstreamTimers = kandelo::node::HasRuntimeTimerState(sc->upstreamNodeRuntime.get());
++    bool externalReferences = ranNative > 0 || KandeloSocketHasWatches();
++    if (upstreamTimers) {
+       RootedObject runtime(cx, sc->upstreamNodeRuntime);
+       if (!kandelo::node::DispatchRuntimeTimers(
+-              cx, runtime, ranNative > 0 || KandeloSocketHasWatches(),
++              cx, runtime, externalReferences, UpstreamNodeJobCheckpoint,
+               &ranTimers, &nextTimerDelay)) {
+-        return false;
++        return sc->quitting;
+       }
+     } else {
+       ranTimers = KandeloRunDueTimers(cx, &nextTimerDelay);
+@@ -3771,7 +3783,10 @@
+         !KandeloSocketHasWatches() && !timersPending) {
+       break;
+     }
+-    if (!ranTasks && ranNative == 0 && ranTimers == 0) {
++    // The genuine libuv loop blocks in its own poller. Only the ordinary
++    // compatibility loop or existing non-libuv native watches use this bridge.
++    if ((!upstreamTimers || externalReferences) &&
++        !ranTasks && ranNative == 0 && ranTimers == 0) {
+       useconds_t sleepUs = 1000;
+       if (timersPending) {
+         int64_t wantUs = nextTimerDelay * 1000;

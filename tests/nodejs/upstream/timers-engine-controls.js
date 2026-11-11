@@ -56,9 +56,9 @@ check('negative-expiry-return-leaves-a-real-unreferenced-pending-timer',()=>{
   assertEq(calls,1);assertEq(state.armed,true);assertEq(state.timerReferenced,false);
 });
 check('zero-expiry-does-not-discard-reentrant-rescheduling',()=>{
-  let calls=0;fire(0,()=>{calls++;if(calls===1)timers.scheduleTimer(0);return 0});
+  let calls=0;fire(0,()=>{calls++;if(calls===1)timers.scheduleTimer(120000);return 0});
   assertEq(calls,1);assertEq(api.inspectTimers().armed,true);assertEq(api.inspectTimers().timerReferenced,false);
-  timers.toggleTimerRef(true);drainJobQueue();assertEq(calls,2);assertEq(api.inspectTimers().armed,false);
+  timers.scheduleTimer(0);timers.toggleTimerRef(true);drainJobQueue();assertEq(calls,2);assertEq(api.inspectTimers().armed,false);
 });
 check('unreferenced-even-due-timer-does-not-keep-the-loop-alive',()=>{
   let calls=0;callbacks(()=>{calls++;return 0});timers.getLibuvNow();timers.scheduleTimer(0);timers.toggleTimerRef(false);drainJobQueue();
@@ -117,8 +117,29 @@ check('fresh-loop-does-not-retain-a-previous-check-phase',()=>{
   const order=[];callbacks(()=>{order.push('timer');Promise.resolve().then(()=>order.push('microtask'));return 0},()=>{order.push('immediate');info.fill(0)});
   info[0]=1;info[1]=1;timers.toggleImmediateRef(true);timers.getLibuvNow();timers.scheduleTimer(0);timers.toggleTimerRef(true);drainJobQueue();assertEq(order.join(','),'timer,microtask,immediate');
 });
+check('fresh-default-loop-services-reentrant-zero-deadline-before-exit',()=>{
+  let calls=0;fire(0,()=>{if(++calls===1)timers.scheduleTimer(0);return 0});
+  assertEq(calls,2);assertEq(api.inspectTimers().armed,false);assertEq(api.inspectTimers().timerReferenced,false);
+});
+check('actual-libuv-version-and-public-layout-match',()=>{
+  const state=api.inspectTimers();assertEq(state.libuvVersion,0x013401);
+  assertEq(Number.isSafeInteger(state.loopSize)&&state.loopSize>0,true);assertEq(state.loopSize,state.nativeLoopSize);
+});
+check('outstanding-immediates-drain-with-engine-checkpoints',()=>{
+  const order=[];let calls=0;
+  callbacks(()=>0,()=>{const index=++calls;order.push('immediate'+index);Promise.resolve().then(()=>order.push('microtask'+index));if(index===3)info.fill(0);else info[2]=1});
+  info[0]=1;info[1]=1;timers.toggleImmediateRef(true);drainJobQueue();
+  assertEq(calls,3);assertEq(order.join(','),'immediate1,microtask1,immediate2,microtask2,immediate3,microtask3');
+  assertEq(api.inspectTimers().immediateReferenced,false);
+});
+check('moving-gc-during-callback-checkpoint-preserves-libuv-owner',()=>{
+  const order=[];
+  callbacks(()=>{order.push('timer');info[0]=1;info[1]=1;timers.toggleImmediateRef(true);Promise.resolve().then(()=>{gc('shrinking');order.push('gc-job')});return 0},()=>{gc('shrinking');order.push('immediate');info.fill(0)});
+  timers.getLibuvNow();timers.scheduleTimer(0);timers.toggleTimerRef(true);drainJobQueue();
+  assertEq(order.join(','),'timer,gc-job,immediate');assertEq(api.inspectTimers().armed,false);
+});
 const state=api.inspectTimers();
-print(JSON.stringify({kind:'native-timers-controls',plannedCases:23,cases:observations.length,notRun:23-observations.length,failures,observations,
+print(JSON.stringify({kind:'native-timers-controls',plannedCases:27,cases:observations.length,notRun:27-observations.length,failures,observations,
   state:{armed:state.armed,timerReferenced:state.timerReferenced,immediateReferenced:state.immediateReferenced,deadline:state.deadline.toString()},
-  limits:['Native binding/scheduler controls, not public timers or successful Node bootstrap','No task_queue/async callback-scope/tick/fatal recovery integration','No full Node/libuv phase-ordering/native differential/security/OOM/finalization proof','No browser execution']}));
+  limits:['Native binding/scheduler controls, not public timers or successful Node bootstrap','No task_queue/async callback-scope/tick/fatal recovery integration','Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete','Per-host execution is recorded by the external runner']}));
 if(failures)quit(1);

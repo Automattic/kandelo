@@ -694,3 +694,52 @@ and implement genuine task-queue/async callback scopes. Wider libuv support
 belongs in the backend catalog and ordered roadmap; it is not implied by these
 controls. Exact artifacts, inputs, source comparison, failures and limits are in
 [libuv-backend-engine-check.json](../tests/nodejs/upstream/libuv-backend-engine-check.json).
+
+## Native timers integrated with libuv
+
+Revision 27 links the normal resolved libuv 1.52.1 package (revision 3) and uses
+real loop, timer, check and idle handles. The native deadline/ref/PreferImmediate
+slots and custom phase selection are removed. Time, deadlines, liveness and
+phases now come from libuv. The native-only path blocks in UV_RUN_DEFAULT;
+existing non-libuv native watches retain an explicit NOWAIT/shell-poll bridge.
+The ordinary compatibility bootstrap and its timer path remain separate.
+
+Callbacks, shared arrays, principal process and realm remain traced in protected
+JS slots. Native data borrows only a stack root while uv_run executes. Timer and
+check callbacks run actual engine job checkpoints; foreground finalization
+closes initialized handles and their native loop without calling JS. Failed
+callbacks stop the loop and preserve their exception; shell quit status is also
+preserved. Full Node callback scopes, AsyncWrap/ticks/rejection/fatal routing and
+complete lifecycle/security/OOM behavior remain unfinished. Public handle sizes
+are checked before libuv writes native state. The explicit Kandelo header
+selector takes precedence over ambient legacy SpiderMonkey Linux macros; the
+libuv library itself uses the true Kandelo target. SpiderMonkey's wider target
+configuration debt remains open.
+
+Twenty-seven timer binding/loop controls pass on each of Node, Chromium, Firefox
+and WebKit using identical engine/kernel bytes, including moving GC during a
+callback checkpoint and outstanding immediate batches. Natural unref exits and
+callback quit status pass separately on all four hosts. On Node, the same
+artifact also passes the 135 prior cases and their drivers; six expected fatal
+assertions retain their diagnostic/error exits. Eighteen pinned native timer
+reference controls pass separately. These are binding/engine controls, not
+successful original public timers or Node startup.
+
+The initial patch build failed because short context let patch place the
+checkpoint before its dependencies; the corrected patch uses actual loop
+context. The first guest run then exposed a former scheduler test's incorrect
+same-drain assumption: the pinned native executable also services a reentrant
+zero-delay timer after its first callback unrefs it. The corrected fixture tests
+both that native phase behavior and future reentrant scheduling. No engine code
+was changed to force the old expectation. The first browser run failed in the
+harness's inspector-body hashing of the large response. The final runner hashes
+the exact consumed ArrayBuffer in-page and uses the normal resolver's file
+approval. Those failed attempts remain retained. The passing browser run still
+reports a separate macOS permission warning cleaning its owned Firefox profile.
+
+Original principal bootstrap still stops on task_queue at internal/timers:92;
+original stack-limit policy still reaches missing constants. User CJS/ESM entry,
+output/error/exit startup acceptance and the full backend catalog remain open.
+No partial/canonical product images, full product/ABI campaigns or overall suites
+ran. Exact inputs, artifacts, per-host results, failures and limits are in
+[timers-libuv-engine-check.json](../tests/nodejs/upstream/timers-libuv-engine-check.json).

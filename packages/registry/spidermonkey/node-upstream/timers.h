@@ -10,9 +10,11 @@ bool ReadGuestMonotonicMillis(JSContext* cx, uint64_t* result);
 JSObject* CreateRuntimeTimerState(JSContext* cx, double base);
 JSObject* CreateTimersBinding(JSContext* cx, JS::HandleObject runtime,
                              JS::HandleObject realm, JS::HandleObject process);
-// No public adapter hooks. The caller owns actual engine microtask checkpoints.
+// No public adapter hooks. The caller provides actual engine job checkpoints.
+using RuntimeTimerCheckpoint = bool (*)(JSContext* cx, bool* yield);
 bool DispatchRuntimeTimers(JSContext* cx, JS::HandleObject runtime,
-                           bool externalReferences, int* dispatched,
+                           bool externalReferences, RuntimeTimerCheckpoint checkpoint,
+                           int* dispatched,
                            int64_t* nextDelay);
 JSObject* InspectRuntimeTimers(JSContext* cx, JS::HandleObject runtime);
 }  // namespace kandelo::node

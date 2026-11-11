@@ -98,15 +98,16 @@
     },
     {
       "area": "native timers binding and event scheduler",
-      "sourceStatus": "real guest-monotonic deadline/ref state, shared info arrays and traced callbacks; privileged Node-host controls pass",
-      "evidence": "timers-engine-check.json",
-      "remaining": "native callback-scope/async/tick/fatal retry, complete Node phase semantics, full native/lifecycle/security/OOM/browser differential; public timers require wider unchanged JS closure"
+      "sourceStatus": "real libuv loop/timer/check/idle handles, traced callbacks and actual engine checkpoints; 27 controls and exit/liveness drivers pass on each host",
+      "evidence": "timers-libuv-engine-check.json",
+      "remaining": "Node native callback scopes/AsyncWrap/tick/rejection/fatal routing, full lifecycle/security/OOM and public JS timer closure remain incomplete"
     },
     {
       "area": "standalone libuv loop backend",
-      "sourceStatus": "real pinned Node-bundled libuv1.52.1 on the true Kandelo SDK; POSIX poll/clock, typed pthread entry; 13 focused controls pass separately on Node/Chromium/Firefox/WebKit",
+      "sourceStatus": "real pinned Node-bundled libuv1.52.1 on true Kandelo SDK; now linked into native timers with explicit public-layout precedence; prior standalone evidence retained",
       "evidence": "libuv-backend-engine-check.json",
-      "remaining": "Node embedding not yet linked/adapted; ten public OS functions missing; sockets/DNS/spawn/signals/cancel/fork/OOM/full lifecycle and full conformance unvalidated"
+      "remaining": "ten public OS functions missing; wider socket/DNS/spawn/signals/cancel/fork/OOM/full lifecycle and full conformance unvalidated",
+      "integrationEvidence": "timers-libuv-engine-check.json"
     }
   ],
   "runtimeConformance": {
@@ -178,19 +179,19 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 26,
+    "packageRevision": 27,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "timers-engine-check.json",
+    "evidence": "timers-libuv-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "Real native timer binding/scheduler plus prior engine/realm/process controls on Node host; principal body stops on task_queue",
+    "packageRuntimeScope": "Real libuv timer owner/loop on all four hosts plus prior Node engine/realm cases; original principal body still stops on task_queue",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
-    "targetingDebt": "existing Linux triplet and __linux__/__unix__ defines are unchanged; target metadata/conformance remain unestablished"
+    "targetingDebt": "Existing Mozilla Linux triplet/defines remain; linked libuv uses the true Kandelo build and explicit public-layout selector before legacy macros"
   },
   "startupPrerequisites": {
     "nodePrivateKeySemantics": {
@@ -283,7 +284,7 @@
     },
     "realmLibrary": {
       "inventory": "realm-library-contracts.md",
-      "implementationEvidence": "timers-engine-check.json",
+      "implementationEvidence": "timers-libuv-engine-check.json",
       "originalBodyExecuted": true,
       "originalLoaderClosuresRetained": true,
       "oneOriginalBuiltinCache": true,
@@ -303,7 +304,7 @@
     },
     "processConfig": {
       "inventory": "process-config-contracts.md",
-      "evidence": "timers-engine-check.json",
+      "evidence": "timers-libuv-engine-check.json",
       "distinctMutableProcessPrototype": true,
       "nativeEmptyInstanceConstructor": true,
       "effectiveReceiverSemantics": true,
@@ -318,7 +319,7 @@
     },
     "timers": {
       "inventory": "timers-contracts.md",
-      "evidence": "timers-engine-check.json",
+      "evidence": "timers-libuv-engine-check.json",
       "actualGuestClock": true,
       "runtimeSharedInfoArrays": true,
       "realDeadlineAndReferences": true,
@@ -329,7 +330,12 @@
       "legacyPublicTimerHooksBypassed": true,
       "nativeCallbackScopeAsyncTickFatalComplete": false,
       "fullPhaseSemantics": false,
-      "publicTimersCompatibility": false
+      "publicTimersCompatibility": false,
+      "actualLibuvLoopAndHandles": true,
+      "libuvOwnsPhaseProgression": true,
+      "nativeOnlyPollBlocking": "UV_RUN_DEFAULT",
+      "legacyNativeWatchBridge": "UV_RUN_NOWAIT plus existing shell polling",
+      "fullPhaseSemanticsReason": "Libuv phases are real; complete Node callback/async scopes remain incomplete"
     }
   },
   "nativeDifferentialControls": {
@@ -391,11 +397,14 @@
     },
     "timers": {
       "reference": "Node26.13.0Darwinarm64",
-      "cases": 16,
+      "cases": 18,
       "failures": 0,
-      "evidence": "timers-native-reference.json",
+      "evidence": "timers-libuv-native-reference.json",
       "guestRun": false,
-      "limits": "13 already-bootstrapped direct-binding cases plus 3 isolated exit/phase controls; no full callback/phase/native realm/lifecycle/security/OOM or guest startup equivalence"
+      "limits": "14 already-bootstrapped direct-binding cases plus 4 isolated exit/phase controls; no full callback/phase/native realm/lifecycle/security/OOM or guest startup equivalence",
+      "directBindingCases": 14,
+      "isolatedControls": 4,
+      "totalCases": 18
     }
   },
   "focusedGuestEngineControls": {
@@ -421,8 +430,8 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "timers-engine-check.json",
-      "regressionScope": "Same revision-26 artifact passes 13 process/config, 16 realm, 21 stack, 14 dynamic-import, 19 ModuleWrap, 15 synthetic, 14 context and 23 private-key cases and drivers; raw regressions retained under .context/node-timers",
+      "currentArtifactEvidence": "timers-libuv-engine-check.json",
+      "regressionScope": "Same revision27 libuv-linked artifact passes 27 timers plus 135 prior cases and drivers; raw reports retained in .context/node-uv-integration",
       "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
@@ -457,22 +466,42 @@
       "processConfigDriverRuns": 3,
       "processConfigDriverFailures": 0,
       "processConfigSuccessHostDiagnostics": 0,
-      "timersEvidence": "timers-engine-result.json",
-      "timersCases": 23,
+      "timersEvidence": "timers-libuv-engine-result.json",
+      "timersCases": 27,
       "timersFailures": 0,
-      "timersDriverRuns": 7,
+      "timersDriverRuns": 8,
       "timersDriverFailures": 0,
       "timersSuccessHostDiagnostics": 0,
       "timersFatalControls": 2,
       "timersFatalExpectedHostDiagnosticsEach": 1
     },
-    "Chromium": "not run",
-    "Firefox": "not run",
-    "WebKit": "not run"
+    "Chromium": {
+      "evidence": "timers-libuv-engine-check.json",
+      "timersCases": 27,
+      "timersFailures": 0,
+      "driverRuns": 4,
+      "driverFailures": 0,
+      "scope": "timer binding/engine controls, natural unref exits and callback quit; not Node startup or full backend compatibility"
+    },
+    "Firefox": {
+      "evidence": "timers-libuv-engine-check.json",
+      "timersCases": 27,
+      "timersFailures": 0,
+      "driverRuns": 4,
+      "driverFailures": 0,
+      "scope": "timer binding/engine controls, natural unref exits and callback quit; not Node startup or full backend compatibility"
+    },
+    "WebKit": {
+      "evidence": "timers-libuv-engine-check.json",
+      "timersCases": 27,
+      "timersFailures": 0,
+      "driverRuns": 4,
+      "driverFailures": 0,
+      "scope": "timer binding/engine controls, natural unref exits and callback quit; not Node startup or full backend compatibility"
+    }
   },
   "nextWork": [
-    "Adapt the revision-26 native Node scheduler to the genuine libuv loop/handles exercised by the focused controls, preserving callback/realm/GC ownership; wider libuv APIs remain cataloged gaps, not startup or compatibility success",
-    "Implement actual task_queue/async ownership, native callback scopes and wider eager principal closure using the original loader; native node-body attempt now stops at task_queue",
+    "Implement genuine task_queue/async callback scopes over the actual engine job queue and libuv-backed environment; original principal bootstrap remains missing task_queue",
     "Finish truthful process/config/options/exit lifecycle and complete timer phase/error integration; no placeholder backends or copied native-reference fields",
     "Continue complete backend catalog while integrating startup; actual user CJS/ESM and four-host startup remain unrun"
   ]

@@ -1,0 +1,2759 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T06:54:17.512412+00:00",
+  "scope": "Genuine libuv-linked native Node timer binding and engine loop; 27 selected timer controls on each of four hosts, prior Node regressions, not Node startup or full compatibility",
+  "sourceHeadAtBuild": "3690f99f75582fe3982a5fc7b1fe76c767cb03c5",
+  "testedInputsWereUncommitted": true,
+  "package": {
+    "name": "spidermonkey",
+    "version": "140.11.0esr",
+    "revision": 27,
+    "kernelAbiFloor": 56,
+    "cacheKey": "d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46"
+  },
+  "libuv": {
+    "version": "1.52.1",
+    "revision": 3,
+    "cacheKey": "353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a",
+    "archive": {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/lib/libuv.a",
+      "bytes": 579198,
+      "sha256": "6f792478cf73eecad95b5bfd2ad1c29625e8983f3c66d113d68e132266a4d9bd"
+    },
+    "sameArchiveBytesAsStandaloneRevision2": true,
+    "kandeloHeaderSelectionPrecedesLegacyLinuxMacros": true,
+    "widerSpiderMonkeyLinuxTargetingDebtUnchanged": true
+  },
+  "testedInputs": [
+    {
+      "path": "packages/registry/libuv/README.md",
+      "bytes": 4705,
+      "sha256": "204356fd106850fa4a58b39b3b2d699bcce978e8b5a92da1fc7888f46ca37c5c"
+    },
+    {
+      "path": "packages/registry/libuv/build-libuv.sh",
+      "bytes": 1412,
+      "sha256": "d5bc6c00fb33a48eb2974420471d5f690ac7846a7f4b428b7f8a8a5fe7ddf6c7"
+    },
+    {
+      "path": "packages/registry/libuv/build.toml",
+      "bytes": 536,
+      "sha256": "6e89a6a5c594d7fc4cba62c656983763772b6b10baf7efc2e9b4758119ebdfc6"
+    },
+    {
+      "path": "packages/registry/libuv/package.toml",
+      "bytes": 1833,
+      "sha256": "8d2febf060cc5cc646d6a6edd12889fdf0d337b0edebfb7b4098da28ba6872fa"
+    },
+    {
+      "path": "packages/registry/libuv/patches/0001-kandelo-posix-backend.patch",
+      "bytes": 1730,
+      "sha256": "214265144499c42db0769900c44561282592e73785b2f010b2cdfd9a771631f0"
+    },
+    {
+      "path": "packages/registry/libuv/patches/0002-typed-pthread-entry.patch",
+      "bytes": 1710,
+      "sha256": "f67cf80f289d7f101134de83d27262f09fb87c39936aa903a1d3dde45354d346"
+    },
+    {
+      "path": "packages/registry/libuv/src/kandelo-proctitle.c",
+      "bytes": 600,
+      "sha256": "06dc646f327c3895860cfdf7f892cfe4aed69d3cf19392c524e1259424c710d8"
+    },
+    {
+      "path": "packages/registry/libuv/test/CMakeLists.txt",
+      "bytes": 329,
+      "sha256": "e74af959942f623ddf83b7908bc233bbb2b79d7bf7c687630c616c74f382df2d"
+    },
+    {
+      "path": "packages/registry/libuv/test/backend-controls.c",
+      "bytes": 10519,
+      "sha256": "c746b6617a614a7f946de46b0105171f4e16299b2c90edd89ec523d05edc8318"
+    },
+    {
+      "path": "packages/registry/libuv/test/build-controls.sh",
+      "bytes": 1102,
+      "sha256": "c740a257084465bc466577b5f2be51bc9bb8089aaf2c41a626d51da347638151"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build-spidermonkey.sh",
+      "bytes": 21313,
+      "sha256": "752573d6ba11363c146d7f3eebb5a58afd8c52e2f2aa968758a8309b1f886523"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build.toml",
+      "bytes": 769,
+      "sha256": "64f0447b738527b35dc64bf9610b69c244b7fb7870a7755a6c9b7aaa5bb23ebe"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/README.md",
+      "bytes": 4850,
+      "sha256": "b974040a4ef6f82273c5ea4dd606dbb01eaa0b70bf066b66c916dc5d50fd1097"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.cpp",
+      "bytes": 3597,
+      "sha256": "276bb35c7e077939924671f1ddd86037c6a0ec2addd47dbae93b877605fd7faa"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.h",
+      "bytes": 870,
+      "sha256": "1edb63c5fdd933ab1d0466e079803d47f7e3fd747ccc2f59469cf900c5c1a409"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/error-stack.cpp",
+      "bytes": 21258,
+      "sha256": "6eb61dcb59a48520295e9db1f4012dceb58b512d3fdfe9ba91474c96beaf630b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/error-stack.h",
+      "bytes": 486,
+      "sha256": "1fe75f2166a86f7127cc25ffcd560e5e909af934320961454220c872df15b40b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/module-wrap.cpp",
+      "bytes": 32778,
+      "sha256": "27e52a5e7ba0550febfec9f4968e607983321dec44e516c0b20541a86763ebf5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/module-wrap.h",
+      "bytes": 394,
+      "sha256": "e13bd86550d609cf28634511414e3d7ea708234c11a2dbd751952120ba367575"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/per-context.cpp",
+      "bytes": 18683,
+      "sha256": "946e44f1da38942b8a2b48b54b9373595c2468bf5486251d96e703828984d73c"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/per-context.h",
+      "bytes": 2385,
+      "sha256": "8409d3c0f6d5e1827027b66a01812d536640aa41a3a782d1846a3681094833b5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/prepare-build.sh",
+      "bytes": 2937,
+      "sha256": "efbc9e239109e58ee94a3d505a732244dd6c5e671b1fe2f9187fc1dfd967175b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/private-key-test-api.cpp",
+      "bytes": 11163,
+      "sha256": "ebf3dd6ea1f877e2ca77e0c5868e4c8750ec1e82025f832f1f98ef260fe3b13b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/private-key-test-api.h",
+      "bytes": 383,
+      "sha256": "62f4b86bcb98b3c7c5fdf7053ef567199040c5e64fb1274a94d859d5fd9deaa8"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
+      "bytes": 23026,
+      "sha256": "5c1772dc43dad05c985ec8695138ffa5da93ce4893fe3ba64b48d2f6c72afb7c"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/realm.h",
+      "bytes": 775,
+      "sha256": "7aeed4da492e1b2efcbec34005713f83485b2ab5a60cb5da31f028dd9520af52"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/timers.cpp",
+      "bytes": 22377,
+      "sha256": "4ffd586c98ace235fd4fcbb4680a24195a2c6a2a75a4f3333e6e2dabdd75ade5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/timers.h",
+      "bytes": 918,
+      "sha256": "6e3ebef72177dc9acf643e1ecd5822c84105c13ab0302c6d9b7f99ea61d9775d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/package.toml",
+      "bytes": 2570,
+      "sha256": "6fb426565d6805e5a4ed931185b8d273ccd846e110b66e394fd6f6641c072b58"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0001-allow-static-cxx-runtime-for-wasm-linux.patch",
+      "bytes": 718,
+      "sha256": "d0c2ccf64c46d11cc512011b8b1b3b72af2e7f6e3bf65b96bd93d41c2c6c9e2e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0002-map-kandelo-wasm-linux-rust-target.patch",
+      "bytes": 1878,
+      "sha256": "7deeacd2052e7a964aa5ac0147bc313c1d28b5bda7e817fda705660203eecbcf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0003-jsonprinter-size-t-wasm32.patch",
+      "bytes": 1188,
+      "sha256": "e259107555c745cff184092667548679f9e7e8993e6ab329e3e3afb65c946ff4"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0004-disable-wasm32-return-address-stackwalk.patch",
+      "bytes": 865,
+      "sha256": "d075352ab5f8ab76620a964891a81063e44543dda10d4b1235da681a9c1c1ea6"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0005-getrandom-custom-backend-wasm32.patch",
+      "bytes": 1342,
+      "sha256": "615eb35b13d9ee74c5bcb5d3b8e4768dd817be71e9f57f310cbe6234c4437aa9"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0006-randomnum-use-sys-random-on-wasm32.patch",
+      "bytes": 489,
+      "sha256": "03c2496b0e6ddc4bafd8f3b1e84a0034eb0c8228517a9a3b8c3dc921326ae8c7"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0007-skip-elf-network-check-for-wasm-target.patch",
+      "bytes": 704,
+      "sha256": "778bc6bc2817ed36de9c325f1c20d06b412f45b8ac6e6da94c9c6120a6395ef6"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0008-use-wasm-trap-for-moz-crash.patch",
+      "bytes": 2072,
+      "sha256": "59a87abf141cc4bf40acf11c48ab662ec1ac9e5be896b997bebcf42904d6b95e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0009-use-wasm-frame-address-for-native-stack-base.patch",
+      "bytes": 1095,
+      "sha256": "5e954b61c692e799e216c8f732cc936ad3be1b8e0aef0db2459f68748cf99cc0"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0010-use-wasm-icu-data-section-syntax.patch",
+      "bytes": 567,
+      "sha256": "d655d6fc1b13e1b892c01be43ccf421524d8bf45fa0bea17dc3a51967f6309bf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0011-heap-autorunparallel-task-on-wasm32.patch",
+      "bytes": 2616,
+      "sha256": "62147693a4932d0f431ea4739d9bb73bc51126dceda735dec5314e306ad78637"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0012-kandelo-node-compat-shell-entry.patch",
+      "bytes": 68730,
+      "sha256": "ab3eaea6ceffed9c752cac4f176bec517608f695f274f93e4cb4c9c252ec4d1f"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0013-kandelo-join-shell-workers.patch",
+      "bytes": 1670,
+      "sha256": "f0aa3c64bddba28865089c5796fff310050380e6b7cc85239e6e8b55ccfe9923"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0014-disable-mozglue-interposers-on-wasm32.patch",
+      "bytes": 617,
+      "sha256": "f0926fbbcbf085fea29057db1b377ca3e77e740bc84028acda06164be5e9dd46"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0015-kandelo-esm-bare-specifier.patch",
+      "bytes": 4832,
+      "sha256": "31b055317dda2d7c76a443f3d20bb3809a3ed2397ae880dc3c871df600b9e08d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0016-kandelo-import-meta.patch",
+      "bytes": 3208,
+      "sha256": "90f58982f04d7edcf56cef14870d9138eff29c3b1e7f04dc7a11c90ef3f7698e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0017-kandelo-default-explicit-resource-management.patch",
+      "bytes": 1598,
+      "sha256": "4efa7ee65d052ba90e24f5d0ee2a2a21791a0754b4a631a44bd826591dfea68a"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0018-kandelo-require-module.patch",
+      "bytes": 8092,
+      "sha256": "0b232f54d09dafb92f0ddf294adbad8e0771eb0cde7c3a0832618a6519649f59"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0019-kandelo-link-evaluating-cycle.patch",
+      "bytes": 1248,
+      "sha256": "77a223da83d68b9c09cb5359cf67bfb1ab8aad23b16ee0112c32f81a3da540a3"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0020-kandelo-vm-context.patch",
+      "bytes": 15754,
+      "sha256": "36f574011dea2deaf6211078c01332c3f10c3b534ff8b515f89c3a8daa827182"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0021-kandelo-zstd-decompress.patch",
+      "bytes": 5365,
+      "sha256": "a1bf725dd8150de5f40aab4d402474e337c511a1abd0180daf293440e8113bb1"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0022-kandelo-async-subprocess.patch",
+      "bytes": 22294,
+      "sha256": "49a9945ce4c1ec2870456be43bea20d4bc120e99af487b6653bac4972d52eade"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0023-kandelo-upstream-node-compiler-build.patch",
+      "bytes": 510,
+      "sha256": "25c9cc588291a31290b213bf1be4b4457627f8aabe58bfa0301264bc91ff562d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0024-kandelo-embedding-private-keys.patch",
+      "bytes": 22700,
+      "sha256": "8e4953df9f64be060696d470c4ed8ca1ca3cc245514262b1630be986301800e7"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0025-kandelo-upstream-test-controls.patch",
+      "bytes": 1577,
+      "sha256": "59792e25d914a05677c209e216e498ffe445505231953b6658f1350af7b38783"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0026-kandelo-node-context-owner.patch",
+      "bytes": 1028,
+      "sha256": "fa6303afdbbf37dc14aaea7d45f6bb000a203ab3548623649d82d59401be7631"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0027-kandelo-synthetic-modules.patch",
+      "bytes": 19313,
+      "sha256": "4adaba274a9081f562e20aed2831742ada77a72d9ae184ec8645ead51fff829d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0028-kandelo-node-module-wrap.patch",
+      "bytes": 5255,
+      "sha256": "10035a5cdf3a6f880b77385cc27b382ef3f0fbcf8d9b215b7d5ce8987e7bd9b8"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0029-kandelo-node-dynamic-import.patch",
+      "bytes": 8467,
+      "sha256": "023ff05c740243d7b3d39d789ce2d13c9ff50be24502fa03e59c4a08be9079cc"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0030-kandelo-node-error-stack.patch",
+      "bytes": 9285,
+      "sha256": "99e983f4539411b5b97d48eeddad5ff9b7a8886d15c11b66517ba687893bf4f1"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0031-kandelo-node-realm.patch",
+      "bytes": 270,
+      "sha256": "e3529daa83f3435358566a80d2d241d59977c4c3bc3f092c8e1156dd8178c821"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0032-kandelo-node-timers.patch",
+      "bytes": 3223,
+      "sha256": "47584dbe8f655f307275023e1b79be2a1e5f2e9db44d685ba3c22ca2856f0ec5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0033-kandelo-libuv-loop.patch",
+      "bytes": 1941,
+      "sha256": "0bfe5d40e573fe7946315004c54921a4a443fa05dd9e8f0208fc2e0c6583e3da"
+    },
+    {
+      "path": "scripts/generate-nodejs-source-registry.py",
+      "bytes": 11468,
+      "sha256": "c4a23b02b681a8c7ee0119b002ff3eff3adfa01bac9e08a42f7d2101e61ce165"
+    },
+    {
+      "path": "scripts/install-local-binary.sh",
+      "bytes": 31462,
+      "sha256": "610ee0943a61319ce8a030270365fe05af76441bd464995f1d858d9f096e9e88"
+    },
+    {
+      "path": "scripts/nodejs-builtin-metadata.cpp",
+      "bytes": 1972,
+      "sha256": "74a60d09dce591adf01c779a8788ccabccdbe498f93b0487f54a609428324348"
+    },
+    {
+      "path": "scripts/package-build-roots.sh",
+      "bytes": 43483,
+      "sha256": "a6ef104ebdf8a88edff4467d039c710730f47a0029777638a619250b56a2a384"
+    },
+    {
+      "path": "scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 11397,
+      "sha256": "5fa7d38dfcf49fc0c40bba1e2a8e4b12f0bf0c36c59bcfc3724d6545a88b3ae1"
+    },
+    {
+      "path": "sdk/cmake/Platform/Kandelo.cmake",
+      "bytes": 624,
+      "sha256": "f5e71eccc2d9555bd732dbcc2e8362a5cba04da663f2603c35c035f8009db831"
+    },
+    {
+      "path": "sdk/cmake/kandelo-toolchain.cmake",
+      "bytes": 770,
+      "sha256": "77ec98d46ec471804385953298526d450891c796b05d6793fbca4d4523d26f44"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/libuv-backend.spec.ts",
+      "bytes": 3777,
+      "sha256": "dcd76bb4852c773941dfa1bfd56f2bec535a1d17540f764db450cb5b55ab7b74"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/playwright.config.ts",
+      "bytes": 1180,
+      "sha256": "d719ac6799f745bf416dc9740e6ca47dd3862c10cd100d63a8b6d32ed88040d6"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/storage-setup.ts",
+      "bytes": 1813,
+      "sha256": "4622b5c753c5828fe1c3b99647cb3ca8820b4c1ff9a852c23fefca606107484e"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/vite.config.ts",
+      "bytes": 665,
+      "sha256": "464cb617c9eabf71a697941b98e13b330beccae04ed1c77b7366ef063f3e9d25"
+    },
+    {
+      "path": "tests/nodejs/upstream/realm-bootstrap-gap-probe.js",
+      "bytes": 1758,
+      "sha256": "50e2db218a7e80bc565592fd692f3de2e83eb09373ae311e0ab60e4d71542021"
+    },
+    {
+      "path": "tests/nodejs/upstream/timers-browser/artifact-url.ts",
+      "bytes": 163,
+      "sha256": "236501fb0f71bdf102dbf31519168d452b7cac096be6e220a7aaea90e7de80dc"
+    },
+    {
+      "path": "tests/nodejs/upstream/timers-browser/playwright.config.ts",
+      "bytes": 223,
+      "sha256": "2bfdf8c2954680e319c90e6bc724c137a4fdbdceeb00b8021156cbfab460bc86"
+    },
+    {
+      "path": "tests/nodejs/upstream/timers-browser/timers-libuv.spec.ts",
+      "bytes": 6561,
+      "sha256": "5fac10c22ec26592643a871e50bb4b799847e6df9d88652a9b2713b8234c9fe9"
+    },
+    {
+      "path": "tests/nodejs/upstream/timers-engine-controls.js",
+      "bytes": 12787,
+      "sha256": "58c67589b084a2d9a95b6ee3a3e1376cb4e6ddf12829d7432339cbbc08f009b8"
+    },
+    {
+      "path": "tests/nodejs/upstream/timers-native-controls.cjs",
+      "bytes": 7829,
+      "sha256": "23dfa30a1cca5d176992908305000e97252e5e186794ab469888038d26f02469"
+    },
+    {
+      "path": "third_party/nodejs/sources.json",
+      "bytes": 116767,
+      "sha256": "7e131abb50f48efbfd1503d09f99934f399a1c82fcdc567fc39395425dcab8fd"
+    }
+  ],
+  "artifacts": {
+    "program": {
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+      "bytes": 51286498,
+      "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "retainedProgram": {
+      "path": ".context/node-uv-integration/engine-libuv-final.wasm.gz",
+      "bytes": 16775707,
+      "sha256": "752fe7f717c9dcebaefdd50150df96c18572d82b9fca9cdf565890ea7558cfe4"
+    },
+    "retainedLibrary": {
+      "path": ".context/node-uv-integration/libuv-rev3-output.tar.gz",
+      "bytes": 164158,
+      "sha256": "ef5994a91d6b8f17354445837efc5b0277d4269d9715ba00d4eedc7b09854437"
+    }
+  },
+  "libraryRoundtripMembers": [
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/aix.h",
+      "bytes": 1615,
+      "sha256": "bed77e4cf6c06f1224e681cbe607eff04713ca0c1e1f4a102e6a6565ee3f02aa",
+      "relativePath": "include/uv/aix.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/bsd.h",
+      "bytes": 1641,
+      "sha256": "963533ff4b16f72a204a8c760896a857c54d0ac50570f1793e3bef1f2ae8b35f",
+      "relativePath": "include/uv/bsd.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/darwin.h",
+      "bytes": 3213,
+      "sha256": "222b6dd3ce67cfbb735b14b1662f065fc23570d6969acf463b39d946b7590d8c",
+      "relativePath": "include/uv/darwin.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/errno.h",
+      "bytes": 11216,
+      "sha256": "4242edf790e4569ef349026ab4c6e31093334ee5fc02b16ed7a0d9fbacdffd16",
+      "relativePath": "include/uv/errno.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/linux.h",
+      "bytes": 1781,
+      "sha256": "adce0ed0821c8466a87a0a4c9e0df9ea7e4a4b24d099c7d7ed196f72a13f669d",
+      "relativePath": "include/uv/linux.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/os390.h",
+      "bytes": 1553,
+      "sha256": "98388ae32ce2c4390b82c3529539d2a476c44f590e960ed30a79f72b807ecd02",
+      "relativePath": "include/uv/os390.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/posix.h",
+      "bytes": 1606,
+      "sha256": "e9d7218b34e6e89b7b412891b7e2aa8b3a561c5ce9714c1f4def6c8a8593a6a6",
+      "relativePath": "include/uv/posix.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/sunos.h",
+      "bytes": 1985,
+      "sha256": "29d4b4ef48dc3c3ab32d75e0a85bcb80e084d42b32aae40d67fc1d882b93298a",
+      "relativePath": "include/uv/sunos.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/threadpool.h",
+      "bytes": 1505,
+      "sha256": "09ae41099af710289155be012df45c2fce04da6a02e813278b4558935e645938",
+      "relativePath": "include/uv/threadpool.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/tree.h",
+      "bytes": 36117,
+      "sha256": "34393c74082c71ddd5bd9ec4afe30ef03df7fa7bb64be5a50ae070cdfebb5c43",
+      "relativePath": "include/uv/tree.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/unix.h",
+      "bytes": 19973,
+      "sha256": "a3841bea5bdb1b9fe303e509ae6059da65c37ff99c466c2b3902e6a7e50f9fe5",
+      "relativePath": "include/uv/unix.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/version.h",
+      "bytes": 1831,
+      "sha256": "a859f2c21f7887d45b0372109ebc91759a6f8c408c7cbf2a12f9bbe579be403b",
+      "relativePath": "include/uv/version.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv/win.h",
+      "bytes": 33840,
+      "sha256": "9ad5dd7d5d4d51981f40edfc65a53ab94e91f6a2e73f2bf897e0e697fd9e8233",
+      "relativePath": "include/uv/win.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/include/uv.h",
+      "bytes": 73038,
+      "sha256": "bb9ed99b80cd22c58361bffdfbb2aa7029ce0391cde616745c0072a6f3c03219",
+      "relativePath": "include/uv.h"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/lib/cmake/libuv/libuvConfig-release.cmake",
+      "bytes": 818,
+      "sha256": "be72dfc08de5d324e893668fff0246d7bc96ff50437d6c3b1bbfcffbe02bf00f",
+      "relativePath": "lib/cmake/libuv/libuvConfig-release.cmake"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/lib/cmake/libuv/libuvConfig.cmake",
+      "bytes": 4199,
+      "sha256": "72fc6cae82cdcbf8ae3e15d0ffebe662946ab30c9b8d3339d84b7931c880e26d",
+      "relativePath": "lib/cmake/libuv/libuvConfig.cmake"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/lib/cmake/libuv/libuvConfigVersion.cmake",
+      "bytes": 2765,
+      "sha256": "db5d8fda6ed3ae8ab950a96a76e670b4a0d24667ff0937f9940a2b56a44029c1",
+      "relativePath": "lib/cmake/libuv/libuvConfigVersion.cmake"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/lib/libuv.a",
+      "bytes": 579198,
+      "sha256": "6f792478cf73eecad95b5bfd2ad1c29625e8983f3c66d113d68e132266a4d9bd",
+      "relativePath": "lib/libuv.a"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/lib/pkgconfig/libuv-static.pc",
+      "bytes": 677,
+      "sha256": "c278beddbc08446e7d8201de6dd3586a3ba6bf88ee0cf1e6d8ecbd5f98c492b1",
+      "relativePath": "lib/pkgconfig/libuv-static.pc"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/share/doc/libuv/LICENSE",
+      "bytes": 1079,
+      "sha256": "16de0c32b265cb7d46a6d3bd614f259dd4d693a5e26b3407b04aae8d73041f0c",
+      "relativePath": "share/doc/libuv/LICENSE"
+    },
+    {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/share/doc/libuv/LICENSE-extra",
+      "bytes": 1603,
+      "sha256": "262c44bd2cdba037e6d2a82fba15f5800d292bc993a6f5d6b6ea487744d02836",
+      "relativePath": "share/doc/libuv/LICENSE-extra"
+    }
+  ],
+  "roundtripBytesVerified": true,
+  "runs": [
+    {
+      "host": "Node",
+      "mode": "timers",
+      "rawReport": {
+        "path": ".context/node-uv-integration/timers-engine-result.json",
+        "bytes": 71769,
+        "sha256": "966d1127587dea9d7d31006def154c28c9e07302ccd238fedae4c9db32583c71"
+      },
+      "cases": 27,
+      "driverRuns": 8,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "timers-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"native-timers-controls\",\"plannedCases\":27,\"cases\":27,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"native-binding-and-live-info-layout\",\"status\":\"pass\"},{\"name\":\"guest-monotonic-environment-clock-is-shared\",\"status\":\"pass\"},{\"name\":\"reference-toggles-use-true-without-coercing\",\"status\":\"pass\"},{\"name\":\"schedule-converts-once-and-keeps-exact-uint64-deadline\",\"status\":\"pass\"},{\"name\":\"schedule-conversion-errors-preserve-original-state-and-exception\",\"status\":\"pass\"},{\"name\":\"actual-referenced-deadline-blocks-and-invokes-native-callback\",\"status\":\"pass\"},{\"name\":\"rescheduling-replaces-the-existing-native-deadline\",\"status\":\"pass\"},{\"name\":\"positive-expiry-return-rearms-a-referenced-one-shot\",\"status\":\"pass\"},{\"name\":\"negative-expiry-return-leaves-a-real-unreferenced-pending-timer\",\"status\":\"pass\"},{\"name\":\"zero-expiry-does-not-discard-reentrant-rescheduling\",\"status\":\"pass\"},{\"name\":\"unreferenced-even-due-timer-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"referenced-immediate-uses-live-counters-and-principal-process\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"real-engine-microtasks-run-between-timer-and-immediate-phases\",\"status\":\"pass\"},{\"name\":\"native-method-ownership-does-not-depend-on-a-javascript-receiver\",\"status\":\"pass\"},{\"name\":\"callback-replacement-and-gc-retain-the-real-latest-function\",\"status\":\"pass\"},{\"name\":\"other-realm-binding-shares-environment-state-and-principal-receiver\",\"status\":\"pass\"},{\"name\":\"original-callback-exception-is-not-cleared-or-replaced\",\"status\":\"pass\"},{\"name\":\"reentrant-loop-dispatch-is-rejected-without-losing-outer-state\",\"status\":\"pass\"},{\"name\":\"diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state\",\"status\":\"pass\"},{\"name\":\"owned-loop-does-not-call-public-compatibility-timer-hooks\",\"status\":\"pass\"},{\"name\":\"fresh-loop-does-not-retain-a-previous-check-phase\",\"status\":\"pass\"},{\"name\":\"fresh-default-loop-services-reentrant-zero-deadline-before-exit\",\"status\":\"pass\"},{\"name\":\"actual-libuv-version-and-public-layout-match\",\"status\":\"pass\"},{\"name\":\"outstanding-immediates-drain-with-engine-checkpoints\",\"status\":\"pass\"},{\"name\":\"moving-gc-during-callback-checkpoint-preserves-libuv-owner\",\"status\":\"pass\"}],\"state\":{\"armed\":false,\"timerReferenced\":false,\"immediateReferenced\":false,\"deadline\":\"45277397\"},\"limits\":[\"Native binding/scheduler controls, not public timers or successful Node bootstrap\",\"No task_queue/async callback-scope/tick/fatal recovery integration\",\"Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete\",\"Per-host execution is recorded by the external runner\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "native-timers-controls",
+            "plannedCases": 27,
+            "cases": 27,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "native-binding-and-live-info-layout",
+                "status": "pass"
+              },
+              {
+                "name": "guest-monotonic-environment-clock-is-shared",
+                "status": "pass"
+              },
+              {
+                "name": "reference-toggles-use-true-without-coercing",
+                "status": "pass"
+              },
+              {
+                "name": "schedule-converts-once-and-keeps-exact-uint64-deadline",
+                "status": "pass"
+              },
+              {
+                "name": "schedule-conversion-errors-preserve-original-state-and-exception",
+                "status": "pass"
+              },
+              {
+                "name": "actual-referenced-deadline-blocks-and-invokes-native-callback",
+                "status": "pass"
+              },
+              {
+                "name": "rescheduling-replaces-the-existing-native-deadline",
+                "status": "pass"
+              },
+              {
+                "name": "positive-expiry-return-rearms-a-referenced-one-shot",
+                "status": "pass"
+              },
+              {
+                "name": "negative-expiry-return-leaves-a-real-unreferenced-pending-timer",
+                "status": "pass"
+              },
+              {
+                "name": "zero-expiry-does-not-discard-reentrant-rescheduling",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-even-due-timer-does-not-keep-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "referenced-immediate-uses-live-counters-and-principal-process",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-immediate-does-not-keep-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "real-engine-microtasks-run-between-timer-and-immediate-phases",
+                "status": "pass"
+              },
+              {
+                "name": "native-method-ownership-does-not-depend-on-a-javascript-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "callback-replacement-and-gc-retain-the-real-latest-function",
+                "status": "pass"
+              },
+              {
+                "name": "other-realm-binding-shares-environment-state-and-principal-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "original-callback-exception-is-not-cleared-or-replaced",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-loop-dispatch-is-rejected-without-losing-outer-state",
+                "status": "pass"
+              },
+              {
+                "name": "diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state",
+                "status": "pass"
+              },
+              {
+                "name": "owned-loop-does-not-call-public-compatibility-timer-hooks",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-loop-does-not-retain-a-previous-check-phase",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-default-loop-services-reentrant-zero-deadline-before-exit",
+                "status": "pass"
+              },
+              {
+                "name": "actual-libuv-version-and-public-layout-match",
+                "status": "pass"
+              },
+              {
+                "name": "outstanding-immediates-drain-with-engine-checkpoints",
+                "status": "pass"
+              },
+              {
+                "name": "moving-gc-during-callback-checkpoint-preserves-libuv-owner",
+                "status": "pass"
+              }
+            ],
+            "state": {
+              "armed": false,
+              "timerReferenced": false,
+              "immediateReferenced": false,
+              "deadline": "45277397"
+            },
+            "limits": [
+              "Native binding/scheduler controls, not public timers or successful Node bootstrap",
+              "No task_queue/async callback-scope/tick/fatal recovery integration",
+              "Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete",
+              "Per-host execution is recorded by the external runner"
+            ]
+          }
+        },
+        {
+          "name": "timer-callback-quit-preserves-requested-shell-exit",
+          "status": "pass",
+          "exitCode": 23,
+          "stdout": "",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "unreferenced-native-timer-permits-natural-guest-exit",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UNREFERENCED_NATIVE_PENDING\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "unreferenced-native-immediate-permits-natural-guest-exit",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UNREFERENCED_NATIVE_PENDING\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "Node immediate callback invariant-remains-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: args.get(0).isObject() && JS::IsCallable(&args[0].toObject()) (Node immediate callback invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/timers.cpp:164\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3a478a:wasm-function[230]:0x79a96\n    at wasm://wasm/0c3a478a:wasm-function[7387]:0x533739\n    at wasm://wasm/0c3a478a:wasm-function[7386]:0x521107\n    at wasm://wasm/0c3a478a:wasm-function[7395]:0x5356c7\n    at wasm://wasm/0c3a478a:wasm-function[7396]:0x535934\n    at wasm://wasm/0c3a478a:wasm-function[8248]:0x603964\n    at wasm://wasm/0c3a478a:wasm-function[87]:0x51849\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+              "status": 132
+            }
+          ]
+        },
+        {
+          "name": "Node timers callback invariant-remains-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: args.get(1).isObject() && JS::IsCallable(&args[1].toObject()) (Node timers callback invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/timers.cpp:165\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3a478a:wasm-function[230]:0x79af4\n    at wasm://wasm/0c3a478a:wasm-function[7387]:0x533739\n    at wasm://wasm/0c3a478a:wasm-function[7386]:0x521107\n    at wasm://wasm/0c3a478a:wasm-function[7395]:0x5356c7\n    at wasm://wasm/0c3a478a:wasm-function[7396]:0x535934\n    at wasm://wasm/0c3a478a:wasm-function[8248]:0x603964\n    at wasm://wasm/0c3a478a:wasm-function[87]:0x51849\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+              "status": 132
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "process-config",
+      "rawReport": {
+        "path": ".context/node-uv-integration/process-config-regression.json",
+        "bytes": 47171,
+        "sha256": "4ab268f2ced86f42d1e0f4d0ff55df88821c9a2a179adac364be55fd1b56feb4"
+      },
+      "cases": 13,
+      "driverRuns": 3,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "process-config-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"native-process-config-controls\",\"plannedCases\":13,\"cases\":13,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"config-identity-and-readonly-real-build-fields\",\"status\":\"pass\"},{\"name\":\"config-does-not-copy-unimplemented-native-feature-metadata\",\"status\":\"pass\"},{\"name\":\"default-locale-comes-from-the-native-engine\",\"status\":\"pass\"},{\"name\":\"actual-process-has-a-distinct-mutable-native-class-prototype\",\"status\":\"pass\"},{\"name\":\"native-process-constructor-creates-empty-instances-and-honors-new-target\",\"status\":\"pass\"},{\"name\":\"changing-process-ancestry-does-not-mutate-object-prototype\",\"status\":\"pass\"},{\"name\":\"exit-info-is-a-real-hidden-live-int32-array\",\"status\":\"pass\"},{\"name\":\"one-runtime-shares-exit-state-across-distinct-realm-processes\",\"status\":\"pass\"},{\"name\":\"config-and-process-prototypes-remain-per-realm\",\"status\":\"pass\"},{\"name\":\"native-node-stage-requires-existing-context-and-realm-ownership\",\"status\":\"pass\"},{\"name\":\"native-node-stage-uses-protected-state-and-preserves-actual-missing-backend\",\"status\":\"pass\"},{\"name\":\"failed-node-body-is-terminal-and-diagnostics-do-not-expose-partial-loaders\",\"status\":\"pass\"},{\"name\":\"failed-principal-body-does-not-retire-another-realms-library-owner\",\"status\":\"pass\"}],\"configSnapshot\":{\"isDebugBuild\":false,\"openSSLIsBoringSSL\":false,\"hasOpenSSL\":true,\"hasIntl\":true,\"hasInspector\":false,\"noBrowserGlobals\":false,\"bits\":32},\"locale\":\"en-US-POSIX\",\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'task_queue' is not implemented\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\",\"internal/bootstrap/node\",\"internal/timers\"]},\"limits\":[\"Native state/failed-stage controls; not successful principal bootstrap or user CJS/ESM entry\",\"No browser proof\",\"No exit dispatch or full process/config/util implementation\",\"FIPS configuration remains explicit Missing\",\"No full differential/security/OOM/lifecycle proof\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "native-process-config-controls",
+            "plannedCases": 13,
+            "cases": 13,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "config-identity-and-readonly-real-build-fields",
+                "status": "pass"
+              },
+              {
+                "name": "config-does-not-copy-unimplemented-native-feature-metadata",
+                "status": "pass"
+              },
+              {
+                "name": "default-locale-comes-from-the-native-engine",
+                "status": "pass"
+              },
+              {
+                "name": "actual-process-has-a-distinct-mutable-native-class-prototype",
+                "status": "pass"
+              },
+              {
+                "name": "native-process-constructor-creates-empty-instances-and-honors-new-target",
+                "status": "pass"
+              },
+              {
+                "name": "changing-process-ancestry-does-not-mutate-object-prototype",
+                "status": "pass"
+              },
+              {
+                "name": "exit-info-is-a-real-hidden-live-int32-array",
+                "status": "pass"
+              },
+              {
+                "name": "one-runtime-shares-exit-state-across-distinct-realm-processes",
+                "status": "pass"
+              },
+              {
+                "name": "config-and-process-prototypes-remain-per-realm",
+                "status": "pass"
+              },
+              {
+                "name": "native-node-stage-requires-existing-context-and-realm-ownership",
+                "status": "pass"
+              },
+              {
+                "name": "native-node-stage-uses-protected-state-and-preserves-actual-missing-backend",
+                "status": "pass"
+              },
+              {
+                "name": "failed-node-body-is-terminal-and-diagnostics-do-not-expose-partial-loaders",
+                "status": "pass"
+              },
+              {
+                "name": "failed-principal-body-does-not-retire-another-realms-library-owner",
+                "status": "pass"
+              }
+            ],
+            "configSnapshot": {
+              "isDebugBuild": false,
+              "openSSLIsBoringSSL": false,
+              "hasOpenSSL": true,
+              "hasIntl": true,
+              "hasInspector": false,
+              "noBrowserGlobals": false,
+              "bits": 32
+            },
+            "locale": "en-US-POSIX",
+            "bootstrapFailure": {
+              "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+              "message": "Native Node binding 'task_queue' is not implemented",
+              "compiledBuiltinIds": [
+                "internal/bootstrap/realm",
+                "internal/errors",
+                "internal/assert",
+                "internal/bootstrap/node",
+                "internal/timers"
+              ]
+            },
+            "limits": [
+              "Native state/failed-stage controls; not successful principal bootstrap or user CJS/ESM entry",
+              "No browser proof",
+              "No exit dispatch or full process/config/util implementation",
+              "FIPS configuration remains explicit Missing",
+              "No full differential/security/OOM/lifecycle proof"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "realm-library",
+      "rawReport": {
+        "path": ".context/node-uv-integration/realm-library-regression.json",
+        "bytes": 46535,
+        "sha256": "aef90dd99603d6c85aaa4dfe8a1bbcae9dabcd4a3fb34f8cb4443d2b1407a5fd"
+      },
+      "cases": 16,
+      "driverRuns": 4,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "guestPid": 100
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": [],
+          "guestPid": 100
+        },
+        {
+          "name": "realm-library-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"upstream-realm-library-controls\",\"plannedCases\":16,\"cases\":16,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"complete-original-realm-script-registers-real-loaders\",\"status\":\"pass\"},{\"name\":\"original-loader-self-require-and-native-retention-agree\",\"status\":\"pass\"},{\"name\":\"native-source-registry-ids-are-complete-fresh-and-frozen-binding-owned\",\"status\":\"pass\"},{\"name\":\"native-process-reads-actual-guest-kernel-metadata\",\"status\":\"pass\"},{\"name\":\"original-internal-binding-cache-uses-canonical-native-owners\",\"status\":\"pass\"},{\"name\":\"upstream-module-cache-and-complete-assert-body-execute\",\"status\":\"pass\"},{\"name\":\"module-load-list-is-produced-by-the-original-js-loader\",\"status\":\"pass\"},{\"name\":\"unknown-js-module-and-missing-native-backend-fail-honestly\",\"status\":\"pass\"},{\"name\":\"original-exposure-policy-and-native-builtin-esm-facade-work\",\"status\":\"pass\"},{\"name\":\"original-error-preparation-and-native-frames-are-connected\",\"status\":\"pass\"},{\"name\":\"original-error-module-uses-the-canonical-private-arrow-symbol\",\"status\":\"pass\"},{\"name\":\"snapshot-mutation-and-repeat-initialization-cannot-replace-the-owner\",\"status\":\"pass\"},{\"name\":\"fresh-realm-requires-original-context-and-library-initialization\",\"status\":\"pass\"},{\"name\":\"original-js-exception-is-preserved-and-failure-is-terminal\",\"status\":\"pass\"},{\"name\":\"reentrant-original-js-bootstrap-cannot-create-another-owner\",\"status\":\"pass\"},{\"name\":\"other-realm-has-distinct-loaders-process-and-module-cache\",\"status\":\"pass\"}],\"processMetadata\":{\"pid\":100,\"ppid\":0,\"platform\":\"wasm-posix\",\"arch\":\"wasm32\"},\"limits\":[\"Complete original realm.js executes, not principal bootstrap/node or user CJS/ESM startup\",\"No browser proof\",\"Only eager native binding closure implemented; process/util/builtins remain partial\",\"No complete backend catalog/native security/OOM/lifecycle differential\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "upstream-realm-library-controls",
+            "plannedCases": 16,
+            "cases": 16,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "complete-original-realm-script-registers-real-loaders",
+                "status": "pass"
+              },
+              {
+                "name": "original-loader-self-require-and-native-retention-agree",
+                "status": "pass"
+              },
+              {
+                "name": "native-source-registry-ids-are-complete-fresh-and-frozen-binding-owned",
+                "status": "pass"
+              },
+              {
+                "name": "native-process-reads-actual-guest-kernel-metadata",
+                "status": "pass"
+              },
+              {
+                "name": "original-internal-binding-cache-uses-canonical-native-owners",
+                "status": "pass"
+              },
+              {
+                "name": "upstream-module-cache-and-complete-assert-body-execute",
+                "status": "pass"
+              },
+              {
+                "name": "module-load-list-is-produced-by-the-original-js-loader",
+                "status": "pass"
+              },
+              {
+                "name": "unknown-js-module-and-missing-native-backend-fail-honestly",
+                "status": "pass"
+              },
+              {
+                "name": "original-exposure-policy-and-native-builtin-esm-facade-work",
+                "status": "pass"
+              },
+              {
+                "name": "original-error-preparation-and-native-frames-are-connected",
+                "status": "pass"
+              },
+              {
+                "name": "original-error-module-uses-the-canonical-private-arrow-symbol",
+                "status": "pass"
+              },
+              {
+                "name": "snapshot-mutation-and-repeat-initialization-cannot-replace-the-owner",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-realm-requires-original-context-and-library-initialization",
+                "status": "pass"
+              },
+              {
+                "name": "original-js-exception-is-preserved-and-failure-is-terminal",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-original-js-bootstrap-cannot-create-another-owner",
+                "status": "pass"
+              },
+              {
+                "name": "other-realm-has-distinct-loaders-process-and-module-cache",
+                "status": "pass"
+              }
+            ],
+            "processMetadata": {
+              "pid": 100,
+              "ppid": 0,
+              "platform": "wasm-posix",
+              "arch": "wasm32"
+            },
+            "limits": [
+              "Complete original realm.js executes, not principal bootstrap/node or user CJS/ESM startup",
+              "No browser proof",
+              "Only eager native binding closure implemented; process/util/builtins remain partial",
+              "No complete backend catalog/native security/OOM/lifecycle differential"
+            ]
+          },
+          "guestPid": 100
+        },
+        {
+          "name": "once-only-loaders-registration-invariant-is-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: JS::GetReservedSlot(state, InternalLoader).isUndefined() && JS::GetReservedSlot(state, BuiltinRequire).isUndefined() (Node internal loaders registration invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/realm.cpp:131\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3a478a:wasm-function[217]:0x7719b\n    at wasm://wasm/0c3a478a:wasm-function[7387]:0x533739\n    at wasm://wasm/0c3a478a:wasm-function[7386]:0x521107\n    at wasm://wasm/0c3a478a:wasm-function[7395]:0x5356c7\n    at wasm://wasm/0c3a478a:wasm-function[7396]:0x535934\n    at wasm://wasm/0c3a478a:wasm-function[8248]:0x603964\n    at wasm://wasm/0c3a478a:wasm-function[87]:0x51849\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+              "status": 132
+            }
+          ],
+          "guestPid": 100
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "error-stack",
+      "rawReport": {
+        "path": ".context/node-uv-integration/error-stack-regression.json",
+        "bytes": 48384,
+        "sha256": "5b94ee5f127b0e66d494f523ac958a2c986533bac00176b1a380be1da25d8adb"
+      },
+      "cases": 21,
+      "driverRuns": 3,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "error-stack-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"native-error-stack-controls\",\"plannedCases\":21,\"cases\":21,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"original-native-capture-survives-primordials-initialization\",\"status\":\"pass\"},{\"name\":\"preparation-is-lazy-cached-and-has-real-own-accessors\",\"status\":\"pass\"},{\"name\":\"zero-negative-fractional-and-nan-limits\",\"status\":\"pass\"},{\"name\":\"non-numeric-and-accessor-limits-disable-without-getters\",\"status\":\"pass\"},{\"name\":\"capture-limit-is-fixed-at-creation\",\"status\":\"pass\"},{\"name\":\"constructor-opt-trims-real-captured-frames\",\"status\":\"pass\"},{\"name\":\"thrown-preparation-is-retried-with-original-exception\",\"status\":\"pass\"},{\"name\":\"undefined-return-is-cached-as-a-real-result\",\"status\":\"pass\"},{\"name\":\"stack-assignment-replaces-pending-and-prepared-values\",\"status\":\"pass\"},{\"name\":\"frozen-error-retains-functional-internal-cache\",\"status\":\"pass\"},{\"name\":\"recapture-replaces-original-capture-and-cache\",\"status\":\"pass\"},{\"name\":\"recursive-preparation-uses-real-default-frames\",\"status\":\"pass\"},{\"name\":\"borrowed-stack-accessor-reads-only-real-target-captures\",\"status\":\"pass\"},{\"name\":\"proxy-capture-refuses-without-running-property-traps\",\"status\":\"pass\"},{\"name\":\"inherited-data-limit-is-read-without-coercion\",\"status\":\"pass\"},{\"name\":\"saved-callsite-methods-use-actual-module-source-and-survive-gc\",\"status\":\"pass\"},{\"name\":\"unowned-realm-keeps-original-engine-capture-path\",\"status\":\"pass\"},{\"name\":\"foreign-owned-error-prepares-in-its-original-realm\",\"status\":\"pass\"},{\"name\":\"native-fatal-enhancers-retain-and-invoke-real-callbacks\",\"status\":\"pass\"},{\"name\":\"error-binding-requires-successful-original-context-initialization\",\"status\":\"pass\"},{\"name\":\"registered-bootstrap-preparation-receives-global-error-and-trace\",\"status\":\"pass\"}],\"limits\":[\"No upstream realm/bootstrap/startup\",\"No browser proof\",\"Saved-frame CallSite core only; receiver/function/eval/native/async/constructor/Wasm metadata remains explicit gaps\",\"No full security/OOM/finalization/native differential\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "native-error-stack-controls",
+            "plannedCases": 21,
+            "cases": 21,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "original-native-capture-survives-primordials-initialization",
+                "status": "pass"
+              },
+              {
+                "name": "preparation-is-lazy-cached-and-has-real-own-accessors",
+                "status": "pass"
+              },
+              {
+                "name": "zero-negative-fractional-and-nan-limits",
+                "status": "pass"
+              },
+              {
+                "name": "non-numeric-and-accessor-limits-disable-without-getters",
+                "status": "pass"
+              },
+              {
+                "name": "capture-limit-is-fixed-at-creation",
+                "status": "pass"
+              },
+              {
+                "name": "constructor-opt-trims-real-captured-frames",
+                "status": "pass"
+              },
+              {
+                "name": "thrown-preparation-is-retried-with-original-exception",
+                "status": "pass"
+              },
+              {
+                "name": "undefined-return-is-cached-as-a-real-result",
+                "status": "pass"
+              },
+              {
+                "name": "stack-assignment-replaces-pending-and-prepared-values",
+                "status": "pass"
+              },
+              {
+                "name": "frozen-error-retains-functional-internal-cache",
+                "status": "pass"
+              },
+              {
+                "name": "recapture-replaces-original-capture-and-cache",
+                "status": "pass"
+              },
+              {
+                "name": "recursive-preparation-uses-real-default-frames",
+                "status": "pass"
+              },
+              {
+                "name": "borrowed-stack-accessor-reads-only-real-target-captures",
+                "status": "pass"
+              },
+              {
+                "name": "proxy-capture-refuses-without-running-property-traps",
+                "status": "pass"
+              },
+              {
+                "name": "inherited-data-limit-is-read-without-coercion",
+                "status": "pass"
+              },
+              {
+                "name": "saved-callsite-methods-use-actual-module-source-and-survive-gc",
+                "status": "pass"
+              },
+              {
+                "name": "unowned-realm-keeps-original-engine-capture-path",
+                "status": "pass"
+              },
+              {
+                "name": "foreign-owned-error-prepares-in-its-original-realm",
+                "status": "pass"
+              },
+              {
+                "name": "native-fatal-enhancers-retain-and-invoke-real-callbacks",
+                "status": "pass"
+              },
+              {
+                "name": "error-binding-requires-successful-original-context-initialization",
+                "status": "pass"
+              },
+              {
+                "name": "registered-bootstrap-preparation-receives-global-error-and-trace",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No upstream realm/bootstrap/startup",
+              "No browser proof",
+              "Saved-frame CallSite core only; receiver/function/eval/native/async/constructor/Wasm metadata remains explicit gaps",
+              "No full security/OOM/finalization/native differential"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "dynamic-import",
+      "rawReport": {
+        "path": ".context/node-uv-integration/dynamic-import-regression.json",
+        "bytes": 34999,
+        "sha256": "a3c6ebcf4efb1a12345f0af85171b4e5dbca272f4e7009e04970fa0adc784e04"
+      },
+      "cases": 14,
+      "driverRuns": 3,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "dynamic-import-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"native-dynamic-import-controls\",\"plannedCases\":14,\"cases\":14,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"five-original-callback-arguments-and-frozen-attributes\",\"status\":\"pass\"},{\"name\":\"ordinary-values-and-referrer-promise\",\"status\":\"pass\"},{\"name\":\"thenable-adoption-is-asynchronous-and-once\",\"status\":\"pass\"},{\"name\":\"pending-promise-owns-real-completion-through-gc\",\"status\":\"pass\"},{\"name\":\"callback-promise-rejection-preserves-original-value\",\"status\":\"pass\"},{\"name\":\"throwing-then-getter-rejects-import-with-original-value\",\"status\":\"pass\"},{\"name\":\"synchronous-callback-exception-stops-importing-module\",\"status\":\"pass\"},{\"name\":\"invalid-options-reject-before-callback\",\"status\":\"pass\"},{\"name\":\"specifier-coercion-options-order-and-numeric-attribute-keys\",\"status\":\"pass\"},{\"name\":\"actual-namespace-and-top-level-await-use-one-engine-graph\",\"status\":\"pass\"},{\"name\":\"top-level-await-remains-pending-until-callback-settles\",\"status\":\"pass\"},{\"name\":\"foreign-promise-is-adopted-in-referrer-realm\",\"status\":\"pass\"},{\"name\":\"realm-callback-registration-and-pending-replacement-are-distinct\",\"status\":\"pass\"},{\"name\":\"ordinary-shell-record-dynamic-import-keeps-original-loader\",\"status\":\"pass\"}],\"limits\":[\"No upstream realm/bootstrap/CJS/ESM startup\",\"No browser proof\",\"Only ModuleWrap-owned evaluation-phase imports covered\",\"Default metadata/contextify/cache/facade/interrupt backends remain unfinished\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "native-dynamic-import-controls",
+            "plannedCases": 14,
+            "cases": 14,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "five-original-callback-arguments-and-frozen-attributes",
+                "status": "pass"
+              },
+              {
+                "name": "ordinary-values-and-referrer-promise",
+                "status": "pass"
+              },
+              {
+                "name": "thenable-adoption-is-asynchronous-and-once",
+                "status": "pass"
+              },
+              {
+                "name": "pending-promise-owns-real-completion-through-gc",
+                "status": "pass"
+              },
+              {
+                "name": "callback-promise-rejection-preserves-original-value",
+                "status": "pass"
+              },
+              {
+                "name": "throwing-then-getter-rejects-import-with-original-value",
+                "status": "pass"
+              },
+              {
+                "name": "synchronous-callback-exception-stops-importing-module",
+                "status": "pass"
+              },
+              {
+                "name": "invalid-options-reject-before-callback",
+                "status": "pass"
+              },
+              {
+                "name": "specifier-coercion-options-order-and-numeric-attribute-keys",
+                "status": "pass"
+              },
+              {
+                "name": "actual-namespace-and-top-level-await-use-one-engine-graph",
+                "status": "pass"
+              },
+              {
+                "name": "top-level-await-remains-pending-until-callback-settles",
+                "status": "pass"
+              },
+              {
+                "name": "foreign-promise-is-adopted-in-referrer-realm",
+                "status": "pass"
+              },
+              {
+                "name": "realm-callback-registration-and-pending-replacement-are-distinct",
+                "status": "pass"
+              },
+              {
+                "name": "ordinary-shell-record-dynamic-import-keeps-original-loader",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No upstream realm/bootstrap/CJS/ESM startup",
+              "No browser proof",
+              "Only ModuleWrap-owned evaluation-phase imports covered",
+              "Default metadata/contextify/cache/facade/interrupt backends remain unfinished"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "module-wrap",
+      "rawReport": {
+        "path": ".context/node-uv-integration/module-wrap-regression.json",
+        "bytes": 46768,
+        "sha256": "52579d5bb9cf119207fe56f2bf94aeb3b5ebc8cded74df83ae6120dbcdcee8b9"
+      },
+      "cases": 19,
+      "driverRuns": 5,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "module-wrap-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"native-module-wrap-controls\",\"plannedCases\":19,\"cases\":19,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"canonical-realm-binding-and-original-prototype-operation\",\"status\":\"pass\"},{\"name\":\"synthetic-constructor-real-namespace-and-wrapper-receiver\",\"status\":\"pass\"},{\"name\":\"has-async-graph-is-own-lazy-writable-data\",\"status\":\"pass\"},{\"name\":\"live-synthetic-exports-and-reference-error\",\"status\":\"pass\"},{\"name\":\"synthetic-first-failure-throws-later-evaluation-rejects\",\"status\":\"pass\"},{\"name\":\"source-requests-have-real-frozen-attributes\",\"status\":\"pass\"},{\"name\":\"native-source-links-synthetic-dependency-and-live-reexport\",\"status\":\"pass\"},{\"name\":\"source-module-cycles-use-actual-engine-graph\",\"status\":\"pass\"},{\"name\":\"linked-dependencies-cannot-be-mutated-through-caller-array\",\"status\":\"pass\"},{\"name\":\"top-level-await-and-synchronous-refusal\",\"status\":\"pass\"},{\"name\":\"synchronous-evaluation-and-rejection-identity\",\"status\":\"pass\"},{\"name\":\"dependency-failure-stops-source-body\",\"status\":\"pass\"},{\"name\":\"custom-import-meta-callback-uses-original-id-and-wrapper\",\"status\":\"pass\"},{\"name\":\"source-bytes-unicode-surrogates-offsets-and-pragmas\",\"status\":\"pass\"},{\"name\":\"native-source-object-storage-is-real-and-missing-source-errors\",\"status\":\"pass\"},{\"name\":\"wrong-receiver-and-unimplemented-backends-fail-honestly\",\"status\":\"pass\"},{\"name\":\"new-realm-gets-distinct-binding-and-constructors\",\"status\":\"pass\"},{\"name\":\"wrapper-and-graph-identity-survive-gc\",\"status\":\"pass\"},{\"name\":\"previous-shell-module-hooks-still-own-non-node-records\",\"status\":\"pass\"}],\"limits\":[\"No upstream Node realm/bootstrap/CJS/ESM startup\",\"No browser execution\",\"Default import.meta/contextify/cache/deadline/signal backends still missing\",\"No complete native differential/security/OOM/finalization proof\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "native-module-wrap-controls",
+            "plannedCases": 19,
+            "cases": 19,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "canonical-realm-binding-and-original-prototype-operation",
+                "status": "pass"
+              },
+              {
+                "name": "synthetic-constructor-real-namespace-and-wrapper-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "has-async-graph-is-own-lazy-writable-data",
+                "status": "pass"
+              },
+              {
+                "name": "live-synthetic-exports-and-reference-error",
+                "status": "pass"
+              },
+              {
+                "name": "synthetic-first-failure-throws-later-evaluation-rejects",
+                "status": "pass"
+              },
+              {
+                "name": "source-requests-have-real-frozen-attributes",
+                "status": "pass"
+              },
+              {
+                "name": "native-source-links-synthetic-dependency-and-live-reexport",
+                "status": "pass"
+              },
+              {
+                "name": "source-module-cycles-use-actual-engine-graph",
+                "status": "pass"
+              },
+              {
+                "name": "linked-dependencies-cannot-be-mutated-through-caller-array",
+                "status": "pass"
+              },
+              {
+                "name": "top-level-await-and-synchronous-refusal",
+                "status": "pass"
+              },
+              {
+                "name": "synchronous-evaluation-and-rejection-identity",
+                "status": "pass"
+              },
+              {
+                "name": "dependency-failure-stops-source-body",
+                "status": "pass"
+              },
+              {
+                "name": "custom-import-meta-callback-uses-original-id-and-wrapper",
+                "status": "pass"
+              },
+              {
+                "name": "source-bytes-unicode-surrogates-offsets-and-pragmas",
+                "status": "pass"
+              },
+              {
+                "name": "native-source-object-storage-is-real-and-missing-source-errors",
+                "status": "pass"
+              },
+              {
+                "name": "wrong-receiver-and-unimplemented-backends-fail-honestly",
+                "status": "pass"
+              },
+              {
+                "name": "new-realm-gets-distinct-binding-and-constructors",
+                "status": "pass"
+              },
+              {
+                "name": "wrapper-and-graph-identity-survive-gc",
+                "status": "pass"
+              },
+              {
+                "name": "previous-shell-module-hooks-still-own-non-node-records",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No upstream Node realm/bootstrap/CJS/ESM startup",
+              "No browser execution",
+              "Default import.meta/contextify/cache/deadline/signal backends still missing",
+              "No complete native differential/security/OOM/finalization proof"
+            ]
+          }
+        },
+        {
+          "name": "module-constructor-invariant-remains-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: args.isConstructing() && argc >= 3 (Node ModuleWrap constructor invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/module-wrap.cpp:264\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3a478a:wasm-function[134]:0x5fd5b\n    at wasm://wasm/0c3a478a:wasm-function[7387]:0x533739\n    at wasm://wasm/0c3a478a:wasm-function[7386]:0x521107\n    at wasm://wasm/0c3a478a:wasm-function[7395]:0x5356c7\n    at wasm://wasm/0c3a478a:wasm-function[7396]:0x535934\n    at wasm://wasm/0c3a478a:wasm-function[8248]:0x603964\n    at wasm://wasm/0c3a478a:wasm-function[87]:0x51849\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+              "status": 132
+            }
+          ]
+        },
+        {
+          "name": "module-source-object-invariant-remains-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: JS::GetReservedSlot(wrap, SourceObject).isUndefined() (Node module source object initialization invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/module-wrap.cpp:551\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3a478a:wasm-function[156]:0x660db\n    at wasm://wasm/0c3a478a:wasm-function[7387]:0x533739\n    at wasm://wasm/0c3a478a:wasm-function[7386]:0x521107\n    at wasm://wasm/0c3a478a:wasm-function[7395]:0x5356c7\n    at wasm://wasm/0c3a478a:wasm-function[7396]:0x535934\n    at wasm://wasm/0c3a478a:wasm-function[8248]:0x603964\n    at wasm://wasm/0c3a478a:wasm-function[87]:0x51849\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+              "status": 132
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "synthetic-modules",
+      "rawReport": {
+        "path": ".context/node-uv-integration/synthetic-modules-regression.json",
+        "bytes": 34427,
+        "sha256": "7d5e27dbc600191c3dad9d1bf8d73d21ab03b75d44fe47f659ffea97657cb55a"
+      },
+      "cases": 15,
+      "driverRuns": 3,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "synthetic-modules-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"engine-synthetic-module-controls\",\"plannedCases\":15,\"cases\":15,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"real-module-record-link-and-synchronous-evaluation\",\"status\":\"pass\"},{\"name\":\"live-native-exports-and-real-namespace\",\"status\":\"pass\"},{\"name\":\"source-importer-evaluates-synthetic-dependency-first\",\"status\":\"pass\"},{\"name\":\"source-imports-observe-live-binding-updates\",\"status\":\"pass\"},{\"name\":\"callback-exception-becomes-cached-rejected-promise\",\"status\":\"pass\"},{\"name\":\"dependency-failure-prevents-importer-body\",\"status\":\"pass\"},{\"name\":\"synthetic-dependency-under-real-top-level-await\",\"status\":\"pass\"},{\"name\":\"reentrant-evaluate-returns-published-promise\",\"status\":\"pass\"},{\"name\":\"reentrant-dependent-graph-cannot-use-incomplete-evaluation\",\"status\":\"pass\"},{\"name\":\"arbitrary-export-names-do-not-alias-engine-bindings\",\"status\":\"pass\"},{\"name\":\"empty-module-has-no-fabricated-exports\",\"status\":\"pass\"},{\"name\":\"invalid-names-and-unknown-exports-fail-honestly\",\"status\":\"pass\"},{\"name\":\"native-private-callback-and-export-values-survive-gc\",\"status\":\"pass\"},{\"name\":\"json-module-path-preserves-real-parser-and-type\",\"status\":\"pass\"},{\"name\":\"shared-synthetic-dependency-runs-once-across-importers\",\"status\":\"pass\"}],\"limits\":[\"No Node ModuleWrap binding or upstream realm/bootstrap execution\",\"No browser execution\",\"No OOM/security-wrapper/complete finalization proof\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "engine-synthetic-module-controls",
+            "plannedCases": 15,
+            "cases": 15,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "real-module-record-link-and-synchronous-evaluation",
+                "status": "pass"
+              },
+              {
+                "name": "live-native-exports-and-real-namespace",
+                "status": "pass"
+              },
+              {
+                "name": "source-importer-evaluates-synthetic-dependency-first",
+                "status": "pass"
+              },
+              {
+                "name": "source-imports-observe-live-binding-updates",
+                "status": "pass"
+              },
+              {
+                "name": "callback-exception-becomes-cached-rejected-promise",
+                "status": "pass"
+              },
+              {
+                "name": "dependency-failure-prevents-importer-body",
+                "status": "pass"
+              },
+              {
+                "name": "synthetic-dependency-under-real-top-level-await",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-evaluate-returns-published-promise",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-dependent-graph-cannot-use-incomplete-evaluation",
+                "status": "pass"
+              },
+              {
+                "name": "arbitrary-export-names-do-not-alias-engine-bindings",
+                "status": "pass"
+              },
+              {
+                "name": "empty-module-has-no-fabricated-exports",
+                "status": "pass"
+              },
+              {
+                "name": "invalid-names-and-unknown-exports-fail-honestly",
+                "status": "pass"
+              },
+              {
+                "name": "native-private-callback-and-export-values-survive-gc",
+                "status": "pass"
+              },
+              {
+                "name": "json-module-path-preserves-real-parser-and-type",
+                "status": "pass"
+              },
+              {
+                "name": "shared-synthetic-dependency-runs-once-across-importers",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No Node ModuleWrap binding or upstream realm/bootstrap execution",
+              "No browser execution",
+              "No OOM/security-wrapper/complete finalization proof"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "per-context",
+      "rawReport": {
+        "path": ".context/node-uv-integration/per-context-regression.json",
+        "bytes": 32937,
+        "sha256": "7c2435df9dc19b2640886255db03d23e134cf5cf0f9dea195fb9afa8ce936e3d"
+      },
+      "cases": 14,
+      "driverRuns": 4,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "per-context-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"upstream-per-context-controls\",\"plannedCases\":14,\"cases\":14,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"three-original-initializers-complete\",\"status\":\"pass\"},{\"name\":\"primordials-and-export-descriptors\",\"status\":\"pass\"},{\"name\":\"complete-native-symbol-inventories-and-descriptors\",\"status\":\"pass\"},{\"name\":\"runtime-identities-shared-with-fresh-realm-tables\",\"status\":\"pass\"},{\"name\":\"exports-and-constructors-owned-by-their-realms\",\"status\":\"pass\"},{\"name\":\"original-domexception-and-real-hidden-clone-marker\",\"status\":\"pass\"},{\"name\":\"original-quotaexceedederror-class-private-state\",\"status\":\"pass\"},{\"name\":\"original-messageport-dispatch\",\"status\":\"pass\"},{\"name\":\"canonical-exports-and-no-repeat-initialization\",\"status\":\"pass\"},{\"name\":\"uninitialized-context-does-not-return-success\",\"status\":\"pass\"},{\"name\":\"original-exception-preserved-and-failure-terminal\",\"status\":\"pass\"},{\"name\":\"reentrant-initialization-refused-without-second-execution\",\"status\":\"pass\"},{\"name\":\"non-global-and-scripted-proxy-targets-refused\",\"status\":\"pass\"},{\"name\":\"canonical-state-and-shared-identities-survive-gc\",\"status\":\"pass\"}],\"limits\":[\"No Node realm/bootstrap loader or CJS/ESM entrypath\",\"No browser execution\",\"No OOM/finalization or complete native differential proof\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "upstream-per-context-controls",
+            "plannedCases": 14,
+            "cases": 14,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "three-original-initializers-complete",
+                "status": "pass"
+              },
+              {
+                "name": "primordials-and-export-descriptors",
+                "status": "pass"
+              },
+              {
+                "name": "complete-native-symbol-inventories-and-descriptors",
+                "status": "pass"
+              },
+              {
+                "name": "runtime-identities-shared-with-fresh-realm-tables",
+                "status": "pass"
+              },
+              {
+                "name": "exports-and-constructors-owned-by-their-realms",
+                "status": "pass"
+              },
+              {
+                "name": "original-domexception-and-real-hidden-clone-marker",
+                "status": "pass"
+              },
+              {
+                "name": "original-quotaexceedederror-class-private-state",
+                "status": "pass"
+              },
+              {
+                "name": "original-messageport-dispatch",
+                "status": "pass"
+              },
+              {
+                "name": "canonical-exports-and-no-repeat-initialization",
+                "status": "pass"
+              },
+              {
+                "name": "uninitialized-context-does-not-return-success",
+                "status": "pass"
+              },
+              {
+                "name": "original-exception-preserved-and-failure-terminal",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-initialization-refused-without-second-execution",
+                "status": "pass"
+              },
+              {
+                "name": "non-global-and-scripted-proxy-targets-refused",
+                "status": "pass"
+              },
+              {
+                "name": "canonical-state-and-shared-identities-survive-gc",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No Node realm/bootstrap loader or CJS/ESM entrypath",
+              "No browser execution",
+              "No OOM/finalization or complete native differential proof"
+            ]
+          }
+        },
+        {
+          "name": "fresh-exports-invariant-remains-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: !hasPrimordials (Node per-context exports invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/per-context.cpp:222\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3a478a:wasm-function[191]:0x71520\n    at wasm://wasm/0c3a478a:wasm-function[190]:0x6cc6f\n    at wasm://wasm/0c3a478a:wasm-function[21610]:0x1379fd8\n    at wasm://wasm/0c3a478a:wasm-function[7387]:0x53374f\n    at wasm://wasm/0c3a478a:wasm-function[7386]:0x521107\n    at wasm://wasm/0c3a478a:wasm-function[7395]:0x5356c7\n    at wasm://wasm/0c3a478a:wasm-function[7396]:0x535934\n    at wasm://wasm/0c3a478a:wasm-function[8248]:0x603964\n    at wasm://wasm/0c3a478a:wasm-function[87]:0x51849\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)",
+              "status": 132
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "private-keys",
+      "rawReport": {
+        "path": ".context/node-uv-integration/private-keys-regression.json",
+        "bytes": 42229,
+        "sha256": "8fe68a9711b75063e3e55255b0a8f6e7e26494dce37e17ac5dea7ccd3a310a4f"
+      },
+      "cases": 23,
+      "driverRuns": 3,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "private-keys-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"engine-private-key-controls-only\",\"cases\":23,\"failures\":0,\"observations\":[{\"name\":\"fresh-hidden-symbol-identity\",\"status\":\"pass\"},{\"name\":\"hidden-from-reflection-and-copy\",\"status\":\"pass\"},{\"name\":\"missing-native-read\",\"status\":\"pass\"},{\"name\":\"own-only-read-has-and-write\",\"status\":\"pass\"},{\"name\":\"own-only-lookup-ignores-prototype-proxy\",\"status\":\"pass\"},{\"name\":\"new-write-after-prevent-extensions\",\"status\":\"pass\"},{\"name\":\"existing-write-after-prevent-extensions\",\"status\":\"pass\"},{\"name\":\"new-write-after-seal\",\"status\":\"pass\"},{\"name\":\"existing-write-after-seal\",\"status\":\"pass\"},{\"name\":\"new-write-after-freeze\",\"status\":\"pass\"},{\"name\":\"existing-write-after-freeze\",\"status\":\"pass\"},{\"name\":\"ordinary-assignment-descriptor\",\"status\":\"pass\"},{\"name\":\"native-initialization-on-frozen-object\",\"status\":\"pass\"},{\"name\":\"missing-proxy-read-has-delete-bypass-traps\",\"status\":\"pass\"},{\"name\":\"first-ordinary-proxy-write-rejected\",\"status\":\"pass\"},{\"name\":\"native-proxy-initialize-read-update-descriptor-has-delete\",\"status\":\"pass\"},{\"name\":\"proxy-private-entry-is-not-a-target-property\",\"status\":\"pass\"},{\"name\":\"native-private-on-revoked-scripted-proxy\",\"status\":\"pass\"},{\"name\":\"cross-compartment-forwarding-retains-target-ownership\",\"status\":\"pass\"},{\"name\":\"hidden-proxy-value-survives-gc\",\"status\":\"pass\"},{\"name\":\"ordinary-symbol-semantics-preserved\",\"status\":\"pass\"},{\"name\":\"language-class-private-semantics-preserved\",\"status\":\"pass\"},{\"name\":\"native-initializer-refuses-public-symbol\",\"status\":\"pass\"}],\"limits\":[\"No upstream startup\",\"No complete native-V8 differential proof\",\"No security-wrapper policy or OOM/GC-finalization proof\",\"No per-runtime symbol owner or per-context initializer coverage\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "engine-private-key-controls-only",
+            "cases": 23,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "fresh-hidden-symbol-identity",
+                "status": "pass"
+              },
+              {
+                "name": "hidden-from-reflection-and-copy",
+                "status": "pass"
+              },
+              {
+                "name": "missing-native-read",
+                "status": "pass"
+              },
+              {
+                "name": "own-only-read-has-and-write",
+                "status": "pass"
+              },
+              {
+                "name": "own-only-lookup-ignores-prototype-proxy",
+                "status": "pass"
+              },
+              {
+                "name": "new-write-after-prevent-extensions",
+                "status": "pass"
+              },
+              {
+                "name": "existing-write-after-prevent-extensions",
+                "status": "pass"
+              },
+              {
+                "name": "new-write-after-seal",
+                "status": "pass"
+              },
+              {
+                "name": "existing-write-after-seal",
+                "status": "pass"
+              },
+              {
+                "name": "new-write-after-freeze",
+                "status": "pass"
+              },
+              {
+                "name": "existing-write-after-freeze",
+                "status": "pass"
+              },
+              {
+                "name": "ordinary-assignment-descriptor",
+                "status": "pass"
+              },
+              {
+                "name": "native-initialization-on-frozen-object",
+                "status": "pass"
+              },
+              {
+                "name": "missing-proxy-read-has-delete-bypass-traps",
+                "status": "pass"
+              },
+              {
+                "name": "first-ordinary-proxy-write-rejected",
+                "status": "pass"
+              },
+              {
+                "name": "native-proxy-initialize-read-update-descriptor-has-delete",
+                "status": "pass"
+              },
+              {
+                "name": "proxy-private-entry-is-not-a-target-property",
+                "status": "pass"
+              },
+              {
+                "name": "native-private-on-revoked-scripted-proxy",
+                "status": "pass"
+              },
+              {
+                "name": "cross-compartment-forwarding-retains-target-ownership",
+                "status": "pass"
+              },
+              {
+                "name": "hidden-proxy-value-survives-gc",
+                "status": "pass"
+              },
+              {
+                "name": "ordinary-symbol-semantics-preserved",
+                "status": "pass"
+              },
+              {
+                "name": "language-class-private-semantics-preserved",
+                "status": "pass"
+              },
+              {
+                "name": "native-initializer-refuses-public-symbol",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No upstream startup",
+              "No complete native-V8 differential proof",
+              "No security-wrapper policy or OOM/GC-finalization proof",
+              "No per-runtime symbol owner or per-context initializer coverage"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "host": "chromium",
+      "hostVersion": "153.0.8010.12",
+      "rawReport": {
+        "path": ".context/node-uv-integration/browser/timers-chromium.json",
+        "bytes": 14444,
+        "sha256": "dd2eafae78b5af1aa7d5f83863b9a85de5c24d2689d6a346efb0890fa582fdb7"
+      },
+      "cases": 27,
+      "driverRuns": 4,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "binding-controls",
+          "result": {
+            "exitCode": 0,
+            "stdout": "{\"kind\":\"native-timers-controls\",\"plannedCases\":27,\"cases\":27,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"native-binding-and-live-info-layout\",\"status\":\"pass\"},{\"name\":\"guest-monotonic-environment-clock-is-shared\",\"status\":\"pass\"},{\"name\":\"reference-toggles-use-true-without-coercing\",\"status\":\"pass\"},{\"name\":\"schedule-converts-once-and-keeps-exact-uint64-deadline\",\"status\":\"pass\"},{\"name\":\"schedule-conversion-errors-preserve-original-state-and-exception\",\"status\":\"pass\"},{\"name\":\"actual-referenced-deadline-blocks-and-invokes-native-callback\",\"status\":\"pass\"},{\"name\":\"rescheduling-replaces-the-existing-native-deadline\",\"status\":\"pass\"},{\"name\":\"positive-expiry-return-rearms-a-referenced-one-shot\",\"status\":\"pass\"},{\"name\":\"negative-expiry-return-leaves-a-real-unreferenced-pending-timer\",\"status\":\"pass\"},{\"name\":\"zero-expiry-does-not-discard-reentrant-rescheduling\",\"status\":\"pass\"},{\"name\":\"unreferenced-even-due-timer-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"referenced-immediate-uses-live-counters-and-principal-process\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"real-engine-microtasks-run-between-timer-and-immediate-phases\",\"status\":\"pass\"},{\"name\":\"native-method-ownership-does-not-depend-on-a-javascript-receiver\",\"status\":\"pass\"},{\"name\":\"callback-replacement-and-gc-retain-the-real-latest-function\",\"status\":\"pass\"},{\"name\":\"other-realm-binding-shares-environment-state-and-principal-receiver\",\"status\":\"pass\"},{\"name\":\"original-callback-exception-is-not-cleared-or-replaced\",\"status\":\"pass\"},{\"name\":\"reentrant-loop-dispatch-is-rejected-without-losing-outer-state\",\"status\":\"pass\"},{\"name\":\"diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state\",\"status\":\"pass\"},{\"name\":\"owned-loop-does-not-call-public-compatibility-timer-hooks\",\"status\":\"pass\"},{\"name\":\"fresh-loop-does-not-retain-a-previous-check-phase\",\"status\":\"pass\"},{\"name\":\"fresh-default-loop-services-reentrant-zero-deadline-before-exit\",\"status\":\"pass\"},{\"name\":\"actual-libuv-version-and-public-layout-match\",\"status\":\"pass\"},{\"name\":\"outstanding-immediates-drain-with-engine-checkpoints\",\"status\":\"pass\"},{\"name\":\"moving-gc-during-callback-checkpoint-preserves-libuv-owner\",\"status\":\"pass\"}],\"state\":{\"armed\":false,\"timerReferenced\":false,\"immediateReferenced\":false,\"deadline\":\"4461\"},\"limits\":[\"Native binding/scheduler controls, not public timers or successful Node bootstrap\",\"No task_queue/async callback-scope/tick/fatal recovery integration\",\"Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete\",\"Per-host execution is recorded by the external runner\"]}\n",
+            "stderr": "",
+            "combined": "{\"kind\":\"native-timers-controls\",\"plannedCases\":27,\"cases\":27,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"native-binding-and-live-info-layout\",\"status\":\"pass\"},{\"name\":\"guest-monotonic-environment-clock-is-shared\",\"status\":\"pass\"},{\"name\":\"reference-toggles-use-true-without-coercing\",\"status\":\"pass\"},{\"name\":\"schedule-converts-once-and-keeps-exact-uint64-deadline\",\"status\":\"pass\"},{\"name\":\"schedule-conversion-errors-preserve-original-state-and-exception\",\"status\":\"pass\"},{\"name\":\"actual-referenced-deadline-blocks-and-invokes-native-callback\",\"status\":\"pass\"},{\"name\":\"rescheduling-replaces-the-existing-native-deadline\",\"status\":\"pass\"},{\"name\":\"positive-expiry-return-rearms-a-referenced-one-shot\",\"status\":\"pass\"},{\"name\":\"negative-expiry-return-leaves-a-real-unreferenced-pending-timer\",\"status\":\"pass\"},{\"name\":\"zero-expiry-does-not-discard-reentrant-rescheduling\",\"status\":\"pass\"},{\"name\":\"unreferenced-even-due-timer-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"referenced-immediate-uses-live-counters-and-principal-process\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"real-engine-microtasks-run-between-timer-and-immediate-phases\",\"status\":\"pass\"},{\"name\":\"native-method-ownership-does-not-depend-on-a-javascript-receiver\",\"status\":\"pass\"},{\"name\":\"callback-replacement-and-gc-retain-the-real-latest-function\",\"status\":\"pass\"},{\"name\":\"other-realm-binding-shares-environment-state-and-principal-receiver\",\"status\":\"pass\"},{\"name\":\"original-callback-exception-is-not-cleared-or-replaced\",\"status\":\"pass\"},{\"name\":\"reentrant-loop-dispatch-is-rejected-without-losing-outer-state\",\"status\":\"pass\"},{\"name\":\"diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state\",\"status\":\"pass\"},{\"name\":\"owned-loop-does-not-call-public-compatibility-timer-hooks\",\"status\":\"pass\"},{\"name\":\"fresh-loop-does-not-retain-a-previous-check-phase\",\"status\":\"pass\"},{\"name\":\"fresh-default-loop-services-reentrant-zero-deadline-before-exit\",\"status\":\"pass\"},{\"name\":\"actual-libuv-version-and-public-layout-match\",\"status\":\"pass\"},{\"name\":\"outstanding-immediates-drain-with-engine-checkpoints\",\"status\":\"pass\"},{\"name\":\"moving-gc-during-callback-checkpoint-preserves-libuv-owner\",\"status\":\"pass\"}],\"state\":{\"armed\":false,\"timerReferenced\":false,\"immediateReferenced\":false,\"deadline\":\"4461\"},\"limits\":[\"Native binding/scheduler controls, not public timers or successful Node bootstrap\",\"No task_queue/async callback-scope/tick/fatal recovery integration\",\"Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete\",\"Per-host execution is recorded by the external runner\"]}\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass",
+          "detail": {
+            "kind": "native-timers-controls",
+            "plannedCases": 27,
+            "cases": 27,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "native-binding-and-live-info-layout",
+                "status": "pass"
+              },
+              {
+                "name": "guest-monotonic-environment-clock-is-shared",
+                "status": "pass"
+              },
+              {
+                "name": "reference-toggles-use-true-without-coercing",
+                "status": "pass"
+              },
+              {
+                "name": "schedule-converts-once-and-keeps-exact-uint64-deadline",
+                "status": "pass"
+              },
+              {
+                "name": "schedule-conversion-errors-preserve-original-state-and-exception",
+                "status": "pass"
+              },
+              {
+                "name": "actual-referenced-deadline-blocks-and-invokes-native-callback",
+                "status": "pass"
+              },
+              {
+                "name": "rescheduling-replaces-the-existing-native-deadline",
+                "status": "pass"
+              },
+              {
+                "name": "positive-expiry-return-rearms-a-referenced-one-shot",
+                "status": "pass"
+              },
+              {
+                "name": "negative-expiry-return-leaves-a-real-unreferenced-pending-timer",
+                "status": "pass"
+              },
+              {
+                "name": "zero-expiry-does-not-discard-reentrant-rescheduling",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-even-due-timer-does-not-keep-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "referenced-immediate-uses-live-counters-and-principal-process",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-immediate-does-not-keep-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "real-engine-microtasks-run-between-timer-and-immediate-phases",
+                "status": "pass"
+              },
+              {
+                "name": "native-method-ownership-does-not-depend-on-a-javascript-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "callback-replacement-and-gc-retain-the-real-latest-function",
+                "status": "pass"
+              },
+              {
+                "name": "other-realm-binding-shares-environment-state-and-principal-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "original-callback-exception-is-not-cleared-or-replaced",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-loop-dispatch-is-rejected-without-losing-outer-state",
+                "status": "pass"
+              },
+              {
+                "name": "diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state",
+                "status": "pass"
+              },
+              {
+                "name": "owned-loop-does-not-call-public-compatibility-timer-hooks",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-loop-does-not-retain-a-previous-check-phase",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-default-loop-services-reentrant-zero-deadline-before-exit",
+                "status": "pass"
+              },
+              {
+                "name": "actual-libuv-version-and-public-layout-match",
+                "status": "pass"
+              },
+              {
+                "name": "outstanding-immediates-drain-with-engine-checkpoints",
+                "status": "pass"
+              },
+              {
+                "name": "moving-gc-during-callback-checkpoint-preserves-libuv-owner",
+                "status": "pass"
+              }
+            ],
+            "state": {
+              "armed": false,
+              "timerReferenced": false,
+              "immediateReferenced": false,
+              "deadline": "4461"
+            },
+            "limits": [
+              "Native binding/scheduler controls, not public timers or successful Node bootstrap",
+              "No task_queue/async callback-scope/tick/fatal recovery integration",
+              "Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete",
+              "Per-host execution is recorded by the external runner"
+            ]
+          }
+        },
+        {
+          "name": "unreferenced-timer-natural-exit",
+          "result": {
+            "exitCode": 0,
+            "stdout": "UNREF_PENDING\n",
+            "stderr": "",
+            "combined": "UNREF_PENDING\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "unreferenced-immediate-natural-exit",
+          "result": {
+            "exitCode": 0,
+            "stdout": "UNREF_PENDING\n",
+            "stderr": "",
+            "combined": "UNREF_PENDING\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "callback-quit-status",
+          "result": {
+            "exitCode": 23,
+            "stdout": "",
+            "stderr": "",
+            "combined": "",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        }
+      ],
+      "consumedArtifactHashes": [
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+          "status": 200,
+          "bytes": 2958224,
+          "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/conductor/workspaces/kandelo/port-vila/local-binaries/kandelo_image_module32.wasm",
+          "status": 200,
+          "bytes": 403950,
+          "sha256": "85bf98b36b2229d30a8f36d8bb238170c124e09937acc6824a8e0560ab94d4ec"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        }
+      ]
+    },
+    {
+      "host": "firefox",
+      "hostVersion": "155.0",
+      "rawReport": {
+        "path": ".context/node-uv-integration/browser/timers-firefox.json",
+        "bytes": 14435,
+        "sha256": "e91517392ef73bc027c4253752c48dfc23e6ca9b429287748498d9169b639d91"
+      },
+      "cases": 27,
+      "driverRuns": 4,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "binding-controls",
+          "result": {
+            "exitCode": 0,
+            "stdout": "{\"kind\":\"native-timers-controls\",\"plannedCases\":27,\"cases\":27,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"native-binding-and-live-info-layout\",\"status\":\"pass\"},{\"name\":\"guest-monotonic-environment-clock-is-shared\",\"status\":\"pass\"},{\"name\":\"reference-toggles-use-true-without-coercing\",\"status\":\"pass\"},{\"name\":\"schedule-converts-once-and-keeps-exact-uint64-deadline\",\"status\":\"pass\"},{\"name\":\"schedule-conversion-errors-preserve-original-state-and-exception\",\"status\":\"pass\"},{\"name\":\"actual-referenced-deadline-blocks-and-invokes-native-callback\",\"status\":\"pass\"},{\"name\":\"rescheduling-replaces-the-existing-native-deadline\",\"status\":\"pass\"},{\"name\":\"positive-expiry-return-rearms-a-referenced-one-shot\",\"status\":\"pass\"},{\"name\":\"negative-expiry-return-leaves-a-real-unreferenced-pending-timer\",\"status\":\"pass\"},{\"name\":\"zero-expiry-does-not-discard-reentrant-rescheduling\",\"status\":\"pass\"},{\"name\":\"unreferenced-even-due-timer-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"referenced-immediate-uses-live-counters-and-principal-process\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"real-engine-microtasks-run-between-timer-and-immediate-phases\",\"status\":\"pass\"},{\"name\":\"native-method-ownership-does-not-depend-on-a-javascript-receiver\",\"status\":\"pass\"},{\"name\":\"callback-replacement-and-gc-retain-the-real-latest-function\",\"status\":\"pass\"},{\"name\":\"other-realm-binding-shares-environment-state-and-principal-receiver\",\"status\":\"pass\"},{\"name\":\"original-callback-exception-is-not-cleared-or-replaced\",\"status\":\"pass\"},{\"name\":\"reentrant-loop-dispatch-is-rejected-without-losing-outer-state\",\"status\":\"pass\"},{\"name\":\"diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state\",\"status\":\"pass\"},{\"name\":\"owned-loop-does-not-call-public-compatibility-timer-hooks\",\"status\":\"pass\"},{\"name\":\"fresh-loop-does-not-retain-a-previous-check-phase\",\"status\":\"pass\"},{\"name\":\"fresh-default-loop-services-reentrant-zero-deadline-before-exit\",\"status\":\"pass\"},{\"name\":\"actual-libuv-version-and-public-layout-match\",\"status\":\"pass\"},{\"name\":\"outstanding-immediates-drain-with-engine-checkpoints\",\"status\":\"pass\"},{\"name\":\"moving-gc-during-callback-checkpoint-preserves-libuv-owner\",\"status\":\"pass\"}],\"state\":{\"armed\":false,\"timerReferenced\":false,\"immediateReferenced\":false,\"deadline\":\"8197\"},\"limits\":[\"Native binding/scheduler controls, not public timers or successful Node bootstrap\",\"No task_queue/async callback-scope/tick/fatal recovery integration\",\"Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete\",\"Per-host execution is recorded by the external runner\"]}\n",
+            "stderr": "",
+            "combined": "{\"kind\":\"native-timers-controls\",\"plannedCases\":27,\"cases\":27,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"native-binding-and-live-info-layout\",\"status\":\"pass\"},{\"name\":\"guest-monotonic-environment-clock-is-shared\",\"status\":\"pass\"},{\"name\":\"reference-toggles-use-true-without-coercing\",\"status\":\"pass\"},{\"name\":\"schedule-converts-once-and-keeps-exact-uint64-deadline\",\"status\":\"pass\"},{\"name\":\"schedule-conversion-errors-preserve-original-state-and-exception\",\"status\":\"pass\"},{\"name\":\"actual-referenced-deadline-blocks-and-invokes-native-callback\",\"status\":\"pass\"},{\"name\":\"rescheduling-replaces-the-existing-native-deadline\",\"status\":\"pass\"},{\"name\":\"positive-expiry-return-rearms-a-referenced-one-shot\",\"status\":\"pass\"},{\"name\":\"negative-expiry-return-leaves-a-real-unreferenced-pending-timer\",\"status\":\"pass\"},{\"name\":\"zero-expiry-does-not-discard-reentrant-rescheduling\",\"status\":\"pass\"},{\"name\":\"unreferenced-even-due-timer-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"referenced-immediate-uses-live-counters-and-principal-process\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"real-engine-microtasks-run-between-timer-and-immediate-phases\",\"status\":\"pass\"},{\"name\":\"native-method-ownership-does-not-depend-on-a-javascript-receiver\",\"status\":\"pass\"},{\"name\":\"callback-replacement-and-gc-retain-the-real-latest-function\",\"status\":\"pass\"},{\"name\":\"other-realm-binding-shares-environment-state-and-principal-receiver\",\"status\":\"pass\"},{\"name\":\"original-callback-exception-is-not-cleared-or-replaced\",\"status\":\"pass\"},{\"name\":\"reentrant-loop-dispatch-is-rejected-without-losing-outer-state\",\"status\":\"pass\"},{\"name\":\"diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state\",\"status\":\"pass\"},{\"name\":\"owned-loop-does-not-call-public-compatibility-timer-hooks\",\"status\":\"pass\"},{\"name\":\"fresh-loop-does-not-retain-a-previous-check-phase\",\"status\":\"pass\"},{\"name\":\"fresh-default-loop-services-reentrant-zero-deadline-before-exit\",\"status\":\"pass\"},{\"name\":\"actual-libuv-version-and-public-layout-match\",\"status\":\"pass\"},{\"name\":\"outstanding-immediates-drain-with-engine-checkpoints\",\"status\":\"pass\"},{\"name\":\"moving-gc-during-callback-checkpoint-preserves-libuv-owner\",\"status\":\"pass\"}],\"state\":{\"armed\":false,\"timerReferenced\":false,\"immediateReferenced\":false,\"deadline\":\"8197\"},\"limits\":[\"Native binding/scheduler controls, not public timers or successful Node bootstrap\",\"No task_queue/async callback-scope/tick/fatal recovery integration\",\"Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete\",\"Per-host execution is recorded by the external runner\"]}\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass",
+          "detail": {
+            "kind": "native-timers-controls",
+            "plannedCases": 27,
+            "cases": 27,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "native-binding-and-live-info-layout",
+                "status": "pass"
+              },
+              {
+                "name": "guest-monotonic-environment-clock-is-shared",
+                "status": "pass"
+              },
+              {
+                "name": "reference-toggles-use-true-without-coercing",
+                "status": "pass"
+              },
+              {
+                "name": "schedule-converts-once-and-keeps-exact-uint64-deadline",
+                "status": "pass"
+              },
+              {
+                "name": "schedule-conversion-errors-preserve-original-state-and-exception",
+                "status": "pass"
+              },
+              {
+                "name": "actual-referenced-deadline-blocks-and-invokes-native-callback",
+                "status": "pass"
+              },
+              {
+                "name": "rescheduling-replaces-the-existing-native-deadline",
+                "status": "pass"
+              },
+              {
+                "name": "positive-expiry-return-rearms-a-referenced-one-shot",
+                "status": "pass"
+              },
+              {
+                "name": "negative-expiry-return-leaves-a-real-unreferenced-pending-timer",
+                "status": "pass"
+              },
+              {
+                "name": "zero-expiry-does-not-discard-reentrant-rescheduling",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-even-due-timer-does-not-keep-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "referenced-immediate-uses-live-counters-and-principal-process",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-immediate-does-not-keep-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "real-engine-microtasks-run-between-timer-and-immediate-phases",
+                "status": "pass"
+              },
+              {
+                "name": "native-method-ownership-does-not-depend-on-a-javascript-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "callback-replacement-and-gc-retain-the-real-latest-function",
+                "status": "pass"
+              },
+              {
+                "name": "other-realm-binding-shares-environment-state-and-principal-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "original-callback-exception-is-not-cleared-or-replaced",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-loop-dispatch-is-rejected-without-losing-outer-state",
+                "status": "pass"
+              },
+              {
+                "name": "diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state",
+                "status": "pass"
+              },
+              {
+                "name": "owned-loop-does-not-call-public-compatibility-timer-hooks",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-loop-does-not-retain-a-previous-check-phase",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-default-loop-services-reentrant-zero-deadline-before-exit",
+                "status": "pass"
+              },
+              {
+                "name": "actual-libuv-version-and-public-layout-match",
+                "status": "pass"
+              },
+              {
+                "name": "outstanding-immediates-drain-with-engine-checkpoints",
+                "status": "pass"
+              },
+              {
+                "name": "moving-gc-during-callback-checkpoint-preserves-libuv-owner",
+                "status": "pass"
+              }
+            ],
+            "state": {
+              "armed": false,
+              "timerReferenced": false,
+              "immediateReferenced": false,
+              "deadline": "8197"
+            },
+            "limits": [
+              "Native binding/scheduler controls, not public timers or successful Node bootstrap",
+              "No task_queue/async callback-scope/tick/fatal recovery integration",
+              "Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete",
+              "Per-host execution is recorded by the external runner"
+            ]
+          }
+        },
+        {
+          "name": "unreferenced-timer-natural-exit",
+          "result": {
+            "exitCode": 0,
+            "stdout": "UNREF_PENDING\n",
+            "stderr": "",
+            "combined": "UNREF_PENDING\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "unreferenced-immediate-natural-exit",
+          "result": {
+            "exitCode": 0,
+            "stdout": "UNREF_PENDING\n",
+            "stderr": "",
+            "combined": "UNREF_PENDING\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "callback-quit-status",
+          "result": {
+            "exitCode": 23,
+            "stdout": "",
+            "stderr": "",
+            "combined": "",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        }
+      ],
+      "consumedArtifactHashes": [
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+          "status": 200,
+          "bytes": 2958224,
+          "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/conductor/workspaces/kandelo/port-vila/local-binaries/kandelo_image_module32.wasm",
+          "status": 200,
+          "bytes": 403950,
+          "sha256": "85bf98b36b2229d30a8f36d8bb238170c124e09937acc6824a8e0560ab94d4ec"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        }
+      ]
+    },
+    {
+      "host": "webkit",
+      "hostVersion": "26.6",
+      "rawReport": {
+        "path": ".context/node-uv-integration/browser/timers-webkit.json",
+        "bytes": 14433,
+        "sha256": "cc0b3aae4e4cc2af72b6dc81a4a9da686f46cc8f0c237fd726c67e9ac4c09216"
+      },
+      "cases": 27,
+      "driverRuns": 4,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "binding-controls",
+          "result": {
+            "exitCode": 0,
+            "stdout": "{\"kind\":\"native-timers-controls\",\"plannedCases\":27,\"cases\":27,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"native-binding-and-live-info-layout\",\"status\":\"pass\"},{\"name\":\"guest-monotonic-environment-clock-is-shared\",\"status\":\"pass\"},{\"name\":\"reference-toggles-use-true-without-coercing\",\"status\":\"pass\"},{\"name\":\"schedule-converts-once-and-keeps-exact-uint64-deadline\",\"status\":\"pass\"},{\"name\":\"schedule-conversion-errors-preserve-original-state-and-exception\",\"status\":\"pass\"},{\"name\":\"actual-referenced-deadline-blocks-and-invokes-native-callback\",\"status\":\"pass\"},{\"name\":\"rescheduling-replaces-the-existing-native-deadline\",\"status\":\"pass\"},{\"name\":\"positive-expiry-return-rearms-a-referenced-one-shot\",\"status\":\"pass\"},{\"name\":\"negative-expiry-return-leaves-a-real-unreferenced-pending-timer\",\"status\":\"pass\"},{\"name\":\"zero-expiry-does-not-discard-reentrant-rescheduling\",\"status\":\"pass\"},{\"name\":\"unreferenced-even-due-timer-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"referenced-immediate-uses-live-counters-and-principal-process\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"real-engine-microtasks-run-between-timer-and-immediate-phases\",\"status\":\"pass\"},{\"name\":\"native-method-ownership-does-not-depend-on-a-javascript-receiver\",\"status\":\"pass\"},{\"name\":\"callback-replacement-and-gc-retain-the-real-latest-function\",\"status\":\"pass\"},{\"name\":\"other-realm-binding-shares-environment-state-and-principal-receiver\",\"status\":\"pass\"},{\"name\":\"original-callback-exception-is-not-cleared-or-replaced\",\"status\":\"pass\"},{\"name\":\"reentrant-loop-dispatch-is-rejected-without-losing-outer-state\",\"status\":\"pass\"},{\"name\":\"diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state\",\"status\":\"pass\"},{\"name\":\"owned-loop-does-not-call-public-compatibility-timer-hooks\",\"status\":\"pass\"},{\"name\":\"fresh-loop-does-not-retain-a-previous-check-phase\",\"status\":\"pass\"},{\"name\":\"fresh-default-loop-services-reentrant-zero-deadline-before-exit\",\"status\":\"pass\"},{\"name\":\"actual-libuv-version-and-public-layout-match\",\"status\":\"pass\"},{\"name\":\"outstanding-immediates-drain-with-engine-checkpoints\",\"status\":\"pass\"},{\"name\":\"moving-gc-during-callback-checkpoint-preserves-libuv-owner\",\"status\":\"pass\"}],\"state\":{\"armed\":false,\"timerReferenced\":false,\"immediateReferenced\":false,\"deadline\":\"2687\"},\"limits\":[\"Native binding/scheduler controls, not public timers or successful Node bootstrap\",\"No task_queue/async callback-scope/tick/fatal recovery integration\",\"Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete\",\"Per-host execution is recorded by the external runner\"]}\n",
+            "stderr": "",
+            "combined": "{\"kind\":\"native-timers-controls\",\"plannedCases\":27,\"cases\":27,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"native-binding-and-live-info-layout\",\"status\":\"pass\"},{\"name\":\"guest-monotonic-environment-clock-is-shared\",\"status\":\"pass\"},{\"name\":\"reference-toggles-use-true-without-coercing\",\"status\":\"pass\"},{\"name\":\"schedule-converts-once-and-keeps-exact-uint64-deadline\",\"status\":\"pass\"},{\"name\":\"schedule-conversion-errors-preserve-original-state-and-exception\",\"status\":\"pass\"},{\"name\":\"actual-referenced-deadline-blocks-and-invokes-native-callback\",\"status\":\"pass\"},{\"name\":\"rescheduling-replaces-the-existing-native-deadline\",\"status\":\"pass\"},{\"name\":\"positive-expiry-return-rearms-a-referenced-one-shot\",\"status\":\"pass\"},{\"name\":\"negative-expiry-return-leaves-a-real-unreferenced-pending-timer\",\"status\":\"pass\"},{\"name\":\"zero-expiry-does-not-discard-reentrant-rescheduling\",\"status\":\"pass\"},{\"name\":\"unreferenced-even-due-timer-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"referenced-immediate-uses-live-counters-and-principal-process\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"real-engine-microtasks-run-between-timer-and-immediate-phases\",\"status\":\"pass\"},{\"name\":\"native-method-ownership-does-not-depend-on-a-javascript-receiver\",\"status\":\"pass\"},{\"name\":\"callback-replacement-and-gc-retain-the-real-latest-function\",\"status\":\"pass\"},{\"name\":\"other-realm-binding-shares-environment-state-and-principal-receiver\",\"status\":\"pass\"},{\"name\":\"original-callback-exception-is-not-cleared-or-replaced\",\"status\":\"pass\"},{\"name\":\"reentrant-loop-dispatch-is-rejected-without-losing-outer-state\",\"status\":\"pass\"},{\"name\":\"diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state\",\"status\":\"pass\"},{\"name\":\"owned-loop-does-not-call-public-compatibility-timer-hooks\",\"status\":\"pass\"},{\"name\":\"fresh-loop-does-not-retain-a-previous-check-phase\",\"status\":\"pass\"},{\"name\":\"fresh-default-loop-services-reentrant-zero-deadline-before-exit\",\"status\":\"pass\"},{\"name\":\"actual-libuv-version-and-public-layout-match\",\"status\":\"pass\"},{\"name\":\"outstanding-immediates-drain-with-engine-checkpoints\",\"status\":\"pass\"},{\"name\":\"moving-gc-during-callback-checkpoint-preserves-libuv-owner\",\"status\":\"pass\"}],\"state\":{\"armed\":false,\"timerReferenced\":false,\"immediateReferenced\":false,\"deadline\":\"2687\"},\"limits\":[\"Native binding/scheduler controls, not public timers or successful Node bootstrap\",\"No task_queue/async callback-scope/tick/fatal recovery integration\",\"Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete\",\"Per-host execution is recorded by the external runner\"]}\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass",
+          "detail": {
+            "kind": "native-timers-controls",
+            "plannedCases": 27,
+            "cases": 27,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "native-binding-and-live-info-layout",
+                "status": "pass"
+              },
+              {
+                "name": "guest-monotonic-environment-clock-is-shared",
+                "status": "pass"
+              },
+              {
+                "name": "reference-toggles-use-true-without-coercing",
+                "status": "pass"
+              },
+              {
+                "name": "schedule-converts-once-and-keeps-exact-uint64-deadline",
+                "status": "pass"
+              },
+              {
+                "name": "schedule-conversion-errors-preserve-original-state-and-exception",
+                "status": "pass"
+              },
+              {
+                "name": "actual-referenced-deadline-blocks-and-invokes-native-callback",
+                "status": "pass"
+              },
+              {
+                "name": "rescheduling-replaces-the-existing-native-deadline",
+                "status": "pass"
+              },
+              {
+                "name": "positive-expiry-return-rearms-a-referenced-one-shot",
+                "status": "pass"
+              },
+              {
+                "name": "negative-expiry-return-leaves-a-real-unreferenced-pending-timer",
+                "status": "pass"
+              },
+              {
+                "name": "zero-expiry-does-not-discard-reentrant-rescheduling",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-even-due-timer-does-not-keep-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "referenced-immediate-uses-live-counters-and-principal-process",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-immediate-does-not-keep-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "real-engine-microtasks-run-between-timer-and-immediate-phases",
+                "status": "pass"
+              },
+              {
+                "name": "native-method-ownership-does-not-depend-on-a-javascript-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "callback-replacement-and-gc-retain-the-real-latest-function",
+                "status": "pass"
+              },
+              {
+                "name": "other-realm-binding-shares-environment-state-and-principal-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "original-callback-exception-is-not-cleared-or-replaced",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-loop-dispatch-is-rejected-without-losing-outer-state",
+                "status": "pass"
+              },
+              {
+                "name": "diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state",
+                "status": "pass"
+              },
+              {
+                "name": "owned-loop-does-not-call-public-compatibility-timer-hooks",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-loop-does-not-retain-a-previous-check-phase",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-default-loop-services-reentrant-zero-deadline-before-exit",
+                "status": "pass"
+              },
+              {
+                "name": "actual-libuv-version-and-public-layout-match",
+                "status": "pass"
+              },
+              {
+                "name": "outstanding-immediates-drain-with-engine-checkpoints",
+                "status": "pass"
+              },
+              {
+                "name": "moving-gc-during-callback-checkpoint-preserves-libuv-owner",
+                "status": "pass"
+              }
+            ],
+            "state": {
+              "armed": false,
+              "timerReferenced": false,
+              "immediateReferenced": false,
+              "deadline": "2687"
+            },
+            "limits": [
+              "Native binding/scheduler controls, not public timers or successful Node bootstrap",
+              "No task_queue/async callback-scope/tick/fatal recovery integration",
+              "Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete",
+              "Per-host execution is recorded by the external runner"
+            ]
+          }
+        },
+        {
+          "name": "unreferenced-timer-natural-exit",
+          "result": {
+            "exitCode": 0,
+            "stdout": "UNREF_PENDING\n",
+            "stderr": "",
+            "combined": "UNREF_PENDING\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "unreferenced-immediate-natural-exit",
+          "result": {
+            "exitCode": 0,
+            "stdout": "UNREF_PENDING\n",
+            "stderr": "",
+            "combined": "UNREF_PENDING\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "callback-quit-status",
+          "result": {
+            "exitCode": 23,
+            "stdout": "",
+            "stderr": "",
+            "combined": "",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        }
+      ],
+      "consumedArtifactHashes": [
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+          "status": 200,
+          "bytes": 2958224,
+          "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/conductor/workspaces/kandelo/port-vila/local-binaries/kandelo_image_module32.wasm",
+          "status": 200,
+          "bytes": 403950,
+          "sha256": "85bf98b36b2229d30a8f36d8bb238170c124e09937acc6824a8e0560ab94d4ec"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        },
+        {
+          "url": "http://127.0.0.1:51822/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+          "bytes": 51286498,
+          "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+        }
+      ]
+    }
+  ],
+  "guestCaseObservations": 243,
+  "guestProcessDrivers": 48,
+  "casesPerTimerHost": 27,
+  "nodePriorCases": 135,
+  "expectedFatalNodeControls": 6,
+  "expectedFatalHostDiagnosticsEach": 1,
+  "failures": 0,
+  "nativeReference": {
+    "report": {
+      "path": ".context/node-uv-integration/native-reference.json",
+      "bytes": 6380,
+      "sha256": "27b4131683c1a93a96ab0b2b3608b296945d23a4aec3ad9334a0b8fbdca6a770"
+    },
+    "directCases": 14,
+    "isolatedCases": 4,
+    "totalControls": 18,
+    "failures": 0
+  },
+  "bootstrapGap": {
+    "rawReport": {
+      "path": ".context/node-uv-integration/bootstrap-gap-probe.json",
+      "bytes": 41703,
+      "sha256": "20d7a103b80a355331b6d64694bb3f3c39f1dc76ac7fefad135de0d66bfe4a3b"
+    },
+    "detail": {
+      "kind": "upstream-realm-bootstrap-gap-probe",
+      "observations": [
+        {
+          "operation": "principal-bootstrap-node",
+          "status": "missing-backend",
+          "name": "Error",
+          "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+          "message": "Native Node binding 'task_queue' is not implemented",
+          "stack": "Error: Native Node binding 'task_queue' is not implemented\n    at internalBinding (node:internal/bootstrap/realm:172:34)\n    at node:internal/timers:92:20\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/bootstrap/node:69:31\n    at -e:12:11",
+          "compiledBuiltinIds": [
+            "internal/bootstrap/realm",
+            "internal/errors",
+            "internal/assert",
+            "internal/bootstrap/node",
+            "internal/timers"
+          ]
+        },
+        {
+          "operation": "original-typed-node-error",
+          "status": "returned",
+          "compiledBuiltinIds": [
+            "internal/bootstrap/realm",
+            "internal/errors",
+            "internal/assert"
+          ]
+        },
+        {
+          "operation": "original-stack-limit-policy",
+          "status": "missing-backend",
+          "name": "Error",
+          "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+          "message": "Native Node binding 'constants' is not implemented",
+          "stack": "Error: Native Node binding 'constants' is not implemented\n    at internalBinding (node:internal/bootstrap/realm:172:34)\n    at node:internal/util:62:36\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/validators:35:38\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/v8/startup_snapshot:5:12\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)",
+          "compiledBuiltinIds": [
+            "internal/bootstrap/realm",
+            "internal/errors",
+            "internal/assert",
+            "internal/v8/startup_snapshot",
+            "internal/validators",
+            "internal/util"
+          ]
+        }
+      ],
+      "upstreamStartup": false,
+      "emptyEvaluation": "not run",
+      "simpleScript": "not run",
+      "commonJsEntry": "not run",
+      "esmEntry": "not run"
+    },
+    "scope": "Observer exit 0 records actual gaps; not startup success"
+  },
+  "attempts": [
+    {
+      "id": "node-libuv-browser-buffer-hash-1111-012838-4bcf",
+      "command": "scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-uv-integration.avq446kj/run-browsers.sh",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 202.3,
+      "log": {
+        "path": ".context/node-uv-integration/job-logs/node-libuv-browser-buffer-hash-1111-012838-4bcf.log",
+        "bytes": 6074,
+        "sha256": "ce0fc216e186d8c36aa7f0b083e4e1cbd910d12e2f118c2d9b75e06879e7c044"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-libuv-browser-controls-1111-012508-60f9",
+      "command": "scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-uv-integration.avq446kj/run-browsers.sh",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 90.0,
+      "log": {
+        "path": ".context/node-uv-integration/job-logs/node-libuv-browser-controls-1111-012508-60f9.log",
+        "bytes": 14795,
+        "sha256": "9b6e5b7afb4db9840623ae3ed8821f316d39bad213d8603075b898ecc59344ca"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-libuv-corrected-controls-1111-012508-f663",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx scripts/run-nodejs-private-key-controls.ts /Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm .context/node-uv-integration/timers-engine-result.json timers",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 54.2,
+      "log": {
+        "path": ".context/node-uv-integration/job-logs/node-libuv-corrected-controls-1111-012508-f663.log",
+        "bytes": 2598,
+        "sha256": "fe7bea8104e7d0a4d1a6f34bcb51f874d06e6cc457af6c5d81613b982090178e"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-libuv-engine-1111-005214-f679",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh spidermonkey",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 207.3,
+      "log": {
+        "path": ".context/node-uv-integration/job-logs/node-libuv-engine-1111-005214-f679.log",
+        "bytes": 2364,
+        "sha256": "f6ac9df33a836c2c34f8a0d8af820e1b9c1118ba30f092ba59c061dd7892d1fd"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-uv-integration/job-logs/node-libuv-engine-1111-005214-f679-package-0.log",
+          "bytes": 268867,
+          "sha256": "f11fd3ad412bc3205e2eafea4dfee6b8d2245533cb5eb6c68f89c9a2178b88f1"
+        }
+      ]
+    },
+    {
+      "id": "node-libuv-engine-exact-patch-1111-010216-59ef",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh spidermonkey",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 764.7,
+      "log": {
+        "path": ".context/node-uv-integration/job-logs/node-libuv-engine-exact-patch-1111-010216-59ef.log",
+        "bytes": 376,
+        "sha256": "49ace818f416917a3630eebb89f2ad7640d15709ae306a30a85eab1d9e8766d7"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-uv-integration/job-logs/node-libuv-engine-exact-patch-1111-010216-59ef-package-0.log",
+          "bytes": 258673,
+          "sha256": "c3f90abb92e31d0b87d6910f2fdc0c35064b6713458b64e8aedb7d7fe5ffcc48"
+        }
+      ]
+    },
+    {
+      "id": "node-libuv-first-controls-1111-011849-8da3",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx scripts/run-nodejs-private-key-controls.ts /Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm .context/node-uv-integration/timers-engine-result.json timers",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 73.6,
+      "log": {
+        "path": ".context/node-uv-integration/job-logs/node-libuv-first-controls-1111-011849-8da3.log",
+        "bytes": 2276,
+        "sha256": "1980251ff708341727c0e8670168ad808dfe0945975e2e530a047745a1b4b42a"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-libuv-native-reference-1111-005520-6586",
+      "command": "scripts/dev-shell.sh python3 .context/node-uv-integration/record-native.py",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 3.7,
+      "log": {
+        "path": ".context/node-uv-integration/job-logs/node-libuv-native-reference-1111-005520-6586.log",
+        "bytes": 684,
+        "sha256": "efb747d3b38eaf4dc41db3b049e33c260d704be65a83a18423f0445438a37039"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-libuv-reentrant-native-reference-1111-012236-6bbd",
+      "command": "scripts/dev-shell.sh python3 .context/node-uv-integration/record-native.py",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 22.6,
+      "log": {
+        "path": ".context/node-uv-integration/job-logs/node-libuv-reentrant-native-reference-1111-012236-6bbd.log",
+        "bytes": 741,
+        "sha256": "817a036a70db5482bfc6eeeba2e7e49abae92dff583f09f8660fc499ca89e572"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-libuv-regressions-1111-012508-905f",
+      "command": "scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-uv-integration.avq446kj/run-regressions.sh",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 102.1,
+      "log": {
+        "path": ".context/node-uv-integration/job-logs/node-libuv-regressions-1111-012508-905f.log",
+        "bytes": 7120,
+        "sha256": "da4db82d14e6292ca7b697565fbc8c5900b71adcd055f0285f43ce6fe98ee8d0"
+      },
+      "packageLogs": []
+    }
+  ],
+  "failureHistory": [
+    "First normal engine build failed: tiny line1 patch context let patch fuzz2 place the checkpoint at file start. Regenerated 0033 from actual retained loop contexts; final real recipe applies that patch without fuzz. Local context construction explicitly excludes an unrelated main-exit hunk.",
+    "First guest run passed25of26cases but old custom-scheduler fixture expected one zero-delay reentrant callback. The exact pinned native isolated process also performs two in a fresh DEFAULT loop. Corrected future-reentrant test and added explicit native-confirmed same-drain behavior. Engine artifact unchanged for corrected27case run.",
+    "First browser attempt failed in harness inspector response.body collection because the engine-sized response was evicted. Final harness hashes the exact consumed in-page ArrayBuffer and uses normal resolver exact-file approval; original failures retained."
+  ],
+  "warnings": {
+    "compilerWarnings": 16,
+    "mozillaSourceChecks": 3,
+    "instrumentation": "Existing facts code hash mismatch after optimization; bounded native baseline used. No fork behavior proof.",
+    "browserStorageCleanup": {
+      "status": "warning",
+      "message": "EACCES: permission denied, rmdir '/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/validation-scratch/64d3fddc-878f-4bd7-9696-dde2a47e7d53/tmp/kandelo-playwright-storage-bv4J5R/firefox/Documents'",
+      "root": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/validation-scratch/64d3fddc-878f-4bd7-9696-dde2a47e7d53/tmp/kandelo-playwright-storage-bv4J5R"
+    }
+  },
+  "sourceIdentity": {
+    "manifestSha256": "7e131abb50f48efbfd1503d09f99934f399a1c82fcdc567fc39395425dcab8fd",
+    "nodeSourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+    "allImportedFilesMatch": true,
+    "importedFiles": 493,
+    "registeredJsFiles": 443,
+    "registeredJsBytes": 10993403,
+    "noUpstreamJsChanges": true
+  },
+  "limits": [
+    "No successful upstream Node empty/simple evaluation, CJS/ESM entry, output/error/exit startup acceptance or complete backend catalog.",
+    "Real libuv phases and selected callback checkpoints; complete Node callback scopes/AsyncWrap/ticks/rejection/fatal recovery remain incomplete.",
+    "Existing non-libuv native watches retain NOWAIT/shell polling bridge; no complete I/O migration or legacy-interoperability proof.",
+    "Moving GC tested during callbacks, not full security/OOM/finalization/fork/thread/lifecycle conformance.",
+    "Ten public libuv OS functions still absent; broader sockets/DNS/spawn/signal/cancellation unvalidated.",
+    "Focused empty guest filesystems only; no partial/canonical image, full product, successor-ABI campaign or overall suite. Kernel/libc/SDK/host code and ABI55 history unchanged.",
+    "Raw Node projection omits only redundant stdoutBytes/stderrBytes; hashes bind retained complete reports."
+  ],
+  "next": "Implement actual task_queue/async callback-scope ownership over the engine job queue and libuv-backed environment while executing original startup bodies; continue catalog and retain eventual user review gate."
+}
