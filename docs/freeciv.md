@@ -219,9 +219,7 @@ This aligns the initial scene and window dimensions. The portable Freeciv
 correction should respect the actual configured window size at startup.
 Handling later compositor-driven changes, including Sway adding or removing
 neighboring tiles, is separate work and remains unvalidated. The wrapper
-continues to preserve ordinary Wayland windowed launches. See the
-[Cage follow-up handoff](graphics/cage-reliability-2026-11.md#follow-up-handoff--2026-11-11)
-for the native control and the remaining scope.
+continues to preserve ordinary Wayland windowed launches.
 
 ## Display and input ownership
 

@@ -11,7 +11,7 @@ release scope: selected graphical demos generally work, while known
 defects and full validation remain explicit follow-ups. The combined
 normal-built shipment checkpoint passed 23 of 24 graphical cases; WebKit
 Cage startup failed before rendering and its isolated control reproduced
-the failure. The [Cage reliability investigation](graphics/cage-reliability-2026-11.md)
+the failure. The [Cage follow-up](https://github.com/Automattic/kandelo/pull/1678)
 attributes that startup failure to the test's ephemeral storage context and
 records a separate terminal visibility/resize ordering repair. The original
 failures remain release evidence. The implemented ownership and publication
@@ -7178,7 +7178,7 @@ restarts. The retained terminal fits after observed visibility and the
 following animation frame, allowing xterm's hidden renderer to resume
 before it measures the new scroll range. Each terminal cancels its own
 visibility observer and scheduled fit when disposed. See the
-[reliability report](graphics/cage-reliability-2026-11.md) for scope and
+[Cage follow-up PR](https://github.com/Automattic/kandelo/pull/1678) for scope and
 current validation.
 
 ## Wayland tiling compositor (`sway`)

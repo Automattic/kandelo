@@ -28179,7 +28179,7 @@ not browser repair, complete B1, a performance improvement or native feel.
 
 ## Cage reliability follow-up (R1, 2026-11-09)
 
-The [bounded reliability report](cage-reliability-2026-11.md) preserves the
+The [bounded reliability report](https://github.com/Automattic/kandelo/blob/8e627db8f83a6544669671786923397fb55030db/docs/graphics/cage-reliability-2026-11.md) preserves the
 original 23/24 shipment and failed WebKit control while attributing that
 startup rejection to OPFS root access in the test's ephemeral context,
 before any guest starts. Cage now uses the existing persistent-page
@@ -28244,7 +28244,7 @@ of copies and 1.16s inside imported-buffer synchronization in the 4K case.
 WebKit also degrades with output size. The owning path synchronizes mapped
 BOs on ready waits and receives, coupling pointer traffic to full-image
 comparisons/imports in the kernel worker that also services cursor/vblank
-presentation. No performance correction has been applied. The [R1 report](cage-reliability-2026-11.md#cursor-slowness-reproduced-on-the-normal-preview)
+presentation. No performance correction has been applied. The [R1 report](https://github.com/Automattic/kandelo/blob/8e627db8f83a6544669671786923397fb55030db/docs/graphics/cage-reliability-2026-11.md#cursor-slowness-reproduced-on-the-normal-preview)
 records raw scope, observer controls, failed diagnostic attempts and the
 unpartitioned startup time. Functional green does not establish acceptable
 interactive latency; R1 and draft PR #1678 remain open. Broader campaign
@@ -28272,7 +28272,7 @@ capped mode is 1280×684. Chromium's cursor observer records 32 paints during
 WebKit records 39 versus 15, with different actual event-delivery durations.
 These are scoped cursor callbacks with intentionally different guest pixel
 counts, not equal-quality renderer speedups or native-display latency.
-The [R1 follow-up report](cage-reliability-2026-11.md#modest-default-display-requested-by-the-maintainer)
+The [R1 follow-up report](https://github.com/Automattic/kandelo/blob/8e627db8f83a6544669671786923397fb55030db/docs/graphics/cage-reliability-2026-11.md#modest-default-display-requested-by-the-maintainer)
 records exact products, commands, observer limits and remaining checks.
 The old preview remains preserved separately, the earlier unexplained
 WebKit audio retirement stays open, and the PR remains a draft. Full new
@@ -28338,7 +28338,7 @@ historical WebKit corrupted-terminal failure. Current full memory/desktop
 and paired performance validation is unfinished; the PR remains a draft.
 Maintainer Firefox feedback accepts improved responsiveness and game
 performance, while the remaining Cage/Sway sharpness difference is follow-up
-work. The [R1 report](cage-reliability-2026-11.md#current-integration-after-the-macos-update)
+work. The [R1 report](https://github.com/Automattic/kandelo/blob/8e627db8f83a6544669671786923397fb55030db/docs/graphics/cage-reliability-2026-11.md#current-integration-after-the-macos-update)
 records the current image/kernel identities and separates earlier results.
 
 
@@ -28366,4 +28366,30 @@ detached-byte allocation OOM in a different kernel operation, followed by
 fatal failure. Earlier successful controls remain mixed outcomes. The
 resource cause and complete paired performance validation remain open;
 no browser defect, green allowance or complete R1 acceptance is inferred.
-See the [current repair evidence](cage-reliability-2026-11.md#browser-shutdown-cancellation-and-fixture-corrections--2026-11-10).
+See the [current repair evidence](https://github.com/Automattic/kandelo/blob/8e627db8f83a6544669671786923397fb55030db/docs/graphics/cage-reliability-2026-11.md#browser-shutdown-cancellation-and-fixture-corrections--2026-11-10).
+
+
+## Bounded Cage delivery and remaining work — 2026-11-11
+
+[PR #1678](https://github.com/Automattic/kandelo/pull/1678) contains the bounded
+Cage responsiveness and reliability increment. Against pinned develop
+`200d7bbfacdb`, the canonical graph passes 278/278, memory 18/18,
+prepared-host checks 257/257 and actual Steel Sky under Cage/Sway 6/6 across
+three engines. Desktop is 118/120, including Cage 15/15 and Sway 12/12; the
+two archive-import failures also reproduce on the current control. Program
+ABI 56 and host adapter 6 are unchanged. The PR records exact validation,
+benchmark context and remaining risks.
+
+Node pipe throughput penalties of 10.6–13.2% and getpid latency increases of
+6.4–6.6% remain unexplained review risks. Cursor observations qualify 11/12
+cases, including all six candidate cases; the large Chromium baseline is
+unqualified. Broad performance neutrality, complete R1, native Safari and
+full graphics/POSIX conformance are not claimed.
+
+Follow-up work includes Cage text sharpness relative to Sway, the portable
+[Freeciv window-size correction](../freeciv.md#known-wayland-window-size-limitation),
+and separate live Sway resize coverage. The current Cage profile uses one
+guest pixel per CSS pixel; its HiDPI tradeoff is documented in
+[browser support](../browser-support.md). The separate graphics campaign plan
+remains on branch `brandonpayton/graphics-campaign-plan`; this bounded
+delivery does not activate B2–B6/C1–C3.
