@@ -1,5 +1,11 @@
 # Package And Build Contract
 
+Keep port-specific usage, build notes, patches, workarounds, and limits in
+`packages/registry/<name>/README.md`. Follow the
+[package documentation convention](../repository-organization.md#package-layout)
+for the boundary between package notes, shared platform guides, and local
+investigation records.
+
 Packages are consumers of the platform and distribution units for reproducible
 artifacts. A package build should exercise the SDK, libc, resolver, sysroot,
 VFS image tooling, fork instrumentation, and kernel assumptions through the
