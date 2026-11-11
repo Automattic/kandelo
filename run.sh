@@ -584,9 +584,13 @@ bootstrap_target() {
         return 1
     }
     local_build_events_env
+    # Package builds share cache keys with `./run.sh setup`, so they must see
+    # its PATH: the declared tool set, without tools that only reach the dev
+    # shell as another package's dependencies (scripts/setup.sh).
     bash "$REPO_ROOT/scripts/dev-shell.sh" \
         ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
-        "$xtask" bootstrap "$target" "$@"
+        bash -c 'export PATH="$KANDELO_DEV_SHELL_TOOL_PATH" && exec "$@"' \
+        kandelo-bootstrap "$xtask" bootstrap "$target" "$@"
 }
 
 # local_build_events_env: set LOCAL_BUILD_EVENTS_ENV to an `env` prefix that
@@ -2757,9 +2761,11 @@ cmd_partial() {
         exit 1
     fi
     local_build_events_env
+    # The declared tool set, as for setup and bootstrap_target.
     exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
         ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
-        bash -c 'host_target="$(rustc -vV | sed -n "s/^host: //p")" &&
+        bash -c 'export PATH="$KANDELO_DEV_SHELL_TOOL_PATH" &&
+            host_target="$(rustc -vV | sed -n "s/^host: //p")" &&
             exec cargo run -q -p xtask --target "$host_target" -- partial-image "$@"' \
         partial "$@"
 }

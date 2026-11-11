@@ -292,6 +292,10 @@
             # coreutils.wasm running inside Kandelo — help2man only
             # reformats already-faithful text into troff.
             pkgs.help2man
+            # libxslt provides `xsltproc`, which scripts/xmlto-man.sh runs
+            # over pinned DocBook XSL to render the DocBook man pages of
+            # dbus-docs and git-docs, as upstream's `xmlto man` does.
+            pkgs.libxslt
             # libfaketime provides `faketime`, which the determinism check
             # (scripts/check-determinism.sh → xtask check-determinism) uses to
             # run its two builds under distinct wall clocks. Without it the two

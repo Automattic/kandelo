@@ -13,10 +13,15 @@
 # raw UTF-8. It writes the page into the current directory. This does the
 # same, with DocBook XSL at $DOCBOOK_XSL. As with xmlto, the DocBook DTD a
 # page declares is read only if XML_CATALOG_FILES resolves it (--nonet);
-# a page that uses the DTD's entities needs it.
+# a page that uses the DTD's entities needs it. xsltproc is flake.nix's
+# pinned libxslt.
 set -euo pipefail
 
 : "${DOCBOOK_XSL:?xmlto-man.sh: set DOCBOOK_XSL to the DocBook XSL tree}"
+command -v xsltproc >/dev/null || {
+    echo "xmlto-man.sh: xsltproc is not on PATH (flake.nix provides it)" >&2
+    exit 2
+}
 layers=() params=() input="" format=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
