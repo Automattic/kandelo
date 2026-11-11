@@ -1,0 +1,27 @@
+kind = "program"
+name = "patch-docs"
+version = "2.8"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual page for the `patch` package (GNU patch).
+# The source, SHA-256 and version are the `patch` package's own, so the
+# page describes the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/patch/patch-2.8.tar.xz"
+sha256 = "f87cee69eec2b4fcbf60a396b030ad6aa3415f192aa5f7ee84cad5e11f7f5ae3"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/patch.git/tree/COPYING?h=v2.8"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/patch-docs/build-patch-docs.sh"
+
+[[outputs]]
+name = "patch-docs"
+wasm = "patch-docs.zip"
+fork_instrumentation = "disabled"

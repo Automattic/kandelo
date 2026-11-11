@@ -149,9 +149,12 @@ cross build:
 - The guest compiler is `cc` (`c++`, `wasm32posix-ar`, ...). The build
   image is the rootfs with every tool resident (`make`, `m4`, `awk`, ...);
   check with `command -v` in the guest. `yacc` is Berkeley yacc and `lex`
-  is flex, without their `-ly`/`-ll` libraries. Several other base tools
-  from `posix-utils-lite` are placeholders that report success without
-  doing the work (`patch`, `compress`, `iconv`, `ed`, ...): see
+  is flex, without their `-ly`/`-ll` libraries; `patch` is GNU patch; `ar`,
+  `ranlib`, `nm`, `strip`, `objdump` and the other binary tools are LLVM's
+  (there is no plain `readelf`; use `llvm-readobj`). Several other base
+  tools from `posix-utils-lite` are placeholders that report success
+  without doing the work (`compress`,
+  `iconv`, `ed`, ...): see
   "Base-image utilities that are placeholders" in `docs/posix-status.md`
   before relying on one in a build.
 - Dependencies are `--input` mounts (`/deps/<name>`), so paths written into

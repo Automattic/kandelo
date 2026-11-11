@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Cross-build clang, wasm-ld, and llvm-{ar,ranlib,nm} to wasm32 for Kandelo.
+# Cross-build clang, wasm-ld, and the LLVM binary tools (llvm-ar, -ranlib,
+# -nm, -objdump, -objcopy, -readobj, -size, -strings, -cxxfilt, -symbolizer)
+# to wasm32 for Kandelo.
 # Build in resolver-owned roots using the worktree SDK and declared libcxx.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -170,35 +172,40 @@ cmake -G "Unix Makefiles" -S "$LLVM_SRC_DIR/llvm" -B "$BUILD_DIR" \
   -DBUILD_SHARED_LIBS=OFF -DCLANG_ENABLE_ARCMT=OFF \
   -DCLANG_ENABLE_STATIC_ANALYZER=OFF -DCLANG_ENABLE_PLUGIN_SUPPORT=OFF
 
+# The LLVM binary tools, each one output. Several answer to more than one
+# name by argv[0], as their LLVM builds' own symlinks do: llvm-objcopy runs
+# as strip, llvm-readobj as readelf, llvm-symbolizer as addr2line. Images
+# install those names as symlinks to the one output.
+LLVM_TOOLS=(
+  llvm-ar llvm-ranlib llvm-nm llvm-objdump llvm-objcopy llvm-readobj
+  llvm-size llvm-strings llvm-cxxfilt llvm-symbolizer
+)
+
 echo "==> Building clang tools..."
 # Default to -j1: the final link of the ~44 MB clang.wasm binary is
 # memory-hungry, and parallel LLVM links at higher -j can OOM the host.
 # Override with KANDELO_CLANG_BUILD_JOBS on machines with enough memory.
-cmake --build "$BUILD_DIR" --target clang lld llvm-ar llvm-ranlib llvm-nm \
+cmake --build "$BUILD_DIR" --target clang lld "${LLVM_TOOLS[@]}" \
   -j"${KANDELO_CLANG_BUILD_JOBS:-1}"
 
-# --- Install the five declared outputs ---
+# --- Install the declared outputs ---
 # The Kandelo CMake platform supplies the .wasm executable suffix. LLVM
 # emits version/driver aliases as symlinks. install_local_binary requires regular
 # non-symlink files, so dereference each into a staging dir with `cp -L`
 # first (llvm-ar/llvm-nm are already regular; cp -L copies them intact).
 STAGE_DIR="$WORK_DIR/stage-bin"
 mkdir -p "$STAGE_DIR"
-cp -L "$BUILD_DIR/bin/clang.wasm"       "$STAGE_DIR/clang.wasm"
-cp -L "$BUILD_DIR/bin/wasm-ld.wasm"     "$STAGE_DIR/wasm-ld.wasm"
-cp -L "$BUILD_DIR/bin/llvm-ar.wasm"     "$STAGE_DIR/llvm-ar.wasm"
-cp -L "$BUILD_DIR/bin/llvm-ranlib.wasm" "$STAGE_DIR/llvm-ranlib.wasm"
-cp -L "$BUILD_DIR/bin/llvm-nm.wasm"     "$STAGE_DIR/llvm-nm.wasm"
+for tool in clang wasm-ld "${LLVM_TOOLS[@]}"; do
+  cp -L "$BUILD_DIR/bin/$tool.wasm" "$STAGE_DIR/$tool.wasm"
+done
 
 # Binaryen's recursive StackIR writer overflows macOS's small native worker
 # stacks on these instrumented LLVM functions. One core runs its full O2
 # post-pass on the main thread, without disabling optimization or validation.
 export BINARYEN_CORES=1
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary clang "$STAGE_DIR/clang.wasm"       clang.wasm
-install_local_binary clang "$STAGE_DIR/wasm-ld.wasm"     wasm-ld.wasm
-install_local_binary clang "$STAGE_DIR/llvm-ar.wasm"     llvm-ar.wasm
-install_local_binary clang "$STAGE_DIR/llvm-ranlib.wasm" llvm-ranlib.wasm
-install_local_binary clang "$STAGE_DIR/llvm-nm.wasm"     llvm-nm.wasm
+for tool in clang wasm-ld "${LLVM_TOOLS[@]}"; do
+  install_local_binary clang "$STAGE_DIR/$tool.wasm" "$tool.wasm"
+done
 
 echo "==> clang package build complete."

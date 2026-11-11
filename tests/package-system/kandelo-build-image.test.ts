@@ -1,9 +1,15 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
-import { installGuestToolchain } from "../../images/vfs/scripts/build-kandelo-build-image";
+import { LLVM_BINARY_TOOL_SPECS } from "../../images/vfs/lib/init/shell-binaries";
+import {
+  installGuestToolchain,
+  installLlvmBinaryTools,
+} from "../../images/vfs/scripts/build-kandelo-build-image";
 import { writeVfsBinary } from "../../host/src/vfs/image-helpers";
 
 const text = (value: string) => new TextEncoder().encode(value);
@@ -40,6 +46,7 @@ describe("kandelo-build-image package", () => {
     expect(dependsOn("packages/registry/kandelo-build-image/package.toml")).toEqual([
       ...dependsOn("packages/registry/rootfs/package.toml"),
       "kandelo-sdk-browser-bundle@21.1.7",
+      "clang@21.1.7",
     ]);
   });
 });
@@ -77,5 +84,51 @@ describe("installGuestToolchain", () => {
       return fs.exportImage();
     };
     expect(build()).toEqual(build());
+  });
+});
+
+describe("installLlvmBinaryTools", () => {
+  function clangOutputs(): string {
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-clang-outputs-"));
+    for (const spec of LLVM_BINARY_TOOL_SPECS) {
+      writeFileSync(join(dir, basename(spec.resolverPath)), `${spec.id} bytes`);
+    }
+    return dir;
+  }
+
+  it("replaces the rootfs placeholders with the LLVM tools and their names", () => {
+    const fs = eagerRootfs();
+    // posix-utils-lite's stand-ins, as the eager rootfs installs them.
+    for (const name of ["ar", "nm", "strip", "strings"]) {
+      writeVfsBinary(fs, `/usr/bin/${name}`, text("posix-utils-lite"), 0o755);
+    }
+    const dir = clangOutputs();
+    try {
+      installLlvmBinaryTools(fs, dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    const read = (path: string) => new TextDecoder().decode(fs.readFile(path));
+    expect(read("/usr/bin/ar")).toBe("llvm-ar bytes");
+    expect(read("/usr/bin/ranlib")).toBe("llvm-ar bytes");
+    expect(read("/usr/bin/nm")).toBe("llvm-nm bytes");
+    expect(read("/usr/bin/strip")).toBe("llvm-objcopy bytes");
+    expect(read("/usr/bin/strings")).toBe("llvm-strings bytes");
+    expect(read("/usr/bin/llvm-readelf")).toBe("llvm-readobj bytes");
+    expect(() => fs.lstat("/usr/bin/readelf")).toThrow();
+    expect(read("/usr/bin/addr2line")).toBe("llvm-symbolizer bytes");
+    expect(fs.readlink("/usr/bin/objdump")).toBe("/usr/bin/llvm-objdump");
+    expect(fs.stat("/usr/bin/llvm-objdump").mode & 0o7777).toBe(0o755);
+  });
+
+  it("refuses to replace a base file that is not a named placeholder", () => {
+    const fs = eagerRootfs();
+    writeVfsBinary(fs, "/usr/bin/objdump", text("someone else's objdump"), 0o755);
+    const dir = clangOutputs();
+    try {
+      expect(() => installLlvmBinaryTools(fs, dir)).toThrow(/\/usr\/bin\/objdump/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -95,6 +95,7 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
   ["nethack-docs", "share/man/man6/nethack.6"],
   ["node-docs", "share/man/man1/node.1"],
   ["npm-docs", "share/man/man1/npm.1"],
+  ["patch-docs", "share/man/man1/patch.1"],
   ["perl-docs", "share/man/man1/perl.1"],
   ["php-docs", "share/man/man1/php.1"],
   ["redis-docs", "share/man/man1/redis-cli.1"],

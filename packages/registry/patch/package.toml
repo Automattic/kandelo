@@ -1,0 +1,26 @@
+kind = "program"
+name = "patch"
+version = "2.8"
+# GNU patch: applies diff(1) output to original files. It replaces the
+# posix-utils-lite placeholder, which printed `patching file X` and changed
+# nothing. patch runs ed(1) through system(3) for ed-style diffs, so it is
+# fork-instrumented.
+kernel_abi = 56
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/patch/patch-2.8.tar.xz"
+sha256 = "f87cee69eec2b4fcbf60a396b030ad6aa3415f192aa5f7ee84cad5e11f7f5ae3"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/patch.git/tree/COPYING?h=v2.8"
+
+[build]
+script_path = "packages/registry/patch/build-patch.sh"
+
+[[outputs]]
+name = "patch"
+wasm = "patch.wasm"
+fork_instrumentation = "auto"

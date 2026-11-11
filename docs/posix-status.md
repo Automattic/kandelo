@@ -641,11 +641,22 @@ The base rootfs installs a compact utility set, `posix-utils-lite`
 package provides yet. Several of its programs are placeholders that do not
 do what the utility is specified to do, and most still exit 0. Do not rely
 on them in builds or scripts; a real package should replace each one, as
-Berkeley yacc (`byacc`) and flex now replace its `yacc` and `lex`.
+Berkeley yacc (`byacc`), flex and GNU patch now replace its `yacc`, `lex`
+and `patch`.
+
+The shell image, every image built on it, and the build image replace its
+`ar`, `nm`, `strip` and `strings` with LLVM's (`llvm-ar`, `llvm-nm`,
+`llvm-objcopy` running as `strip`, `llvm-strings`, from the `clang`
+package) and add `ranlib`, `objdump`, `objcopy`, `llvm-readobj` (also
+`llvm-readelf`), `size`, `c++filt` and `addr2line`. There is no plain
+`readelf`: Kandelo programs are Wasm, and llvm-readobj answers ELF
+questions such as `readelf -d` (NEEDED, SONAME) on Wasm with empty output
+and exit 0, so a script that runs `readelf` would conclude a program has
+no dependencies. The rows below for those four describe images that carry
+only the base rootfs.
 
 | Utility | What it actually does |
 |---|---|
-| `patch` | Prints `patching file X` for each file a unified diff names, changes nothing, and exits 0. |
 | `compress`, `uncompress` | Copy the bytes unchanged: `compress f` writes an uncompressed `f.Z`. |
 | `iconv` | Copies its input; `-f` and `-t` are ignored. |
 | `msgfmt` | Writes the source text behind a comment line, not a binary message catalog. |
@@ -656,10 +667,16 @@ Berkeley yacc (`byacc`) and flex now replace its `yacc` and `lex`.
 | `ipcrm` | Refuses, saying System V IPC removal is unavailable, although it is implemented. |
 | `xgettext` | Extracts every string literal, not only the ones passed to `gettext` calls. |
 | `ar` | `r` and `q` rewrite the archive with only the named members (existing members are lost); writes no symbol index. |
+| `strip` | Removes every Wasm custom section, including the ABI section the host requires, so a stripped program no longer loads. |
+| `strings` | Ignores its options except `-n`; `-t` prints no offsets and `-a` changes nothing. |
 | `uuencode`, `uudecode` | `uuencode` always writes base64 (as with `-m`); `uudecode` decodes only base64. |
 | `cflow`, `cxref` | List function definitions found by a line pattern; no call graph and no cross-reference. |
 | `more` | Copies its input without paging. |
 | `getconf` | Prints built-in fallback values when `sysconf` fails. |
+
+GNU patch runs `/usr/bin/ed` for ed-style diffs (`patch -e`, or a diff
+`patch` recognizes as an ed script), so those still go through the `ed`
+placeholder above; unified and context diffs do not use it.
 
 The real `yacc` and `lex` come without their libraries: there is no
 `-ly` (POSIX `main` and `yyerror`) or `-ll`/`-lfl` (`main` and `yywrap`) in

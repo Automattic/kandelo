@@ -34,6 +34,7 @@ import {
 import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazySpecDependency,
+  shellLazySpecDisplaces,
 } from "../lib/init/shell-binaries";
 import {
   NETHACK_PLAYGROUND,
@@ -1226,6 +1227,44 @@ function optionalLazyIdentity(
  * actually happened rather than silently accepting either an unrelated
  * change or no change at all.
  */
+/**
+ * The base-image placeholders the overlay displaces (a lazy-binary spec's
+ * `displaces`), with their rootfs lazy identities. Only placeholders whose
+ * replacing package the shell includes are displaced; the rest must survive
+ * unchanged like any other rootfs file.
+ */
+function displacedPlaceholderIdentities(
+  fs: KandeloImageFs,
+  includes: (dependency: string) => boolean,
+): { path: string; identity: LazyIdentity }[] {
+  const displaced: { path: string; identity: LazyIdentity }[] = [];
+  for (const spec of SHELL_LAZY_BINARY_SPECS) {
+    if (!includes(shellLazySpecDependency(spec))) continue;
+    for (const path of shellLazySpecDisplaces(spec)) {
+      const identity = optionalLazyIdentity(fs, path);
+      if (identity !== null) displaced.push({ path, identity });
+    }
+  }
+  return displaced;
+}
+
+/**
+ * Each displaced placeholder's path must now name the replacing program's
+ * alias, not the placeholder: the overlay removed the placeholder so the
+ * replacement's symlink could claim the path.
+ */
+function requirePlaceholdersSuperseded(
+  fs: KandeloImageFs,
+  displaced: readonly { path: string; identity: LazyIdentity }[],
+): void {
+  for (const { path, identity } of displaced) {
+    const stat = fs.lstat(path);
+    if ((stat.mode & FILE_TYPE_MASK) !== SYMBOLIC_LINK_MODE || sameLazyIdentity(stat, identity)) {
+      throw new Error(`${path} still resolves to the posix-utils-lite placeholder`);
+    }
+  }
+}
+
 function requireManSupersededByMandoc(
   fs: KandeloImageFs,
   priorIdentity: LazyIdentity | null,
@@ -1716,9 +1755,13 @@ export async function buildSourceRootfsShellImage(
   const priorManIdentity = includes("mandoc-browser-bundle")
     ? optionalLazyIdentity(fs, "/usr/bin/man")
     : null;
+  // The same for the placeholders real programs displace (ar, nm, strip and
+  // strings, replaced by the LLVM binary tools).
+  const displacedPlaceholders = displacedPlaceholderIdentities(fs, includes);
   const omittedLazyIdentities = [
     sourceBash.identity,
     ...(priorManIdentity ? [priorManIdentity] : []),
+    ...displacedPlaceholders.map(({ identity }) => identity),
   ];
   const unrelatedLazyBefore = lazyRecords(fs, omittedLazyIdentities);
 
@@ -1772,6 +1815,7 @@ export async function buildSourceRootfsShellImage(
     "production shell overlay",
   );
   requireManSupersededByMandoc(fs, priorManIdentity);
+  requirePlaceholdersSuperseded(fs, displacedPlaceholders);
   requireCompleteProductShellContract(fs, selection);
 
   ensureDirRecursive(fs, "/usr/bin");
