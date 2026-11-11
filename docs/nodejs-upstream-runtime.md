@@ -17,6 +17,9 @@ with protected state, passes native configuration and reaches the missing
 original async-hooks module, native constants initializer and engine type
 predicates, native options, the original string-decoder binding and native process
 version metadata and complete original native ICU through real backends.
+The original native tracing agent and its standalone library are now linked
+into the engine and have focused four-host controls; their JS binding and
+engine intrinsics remain missing.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -1153,7 +1156,7 @@ program/kernel bytes. Two compile-only checks verify actual target identity and
 precedence over the existing embedding Linux macro. The initial selector was
 placed in the feature-header block; the new check exposed that mistake, and the
 corrected OS detector now takes precedence. Relocated CMake and pkg-config consumers pass separately
-on Node:54 selected case observations across six guest processes. The first
+on Node: 54 selected case observations across six guest processes. The first
 relocation check exposed libuv's installed pkg-config file retaining its original
 cache prefix. Revision 4 fixes that metadata; its runtime archive is byte-identical
 to revision 3. The initial compiler-driver error, unsupported target/missing Abseil
@@ -1161,9 +1164,9 @@ probe, incomplete private declarations and relocation failure remain retained.
 The first browser run retained storage because WebKit was still running; the
 final run reports a separate Firefox profile-cleanup permission warning.
 
-This library is not linked into SpiderMonkey yet. Original Node agent/writer/
-buffer classes, trace binding, engine intrinsics, per-environment handler and
-native external byte ownership remain incomplete. The original controller uses
+At this standalone checkpoint the library was not linked into SpiderMonkey.
+Original Node agent/writer/buffer classes, trace binding, engine intrinsics,
+per-environment handler and native external byte ownership were incomplete. The original controller uses
 process-global category storage, which must outlive every future guest JS view.
 Broader file/rotation/error, clocks, locking, cancellation, OOM/security and
 process/worker teardown behavior remain unproven. The existing engine was not
@@ -1172,3 +1175,64 @@ bootstrap still stops on trace_events and stack-limit policy on mksnapshot.
 No product images, full products, successor-ABI builds or overall suites ran.
 See [trace-events-contracts.json](../tests/nodejs/upstream/trace-events-contracts.json)
 and [v8-tracing-component-check.json](../tests/nodejs/upstream/v8-tracing-component-check.json).
+
+## Original native tracing agent integration
+
+The revision-36 engine links the resolved standalone tracing library and six
+complete original Node translation units: `agent.cc`, `agent_legacy.cc`,
+`node_trace_buffer.cc`, `node_trace_writer.cc`, `traced_value.cc` and
+`trace_event_helper.cc`. The import now contains 549 authenticated files;
+all 532 prior records and all 443 JavaScript sources remain unchanged. The
+native `node_trace_events.cc` and V8 `builtins-trace.cc` are imported for the
+next binding step, but are not compiled by this checkpoint.
+
+One process owner supplies actual dependency versions from the same native
+provider as `process.versions`, and tracing configuration from the complete
+original options parser. It never reads mutable JavaScript version properties.
+The source agent owns its real libuv worker, buffer, asynchronous writer and
+guest trace files. An explicit main-thread hook removes native observers and
+destroys the agent before destroying the JavaScript context, so finalizers
+cannot become responsible for joining a tracing worker. The process owner
+cannot be recreated after shutdown. Permission-policy adoption and changes to
+the process tracing profile remain explicit errors.
+
+Nine agent controls pass on Node, Chromium, Firefox and WebKit with identical
+engine/kernel bytes. They read actual guest trace files and cover metadata
+independent of mutable JS properties, category selection, moving GC, explicit
+shutdown, natural exit, quit status, uncaught errors, immutable options and
+failed-realm/permission admission. The final engine also passes all 310 prior
+Node cases: 346 selected engine observations across 128 guest processes,
+including 27 expected fatal assertion exits. Three pinned native CLI controls
+independently check trace metadata and exit/error flushing. These are native
+agent/engine controls; they do not execute the original trace-events binding.
+
+Failed attempts remain recorded. The first build exposed a C++20 header leaking
+into Mozilla's C++17 shell; the shutdown-only header fixes that boundary. The
+next build exposed include-order errors. Initial fixtures wrote to the read-only
+guest root, received EROFS and timed out during writer shutdown. The corrected
+fixtures explicitly select writable guest `/tmp`. File-open failure handling
+remains an open investigation, with its timeout and syscall evidence retained.
+Later checks caught the adapter's hardcoded platform label and incorrect test
+snapshot boolean: tracing now reads actual guest `uname`, and the test property
+uses a real JS boolean. Two fixture assumptions about repeated/empty options
+were corrected to match the actual parser. The final browser run reports a
+separate Firefox profile-cleanup permission warning; guest diagnostics and
+browser errors are empty.
+
+The original V8 trace builtin preserves lone UTF-16 surrogates as WTF-8.
+SpiderMonkey's usual UTF-8 helper replaces them. A separate guest probe compiles
+the complete original V8 encoder header and passes six encoding controls;
+three actual pinned native builtin/file-byte checks confirm surrogate encoding.
+This supplies a verified primitive for the next binding step, but is not yet
+adopted in the engine. No upstream algorithm was extracted or rewritten.
+
+This integration does not provide the original trace-events binding, V8 extra
+functions, `CategorySet` constructor, external category-byte views or the
+per-environment JavaScript observer. Principal upstream bootstrap still stops
+on `trace_events`; stack-limit policy still stops on `mksnapshot`. The broader
+backend catalog, public module compatibility and genuine CJS/ESM startup remain
+open.
+
+No product images, full products, successor-ABI builds or overall suites ran.
+See [trace-agent-engine-check.json](../tests/nodejs/upstream/trace-agent-engine-check.json)
+for exact inputs, artifacts, checks and retained failures.

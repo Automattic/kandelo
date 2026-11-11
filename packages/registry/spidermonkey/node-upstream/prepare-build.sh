@@ -49,6 +49,19 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/icu-upstream.cpp" \
     "$node_consumer/encoding-upstream.cpp" \
     "$node_consumer/string-bytes-upstream.cpp" \
+    "$node_consumer/trace-agent-native-api.h" \
+    "$node_consumer/trace-agent-platform.cpp" \
+    "$node_consumer/trace-agent-upstream.cpp" \
+    "$node_consumer/trace-agent-legacy-upstream.cpp" \
+    "$node_consumer/trace-node-trace-buffer-upstream.cpp" \
+    "$node_consumer/trace-node-trace-writer-upstream.cpp" \
+    "$node_consumer/trace-traced-value-upstream.cpp" \
+    "$node_consumer/trace-trace-event-helper-upstream.cpp" \
+    "$node_consumer/trace-native.cpp" \
+    "$node_consumer/trace-native.h" \
+    "$node_consumer/trace-shutdown.h" \
+    "$node_consumer/trace-agent-test-api.cpp" \
+    "$node_consumer/trace-agent-test-api.h" \
     "$node_consumer/options.cpp" \
     "$node_consumer/options.h" \
     "$node_consumer/options-native-api.h" \
@@ -91,6 +104,9 @@ python3 "$repo_root/scripts/prepare-nodejs-codecs.py" \
 python3 "$repo_root/scripts/prepare-nodejs-options.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/options-upstream"
+python3 "$repo_root/scripts/prepare-nodejs-tracing.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$shell_sources/tracing-upstream"
 python3 "$repo_root/scripts/prepare-nodejs-constants.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/constants-upstream" \

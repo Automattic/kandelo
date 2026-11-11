@@ -195,6 +195,17 @@ fi
 }
 export WASM_POSIX_DEP_LIBUV_DIR="$LIBUV_PREFIX"
 
+V8_TRACING_PREFIX="${WASM_POSIX_DEP_V8_TRACING_DIR:-}"
+if [ -z "$V8_TRACING_PREFIX" ]; then
+    echo "==> Resolving standalone V8 tracing via cargo xtask build-deps..."
+    V8_TRACING_PREFIX="$(resolve_dep v8-tracing)"
+fi
+[ -f "$V8_TRACING_PREFIX/lib/libv8-tracing.a" ] && [ -f "$V8_TRACING_PREFIX/include/libplatform/v8-tracing.h" ] || {
+    echo "ERROR: standalone V8 tracing resolve missing archive/headers at $V8_TRACING_PREFIX" >&2
+    exit 1
+}
+export WASM_POSIX_DEP_V8_TRACING_DIR="$V8_TRACING_PREFIX"
+
 NBYTES_PREFIX="${WASM_POSIX_DEP_NBYTES_DIR:-}"
 if [ -z "$NBYTES_PREFIX" ]; then NBYTES_PREFIX="$(resolve_dep nbytes)"; fi
 SIMDUTF_PREFIX="${WASM_POSIX_DEP_SIMDUTF_DIR:-}"
@@ -213,7 +224,7 @@ if [ "$RESOLVER_BUILD" -eq 1 ]; then
     export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
     SYSROOT="$(
         kandelo_package_prepare_private_sysroot spidermonkey "$SYSROOT" \
-            libcxx openssl zlib libzstd libuv nbytes simdutf
+            libcxx openssl zlib libzstd libuv nbytes simdutf v8-tracing
     )"
     export WASM_POSIX_SYSROOT="$SYSROOT"
 fi
@@ -420,8 +431,8 @@ bash "$SCRIPT_DIR/node-upstream/prepare-build.sh" \
     "$REPO_ROOT" "$SRC_DIR" "$OBJ_DIR" "$MACOS_SDK_DIR" "$ZLIB_PREFIX/include" "$ZSTD_PREFIX/include"
 
 export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -DUV_PLATFORM_KANDELO=1"
-export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -DUV_PLATFORM_KANDELO=1"
-export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a $LIBUV_PREFIX/lib/libuv.a $NBYTES_PREFIX/lib/libnbytes.a $SIMDUTF_PREFIX/lib/libsimdutf.a -lpthread -Wl,-z,stack-size=16777216"
+export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -I$V8_TRACING_PREFIX/include -DUV_PLATFORM_KANDELO=1 -DV8_PLATFORM_KANDELO=1"
+export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a $V8_TRACING_PREFIX/lib/libv8-tracing.a $LIBUV_PREFIX/lib/libuv.a $NBYTES_PREFIX/lib/libnbytes.a $SIMDUTF_PREFIX/lib/libsimdutf.a -lpthread -Wl,-z,stack-size=16777216"
 
 if [ -f "$OBJ_DIR/config.status" ] && {
     ! grep -q 'getrandom_backend' "$OBJ_DIR/config.status" ||

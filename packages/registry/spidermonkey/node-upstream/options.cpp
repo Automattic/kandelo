@@ -356,4 +356,14 @@ bool ConfigureOptions(JSContext* cx,JS::HandleObject realm,JS::HandleObject argu
 void CaptureOptionsInvocation(int argc,char** argv,bool mode) {
   invocation.clear(); for (int i=0;i<argc;i++) invocation.emplace_back(argv[i]); nodeInvocation=mode;
 }
+bool ReadNativeTracingConfiguration(JSContext* cx,JS::HandleObject realm,
+                                    NativeTracingConfiguration* result) {
+  if (!CheckRealmLibraryActive(cx,realm) || !Data(cx,realm)) return false;
+  n::Mutex::ScopedLock lock(n::per_process::cli_options_mutex);
+  const auto& options=n::per_process::cli_options;
+  result->filePattern=options->trace_event_file_pattern;
+  result->categories=options->trace_event_categories;
+  result->permissionsEnabled=options->per_isolate->per_env->permission;
+  return true;
+}
 }

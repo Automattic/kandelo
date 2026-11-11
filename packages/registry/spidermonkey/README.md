@@ -36,7 +36,7 @@ HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
 cargo run -p xtask --target "$HOST_TRIPLE" -- build-deps resolve spidermonkey
 ```
 
-## Upstream Node compiler foundation (source candidate)
+## Upstream Node runtime foundations
 
 The upstream-first restart imports unchanged Node core JavaScript under
 `third_party/nodejs/`. The recipe now stages the immutable registry and native
@@ -44,8 +44,11 @@ compiler consumer into the actual Mozilla shell source list. It builds the
 logical wrapper metadata with original Node C++ code and verifies source hashes
 before generating the private include. The new host `clang++` input is declared.
 
-This wiring has not been built as a guest package. The existing compatibility
-bootstrap remains active; no upstream Node bootstrap, complete module support
-or four-host startup is claimed. No full product rebuild or ABI change is part
-of this source change. See `docs/nodejs-upstream-runtime.md` and the per-family
-implementation ledger for the remaining state, binding and engine work.
+The guest package builds and runs focused native-binding controls on Node,
+Chromium, Firefox and WebKit. The engine now links the original native tracing
+agent as a prerequisite for the missing `trace_events` binding. The existing
+compatibility bootstrap remains active; genuine upstream startup, complete
+module support and separate user CJS/ESM entrypaths remain incomplete. Full
+products and successor-ABI builds remain deferred. See
+`docs/nodejs-upstream-runtime.md` and the per-family implementation ledger for
+exact artifacts, validation scope and remaining work.

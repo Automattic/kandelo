@@ -21,6 +21,7 @@
 #include "shell/node-upstream/codecs.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
+#include "shell/node-upstream/trace-agent-test-api.h"
 #include "shell/node-upstream/types.h"
 #include "shell/ShellModuleObjectWrapper.h"
 
@@ -335,7 +336,8 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
       JS_FS_END,
   };
   JS::RootedObject api(cx, JS_NewPlainObject(cx));
-  if (!api || !JS_DefineFunctions(cx, api, functions)) {
+  if (!api || !JS_DefineFunctions(cx, api, functions) ||
+      !DefineTraceAgentTestAPI(cx, api)) {
     return false;
   }
   JS::RootedObject global(cx, JS::CurrentGlobalOrNull(cx));

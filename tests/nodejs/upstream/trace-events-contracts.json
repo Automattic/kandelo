@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "binding": "trace_events",
-  "status": "startup binding remains missing; standalone original tracing library component and OS/locking prerequisites implemented separately",
+  "status": "startup binding remains missing; original native tracing library and agent integrated separately into engine",
   "sourceVersion": "26.13.0",
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
   "sourceFiles": [
@@ -10,112 +10,143 @@
       "retainedPath": ".context/node-trace-events/source/src/node_trace_events.cc",
       "bytes": 8004,
       "sha256": "d49d2ee967961a72bc879fb4eb228f2670b58559a03619800fad6650b6efdc5e",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/node_trace_events.cc",
+      "compiledForNativeAgent": false
     },
     {
       "upstreamPath": "src/tracing/agent.h",
       "retainedPath": ".context/node-trace-events/source/src/tracing/agent.h",
       "bytes": 3493,
       "sha256": "f3641f429fb4f84615f81b6bcf72972dfd2342a08ade4f555b72789331e34f1a",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/agent.h",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "src/tracing/agent.cc",
       "retainedPath": ".context/node-trace-events/source/src/tracing/agent.cc",
       "bytes": 892,
       "sha256": "b44ad5be81bb0d7ee977e48ec564cccab6f933e9e70a0b31fbc5386ed2436b13",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/agent.cc",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "src/tracing/agent_legacy.h",
       "retainedPath": ".context/node-trace-events/source/src/tracing/agent_legacy.h",
       "bytes": 4283,
       "sha256": "e3b06518a9aa499d73bf63e49183cabf6e97a3d54b911427c056ab0aaab8bffd",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/agent_legacy.h",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "src/tracing/agent_legacy.cc",
       "retainedPath": ".context/node-trace-events/source/src/tracing/agent_legacy.cc",
       "bytes": 10547,
       "sha256": "a8c6b9b1c22e75069695157f9b91522d751e66e233530685d0aa507ae7c71422",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/agent_legacy.cc",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "src/tracing/node_trace_buffer.h",
       "retainedPath": ".context/node-trace-events/source/src/tracing/node_trace_buffer.h",
       "bytes": 2583,
       "sha256": "4929ba7396e3ded365fcf51a4e2d9684573a36dc1947ee8c09b37028035cf8fc",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/node_trace_buffer.h",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "src/tracing/node_trace_buffer.cc",
       "retainedPath": ".context/node-trace-events/source/src/tracing/node_trace_buffer.cc",
       "bytes": 6729,
       "sha256": "c77c172a032b4b021448df06802d2839daa4e9435d5510a7ef9402cb200db62a",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/node_trace_buffer.cc",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "src/tracing/node_trace_writer.h",
       "retainedPath": ".context/node-trace-events/source/src/tracing/node_trace_writer.h",
       "bytes": 2402,
       "sha256": "e2f01c16f6d727476702537de5451eb2c2deb2ed0c4bc354302dfb4683ad6d15",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/node_trace_writer.h",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "src/tracing/node_trace_writer.cc",
       "retainedPath": ".context/node-trace-events/source/src/tracing/node_trace_writer.cc",
       "bytes": 7173,
       "sha256": "ca8879fd79d9fad8c506de88ca30601ae8d3624c67634e7fdda2914e956d3b55",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/node_trace_writer.cc",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "src/tracing/traced_value.h",
       "retainedPath": ".context/node-trace-events/source/src/tracing/traced_value.h",
       "bytes": 4672,
       "sha256": "0ad60c64d85b9cc76c2293575f21c07bbbacdc7f20517aab70e0b171f4c7224f",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/traced_value.h",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "src/tracing/traced_value.cc",
       "retainedPath": ".context/node-trace-events/source/src/tracing/traced_value.cc",
       "bytes": 7486,
       "sha256": "acbee56fb6c7093904797e0d07c3eb37cfe27780b067f0f9bf624aee2db08cc4",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/traced_value.cc",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "src/tracing/trace_event_helper.h",
       "retainedPath": ".context/node-trace-events/source/src/tracing/trace_event_helper.h",
       "bytes": 1098,
       "sha256": "707181ab1d4e6e42d5c83263aa100f549fa1b0280eeb9e4cf8a2036e76d27674",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/trace_event_helper.h",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "src/tracing/trace_event_helper.cc",
       "retainedPath": ".context/node-trace-events/source/src/tracing/trace_event_helper.cc",
       "bytes": 1422,
       "sha256": "8115b429ed3c22d4db2ee7de0d48fca85cccfb50963986e1f8a53d90179a2fde",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/tracing/trace_event_helper.cc",
+      "compiledForNativeAgent": true
     },
     {
       "upstreamPath": "deps/v8/src/builtins/builtins-trace.cc",
       "retainedPath": ".context/node-trace-events/source/deps/v8/src/builtins/builtins-trace.cc",
       "bytes": 8310,
       "sha256": "13b02d7ba55ae3b504a8f85c2b740ae026a354f0ee87837568103eede1c28802",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/deps/v8/src/builtins/builtins-trace.cc",
+      "compiledForNativeAgent": false
     },
     {
       "upstreamPath": "src/env.cc",
       "retainedPath": ".context/node-trace-events/source/src/env.cc",
       "bytes": 99205,
       "sha256": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "compiledForNativeAgent": false
     },
     {
       "upstreamPath": "src/env.h",
       "retainedPath": ".context/node-trace-events/source/src/env.h",
       "bytes": 53128,
       "sha256": "2727db70801cd3d154790795f52aac30909279cfbbec5beab1c0b463a4aa55b8",
-      "compiledForNodeBinding": false
+      "compiledForNodeBinding": false,
+      "importedPath": "third_party/nodejs/upstream/src/env.h",
+      "compiledForNativeAgent": false
     }
   ],
   "coverage": {
@@ -249,11 +280,11 @@
   "prerequisites": [
     {
       "area": "standalone V8 controller/config/object/ring buffer/JSON writer",
-      "status": "normal library port; component evidence in v8-tracing-component-check.json; not yet linked into engine"
+      "status": "normal resolved library linked into revision-36 engine; standalone component and engine/agent evidence remain separate"
     },
     {
       "area": "Node agent/buffer/writer/helper/traced values",
-      "status": "whole originals reviewed; uncompiled and unintegrated"
+      "status": "six whole original translation units compiled and linked into engine with real guest file/worker primitives; original JS binding still missing"
     },
     {
       "area": "whole native node_trace_events.cc",
@@ -261,11 +292,11 @@
     },
     {
       "area": "whole V8 builtins-trace.cc",
-      "status": "reviewed, requires genuine SpiderMonkey handles/primitive conversions/error metadata/JSON API bridge; not compiled"
+      "status": "whole builtin imported but not compiled; genuine handles/error/JSON bridge incomplete; original WTF-8 encoder verified independently against native builtin bytes, not yet adopted"
     },
     {
       "area": "source metadata/permissions/options",
-      "status": "trace process metadata must reuse actual runtime metadata; no V8/addon metadata copying; tracing CLI/file permission integration incomplete"
+      "status": "actual shared native versions provider and complete original CLI parser adopted; permission-policy adoption explicitly rejected; broader security/error paths incomplete"
     },
     {
       "area": "native external ArrayBuffer",
@@ -297,5 +328,31 @@
     "stackLimitCurrentGap": "mksnapshot",
     "fullStartupAccepted": false
   },
-  "broaderRoadmapAuthorized": false
+  "broaderRoadmapAuthorized": false,
+  "nativeAgentIntegration": {
+    "scope": "native prerequisite only; not original trace_events binding, public module compatibility or Node startup",
+    "wholeOriginalTranslationUnits": [
+      "src/tracing/agent.cc",
+      "src/tracing/agent_legacy.cc",
+      "src/tracing/node_trace_buffer.cc",
+      "src/tracing/node_trace_writer.cc",
+      "src/tracing/traced_value.cc",
+      "src/tracing/trace_event_helper.cc"
+    ],
+    "processOwner": "one strong process-wide owner, foreground shutdown before JS_DestroyContext, no recreation after shutdown",
+    "metadata": "same actual native data provider as process.versions; original CLI fields under original mutex; no mutable JS metadata reads",
+    "writerFailureObservation": {
+      "scope": "invalid initial fixture destination in read-only guest root",
+      "status": "open reported EROFS and original writer shutdown timed out; corrected writable /tmp fixture is tested separately",
+      "evidence": ".context/node-trace-events/agent-diagnostic-start.json",
+      "classification": "guest VFS correctly rejects write; writer failure-path/native-reference investigation remains open; no outside-runtime defect attribution"
+    },
+    "originalBindingImplemented": false,
+    "externalCategoryViewsImplemented": false,
+    "javascriptObserverImplemented": false,
+    "fullBackendCatalogComplete": false,
+    "engineEvidence": "tests/nodejs/upstream/trace-agent-engine-check.json",
+    "fourHostSelectedControls": 9,
+    "priorNodeControls": 310
+  }
 }
