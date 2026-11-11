@@ -46,20 +46,38 @@ static void fail(const char *message)
 	failures++;
 }
 
-/* How many times `needle` occurs in the kernel log as of now, or -1. */
-static int count(const char *needle)
+/* Read the whole kernel log, NUL-terminated. Returns its length, or -1. */
+static int read_log(void)
 {
-	int found = 0;
-	const char *at = log;
 	int n = klogctl(KLOG_READ_ALL, log, (int)sizeof log - 1);
 	if (n < 0) {
 		fail("klogctl READ_ALL");
 		return -1;
 	}
 	log[n] = '\0';
-	while ((at = strstr(at, needle)) != NULL) {
-		found++;
-		at += strlen(needle);
+	return n;
+}
+
+/* How many records at priority `pri` (such as "<4>") carry exactly `text`,
+ * including its newline. The log renders each record as one line,
+ * `<pri>[seconds.microseconds] text`, Linux's printk_time form (see
+ * crates/runtime-core/src/klogctl.rs). */
+static int count_record(const char *pri, const char *text)
+{
+	int found = 0;
+	size_t pri_len = strlen(pri), text_len = strlen(text);
+	const char *line = log;
+	if (read_log() < 0) return -1;
+	while (*line != '\0') {
+		const char *end = strchr(line, '\n');
+		size_t len = end != NULL ? (size_t)(end - line) + 1 : strlen(line);
+		const char *close = memchr(line, ']', len);
+		if (strncmp(line, pri, pri_len) == 0 && line[pri_len] == '[' &&
+		    close != NULL && close[1] == ' ' &&
+		    (size_t)(line + len - (close + 2)) == text_len &&
+		    strncmp(close + 2, text, text_len) == 0)
+			found++;
+		line += len;
 	}
 	return found;
 }
@@ -112,9 +130,9 @@ int main(void)
 
 	/* personality: ENOSYS, once recorded in the log with pid, number and name. */
 	snprintf(ours, sizeof ours,
-	         "<4>pid %d called syscall 287 (personality), which is not implemented (ENOSYS)\n",
+	         "pid %d called syscall 287 (personality), which is not implemented (ENOSYS)\n",
 	         (int)getpid());
-	before = count(ours);
+	before = count_record("<4>", ours);
 	if (before < 0) return 1;
 	if (before != 0) fail("the record exists before the call was made");
 
@@ -122,7 +140,7 @@ int main(void)
 	if (personality(PERSONALITY_QUERY) != -1 || errno != ENOSYS) {
 		fail("personality should be ENOSYS, not the persona PER_LINUX");
 	}
-	after = count(ours);
+	after = count_record("<4>", ours);
 	if (after != 1) {
 		fprintf(stderr,
 		        "honest-stub-returns failure: expected one record %s, found %d\n",
