@@ -1710,6 +1710,9 @@ function createWorkerHarness(
     kernel_get_process_exit_signal: vi.fn(() => -1),
     kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
     kernel_mark_process_signaled: vi.fn(() => 0),
+    // EAGAIN asks whether persistent journal pressure caused it. These
+    // lifecycle fixtures model no journal, so no compaction is requested.
+    kernel_rootfs_take_compaction_request: vi.fn(() => 0),
     kernel_set_current_tid: vi.fn(() => 0),
     kernel_take_process_timer_cleanup: vi.fn((
       _pid: number,
