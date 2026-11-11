@@ -107,7 +107,12 @@ it("carries an explicit reload through the native byte transport", async () => {
   const fetcher = vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
   expect(await fetchLazyResourceBytes(fetcher, "https://fixture.invalid/data", 3, undefined,
     { cache: "reload" })).toEqual(new Uint8Array([1, 2, 3]));
-  expect(fetcher).toHaveBeenCalledWith("https://fixture.invalid/data", { cache: "reload" });
+  // The transfer's own abort signal (idle timeout, owner cancellation) rides
+  // beside the cache mode on every fetch.
+  expect(fetcher).toHaveBeenCalledWith("https://fixture.invalid/data", {
+    cache: "reload",
+    signal: expect.any(AbortSignal),
+  });
 });
 
 
