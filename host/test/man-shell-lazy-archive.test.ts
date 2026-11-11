@@ -248,6 +248,10 @@ describe.skipIf(!available)(
         ["1 node", /The\s+SpiderMonkey\s+shell\s+provides/],
         ["1 npm", /javascript package manager/],
         ["1 npm-install", /Install a package/],
+        ["1 gem", /GEM\s+commands\s+are/],
+        ["6 freeciv-server", /The\s+server\s+for\s+the\s+Freeciv\s+game/],
+        // A `.so` stub for freeciv-client(6).
+        ["6 freeciv-sdl2", /The\s+clients\s+for\s+the\s+Freeciv\s+game/],
       ];
       const present = probes.filter(([page]) => pages.has(page));
       expect(present.length).toBeGreaterThan(0);
@@ -260,6 +264,24 @@ describe.skipIf(!available)(
         expect(block.split("\n@@BEGIN ")[0], `man ${page}`).toMatch(text);
       }
     }, 300_000);
+
+    it.skipIf(!available || !imagePages(new Uint8Array(readFileSync(shellImagePath)))
+      .some((page) => page.section === "1" && page.name === "npm-install"))(
+      "renders npm's pages from npm's own man directory",
+      async () => {
+        // `npm help` finds a page under npm's root (/usr/local/lib/npm/man)
+        // and runs man on that path; npm-docs links its pages there. (npm
+        // help itself cannot run yet: it loads node:readline/promises,
+        // which Kandelo's node does not provide.)
+        const { stdout, exitCode } = await runInShell(
+          imageBytes(),
+          "man /usr/local/lib/npm/man/man1/npm-install.1",
+        );
+        expect(exitCode).toBe(0);
+        expect(stripOverstrike(stdout)).toMatch(/npm-install\s+-\s+Install a package/);
+      },
+      120_000,
+    );
 
     it.skipIf(!available || !imageHasIndex(new Uint8Array(readFileSync(shellImagePath))))(
       "searches the index with whatis and apropos",

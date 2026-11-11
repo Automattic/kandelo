@@ -28,11 +28,11 @@
  *     "env":      ["PATH=/usr/bin:/bin"],
  *     "uid": 1000, "gid": 1000,
  *     "commands": [{ "name": "x", "path": "/usr/bin/x", "argv0": "x",
- *                    "stream": "stdout" }]
+ *                    "stream": "stdout", "help": ["--help"] }]
  *   }
  *
  * For each command, `<name>.help` and `<name>.version` receive what
- * `<argv0> --help` and `<argv0> --version` printed on `stream` (stdout
+ * `<argv0> --help` (or `<argv0> <help...>`) and `<argv0> --version` printed on `stream` (stdout
  * unless a program prints its usage on stderr). A command whose --help
  * prints nothing is reported and skipped: the recipe's page list then
  * fails on the missing page, and a missing page is an honest gap, never
@@ -61,7 +61,13 @@ interface Spec {
   env?: string[];
   uid?: number;
   gid?: number;
-  commands: Array<{ name: string; path: string; argv0?: string; stream?: "stdout" | "stderr" }>;
+  commands: Array<{
+    name: string;
+    path: string;
+    argv0?: string;
+    stream?: "stdout" | "stderr";
+    help?: string[];
+  }>;
 }
 
 function parentOf(path: string): string {
@@ -160,10 +166,10 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
 
   const skipped: string[] = [];
-  for (const { name, path, argv0, stream } of spec.commands) {
+  for (const { name, path, argv0, stream, help: helpArgs } of spec.commands) {
     const argv0Name = argv0 ?? name;
     const which = stream ?? "stdout";
-    const help = await capture(kernel, image, path, [argv0Name, "--help"], env, which, user);
+    const help = await capture(kernel, image, path, [argv0Name, ...(helpArgs ?? ["--help"])], env, which, user);
     const version = await capture(kernel, image, path, [argv0Name, "--version"], env, "stdout", user);
     if (!help.trim()) {
       console.error(`capture-help-output: skip ${name}: empty --help from Kandelo`);

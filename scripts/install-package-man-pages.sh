@@ -65,6 +65,9 @@
 #         less.nro:less.1     -> share/man/man1/less.1  (less keeps troff in .nro)
 #         unxz.1=xz.1         -> share/man/man1/unxz.1 -> xz.1
 #         tic.1m              -> share/man/man1/tic.1m
+#         +local/lib/npm/man  -> local/lib/npm/man/man<N>/<page> symlinks to
+#                                every page staged earlier, for a program that
+#                                looks pages up in its own directory (npm help)
 #
 #       A missing page is a hard failure: upstream moving or renaming a
 #       page must surface as a build error, not as `man foo` finding
@@ -298,6 +301,23 @@ install_package_man_pages() {
     for spec in "$@"; do
         target=""
         case "$spec" in
+            +*)
+                local mirror="${spec#+}" up page rel
+                case "/$mirror/" in
+                    //|*/../*|*/./*|*//*)
+                        echo "install_package_man_pages: $pkg: invalid mirror '$spec'" >&2
+                        return 2
+                        ;;
+                esac
+                # From <mirror>/man<N>/ back up to the archive root.
+                up="../$(printf '%s' "$mirror" | sed 's#[^/][^/]*#..#g')/"
+                while IFS= read -r page; do
+                    rel="${page#"$stage"/share/man/}"
+                    mkdir -p "$stage/$mirror/$(dirname "$rel")"
+                    ln -s "${up}share/man/$rel" "$stage/$mirror/$rel"
+                done < <(find "$stage/share/man" \( -type f -o -type l \) | LC_ALL=C sort)
+                continue
+                ;;
             *=*)
                 dest="${spec%%=*}"
                 target="${spec#*=}"

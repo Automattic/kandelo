@@ -1,0 +1,26 @@
+kind = "program"
+name = "rubygems-docs"
+version = "4.0.5"
+kernel_abi = 56
+depends_on = ["ruby-browser-bundle@4.0.5", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual page for gem, generated from what the program
+# prints for --help and --version while running inside Kandelo: the
+# program has no upstream manual page. The recipe is this repository's,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "Ruby OR BSD-2-Clause"
+url = "https://github.com/ruby/ruby/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/rubygems-docs/build-rubygems-docs.sh"
+
+[[outputs]]
+name = "rubygems-docs"
+wasm = "rubygems-docs.zip"
+fork_instrumentation = "disabled"
