@@ -1,16 +1,24 @@
 # Cage reliability follow-up — 2026-11-09
 
-Status (2026-11-11): PR #1678 integrates pinned `develop` commit
-`200d7bbfacdb`; the current candidate is `db4a24c5ea`. Its normal canonical
-build completes all 278 nodes. The integrated runtime passes the full
-18-case browser memory gate, prepared-product host checks 257/257, and
-actual Steel Sky gameplay under Cage and Sway on all three engines (6/6).
-The desktop run is 118/120, including Cage 15/15 and Sway 12/12; its two
-archive-import failures also reproduce on pinned develop. The official ABI
-check passes. Matched performance comparisons are still in progress. The PR remains draft; no merge is authorized.
+Status (2026-11-11): the bounded increment integrates pinned `develop`
+`200d7bbfacdb`. Measurements use candidate `00afdb7a33`; its runtime sources
+remain unchanged from `b718daade0`. The normal canonical build completes
+278/278 nodes. Memory passes 18/18, prepared-product host checks 257/257,
+and actual Steel Sky gameplay under Cage and Sway passes 6/6 across the
+three engines. Desktop is 118/120, including Cage 15/15 and Sway 12/12;
+the two archive-import failures also reproduce on the current control.
+The official ABI check passes, preserving program 56 and host adapter 6.
+
+All nine enabled benchmark suites complete on Node and Chromium in both
+orders, with three rounds per invocation. Cursor observations qualify
+11/12 cases, including all six candidate cases. The 1920-wide cursor
+callback measurements improve on all three engines. Repeated Node I/O
+penalties remain an explicit review risk; broad performance neutrality,
+complete R1 and native-feel acceptance are not claimed. No merge is authorized.
 
 [Current normal Cage preview](http://127.0.0.1:56525/?vfs=%2F__kandelo_source_only_assets__%2Fbc5ec7b4185daa82fee26cdd5534cb4f3111ec738899f6286f734575c9a56780%2Fshell.vfs.zst&profile=cage).
-The [integration record](#integration-with-develop--2026-11-11) below separates
+The [completed measurements](#completed-integrated-measurements--2026-11-11) and
+[integration record](#integration-with-develop--2026-11-11) below separate
 current results from retained earlier failures. The remaining text-sharpness
 gap relative to Sway is the maintainer-approved visual follow-up. Full R1,
 native-feel and native Safari acceptance are not claimed; B2–B6/C1–C3 remain
@@ -1975,11 +1983,11 @@ objects. Vite registers these public paths when virtual modules load;
 early registration is a suspected explanation, not a retained observation
 of the first response. Both probe outcomes remain recorded separately.
 
-Matched timing comparisons and cursor observations remain pending. The PR
-stays draft while these measurements are collected. No complete R1,
+The completed timing comparisons and cursor observations are recorded below.
+Their flags and qualification failures stay visible; no complete R1,
 native-display latency or native Safari acceptance is claimed.
 
-The destination comparison checkout is detached at
+The control build and archive checks ran at
 `6e9d97ea2ba26856ece3e978e49bc799cbe74dee`: pinned `200d7bbfac` plus eight
 build-only evidence-classification rows and the same measured budget/manual
 layout preparation and the same test-only fixture preparation. Its runtime, libc/SDK and benchmark sources still
@@ -2001,8 +2009,8 @@ confirmed shared allocator default, sparse.
 
 Preflight also verifies no source differences against pinned develop in libc,
 SDK, Cargo/toolchain/Nix definitions, program ABI or the ABI snapshot. The
-control will still run its own normal SDK/product build; this source check
-does not substitute for artifact identities or compatibility execution.
+control completed its own normal SDK/product build; source equality alone
+does not substitute for the retained artifact identities or compatibility execution.
 
 The original prepared host selection finished 255/257: two existing default
 five-second Vitest deadlines fired for GBM surface and MAP_PRIVATE cases.
@@ -2023,3 +2031,190 @@ The original failures and all stage diagnostics remain retained. The run was
 receipt does not relabel the run's original HEAD. No product runtime, ABI,
 recipe, predicate or deadline changed. The comparison checkout has the
 same test-only preparation, with no R1 runtime patch.
+
+
+## Completed integrated measurements — 2026-11-11
+
+The measured runtime is candidate `00afdb7a331338cd73962cb5c958d82682ca2c3d`
+against control `541d6e0ee512ddb55fccc73885a6b399e9c86513`. The latter adds
+only the identical Sway first-paint test preparation to the control above;
+its host runtime, kernel, libc, SDK, ABI and benchmark source paths still
+exactly match pinned develop `200d7bbfac`. The exact control preparation
+patch and source/build receipts are retained. There is no R1 runtime patch
+in the control. Later documentation commits do not relabel these run heads.
+
+### Full benchmark evidence and retained flags
+
+The normal harness runs all nine enabled suites, with three actual workload
+rounds each, in eight complete invocations: Node B–C–C–B and Chromium
+C–B–B–C. There are two parent launches per host/revision overall, not an
+independent parent for every round. The strict result verifier confirms
+actual Node 24.22.1, source heads, required artifact hashes, valid fork
+symbols, nine nonempty suites, finite metrics and all three round logs.
+The full job finishes with exit 0 in 34m10s. All four official
+`benchmarks/compare.ts` comparisons also finish with exit 0; their output
+highlights timing flags rather than turning those flags into a passing
+no-regression verdict.
+
+| Comparison order | Node metrics / >5% flags | Chromium metrics / >5% flags |
+| --- | --- | --- |
+| Forward | 48 / 17 | 43 / 10 |
+| Reverse | 48 / 20 | 43 / 11 |
+
+Selected examples below retain both orders, including the large reverse-order
+SQL flag. Percentages use the metric's original direction; lower throughput
+and higher latency are adverse. This is not the complete flag inventory.
+
+| Selected full-matrix metric | Forward: baseline → candidate | Reverse: baseline → candidate |
+| --- | --- | --- |
+| Node pipe throughput, MiB/s | 49.97 → 43.47 (-13.0%) | 51.51 → 48.56 (-5.7%) |
+| Node getpid, µs | 33.43 → 35.54 (+6.3%) | 31.75 → 33.85 (+6.6%) |
+| Node sparse-file lock acquire, µs/op | 28.83 → 48.27 (+67.4%) | 29.19 → 35.67 (+22.2%) |
+| Node wasm64 Aria CREATE, ms | 290.44 → 264.07 (-9.1%) | 224.97 → 487.19 (+116.6%) |
+| Node InnoDB INSERT, ms | 347.27 → 419.91 (+20.9%) | 265.58 → 364.63 (+37.3%) |
+| Chromium hello startup, ms | 232.00 → 272.53 (+17.5%) | 219.36 → 257.89 (+17.6%) |
+| Chromium scratch spawn, ms | 39.07 → 48.09 (+23.1%) | 38.77 → 40.89 (+5.5%) |
+
+The original first invocation failed artifact admission before any workload
+ran: the cached standalone MariaDB VFS image had not materialized its
+wasm64 server/client dependency outputs. Its failed log and hashes remain
+under `develop-benchmarks/`. Each checkout then resolves `mariadb --arch
+wasm64` through its own normal SDK/resolver, materializing the same validated
+cache generation without forcing keys or changing policy. Actual harness
+artifact-admission preflights subsequently pass for both hosts on both
+trees. The corrected eight-invocation run uses the separate
+`develop-benchmarks-corrected64/` directory. Existing MariaDB warnings about
+legacy binaries without contract-digest stamps remain in the raw output;
+normal resolver admission and version compatibility are not a claim that
+those legacy binaries gained a new digest stamp.
+
+Node's only differing fingerprinted inputs are the host source tree and
+worker bundle. The browser also has a differing normal WordPress VFS, so
+that application's comparison is not a worker-source-only experiment.
+All required artifact hashes and selected paths remain in the JSON results.
+Separate clock-only probes observe no negative deltas: minimum positive
+Node delta about 0.000041 ms, isolated Chromium main/worker about 0.005 ms.
+These probes are not benchmark parents or workload timing measurements.
+
+Host load varied materially. Recorded starts include a separate Node 24.15
+process near 289% CPU during one candidate Node invocation, WebKit near
+200% during another, and Screen Sharing over 100% during some browser
+invocations. These observations limit interpretation; they do not establish
+that host load caused a particular timing flag. No other application's
+process was stopped.
+
+Separate C–B–B–C controls keep the unchanged targeted suites and three
+rounds per fresh parent. They do not replace the full-matrix results.
+Repeated Node flags remain:
+
+| Focused Node metric | Control pair 1: baseline → candidate | Control pair 2: baseline → candidate |
+| --- | --- | --- |
+| Pipe throughput, MiB/s | 50.00 → 43.40 (−13.2%) | 48.54 → 43.40 (−10.6%) |
+| getpid round trip, µs | 31.17 → 33.17 (+6.4%) | 31.27 → 33.34 (+6.6%) |
+
+Browser hello startup changes direction in the focused controls:
+258.71→224.29 ms and 222.12→249.87 ms. Large first scratch spawn remains
+flagged in both, 31.77→34.10 ms and 31.94→33.67 ms. The original lock
+measurements use a one-pass realtime clock; a single millisecond can move a
+small per-operation result substantially. That quantization does not dismiss
+all other metrics or explain the repeated Node pipe/getpid flags.
+
+Additional CPU and sampled-heap diagnostics capture 28 isolates per side
+(one main, 12 kernel, 15 guest). A standalone main/worker smoke test checks
+capture and demonstrates discarded probe roots being collected. Residual
+samples at the discarded allocation site leave temporary-object coverage
+unestablished; these heap samples are not a count of temporary allocation
+traffic. CPU profiles span complete isolates and include loader/compilation
+work. They are not calibrated to guest-phase clocks, so aggregate sampling
+weights are not attributed to individual guest phases or GC pauses. The
+profiles do not establish a causal explanation for the timing differences.
+All raw profiles and exact worker bundles/source maps are retained compressed.
+
+A private host-only experiment supplies the same verified normal kernel,
+rootfs and guest-program bytes through the supported dedicated-worker API.
+It compares target, full candidate and a candidate with the graphics group
+restored to target, in A–B–C–C–B–A parent order. The private variant passes
+its normal host build and freshness checks; no source or artifact in a
+published preview changes. Removing the graphics group does not restore a
+consistent baseline result. Pipe round values vary widely, including
+20.99–59.76 MiB/s across the diagnostic runs. This does not isolate a cause
+or establish neutrality. Its first setup attempt failed before building
+because of an incorrect working directory; the corrected source preparation,
+failed setup log, actual build and six diagnostic parents remain retained.
+No experimental variant is part of the proposed patch.
+
+A subsequent same-code negative control rebuilds the private host with all
+declared host inputs matching target. Its kernel-worker and guest-worker
+bundles are byte-identical to the control, and all four run fingerprints
+match. It uses the same admitted inputs in control–copy–copy–control parent
+order. Pipe medians still differ: 52.77→47.28 MiB/s and 52.29→48.92 MiB/s
+(about −10.4% and −6.4%) between identical worker code in different paths
+and processes. getpid medians are 30.581→31.399 µs and 30.045→29.359 µs
+(about +2.7% and −2.3%). This demonstrates non-code variation of similar
+size for the pipe metric; it does not explain the candidate getpid penalty
+or dismiss the original flags. Exact bundle equality and all raw controls
+are retained in `develop-runtime-equal-code/`.
+
+The repeated Node I/O penalties and remaining startup flags are **open review
+risks**, not waived checks or a proven browser defect. No speculative syscall
+or dispatch optimization is added to conceal them. Broad performance
+neutrality and full R1 acceptance remain unproven.
+
+### Actual cursor observations
+
+The single HTTP/WS observer run collects all 12 profiles: three engines,
+1920/3840-wide viewports, DPR 1, both revisions. Eleven qualify; all six
+candidate cases qualify. The baseline Chromium 3840 case observes only one
+cursor position, so the test and strict whole-inventory parser both exit 1.
+Its raw data is retained, but its derived latency is not reported as a
+qualified before value. There are no retries or missing profiles.
+
+| 1920-wide engine | Distinct matched positions, baseline → candidate | Callback p50, ms | Callback p95, ms |
+| --- | --- | --- | --- |
+| Chromium 153.0.8010.12 | 16 → 60 | 68.355 → 17.670 | 76.010 → 23.080 |
+| Firefox 155.0 | 18 → 60 | 67.980 → 17.700 | 100.960 → 18.280 |
+| WebKit 26.6 | 26 → 34 | 47.120 → 37.400 | 69.620 → 56.020 |
+
+Each case delivers 61 browser-trusted events: initial placement plus 60
+moves. At 1920, actual injection durations are 1008→1075 ms in Chromium,
+1008→1008 ms in Firefox and 1101→1174 ms in WebKit. At 3840, matched
+positions are Chromium 1→42, Firefox 2→31 and WebKit 13→27. Firefox's
+two-position baseline is a particularly sparse comparison. WebKit's wide
+injections take 2485→2573 ms despite requesting about one second.
+
+These observations use the same CSS viewport and input sequence, while the
+candidate intentionally replaces the old capped guest mode with its CSS
+pane size. They are not identical guest-pixel workloads. Every final
+pointer endpoint reaches the real worker cursor callback; every profile has
+zero rejected negative-clock/matching samples. Module/channel identities,
+original and instrumented source hashes and actual delivery times are
+retained. The worker observer sends only copied diagnostic values, never
+guest memory. Its callbacks are not native display presentation, FPS or a
+native-feel acceptance test. The complete 12-case qualification remains red.
+
+### Delivery and remaining scope
+
+The final read-only preservation check confirms all 18 cohort hashes and
+14 HTTP shell/kernel identities across seven selected previews, including
+the new candidate and control. Earlier receipts are retained separately.
+The full memory gate, Cage/Sway functional results, actual gameplay and
+current ABI/compatibility evidence support review of this bounded repair.
+The two archive-import failures, unqualified control cursor stream and
+unexplained timing penalties stay visible. The maintainer-approved blur
+follow-up remains the only approved visual deferral; no other finding is
+reclassified as fixed. Native Safari and full POSIX/graphics conformance
+were not run. B2–B6/C1–C3 remain paused. This report authorizes no merge or
+promotion and does not close the broader R1 investigation.
+
+Current evidence is retained under `.context/cage-coherence-20261109/`:
+`develop-timing-corrected64-inputs/`,
+`develop-benchmarks-corrected64/{forward,reverse}/`,
+`develop-targeted-controls/`, `develop-io-profiles/`,
+`develop-runtime-isolation/`, `develop-runtime-equal-code/`,
+`develop-pointer-executed-inputs/`,
+`develop-pointer-proxy-observations/`, `develop-pointer-proxy-failures/`,
+`develop-pointer-proxy-identities.json`, `develop-followup-diagnostic-inputs/`
+and `develop-delivery-preserved-preview-identities.json`. The current
+pointer helper `cursor-observer-source.mjs` is retained with the actual
+executed inputs. Failed metadata probes, original test failures and all
+historical frozen-source results remain separate from these measurements.
