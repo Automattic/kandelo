@@ -20,6 +20,8 @@ mkdir -p "$shell_sources" "$node_objects"
 cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/builtin-compiler.cpp" \
     "$node_consumer/builtin-compiler.h" \
+    "$node_consumer/buffer-memory.cpp" \
+    "$node_consumer/buffer-memory.h" \
     "$node_consumer/private-key-test-api.cpp" \
     "$node_consumer/private-key-test-api.h" \
     "$node_consumer/process-versions.cpp" \

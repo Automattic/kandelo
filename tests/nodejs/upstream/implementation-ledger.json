@@ -29,7 +29,9 @@
     "traceBindingEngineEvidence": "trace-binding-engine-check.json",
     "nativeTraceAgentEvidence": "trace-agent-engine-check.json",
     "continuationPartialCatalog": "continuation-contracts.json",
-    "continuationEngineEvidence": "continuation-engine-check.json"
+    "continuationEngineEvidence": "continuation-engine-check.json",
+    "bufferPartialCatalog": "buffer-contracts.json",
+    "bufferMemoryEvidence": "buffer-memory-engine-check.json"
   },
   "implementation": [
     {
@@ -194,6 +196,12 @@
       "sourceStatus": "real rooted current value, host-defined reaction snapshots, traced FIFO data, real scope restoration and original native Scope/option guard;27engine controls and7drivers per host",
       "evidence": "continuation-engine-check.json",
       "remaining": "four active original Frame/ALS/RunScope controls still blocked by actual pre-bootstrap options guard; common native callback/raw Promise hook/resource/lifecycle/security/OOM and complete startup remain open"
+    },
+    {
+      "area": "native ArrayBuffer detach-key prerequisite for original Buffer",
+      "sourceStatus": "actual engine-traced key, SameValue-authorized detach and transfer/serialization/JSAPI enforcement; 23 controls per host plus 12 shared native reference cases",
+      "evidence": "buffer-memory-engine-check.json",
+      "remaining": "complete original node_buffer.cc not imported/compiled; stable Environment/cleanup/weak handle/foreground callback ownership, general allocation/copy/alignment/prototype and full original binding/startup remain incomplete"
     }
   ],
   "runtimeConformance": {
@@ -280,6 +288,21 @@
       "additionalDriversPerHost": 7,
       "evidence": "continuation-engine-check.json",
       "scope": "raw engine and original native scope; four active original JavaScript consumer controls deferred behind genuine bootstrap guard"
+    },
+    "bufferMemoryPrerequisite": {
+      "hosts": [
+        "Node",
+        "Chromium",
+        "Firefox",
+        "WebKit"
+      ],
+      "casesPerHost": 23,
+      "selectedObservations": 92,
+      "guestProcesses": 4,
+      "failures": 0,
+      "nativeSharedCases": 12,
+      "evidence": "buffer-memory-engine-check.json",
+      "scope": "real engine memory primitives through privileged controls; original Buffer binding and startup not accepted"
     }
   },
   "validationLimits": {

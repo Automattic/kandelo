@@ -1,0 +1,2139 @@
+{
+  "schema": 1,
+  "binding": "buffer",
+  "status": "complete binding export surface reviewed; implementation and full transitive consumer/lifecycle audit incomplete",
+  "sourceVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceFiles": [
+    {
+      "path": "src/node_buffer.cc",
+      "retainedPath": ".context/node-buffer/source/src/node_buffer.cc",
+      "bytes": 76513,
+      "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2",
+      "imported": false,
+      "compiled": false
+    },
+    {
+      "path": "lib/buffer.js",
+      "role": "library",
+      "bytes": 46634,
+      "sha256": "9b76f4047cf88f9bc8ce2a097b42aff00dca9d214b306ef48c170abb2e0643f2",
+      "builtinId": "buffer"
+    },
+    {
+      "path": "lib/internal/bootstrap/node.js",
+      "role": "library",
+      "bytes": 16325,
+      "sha256": "02a0489fb6713fc59e8fc95582ebd44a50b0f4c4a48d6e1c7879724ac6b93332",
+      "builtinId": "internal/bootstrap/node"
+    },
+    {
+      "path": "lib/internal/buffer.js",
+      "role": "library",
+      "bytes": 34628,
+      "sha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+      "builtinId": "internal/buffer"
+    },
+    {
+      "path": "src/env_properties.h",
+      "role": "provenance",
+      "bytes": 42469,
+      "sha256": "891cb90ba1164eecc1ae5eef69ef3102369eeebc7630dccda2ca5737a2a097ad",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_buffer.h",
+      "role": "provenance",
+      "bytes": 3843,
+      "sha256": "42db024cf1ae62db1a9a23477ee9927e9b7ed04999bd4498371b144962a31525",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_errors.h",
+      "role": "provenance",
+      "bytes": 23299,
+      "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8",
+      "builtinId": null
+    },
+    {
+      "path": "src/string_bytes.cc",
+      "role": "provenance",
+      "bytes": 29594,
+      "sha256": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d",
+      "builtinId": null
+    },
+    {
+      "path": "src/string_bytes.h",
+      "role": "provenance",
+      "bytes": 4614,
+      "sha256": "5e0b0f184d2e7b0556b5afb67bfaa28b3aa92c960a2dccff40006e1a1c1b86f2",
+      "builtinId": null
+    }
+  ],
+  "embeddingReferenceSources": [
+    {
+      "path": "deps/v8/include/v8-array-buffer.h",
+      "bytes": 23174,
+      "sha256": "f4ac87ceb25d30a2da70d73d4656a447ffa59f09259b67702745968f33172dcb"
+    },
+    {
+      "path": "deps/v8/src/api/api.cc",
+      "bytes": 498745,
+      "sha256": "147e419129137728659555cdb7866823e0ee7bc005e81ff5206c9f064e094f86"
+    }
+  ],
+  "coverage": {
+    "originalJsFiles": 443,
+    "directLiteralBindingConsumers": [
+      {
+        "path": "lib/buffer.js",
+        "line": 89,
+        "kind": "internalBinding",
+        "requestedExports": [
+          "byteLengthUtf8",
+          "compare",
+          "compareOffset",
+          "copy",
+          "fill",
+          "isAscii",
+          "isLatin1",
+          "isUtf8",
+          "stringLengthUtf8",
+          "indexOfBuffer",
+          "indexOfNumber",
+          "indexOfString",
+          "swap16",
+          "swap32",
+          "swap64",
+          "kMaxLength",
+          "kStringMaxLength",
+          "atob",
+          "btoa",
+          "asciiSlice",
+          "base64Slice",
+          "base64urlSlice",
+          "latin1Slice",
+          "hexSlice",
+          "ucs2Slice",
+          "utf8Slice",
+          "base64Write",
+          "base64urlWrite",
+          "hexWrite",
+          "ucs2Write"
+        ]
+      },
+      {
+        "path": "lib/http.js",
+        "line": 44,
+        "kind": "internalBinding",
+        "requestedExports": [
+          "mask"
+        ]
+      },
+      {
+        "path": "lib/internal/blob.js",
+        "line": 30,
+        "kind": "internalBinding",
+        "requestedExports": [
+          "kMaxLength"
+        ]
+      },
+      {
+        "path": "lib/internal/bootstrap/node.js",
+        "line": 468,
+        "kind": "internalBinding",
+        "requestedExports": []
+      },
+      {
+        "path": "lib/internal/buffer.js",
+        "line": 40,
+        "kind": "internalBinding",
+        "requestedExports": [
+          "asciiSlice",
+          "base64Slice",
+          "base64urlSlice",
+          "latin1Slice",
+          "hexSlice",
+          "ucs2Slice",
+          "utf8Slice",
+          "asciiWriteStatic",
+          "base64Write",
+          "base64urlWrite",
+          "latin1WriteStatic",
+          "hexWrite",
+          "ucs2Write",
+          "utf8WriteStatic",
+          "arrayBufferAlignedOffset",
+          "createUnsafeArrayBuffer",
+          "setDetachKey"
+        ]
+      },
+      {
+        "path": "lib/internal/util/comparisons.js",
+        "line": 56,
+        "kind": "internalBinding",
+        "requestedExports": [
+          "compare"
+        ]
+      },
+      {
+        "path": "lib/internal/webstreams/util.js",
+        "line": 34,
+        "kind": "internalBinding",
+        "requestedExports": [
+          "copyArrayBuffer"
+        ]
+      },
+      {
+        "path": "lib/internal/zip/dos.js",
+        "line": 19,
+        "kind": "internalBinding",
+        "requestedExports": [
+          "isUtf8"
+        ]
+      }
+    ],
+    "literalModuleConsumers": [
+      {
+        "path": "lib/_http_client.js",
+        "builtinId": "_http_client",
+        "line": 62,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/_http_outgoing.js",
+        "builtinId": "_http_outgoing",
+        "line": 41,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/_http_server.js",
+        "builtinId": "_http_server",
+        "line": 106,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/buffer.js",
+        "builtinId": "buffer",
+        "line": 151,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "FastBuffer",
+          "markAsUntransferable",
+          "addBufferPrototypeMethods",
+          "createUnsafeBuffer",
+          "createUnsafeAlignedBuffer",
+          "alignmentPadding",
+          "asciiWrite",
+          "latin1Write",
+          "utf8Write"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/child_process.js",
+        "builtinId": "child_process",
+        "line": 63,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/dgram.js",
+        "builtinId": "dgram",
+        "line": 68,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/dgram.js",
+        "builtinId": "dgram",
+        "line": 77,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "FastBuffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/ffi.js",
+        "builtinId": "ffi",
+        "line": 17,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/fs.js",
+        "builtinId": "fs",
+        "line": 66,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/https.js",
+        "builtinId": "https",
+        "line": 73,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/bench_runner/cli.js",
+        "builtinId": "internal/bench_runner/cli",
+        "line": 41,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/bootstrap/node.js",
+        "builtinId": "internal/bootstrap/node",
+        "line": 467,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/child_process/serialization.js",
+        "builtinId": "internal/child_process/serialization",
+        "line": 11,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/console/constructor.js",
+        "builtinId": "internal/console/constructor",
+        "line": 53,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/argon2.js",
+        "builtinId": "internal/crypto/argon2",
+        "line": 9,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/diffiehellman.js",
+        "builtinId": "internal/crypto/diffiehellman",
+        "line": 11,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/hash.js",
+        "builtinId": "internal/crypto/hash",
+        "line": 48,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/hkdf.js",
+        "builtinId": "internal/crypto/hkdf",
+        "line": 24,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "kMaxLength"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/kem_hybrids.js",
+        "builtinId": "internal/crypto/kem_hybrids",
+        "line": 17,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/keys.js",
+        "builtinId": "internal/crypto/keys",
+        "line": 98,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/pbkdf2.js",
+        "builtinId": "internal/crypto/pbkdf2",
+        "line": 9,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/random.js",
+        "builtinId": "internal/crypto/random",
+        "line": 47,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer",
+          "kMaxLength"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/random.js",
+        "builtinId": "internal/crypto/random",
+        "line": 76,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "FastBuffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/scrypt.js",
+        "builtinId": "internal/crypto/scrypt",
+        "line": 7,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/sig.js",
+        "builtinId": "internal/crypto/sig",
+        "line": 46,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/util.js",
+        "builtinId": "internal/crypto/util",
+        "line": 92,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/crypto/x509.js",
+        "builtinId": "internal/crypto/x509",
+        "line": 41,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/data_url.js",
+        "builtinId": "internal/data_url",
+        "line": 15,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/debugger/inspect_client.js",
+        "builtinId": "internal/debugger/inspect_client",
+        "line": 15,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/debugger/inspect_client.js",
+        "builtinId": "internal/debugger/inspect_client",
+        "line": 21,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "FastBuffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/dtls/dtls.js",
+        "builtinId": "internal/dtls/dtls",
+        "line": 52,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/encoding.js",
+        "builtinId": "internal/encoding",
+        "line": 18,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "FastBuffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/encoding/single-byte.js",
+        "builtinId": "internal/encoding/single-byte",
+        "line": 22,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "isAscii"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/encoding/single-byte.js",
+        "builtinId": "internal/encoding/single-byte",
+        "line": 24,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "FastBuffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/error_serdes.js",
+        "builtinId": "internal/error_serdes",
+        "line": 32,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/errors.js",
+        "builtinId": "internal/errors",
+        "line": 243,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/ffi/fast-api.js",
+        "builtinId": "internal/ffi/fast-api",
+        "line": 20,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/fs/promises.js",
+        "builtinId": "internal/fs/promises",
+        "line": 38,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/fs/read/context.js",
+        "builtinId": "internal/fs/read/context",
+        "line": 19,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/fs/rimraf.js",
+        "builtinId": "internal/fs/rimraf",
+        "line": 14,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/fs/streams.js",
+        "builtinId": "internal/fs/streams",
+        "line": 38,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/fs/utils.js",
+        "builtinId": "internal/fs/utils",
+        "line": 30,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/fs/watchers.js",
+        "builtinId": "internal/fs/watchers",
+        "line": 67,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/http.js",
+        "builtinId": "internal/http",
+        "line": 21,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/http2/core.js",
+        "builtinId": "internal/http2/core",
+        "line": 44,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "readUInt16BE",
+          "readUInt32BE"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/inspector/network_http2.js",
+        "builtinId": "internal/inspector/network_http2",
+        "line": 32,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/inspector/network_undici.js",
+        "builtinId": "internal/inspector/network_undici",
+        "line": 17,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/modules/esm/load.js",
+        "builtinId": "internal/modules/esm/load",
+        "line": 14,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/modules/esm/worker.js",
+        "builtinId": "internal/modules/esm/worker",
+        "line": 34,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "isMarkedAsUntransferable"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/net.js",
+        "builtinId": "internal/net",
+        "line": 10,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/quic/quic.js",
+        "builtinId": "internal/quic/quic",
+        "line": 105,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/source_map/source_map_cache.js",
+        "builtinId": "internal/source_map/source_map_cache",
+        "line": 18,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/stream_base_commons.js",
+        "builtinId": "internal/stream_base_commons",
+        "line": 8,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/stream_base_commons.js",
+        "builtinId": "internal/stream_base_commons",
+        "line": 9,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "FastBuffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/streams/fast-utf8-stream.js",
+        "builtinId": "internal/streams/fast-utf8-stream",
+        "line": 22,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/streams/from.js",
+        "builtinId": "internal/streams/from",
+        "line": 8,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/streams/iter/classic.js",
+        "builtinId": "internal/streams/iter/classic",
+        "line": 71,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/streams/iter/transform.js",
+        "builtinId": "internal/streams/iter/transform",
+        "line": 31,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/streams/readable.js",
+        "builtinId": "internal/streams/readable",
+        "line": 53,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/streams/writable.js",
+        "builtinId": "internal/streams/writable",
+        "line": 47,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/test_runner/reporter/v8-serializer.js",
+        "builtinId": "internal/test_runner/reporter/v8-serializer",
+        "line": 7,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/test_runner/runner.js",
+        "builtinId": "internal/test_runner/runner",
+        "line": 45,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/tls/wrap.js",
+        "builtinId": "internal/tls/wrap",
+        "line": 51,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/url.js",
+        "builtinId": "internal/url",
+        "line": 84,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/util/comparisons.js",
+        "builtinId": "internal/util/comparisons",
+        "line": 60,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/util/inspect.js",
+        "builtinId": "internal/util/inspect",
+        "line": 2351,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/v8_prof_polyfill.js",
+        "builtinId": "internal/v8_prof_polyfill",
+        "line": 41,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/vfs/file_handle.js",
+        "builtinId": "internal/vfs/file_handle",
+        "line": 13,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/vfs/file_system.js",
+        "builtinId": "internal/vfs/file_system",
+        "line": 652,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Blob"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/vfs/providers/memory.js",
+        "builtinId": "internal/vfs/providers/memory",
+        "line": 15,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/vfs/providers/real.js",
+        "builtinId": "internal/vfs/providers/real",
+        "line": 10,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/vfs/providers/sea.js",
+        "builtinId": "internal/vfs/providers/sea",
+        "line": 19,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/vfs/providers/ziparchive.js",
+        "builtinId": "internal/vfs/providers/ziparchive",
+        "line": 16,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/vfs/sea.js",
+        "builtinId": "internal/vfs/sea",
+        "line": 83,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/vfs/setup.js",
+        "builtinId": "internal/vfs/setup",
+        "line": 14,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/vfs/streams.js",
+        "builtinId": "internal/vfs/streams",
+        "line": 7,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/vfs/watcher.js",
+        "builtinId": "internal/vfs/watcher",
+        "line": 14,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/webstreams/adapters.js",
+        "builtinId": "internal/webstreams/adapters",
+        "line": 59,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/webstreams/readablestream.js",
+        "builtinId": "internal/webstreams/readablestream",
+        "line": 146,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/zip/archive.js",
+        "builtinId": "internal/zip/archive",
+        "line": 32,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/zip/binary.js",
+        "builtinId": "internal/zip/binary",
+        "line": 23,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/zip/buffer.js",
+        "builtinId": "internal/zip/buffer",
+        "line": 34,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/zip/compression.js",
+        "builtinId": "internal/zip/compression",
+        "line": 21,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "kMaxLength"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/zip/constants.js",
+        "builtinId": "internal/zip/constants",
+        "line": 13,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "FastBuffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/zip/entry.js",
+        "builtinId": "internal/zip/entry",
+        "line": 44,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer",
+          "kMaxLength"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/zip/extra-fields.js",
+        "builtinId": "internal/zip/extra-fields",
+        "line": 19,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/zip/file.js",
+        "builtinId": "internal/zip/file",
+        "line": 47,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer",
+          "kMaxLength"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/zip/header-builders.js",
+        "builtinId": "internal/zip/header-builders",
+        "line": 18,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/net.js",
+        "builtinId": "net",
+        "line": 73,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/querystring.js",
+        "builtinId": "querystring",
+        "line": 40,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/stream.js",
+        "builtinId": "stream",
+        "line": 49,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/stream/consumers.js",
+        "builtinId": "stream/consumers",
+        "line": 18,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/string_decoder.js",
+        "builtinId": "string_decoder",
+        "line": 31,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/tls.js",
+        "builtinId": "tls",
+        "line": 68,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/util.js",
+        "builtinId": "util",
+        "line": 57,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/v8.js",
+        "builtinId": "v8",
+        "line": 38,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/v8.js",
+        "builtinId": "v8",
+        "line": 65,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "FastBuffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/worker_threads.js",
+        "builtinId": "worker_threads",
+        "line": 33,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "markAsUntransferable",
+          "isMarkedAsUntransferable"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/zlib.js",
+        "builtinId": "zlib",
+        "line": 69,
+        "kind": "require",
+        "target": "buffer",
+        "computed": false,
+        "requestedExports": [
+          "Buffer",
+          "kMaxLength"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/zlib.js",
+        "builtinId": "zlib",
+        "line": 78,
+        "kind": "require",
+        "target": "internal/buffer",
+        "computed": false,
+        "requestedExports": [
+          "FastBuffer"
+        ],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      }
+    ],
+    "nativeRegisteredFunctions": 37,
+    "nativeRegisteredConstants": 2,
+    "scope": "static syntax plus whole original C++ source review; not full backend catalog",
+    "completeGraphReconciled": false
+  },
+  "exports": [
+    {
+      "name": "atob",
+      "kind": "function",
+      "callback": "Atob",
+      "registrationLine": 2027,
+      "signature": "(string) -> one-byte string | negative decoding status",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "btoa",
+      "kind": "function",
+      "callback": "Btoa",
+      "registrationLine": 2028,
+      "signature": "(string) -> ASCII base64 string | negative encoding status",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "setBufferPrototype",
+      "kind": "function",
+      "callback": "SetBufferPrototype",
+      "registrationLine": 2030,
+      "signature": "(object) -> undefined; requires genuine principal Realm",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "byteLengthUtf8",
+      "kind": "function",
+      "callback": "SlowByteLengthUtf8",
+      "registrationLine": 2034,
+      "signature": "(string) -> byte count",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "copy",
+      "kind": "function",
+      "callback": "SlowCopy",
+      "registrationLine": 2037,
+      "signature": "(sourceView, targetView, targetStart:Number, sourceStart:Number, count:Number) -> copied:Number",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "compare",
+      "kind": "function",
+      "callback": "Compare",
+      "registrationLine": 2038,
+      "signature": "(leftView, rightView) -> -1 | 0 | 1",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "compareOffset",
+      "kind": "function",
+      "callback": "CompareOffset",
+      "registrationLine": 2039,
+      "signature": "(targetView, sourceView, targetStart?, sourceStart?, targetEnd?, sourceEnd?) -> -1 | 0 | 1",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "fill",
+      "kind": "function",
+      "callback": "Fill",
+      "registrationLine": 2040,
+      "signature": "(targetView, value, start, end, encoding) -> undefined | -1 invalid fill | -2 out of bounds; numeric fill uses actual Uint32 conversion",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "indexOfBuffer",
+      "kind": "function",
+      "callback": "IndexOfBuffer",
+      "registrationLine": 2041,
+      "signature": "(haystackView, needleView, offset:Number, encoding:Int32, forward:boolean, end:Number) -> index | -1",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "indexOfNumber",
+      "kind": "function",
+      "callback": "SlowIndexOfNumber",
+      "registrationLine": 2044,
+      "signature": "(haystackView, needle:Uint32, offset:Number, forward:boolean, end:Number) -> index | -1",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "indexOfString",
+      "kind": "function",
+      "callback": "IndexOfString",
+      "registrationLine": 2047,
+      "signature": "(haystackView, needle:string, offset:Number, encoding:Int32, forward:boolean, end:Number) -> index | -1",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "copyArrayBuffer",
+      "kind": "function",
+      "callback": "CopyArrayBuffer",
+      "registrationLine": 2051,
+      "signature": "(target:ArrayBuffer, targetStart:Uint32, source:ArrayBuffer, sourceStart:Uint32, count:Uint32) -> undefined",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "createUnsafeArrayBuffer",
+      "kind": "function",
+      "callback": "CreateUnsafeArrayBuffer",
+      "registrationLine": 2055,
+      "signature": "(length:Number) -> ArrayBuffer; exactly one argument",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "arrayBufferAlignedOffset",
+      "kind": "function",
+      "callback": "ArrayBufferAlignedOffset",
+      "registrationLine": 2057,
+      "signature": "(buffer:ArrayBuffer, alignment:Number) -> offset:Number; positive power of two, enough storage",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "swap16",
+      "kind": "function",
+      "callback": "Swap16",
+      "registrationLine": 2059,
+      "signature": "(view) -> undefined; mutates actual bytes; byte length must be divisible by 2",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "swap32",
+      "kind": "function",
+      "callback": "Swap32",
+      "registrationLine": 2060,
+      "signature": "(view) -> undefined; mutates actual bytes; byte length must be divisible by 4",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "swap64",
+      "kind": "function",
+      "callback": "Swap64",
+      "registrationLine": 2061,
+      "signature": "(view) -> undefined; mutates actual bytes; byte length must be divisible by 8",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "isUtf8",
+      "kind": "function",
+      "callback": "IsUtf8",
+      "registrationLine": 2063,
+      "signature": "(TypedArray | ArrayBuffer | SharedArrayBuffer) -> boolean",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "isAscii",
+      "kind": "function",
+      "callback": "IsAscii",
+      "registrationLine": 2065,
+      "signature": "(TypedArray | ArrayBuffer | SharedArrayBuffer) -> boolean",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "isLatin1",
+      "kind": "function",
+      "callback": "IsLatin1",
+      "registrationLine": 2067,
+      "signature": "(string) -> boolean",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "mask",
+      "kind": "function",
+      "callback": "Mask",
+      "registrationLine": 2068,
+      "signature": "(sourceView, targetView, targetStart:Number, count:Number, mask:Uint32) -> boolean; overlapping spans allowed",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "stringLengthUtf8",
+      "kind": "function",
+      "callback": "StringLengthUtf8",
+      "registrationLine": 2071,
+      "signature": "(TypedArray | ArrayBuffer | SharedArrayBuffer) -> UTF-16 code-unit count",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "asciiSlice",
+      "kind": "function",
+      "callback": "StringSlice<ASCII>",
+      "registrationLine": 2087,
+      "signature": "(view, start?, end?) -> encoded string; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "base64Slice",
+      "kind": "function",
+      "callback": "StringSlice<BASE64>",
+      "registrationLine": 2088,
+      "signature": "(view, start?, end?) -> encoded string; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "base64urlSlice",
+      "kind": "function",
+      "callback": "StringSlice<BASE64URL>",
+      "registrationLine": 2090,
+      "signature": "(view, start?, end?) -> encoded string; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "latin1Slice",
+      "kind": "function",
+      "callback": "StringSlice<LATIN1>",
+      "registrationLine": 2091,
+      "signature": "(view, start?, end?) -> encoded string; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "hexSlice",
+      "kind": "function",
+      "callback": "StringSlice<HEX>",
+      "registrationLine": 2092,
+      "signature": "(view, start?, end?) -> encoded string; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "ucs2Slice",
+      "kind": "function",
+      "callback": "StringSlice<UCS2>",
+      "registrationLine": 2093,
+      "signature": "(view, start?, end?) -> encoded string; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "utf8Slice",
+      "kind": "function",
+      "callback": "StringSlice<UTF8>",
+      "registrationLine": 2094,
+      "signature": "(view, start?, end?) -> encoded string; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "base64Write",
+      "kind": "function",
+      "callback": "StringWrite<BASE64>",
+      "registrationLine": 2096,
+      "signature": "(targetView, string, offset?, maxLength?) -> bytes written; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "base64urlWrite",
+      "kind": "function",
+      "callback": "StringWrite<BASE64URL>",
+      "registrationLine": 2097,
+      "signature": "(targetView, string, offset?, maxLength?) -> bytes written; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "hexWrite",
+      "kind": "function",
+      "callback": "StringWrite<HEX>",
+      "registrationLine": 2098,
+      "signature": "(targetView, string, offset?, maxLength?) -> bytes written; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "ucs2Write",
+      "kind": "function",
+      "callback": "StringWrite<UCS2>",
+      "registrationLine": 2099,
+      "signature": "(targetView, string, offset?, maxLength?) -> bytes written; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "asciiWriteStatic",
+      "kind": "function",
+      "callback": "SlowWriteString<ASCII>",
+      "registrationLine": 2103,
+      "signature": "(targetView, string, offset?, maxLength?) -> bytes written; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "latin1WriteStatic",
+      "kind": "function",
+      "callback": "SlowWriteString<LATIN1>",
+      "registrationLine": 2108,
+      "signature": "(targetView, string, offset?, maxLength?) -> bytes written; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "utf8WriteStatic",
+      "kind": "function",
+      "callback": "SlowWriteString<UTF8>",
+      "registrationLine": 2113,
+      "signature": "(targetView, string, offset?, maxLength?) -> bytes written; original StringBytes encoding",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "setDetachKey",
+      "kind": "function",
+      "callback": "SetDetachKey",
+      "registrationLine": 2117,
+      "signature": "(buffer:ArrayBuffer, key:any) -> undefined; native key, not JS property",
+      "implementationStatus": "original native binding not integrated",
+      "owningLayer": "SpiderMonkey native Node embedding, consuming original node_buffer.cc",
+      "validationStatus": "not yet runtime checked through original guest binding"
+    },
+    {
+      "name": "kMaxLength",
+      "kind": "number",
+      "source": "actual Uint8Array::kMaxLength; engine address-space limit",
+      "implementationStatus": "original binding not integrated; do not copy native host constant"
+    },
+    {
+      "name": "kStringMaxLength",
+      "kind": "number",
+      "source": "actual String::kMaxLength",
+      "implementationStatus": "original binding not integrated; do not copy native host constant"
+    }
+  ],
+  "errorsAndAssertions": {
+    "sourceErrorCodes": [
+      "ERR_BUFFER_CONTEXT_NOT_AVAILABLE",
+      "ERR_BUFFER_OUT_OF_BOUNDS",
+      "ERR_MEMORY_ALLOCATION_FAILED",
+      "ERR_OUT_OF_RANGE"
+    ],
+    "validationMacros": [
+      "THROW_AND_RETURN_IF_NOT_BUFFER",
+      "THROW_AND_RETURN_IF_NOT_STRING",
+      "ParseArrayIndex: IntegerValue plus genuine pending-exception propagation"
+    ],
+    "rangeError": "createUnsafeArrayBuffer wrong argument count: Invalid array buffer length",
+    "assertions": "Keep every original CHECK and source argument contract, including principal Realm and validated slow/fast entry assumptions; do not replace with fake success",
+    "remaining": "complete per-export exceptional path/native differential, OOM and limits"
+  },
+  "sharedStateAndOwnership": [
+    {
+      "contract": "principal Realm buffer prototype",
+      "source": "SetBufferPrototype and Buffer::New(env, backing, offset, length)",
+      "requirement": "One actual principal Realm owns a rooted prototype; original Kind check must reflect real identity; native construction installs that actual prototype",
+      "status": "not implemented"
+    },
+    {
+      "contract": "allocation and external backing",
+      "source": "Buffer::New/Copy overloads; AdoptIntoBackingStore; AllocateUnsafeArrayBuffer",
+      "requirement": "real allocation, bounded lengths, initialized vs uninitialized behavior from actual zero_fill_all_buffers option and actual snapshot mode, exactly-once original deleter; no escaped temporary spans",
+      "status": "general Buffer allocation not implemented; existing tracing external backing is domain-specific"
+    },
+    {
+      "contract": "view aliases and retained spans",
+      "source": "CopyImpl, StringSlice, ArrayBufferViewContents",
+      "requirement": "retain actual backing, ByteOffset and ByteLength; preserve fixed/resizable/shared aliases; shared/shared copy uses atomics, mixed copy follows original memmove path; detached/immutable handling in genuine engine copy API",
+      "status": "existing codec SpanOwner is a reviewed reusable primitive; full Buffer contracts unimplemented"
+    },
+    {
+      "contract": "stable native pointer/alignment",
+      "source": "ArrayBufferAlignedOffset and ab->Data",
+      "requirement": "stabilize actual inline backing before returning an address; returned alignment remains valid through moving GC; never invent an offset or enter fake snapshot mode",
+      "status": "existing codec stabilization reusable; Buffer API not connected"
+    },
+    {
+      "contract": "detach key",
+      "source": "SetDetachKey; lib/internal/buffer.js markAsUntransferable",
+      "requirement": "engine-traced arbitrary Value, SameValue authorized detach, IsDetachable independent of the key value, transfer/steal/serialization enforcement, hidden from JS property operations, realm wrapping and moving-GC safety",
+      "status": "engine prerequisite verified on all four hosts with 23 controls per host, 12 shared native controls; original Buffer binding remains unimplemented",
+      "evidence": "buffer-memory-engine-check.json"
+    },
+    {
+      "contract": "custom FreeCallback lifetime",
+      "source": "whole original CallbackInfo class and New(env,data,len,callback,hint)",
+      "requirement": "stable process Environment, cleanup queue, genuine weak Global<ArrayBuffer>, mutex-protected callback retirement, external-memory accounting and move-only foreground SetImmediateThreadsafe; clean/drain before JSContext destruction; never store current frame-local Environment",
+      "status": "missing; current frame-local codec Environment is unsafe for escaping callback owners"
+    },
+    {
+      "contract": "fast method metadata",
+      "source": "CFunction definitions and SetFastMethod registrations",
+      "requirement": "retain actual function/signature metadata; choose original slow callback for ordinary SpiderMonkey ABI; do not advertise V8 fast JIT support or fabricate snapshot external references",
+      "status": "not implemented"
+    },
+    {
+      "contract": "strings/encodings and roots",
+      "source": "StringBytes and original simdutf/nbytes algorithms",
+      "requirement": "true UTF-16/one-byte/UTF-8 lengths and writes, external one-byte resource access, actual numeric conversions and return widths, EscapableHandleScope promotion of real roots",
+      "status": "StringBytes/decoder foundations compiled; additional Buffer primitives and numeric/root APIs missing"
+    }
+  ],
+  "schedulingLifecycleCancellation": {
+    "ordinaryMethods": "synchronous; native callback execution/GC admission still required",
+    "externalFreeCallback": "can originate from backing-store finalization on another thread; post exactly once to stable Environment foreground work or synchronous original shutdown Clean",
+    "liveness": "cleanup queue membership and native immediate ownership; do not make release callback depend on dead Frame",
+    "forkWorkers": "full duplicated environment/backing ownership and cancellation/teardown remain unaudited; no four-host conformance claim"
+  },
+  "archivedReuse": [
+    {
+      "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+      "paths": [
+        "third_party/node-core/retained-backing-store.h",
+        "third_party/node-core/retained-backing-store.md",
+        "third_party/node-core/worker-startup-owner.h",
+        "third_party/node-core/host-transfer-order.md"
+      ],
+      "evidence": ".context/davao-handoff/BACKEND-SALVAGE.md",
+      "admission": "review mechanisms against actual source contracts; old public Buffer JS and excerpt generators are excluded"
+    }
+  ],
+  "validationObligations": [
+    "Shared native-V8/guest detach tests, actual JSAPI and serialization scopes, arbitrary keys, RAB storage, realm wrapping, moving GC and view invalidation on all four hosts",
+    "Full source binding export/property and source error/assertion differential; original internal/buffer and public buffer execution in same module environment",
+    "Allocation failures, real limits and flags, zero length, unsafe allocation, alignment across GC, nested callbacks and prototype principal identity",
+    "Aliased copies, shared/shared atomics and mixed shared buffers, resizable/out-of-bounds/detached views and concurrency",
+    "All codecs, search bounds and numeric conversions, UTF-16 surrogate cases, swaps, masks and unchanged source assertions",
+    "Original custom FreeCallback GC/shutdown ordering, weak handles, concurrent finalization, reentrant cleanup and foreground queue draining",
+    "Startup evidence and separate CommonJS/ESM remain distinct from Buffer binding checks"
+  ],
+  "dependencyOrder": [
+    {
+      "step": 1,
+      "work": "Engine allocation/view/detach/stable-backing primitives; preserve existing codec and array-buffer behavior"
+    },
+    {
+      "step": 2,
+      "work": "Stable Environment ownership, cleanup queue, weak handle and foreground dispatch for complete native CallbackInfo"
+    },
+    {
+      "step": 3,
+      "work": "Complete original node_buffer.cc import/compile and truthful API adaptation, original errors/metadata, real principal prototype; no algorithm excerpts"
+    },
+    {
+      "step": 4,
+      "work": "Shared native and four-host binding/original-source controls; retain all failures and missing contracts"
+    },
+    {
+      "step": 5,
+      "work": "Resolve genuine startup mksnapshot and later blockers; verify startup, then reconcile broader graph and stop for roadmap review"
+    }
+  ],
+  "startup": {
+    "status": "still fails on missing native buffer in original buffer.js",
+    "mksnapshot": "separate stack-limit policy and startup snapshot dependency still missing",
+    "cjsEntry": "unproven",
+    "esmEntry": "unproven"
+  },
+  "fullCatalogComplete": false,
+  "broaderRoadmapAuthorized": false,
+  "engineMemoryPrerequisite": {
+    "implemented": true,
+    "casesPerHost": 23,
+    "nativeSharedCases": 12,
+    "hosts": [
+      "Node",
+      "Chromium",
+      "Firefox",
+      "WebKit"
+    ],
+    "evidence": "buffer-memory-engine-check.json",
+    "originalBindingImplemented": false,
+    "nativeCallbackLifetimeImplemented": false,
+    "scope": "privileged engine controls, not original Buffer binding or startup acceptance"
+  }
+}

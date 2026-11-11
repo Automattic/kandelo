@@ -18,6 +18,7 @@
 #include "js/Wrapper.h"
 #include "shell/jsshell.h"
 #include "shell/node-upstream/async-wrap.h"
+#include "shell/node-upstream/buffer-memory.h"
 #include "shell/node-upstream/codecs.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
@@ -337,7 +338,8 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
   };
   JS::RootedObject api(cx, JS_NewPlainObject(cx));
   if (!api || !JS_DefineFunctions(cx, api, functions) ||
-      !DefineTraceAgentTestAPI(cx, api) || !DefineContinuationTestAPI(cx, api)) {
+      !DefineTraceAgentTestAPI(cx, api) || !DefineContinuationTestAPI(cx, api) ||
+      !DefineBufferMemoryTestAPI(cx, api)) {
     return false;
   }
   JS::RootedObject global(cx, JS::CurrentGlobalOrNull(cx));

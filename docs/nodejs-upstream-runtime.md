@@ -20,6 +20,9 @@ four hosts. Continuation-preserved engine data and the complete original
 async-context native source are also integrated; active JavaScript consumers
 remain guarded until genuine bootstrap completes. Full observer exception/fatal
 routing remains incomplete.
+Engine ArrayBuffers now retain native detach keys and enforce them during
+transfer and serialization. This verified Buffer prerequisite is separate from
+the still-unimplemented original native Buffer binding.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -1349,3 +1352,53 @@ products, successor ABI or overall suites were built or run.
 See [continuation-contracts.json](../tests/nodejs/upstream/continuation-contracts.json)
 and [continuation-engine-check.json](../tests/nodejs/upstream/continuation-engine-check.json)
 for exact coverage, retained failures, ownership limits and artifact identities.
+
+## Native Buffer memory prerequisites
+
+Revision 39 adds an engine-traced ArrayBuffer detach-key slot. Ordinary
+transfer, storage extraction, JSAPI detachment and structured-clone transfer
+reject protected storage. The native embedding detach entry checks actual
+SameValue identity, realm wrapping, Wasm/asm.js restrictions and existing
+length pins before invalidating the buffer and its views. Clearing a key
+releases its strong reference. Ordinary properties, frozen objects and
+serialization copies cannot forge or inherit that native state. Existing
+data/length/flag slot offsets are unchanged; reserved-slot counts, inline
+capacity and resizable-buffer metadata use the actual new layout.
+
+Twenty-three memory controls pass on each of Node, Chromium, Firefox and
+WebKit with identical engine and kernel bytes. Twelve shared observations
+match the authenticated native Node reference through its original buffer
+binding. Additional engine controls cover authorized detach, SameValue,
+moving GC, key collection after clearing, foreign realms, native pinning,
+ordinary JSAPI detach and three serialization scopes. These use privileged
+engine controls; they do not execute a replacement native Buffer binding.
+The same artifact passes the previous 492 selected engine observations,
+including 32 expected fatal assertion exits, across 142 guest processes.
+The new memory controls add 92 observations and four guest processes.
+
+The complete original 76,513-byte node_buffer.cc has been authenticated and
+reviewed, but is not yet imported or compiled. Its partial catalog records
+37 functions, two constants, eight direct binding consumers and 100 literal
+buffer/internal-buffer module references. Those references are a syntax
+index, not complete lazy/conditional/worker reachability. In particular,
+the original CallbackInfo retains an Environment and needs a genuine
+cleanup queue, weak ArrayBuffer handle and thread-safe foreground dispatch.
+The current frame-local codec Environment cannot safely serve that owner.
+General Buffer allocation, stable alignment, principal-realm prototype,
+copy semantics and additional native string/number/handle contracts remain
+to be connected to the complete original source.
+
+The initial build-list ordering failure and a pinning-test error expectation
+are retained. SpiderMonkey's existing pinned-length error is RangeError;
+the first test incorrectly expected TypeError. Final browser guest errors
+are empty; separate run-owned Firefox Downloads/Library cleanup attempts
+reported EACCES and their storage was retained. No user permissions changed.
+Normal resolution reuses the tested revision-39 artifact. All 554 source
+records and all 443 JavaScript sources remain byte-identical. Bootstrap
+still stops at native buffer, with mksnapshot separately missing. Empty/simple
+startup, CJS/ESM entrypaths and the full backend catalog remain incomplete.
+No images, canonical products, successor-ABI builds or overall suites ran.
+
+See [buffer-contracts.json](../tests/nodejs/upstream/buffer-contracts.json)
+and [buffer-memory-engine-check.json](../tests/nodejs/upstream/buffer-memory-engine-check.json)
+for contract coverage, exact artifacts, retained attempts and remaining work.
