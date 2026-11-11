@@ -11,7 +11,9 @@ loader and Node bootstrap are not connected; startup, CJS/ESM entrypaths and
 browser execution remain unrun. This prerequisite does not establish module
 compatibility or guest readback of all 443 builtin sources.
 The engine also has callback-backed synthetic modules with focused source-graph
-evidence on the Node host. The native Node ModuleWrap binding is still missing.
+evidence on the Node host. A partial native ModuleWrap binding now uses those
+records and actual source modules through privileged diagnostics. The upstream
+realm/binding loader remains disconnected.
 
 The target remains Node.js 26.13.0, Lithium LTS, source commit
 `18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. Verification on November 10,
@@ -416,9 +418,65 @@ See `synthetic-module-native-reference.json` and `module-wrap-contracts.md`.
 The latter inventories the native ModuleWrap registration and prerequisites;
 full member/error/lifecycle and transitive-consumer coverage remains incomplete.
 
-There is no Node ModuleWrap binding or connected upstream realm/bootstrap yet.
+The native ModuleWrap core below exists; there is no connected upstream realm/bootstrap yet.
 The original builtin source-text compiler helper, Node CJS/ESM entrypaths,
 browsers, complete native differential, security/OOM/finalization and startup
 remain unverified. The successful package emitted 16 compiler warnings and the
 existing instrumentation fallback diagnostic. No canonical image, full product,
 successor-ABI campaign rebuild or overall suite ran.
+
+## Native ModuleWrap core
+
+Revision 21 adds a canonical per-realm native binding with genuine ModuleWrap
+instances. Reserved slots trace engine records, callback state, dependency
+wrappers, host-defined identities and module-source objects. The existing
+canonical context carrier caches the binding; native constructor functions
+retain its private owner. Runtime module hooks route owned records to this
+binding and delegate other records to the prior shell hooks. No finalizer
+owns a persistent root back to itself.
+
+The core compiles complete UTF-16 source strings without rewriting them,
+retains parser request attributes, links ordered dependencies, creates real
+namespaces/live reexports and derives async-graph state from the linked
+dependencies. Attribute retention includes unknown values; the original engine
+unsupported-attribute error is preserved. Status values map explicitly to
+Node's constants. The synthetic callback receives its actual wrapper and is
+released before invocation. The first synthetic failure throws synchronously;
+later evaluation rejects with the same exception. Own lazy `hasAsyncGraph`,
+source pragmas, positive offsets, source-object identity and custom import.meta
+callbacks have bounded control coverage.
+
+Nineteen guest controls passed on the Node host, alongside six separate
+controls against the exact pinned native internal ModuleWrap binding. The
+guest checks include cycles, live imports, top-level await/sync refusal,
+original exception identity, separate realm bindings, GC retention and prior
+shell-hook delegation. Two isolated fatal controls preserve the constructor
+and once-only module-source-object assertions. The same artifact passed all
+15 synthetic-engine, 14 context and 23 private-key regressions, including the
+separate context fatal-invariant control. Expected assertion traps and host
+diagnostics are retained separately from successful runs.
+
+One earlier compile failed on two API mismatches. The first runtime candidate
+built but failed four controls: Boolean properties used an integer overload,
+and the engine discarded unknown attribute values before metadata storage.
+The corrected source and final identified artifact pass the controls. Exact
+input/artifact identities, earlier failures and raw results are in
+`tests/nodejs/upstream/module-wrap-engine-check.json` and its result receipt;
+native-reference evidence is in `module-wrap-native-reference.json`.
+
+```sh
+scripts/dev-shell.sh node_modules/.bin/tsx \
+  scripts/run-nodejs-private-key-controls.ts /absolute/path/to/js.wasm \
+  /absolute/path/to/new-report.json module-wrap
+```
+
+This remains a partial native binding. Dynamic import, default import.meta
+URL/path/resolve handling, contextify admission, compile caches, required-ESM
+facades, positive deadlines and signal-interruption ownership are explicit
+unimplemented failures. Negative source offsets and embedded-NUL diagnostic
+URLs are also explicit gaps. Source/defer import phases and nested Wasm are
+not established by storing a module-source object. Full native differential,
+security/OOM/finalization, browser hosts and actual upstream startup remain
+unverified. No canonical image, full product, successor-ABI campaign rebuild
+or overall suite ran. The final package reported 16 warnings and the existing
+instrumentation fallback; no fork-behavior claim is made.

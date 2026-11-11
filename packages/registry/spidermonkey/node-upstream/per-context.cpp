@@ -2,6 +2,7 @@
 
 #include "mozilla/Assertions.h"
 
+#include <cstring>
 #include <iterator>
 #include <utility>
 
@@ -21,6 +22,7 @@
 #include "js/ValueArray.h"
 #include "js/Wrapper.h"
 #include "shell/node-upstream/builtin-compiler.h"
+#include "shell/node-upstream/module-wrap.h"
 
 namespace kandelo::node {
 namespace {
@@ -43,7 +45,7 @@ static const JSClass kRuntimeClass = {
     "KandeloNodeRuntime", JSCLASS_HAS_RESERVED_SLOTS(FirstSymbol + std::size(kSymbols))};
 enum ContextSlot {
   ContextPhase, OwningGlobal, RuntimeOwner, Exports, Primordials,
-  PrivateSymbols, OrdinarySymbols, CompletedScripts, ContextSlots
+  PrivateSymbols, OrdinarySymbols, CompletedScripts, ModuleWrapBinding, ContextSlots
 };
 static const JSClass kContextClass = {
     "KandeloNodeContext", JSCLASS_HAS_RESERVED_SLOTS(ContextSlots)};
@@ -233,6 +235,27 @@ bool InitializeCurrentContext(JSContext* cx, JS::HandleObject runtime) {
 JSObject* GetCurrentContextExports(JSContext* cx, JS::HandleObject runtime) {
   JS::RootedObject state(cx, ReadyContext(cx, runtime));
   return state ? &JS::GetReservedSlot(state, Exports).toObject() : nullptr;
+}
+
+JS::Symbol* GetRuntimeSymbol(JSContext* cx, JS::HandleObject runtime, const char* name) {
+  if (!RuntimeReady(cx, runtime)) return nullptr;
+  for (size_t i = 0; i < std::size(kSymbols); i++) {
+    if (std::strcmp(name, kSymbols[i].name) == 0)
+      return JS::GetReservedSlot(runtime, FirstSymbol + i).toSymbol();
+  }
+  Report(cx, "Unknown native runtime symbol");
+  return nullptr;
+}
+
+JSObject* GetCurrentContextModuleWrapBinding(JSContext* cx, JS::HandleObject runtime) {
+  JS::RootedObject state(cx, ReadyContext(cx, runtime));
+  if (!state) return nullptr;
+  JS::Value cached = JS::GetReservedSlot(state, ModuleWrapBinding);
+  if (cached.isObject()) return &cached.toObject();
+  JS::RootedObject binding(cx, CreateModuleWrapBinding(cx, runtime));
+  if (!binding) return nullptr;
+  JS::SetReservedSlot(state, ModuleWrapBinding, JS::ObjectValue(*binding));
+  return binding;
 }
 
 JSObject* InspectCurrentContextForTesting(JSContext* cx, JS::HandleObject runtime) {

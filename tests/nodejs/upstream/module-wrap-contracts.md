@@ -85,8 +85,8 @@ namespace identity, GC retention and the unchanged JSON path. Shell debug
 getters intentionally hide synthetic internals, so these controls observe
 lifecycle through actual link/evaluation operations and Promise results.
 Exact inputs/artifacts and all failed attempts are in
-`synthetic-module-engine-check.json`. Node ModuleWrap and upstream startup
-remain unimplemented.
+`synthetic-module-engine-check.json`. The subsequent native core below is
+partial; upstream startup remains unimplemented.
 
 ## Native reference observations
 
@@ -111,8 +111,29 @@ claim that engine-only controls prove Node ModuleWrap compatibility.
 
 ## Remaining integration and validation
 
-Implement the native wrapper and binding against real synthetic and source
-module records. Reconcile timeout/interrupt state and context microtask queues
+The initial native core now caches one binding per initialized context and owns
+real synthetic/source records, traced callbacks and copied ordered dependency
+edges. Nineteen Node-host guest controls and six separate pinned native
+internal-binding controls cover its bounded contracts. It preserves the native
+distinction between a first synthetic failure throwing and later evaluation
+returning a rejected Promise. Successful repeated synthetic evaluation returns
+the same Promise. This refines the earlier public VM observations with direct
+native-binding evidence; neither reference set proves complete equivalence.
+
+The core implements constructors for the current realm, request metadata,
+link/instantiate/evaluate(-1,false)/evaluateSync, live exports/namespaces,
+status/error mapping, lazy async-graph state, source-object storage and custom
+import.meta callback registration. The callback is consumed before invocation,
+and real prior shell hooks continue to own non-Node records. Source compiler
+configuration enables the actual import-attribute capability. Metadata retains
+all parsed values while preserving the unsupported-key error on instantiation.
+The constructor and source-object assertions have isolated fatal controls.
+See `module-wrap-engine-check.json` for exact identities and failed attempts.
+
+Complete dynamic import, default import.meta URL/path/resolve, contextify,
+cache admission/generation and required-module facades. These paths currently
+raise explicit implementation errors. Negative source offsets and embedded-NUL
+diagnostic URLs also remain explicit gaps. Reconcile real timeout/interrupt state and context microtask queues
 with the real guest process. Connect builtin compiler/source registry and
 canonical per-context state to one realm/binding owner, then run complete
 `internal/bootstrap/realm` with actual errors/util/process contracts. Preserve

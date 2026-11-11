@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T00:55:03.218769+00:00",
+  "scope": "Exact pinned native Node internal ModuleWrap binding only; no guest/browser/startup evidence",
+  "executableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "controlPath": "tests/nodejs/upstream/module-wrap-native-controls.cjs",
+  "controlSha256": "a8f13f24e5df9047daf52967448cdc92b6cff70d17e4c6f38ee4089acc04f15d",
+  "environmentKeys": [
+    "PATH",
+    "LANG",
+    "TZ"
+  ],
+  "exit": 0,
+  "stderr": "(node:7488) internal/test/binding: These APIs are for internal testing only. Do not use them.\n(Use `native-node --trace-warnings ...` to show where the warning was created)\n",
+  "nativeResult": {
+    "kind": "native-module-wrap-reference-only",
+    "version": "v26.13.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "v8": "14.6.202.34-node.40",
+    "execArgv": [
+      "--expose-internals"
+    ],
+    "cases": 6,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "native-synthetic-callback-receiver-and-success-promise",
+        "status": "pass"
+      },
+      {
+        "name": "native-first-synthetic-failure-throws-then-rejects",
+        "status": "pass"
+      },
+      {
+        "name": "native-request-attributes-are-complete-and-frozen",
+        "status": "pass"
+      },
+      {
+        "name": "native-source-synthetic-graph-and-live-bindings",
+        "status": "pass"
+      },
+      {
+        "name": "native-custom-metadata-callback-identity",
+        "status": "pass"
+      },
+      {
+        "name": "native-source-object-missing-error-and-retained-value",
+        "status": "pass"
+      }
+    ],
+    "limits": [
+      "Bounded native internal binding reference only",
+      "No guest startup or browser conformance",
+      "No complete method/error/lifecycle/security/OOM differential"
+    ]
+  },
+  "priorPublicVmReference": "synthetic-module-native-reference.json"
+}

@@ -1,0 +1,138 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -30,6 +30,7 @@
+ SOURCES += [
+     "node-upstream/builtin-compiler.cpp",
+     "node-upstream/builtin-source-registry.cpp",
++    "node-upstream/module-wrap.cpp",
+     "node-upstream/per-context.cpp",
+     "node-upstream/private-key-test-api.cpp",
+ ]
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -14,6 +14,7 @@
+ #include "builtin/MapObject.h"
+ #include "js/CompileOptions.h"
+ #include "js/GCVector.h"
++#include "js/Modules.h"
+ #include "shell/ModuleLoader.h"
+ #include "threading/ConditionVariable.h"
+ #include "threading/LockGuard.h"
+@@ -213,6 +214,10 @@
+ 
+   // External owner root released with this runtime, never by a JS finalizer.
+   JS::PersistentRootedObject upstreamNodeRuntime;
++  bool upstreamModuleHooksInstalled = false;
++  JS::ModuleResolveHook upstreamPreviousModuleResolve = nullptr;
++  JS::ModuleMetadataHook upstreamPreviousModuleMetadata = nullptr;
++  JS::ModuleDynamicImportHook upstreamPreviousModuleDynamicImport = nullptr;
+ 
+ #ifdef SINGLESTEP_PROFILING
+   Vector<StackChars, 0, SystemAllocPolicy> stacks;
+--- a/js/src/builtin/ModuleObject.h
++++ b/js/src/builtin/ModuleObject.h
+@@ -70,6 +70,7 @@
+   enum {
+     SpecifierSlot = 0,
+     FirstUnsupportedAttributeKeySlot,
++    AttributesDataSlot,
+     ModuleTypeSlot,
+     SlotCount
+   };
+@@ -84,6 +85,9 @@
+                                                    JS::ModuleType moduleType);
+ 
+   JSAtom* specifier() const;
++  JSObject* attributesData() const {
++    return &getReservedSlot(AttributesDataSlot).toObject();
++  }
+   JS::ModuleType moduleType() const;
+ 
+   // We process import attributes earlier in the process, but according to the
+--- a/js/src/builtin/ModuleObject.cpp
++++ b/js/src/builtin/ModuleObject.cpp
+@@ -18,6 +18,7 @@
+ #include "frontend/Stencil.h"
+ #include "gc/GCContext.h"
+ #include "gc/Tracer.h"
++#include "js/Array.h"
+ #include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin, JS::LimitedColumnNumberOneOrigin
+ #include "js/friend/ErrorMessages.h"  // JSMSG_*
+ #include "js/Modules.h"  // JS::GetModulePrivate, JS::ModuleDynamicImportHook, JS::ModuleType
+@@ -252,22 +253,40 @@
+     return nullptr;
+   }
+ 
+-  return create(cx, specifier, moduleType);
++  Rooted<ModuleRequestObject*> self(cx, create(cx, specifier, moduleType));
++  if (!self) return nullptr;
++  // Retain exact parser attributes for embedding loaders. ModuleType alone
++  // loses unknown keys/values and cannot describe an original Node request.
++  RootedValueVector values(cx);
++  for (const auto& attribute : maybeAttributes) {
++    if (!values.append(StringValue(attribute.key())) ||
++        !values.append(StringValue(attribute.value()))) return nullptr;
++  }
++  RootedObject attributes(cx, JS::NewArrayObject(cx, values));
++  if (!attributes) return nullptr;
++  self->setReservedSlot(AttributesDataSlot, ObjectValue(*attributes));
++  return self;
+ }
+ 
+ /* static */
+ ModuleRequestObject* ModuleRequestObject::create(JSContext* cx,
+                                                  Handle<JSAtom*> specifier,
+                                                  JS::ModuleType moduleType) {
+-  ModuleRequestObject* self =
+-      NewObjectWithGivenProto<ModuleRequestObject>(cx, nullptr);
++  Rooted<ModuleRequestObject*> self(
++      cx, NewObjectWithGivenProto<ModuleRequestObject>(cx, nullptr));
+   if (!self) {
+     return nullptr;
+   }
+ 
+   self->initReservedSlot(SpecifierSlot, StringOrNullValue(specifier));
+   self->initReservedSlot(ModuleTypeSlot, ModuleTypeToValue(moduleType));
+-
++  RootedValueVector values(cx);
++  if (moduleType == JS::ModuleType::JSON &&
++      (!values.append(StringValue(cx->names().type)) ||
++       !values.append(StringValue(cx->names().json)))) return nullptr;
++  RootedObject attributes(cx, JS::NewArrayObject(cx, values));
++  if (!attributes) return nullptr;
++  self->initReservedSlot(AttributesDataSlot, ObjectValue(*attributes));
+   return self;
+ }
+ 
+@@ -1916,19 +1935,18 @@
+     // host hook is deeply unclear, and so right now embedders will not have
+     // the ability to alter or extend the set of supported attributes.
+     // See https://bugzilla.mozilla.org/show_bug.cgi?id=1840723.
+-    if (key == TaggedParserAtomIndex::WellKnown::type()) {
+-      auto value = attribute->right()->as<NameNode>().atom();
+-      markUsedByStencil(value);
+-
+-      StencilModuleImportAttribute attributeStencil(key, value);
+-      if (!request.attributes.append(attributeStencil)) {
+-        js::ReportOutOfMemory(fc_);
+-        return false;
+-      }
+-    } else {
+-      if (!request.firstUnsupportedAttributeKey) {
+-        request.firstUnsupportedAttributeKey = key;
+-      }
++    // Keep the parser's complete metadata for the native Node loader. Retain
++    // the engine's unsupported-key marker and its normal evaluation error.
++    auto value = attribute->right()->as<NameNode>().atom();
++    markUsedByStencil(value);
++    StencilModuleImportAttribute attributeStencil(key, value);
++    if (!request.attributes.append(attributeStencil)) {
++      js::ReportOutOfMemory(fc_);
++      return false;
++    }
++    if (key != TaggedParserAtomIndex::WellKnown::type() &&
++        !request.firstUnsupportedAttributeKey) {
++      request.firstUnsupportedAttributeKey = key;
+     }
+   }
+ 

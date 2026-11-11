@@ -7,17 +7,18 @@ import { runCentralizedProgram } from "../host/test/centralized-test-helper";
 
 const [programArgument, reportArgument, modeArgument = "private-keys"] = process.argv.slice(2);
 if (!programArgument || !reportArgument || process.argv.length > 5 ||
-    !["private-keys", "per-context", "synthetic-modules"].includes(modeArgument)) {
-  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules]");
+    !["private-keys", "per-context", "synthetic-modules", "module-wrap"].includes(modeArgument)) {
+  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap]");
 }
 const perContext = modeArgument === "per-context";
 const synthetic = modeArgument === "synthetic-modules";
-const expectedKind = synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
-const expectedCases = synthetic ? 15 : perContext ? 14 : 23;
+const moduleWrap = modeArgument === "module-wrap";
+const expectedKind = moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
+const expectedCases = moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
 const program = resolve(programArgument);
 const reportPath = resolve(reportArgument);
 const kernel = resolveBinary("kernel.wasm");
-const fixturePath = resolve(synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
+const fixturePath = resolve(moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
   : "tests/nodejs/upstream/private-key-engine-controls.js");
 const fixture = readFileSync(fixturePath, "utf8");
 function identity(path: string) {
@@ -80,6 +81,19 @@ if (perContext) {
     expect(result.stderr.includes("Node per-context exports invariant"), JSON.stringify(result));
     expect(!result.stdout.includes("UNEXPECTED_"), JSON.stringify(result));
   });
+}
+if (moduleWrap) {
+  for (const [name, operation, assertion] of [
+    ["module-constructor-invariant-remains-fatal", "ModuleWrap('fixture:invalid', undefined, [], () => {});", "Node ModuleWrap constructor invariant"],
+    ["module-source-object-invariant-remains-fatal", "const module = new ModuleWrap('fixture:source', undefined, [], () => {}); module.setModuleSourceObject({}); module.setModuleSourceObject({});", "Node module source object initialization invariant"],
+  ]) {
+    await run(name, ["js", "--kandelo-test-upstream", "-e",
+      "__kandeloUpstreamTest.initializeContext(); const { ModuleWrap } = __kandeloUpstreamTest.getModuleWrapBinding(); try { " + operation + " print('UNEXPECTED_RETURN'); } catch (error) { print('UNEXPECTED_CATCH'); }"], (result) => {
+      expect(result.exitCode !== 0, JSON.stringify(result));
+      expect(result.stderr.includes(assertion), JSON.stringify(result));
+      expect(!result.stdout.includes("UNEXPECTED_"), JSON.stringify(result));
+    });
+  }
 }
 const report = {
   schema: 1, completedAt: new Date().toISOString(),

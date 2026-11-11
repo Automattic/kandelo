@@ -23,6 +23,8 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/private-key-test-api.cpp" \
     "$node_consumer/private-key-test-api.h" \
     "$node_consumer/per-context.cpp" \
+    "$node_consumer/module-wrap.cpp" \
+    "$node_consumer/module-wrap.h" \
     "$node_consumer/per-context.h" "$shell_sources/"
 # Keep the portable registry's include names independent of Mozilla shell paths.
 # Mozilla's checker treats js/src as the root of internal header include names.

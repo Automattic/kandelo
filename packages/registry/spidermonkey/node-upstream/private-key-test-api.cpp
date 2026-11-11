@@ -62,7 +62,7 @@ bool InitializePrivateKey(JSContext* cx, unsigned argc, JS::Value* vp) {
   return true;
 }
 
-enum class ContextOperation { Initialize, GetExports, Inspect };
+enum class ContextOperation { Initialize, GetExports, Inspect, ModuleWrapBinding };
 
 bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
                           ContextOperation operation) {
@@ -96,6 +96,8 @@ bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
     if (ok) {
       JS::RootedObject value(cx, operation == ContextOperation::Inspect
           ? InspectCurrentContextForTesting(cx, runtime)
+          : operation == ContextOperation::ModuleWrapBinding
+          ? GetCurrentContextModuleWrapBinding(cx, runtime)
           : GetCurrentContextExports(cx, runtime));
       ok = bool(value);
       if (ok) result.setObject(*value);
@@ -123,6 +125,9 @@ bool GetContextExports(JSContext* cx, unsigned argc, JS::Value* vp) {
 }
 bool InspectContext(JSContext* cx, unsigned argc, JS::Value* vp) {
   return ContextOperationCall(cx, argc, vp, ContextOperation::Inspect);
+}
+bool GetModuleWrapBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
+  return ContextOperationCall(cx, argc, vp, ContextOperation::ModuleWrapBinding);
 }
 
 bool EvaluateSyntheticForTesting(JSContext* cx, JS::HandleObject module,
@@ -213,6 +218,7 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
       JS_FN("initializeContext", InitializeContext, 0, 0),
       JS_FN("getContextExports", GetContextExports, 0, 0),
       JS_FN("inspectContext", InspectContext, 0, 0),
+      JS_FN("getModuleWrapBinding", GetModuleWrapBinding, 0, 0),
       JS_FN("newSyntheticModule", NewSyntheticModule, 2, 0),
       JS_FN("setSyntheticExport", SetSyntheticExport, 3, 0),
       JS_FN("moduleNamespace", ModuleNamespaceForTesting, 1, 0),
