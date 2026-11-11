@@ -34,7 +34,8 @@ check('native-process-reads-actual-guest-kernel-metadata',()=>{
   assertEq(Number.isInteger(realm.process.pid)&&realm.process.pid>0,true);
   assertEq(Number.isInteger(realm.process.ppid)&&realm.process.ppid>=0,true);
   const descriptor=Object.getOwnPropertyDescriptor(realm.process,'pid');assertEq(descriptor.writable,false);
-  assertEq(Object.getPrototypeOf(realm.process),Object.prototype);
+  const prototype=Object.getPrototypeOf(realm.process);assertEq(prototype===Object.prototype,false);
+  assertEq(Object.getPrototypeOf(prototype),Object.prototype);assertEq(realm.process.constructor.prototype,prototype);
 });
 check('original-internal-binding-cache-uses-canonical-native-owners',()=>{
   assertEq(realm.internalBinding('module_wrap'),api.getModuleWrapBinding());
@@ -112,7 +113,7 @@ check('reentrant-original-js-bootstrap-cannot-create-another-owner',()=>{
 check('other-realm-has-distinct-loaders-process-and-module-cache',()=>{
   const target=newGlobal({newCompartment:true});api.initializeContext(target);const other=api.initializeRealm(target);
   assertEq(other.require===realm.require,false);assertEq(other.process===realm.process,false);
-  assertEq(Object.getPrototypeOf(other.process),target.Object.prototype);assertEq(other.process.pid,realm.process.pid);
+  assertEq(Object.getPrototypeOf(Object.getPrototypeOf(other.process)),target.Object.prototype);assertEq(other.process.pid,realm.process.pid);
   assertEq(other.require('internal/assert')===realm.require('internal/assert'),false);
   assertEq(other.internalBinding('util').privateSymbols.arrow_message_private_symbol,realm.internalBinding('util').privateSymbols.arrow_message_private_symbol);
   gc();assertEq(other.require('internal/bootstrap/realm').require,other.require);

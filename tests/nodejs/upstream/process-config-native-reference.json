@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T03:31:23.256044+00:00",
+  "scope": "Exact pinned native process/config reference only; native already bootstrapped",
+  "executableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "controlPath": "tests/nodejs/upstream/process-config-native-controls.cjs",
+  "controlSha256": "0cf43a2bc4ac46dbc4ba993f796b22a034ec028d39a46a4a416c67763430ac3c",
+  "environmentKeys": [
+    "PATH",
+    "LANG",
+    "TZ"
+  ],
+  "exit": 0,
+  "stderr": "(node:82338) internal/test/binding: These APIs are for internal testing only. Do not use them.\n(Use `native-node --trace-warnings ...` to show where the warning was created)\n",
+  "nativeResult": {
+    "kind": "native-process-config-reference-only",
+    "version": "v26.13.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "v8": "14.6.202.34-node.40",
+    "cases": 8,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "native-config-binding-is-cached-with-readonly-build-fields",
+        "status": "pass"
+      },
+      {
+        "name": "native-config-default-locale-is-a-real-language-tag",
+        "status": "pass"
+      },
+      {
+        "name": "native-locale-does-not-depend-on-a-public-intl-replacement",
+        "status": "pass"
+      },
+      {
+        "name": "native-process-has-distinct-mutable-class-prototype",
+        "status": "pass"
+      },
+      {
+        "name": "native-process-constructor-creates-empty-instances",
+        "status": "pass"
+      },
+      {
+        "name": "native-process-constructor-honors-subclass-and-new-target",
+        "status": "pass"
+      },
+      {
+        "name": "native-process-exit-info-has-original-private-int32-layout",
+        "status": "pass"
+      },
+      {
+        "name": "original-process-accessors-share-the-live-native-exit-info",
+        "status": "pass"
+      }
+    ],
+    "config": {
+      "isDebugBuild": false,
+      "openSSLIsBoringSSL": false,
+      "hasOpenSSL": true,
+      "fipsMode": true,
+      "hasIntl": true,
+      "hasTracing": true,
+      "hasNodeOptions": true,
+      "hasInspector": true,
+      "noBrowserGlobals": false,
+      "bits": 64
+    },
+    "locale": "en-US",
+    "limits": [
+      "Native process already bootstrapped; separate target/build capabilities",
+      "No native multi-realm Environment/GC/security/OOM/lifecycle differential",
+      "No guest startup or exit-dispatch proof"
+    ]
+  }
+}

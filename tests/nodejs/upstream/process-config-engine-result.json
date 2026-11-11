@@ -1,0 +1,160 @@
+{
+  "projection": "Only stdoutBytes/stderrBytes arrays omitted; full raw harness report retained",
+  "rawReport": {
+    "path": ".context/node-process-config/guest-controls.json",
+    "bytes": 47080,
+    "sha256": "10df58b4c51cd2c2d7f8fc59c1057009c8857500c308468d8a3709149dad172b"
+  },
+  "report": {
+    "schema": 1,
+    "completedAt": "2026-11-11T03:42:41.030Z",
+    "scope": "Focused SpiderMonkey guest-engine process-config controls on the Node host; no upstream Node startup",
+    "host": {
+      "version": "v24.15.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    },
+    "program": {
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev25-wasm32-abi56-9010fbd5e90e38f49018bd488a3ffdb35fd0be81bcad03d2861576ccae70936e/js.wasm",
+      "bytes": 51209326,
+      "sha256": "e96494eef168431b91ed200a0a9505a4b2a2204eeccf41ad994b0e7bf7f9bb20"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "fixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/process-config-engine-controls.js",
+      "bytes": 8826,
+      "sha256": "e4decc0aa360bac83e81a8332542d623ec9daad4adf870d5bc8094caf362196b"
+    },
+    "runner": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 9091,
+      "sha256": "83a2bb26809130d276644f0e6b407fdf68334c49b742bf9d163903cef27b2bbb"
+    },
+    "runs": [
+      {
+        "name": "ordinary-shell-does-not-expose-native-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "node-mode-refuses-native-test-controls",
+        "status": "pass",
+        "exitCode": 3,
+        "stdout": "",
+        "stderr": "Error: upstream test controls require JS-shell mode\n",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "process-config-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "{\"kind\":\"native-process-config-controls\",\"plannedCases\":13,\"cases\":13,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"config-identity-and-readonly-real-build-fields\",\"status\":\"pass\"},{\"name\":\"config-does-not-copy-unimplemented-native-feature-metadata\",\"status\":\"pass\"},{\"name\":\"default-locale-comes-from-the-native-engine\",\"status\":\"pass\"},{\"name\":\"actual-process-has-a-distinct-mutable-native-class-prototype\",\"status\":\"pass\"},{\"name\":\"native-process-constructor-creates-empty-instances-and-honors-new-target\",\"status\":\"pass\"},{\"name\":\"changing-process-ancestry-does-not-mutate-object-prototype\",\"status\":\"pass\"},{\"name\":\"exit-info-is-a-real-hidden-live-int32-array\",\"status\":\"pass\"},{\"name\":\"one-runtime-shares-exit-state-across-distinct-realm-processes\",\"status\":\"pass\"},{\"name\":\"config-and-process-prototypes-remain-per-realm\",\"status\":\"pass\"},{\"name\":\"native-node-stage-requires-existing-context-and-realm-ownership\",\"status\":\"pass\"},{\"name\":\"native-node-stage-uses-protected-state-and-preserves-actual-missing-backend\",\"status\":\"pass\"},{\"name\":\"failed-node-body-is-terminal-and-diagnostics-do-not-expose-partial-loaders\",\"status\":\"pass\"},{\"name\":\"failed-principal-body-does-not-retire-another-realms-library-owner\",\"status\":\"pass\"}],\"configSnapshot\":{\"isDebugBuild\":false,\"openSSLIsBoringSSL\":false,\"hasOpenSSL\":true,\"hasIntl\":true,\"hasInspector\":false,\"noBrowserGlobals\":false,\"bits\":32},\"locale\":\"en-US-POSIX\",\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'timers' is not implemented\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\",\"internal/bootstrap/node\",\"internal/timers\"]},\"limits\":[\"Native state/failed-stage controls; not successful principal bootstrap or user CJS/ESM entry\",\"No browser proof\",\"No exit dispatch or full process/config/util implementation\",\"FIPS configuration remains explicit Missing\",\"No full differential/security/OOM/lifecycle proof\"]}\n",
+        "stderr": "",
+        "hostDiagnostics": [],
+        "detail": {
+          "kind": "native-process-config-controls",
+          "plannedCases": 13,
+          "cases": 13,
+          "notRun": 0,
+          "failures": 0,
+          "observations": [
+            {
+              "name": "config-identity-and-readonly-real-build-fields",
+              "status": "pass"
+            },
+            {
+              "name": "config-does-not-copy-unimplemented-native-feature-metadata",
+              "status": "pass"
+            },
+            {
+              "name": "default-locale-comes-from-the-native-engine",
+              "status": "pass"
+            },
+            {
+              "name": "actual-process-has-a-distinct-mutable-native-class-prototype",
+              "status": "pass"
+            },
+            {
+              "name": "native-process-constructor-creates-empty-instances-and-honors-new-target",
+              "status": "pass"
+            },
+            {
+              "name": "changing-process-ancestry-does-not-mutate-object-prototype",
+              "status": "pass"
+            },
+            {
+              "name": "exit-info-is-a-real-hidden-live-int32-array",
+              "status": "pass"
+            },
+            {
+              "name": "one-runtime-shares-exit-state-across-distinct-realm-processes",
+              "status": "pass"
+            },
+            {
+              "name": "config-and-process-prototypes-remain-per-realm",
+              "status": "pass"
+            },
+            {
+              "name": "native-node-stage-requires-existing-context-and-realm-ownership",
+              "status": "pass"
+            },
+            {
+              "name": "native-node-stage-uses-protected-state-and-preserves-actual-missing-backend",
+              "status": "pass"
+            },
+            {
+              "name": "failed-node-body-is-terminal-and-diagnostics-do-not-expose-partial-loaders",
+              "status": "pass"
+            },
+            {
+              "name": "failed-principal-body-does-not-retire-another-realms-library-owner",
+              "status": "pass"
+            }
+          ],
+          "configSnapshot": {
+            "isDebugBuild": false,
+            "openSSLIsBoringSSL": false,
+            "hasOpenSSL": true,
+            "hasIntl": true,
+            "hasInspector": false,
+            "noBrowserGlobals": false,
+            "bits": 32
+          },
+          "locale": "en-US-POSIX",
+          "bootstrapFailure": {
+            "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+            "message": "Native Node binding 'timers' is not implemented",
+            "compiledBuiltinIds": [
+              "internal/bootstrap/realm",
+              "internal/errors",
+              "internal/assert",
+              "internal/bootstrap/node",
+              "internal/timers"
+            ]
+          },
+          "limits": [
+            "Native state/failed-stage controls; not successful principal bootstrap or user CJS/ESM entry",
+            "No browser proof",
+            "No exit dispatch or full process/config/util implementation",
+            "FIPS configuration remains explicit Missing",
+            "No full differential/security/OOM/lifecycle proof"
+          ]
+        }
+      }
+    ],
+    "failures": 0,
+    "limits": [
+      "No Chromium/Firefox/WebKit execution",
+      "No upstream startup or module compatibility evidence",
+      "No complete native-V8 differential proof",
+      "No security-wrapper/OOM or complete symbol-owner teardown/finalization proof"
+    ]
+  }
+}

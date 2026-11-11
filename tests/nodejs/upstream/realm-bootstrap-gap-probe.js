@@ -9,8 +9,7 @@ for(const operation of ['principal-bootstrap-node','original-typed-node-error','
   const {global,realm}=context();
   try{
     if(operation==='principal-bootstrap-node'){
-      const bootstrap=realm.internalBinding('builtins').compileFunction('internal/bootstrap/node');
-      bootstrap(realm.process,realm.require,realm.internalBinding,api.getContextExports(global).primordials);
+      api.runNodeBootstrap(global);
     }else if(operation==='original-typed-node-error'){
       const {codes:{ERR_INVALID_ARG_TYPE}}=realm.require('internal/errors');
       const error=new ERR_INVALID_ARG_TYPE('name','string',1);
@@ -18,10 +17,10 @@ for(const operation of ['principal-bootstrap-node','original-typed-node-error','
     }else{
       realm.require('internal/errors').isErrorStackTraceLimitWritable();
     }
-    observations.push({operation,status:'returned',compiledBuiltinIds:api.getRealm(global).compiledBuiltinIds});
+    observations.push({operation,status:'returned',compiledBuiltinIds:api.inspectRealm(global).compiledBuiltinIds});
   }catch(error){
     let stack;try{stack=error.stack}catch(stackError){stack='stack formatting failed: '+stackError.message}
-    observations.push({operation,status:error.code==='ERR_KANDELO_NOT_IMPLEMENTED'?'missing-backend':'unexpected-failure',name:error.name,code:error.code,message:error.message,stack,compiledBuiltinIds:api.getRealm(global).compiledBuiltinIds});
+    observations.push({operation,status:error.code==='ERR_KANDELO_NOT_IMPLEMENTED'?'missing-backend':'unexpected-failure',name:error.name,code:error.code,message:error.message,stack,compiledBuiltinIds:api.inspectRealm(global).compiledBuiltinIds});
   }
 }
 print(JSON.stringify({kind:'upstream-realm-bootstrap-gap-probe',observations,upstreamStartup:false,emptyEvaluation:'not run',simpleScript:'not run',commonJsEntry:'not run',esmEntry:'not run'}));

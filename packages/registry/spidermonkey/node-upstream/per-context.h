@@ -19,7 +19,12 @@ JSObject* GetCurrentContextErrorStackState(JSContext* cx, JS::HandleObject runti
 JSObject* GetCurrentContextModuleWrapBinding(JSContext* cx, JS::HandleObject runtime);
 JS::Symbol* GetRuntimeSymbol(JSContext* cx, JS::HandleObject runtime, const char* name);
 JSObject* CreateRuntimePrivateSymbolTable(JSContext* cx, JS::HandleObject runtime);
+// Original Environment::ExitInfoField layout; one actual guest process owns
+// this live Int32Array across all of its realms (src/env.h).
+enum ExitInfoField { kExiting = 0, kExitCode, kHasExitCode, kExitInfoFieldCount };
+JSObject* GetRuntimeExitInfo(JSContext* cx, JS::HandleObject runtime);
 bool InitializeCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime);
+bool RunCurrentNodeBootstrap(JSContext* cx, JS::HandleObject runtime);
 JSObject* GetCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime, bool inspect);
 
 // Privileged diagnostics return a snapshot, never the canonical carrier/key.

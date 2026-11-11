@@ -33,10 +33,18 @@ registered by upstream JavaScript. The original `BuiltinModule` owns the only
 module cache, exposure policy and builtin facade path. Native records and
 function slots trace their owners; no host Node builtin supplies guest behavior.
 
-The initial process object reads guest `uname`, `getpid` and `getppid` through
+The process object has its own mutable prototype and native empty-instance
+constructor. A runtime-owned live Int32Array supplies the original exit-info
+fields to every realm process through the canonical hidden key. Exit dispatch
+is not connected yet. The initial process object reads guest `uname`, `getpid` and `getppid` through
 libc and kernel syscalls. Its process methods/configuration remain partial.
-Only the eager realm binding closure (builtins, module_wrap, errors and
-util.privateSymbols) is admitted. Unsupported native bindings and missing
+The native config binding reports actual engine/build policy, uses the guest
+engine locale and leaves unimplemented FIPS semantics explicit. The eager
+realm binding closure and config are admitted; util also exposes the original
+exit-info field indices. Native principal-node invocation uses protected
+process/loader/primordials slots, preserves the actual failure, and makes a
+failed environment terminal. Completing that body alone will not mark full
+Realm bootstrap complete. Unsupported native bindings and missing
 metadata/cache/source-text operations raise explicit implementation errors.
 A compilation-event diagnostic list does not stand in for native cache usage.
 

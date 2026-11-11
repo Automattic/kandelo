@@ -11,10 +11,11 @@ realm owner retains the actual original loader closures. Original JavaScript
 owns builtin caching, exposure policy and moduleLoadList. The eager native
 realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
-This is the realm-library stage, not complete Node startup. A direct diagnostic
-call into the complete `internal/bootstrap/node` stops at its first eager
-missing native binding, `config`. Empty/simple evaluation, user CJS/ESM
-entrypaths and browser startup remain unrun. The native process and
+The native principal-body entry now calls complete `internal/bootstrap/node`
+with protected state, passes native configuration and stops on missing
+`timers` through the original internal/timers body. Complete Node startup,
+empty/simple evaluation, user CJS/ESM entrypaths and browser startup remain
+unrun. The native process and
 util/builtins bindings remain partial; no complete module compatibility or
 443-source guest payload readback is established. ModuleWrap-owned dynamic
 imports and genuine source/synthetic graphs have focused Node-host controls.
@@ -587,11 +588,41 @@ access policy required the original modules helper; no upstream source or
 require implementation was substituted. See `realm-library-contracts.md` and
 `realm-library-engine-check.json` for exact identities and limitations.
 
-Principal bootstrap remains unfinished: a complete-body diagnostic call stops
-at `internal/bootstrap/node:68` on the missing `config` binding. This failure
+Principal bootstrap remains unfinished: the earlier complete-body diagnostic
+stopped on missing config; the native principal-body entry described below now
+reaches the missing timers binding through original internal/timers. This failure
 is recorded separately from successful realm controls. The process object,
 configuration, exit-info, Buffer, timers, async context and wider eager backend
 closure still need implementation. The complete catalog/roadmap, real user
 CJS/ESM startup and four-host evidence remain open. No canonical image, full
 product, successor-ABI campaign rebuild, overall suite or fork-behavior
 validation ran.
+
+## Native process and build configuration
+
+Revision 25 gives each realm process a distinct mutable native class prototype
+and empty-instance constructor. Non-constructor calls preserve actual effective
+receiver/global/boxing behavior. One runtime-owned Int32Array supplies the
+original hidden exit-info fields across realms, using checked compartment
+wrapping. Native util exposes the original field indices. Actual exit dispatch,
+full process metadata/environment and completion still need implementation.
+
+A per-realm config binding reports actual compiled engine/OpenSSL/Intl features,
+guest pointer width and selected standard web-bootstrap policy. The locale
+comes from the guest engine runtime. Native reference platform/V8 configuration
+is not copied; unsupported FIPS configuration and builtins JSON remain explicit
+errors. Inspector, tracing and NODE_OPTIONS integration are absent. See
+`process-config-contracts.md` for field ownership and current boundaries.
+
+The native owner calls the entire original internal/bootstrap/node body with
+protected process/require/internalBinding/primordials, records the actual body
+phase, and preserves terminal failure. This currently reaches missing timers
+rather than missing config. Node-body completion is separate from the remaining
+web/thread/ownership/env stages. Thirteen native-state controls, the 122 prior
+engine/realm cases and eight separate pinned native references pass; these
+include failure/retry tests, not successful startup. The first reference/guest
+attempts exposed incorrect receiver-return and cached-binding assumptions; the
+native implementation and control respectively were corrected while preserving
+the original JS cache. Exact artifacts/failures/limits are in
+`process-config-engine-check.json`. No user CJS/ESM or browser startup, full
+catalog, canonical products, successor-ABI campaign or overall suite is proven.

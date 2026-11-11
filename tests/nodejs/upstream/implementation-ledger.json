@@ -46,8 +46,8 @@
     {
       "area": "shared Node realm and native binding loader",
       "sourceStatus": "partial native owner implemented; complete original realm library loader executes through privileged Node-host controls",
-      "remaining": "principal bootstrap/node and wider binding/process closure; complete lifecycle/security/OOM and four-host startup",
-      "evidence": "realm-library-engine-check.json"
+      "remaining": "principal node body stops on missing timers; remaining native closure and web/thread/ownership/env stages, full lifecycle/security/OOM and four-host startup",
+      "evidence": "process-config-engine-check.json"
     },
     {
       "area": "structured Error stack/CallSite/limit contracts",
@@ -70,13 +70,14 @@
     },
     {
       "area": "eager Buffer/process/fs/options/task queues/timers/async binding closure",
-      "sourceStatus": "missing from new integration",
+      "sourceStatus": "initial process/exit-info/config owners exist; wider Buffer/fs/options/task queues/timers/async closure missing",
       "remaining": "contract inventory and dependency-ordered owning backends; no placeholder export objects"
     },
     {
       "area": "generated runtime configuration",
-      "sourceStatus": "missing",
-      "remaining": "derive actual guest features and state without copying native reference metadata"
+      "sourceStatus": "partial native config from actual guest engine/build state implemented",
+      "remaining": "builtins config JSON, FIPS/options/runtime metadata and full process configuration without copying native reference state",
+      "evidence": "process-config-engine-check.json"
     },
     {
       "area": "nested guest Wasm",
@@ -87,6 +88,12 @@
       "area": "complete backend catalog and roadmap",
       "sourceStatus": "partial syntax index and bounded source reviews",
       "remaining": "all members/signatures/errors/lifecycles/ownership, lazy/conditional/worker/platform paths, archived reuse map and per-host validation obligations"
+    },
+    {
+      "area": "native initial process prototype/constructor, shared exit-info and config",
+      "sourceStatus": "partial genuine native owner/build state; principal-node body invoked through protected slots and stops on missing timers",
+      "evidence": "process-config-engine-check.json",
+      "remaining": "actual exit dispatch, full process/version/environment/options/config JSON/FIPS and wider startup binding closure; full native lifecycle/security/OOM/browser differential"
     }
   ],
   "runtimeConformance": {
@@ -146,17 +153,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 24,
+    "packageRevision": 25,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "realm-library-engine-check.json",
+    "evidence": "process-config-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "complete original realm library loader plus 106 native engine prerequisite controls on Node host; no principal Node bootstrap or user entry",
+    "packageRuntimeScope": "Native process/config and principal-node body failure controls, plus prior realm/engine controls on Node host; no user startup",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "existing Linux triplet and __linux__/__unix__ defines are unchanged; target metadata/conformance remain unestablished"
   },
@@ -251,7 +258,7 @@
     },
     "realmLibrary": {
       "inventory": "realm-library-contracts.md",
-      "implementationEvidence": "realm-library-engine-check.json",
+      "implementationEvidence": "process-config-engine-check.json",
       "originalBodyExecuted": true,
       "originalLoaderClosuresRetained": true,
       "oneOriginalBuiltinCache": true,
@@ -264,10 +271,25 @@
         "canonical errors callbacks",
         "canonical util.privateSymbols"
       ],
-      "principalBootstrapGap": "Complete internal/bootstrap/node invocation stops on missing config at original line 68",
+      "principalBootstrapGap": "Native complete-body invocation passes config and stops on missing timers through original internal/timers",
       "principalBootstrapCompleted": false,
       "cjsEntry": false,
       "esmEntry": false
+    },
+    "processConfig": {
+      "inventory": "process-config-contracts.md",
+      "evidence": "process-config-engine-check.json",
+      "distinctMutableProcessPrototype": true,
+      "nativeEmptyInstanceConstructor": true,
+      "effectiveReceiverSemantics": true,
+      "runtimeSharedExitInfo": true,
+      "liveExitInfoNativeDispatch": false,
+      "configFromActualBuild": true,
+      "localeFromGuestEngine": true,
+      "principalNodeBodyAttempted": true,
+      "principalNodeBodyCompleted": false,
+      "fullProcessAndConfig": false,
+      "originalCachedBindingPolicyPreserved": true
     }
   },
   "nativeDifferentialControls": {
@@ -318,6 +340,14 @@
       "evidence": "realm-library-native-reference.json",
       "guestRun": false,
       "limits": "Already-bootstrapped native reference through original internal/modules/helpers; no full native lifecycle/security/OOM or guest startup differential"
+    },
+    "processConfig": {
+      "reference": "Node26.13.0Darwinarm64",
+      "cases": 8,
+      "failures": 0,
+      "evidence": "process-config-native-reference.json",
+      "guestRun": false,
+      "limits": "Already-bootstrapped native process/config reference; no native multi-realm or full lifecycle/security/OOM differential and no guest startup/exit dispatch proof"
     }
   },
   "focusedGuestEngineControls": {
@@ -343,8 +373,8 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "realm-library-engine-check.json",
-      "regressionScope": "Same revision-24 artifact passes 21 stack, 14 dynamic-import, 19 ModuleWrap, 15 synthetic, 14 context and 23 private-key cases and drivers; raw regressions retained under .context/node-realm",
+      "currentArtifactEvidence": "process-config-engine-check.json",
+      "regressionScope": "Same revision-25 artifact passes 16 realm, 21 stack, 14 dynamic-import, 19 ModuleWrap, 15 synthetic, 14 context and 23 private-key cases and drivers; raw regressions retained under .context/node-process-config",
       "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
@@ -372,15 +402,21 @@
       "realmLibraryDriverFailures": 0,
       "realmLibrarySuccessHostDiagnostics": 0,
       "realmLibraryFatalControls": 1,
-      "realmLibraryFatalExpectedHostDiagnosticsEach": 1
+      "realmLibraryFatalExpectedHostDiagnosticsEach": 1,
+      "processConfigEvidence": "process-config-engine-result.json",
+      "processConfigCases": 13,
+      "processConfigFailures": 0,
+      "processConfigDriverRuns": 3,
+      "processConfigDriverFailures": 0,
+      "processConfigSuccessHostDiagnostics": 0
     },
     "Chromium": "not run",
     "Firefox": "not run",
     "WebKit": "not run"
   },
   "nextWork": [
-    "Implement truthful native config/process state and the dependency-ordered eager principal bootstrap closure; use the actual original realm loader and protected primordials",
-    "Preserve real source/engine failures and assertions; no placeholder backends or copied native-reference configuration",
-    "Continue complete backend catalog while integrating startup; user CJS/ESM and four-host startup remain unrun"
+    "Implement actual native timers/task_queue/async ownership and wider eager principal bootstrap closure using the one original loader; current native node-body attempt stops at timers",
+    "Finish truthful process/config/options/exit lifecycle, preserving original cache and failure behavior; no placeholder backends or copied native-reference fields",
+    "Continue complete backend catalog while integrating startup; actual user CJS/ESM and four-host startup remain unrun"
   ]
 }

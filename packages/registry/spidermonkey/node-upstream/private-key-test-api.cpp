@@ -64,7 +64,7 @@ bool InitializePrivateKey(JSContext* cx, unsigned argc, JS::Value* vp) {
 }
 
 enum class ContextOperation { Initialize, GetExports, Inspect, ModuleWrapBinding,
-                              ErrorBinding, InitializeRealm, GetRealm, InspectRealm };
+                              ErrorBinding, InitializeRealm, GetRealm, InspectRealm, RunNode };
 
 bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
                           ContextOperation operation) {
@@ -97,6 +97,8 @@ bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
          InitializeCurrentContext(cx, runtime);
     if (ok && operation == ContextOperation::InitializeRealm)
       ok = InitializeCurrentRealmLibrary(cx, runtime);
+    if (ok && operation == ContextOperation::RunNode)
+      ok = RunCurrentNodeBootstrap(cx, runtime);
     if (ok) {
       JS::RootedObject value(cx, operation == ContextOperation::Inspect
           ? InspectCurrentContextForTesting(cx, runtime)
@@ -105,7 +107,7 @@ bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
           : operation == ContextOperation::ErrorBinding
           ? GetErrorStackBinding(cx)
           : operation == ContextOperation::InitializeRealm || operation == ContextOperation::GetRealm ||
-            operation == ContextOperation::InspectRealm
+            operation == ContextOperation::InspectRealm || operation == ContextOperation::RunNode
           ? GetCurrentRealmLibrary(cx, runtime, operation == ContextOperation::InspectRealm)
           : GetCurrentContextExports(cx, runtime));
       ok = bool(value);
@@ -146,6 +148,9 @@ bool InitializeRealm(JSContext* cx, unsigned argc, JS::Value* vp) {
 }
 bool GetRealm(JSContext* cx, unsigned argc, JS::Value* vp) {
   return ContextOperationCall(cx, argc, vp, ContextOperation::GetRealm);
+}
+bool RunNode(JSContext* cx, unsigned argc, JS::Value* vp) {
+  return ContextOperationCall(cx, argc, vp, ContextOperation::RunNode);
 }
 bool InspectRealm(JSContext* cx, unsigned argc, JS::Value* vp) {
   return ContextOperationCall(cx, argc, vp, ContextOperation::InspectRealm);
@@ -251,6 +256,7 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
       JS_FN("initializeRealm", InitializeRealm, 0, 0),
       JS_FN("getRealm", GetRealm, 0, 0),
       JS_FN("inspectRealm", InspectRealm, 0, 0),
+      JS_FN("runNodeBootstrap", RunNode, 0, 0),
       JS_FN("enhanceFatalStack", EnhanceFatalStack, 2, 0),
       JS_FN("newSyntheticModule", NewSyntheticModule, 2, 0),
       JS_FN("setSyntheticExport", SetSyntheticExport, 3, 0),

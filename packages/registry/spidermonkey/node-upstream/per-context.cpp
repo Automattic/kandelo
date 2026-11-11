@@ -14,6 +14,7 @@
 #include "js/CallAndConstruct.h"
 #include "js/Class.h"
 #include "js/ErrorReport.h"
+#include "js/experimental/TypedData.h"
 #include "js/GlobalObject.h"
 #include "js/Object.h"
 #include "js/PropertyAndElement.h"
@@ -42,7 +43,7 @@ static constexpr SymbolSpec kSymbols[] = {
 static_assert(std::size(kSymbols) == 49);
 
 enum Phase { Initializing = 1, Ready = 2, Failed = 3 };
-enum RuntimeSlot { RuntimePhase, ContextKey, FirstSymbol };
+enum RuntimeSlot { RuntimePhase, ContextKey, ExitInfo, FirstSymbol };
 static const JSClass kRuntimeClass = {
     "KandeloNodeRuntime", JSCLASS_HAS_RESERVED_SLOTS(FirstSymbol + std::size(kSymbols))};
 enum ContextSlot {
@@ -274,6 +275,25 @@ JSObject* CreateRuntimePrivateSymbolTable(JSContext* cx, JS::HandleObject runtim
   return table;
 }
 
+JSObject* GetRuntimeExitInfo(JSContext* cx, JS::HandleObject runtime) {
+  if (!RuntimeReady(cx, runtime)) return nullptr;
+  JS::RootedObject array(cx);
+  {
+    // Allocate in the owner's realm and wrap at the boundary: a raw foreign
+    // object must never become a cross-compartment reserved-slot edge.
+    JSAutoRealm realm(cx, runtime);
+    JS::Value value = JS::GetReservedSlot(runtime, ExitInfo);
+    if (value.isObject()) array = &value.toObject();
+    else {
+      array = JS_NewInt32Array(cx, kExitInfoFieldCount);
+      if (!array) return nullptr;
+      JS::SetReservedSlot(runtime, ExitInfo, JS::ObjectValue(*array));
+    }
+  }
+  if (!JS_WrapObject(cx, &array)) return nullptr;
+  return array;
+}
+
 bool InitializeCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime) {
   JS::RootedObject context(cx, ReadyContext(cx, runtime));
   if (!context) return false;
@@ -298,6 +318,15 @@ JSObject* GetCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime, bool i
   if (!value.isObject()) { Report(cx, "Node realm has not been initialized"); return nullptr; }
   JS::RootedObject state(cx, &value.toObject());
   return RealmLibrarySnapshot(cx, state, inspect);
+}
+
+bool RunCurrentNodeBootstrap(JSContext* cx, JS::HandleObject runtime) {
+  JS::RootedObject context(cx, ReadyContext(cx, runtime));
+  if (!context) return false;
+  JS::Value value = JS::GetReservedSlot(context, RealmLibrary);
+  if (!value.isObject()) return Report(cx, "Node realm has not been initialized");
+  JS::RootedObject state(cx, &value.toObject());
+  return RunNodeBootstrap(cx, state);
 }
 
 JSObject* GetCurrentContextModuleWrapBinding(JSContext* cx, JS::HandleObject runtime) {
