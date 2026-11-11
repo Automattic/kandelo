@@ -39,6 +39,15 @@ comparisons remain unfinished. No complete R1 or native-feel acceptance is
 claimed. Older host-adapter-5 observations, including the cap-only 18/18
 memory result and its other failed configurations, remain separate evidence.
 
+The reviewed runtime at `8ddcdcedc7` now has a coherent normal preview on
+port 56522. Its boot, shifted-input, repaint and exit smoke check passes
+1/1; actual comparison/publication through memory growth passes all three
+browser engines. The new memory gate has passed 300 source checks and its
+Node (3) and Bun (7) stages; its 18 browser cases and the fresh 120-case
+desktop matrix are running. These partial results do not replace their
+previous red verdicts. Current frozen-program compatibility passes 6/6,
+and the ABI snapshot and supported program baseline match pinned main.
+
 This delivery investigates work package R1 after #1594. It does not activate
 B2–B6/C1–C3 or claim full graphics/native-feel acceptance.
 
@@ -1540,3 +1549,65 @@ fork; the borrowed vfork child's existing lifetime/containment protocol is
 unchanged and has a refusal regression. Both replay files are now part of
 the canonical browser-memory source gate. New normal preparation follows
 these stable source inputs; the cancelled preparation is not validation.
+
+
+## Reviewed normal preview and validation in progress
+
+Runtime source: `8ddcdcedc7e8495f1f89940b4c584aacd485a322`.
+[Current normal Cage preview](http://127.0.0.1:56522/?vfs=%2F__kandelo_source_only_assets__%2F64632122b267b4936b3fbc370eac5c2010002b7a8a800cebf75f5a777c6c6211%2Fshell.vfs.zst&profile=cage).
+Shell: 1,069,815 bytes, SHA-256
+`64632122b267b4936b3fbc370eac5c2010002b7a8a800cebf75f5a777c6c6211`.
+Kernel: 2,959,451 bytes, SHA-256
+`20f8ba1c1c6ced1a11bed01ceb662bc542eaa1fb7769cddc93c80bc69a00c904`.
+Both actual HTTP objects match their normal SourceOnly members exactly.
+The previous public previews remain independently frozen.
+
+All 253 demanded package/product nodes, including 11 products, complete
+through the normal whole-graph bootstrap. The initial unpublished debug
+publisher was stopped after the packages finished; a retained CPU sample
+shows repeated source hashing during finalization. The freshly checked
+release build of the same current-head xtask runs the identical full
+`bootstrap packages --jobs 1` graph and finalizes in 208.0 seconds. Its
+consumer check passes in 3.4 seconds. The literal `./run.sh browser` entry
+then repeats its normal cached checks and serves this preview. No source,
+artifact keys, package selection, or validation rules are substituted.
+The old intentional status-143 preparation records remain retained.
+
+The real normal-entry check passes 1/1 in 9.3 seconds, at 1920×972 with
+WebGL2 GLES rendering. Its screenshot visibly contains the contiguous
+uppercase `CAGE_TRY_OK`; the terminal later reports exit status zero.
+The actual-root baseline check passes 3/3 in 3.8 seconds, with native
+baselines on Chromium/Firefox and arrays on WebKit, preserving exact bytes
+through real growth. Real Bun 1.3.3 also preserves exact changed bytes
+through growth with arrays. These are correctness observations, not timing
+acceptance or native-display latency measurements.
+
+Additional process evidence: 16 actual native fork programs pass across
+wasm32/wasm64, including recursive fork, a SIGUSR1 handler, fork from a
+pthread, and continuation-ENOMEM recovery. The five Open POSIX `kill`
+tests pass on Node and Chromium. An earlier Chromium attempt runs zero
+guest tests and reports five setup errors: a controlled HTTP probe records
+the validator rejecting the new shell's 1,069,815-byte member against old
+1,069,801-byte projection metadata while preparation is unfinished. After
+coherent normal publication, those same five browser tests pass without
+source or test changes. Both attempts remain in the evidence.
+
+Fresh offline frozen-program compatibility passes 6/6 across all three
+engines, including OPFS. The Firefox staging-directory cleanup EACCES
+warning is retained and leaves its run-owned directory in place. All 18
+historical/supported cohort files still match their original hashes. The
+fresh `ABI_CHECK_BASE_REF=8161769ed9d2` snapshot/baseline check also passes;
+program 56 and host 6 remain unchanged.
+
+The full memory gate runs the unchanged `scripts/check-browser-memory.sh`
+inside the declared dev shell, which is the gate delegated by
+`./run.sh test browser-memory`. A private artifact-retention wrapper keeps
+the exact JSON report inode before ordinary temporary-file cleanup. Its
+first launch stops before any tests because of an unsupported Python
+context-manager use; after correcting that helper, a separate file-lifetime
+fixture verifies exact retained bytes through temporary-name unlink.
+No guest test is simulated by that artifact check. The unchanged gate's
+source stage passes 300/300, Node teardown 3/3 and Bun teardown 7/7. Its
+18 browser cases and the new complete 120-case desktop inventory remain
+in progress; no retries or skips are added. All nine Node/Chromium macro
+benchmark pairs and the 12 matched cursor observations remain unfinished.
