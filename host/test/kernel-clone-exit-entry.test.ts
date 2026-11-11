@@ -242,19 +242,28 @@ describe("clone and exit entry authority", () => {
       },
     });
     harness.worker.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: vi.fn() });
-    writeSyscall(harness.channel, ABI_SYSCALLS.Clone, [0n, 0x8000n, 0n, 0x9000n, 0n]);
-    harness.worker.handleSyscall(harness.channel);
-    await harness.worker.beginKernelTeardown();
-    expect(channelResult(harness.channel).status).toBe(CHANNEL_STATUS_COMPLETE);
-    writeSyscall(harness.channel, ABI_SYSCALLS.Exit, [137n]);
-    if (rejectLaunch) rejectLaunchPromise(new Error("late launch rejection"));
-    else resolveLaunch();
-    await flushLifecycleContinuations();
-    expect(channelResult(harness.channel).status).toBe(CHANNEL_STATUS_PENDING);
-    expect(rollback).not.toHaveBeenCalled();
-    expect(onExit).not.toHaveBeenCalled();
-    harness.worker.handleSyscall(harness.channel);
-    expect(onExit).toHaveBeenCalledExactlyOnceWith(harness.channel.pid, 137);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      writeSyscall(harness.channel, ABI_SYSCALLS.Clone, [0n, 0x8000n, 0n, 0x9000n, 0n]);
+      harness.worker.handleSyscall(harness.channel);
+      await harness.worker.beginKernelTeardown();
+      expect(channelResult(harness.channel).status).toBe(CHANNEL_STATUS_COMPLETE);
+      writeSyscall(harness.channel, ABI_SYSCALLS.Exit, [137n]);
+      if (rejectLaunch) rejectLaunchPromise(new Error("late launch rejection"));
+      else resolveLaunch();
+      await flushLifecycleContinuations();
+      // Teardown revoked the clone's publication authority, so the reused
+      // mailbox keeps its pending exit. The allocated Rust task is still this
+      // attempt's to remove: an unlaunched TID (threadRan=0) never survives.
+      expect(channelResult(harness.channel).status).toBe(CHANNEL_STATUS_PENDING);
+      expect(rollback).toHaveBeenCalledExactlyOnceWith(harness.channel.pid, 73, 0);
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining(rejectLaunch
+        ? "late launch rejection"
+        : "onClone returned without attaching kernel tid 73"));
+      expect(onExit).not.toHaveBeenCalled();
+      harness.worker.handleSyscall(harness.channel);
+      expect(onExit).toHaveBeenCalledExactlyOnceWith(harness.channel.pid, 137);
+    } finally { consoleError.mockRestore(); }
   });
 
   it.each([4, 8] as const)("retires parked and later sibling requests without repeating Rust exit for width %s", async width => {
