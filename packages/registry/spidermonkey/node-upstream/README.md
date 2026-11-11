@@ -55,3 +55,10 @@ process environment and user CJS/ESM entrypaths still need their real native
 backends and lifecycle. No full-product, successor-ABI, browser, fork or overall
 suite claim follows from these focused controls. Do not wire placeholder
 bindings merely to advance bootstrap.
+
+`timers.cpp` owns the actual environment timer deadline, reference state,
+shared info arrays and traced callbacks. Its opt-in shell-loop path uses guest
+CLOCK_MONOTONIC and actual engine checkpoints, bypassing public compatibility
+timer hooks. Native callback-scope/async/tick/fatal recovery and complete Node
+phase ordering remain separate unfinished contracts. This backend does not
+implement JavaScript timer lists; those belong to unchanged internal/timers.

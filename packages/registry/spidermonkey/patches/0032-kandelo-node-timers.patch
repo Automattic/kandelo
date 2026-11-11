@@ -1,0 +1,121 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -186,7 +186,9 @@
+ #include "shell/jsoptparse.h"
+ #include "shell/jsshell.h"
+ #include "shell/kandelo-node-bootstrap.h"
++#include "shell/node-upstream/per-context.h"
+ #include "shell/node-upstream/private-key-test-api.h"
++#include "shell/node-upstream/timers.h"
+ #include "shell/OSObject.h"
+ #include "shell/ShellModuleObjectWrapper.h"
+ #include "shell/WasmTesting.h"
+@@ -3729,17 +3731,17 @@
+   return fired;
+ }
+ 
+-static void RunShellJobs(JSContext* cx) {
++static bool RunShellJobs(JSContext* cx) {
+   ShellContext* sc = GetShellContext(cx);
+   if (sc->quitting) {
+-    return;
++    return true;
+   }
+ 
+   while (true) {
+     // Run microtasks.
+     js::RunJobs(cx);
+     if (sc->quitting) {
+-      return;
++      return true;
+     }
+ 
+     // Run tasks (only finalization registry clean tasks are possible).
+@@ -3749,10 +3751,20 @@
+     // Fire real-delay timers and learn when the next one is due. A pending
+     // timer keeps the loop alive just like a pending native watch.
+     int64_t nextTimerDelay = -1;
+-    int ranTimers = KandeloRunDueTimers(cx, &nextTimerDelay);
++    int ranTimers = 0;
++    if (kandelo::node::HasRuntimeTimerState(sc->upstreamNodeRuntime.get())) {
++      RootedObject runtime(cx, sc->upstreamNodeRuntime);
++      if (!kandelo::node::DispatchRuntimeTimers(
++              cx, runtime, ranNative > 0 || KandeloSocketHasWatches(),
++              &ranTimers, &nextTimerDelay)) {
++        return false;
++      }
++    } else {
++      ranTimers = KandeloRunDueTimers(cx, &nextTimerDelay);
++    }
+     bool timersPending = nextTimerDelay >= 0;
+     if (sc->quitting) {
+-      return;
++      return true;
+     }
+ 
+     if (!ranTasks && ranNative == 0 && ranTimers == 0 &&
+@@ -3773,6 +3785,7 @@
+       usleep(sleepUs);
+     }
+   }
++  return true;
+ }
+ 
+ static bool DrainJobQueue(JSContext* cx, unsigned argc, Value* vp) {
+@@ -3791,7 +3804,9 @@
+     return false;
+   }
+ 
+-  RunShellJobs(cx);
++  if (!RunShellJobs(cx)) {
++    return false;
++  }
+ 
+   if (GetShellContext(cx)->quitting) {
+     return false;
+@@ -4348,7 +4363,9 @@
+           stderr);
+     }
+ 
+-    RunShellJobs(cx);
++    if (!RunShellJobs(cx)) {
++      AutoReportException are(cx);
++    }
+   } while (!hitEOF && !sc->quitting);
+ 
+   if (gOutFile->isOpen()) {
+@@ -7026,7 +7043,9 @@
+       JS_ExecuteScript(cx, script, &result);
+     }
+ 
+-    RunShellJobs(cx);
++    if (!RunShellJobs(cx)) {
++      AutoReportException are(cx);
++    }
+   } while (0);
+ 
+   KillWatchdog(cx);
+@@ -14538,7 +14557,12 @@
+      * tasks before the main thread JSRuntime is torn down. Drain after
+      * uncaught exceptions have been reported since draining runs callbacks.
+      */
+-    RunShellJobs(cx);
++    {
++      AutoReportException are(cx);
++      if (!RunShellJobs(cx)) {
++        result = EXITCODE_RUNTIME_ERROR;
++      }
++    }
+ 
+     // Only if there's no other error, report unhandled rejections.
+     if (!result && !sc->exitCode) {
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -35,6 +35,7 @@
+     "node-upstream/per-context.cpp",
+     "node-upstream/private-key-test-api.cpp",
+     "node-upstream/realm.cpp",
++    "node-upstream/timers.cpp",
+ ]
+ 
+ if CONFIG["FUZZING_INTERFACES"]:

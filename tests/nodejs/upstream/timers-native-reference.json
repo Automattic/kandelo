@@ -1,0 +1,137 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T04:31:44.457351+00:00",
+  "scope": "Pinned native direct-timers reference and isolated natural-exit controls, not guest startup",
+  "executableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "controlPath": "tests/nodejs/upstream/timers-native-controls.cjs",
+  "controlSha256": "9367c041220abef9a2ead9588893cf91c19eda5143ce6226dca75d1f04127799",
+  "flags": [
+    "--expose-internals",
+    "--expose-gc",
+    "--no-warnings"
+  ],
+  "warningPolicy": "Explicit no-warnings avoids internal/test/binding warning I/O affecting isolated ref/unref liveness",
+  "environmentKeys": [
+    "PATH",
+    "LANG",
+    "TZ"
+  ],
+  "runs": [
+    {
+      "mode": "main",
+      "status": "pass",
+      "exit": 0,
+      "stdout": "{\"kind\":\"native-timers-reference-only\",\"version\":\"v26.13.0\",\"platform\":\"darwin\",\"arch\":\"arm64\",\"v8\":\"14.6.202.34-node.40\",\"cases\":13,\"failures\":0,\"observations\":[{\"name\":\"native-binding-and-real-info-layout\",\"status\":\"pass\"},{\"name\":\"native-clock-and-true-only-reference-toggles\",\"status\":\"pass\"},{\"name\":\"native-duration-conversion-and-original-exceptions\",\"status\":\"pass\"},{\"name\":\"native-referenced-deadline-and-process-receiver\",\"status\":\"pass\"},{\"name\":\"native-schedule-replaces-previous-deadline\",\"status\":\"pass\"},{\"name\":\"native-positive-expiry-rearms-one-shot\",\"status\":\"pass\"},{\"name\":\"native-negative-expiry-leaves-unreferenced-timer\",\"status\":\"pass\"},{\"name\":\"native-zero-expiry-preserves-reentrant-schedule\",\"status\":\"pass\"},{\"name\":\"native-immediate-counters-and-process-receiver\",\"status\":\"pass\"},{\"name\":\"native-microtask-checkpoint-between-timer-and-immediate\",\"status\":\"pass\"},{\"name\":\"native-method-owner-is-independent-of-this-value\",\"status\":\"pass\"},{\"name\":\"native-callback-replacement-and-gc-retention\",\"status\":\"pass\"},{\"name\":\"native-foreign-function-keeps-principal-process-receiver\",\"status\":\"pass\"}],\"limits\":[\"Native runtime already bootstrapped; direct binding controls only\",\"Foreign function uses a VM context, not a fresh Node native Realm/Environment\",\"No complete async/tick/fatal/native phase/lifecycle/security/OOM differential\",\"Unref-only natural-exit controls run in separate processes\"]}\n",
+      "stderr": "",
+      "detail": {
+        "kind": "native-timers-reference-only",
+        "version": "v26.13.0",
+        "platform": "darwin",
+        "arch": "arm64",
+        "v8": "14.6.202.34-node.40",
+        "cases": 13,
+        "failures": 0,
+        "observations": [
+          {
+            "name": "native-binding-and-real-info-layout",
+            "status": "pass"
+          },
+          {
+            "name": "native-clock-and-true-only-reference-toggles",
+            "status": "pass"
+          },
+          {
+            "name": "native-duration-conversion-and-original-exceptions",
+            "status": "pass"
+          },
+          {
+            "name": "native-referenced-deadline-and-process-receiver",
+            "status": "pass"
+          },
+          {
+            "name": "native-schedule-replaces-previous-deadline",
+            "status": "pass"
+          },
+          {
+            "name": "native-positive-expiry-rearms-one-shot",
+            "status": "pass"
+          },
+          {
+            "name": "native-negative-expiry-leaves-unreferenced-timer",
+            "status": "pass"
+          },
+          {
+            "name": "native-zero-expiry-preserves-reentrant-schedule",
+            "status": "pass"
+          },
+          {
+            "name": "native-immediate-counters-and-process-receiver",
+            "status": "pass"
+          },
+          {
+            "name": "native-microtask-checkpoint-between-timer-and-immediate",
+            "status": "pass"
+          },
+          {
+            "name": "native-method-owner-is-independent-of-this-value",
+            "status": "pass"
+          },
+          {
+            "name": "native-callback-replacement-and-gc-retention",
+            "status": "pass"
+          },
+          {
+            "name": "native-foreign-function-keeps-principal-process-receiver",
+            "status": "pass"
+          }
+        ],
+        "limits": [
+          "Native runtime already bootstrapped; direct binding controls only",
+          "Foreign function uses a VM context, not a fresh Node native Realm/Environment",
+          "No complete async/tick/fatal/native phase/lifecycle/security/OOM differential",
+          "Unref-only natural-exit controls run in separate processes"
+        ]
+      }
+    },
+    {
+      "mode": "unref-timer",
+      "status": "pass",
+      "exit": 0,
+      "stdout": "{\"kind\":\"native-timer-unref-exit-control\",\"mode\":\"unref-timer\"}\n",
+      "stderr": "",
+      "detail": {
+        "kind": "native-timer-unref-exit-control",
+        "mode": "unref-timer"
+      }
+    },
+    {
+      "mode": "unref-immediate",
+      "status": "pass",
+      "exit": 0,
+      "stdout": "{\"kind\":\"native-timer-unref-exit-control\",\"mode\":\"unref-immediate\"}\n",
+      "stderr": "",
+      "detail": {
+        "kind": "native-timer-unref-exit-control",
+        "mode": "unref-immediate"
+      }
+    },
+    {
+      "mode": "initial-phases",
+      "status": "pass",
+      "exit": 0,
+      "stdout": "{\"kind\":\"native-timer-initial-phase-control\",\"mode\":\"initial-phases\",\"order\":[\"timer\",\"microtask\",\"immediate\"]}\n",
+      "stderr": "",
+      "detail": {
+        "kind": "native-timer-initial-phase-control",
+        "mode": "initial-phases",
+        "order": [
+          "timer",
+          "microtask",
+          "immediate"
+        ]
+      }
+    }
+  ],
+  "failures": 0
+}

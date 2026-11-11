@@ -1,16 +1,16 @@
 {
   "projection": "Only stdoutBytes/stderrBytes arrays omitted; full raw harness report retained",
   "rawReport": {
-    "path": ".context/node-process-config/bootstrap-gap-probe.json",
-    "bytes": 41539,
-    "sha256": "f0648fb81e7eb2cc5b99e532eb76102c61dfa250210c8f297b125e563253677f"
+    "path": ".context/node-timers/bootstrap-gap-probe.json",
+    "bytes": 41703,
+    "sha256": "a1f2d955f4edd469497929f1a8e865487b0163698a2da16571b262a5fb7bab2f"
   },
   "report": {
     "scope": "Diagnostic complete-body calls; actual missing backends, not startup success",
     "program": {
-      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev25-wasm32-abi56-9010fbd5e90e38f49018bd488a3ffdb35fd0be81bcad03d2861576ccae70936e/js.wasm",
-      "bytes": 51209326,
-      "sha256": "e96494eef168431b91ed200a0a9505a4b2a2204eeccf41ad994b0e7bf7f9bb20"
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev26-wasm32-abi56-bcc7158f8c82da763f4f146515ddc111d7d8efdcca7561bf5bbc5d676a791581/js.wasm",
+      "bytes": 51236375,
+      "sha256": "70d19a3117db7044821cebe339c4d05e279f637bf719c4e854030cf6b85bd1ef"
     },
     "kernel": {
       "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
@@ -24,7 +24,7 @@
     },
     "result": {
       "exitCode": 0,
-      "stdout": "{\"kind\":\"upstream-realm-bootstrap-gap-probe\",\"observations\":[{\"operation\":\"principal-bootstrap-node\",\"status\":\"missing-backend\",\"name\":\"Error\",\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'timers' is not implemented\",\"stack\":\"Error: Native Node binding 'timers' is not implemented\\n    at internalBinding (node:internal/bootstrap/realm:172:34)\\n    at node:internal/timers:85:32\\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\\n    at node:internal/bootstrap/node:69:31\\n    at -e:12:11\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\",\"internal/bootstrap/node\",\"internal/timers\"]},{\"operation\":\"original-typed-node-error\",\"status\":\"returned\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\"]},{\"operation\":\"original-stack-limit-policy\",\"status\":\"missing-backend\",\"name\":\"Error\",\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'constants' is not implemented\",\"stack\":\"Error: Native Node binding 'constants' is not implemented\\n    at internalBinding (node:internal/bootstrap/realm:172:34)\\n    at node:internal/util:62:36\\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\\n    at node:internal/validators:35:38\\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\\n    at node:internal/v8/startup_snapshot:5:12\\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\",\"internal/v8/startup_snapshot\",\"internal/validators\",\"internal/util\"]}],\"upstreamStartup\":false,\"emptyEvaluation\":\"not run\",\"simpleScript\":\"not run\",\"commonJsEntry\":\"not run\",\"esmEntry\":\"not run\"}\n",
+      "stdout": "{\"kind\":\"upstream-realm-bootstrap-gap-probe\",\"observations\":[{\"operation\":\"principal-bootstrap-node\",\"status\":\"missing-backend\",\"name\":\"Error\",\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'task_queue' is not implemented\",\"stack\":\"Error: Native Node binding 'task_queue' is not implemented\\n    at internalBinding (node:internal/bootstrap/realm:172:34)\\n    at node:internal/timers:92:20\\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\\n    at node:internal/bootstrap/node:69:31\\n    at -e:12:11\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\",\"internal/bootstrap/node\",\"internal/timers\"]},{\"operation\":\"original-typed-node-error\",\"status\":\"returned\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\"]},{\"operation\":\"original-stack-limit-policy\",\"status\":\"missing-backend\",\"name\":\"Error\",\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'constants' is not implemented\",\"stack\":\"Error: Native Node binding 'constants' is not implemented\\n    at internalBinding (node:internal/bootstrap/realm:172:34)\\n    at node:internal/util:62:36\\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\\n    at node:internal/validators:35:38\\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\\n    at node:internal/v8/startup_snapshot:5:12\\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\",\"internal/v8/startup_snapshot\",\"internal/validators\",\"internal/util\"]}],\"upstreamStartup\":false,\"emptyEvaluation\":\"not run\",\"simpleScript\":\"not run\",\"commonJsEntry\":\"not run\",\"esmEntry\":\"not run\"}\n",
       "stderr": "",
       "hostDiagnostics": []
     },
@@ -36,8 +36,8 @@
           "status": "missing-backend",
           "name": "Error",
           "code": "ERR_KANDELO_NOT_IMPLEMENTED",
-          "message": "Native Node binding 'timers' is not implemented",
-          "stack": "Error: Native Node binding 'timers' is not implemented\n    at internalBinding (node:internal/bootstrap/realm:172:34)\n    at node:internal/timers:85:32\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/bootstrap/node:69:31\n    at -e:12:11",
+          "message": "Native Node binding 'task_queue' is not implemented",
+          "stack": "Error: Native Node binding 'task_queue' is not implemented\n    at internalBinding (node:internal/bootstrap/realm:172:34)\n    at node:internal/timers:92:20\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/bootstrap/node:69:31\n    at -e:12:11",
           "compiledBuiltinIds": [
             "internal/bootstrap/realm",
             "internal/errors",

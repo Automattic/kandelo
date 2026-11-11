@@ -26,6 +26,7 @@
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/module-wrap.h"
 #include "shell/node-upstream/realm.h"
+#include "shell/node-upstream/timers.h"
 
 namespace kandelo::node {
 namespace {
@@ -43,7 +44,8 @@ static constexpr SymbolSpec kSymbols[] = {
 static_assert(std::size(kSymbols) == 49);
 
 enum Phase { Initializing = 1, Ready = 2, Failed = 3 };
-enum RuntimeSlot { RuntimePhase, ContextKey, ExitInfo, FirstSymbol };
+enum RuntimeSlot { RuntimePhase, ContextKey, ExitInfo, TimerBase, TimerState,
+                   PrincipalRealm, PrincipalProcess, FirstSymbol };
 static const JSClass kRuntimeClass = {
     "KandeloNodeRuntime", JSCLASS_HAS_RESERVED_SLOTS(FirstSymbol + std::size(kSymbols))};
 enum ContextSlot {
@@ -149,6 +151,12 @@ JSObject* EnsureRuntimeState(JSContext* cx, JS::PersistentRootedObject& owner) {
   if (!state) return nullptr;  // No identity/state published: clean retry allowed.
   PhaseOf(state, RuntimePhase, Initializing);
   owner = state;  // External embedding root; no finalizer-dependent root cycle.
+  uint64_t milliseconds;
+  if (!ReadGuestMonotonicMillis(cx, &milliseconds)) {
+    PhaseOf(state, RuntimePhase, Failed);
+    return nullptr;
+  }
+  JS::SetReservedSlot(state, TimerBase, JS::DoubleValue(double(milliseconds)));
   JS::RootedString description(cx, JS_NewStringCopyZ(cx, "node:per-context-exports"));
   JS::RootedSymbol key(cx);
   if (description) key = JS::NewEmbeddingPrivateSymbol(cx, description);
@@ -292,6 +300,58 @@ JSObject* GetRuntimeExitInfo(JSContext* cx, JS::HandleObject runtime) {
   }
   if (!JS_WrapObject(cx, &array)) return nullptr;
   return array;
+}
+
+bool HasRuntimeTimerState(JSObject* runtime) {
+  return runtime && JS::GetClass(runtime) == &kRuntimeClass &&
+         JS::GetReservedSlot(runtime, TimerState).isObject();
+}
+JSObject* GetRuntimeTimerState(JSContext* cx, JS::HandleObject runtime, bool create) {
+  if (!RuntimeReady(cx, runtime)) return nullptr;
+  JS::RootedObject state(cx);
+  {
+    JSAutoRealm realm(cx, runtime);
+    JS::Value value = JS::GetReservedSlot(runtime, TimerState);
+    if (value.isObject()) state = &value.toObject();
+    else if (create) {
+      state = CreateRuntimeTimerState(cx, JS::GetReservedSlot(runtime, TimerBase).toNumber());
+      if (!state) return nullptr;
+      JS::SetReservedSlot(runtime, TimerState, JS::ObjectValue(*state));
+    }
+  }
+  if (state && !JS_WrapObject(cx, &state)) return nullptr;
+  return state;
+}
+bool RegisterRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime,
+                                   JS::HandleObject realm, JS::HandleObject process) {
+  if (!RuntimeReady(cx, runtime)) return false;
+  JSAutoRealm home(cx, runtime);
+  if (JS::GetReservedSlot(runtime, PrincipalRealm).isObject()) return true;
+  JS::RootedObject wrappedRealm(cx, realm), wrappedProcess(cx, process);
+  if (!JS_WrapObject(cx, &wrappedRealm) || !JS_WrapObject(cx, &wrappedProcess)) return false;
+  // First successfully initialized realm is the environment's principal realm;
+  // child realm bindings must not replace its process receiver or owner.
+  JS::SetReservedSlot(runtime, PrincipalRealm, JS::ObjectValue(*wrappedRealm));
+  JS::SetReservedSlot(runtime, PrincipalProcess, JS::ObjectValue(*wrappedProcess));
+  return true;
+}
+JSObject* RuntimePrincipalObject(JSContext* cx, JS::HandleObject runtime, unsigned slot) {
+  if (!RuntimeReady(cx, runtime)) return nullptr;
+  JS::Value value = JS::GetReservedSlot(runtime, slot);
+  if (!value.isObject()) { Report(cx, "Node environment has no principal realm"); return nullptr; }
+  JS::RootedObject object(cx, &value.toObject());
+  if (!JS_WrapObject(cx, &object)) return nullptr;
+  return object;
+}
+JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime) {
+  return RuntimePrincipalObject(cx, runtime, PrincipalRealm);
+}
+JSObject* GetRuntimePrincipalProcess(JSContext* cx, JS::HandleObject runtime) {
+  return RuntimePrincipalObject(cx, runtime, PrincipalProcess);
+}
+JSObject* InspectCurrentTimerState(JSContext* cx, JS::HandleObject runtime) {
+  if (!ReadyContext(cx, runtime)) return nullptr;
+  return InspectRuntimeTimers(cx, runtime);
 }
 
 bool InitializeCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime) {

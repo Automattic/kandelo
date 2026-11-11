@@ -1,0 +1,230 @@
+{
+  "projection": "Only stdoutBytes/stderrBytes arrays omitted; full raw harness report retained",
+  "rawReport": {
+    "path": ".context/node-timers/guest-controls.json",
+    "bytes": 62438,
+    "sha256": "57aae24028b35a7422e23d60b142cb4fd4b71f680ec3f0882dccbece14ad1e55"
+  },
+  "report": {
+    "schema": 1,
+    "completedAt": "2026-11-11T04:36:38.763Z",
+    "scope": "Focused SpiderMonkey guest-engine timers controls on the Node host; no upstream Node startup",
+    "host": {
+      "version": "v24.15.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    },
+    "program": {
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev26-wasm32-abi56-bcc7158f8c82da763f4f146515ddc111d7d8efdcca7561bf5bbc5d676a791581/js.wasm",
+      "bytes": 51236375,
+      "sha256": "70d19a3117db7044821cebe339c4d05e279f637bf719c4e854030cf6b85bd1ef"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "fixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/timers-engine-controls.js",
+      "bytes": 11135,
+      "sha256": "cfd4a3246c061097059ec32a4958ceb1c6008786e9f49c20ae856e53798f59b3"
+    },
+    "runner": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 10885,
+      "sha256": "062db27975412f395af89617fd2b4f94a4cd890fb09f0ffdcbd586ae77cd7e3f"
+    },
+    "runs": [
+      {
+        "name": "ordinary-shell-does-not-expose-native-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "node-mode-refuses-native-test-controls",
+        "status": "pass",
+        "exitCode": 3,
+        "stdout": "",
+        "stderr": "Error: upstream test controls require JS-shell mode\n",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "timers-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "{\"kind\":\"native-timers-controls\",\"plannedCases\":23,\"cases\":23,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"native-binding-and-live-info-layout\",\"status\":\"pass\"},{\"name\":\"guest-monotonic-environment-clock-is-shared\",\"status\":\"pass\"},{\"name\":\"reference-toggles-use-true-without-coercing\",\"status\":\"pass\"},{\"name\":\"schedule-converts-once-and-keeps-exact-uint64-deadline\",\"status\":\"pass\"},{\"name\":\"schedule-conversion-errors-preserve-original-state-and-exception\",\"status\":\"pass\"},{\"name\":\"actual-referenced-deadline-blocks-and-invokes-native-callback\",\"status\":\"pass\"},{\"name\":\"rescheduling-replaces-the-existing-native-deadline\",\"status\":\"pass\"},{\"name\":\"positive-expiry-return-rearms-a-referenced-one-shot\",\"status\":\"pass\"},{\"name\":\"negative-expiry-return-leaves-a-real-unreferenced-pending-timer\",\"status\":\"pass\"},{\"name\":\"zero-expiry-does-not-discard-reentrant-rescheduling\",\"status\":\"pass\"},{\"name\":\"unreferenced-even-due-timer-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"referenced-immediate-uses-live-counters-and-principal-process\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"real-engine-microtasks-run-between-timer-and-immediate-phases\",\"status\":\"pass\"},{\"name\":\"native-method-ownership-does-not-depend-on-a-javascript-receiver\",\"status\":\"pass\"},{\"name\":\"callback-replacement-and-gc-retain-the-real-latest-function\",\"status\":\"pass\"},{\"name\":\"other-realm-binding-shares-environment-state-and-principal-receiver\",\"status\":\"pass\"},{\"name\":\"original-callback-exception-is-not-cleared-or-replaced\",\"status\":\"pass\"},{\"name\":\"reentrant-loop-dispatch-is-rejected-without-losing-outer-state\",\"status\":\"pass\"},{\"name\":\"diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state\",\"status\":\"pass\"},{\"name\":\"owned-loop-does-not-call-public-compatibility-timer-hooks\",\"status\":\"pass\"},{\"name\":\"fresh-loop-does-not-retain-a-previous-check-phase\",\"status\":\"pass\"}],\"state\":{\"armed\":false,\"timerReferenced\":false,\"immediateReferenced\":false,\"deadline\":\"38720825\"},\"limits\":[\"Native binding/scheduler controls, not public timers or successful Node bootstrap\",\"No task_queue/async callback-scope/tick/fatal recovery integration\",\"No full Node/libuv phase-ordering/native differential/security/OOM/finalization proof\",\"No browser execution\"]}\n",
+        "stderr": "",
+        "hostDiagnostics": [],
+        "detail": {
+          "kind": "native-timers-controls",
+          "plannedCases": 23,
+          "cases": 23,
+          "notRun": 0,
+          "failures": 0,
+          "observations": [
+            {
+              "name": "native-binding-and-live-info-layout",
+              "status": "pass"
+            },
+            {
+              "name": "guest-monotonic-environment-clock-is-shared",
+              "status": "pass"
+            },
+            {
+              "name": "reference-toggles-use-true-without-coercing",
+              "status": "pass"
+            },
+            {
+              "name": "schedule-converts-once-and-keeps-exact-uint64-deadline",
+              "status": "pass"
+            },
+            {
+              "name": "schedule-conversion-errors-preserve-original-state-and-exception",
+              "status": "pass"
+            },
+            {
+              "name": "actual-referenced-deadline-blocks-and-invokes-native-callback",
+              "status": "pass"
+            },
+            {
+              "name": "rescheduling-replaces-the-existing-native-deadline",
+              "status": "pass"
+            },
+            {
+              "name": "positive-expiry-return-rearms-a-referenced-one-shot",
+              "status": "pass"
+            },
+            {
+              "name": "negative-expiry-return-leaves-a-real-unreferenced-pending-timer",
+              "status": "pass"
+            },
+            {
+              "name": "zero-expiry-does-not-discard-reentrant-rescheduling",
+              "status": "pass"
+            },
+            {
+              "name": "unreferenced-even-due-timer-does-not-keep-the-loop-alive",
+              "status": "pass"
+            },
+            {
+              "name": "referenced-immediate-uses-live-counters-and-principal-process",
+              "status": "pass"
+            },
+            {
+              "name": "unreferenced-immediate-does-not-keep-the-loop-alive",
+              "status": "pass"
+            },
+            {
+              "name": "unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive",
+              "status": "pass"
+            },
+            {
+              "name": "real-engine-microtasks-run-between-timer-and-immediate-phases",
+              "status": "pass"
+            },
+            {
+              "name": "native-method-ownership-does-not-depend-on-a-javascript-receiver",
+              "status": "pass"
+            },
+            {
+              "name": "callback-replacement-and-gc-retain-the-real-latest-function",
+              "status": "pass"
+            },
+            {
+              "name": "other-realm-binding-shares-environment-state-and-principal-receiver",
+              "status": "pass"
+            },
+            {
+              "name": "original-callback-exception-is-not-cleared-or-replaced",
+              "status": "pass"
+            },
+            {
+              "name": "reentrant-loop-dispatch-is-rejected-without-losing-outer-state",
+              "status": "pass"
+            },
+            {
+              "name": "diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state",
+              "status": "pass"
+            },
+            {
+              "name": "owned-loop-does-not-call-public-compatibility-timer-hooks",
+              "status": "pass"
+            },
+            {
+              "name": "fresh-loop-does-not-retain-a-previous-check-phase",
+              "status": "pass"
+            }
+          ],
+          "state": {
+            "armed": false,
+            "timerReferenced": false,
+            "immediateReferenced": false,
+            "deadline": "38720825"
+          },
+          "limits": [
+            "Native binding/scheduler controls, not public timers or successful Node bootstrap",
+            "No task_queue/async callback-scope/tick/fatal recovery integration",
+            "No full Node/libuv phase-ordering/native differential/security/OOM/finalization proof",
+            "No browser execution"
+          ]
+        }
+      },
+      {
+        "name": "unreferenced-native-timer-permits-natural-guest-exit",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "UNREFERENCED_NATIVE_PENDING\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "unreferenced-native-immediate-permits-natural-guest-exit",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "UNREFERENCED_NATIVE_PENDING\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "Node immediate callback invariant-remains-fatal",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: args.get(0).isObject() && JS::IsCallable(&args[0].toObject()) (Node immediate callback invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/timers.cpp:113\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c37385e:wasm-function[228]:0x77b9d\n    at wasm://wasm/0c37385e:wasm-function[7328]:0x528b50\n    at wasm://wasm/0c37385e:wasm-function[7327]:0x51651e\n    at wasm://wasm/0c37385e:wasm-function[7336]:0x52aade\n    at wasm://wasm/0c37385e:wasm-function[7337]:0x52ad4b\n    at wasm://wasm/0c37385e:wasm-function[8189]:0x5f8d7b\n    at wasm://wasm/0c37385e:wasm-function[87]:0x515d4\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "Node timers callback invariant-remains-fatal",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: args.get(1).isObject() && JS::IsCallable(&args[1].toObject()) (Node timers callback invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/timers.cpp:114\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c37385e:wasm-function[228]:0x77bfb\n    at wasm://wasm/0c37385e:wasm-function[7328]:0x528b50\n    at wasm://wasm/0c37385e:wasm-function[7327]:0x51651e\n    at wasm://wasm/0c37385e:wasm-function[7336]:0x52aade\n    at wasm://wasm/0c37385e:wasm-function[7337]:0x52ad4b\n    at wasm://wasm/0c37385e:wasm-function[8189]:0x5f8d7b\n    at wasm://wasm/0c37385e:wasm-function[87]:0x515d4\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+            "status": 132
+          }
+        ]
+      }
+    ],
+    "failures": 0,
+    "limits": [
+      "No Chromium/Firefox/WebKit execution",
+      "No upstream startup or module compatibility evidence",
+      "No complete native-V8 differential proof",
+      "No security-wrapper/OOM or complete symbol-owner teardown/finalization proof"
+    ]
+  }
+}

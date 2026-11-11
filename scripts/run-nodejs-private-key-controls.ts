@@ -7,22 +7,23 @@ import { runCentralizedProgram } from "../host/test/centralized-test-helper";
 
 const [programArgument, reportArgument, modeArgument = "private-keys"] = process.argv.slice(2);
 if (!programArgument || !reportArgument || process.argv.length > 5 ||
-    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config"].includes(modeArgument)) {
-  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config]");
+    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config", "timers"].includes(modeArgument)) {
+  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config|timers]");
 }
 const perContext = modeArgument === "per-context";
 const synthetic = modeArgument === "synthetic-modules";
 const moduleWrap = modeArgument === "module-wrap";
 const dynamicImport = modeArgument === "dynamic-import";
 const errorStack = modeArgument === "error-stack";
+const nativeTimers = modeArgument === "timers";
 const processConfig = modeArgument === "process-config";
 const realmLibrary = modeArgument === "realm-library";
-const expectedKind = processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
-const expectedCases = processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
+const expectedKind = nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
+const expectedCases = nativeTimers ? 23 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
 const program = resolve(programArgument);
 const reportPath = resolve(reportArgument);
 const kernel = resolveBinary("kernel.wasm");
-const fixturePath = resolve(processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
+const fixturePath = resolve(nativeTimers ? "tests/nodejs/upstream/timers-engine-controls.js" : processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
   : "tests/nodejs/upstream/private-key-engine-controls.js");
 const fixture = readFileSync(fixturePath, "utf8");
 function identity(path: string) {
@@ -112,6 +113,26 @@ if (realmLibrary) {
       expect(result.stderr.includes("Node internal loaders registration invariant"), JSON.stringify(result));
       expect(!result.stdout.includes("UNEXPECTED_"), JSON.stringify(result));
     });
+}
+if (nativeTimers) {
+  for (const mode of ["timer", "immediate"]) {
+    await run("unreferenced-native-" + mode + "-permits-natural-guest-exit", ["js", "--kandelo-test-upstream", "-e",
+      "__kandeloUpstreamTest.initializeContext(); const realm=__kandeloUpstreamTest.initializeRealm(); const timers=realm.internalBinding('timers'); timers.setupTimers(()=>{throw new Error('UNEXPECTED_IMMEDIATE_CALLBACK')},()=>{throw new Error('UNEXPECTED_TIMER_CALLBACK')}); " +
+      (mode === "timer" ? "timers.getLibuvNow(); timers.scheduleTimer(0); timers.toggleTimerRef(false);" : "timers.immediateInfo[0]=1; timers.toggleImmediateRef(false);") +
+      " print('UNREFERENCED_NATIVE_PENDING');"], (result) => {
+        expect(result.exitCode === 0 && result.stdout.trim() === "UNREFERENCED_NATIVE_PENDING", JSON.stringify(result));
+        expect(result.hostDiagnostics.length === 0, JSON.stringify(result));
+      });
+  }
+  for (const [operation, assertion] of [
+    ["timers.setupTimers(1,()=>0)", "Node immediate callback invariant"],
+    ["timers.setupTimers(()=>{},1)", "Node timers callback invariant"],
+  ]) {
+    await run(assertion + "-remains-fatal", ["js", "--kandelo-test-upstream", "-e",
+      "__kandeloUpstreamTest.initializeContext();const realm=__kandeloUpstreamTest.initializeRealm();const timers=realm.internalBinding('timers');try{" + operation + ";print('UNEXPECTED_RETURN')}catch(error){print('UNEXPECTED_CATCH')}"], (result) => {
+        expect(result.exitCode !== 0 && result.stderr.includes(assertion) && !result.stdout.includes("UNEXPECTED_"), JSON.stringify(result));
+      });
+  }
 }
 const report = {
   schema: 1, completedAt: new Date().toISOString(),

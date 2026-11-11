@@ -13,10 +13,10 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry now calls complete `internal/bootstrap/node`
 with protected state, passes native configuration and stops on missing
-`timers` through the original internal/timers body. Complete Node startup,
-empty/simple evaluation, user CJS/ESM entrypaths and browser startup remain
-unrun. The native process and
-util/builtins bindings remain partial; no complete module compatibility or
+`task_queue` through the original internal/timers body, after admitting the
+real native timer backend. Complete Node startup, empty/simple evaluation,
+user CJS/ESM entrypaths and browser startup remain unrun. The native process
+and util/builtins bindings remain partial; no complete module compatibility or
 443-source guest payload readback is established. ModuleWrap-owned dynamic
 imports and genuine source/synthetic graphs have focused Node-host controls.
 Owned Error stacks use real saved frames, with partial structured CallSites.
@@ -626,3 +626,30 @@ native implementation and control respectively were corrected while preserving
 the original JS cache. Exact artifacts/failures/limits are in
 `process-config-engine-check.json`. No user CJS/ESM or browser startup, full
 catalog, canonical products, successor-ABI campaign or overall suite is proven.
+
+## Native timer scheduler
+
+Revision 26 adds the native timer binding and an opt-in native shell-loop path.
+A runtime owns the actual single deadline, reference state, shared immediate and
+timeout arrays, real registered callbacks and principal process receiver. The
+clock uses guest CLOCK_MONOTONIC relative to environment creation. Integer
+conversion, deadline replacement/saturation, expiry return/ref semantics,
+reentrant scheduling, GC and foreign function ownership have focused controls.
+Public compatibility timer hooks do not supply this native path. Original
+internal/timers remains the JavaScript queue and policy implementation.
+
+Twenty-three guest binding/loop controls and 135 existing cases pass on the
+same package, with natural-exit and isolated fatal-invariant drivers. Sixteen
+separate native reference controls cover direct binding behavior, isolated
+unref-only natural exits and fresh-loop phase order. An initial ordering test
+assumed that independently queued timers/immediates always have one order;
+that assumption was corrected against native behavior. A separate replay then
+confirmed and fixed stale native phase state between drains. Exact artifacts,
+source identities and failures are in timers-engine-check.json; contracts and
+remaining callback/phase boundaries are in timers-contracts.md.
+
+The original principal-node body now passes timers and stops at task_queue.
+Native callback-scope/async/tick/fatal retry, full Node/libuv phase semantics,
+public timer/module compatibility, process exit dispatch, actual user CJS/ESM
+startup, browser hosts and the complete catalog remain unfinished. Full products,
+successor-ABI campaign rebuilds and overall suites remain deferred.

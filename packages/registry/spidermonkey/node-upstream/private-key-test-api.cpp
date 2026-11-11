@@ -64,7 +64,7 @@ bool InitializePrivateKey(JSContext* cx, unsigned argc, JS::Value* vp) {
 }
 
 enum class ContextOperation { Initialize, GetExports, Inspect, ModuleWrapBinding,
-                              ErrorBinding, InitializeRealm, GetRealm, InspectRealm, RunNode };
+                              ErrorBinding, InitializeRealm, GetRealm, InspectRealm, RunNode, InspectTimers };
 
 bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
                           ContextOperation operation) {
@@ -106,6 +106,8 @@ bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
           ? GetCurrentContextModuleWrapBinding(cx, runtime)
           : operation == ContextOperation::ErrorBinding
           ? GetErrorStackBinding(cx)
+          : operation == ContextOperation::InspectTimers
+          ? InspectCurrentTimerState(cx, runtime)
           : operation == ContextOperation::InitializeRealm || operation == ContextOperation::GetRealm ||
             operation == ContextOperation::InspectRealm || operation == ContextOperation::RunNode
           ? GetCurrentRealmLibrary(cx, runtime, operation == ContextOperation::InspectRealm)
@@ -151,6 +153,9 @@ bool GetRealm(JSContext* cx, unsigned argc, JS::Value* vp) {
 }
 bool RunNode(JSContext* cx, unsigned argc, JS::Value* vp) {
   return ContextOperationCall(cx, argc, vp, ContextOperation::RunNode);
+}
+bool InspectTimers(JSContext* cx, unsigned argc, JS::Value* vp) {
+  return ContextOperationCall(cx, argc, vp, ContextOperation::InspectTimers);
 }
 bool InspectRealm(JSContext* cx, unsigned argc, JS::Value* vp) {
   return ContextOperationCall(cx, argc, vp, ContextOperation::InspectRealm);
@@ -257,6 +262,7 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
       JS_FN("getRealm", GetRealm, 0, 0),
       JS_FN("inspectRealm", InspectRealm, 0, 0),
       JS_FN("runNodeBootstrap", RunNode, 0, 0),
+      JS_FN("inspectTimers", InspectTimers, 0, 0),
       JS_FN("enhanceFatalStack", EnhanceFatalStack, 2, 0),
       JS_FN("newSyntheticModule", NewSyntheticModule, 2, 0),
       JS_FN("setSyntheticExport", SetSyntheticExport, 3, 0),

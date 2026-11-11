@@ -34,13 +34,14 @@
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
+#include "shell/node-upstream/timers.h"
 
 namespace kandelo::node {
 namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3 };
-enum Slot { Status, Global, Process, Primordials, Builtins, Util, Config, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, Builtins, Util, Config, Timers, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -219,6 +220,16 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
   JS::RootedObject binding(cx);
   if (name == "builtins") binding = BuiltinsBinding(cx, state);
   else if (name == "config") binding = ConfigBinding(cx, state);
+  else if (name == "timers") {
+    JS::Value cached = JS::GetReservedSlot(state, Timers);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      JS::RootedObject process(cx, &JS::GetReservedSlot(state, Process).toObject());
+      binding = CreateTimersBinding(cx, runtime, state, process);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, Timers, JS::ObjectValue(*binding));
+    }
+  }
   else if (name == "module_wrap") binding = GetCurrentContextModuleWrapBinding(cx, runtime);
   else if (name == "errors") binding = GetErrorStackBinding(cx);
   else if (name == "util") {
@@ -309,6 +320,12 @@ JSObject* AllocateRealmLibraryState(JSContext* cx) {
   JS::SetReservedSlot(state, NodeStatus, JS::Int32Value(NodeNotStarted));
   JS::SetReservedSlot(state, Global, JS::ObjectValue(*JS::CurrentGlobalOrNull(cx))); return state;
 }
+bool CheckRealmLibraryActive(JSContext* cx, JS::HandleObject state) {
+  MOZ_RELEASE_ASSERT(JS::GetClass(state) == &kRealm);
+  if (JS::GetReservedSlot(state, Status) == JS::Int32Value(Failed))
+    return Report(cx, "Previous Node realm initialization failed");
+  return true;
+}
 bool RunRealmLibrary(JSContext* cx, JS::HandleObject state,
                      JS::HandleObject primordials) {
   MOZ_RELEASE_ASSERT(JS::GetClass(state) == &kRealm);
@@ -338,6 +355,11 @@ bool RunRealmLibrary(JSContext* cx, JS::HandleObject state,
     return true;
   };
   bool ok = run();
+  if (ok) {
+    JS::RootedObject runtime(cx, Runtime(cx));
+    JS::RootedObject process(cx, &JS::GetReservedSlot(state, Process).toObject());
+    ok = RegisterRuntimePrincipalRealm(cx, runtime, state, process);
+  }
   JS::SetReservedSlot(state, Status, JS::Int32Value(ok ? LibraryReady : Failed)); return ok;
 }
 bool RejectRepeatedRealmLibraryInitialization(JSContext* cx, JS::HandleObject state) {

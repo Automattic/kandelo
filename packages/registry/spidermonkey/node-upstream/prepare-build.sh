@@ -29,6 +29,8 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/error-stack.h" \
     "$node_consumer/realm.cpp" \
     "$node_consumer/realm.h" \
+    "$node_consumer/timers.cpp" \
+    "$node_consumer/timers.h" \
     "$node_consumer/per-context.h" "$shell_sources/"
 # Keep the portable registry's include names independent of Mozilla shell paths.
 # Mozilla's checker treats js/src as the root of internal header include names.

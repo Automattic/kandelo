@@ -23,6 +23,13 @@ JSObject* CreateRuntimePrivateSymbolTable(JSContext* cx, JS::HandleObject runtim
 // this live Int32Array across all of its realms (src/env.h).
 enum ExitInfoField { kExiting = 0, kExitCode, kHasExitCode, kExitInfoFieldCount };
 JSObject* GetRuntimeExitInfo(JSContext* cx, JS::HandleObject runtime);
+JSObject* GetRuntimeTimerState(JSContext* cx, JS::HandleObject runtime, bool create);
+bool HasRuntimeTimerState(JSObject* runtime);
+bool RegisterRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime,
+                                   JS::HandleObject realm, JS::HandleObject process);
+JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime);
+JSObject* GetRuntimePrincipalProcess(JSContext* cx, JS::HandleObject runtime);
+JSObject* InspectCurrentTimerState(JSContext* cx, JS::HandleObject runtime);
 bool InitializeCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime);
 bool RunCurrentNodeBootstrap(JSContext* cx, JS::HandleObject runtime);
 JSObject* GetCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime, bool inspect);
