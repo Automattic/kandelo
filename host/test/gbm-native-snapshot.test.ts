@@ -1,9 +1,40 @@
 import { describe, expect, it, vi } from "vitest";
 import { allocateByteSnapshot, publishMappedBytes } from "../src/dri/byte-snapshot";
-import { lookupComparisonMemoryShape, recordComparisonMemoryShape } from "../src/process-snapshot-comparator";
+import { getSnapshotComparatorModule, lookupComparisonMemoryShape, recordComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { GbmBoRegistry } from "../src/dri/registry";
 
 describe("bounded native GBM comparisons", () => {
+  it.each([
+    ["Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Version/26.6 Safari/605.1.15", false],
+    ["Mozilla/5.0 Chrome/153.0.0.0 Safari/537.36", true],
+    ["Mozilla/5.0 Firefox/155.0", true],
+  ] as const)("preserves exact publication under the host reservation policy (%s)", (userAgent, nativeAllowed) => {
+    const memory = new WebAssembly.Memory({ initial: 3, maximum: 4, shared: true });
+    recordComparisonMemoryShape(memory, 4, true, 4);
+    const shape = lookupComparisonMemoryShape(memory);
+    expect(getSnapshotComparatorModule(shape, shape)).toBeDefined();
+    vi.stubGlobal("navigator", { userAgent });
+    try {
+      const address = 19, length = 65539;
+      const baseline = allocateByteSnapshot(length, memory);
+      expect(baseline.snapshotMemory !== undefined).toBe(nativeAllowed);
+      const destination = new Uint8Array(length); destination.fill(73);
+      expect(publishMappedBytes(memory, address, baseline, destination, length)).toBe(false);
+      expect(destination.every(byte => byte === 73)).toBe(true);
+      const source = new Uint8Array(memory.buffer, address, length);
+      source[32] = 91; source[length - 1] = 55;
+      expect(publishMappedBytes(memory, address, baseline, destination, length)).toBe(true);
+      memory.grow(1);
+      new Uint8Array(memory.buffer, address, length)[1] = 17;
+      expect(publishMappedBytes(memory, address, baseline, destination, length)).toBe(true);
+      expect(destination[1]).toBe(17);
+      expect(destination[32]).toBe(91);
+      expect(destination[length - 1]).toBe(55);
+      expect(destination[100]).toBe(73);
+      expect(publishMappedBytes(memory, address, baseline, destination, length)).toBe(false);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it.each([4, 8] as const)("compares exact ranges of a real %i-byte-address memory", width => {
     const memory = new WebAssembly.Memory((width === 8
       ? { initial: 4n, maximum: 5n, shared: true, address: "i64" }

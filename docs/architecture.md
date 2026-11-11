@@ -2860,6 +2860,12 @@ snapshot and pending child backing, including concurrent pending allocations,
 and rechecks guest growth before publishing a constructed memory. Native
 constructor exhaustion maps to `ENOMEM` without changing unrelated errors.
 Machine shutdown closes creator admission before draining admitted work.
+If Rust exits a fork child while replay readiness is pending, the exact
+process-exit owner cancels that replay with its already-published teardown.
+Both hosts join that teardown instead of rolling back the exited child.
+A prior worker or protocol failure still wins; a synthetic Worker exit or
+matching error text cannot supply this ownership. The same cancellation is
+rechecked after readiness and after asynchronous launch-state queries.
 This preserves the syscall-time snapshot even if a sibling thread execs while
 the child Worker is prepared. The child copies the current length, not the
 configured maximum, because `memory.size()` and the accessible address-space
@@ -5997,8 +6003,11 @@ read-only Wasm comparator on 64 KiB blocks. Each mapping owns an independent,
 nonshared baseline memory whose initial and maximum sizes both equal the
 rounded allocation. Instances and exports exist only during a synchronous
 borrow of the original process memory. Dirty blocks still use exact
-changed-byte publication; small mappings and unavailable native capabilities
-use the JavaScript comparison. Splits allocate independent baselines, and
+changed-byte publication; small mappings, unavailable native capabilities,
+and JavaScriptCore hosts (WebKit and Bun) use the JavaScript comparison with
+owned-array baselines. Fixed Wasm baselines spend additional reservation
+capacity on JavaScriptCore; optional comparison bookkeeping must not reduce
+the capacity available to guest processes. Splits allocate independent baselines, and
 retirement releases them with their mappings. No guest memory is sent to a
 persistent browser realm, and no ABI or memory-budget ceiling changes.
 This remains boundary synchronization, not live aliasing between Wasm memories. A snapshot is bounded by the

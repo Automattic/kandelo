@@ -1,6 +1,7 @@
 import { getSnapshotComparatorModule, lookupComparisonMemoryShape,
   recordComparisonMemoryShape } from "../process-snapshot-comparator";
 import { mergeChangedByteRuns } from "../shared-byte-runs";
+import { runtimeMemoryProfileSignals } from "../runtime-memory-profile";
 
 const Page = 65536;
 const Memory = WebAssembly.Memory;
@@ -14,8 +15,15 @@ export type ByteSnapshot = { snapshot: Uint8Array; snapshotMemory?: WebAssembly.
  * space. The maximum equals its actual rounded allocation, not an arena ceiling.
  * Unknown constructor provenance keeps the existing owned-array implementation. */
 export function allocateByteSnapshot(length: number, source: WebAssembly.Memory | null): ByteSnapshot {
+  // JSC spends materially more reservation capacity on fixed Wasm baselines
+  // than equal-sized arrays. Keep its existing array path without reducing
+  // guest ceilings; native comparison is optional device bookkeeping.
+  const chargesReservations = runtimeMemoryProfileSignals({
+    userAgent: typeof navigator === "undefined" ? undefined : navigator.userAgent,
+  }).chargesDeclaredCeilings
+    || (typeof process !== "undefined" && typeof process.versions?.bun === "string");
   const shape = source ? lookupComparisonMemoryShape(source) : undefined;
-  if (length < Page || !shape || !getSnapshotComparatorModule(shape, shape))
+  if (chargesReservations || length < Page || !shape || !getSnapshotComparatorModule(shape, shape))
     return { snapshot: new Uint8Array(length), snapshotMemory: undefined };
   const pages = Math.ceil(length / Page);
   const snapshotMemory = new Memory({ initial: pages, maximum: pages });

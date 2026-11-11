@@ -87,6 +87,34 @@ type ForkReplayCoordinatorPhase =
   | "committed"
   | "cancelled";
 
+const observedReplays = new WeakMap<WorkerHandle, ForkReplayGateCoordinator>();
+const processRetirements = new WeakMap<Error, {
+  coordinator: ForkReplayGateCoordinator;
+  completion: Promise<void>;
+}>();
+
+/** Called by the exact process-exit owner after publishing its teardown.
+ * A Worker exit event alone cannot authorize abandoning a fork transaction. */
+export function retireForkReplayWorker(worker: WorkerHandle, completion: Promise<void>): void {
+  const coordinator = observedReplays.get(worker);
+  if (!coordinator || (coordinator.currentPhase !== "pending"
+      && coordinator.currentPhase !== "ready")) return;
+  const error = new Error(`${coordinator.context}: process exit owns replay retirement`);
+  processRetirements.set(error, { coordinator, completion });
+  coordinator.cancel(error);
+}
+
+/** Preserve the first failure and join the existing exit owner. Never roll
+ * back its waitable child or claim that termination proves memory quiescence. */
+export async function waitForForkReplayRetirement(
+  coordinator: ForkReplayGateCoordinator, error: unknown,
+): Promise<boolean> {
+  const retirement = error instanceof Error ? processRetirements.get(error) : undefined;
+  if (!retirement || retirement.coordinator !== coordinator) return false;
+  await retirement.completion;
+  return true;
+}
+
 function cancellationError(context: string, reason: unknown): Error {
   if (reason instanceof Error) return reason;
   return new Error(
@@ -138,6 +166,10 @@ export class ForkReplayGateCoordinator {
     return this.readyPromise;
   }
 
+  throwIfCancelled(): void {
+    if (this.phase === "cancelled") throw this.cancelledWith!;
+  }
+
   commit(): void {
     if (this.phase === "cancelled") {
       throw this.cancelledWith
@@ -175,6 +207,7 @@ export function observeForkReplayWorker(
   pid: number,
   isCurrentGeneration: () => boolean,
 ): void {
+  observedReplays.set(worker, coordinator);
   const protocolFailure = (detail: string): void => {
     coordinator.cancel(new Error(`${coordinator.context}: ${detail}`));
   };

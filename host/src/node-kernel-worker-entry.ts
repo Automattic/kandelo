@@ -142,6 +142,8 @@ import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
 import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
+  retireForkReplayWorker,
+  waitForForkReplayRetirement,
 } from "./fork-replay-gate";
 import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "./fork-reference-broker";
@@ -2483,21 +2485,42 @@ async function handleOrdinaryFork(
       return [];
     }
     await forkReplay.waitUntilReady();
+    forkReplay.throwIfCancelled();
     if (processes.get(childPid)?.worker !== launchedWorker) {
       throw new Error(
         `Fork child ${childPid} changed generation before replay commit`,
       );
     }
-    if (!await retryKernelEntryResult(
+    const mayLaunch = await retryKernelEntryResult(
       () => kernelWorker.shouldLaunchPendingChild(childPid),
-    )) {
-      throw new Error(`Fork child ${childPid} exited before replay commit`);
+    );
+    forkReplay.throwIfCancelled();
+    if (!mayLaunch) {
+      // Rust may deliver a fatal signal after reconstruction but before commit.
+      // Exit retains the waitable child and owns exact-generation retirement.
+      childForkHostImports?.close();
+      const signal = await retryKernelEntryResult(
+        () => kernelWorker.finalizePendingChildTermination(childPid),
+      );
+      forkReplay.throwIfCancelled();
+      if (signal < 0) {
+        throw new Error(`Cannot confirm exited fork child ${childPid} before replay commit`);
+      }
+      forkReplay.cancel(new Error(`Fork child ${childPid} exited before replay commit`));
+      lifecycleTeardownStarted = true;
+      await awaitFinalizedProcessTeardown(
+        childPid,
+        signal > 0 ? signalExitStatus(signal) : 0,
+        launchedWorker,
+      );
+      return [];
     }
     // WHY: only this commit wakes the child inside the inherited fork import.
     // Resolve onFork afterward so the parent cannot observe a child whose
     // continuation has not proved it reached the copied activation.
     forkReplay.commit();
   } catch (error) {
+    if (await waitForForkReplayRetirement(forkReplay, error)) return [];
     if (lifecycleTeardownStarted) throw error;
     const mainNeverCreated = childGeneration
       ? sealProcessWorkerAbsence(childGeneration)
@@ -3577,6 +3600,7 @@ async function finishProcessExit(
     ownedJobs.detached(pid);
   })();
   processTeardowns.set(expectedWorker, teardown);
+  retireForkReplayWorker(expectedWorker, teardown);
 
   // The process is already a kernel-side zombie at this point. Report the
   // exit before worker-thread teardown so a slow termination cannot make

@@ -24,12 +24,15 @@ compatibility passed 6/6. The original combined desktop matrix completed
 12 cursor-fixture cases, two WebKit storage-fixture cases and two ScummVM
 archive-import cases; the latter reproduces on pinned main.
 
-The current-integration memory gate completed 17/18 browser cases. Chromium
-and Firefox completed four mixed-machine cycles each. WebKit reported an
-unexpected allocation cancellation during WordPress teardown; the owning
-browser factory/gate repair now passes 125 focused source checks. A new
-normal build and complete memory validation are still required for that
-repair. Original Steel Sky checks passed Cage 3/3 and Chromium Sway;
+The original integrated memory gate completed 17/18 browser cases. After
+its factory-cancellation repair, the fresh full gate at runtime `2eaec845f9`
+completed **15/18**: all three repeated-switch cases failed. Chromium and
+Firefox reported intentional child-Worker termination while fork replay
+readiness was pending; WebKit reached a ready WordPress kernel but no web
+iframe appeared. The fresh desktop matrix completed **114/120**, with no
+skips. A later exact-exit retirement correction and a graphics-baseline
+reservation policy are under validation; neither red result is cleared by
+isolated unit checks. Original Steel Sky checks passed Cage 3/3 and Chromium Sway;
 Firefox's menu assertion and intermittent WebKit allocation failures remain
 adverse observations. All nine enabled Node/browser before/after benchmark
 comparisons remain unfinished. No complete R1 or native-feel acceptance is
@@ -1439,3 +1442,76 @@ registered crash in the helper; it does not establish universal absence.
 The optional registry check separately fails on an unchanged main entry
 referencing removed `host/src/webgl/main-forward.ts`. That stale metadata
 and the renderer's behavior are distinct observations.
+
+
+## November 10 continuation: exact exit ownership and baseline budget
+
+The normal runtime at `072b79c7e7` is frozen independently at
+`/Users/brandon/kandelo-handoffs/cage-sydney-20261109/previews/r1-shutdown-072b`.
+Its 1,105 source/product files were byte verified. Public port 56519 now
+forwards to frozen backend 56521; the original owned server was stopped
+with its exact verified process group, yielding expected status 143.
+A real Cage boot, shifted input, repaint and exit check passes against that
+backend (1/1, 14.8 seconds). This preserves the published preview while
+new source is validated; it does not serve the latest unvalidated changes.
+
+The full shutdown memory run `cage-shutdown-memory-1110-172109-7165`
+completed 15/18 browser checks in 40m23s. Source ownership (7), host checks
+(267), Node teardown (3) and Bun teardown (7) passed. Both Chrome and
+Firefox record `Worker exited before replay readiness (code=0)` from an
+intentionally terminated fork child. Their ordinary process listeners
+already ignore that synthetic event; the replay observer instead rejects
+an in-flight launch. Rolling back at that point competes with the existing
+exit owner and can discard the child's waitable lifetime.
+
+The correction publishes the exact process-exit teardown before minting a
+coordinator-bound replay cancellation. Both host adapters join that teardown
+instead of attempting a second rollback. An earlier worker/protocol error
+still wins. A matching message, another coordinator or a raw worker exit
+cannot supply this ownership, and a rejected teardown remains an error.
+Cancellation is checked again after readiness and asynchronous kernel
+queries. The Rust-dead path requires an observed exit status; an absent PID
+alone is insufficient. No browser terminate promise becomes a memory fence.
+
+WebKit's failed mixed switch has no console errors. Its retained syslog
+shows the WordPress image verified and kernel ready, but the web iframe
+never appeared within the original deadline. That startup stall is still
+unclassified. All three full traces and screenshots remain in retained
+`shutdown-memory-failures` evidence; no deadline, fixture or restart policy
+was changed to clear them.
+
+The complete desktop run `cage-shutdown-desktops-1110-172120-9c85`
+completed 114/120 in 60m11s, with no skips. Failures are Firefox's inherited
+render-node cursor and small-pane Sway click; Chromium's Cage DPR-2 boot
+and ScummVM Wayland process report; and Firefox/WebKit's archive detector
+reporting no SDL video device. The Cage failure screenshot remains in its
+boot log after image decompression, before guest/rendering readiness; it
+does not establish a rendering defect. The archive detector's same error
+has an unchanged-main control. The original six failures, including inline
+screenshots, are retained under `shutdown-desktop-failures`.
+
+A separate fixed eight-case ABBA/dose experiment in fresh Playwright WebKit
+parents keeps every baseline and shared memory live through its final
+observations. Six owned-array baselines (~42.7 MiB) permit 37 and 38 extra
+1-GiB-maximum shared memories; equal-sized fixed Wasm baselines permit 32
+and 33. Twelve array baselines (~85.4 MiB) permit 39 and 39, versus 31 and
+30 for fixed Wasm baselines. Tiny allocations still succeed after the
+constructor boundary. This establishes an avoidable reservation cost from
+native baseline bookkeeping, not the cause of the application's tiny-array
+OOM and not an outside-runtime defect.
+
+Graphics baseline allocation therefore uses its existing owned-array path
+on WebKit and Bun, retaining native comparisons on eligible V8 and
+SpiderMonkey hosts. Guest/kernel ceilings and publication semantics are
+unchanged. The Safari-policy regression fails before this guard (7/8)
+and passes afterward (8/8); actual helper publication through real memory
+growth passes Chromium, Firefox and WebKit (3/3), and real Bun also passes.
+Those isolated results do not replace the full memory gate. Fresh source,
+normal-product integration and performance results follow when complete.
+
+The new focused source selection initially completed 160/162: both failed
+checks were a new test variable shadowing Node's imported `join` function.
+After correcting that test, all 10 host-parity assertions pass; the other
+152 checks had already passed. The 30 fork-allocation ownership checks,
+8 native-baseline checks and normal host distribution/type build also pass.
+These are source and distribution checks, not a passing browser memory gate.
