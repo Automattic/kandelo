@@ -1,9 +1,11 @@
-import { expect, test, type Page } from "../playwright-test";
+import { expect, type Page } from "../playwright-test";
+import { test } from "./support/persistent-page";
 import { encodeBootDescriptor } from "../../../web-libs/kandelo-session/src/boot-descriptor";
 import { createInlineBootInput } from "../../../web-libs/kandelo-session/src/boot-inputs";
-import type { BootDescriptor } from "../../../web-libs/kandelo-session/src/kernel-host";
+import type { BootDescriptor, BootInput } from "../../../web-libs/kandelo-session/src/kernel-host";
 import { gotoMachine } from "./support/kandelo-machine";
 import { clickDockTool } from "./support/dock";
+import { terminalHistoryMatching } from "./support/terminal-history";
 
 async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate(
@@ -18,7 +20,7 @@ async function terminalText(page: Page): Promise<string> {
  * to /run/kandelo/inputs/script/kandelo-link.sh (manifest at
  * /run/kandelo/boot-input.json) before the initial shell starts.
  */
-async function scriptFragment(text: string): Promise<string> {
+async function scriptFragment(text: string, extraInputs: BootInput[] = []): Promise<string> {
   const descriptor: BootDescriptor = {
     version: 1,
     id: "shell",
@@ -42,7 +44,7 @@ async function scriptFragment(text: string): Promise<string> {
         filename: "kandelo-link.sh",
         bytes: new TextEncoder().encode(text),
         compression: "gzip",
-      })],
+      }), ...extraInputs],
       parameters: { runScript: "script" },
     },
   };
@@ -55,17 +57,37 @@ test("a #k1= boot link runs its script in the initial shell @slow", async ({ pag
   // in the typed command line, only in the script's output. The script also
   // cats the materialization manifest to prove it was staged before boot.
   const fragment = await scriptFragment(
-    'echo "link-script:$((6 * 7))"\ncat /run/kandelo/boot-input.json\n',
+    'echo "link-script:$((6 * 7))"\ncat /run/kandelo/boot-input.json\n' +
+    'cat /run/kandelo/inputs/data/message.txt\n' +
+    'test -f /run/kandelo/inputs/empty/empty.txt && ' +
+    'test ! -s /run/kandelo/inputs/empty/empty.txt && echo "empty-input:$((6 * 7))"\n',
+    [await createInlineBootInput({
+      id: "data",
+      filename: "message.txt",
+      bytes: new TextEncoder().encode("data-input:verified\n"),
+      compression: "gzip",
+    }), await createInlineBootInput({
+      id: "empty",
+      filename: "empty.txt",
+      bytes: new Uint8Array(),
+    })],
   );
   await gotoMachine(page, "shell", { hash: fragment });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 180_000,
   });
-  const text = expect.poll(() => terminalText(page), { timeout: 120_000 });
-  await text.toContain("/run/kandelo/inputs/script/kandelo-link.sh"); // visible invocation
-  await text.toContain('echo "link-script:$((6 * 7))"'); // script contents shown via cat
-  await text.toContain("link-script:42");       // script output
-  await text.toContain("runScript");            // manifest content, proves materialization ran
+  await expect.poll(() => terminalText(page), { timeout: 120_000 })
+    .toContain("empty-input:42");
+  // The multi-input manifest can scroll the invocation off screen. Read
+  // rendered history through xterm's scrolling UI after the script finishes.
+  const text = await terminalHistoryMatching(page.locator(".xterm:visible").first(),
+    /cat "\/run\/kandelo\/inputs\/script\/kandelo-link.sh"/);
+  expect(text).toContain("/run/kandelo/inputs/script/kandelo-link.sh");
+  expect(text).toContain('echo "link-script:$((6 * 7))"');
+  expect(text).toContain("link-script:42");
+  expect(text).toContain("runScript");
+  expect(text).toContain("data-input:verified");
+  expect(text).not.toContain("No such file or directory");
 });
 
 /** The rows and columns the visible xterm (DOM renderer) is drawing. */

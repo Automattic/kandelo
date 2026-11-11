@@ -2081,6 +2081,13 @@ async function bootProfile(
       await kernel.initFromImage(kernelInitOptions);
     }
     assertCurrent();
+    // /run is a fresh kernel-owned tmpfs, so session inputs must be written
+    // after mounting, before init or the interactive shell can read them.
+    for (const file of composed.bootInputFiles ?? []) {
+      await kernel.writeFileToVfs(file.path, file.bytes, file.mode);
+      assertCurrent();
+    }
+    composed.bootInputFiles = undefined;
     await markFilesystemInitialized?.();
     assertCurrent();
     host.attachKernel(kernel);

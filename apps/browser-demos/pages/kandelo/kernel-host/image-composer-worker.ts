@@ -49,7 +49,8 @@ self.onmessage = (event: MessageEvent<MainToComposerMessage>) => {
         { type: "done", sourceClosed: true, ...result },
         // Hand the bytes over rather than copying them: the main thread is
         // only a courier between this realm and the kernel worker.
-        [result.imageBytes.buffer as ArrayBuffer],
+        [result.imageBytes.buffer as ArrayBuffer,
+          ...(result.bootInputFiles ?? []).map(file => file.bytes.buffer as ArrayBuffer)],
       );
     })
     .catch((err: unknown) => {

@@ -3302,6 +3302,11 @@ and verifies the final sha256+byteLength before writing to the VFS. Inputs
 are all-or-nothing: if any input fails verification, no changes occur.
 Resolver-kind inputs fail materialization loudly when no resolver is
 registered (the production registry is empty; inline sources only today).
+The image composer stages the input directories and returns the verified
+file bytes separately. After kernel initialization mounts a fresh tmpfs at
+`/run`, the boot path writes those files and their manifest into the live
+filesystem before launching any guest process. Files placed only in the
+root image beneath `/run` would be hidden by that mount.
 
 Opening a script link boots the machine selected by the query parameters
 (the fragment cannot select an image the query parameters could not) and
