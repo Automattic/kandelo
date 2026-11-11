@@ -44,7 +44,7 @@ The original registration in `src/module_wrap.cc:1611–1680` exposes:
 | `hasAsyncGraph` | Derive from the actual linked graph; lazy property with correct descriptors, not an arbitrary false flag. |
 | `setModuleSourceObject()`, `getModuleSourceObject()` | Real module-source object identity for source-phase consumers. Nested Wasm remains catalogued and deferred unless startup requires it. |
 | `createCachedData()` | Real engine compile-cache bytes and state checks. A native V8 cache is not a SpiderMonkey cache. Unavailable cache generation must remain an explicit failure. |
-| `setImportModuleDynamicallyCallback()` | Traced callback, originating realm/referrer/attributes/phase and real asynchronous module linking/evaluation. |
+| `setImportModuleDynamicallyCallback()` | Traced per-realm callback with original referrer/attributes/phase/resource. Adopt its result through a fresh referrer-realm Promise; unchanged upstream JavaScript owns module loading/linking/evaluation. |
 | `setInitializeImportMetaObjectCallback()` | Correct originating module and actual mutable import.meta object, invoked at the engine hook. |
 | `setImportMetaResolveInitializer()` | Own the real resolver initializer and module/private-state lifetime. |
 | `createRequiredModuleFacade()` | Real required-ESM facade with live bindings and synchronous fulfilled evaluation checks. |
@@ -130,7 +130,16 @@ all parsed values while preserving the unsupported-key error on instantiation.
 The constructor and source-object assertions have isolated fatal controls.
 See `module-wrap-engine-check.json` for exact identities and failed attempts.
 
-Complete dynamic import, default import.meta URL/path/resolve, contextify,
+The subsequent dynamic-import core registers a traced per-realm callback and
+uses an opt-in engine hook for callback-value completion. It preserves five
+native arguments, frozen complete attributes, actual Promise/thenable adoption
+and the original synchronous-callback exception seam. Fourteen guest and
+twelve separate exact native controls pass; source/defer phases, script and
+contextify ownership remain open. Static unknown attributes still fail, and
+non-owned shell records retain their original dynamic loader.
+See `dynamic-import-engine-check.json` for artifact and control evidence.
+
+Complete default import.meta URL/path/resolve, contextify,
 cache admission/generation and required-module facades. These paths currently
 raise explicit implementation errors. Negative source offsets and embedded-NUL
 diagnostic URLs also remain explicit gaps. Reconcile real timeout/interrupt state and context microtask queues

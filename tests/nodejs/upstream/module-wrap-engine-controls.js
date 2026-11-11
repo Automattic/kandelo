@@ -169,7 +169,7 @@ check('wrong-receiver-and-unimplemented-backends-fail-honestly', () => {
   code(()=>module.evaluate(1,false),'ERR_KANDELO_NOT_IMPLEMENTED');
   code(()=>module.evaluate(-1,true),'ERR_KANDELO_NOT_IMPLEMENTED');
   code(()=>module.createCachedData(),'ERR_KANDELO_NOT_IMPLEMENTED');
-  code(()=>binding.setImportModuleDynamicallyCallback(()=>{}),'ERR_KANDELO_NOT_IMPLEMENTED');
+  assertEq(binding.setImportModuleDynamicallyCallback(()=>{}),undefined);
   code(()=>new ModuleWrap('fixture:context',{},[],()=>{}),'ERR_KANDELO_NOT_IMPLEMENTED');
   assertEq(module.getStatus(),binding.kInstantiated);
 });
@@ -194,6 +194,6 @@ check('previous-shell-module-hooks-still-own-non-node-records', () => {
 print(JSON.stringify({kind:'native-module-wrap-controls',plannedCases:19,cases:observations.length,
   notRun:19-observations.length,failures,observations,
   limits:['No upstream Node realm/bootstrap/CJS/ESM startup', 'No browser execution',
-    'Dynamic/default import.meta/contextify/cache/deadline/signal backends still missing',
+    'Default import.meta/contextify/cache/deadline/signal backends still missing',
     'No complete native differential/security/OOM/finalization proof']}));
 if(failures)quit(1);

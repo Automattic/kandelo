@@ -13,7 +13,9 @@ compatibility or guest readback of all 443 builtin sources.
 The engine also has callback-backed synthetic modules with focused source-graph
 evidence on the Node host. A partial native ModuleWrap binding now uses those
 records and actual source modules through privileged diagnostics. The upstream
-realm/binding loader remains disconnected.
+realm/binding loader remains disconnected. ModuleWrap-owned dynamic imports
+now invoke the registered native callback and adopt its result through real
+referrer-realm Promises; the unchanged upstream loader is not yet executing.
 
 The target remains Node.js 26.13.0, Lithium LTS, source commit
 `18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. Verification on November 10,
@@ -21,8 +23,9 @@ The target remains Node.js 26.13.0, Lithium LTS, source commit
 source/native archive checksums agree. The retained source tree's 38,413
 regular files match the verified archive. The Darwin arm64 reference
 executable matches SHA-256
-`533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4`;
-it was not executed for this work. Other native reference contents were not
+`533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4`.
+Pin verification did not execute it; subsequent native controls are described
+below. Other native reference contents were not
 inspected. Evidence is in `tests/nodejs/upstream/pin-verification.json`.
 
 Official references:
@@ -470,7 +473,8 @@ scripts/dev-shell.sh node_modules/.bin/tsx \
   /absolute/path/to/new-report.json module-wrap
 ```
 
-This remains a partial native binding. Dynamic import, default import.meta
+This remains a partial native binding. Dynamic import has the bounded core
+described below. Default import.meta
 URL/path/resolve handling, contextify admission, compile caches, required-ESM
 facades, positive deadlines and signal-interruption ownership are explicit
 unimplemented failures. Negative source offsets and embedded-NUL diagnostic
@@ -480,3 +484,44 @@ security/OOM/finalization, browser hosts and actual upstream startup remain
 unverified. No canonical image, full product, successor-ABI campaign rebuild
 or overall suite ran. The final package reported 16 warnings and the existing
 instrumentation fallback; no fork-behavior claim is made.
+
+## Native dynamic-import callback
+
+Revision 22 implements `setImportModuleDynamicallyCallback` and the engine
+handoff for ModuleWrap-owned evaluation-phase imports. The callback receives
+the original host identity, specifier, phase, frozen null-prototype attributes
+and compilation resource name, with an undefined receiver. Attribute values
+are validated by the engine; custom and numeric string keys reach the actual
+callback. Static unknown-attribute rejection and ordinary shell imports keep
+their existing paths.
+
+Node's callback returns a value, which may be a namespace, Promise, thenable
+or ordinary value. SpiderMonkey's original completion path instead expects
+an evaluated module from its resolver. The new opt-in engine hook preserves
+the callback-value contract: a fresh Promise in the referrer realm adopts the
+result and forwards settlement to the actual import Promise, without asking
+the static resolver to invent a module record. Native reactions trace pending
+completion state. A synchronous callback exception stops the source module;
+rejected callback Promises reject the import. Upstream JavaScript remains
+responsible for actual loader policy and module execution.
+
+Fourteen Node-host guest controls and twelve separate exact native internal
+binding controls pass. They cover arguments/resource identity, asynchronous
+thenable adoption, pending/foreign Promises, original rejection values,
+options conversion order, synchronous callback exceptions and actual namespace
+imports with top-level await. Guest controls additionally cover GC retention,
+per-realm registration/replacement and delegation to the ordinary shell
+loader. The same identified package passes 19 ModuleWrap, 15 synthetic-module,
+14 context and 23 private-key regression cases and their exposure/assertion
+drivers. Expected fatal traps are retained separately from successful runs.
+See `tests/nodejs/upstream/dynamic-import-engine-check.json` and
+`dynamic-import-native-reference.json` for identities and limits.
+
+Run the focused guest fixture with `dynamic-import` as the final argument to
+`scripts/run-nodejs-private-key-controls.ts`, using the command shape above.
+This does not establish script/contextify callback ownership, source/defer
+phases, browser behavior or upstream startup. Default metadata/resolver,
+cache/facade/interrupt backends and the complete backend catalog remain
+unfinished. The build reports the same 16 warnings and existing instrumentation
+fallback. No canonical image, full product, successor-ABI campaign rebuild,
+overall suite or fork-behavior validation ran.

@@ -62,9 +62,9 @@
     },
     {
       "area": "module_wrap/contextify and CJS/ESM entrypaths",
-      "sourceStatus": "partial native ModuleWrap core implemented with actual engine records; 19 Node-host guest controls pass",
-      "remaining": "dynamic/default import.meta/contextify/cache/facade/deadline/signal backends; full errors/lifecycle/security/OOM/browser differential; native realm/bootstrap and CJS/ESM startup unrun",
-      "evidence": "module-wrap-engine-check.json"
+      "sourceStatus": "partial native ModuleWrap core and evaluation-phase dynamic import callback implemented; 19 binding and 14 callback controls pass on Node host",
+      "remaining": "default import.meta/contextify/cache/facade/deadline/signal and script/source/defer callback backends; full errors/lifecycle/security/OOM/browser differential; native realm/bootstrap and CJS/ESM startup unrun",
+      "evidence": "dynamic-import-engine-check.json"
     },
     {
       "area": "eager Buffer/process/fs/options/task queues/timers/async binding closure",
@@ -142,17 +142,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 21,
+    "packageRevision": 22,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "module-wrap-engine-check.json",
+    "evidence": "dynamic-import-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "privileged native ModuleWrap and synthetic/context/private-key controls on Node host; no upstream Node startup",
+    "packageRuntimeScope": "privileged native ModuleWrap/dynamic-import and synthetic/context/private-key controls on Node host; no upstream Node startup",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "existing Linux triplet and __linux__/__unix__ defines are unchanged; target metadata/conformance remain unestablished"
   },
@@ -203,7 +203,6 @@
       "nativeBindingEvidence": "module-wrap-engine-check.json",
       "nativeBindingReference": "module-wrap-native-reference.json",
       "missingBackends": [
-        "dynamic import",
         "default import.meta URL/path/resolve",
         "contextify",
         "compile caches",
@@ -211,8 +210,17 @@
         "positive deadlines",
         "signal interruption",
         "negative source offsets",
-        "embedded-NUL diagnostic URLs"
-      ]
+        "embedded-NUL diagnostic URLs",
+        "script/contextify and source/defer dynamic import ownership"
+      ],
+      "dynamicImport": {
+        "callbackRegistered": true,
+        "moduleWrapEvaluationPhaseImplemented": true,
+        "scriptContextifySourceDeferComplete": false,
+        "callbackValueCompletion": "Fresh actual referrer-realm Promise adopts result and forwards settlement to actual import Promise; ordinary record hook retained for non-owned scripts",
+        "evidence": "dynamic-import-engine-check.json",
+        "nativeReference": "dynamic-import-native-reference.json"
+      }
     }
   },
   "nativeDifferentialControls": {
@@ -239,6 +247,14 @@
       "evidence": "module-wrap-native-reference.json",
       "guestRun": false,
       "limits": "Direct native binding reference, separate from guest controls and earlier public VM observations; full differential remains open"
+    },
+    "dynamicImport": {
+      "reference": "Node26.13.0Darwinarm64",
+      "cases": 12,
+      "failures": 0,
+      "evidence": "dynamic-import-native-reference.json",
+      "guestRun": false,
+      "limits": "Separate exact native callback reference; no full differential, browser or startup proof"
     }
   },
   "focusedGuestEngineControls": {
@@ -264,23 +280,29 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "module-wrap-engine-check.json",
-      "regressionScope": "Same revision-21 artifact passes 15 synthetic-engine cases, 14 context cases, 23 private-key cases and drivers; raw regressions retained under .context/node-module-wrap",
-      "moduleWrapEvidence": "module-wrap-engine-result.json",
+      "currentArtifactEvidence": "dynamic-import-engine-check.json",
+      "regressionScope": "Same revision-22 artifact passes 19 ModuleWrap, 15 synthetic-engine, 14 context and 23 private-key cases and drivers; raw regressions retained under .context/node-dynamic-import",
+      "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
       "moduleWrapDriverRuns": 5,
       "moduleWrapDriverFailures": 0,
       "moduleWrapSuccessHostDiagnostics": 0,
       "moduleWrapFatalControls": 2,
-      "moduleWrapFatalExpectedHostDiagnosticsEach": 1
+      "moduleWrapFatalExpectedHostDiagnosticsEach": 1,
+      "dynamicImportEvidence": "dynamic-import-engine-result.json",
+      "dynamicImportCases": 14,
+      "dynamicImportFailures": 0,
+      "dynamicImportDriverRuns": 3,
+      "dynamicImportDriverFailures": 0,
+      "dynamicImportSuccessHostDiagnostics": 0
     },
     "Chromium": "not run",
     "Firefox": "not run",
     "WebKit": "not run"
   },
   "nextWork": [
-    "Complete eager native ModuleWrap callback backends and connect one genuine realm/process/binding owner with builtins/errors/util; implement real structured stack contracts and execute internal/bootstrap/realm unchanged",
+    "Complete default native metadata/resolver and connect one genuine realm/process/binding owner with builtins/errors/util; implement real structured stack contracts and execute internal/bootstrap/realm unchanged",
     "Preserve source/engine failures; do not substitute public modules or native-reference configuration",
     "Continue complete backend catalog while integrating startup; CJS/ESM and four-host startup remain unrun"
   ]

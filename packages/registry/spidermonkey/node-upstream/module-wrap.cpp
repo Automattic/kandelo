@@ -40,9 +40,9 @@ namespace kandelo::node {
 namespace {
 
 enum WrapSlot { Module, EvaluationCallback, BindingOwner, Dependencies,
-                Linked, HostId, SourceObject, WrapSlots };
+                Linked, HostId, SourceObject, ResourceName, WrapSlots };
 enum BindingSlot { HostKey, SourceMapKey, ImportedCjsKey, DefaultHdo, EmbedderHdo,
-                   MetaCallback, BindingSlots };
+                   MetaCallback, DynamicCallback, BindingSlots };
 const JSClass kWrapClass = {"ModuleWrap", JSCLASS_HAS_RESERVED_SLOTS(WrapSlots)};
 const JSClass kBindingClass = {"NodeModuleBinding", JSCLASS_HAS_RESERVED_SLOTS(BindingSlots)};
 bool HasAsyncGraph(JSContext*, unsigned, JS::Value*);
@@ -219,6 +219,32 @@ bool DynamicImport(JSContext* cx, JS::HandleValue data, JS::HandleObject request
   }
   return Missing(cx, "Node dynamic import callback/Promise ownership is not implemented");
 }
+bool OwnsDynamicImport(JS::HandleValue data) {
+  return data.isObject() && JS::GetClass(&data.toObject()) == &kWrapClass;
+}
+bool DynamicImportValue(JSContext* cx, JS::HandleValue data,
+                        JS::HandleObject request, JS::HandleObject promise) {
+  JS::RootedObject wrap(cx, CheckedWrap(cx, data));
+  if (!wrap) return false;
+  JS::RootedObject owner(cx, Owner(wrap));
+  JS::RootedValue callback(cx, JS::GetReservedSlot(owner, DynamicCallback));
+  if (!callback.isObject())
+    return Missing(cx, "Node dynamic import callback has not been registered");
+  JS::RootedObject attributes(cx, Attributes(cx, request));
+  JS::RootedString specifier(cx, JS::GetModuleRequestSpecifier(cx, request));
+  if (!attributes || !specifier) return false;
+  JS::RootedValueArray<5> args(cx);
+  args[0].set(JS::GetReservedSlot(wrap, HostId));
+  args[1].setString(specifier);
+  args[2].setInt32(3);  // Only evaluation-phase grammar is currently admitted.
+  args[3].setObject(*attributes);
+  // Resource names are the original compilation URL, not a mutable public
+  // wrapper property or a loader-generated replacement.
+  args[4].set(JS::GetReservedSlot(wrap, ResourceName));
+  JS::RootedValue result(cx);
+  if (!JS::Call(cx, JS::UndefinedHandleValue, callback, args, &result)) return false;
+  return JS::FinishDynamicModuleImportWithValue(cx, result, promise);
+}
 void InstallHooks(JSContext* cx) {
   auto* shell = js::shell::GetShellContext(cx);
   if (shell->upstreamModuleHooksInstalled) return;
@@ -230,6 +256,7 @@ void InstallHooks(JSContext* cx) {
   JS::SetModuleResolveHook(runtime, Resolve);
   JS::SetModuleMetadataHook(runtime, Metadata);
   JS::SetModuleDynamicImportHook(runtime, DynamicImport);
+  JS::SetModuleDynamicImportValueHook(runtime, OwnsDynamicImport, DynamicImportValue);
 }
 
 bool New(JSContext* cx, unsigned argc, JS::Value* vp) {
@@ -241,6 +268,7 @@ bool New(JSContext* cx, unsigned argc, JS::Value* vp) {
   JS::RootedObject self(cx, JS_NewObjectForConstructor(cx, &kWrapClass, args));
   if (!self || !JS_DefineProperty(cx, self, "hasAsyncGraph", HasAsyncGraph, SetHasAsyncGraph, 0)) return false;
   JS::SetReservedSlot(self, BindingOwner, JS::ObjectValue(*owner));
+  JS::SetReservedSlot(self, ResourceName, args[0]);
   JS::SetReservedSlot(self, Linked, JS::BooleanValue(false));
   bool synthetic;
   if (!JS::IsArrayObject(cx, args[2], &synthetic)) return false;
@@ -538,6 +566,14 @@ bool SetMetadataCallback(JSContext* cx, unsigned argc, JS::Value* vp) {
   JS::RootedObject owner(cx, &js::GetFunctionNativeReserved(&args.callee(), 0).toObject());
   JS::SetReservedSlot(owner, MetaCallback, args[0]); args.rval().setUndefined(); return true;
 }
+bool SetDynamicCallback(JSContext* cx, unsigned argc, JS::Value* vp) {
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  MOZ_RELEASE_ASSERT(argc == 1 && args[0].isObject() && JS::IsCallable(&args[0].toObject()));
+  JS::RootedObject owner(cx, &js::GetFunctionNativeReserved(&args.callee(), 0).toObject());
+  JS::SetReservedSlot(owner, DynamicCallback, args[0]);
+  args.rval().setUndefined();
+  return true;
+}
 bool Unimplemented(JSContext* cx, unsigned argc, JS::Value* vp) {
   return Missing(cx, "Requested Node module binding backend is not implemented");
 }
@@ -589,8 +625,12 @@ JSObject* CreateModuleWrapBinding(JSContext* cx, JS::HandleObject runtime) {
   JS::RootedObject setter(cx, JS_GetFunctionObject(meta));
   js::SetFunctionNativeReserved(setter, 0, JS::ObjectValue(*owner));
   if (!JS_DefineProperty(cx, binding, "setInitializeImportMetaObjectCallback", setter, JSPROP_ENUMERATE)) return nullptr;
+  JS::RootedFunction dynamic(cx, js::NewFunctionWithReserved(cx, SetDynamicCallback, 1, 0, "setImportModuleDynamicallyCallback"));
+  if (!dynamic) return nullptr;
+  JS::RootedObject dynamicSetter(cx, JS_GetFunctionObject(dynamic));
+  js::SetFunctionNativeReserved(dynamicSetter, 0, JS::ObjectValue(*owner));
+  if (!JS_DefineProperty(cx, binding, "setImportModuleDynamicallyCallback", dynamicSetter, JSPROP_ENUMERATE)) return nullptr;
   static const JSFunctionSpec functions[] = {
-      JS_FN("setImportModuleDynamicallyCallback", Unimplemented, 1, 0),
       JS_FN("setImportMetaResolveInitializer", Unimplemented, 1, 0),
       JS_FN("createRequiredModuleFacade", Unimplemented, 1, 0),
       JS_FN("throwIfPromiseRejected", ThrowIfRejected, 1, 0), JS_FS_END};

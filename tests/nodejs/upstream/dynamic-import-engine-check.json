@@ -1,0 +1,424 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T01:26:06.983080+00:00",
+  "scope": "ModuleWrap-owned evaluation-phase dynamic import callback and actual engine Promise completion; Node-host JS-shell controls, no upstream Node startup",
+  "sourceHeadAtBuild": "62bce2aa91a432678b6caabd0a87f8a7c4ac6e34",
+  "testedInputs": [
+    {
+      "path": "packages/registry/spidermonkey/package.toml",
+      "bytes": 2553,
+      "sha256": "53c1df3b5e6b5d851eb90df02b3ab2e023f1577a0a8535493f25efbe95b250cf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build.toml",
+      "bytes": 769,
+      "sha256": "2abdc7ed178464d175892b7a8cbae38f30534c944044f4a3f0519e7a2ff35738"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build-spidermonkey.sh",
+      "bytes": 20692,
+      "sha256": "7e873720311b9d6fc5135d388176e8ec3a0b29a2872f22c13adc1dfe2b139c71"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0029-kandelo-node-dynamic-import.patch",
+      "bytes": 8467,
+      "sha256": "023ff05c740243d7b3d39d789ce2d13c9ff50be24502fa03e59c4a08be9079cc"
+    },
+    {
+      "path": "scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 7325,
+      "sha256": "66495631e6b17499b672d2ee98c74c8f48ee960bf743491ff62494bc0d4db877"
+    },
+    {
+      "path": "tests/nodejs/upstream/dynamic-import-engine-controls.js",
+      "bytes": 8965,
+      "sha256": "bc966680f890d9daaa6fa90e98a4d478c3056349a67506530b519458c688490a"
+    },
+    {
+      "path": "tests/nodejs/upstream/module-wrap-engine-controls.js",
+      "bytes": 13263,
+      "sha256": "6e01b0424910b1b79326eb3e6e1a920235ba782490992c22b92f27fd1cf64627"
+    },
+    {
+      "path": "tests/nodejs/upstream/dynamic-import-native-controls.cjs",
+      "bytes": 7879,
+      "sha256": "e12aadd283a5be8aaab402a5eff4063154e3170261d8ebefc47c463edd5622e4"
+    },
+    {
+      "path": "third_party/nodejs/sources.json",
+      "bytes": 116767,
+      "sha256": "7e131abb50f48efbfd1503d09f99934f399a1c82fcdc567fc39395425dcab8fd"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/README.md",
+      "bytes": 2383,
+      "sha256": "1d4d20dfb2d615f9520af0444b02a685942e84f4f5721add48f30c2dd2e4a592"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.cpp",
+      "bytes": 3597,
+      "sha256": "276bb35c7e077939924671f1ddd86037c6a0ec2addd47dbae93b877605fd7faa"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.h",
+      "bytes": 870,
+      "sha256": "1edb63c5fdd933ab1d0466e079803d47f7e3fd747ccc2f59469cf900c5c1a409"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/module-wrap.cpp",
+      "bytes": 32778,
+      "sha256": "27e52a5e7ba0550febfec9f4968e607983321dec44e516c0b20541a86763ebf5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/module-wrap.h",
+      "bytes": 394,
+      "sha256": "e13bd86550d609cf28634511414e3d7ea708234c11a2dbd751952120ba367575"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/per-context.cpp",
+      "bytes": 12125,
+      "sha256": "163d6ae4c44474e09e08274f85bb0ea30528e8b132c23fd3675ecaa8db9bf8b0"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/per-context.h",
+      "bytes": 1159,
+      "sha256": "d2e87607a0d4e7febccc9461bcccd34ae10800ad0465a01274c0e4f4207512ae"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/prepare-build.sh",
+      "bytes": 2731,
+      "sha256": "aa6eaf8288ce4bd459ed9134f6e083b59d2ab5cb9740c1c8223717c2e85daedb"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/private-key-test-api.cpp",
+      "bytes": 8732,
+      "sha256": "d41c94b81b6bf18e103805a5bc3f241c184410e025d2b0bc67a9059f2702082a"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/private-key-test-api.h",
+      "bytes": 383,
+      "sha256": "62f4b86bcb98b3c7c5fdf7053ef567199040c5e64fb1274a94d859d5fd9deaa8"
+    }
+  ],
+  "package": {
+    "name": "spidermonkey",
+    "revision": 22,
+    "architecture": "wasm32",
+    "cacheKey": "4bf2694c116e95d32282ffa1d3e74b7ed00e95399c2cbd0dc402cf880bc3e005",
+    "mozillaVersion": "140.11.0esr",
+    "mozillaArchiveSha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028"
+  },
+  "implementation": {
+    "binding": "Canonical per-context traced callback; immutable original compilation resource slot; original runtime host symbol",
+    "arguments": [
+      "host identity",
+      "specifier",
+      "evaluation phase 3",
+      "frozen null-prototype attributes",
+      "original compilation resource name"
+    ],
+    "engine": "Opt-in pure ownership predicate selects callback-value hook only for native ModuleWrap records; ordinary module-record hook remains default",
+    "promise": "Fresh Promise in actual referrer realm adopts callback result; native reactions forward value/reason to actual import Promise; pending edges traced by engine",
+    "exceptions": "Synchronous callback exception stops source body, while invalid options/rejected callback values reject the import Promise with original exception",
+    "attributes": "Engine validates actual options/getters/string values and retains complete custom/numeric attributes for owned dynamic imports. Static unsupported keys and non-owned dynamic import policies remain unchanged",
+    "notALoader": "Upstream JavaScript owns actual module loading/linking/evaluation; callback namespace/value is not converted into a fabricated static module"
+  },
+  "jobs": {
+    "engine": {
+      "id": "node-dynamic-import-engine-1110-201848-b4ff",
+      "exit": 0,
+      "seconds": 227
+    },
+    "guest": {
+      "id": "node-dynamic-import-controls-1110-202243-cc47",
+      "exit": 0,
+      "seconds": 7
+    },
+    "regressions": {
+      "id": "node-dynamic-import-regressions-1110-202307-d373",
+      "exit": 0,
+      "seconds": 19
+    }
+  },
+  "checks": {
+    "mozillaIncludeStyle": "passed",
+    "macroassemblerStyle": "passed",
+    "opcodeCheck": "passed",
+    "importedFilesRehashed": 493,
+    "sourceIdentityFailures": 0,
+    "dynamicImportCases": 14,
+    "dynamicImportFailures": 0,
+    "notRun": 0,
+    "driverRuns": 3,
+    "driverFailures": 0,
+    "successHostDiagnostics": 0,
+    "nativeInternalReferenceCases": 12,
+    "nativeInternalReferenceFailures": 0,
+    "regressions": {
+      "module-wrap": {
+        "report": {
+          "path": ".context/node-dynamic-import/module-wrap-regression.json",
+          "bytes": 46766,
+          "sha256": "d02b49a5bf707e703a06707b12ad77c3443e6a42856c453ac35f2016610f7bb3"
+        },
+        "cases": 19,
+        "failures": 0,
+        "driverRuns": 5,
+        "driverFailures": 0,
+        "successHostDiagnostics": 0,
+        "fatalControls": [
+          {
+            "name": "module-constructor-invariant-remains-fatal",
+            "exit": 132,
+            "guestStderr": "[100] Assertion failure: args.isConstructing() && argc >= 3 (Node ModuleWrap constructor invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/module-wrap.cpp:264\nMOZ_REALLY_CRASH\n",
+            "hostDiagnostics": [
+              {
+                "pid": 100,
+                "source": "worker-main error message",
+                "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c31d036:wasm-function[91]:0x572a5\n    at wasm://wasm/0c31d036:wasm-function[7255]:0x516344\n    at wasm://wasm/0c31d036:wasm-function[7254]:0x503d20\n    at wasm://wasm/0c31d036:wasm-function[7263]:0x5182cf\n    at wasm://wasm/0c31d036:wasm-function[7264]:0x51853c\n    at wasm://wasm/0c31d036:wasm-function[8120]:0x5e67c6\n    at wasm://wasm/0c31d036:wasm-function[87]:0x513e2\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+                "status": 132
+              }
+            ]
+          },
+          {
+            "name": "module-source-object-invariant-remains-fatal",
+            "exit": 132,
+            "guestStderr": "[100] Assertion failure: JS::GetReservedSlot(wrap, SourceObject).isUndefined() (Node module source object initialization invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/module-wrap.cpp:551\nMOZ_REALLY_CRASH\n",
+            "hostDiagnostics": [
+              {
+                "pid": 100,
+                "source": "worker-main error message",
+                "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c31d036:wasm-function[117]:0x5de1a\n    at wasm://wasm/0c31d036:wasm-function[7255]:0x516344\n    at wasm://wasm/0c31d036:wasm-function[7254]:0x503d20\n    at wasm://wasm/0c31d036:wasm-function[7263]:0x5182cf\n    at wasm://wasm/0c31d036:wasm-function[7264]:0x51853c\n    at wasm://wasm/0c31d036:wasm-function[8120]:0x5e67c6\n    at wasm://wasm/0c31d036:wasm-function[87]:0x513e2\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+                "status": 132
+              }
+            ]
+          }
+        ]
+      },
+      "synthetic-modules": {
+        "report": {
+          "path": ".context/node-dynamic-import/synthetic-modules-regression.json",
+          "bytes": 34426,
+          "sha256": "897d0829637ef8f3eff8e1e73d78bc8a03270f6a9c6d693d197943d27affd646"
+        },
+        "cases": 15,
+        "failures": 0,
+        "driverRuns": 3,
+        "driverFailures": 0,
+        "successHostDiagnostics": 0,
+        "fatalControls": []
+      },
+      "per-context": {
+        "report": {
+          "path": ".context/node-dynamic-import/per-context-regression.json",
+          "bytes": 32936,
+          "sha256": "a037536aa2708c26e85e802548476212cf57660812d4da05fdb8f4da370b1924"
+        },
+        "cases": 14,
+        "failures": 0,
+        "driverRuns": 4,
+        "driverFailures": 0,
+        "successHostDiagnostics": 0,
+        "fatalControls": [
+          {
+            "name": "fresh-exports-invariant-remains-fatal",
+            "exit": 132,
+            "guestStderr": "[100] Assertion failure: !hasPrimordials (Node per-context exports invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/per-context.cpp:207\nMOZ_REALLY_CRASH\n",
+            "hostDiagnostics": [
+              {
+                "pid": 100,
+                "source": "worker-main error message",
+                "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c31d036:wasm-function[151]:0x64ce0\n    at wasm://wasm/0c31d036:wasm-function[150]:0x619fe\n    at wasm://wasm/0c31d036:wasm-function[21427]:0x135b2f4\n    at wasm://wasm/0c31d036:wasm-function[7255]:0x51635a\n    at wasm://wasm/0c31d036:wasm-function[7254]:0x503d20\n    at wasm://wasm/0c31d036:wasm-function[7263]:0x5182cf\n    at wasm://wasm/0c31d036:wasm-function[7264]:0x51853c\n    at wasm://wasm/0c31d036:wasm-function[8120]:0x5e67c6\n    at wasm://wasm/0c31d036:wasm-function[87]:0x513e2\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)",
+                "status": 132
+              }
+            ]
+          }
+        ]
+      },
+      "private-keys": {
+        "report": {
+          "path": ".context/node-dynamic-import/private-keys-regression.json",
+          "bytes": 42228,
+          "sha256": "308c8d4c1ff362dd073ad4528e43e0e4f48bdd4c966b2ce02b2855fadf52bda3"
+        },
+        "cases": 23,
+        "failures": 0,
+        "driverRuns": 3,
+        "driverFailures": 0,
+        "successHostDiagnostics": 0,
+        "fatalControls": []
+      }
+    }
+  },
+  "artifacts": [
+    {
+      "kind": "program",
+      "original": {
+        "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev22-wasm32-abi56-4bf2694c116e95d32282ffa1d3e74b7ed00e95399c2cbd0dc402cf880bc3e005/js.wasm",
+        "bytes": 51147789,
+        "sha256": "99e075c99b1595c639ef40bc618a6ea6e95ac3b361a68e3978b88a986065b855"
+      },
+      "retainedCompressed": {
+        "path": ".context/node-dynamic-import/program.99e075c99b1595c639ef40bc618a6ea6e95ac3b361a68e3978b88a986065b855.wasm.gz",
+        "bytes": 16823581,
+        "sha256": "84e949faedca08352c2c2b5f21bde50c000537c9fdeb6061f941c2242f707b9e"
+      },
+      "roundTripVerified": true
+    },
+    {
+      "kind": "kernel",
+      "original": {
+        "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+        "bytes": 2958224,
+        "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+      },
+      "retainedCompressed": {
+        "path": ".context/node-dynamic-import/kernel.f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c.wasm.gz",
+        "bytes": 847370,
+        "sha256": "b76f2c58fc2e76f053b466c4b81618deca938d6bbe5e30c59f09c45495ea3791"
+      },
+      "roundTripVerified": true
+    }
+  ],
+  "retainedLogs": [
+    {
+      "path": ".context/node-dynamic-import/build-job.log",
+      "bytes": 373,
+      "sha256": "a78f496e97f315e0a14d6340c69c2b1f421881c97299578d9cfec0eb1800e348"
+    },
+    {
+      "path": ".context/node-dynamic-import/guest-job.log",
+      "bytes": 570,
+      "sha256": "35c04b946631023e873b579ecba9f5cfe42cce67a31c7935284cf21f9279eab9"
+    },
+    {
+      "path": ".context/node-dynamic-import/regressions-job.log",
+      "bytes": 3444,
+      "sha256": "ecd6b7156f5aba130a4ec1bf3818b31697d1c7fa376fb0a02cf39741ee1e6dec"
+    },
+    {
+      "path": ".context/node-dynamic-import/build-full.log",
+      "bytes": 257827,
+      "sha256": "3ab40b3fdb32272f1b00db7825134f899811f4a70b2c1fd4f4e1acdb7ad8e1df"
+    },
+    {
+      "path": ".context/node-dynamic-import/make-patch.py",
+      "bytes": 7268,
+      "sha256": "f343ac2370b402cf04788fbb6abe605084e41ecf9a64e315f69958a33ca385d8"
+    },
+    {
+      "path": ".context/node-dynamic-import/native-probe.cjs",
+      "bytes": 1642,
+      "sha256": "05981eac2be31af338f75b365cbeb1015a1d92d31ab98297693db3459d605024"
+    },
+    {
+      "path": ".context/node-dynamic-import/run-probe.py",
+      "bytes": 714,
+      "sha256": "61f29cf75ff8f1e9b7cf26b9a2fd9253eef662c2f49c70f82b707aa2828c90a6"
+    },
+    {
+      "path": ".context/node-dynamic-import/record-native.py",
+      "bytes": 1403,
+      "sha256": "fdb97e32c372ba2e8e2544227d309634acff78ad67c59bc9abb9b46682b509ff"
+    },
+    {
+      "path": ".context/node-dynamic-import/run-regressions.sh",
+      "bytes": 417,
+      "sha256": "072818b09d028a10116a357110f764b749dbff0078d068c82eafee77f0f655ca"
+    }
+  ],
+  "retainedReports": [
+    {
+      "path": ".context/node-dynamic-import/module-wrap-regression.json",
+      "bytes": 46766,
+      "sha256": "d02b49a5bf707e703a06707b12ad77c3443e6a42856c453ac35f2016610f7bb3"
+    },
+    {
+      "path": ".context/node-dynamic-import/synthetic-modules-regression.json",
+      "bytes": 34426,
+      "sha256": "897d0829637ef8f3eff8e1e73d78bc8a03270f6a9c6d693d197943d27affd646"
+    },
+    {
+      "path": ".context/node-dynamic-import/per-context-regression.json",
+      "bytes": 32936,
+      "sha256": "a037536aa2708c26e85e802548476212cf57660812d4da05fdb8f4da370b1924"
+    },
+    {
+      "path": ".context/node-dynamic-import/private-keys-regression.json",
+      "bytes": 42228,
+      "sha256": "308c8d4c1ff362dd073ad4528e43e0e4f48bdd4c966b2ce02b2855fadf52bda3"
+    },
+    {
+      "path": ".context/node-dynamic-import/guest-controls.json",
+      "bytes": 34998,
+      "sha256": "226d4629d7a404b5738b2c6d5a3dac6bc2a359d6387f412892a67e18a9e71a18"
+    },
+    {
+      "path": ".context/node-dynamic-import/native-controls.stdout",
+      "bytes": 1195,
+      "sha256": "9e56d5468f63c38c7fbd919836f561e73c8f3c4dcbe683344481d0b55adb2104"
+    },
+    {
+      "path": ".context/node-dynamic-import/native-controls.stderr",
+      "bytes": 174,
+      "sha256": "ba1c5519989c6558263a8b37a2caf39b8f81dfd838a69d04623bbb03fc92bddd"
+    },
+    {
+      "path": ".context/node-dynamic-import/native-probe.stdout",
+      "bytes": 1412,
+      "sha256": "a8a2a9b362d02bfdc44390810546e2e4576acc0e22e8ef2f81dfed18e2faa6c9"
+    },
+    {
+      "path": ".context/node-dynamic-import/native-probe.stderr",
+      "bytes": 174,
+      "sha256": "d2486a64e88f4405056ab0f36cf36049b59848e8372ad055153fb26ab306bf87"
+    },
+    {
+      "path": ".context/node-dynamic-import/native-reference-job.log",
+      "bytes": 1691,
+      "sha256": "6900b2c6815a366255bc08347dad5e4f3f011b9d4d1b6240ab0b44f66772d0ce"
+    },
+    {
+      "path": ".context/node-dynamic-import/revision21-module-wrap-controls.js",
+      "bytes": 13291,
+      "sha256": "b63a8f47b2af689a5d8b33ec636aa70825ede28b7142e1f6dd0e1fb41d77bc1a"
+    }
+  ],
+  "nativeReference": "dynamic-import-native-reference.json",
+  "priorEvidence": "module-wrap-engine-check.json",
+  "buildDiagnostics": {
+    "mozillaReportedCompilerWarnings": 16,
+    "compilerFacts": "Existing pre-instrumentation optimization changes code hash; bounded native baseline fallback retained. No fork-behavior validation."
+  },
+  "unimplemented": [
+    "default import.meta URL/path/resolve and initializer registration",
+    "contextify and separate microtask queues",
+    "script dynamic import callback ownership",
+    "source/defer phases",
+    "compile caches",
+    "required-ESM facades",
+    "positive deadlines and signal interruption",
+    "negative source offsets",
+    "embedded-NUL diagnostic URLs"
+  ],
+  "limits": {
+    "nativeBindingComplete": false,
+    "upstreamRealmBootstrapExecuted": false,
+    "upstreamNodeStartup": false,
+    "cjsEntry": false,
+    "esmEntry": false,
+    "builtinSourceTextCompilerHelperExercised": false,
+    "chromium": false,
+    "firefox": false,
+    "webkit": false,
+    "fullNativeDifferential": false,
+    "securityOOMAndFinalizationProof": false,
+    "completeBackendCatalog": false,
+    "canonicalImageBuilt": false,
+    "fullProductBuild": false,
+    "successorAbiCampaignRebuild": false,
+    "overallSuitesRun": false,
+    "forkBehaviorValidated": false
+  },
+  "targetingDebt": "Existing Linux triplet/__linux__/__unix__ defines unchanged; truthful target configuration/conformance remain open."
+}
