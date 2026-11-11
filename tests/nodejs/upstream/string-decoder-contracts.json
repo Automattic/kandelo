@@ -520,7 +520,7 @@
   },
   "prerequisites": [
     "Import complete string_decoder.cc/.h/-inl.h and required StringBytes/codec files with exact identities and licenses",
-    "Resolve native nbytes0.1.4 and V8-vendored simdutf7.7.0 through normal package inputs; current object preflight is not production recipe integration",
+    "Consume the normal resolved nbytes0.1.4 and simdutf7.7.0 packages in the Node engine; package builds and a relocated consumer pass focused four-host controls, engine dependency wiring remains open",
     "Compile complete original native decoder and StringBytes translation units with actual engine operations; no function extraction or rewritten streaming state machine",
     "Implement real view/backing allocation lifetime and external string ownership/accounting, preserving GC and exception behavior",
     "Use original initializer for encodings/field layout/method registration and original internal/util/public StringDecoder through the shared loader",
@@ -596,7 +596,10 @@
       "path": ".context/node-string-decoder/run-native-reference.py",
       "bytes": 1245,
       "sha256": "ac2c8b1fbdfdc8e40c0a9ea4d63f7c6116bf43c7f3bc6b5ba12adc57c410d6e3"
-    }
+    },
+    "resolvedCodecControlsPerHost": 17,
+    "completeNativeTranslationUnitsCompileAgainstDeclarationsOnly": 2,
+    "guestDecoderOrStringBytesRuntimeLinked": false
   },
   "obligations": [
     "Exact native export/field/descriptor and method registration comparisons",
@@ -616,5 +619,6 @@
     "Full products/product images/successor-ABI builds and overall suites",
     "Nested guest Wasm last unless required by genuine startup",
     "Broader backend roadmap requires user review after startup and full catalog"
-  ]
+  ],
+  "codecFoundationEvidence": "native-codec-engine-check.json"
 }

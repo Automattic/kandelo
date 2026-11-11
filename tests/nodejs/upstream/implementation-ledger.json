@@ -16,7 +16,8 @@
     "constantsPartialCatalog": "constants-contracts.json",
     "typesPartialCatalog": "types-contracts.json",
     "optionsPartialCatalog": "options-contracts.json",
-    "stringDecoderPartialCatalog": "string-decoder-contracts.json"
+    "stringDecoderPartialCatalog": "string-decoder-contracts.json",
+    "nativeCodecEvidence": "native-codec-engine-check.json"
   },
   "implementation": [
     {
@@ -481,7 +482,23 @@
       "guestEvidence": null,
       "nextBindingStill": "string_decoder",
       "completeNativeFilesVerified": 14,
-      "sourceReviewScope": "Decoder and StringBytes contracts plus selected Buffer/view helpers; wider closure remains unreviewed"
+      "sourceReviewScope": "Decoder and StringBytes contracts plus selected Buffer/view helpers; wider closure remains unreviewed",
+      "codecPackages": {
+        "nbytes": "0.1.4",
+        "simdutf": "7.7.0",
+        "normalResolverBuilds": true,
+        "relocatedConsumerChecked": true,
+        "casesPerHost": 17,
+        "hosts": [
+          "Node",
+          "Chromium",
+          "Firefox",
+          "WebKit"
+        ],
+        "evidence": "native-codec-engine-check.json",
+        "linkedIntoNodeEngine": false
+      },
+      "originalNativeUnitsCompileAgainstDeclarationsOnly": 2
     }
   },
   "nativeDifferentialControls": {

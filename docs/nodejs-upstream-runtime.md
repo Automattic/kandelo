@@ -957,3 +957,26 @@ regression requirements and retained-allocation owners are reuse candidates;
 the old handwritten public codecs are excluded. See
 [string-decoder-contracts.json](../tests/nodejs/upstream/string-decoder-contracts.json)
 and [string-decoder-native-reference.json](../tests/nodejs/upstream/string-decoder-native-reference.json).
+
+## Resolved native codec dependencies
+
+The normal resolver now builds nbytes 0.1.4 and simdutf 7.7.0 from the exact
+audited Node archive. nbytes uses upstream CMake with optional C++ module scanning
+disabled for its non-module sources. simdutf builds the complete V8-vendored
+amalgamation. Both packages retain original headers/licenses, declare libcxx and
+use the true Kandelo SDK target. Their installed pkg-config metadata is relocatable.
+
+A consumer linked from relocated package copies passes seventeen selected controls
+on Node, Chromium, Firefox and WebKit with identical guest program/kernel bytes.
+The controls cover Unicode validation/conversion, surrogate replacement, base64
+and bounded output, Node byte primitives and actual implementation selection.
+These are native library controls, not the SpiderMonkey Node runtime or complete
+codec conformance. No product image or supported-package-set entry is added.
+
+The complete original decoder and StringBytes translation units also compile
+unchanged against a declaration interface. Their unresolved engine operations are
+retained as implementation obligations. Those objects are not runtime-linked;
+actual roots, backing allocation lifetime, external strings/accounting, errors,
+method registration and the original Buffer closure remain missing. The startup
+probe still reaches `string_decoder`. Exact artifacts, inputs, failed attempts
+and limits are in [native-codec-engine-check.json](../tests/nodejs/upstream/native-codec-engine-check.json).

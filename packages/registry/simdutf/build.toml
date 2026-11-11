@@ -1,0 +1,8 @@
+script_path = "packages/registry/simdutf/build-simdutf.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = [
+  "packages/registry/simdutf/build-simdutf.sh",
+  "scripts/package-build-roots.sh",
+]

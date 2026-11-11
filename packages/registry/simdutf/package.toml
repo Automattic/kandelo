@@ -1,0 +1,30 @@
+kind = "library"
+name = "simdutf"
+version = "7.7.0"
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = ["libcxx@21.1.7"]
+
+[source]
+# Use Node's V8-vendored amalgamation, preserving its audited source identity.
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz"
+sha256 = "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/deps/v8/third_party/simdutf/LICENSE"
+
+[build]
+script_path = "packages/registry/simdutf/build-simdutf.sh"
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[outputs]
+libs = ["lib/libsimdutf.a"]
+headers = ["include/simdutf.h"]
+pkgconfig = ["lib/pkgconfig/simdutf.pc"]
+files = ["share/doc/simdutf/LICENSE", "share/doc/simdutf/README.chromium"]
