@@ -107,7 +107,7 @@ describe.skipIf(!available)("compiled-module sharing on the Node host", () => {
     await withShellHost(async (host, output) => {
       // The same path holds four different contents in turn. A path-keyed
       // cache would keep running the first module for all of them.
-      const env = "mkdir -p /tmp/x; cp /usr/bin/coreutils /tmp/x/echo";
+      const env = "mkdir -p /tmp/x; cp /bin/coreutils /tmp/x/echo";
       expect(await bash(host, `${env}; /tmp/x/echo first`), output()).toBe(0);
       const first = await host.getWasmModuleCacheStats();
 
@@ -128,7 +128,7 @@ describe.skipIf(!available)("compiled-module sharing on the Node host", () => {
       // A trailing byte makes the bytes invalid: exec fails instead of
       // reusing either module compiled from earlier contents.
       expect(await bash(host, [
-        "cp /usr/bin/coreutils /tmp/x/echo",
+        "cp /bin/coreutils /tmp/x/echo",
         "printf '\\0' >> /tmp/x/echo",
         "/tmp/x/echo must-not-run",
         "echo status=$?",
