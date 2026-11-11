@@ -1,0 +1,58 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -324,6 +324,19 @@
+        src/unix/hurd.c)
+ endif()
+ 
++# Kandelo is a POSIX WebAssembly target, not a Linux target. Use the
++# portable poll/clock backend and expose its public loop layout to consumers.
++if(CMAKE_SYSTEM_NAME STREQUAL "Kandelo")
++  list(APPEND uv_defines _GNU_SOURCE)
++  list(APPEND uv_public_defines UV_PLATFORM_KANDELO=1)
++  set(UV_PLATFORM_CFLAGS "-DUV_PLATFORM_KANDELO=1")
++  list(APPEND uv_sources
++       src/unix/posix-hrtime.c
++       src/unix/posix-poll.c
++       src/unix/no-fsevents.c
++       src/unix/kandelo-proctitle.c)
++endif()
++
+ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+   list(APPEND uv_defines _GNU_SOURCE _POSIX_C_SOURCE=200112)
+   list(APPEND uv_libraries dl rt)
+@@ -455,6 +468,7 @@
+ if(LIBUV_BUILD_SHARED)
+   add_library(uv SHARED ${uv_sources})
+   target_compile_definitions(uv
++    PUBLIC ${uv_public_defines}
+     INTERFACE
+       USING_UV_SHARED=1
+     PRIVATE
+@@ -476,7 +490,7 @@
+ endif()
+ 
+ add_library(uv_a STATIC ${uv_sources})
+-target_compile_definitions(uv_a PRIVATE ${uv_defines})
++target_compile_definitions(uv_a PRIVATE ${uv_defines} PUBLIC ${uv_public_defines})
+ target_compile_options(uv_a PRIVATE ${uv_cflags})
+ target_include_directories(uv_a
+   PUBLIC
+--- a/include/uv/unix.h
++++ b/include/uv/unix.h
+@@ -62,6 +62,8 @@
+       defined(__OpenBSD__)         || \
+       defined(__NetBSD__)
+ # include "uv/bsd.h"
++#elif defined(UV_PLATFORM_KANDELO)
++# include "uv/posix.h"
+ #elif defined(__CYGWIN__) || \
+       defined(__MSYS__)   || \
+       defined(__HAIKU__)  || \
+--- a/libuv-static.pc.in
++++ b/libuv-static.pc.in
+@@ -9,4 +9,4 @@
+ URL: http://libuv.org/
+ 
+ Libs: -L${libdir} -l:libuv.a @LIBS@
+-Cflags: -I${includedir}
++Cflags: -I${includedir} @UV_PLATFORM_CFLAGS@

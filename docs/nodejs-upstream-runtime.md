@@ -653,3 +653,44 @@ Native callback-scope/async/tick/fatal retry, full Node/libuv phase semantics,
 public timer/module compatibility, process exit dispatch, actual user CJS/ESM
 startup, browser hosts and the complete catalog remain unfinished. Full products,
 successor-ABI campaign rebuilds and overall suites remain deferred.
+
+## Standalone libuv foundation
+
+The initial libuv package builds the exact 1.52.1 sources bundled in the pinned
+Node archive through the normal resolver and the true Kandelo CMake toolchain.
+The standalone libuv release differs in four C files; its bytes were compared,
+not silently adopted. The port selects upstream POSIX poll/monotonic-clock
+backends and exports their public loop layout through CMake/pkg-config. A typed
+pthread wrapper replaces upstream's incompatible void/pointer-returning callback
+cast, with explicit child/caller allocation ownership. No kernel, libc, SDK or
+Node JavaScript source change was needed.
+
+Thirteen focused controls pass on Node, Chromium, Firefox and WebKit using the
+same probe and ABI-56 kernel bytes. They cover empty loops, timer deadlines and
+repeat/ref/close state, prepare/check phases, actual cross-thread async wakeups,
+thread-pool work, pipe readiness, asynchronous file write/read effects and
+errors. Two controls check honest unsupported boundaries: filesystem event
+watching and process titles return ENOSYS. This is initial loop evidence, not
+complete libuv conformance or Node startup. The archive defines 308 of 318 public
+function declarations; ten OS resource/interface/executable-path functions
+remain missing and fail to link. Socket/DNS/spawn/signal/cancellation/fork/OOM
+and complete lifecycle behavior remain unvalidated.
+
+The checks used empty guest filesystems. No partial/canonical product image or
+overall suite was built/run. The browser image-builder helpers were provisioned
+through their normal focused build. An initial ordinary browser setup began
+unrelated historical ABI-56 fixture/tool provisioning; it was stopped before
+cohort publication. No pinned ABI-55 or ABI-56 cohort artifacts were published;
+temporary ABI-56 build outputs remain under target/program-baseline.
+Subsequent focused setup avoids that provisioner. Earlier browser harness
+errors/timeouts and the actual pthread trap remain recorded. The passing browser
+run reports a separate host cleanup warning: macOS denied removal of the owned
+Firefox Downloads directory; guest stderr and host diagnostics are empty.
+
+Node's revision-26 embedding still uses its existing native scheduler and still
+stops on task_queue during the original principal body. Next adapt that scheduler
+to the verified libuv loop/handles, retain native realm/GC/callback ownership,
+and implement genuine task-queue/async callback scopes. Wider libuv support
+belongs in the backend catalog and ordered roadmap; it is not implied by these
+controls. Exact artifacts, inputs, source comparison, failures and limits are in
+[libuv-backend-engine-check.json](../tests/nodejs/upstream/libuv-backend-engine-check.json).

@@ -1,0 +1,954 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T05:25:51.493559+00:00",
+  "scope": "Initial standalone genuine libuv loop/threads/pipe/filesystem backend on four hosts, plus explicit unsupported boundaries; no Node.js startup or complete libuv support",
+  "sourceHeadAtBuild": "6c7c6a240f986b31b37cc219ea1c047ad42ea026",
+  "package": {
+    "name": "libuv",
+    "version": "1.52.1",
+    "revision": 2,
+    "kernelAbiFloor": 56,
+    "cacheKey": "c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0",
+    "prefix": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0",
+    "archive": {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/lib/libuv.a",
+      "bytes": 579198,
+      "sha256": "6f792478cf73eecad95b5bfd2ad1c29625e8983f3c66d113d68e132266a4d9bd"
+    }
+  },
+  "source": {
+    "nodeVersion": "26.13.0",
+    "nodeSourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+    "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+    "inventory": {
+      "path": ".context/node-libuv-assessment/source-inventory.json",
+      "bytes": 23746,
+      "sha256": "d73c82ae9fd5a22de4be0d1c8d0c41e245b232f5ec8c27ae2f534e3e4b1186ee"
+    },
+    "files": 155,
+    "sourceBytes": 2305848,
+    "standaloneReleaseArchiveSha256": "66d511b9e6e334c0e62279eb234fbfb2b3110b1479c09b95b44c7afca8cff9e7",
+    "standaloneEqualFiles": 147,
+    "standaloneDifferentFiles": [
+      "src/unix/fs.c",
+      "src/uv-common.c",
+      "src/win/fs-event.c",
+      "src/win/tcp.c"
+    ],
+    "standaloneMissingBuildFiles": [
+      "BUILD.gn",
+      "common.gypi",
+      "unofficial.gni",
+      "uv.gyp"
+    ],
+    "standaloneReleaseAdopted": false
+  },
+  "testedInputs": [
+    {
+      "path": "packages/registry/libuv/README.md",
+      "bytes": 4443,
+      "sha256": "ce1c818f74c489f62add97bc8d426c2ca9465a59382b053ec9113a6f9120ef2c"
+    },
+    {
+      "path": "packages/registry/libuv/build-libuv.sh",
+      "bytes": 1412,
+      "sha256": "d5bc6c00fb33a48eb2974420471d5f690ac7846a7f4b428b7f8a8a5fe7ddf6c7"
+    },
+    {
+      "path": "packages/registry/libuv/build.toml",
+      "bytes": 536,
+      "sha256": "72c2f75e75a474e54afb01ae8d46ba1fcd0fa8384d493083c86d926ff309063e"
+    },
+    {
+      "path": "packages/registry/libuv/package.toml",
+      "bytes": 1833,
+      "sha256": "8d2febf060cc5cc646d6a6edd12889fdf0d337b0edebfb7b4098da28ba6872fa"
+    },
+    {
+      "path": "packages/registry/libuv/patches/0001-kandelo-posix-backend.patch",
+      "bytes": 1763,
+      "sha256": "e7de4436eba9e2d4629d0934580e61d2701c423ef73e8e2eebb6716f3bd911f2"
+    },
+    {
+      "path": "packages/registry/libuv/patches/0002-typed-pthread-entry.patch",
+      "bytes": 1710,
+      "sha256": "f67cf80f289d7f101134de83d27262f09fb87c39936aa903a1d3dde45354d346"
+    },
+    {
+      "path": "packages/registry/libuv/src/kandelo-proctitle.c",
+      "bytes": 600,
+      "sha256": "06dc646f327c3895860cfdf7f892cfe4aed69d3cf19392c524e1259424c710d8"
+    },
+    {
+      "path": "packages/registry/libuv/test/CMakeLists.txt",
+      "bytes": 329,
+      "sha256": "e74af959942f623ddf83b7908bc233bbb2b79d7bf7c687630c616c74f382df2d"
+    },
+    {
+      "path": "packages/registry/libuv/test/backend-controls.c",
+      "bytes": 10519,
+      "sha256": "c746b6617a614a7f946de46b0105171f4e16299b2c90edd89ec523d05edc8318"
+    },
+    {
+      "path": "packages/registry/libuv/test/build-controls.sh",
+      "bytes": 1102,
+      "sha256": "c740a257084465bc466577b5f2be51bc9bb8089aaf2c41a626d51da347638151"
+    },
+    {
+      "path": "scripts/package-build-roots.sh",
+      "bytes": 43483,
+      "sha256": "a6ef104ebdf8a88edff4467d039c710730f47a0029777638a619250b56a2a384"
+    },
+    {
+      "path": "scripts/package-source-metadata.py",
+      "bytes": 1104,
+      "sha256": "54b212c9d341b3a8d884ca522e73f9889941b5b43717cd037eb131f2cd60137c"
+    },
+    {
+      "path": "scripts/run-libuv-backend-controls.ts",
+      "bytes": 3315,
+      "sha256": "a7932492c710fedf61713e64a362520a0a8daf82b76e4755347221f80744eb8c"
+    },
+    {
+      "path": "sdk/cmake/Platform/Kandelo.cmake",
+      "bytes": 624,
+      "sha256": "f5e71eccc2d9555bd732dbcc2e8362a5cba04da663f2603c35c035f8009db831"
+    },
+    {
+      "path": "sdk/cmake/kandelo-toolchain.cmake",
+      "bytes": 770,
+      "sha256": "77ec98d46ec471804385953298526d450891c796b05d6793fbca4d4523d26f44"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/libuv-backend.spec.ts",
+      "bytes": 3777,
+      "sha256": "dcd76bb4852c773941dfa1bfd56f2bec535a1d17540f764db450cb5b55ab7b74"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/playwright.config.ts",
+      "bytes": 1180,
+      "sha256": "d719ac6799f745bf416dc9740e6ca47dd3862c10cd100d63a8b6d32ed88040d6"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/storage-setup.ts",
+      "bytes": 1813,
+      "sha256": "4622b5c753c5828fe1c3b99647cb3ca8820b4c1ff9a852c23fefca606107484e"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/vite.config.ts",
+      "bytes": 665,
+      "sha256": "464cb617c9eabf71a697941b98e13b330beccae04ed1c77b7366ef063f3e9d25"
+    }
+  ],
+  "artifacts": {
+    "program": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/libuv-port.7M7JPg/final-controls/libuv-backend-controls.wasm",
+      "bytes": 155260,
+      "sha256": "30f6491fd6849fe4a7b64b10203678cf3d329bc47881c883f00907c44b7b0edd"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "imageBuilder": {
+      "path": "local-binaries/kandelo_image_module32.wasm",
+      "bytes": 403950,
+      "sha256": "85bf98b36b2229d30a8f36d8bb238170c124e09937acc6824a8e0560ab94d4ec"
+    },
+    "positionedImageBuilder": {
+      "path": "local-binaries/kandelo_image_module_positioned32.wasm",
+      "bytes": 435075,
+      "sha256": "aee96dc104200e0605a9678ca43c4664ea9adf17dbc5f4339c6b61b8ce74f7ad"
+    }
+  },
+  "retainedRoundtrips": {
+    "packageOutputs": {
+      "path": ".context/node-libuv-assessment/libuv-c3c7-output.tar.gz",
+      "bytes": 164167,
+      "sha256": "dd4bdecb2b494c42e0df733bdf655c763845d6a4bd87d12800e3574e0da7af26"
+    },
+    "files": 21,
+    "packageFileIdentities": [
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/aix.h",
+        "bytes": 1615,
+        "sha256": "bed77e4cf6c06f1224e681cbe607eff04713ca0c1e1f4a102e6a6565ee3f02aa",
+        "relativePath": "include/uv/aix.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/bsd.h",
+        "bytes": 1641,
+        "sha256": "963533ff4b16f72a204a8c760896a857c54d0ac50570f1793e3bef1f2ae8b35f",
+        "relativePath": "include/uv/bsd.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/darwin.h",
+        "bytes": 3213,
+        "sha256": "222b6dd3ce67cfbb735b14b1662f065fc23570d6969acf463b39d946b7590d8c",
+        "relativePath": "include/uv/darwin.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/errno.h",
+        "bytes": 11216,
+        "sha256": "4242edf790e4569ef349026ab4c6e31093334ee5fc02b16ed7a0d9fbacdffd16",
+        "relativePath": "include/uv/errno.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/linux.h",
+        "bytes": 1781,
+        "sha256": "adce0ed0821c8466a87a0a4c9e0df9ea7e4a4b24d099c7d7ed196f72a13f669d",
+        "relativePath": "include/uv/linux.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/os390.h",
+        "bytes": 1553,
+        "sha256": "98388ae32ce2c4390b82c3529539d2a476c44f590e960ed30a79f72b807ecd02",
+        "relativePath": "include/uv/os390.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/posix.h",
+        "bytes": 1606,
+        "sha256": "e9d7218b34e6e89b7b412891b7e2aa8b3a561c5ce9714c1f4def6c8a8593a6a6",
+        "relativePath": "include/uv/posix.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/sunos.h",
+        "bytes": 1985,
+        "sha256": "29d4b4ef48dc3c3ab32d75e0a85bcb80e084d42b32aae40d67fc1d882b93298a",
+        "relativePath": "include/uv/sunos.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/threadpool.h",
+        "bytes": 1505,
+        "sha256": "09ae41099af710289155be012df45c2fce04da6a02e813278b4558935e645938",
+        "relativePath": "include/uv/threadpool.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/tree.h",
+        "bytes": 36117,
+        "sha256": "34393c74082c71ddd5bd9ec4afe30ef03df7fa7bb64be5a50ae070cdfebb5c43",
+        "relativePath": "include/uv/tree.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/unix.h",
+        "bytes": 19973,
+        "sha256": "d8a34a53c53ed2de54820ab0e73ced500d292b41b01bd949314e24dc45c7ddcb",
+        "relativePath": "include/uv/unix.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/version.h",
+        "bytes": 1831,
+        "sha256": "a859f2c21f7887d45b0372109ebc91759a6f8c408c7cbf2a12f9bbe579be403b",
+        "relativePath": "include/uv/version.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv/win.h",
+        "bytes": 33840,
+        "sha256": "9ad5dd7d5d4d51981f40edfc65a53ab94e91f6a2e73f2bf897e0e697fd9e8233",
+        "relativePath": "include/uv/win.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/include/uv.h",
+        "bytes": 73038,
+        "sha256": "bb9ed99b80cd22c58361bffdfbb2aa7029ce0391cde616745c0072a6f3c03219",
+        "relativePath": "include/uv.h"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/lib/cmake/libuv/libuvConfig-release.cmake",
+        "bytes": 818,
+        "sha256": "be72dfc08de5d324e893668fff0246d7bc96ff50437d6c3b1bbfcffbe02bf00f",
+        "relativePath": "lib/cmake/libuv/libuvConfig-release.cmake"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/lib/cmake/libuv/libuvConfig.cmake",
+        "bytes": 4199,
+        "sha256": "72fc6cae82cdcbf8ae3e15d0ffebe662946ab30c9b8d3339d84b7931c880e26d",
+        "relativePath": "lib/cmake/libuv/libuvConfig.cmake"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/lib/cmake/libuv/libuvConfigVersion.cmake",
+        "bytes": 2765,
+        "sha256": "db5d8fda6ed3ae8ab950a96a76e670b4a0d24667ff0937f9940a2b56a44029c1",
+        "relativePath": "lib/cmake/libuv/libuvConfigVersion.cmake"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/lib/libuv.a",
+        "bytes": 579198,
+        "sha256": "6f792478cf73eecad95b5bfd2ad1c29625e8983f3c66d113d68e132266a4d9bd",
+        "relativePath": "lib/libuv.a"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/lib/pkgconfig/libuv-static.pc",
+        "bytes": 677,
+        "sha256": "63c4487a7e16860c6aae7bb747710845177bc8eadc0103b7366bbc59ebfb9331",
+        "relativePath": "lib/pkgconfig/libuv-static.pc"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/share/doc/libuv/LICENSE",
+        "bytes": 1079,
+        "sha256": "16de0c32b265cb7d46a6d3bd614f259dd4d693a5e26b3407b04aae8d73041f0c",
+        "relativePath": "share/doc/libuv/LICENSE"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev2-wasm32-abi56-c3c7b7fd76c5ea2c5a29bb8807a620c382c0e2f59b327d5c4b2b0271ddf94ef0/share/doc/libuv/LICENSE-extra",
+        "bytes": 1603,
+        "sha256": "262c44bd2cdba037e6d2a82fba15f5800d292bc993a6f5d6b6ea487744d02836",
+        "relativePath": "share/doc/libuv/LICENSE-extra"
+      }
+    ],
+    "probe": {
+      "path": ".context/node-libuv-assessment/libuv-backend-controls-final.wasm.gz",
+      "bytes": 62726,
+      "sha256": "e570558a0580cc914146ef01764df91ad46a0dfd3ff7530dcb5c6af886577721"
+    },
+    "allBytesVerified": true
+  },
+  "runs": [
+    {
+      "host": "Node",
+      "hostVersion": {
+        "version": "v24.15.0",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "rawReport": {
+        "path": ".context/node-libuv-assessment/node-controls-final.json",
+        "bytes": 15929,
+        "sha256": "b09a7eeb43a283d45f463ccf705fc19f3168079924f2e8e2bf2856fdd9353a0d"
+      },
+      "programSha256": "30f6491fd6849fe4a7b64b10203678cf3d329bc47881c883f00907c44b7b0edd",
+      "kernelSha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c",
+      "result": {
+        "exitCode": 0,
+        "stdout": "{\"case\":\"public-layout\",\"status\":\"pass\"}\n{\"case\":\"empty-loop\",\"status\":\"pass\"}\n{\"case\":\"timer-deadline-and-close\",\"status\":\"pass\"}\n{\"case\":\"repeating-timer-stop\",\"status\":\"pass\"}\n{\"case\":\"unreferenced-timer-liveness\",\"status\":\"pass\"}\n{\"case\":\"busy-close-and-nowait\",\"status\":\"pass\"}\n{\"case\":\"prepare-check-phases\",\"status\":\"pass\"}\n{\"case\":\"thread-to-loop-async-wakeup\",\"status\":\"pass\"}\n{\"case\":\"threadpool-work-and-main-callback\",\"status\":\"pass\"}\n{\"case\":\"pipe-readiness-and-poll-close\",\"status\":\"pass\"}\n{\"case\":\"real-file-async-write-read-and-errors\",\"status\":\"pass\"}\n{\"case\":\"process-title-explicit-unsupported\",\"status\":\"pass\"}\n{\"case\":\"filesystem-watch-explicit-unsupported\",\"status\":\"pass\"}\n{\"kind\":\"libuv-backend-controls\",\"cases\":13,\"failures\":0}\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      "observations": [
+        {
+          "case": "public-layout",
+          "status": "pass"
+        },
+        {
+          "case": "empty-loop",
+          "status": "pass"
+        },
+        {
+          "case": "timer-deadline-and-close",
+          "status": "pass"
+        },
+        {
+          "case": "repeating-timer-stop",
+          "status": "pass"
+        },
+        {
+          "case": "unreferenced-timer-liveness",
+          "status": "pass"
+        },
+        {
+          "case": "busy-close-and-nowait",
+          "status": "pass"
+        },
+        {
+          "case": "prepare-check-phases",
+          "status": "pass"
+        },
+        {
+          "case": "thread-to-loop-async-wakeup",
+          "status": "pass"
+        },
+        {
+          "case": "threadpool-work-and-main-callback",
+          "status": "pass"
+        },
+        {
+          "case": "pipe-readiness-and-poll-close",
+          "status": "pass"
+        },
+        {
+          "case": "real-file-async-write-read-and-errors",
+          "status": "pass"
+        },
+        {
+          "case": "process-title-explicit-unsupported",
+          "status": "pass"
+        },
+        {
+          "case": "filesystem-watch-explicit-unsupported",
+          "status": "pass"
+        }
+      ],
+      "cases": 13,
+      "failures": 0
+    },
+    {
+      "host": "chromium",
+      "hostVersion": "153.0.8010.12",
+      "rawReport": {
+        "path": ".context/node-libuv-assessment/final-browser/browser-chromium.json",
+        "bytes": 3615,
+        "sha256": "1f389012c82b900b248fd86b078073aac46d6207ebf53bb4ffa692d80b615a75"
+      },
+      "programSha256": "30f6491fd6849fe4a7b64b10203678cf3d329bc47881c883f00907c44b7b0edd",
+      "kernelSha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c",
+      "result": {
+        "exitCode": 0,
+        "stdout": "{\"case\":\"public-layout\",\"status\":\"pass\"}\n{\"case\":\"empty-loop\",\"status\":\"pass\"}\n{\"case\":\"timer-deadline-and-close\",\"status\":\"pass\"}\n{\"case\":\"repeating-timer-stop\",\"status\":\"pass\"}\n{\"case\":\"unreferenced-timer-liveness\",\"status\":\"pass\"}\n{\"case\":\"busy-close-and-nowait\",\"status\":\"pass\"}\n{\"case\":\"prepare-check-phases\",\"status\":\"pass\"}\n{\"case\":\"thread-to-loop-async-wakeup\",\"status\":\"pass\"}\n{\"case\":\"threadpool-work-and-main-callback\",\"status\":\"pass\"}\n{\"case\":\"pipe-readiness-and-poll-close\",\"status\":\"pass\"}\n{\"case\":\"real-file-async-write-read-and-errors\",\"status\":\"pass\"}\n{\"case\":\"process-title-explicit-unsupported\",\"status\":\"pass\"}\n{\"case\":\"filesystem-watch-explicit-unsupported\",\"status\":\"pass\"}\n{\"kind\":\"libuv-backend-controls\",\"cases\":13,\"failures\":0}\n",
+        "stderr": "",
+        "combined": "{\"case\":\"public-layout\",\"status\":\"pass\"}\n{\"case\":\"empty-loop\",\"status\":\"pass\"}\n{\"case\":\"timer-deadline-and-close\",\"status\":\"pass\"}\n{\"case\":\"repeating-timer-stop\",\"status\":\"pass\"}\n{\"case\":\"unreferenced-timer-liveness\",\"status\":\"pass\"}\n{\"case\":\"busy-close-and-nowait\",\"status\":\"pass\"}\n{\"case\":\"prepare-check-phases\",\"status\":\"pass\"}\n{\"case\":\"thread-to-loop-async-wakeup\",\"status\":\"pass\"}\n{\"case\":\"threadpool-work-and-main-callback\",\"status\":\"pass\"}\n{\"case\":\"pipe-readiness-and-poll-close\",\"status\":\"pass\"}\n{\"case\":\"real-file-async-write-read-and-errors\",\"status\":\"pass\"}\n{\"case\":\"process-title-explicit-unsupported\",\"status\":\"pass\"}\n{\"case\":\"filesystem-watch-explicit-unsupported\",\"status\":\"pass\"}\n{\"kind\":\"libuv-backend-controls\",\"cases\":13,\"failures\":0}\n",
+        "hostDiagnostics": []
+      },
+      "observations": [
+        {
+          "case": "public-layout",
+          "status": "pass"
+        },
+        {
+          "case": "empty-loop",
+          "status": "pass"
+        },
+        {
+          "case": "timer-deadline-and-close",
+          "status": "pass"
+        },
+        {
+          "case": "repeating-timer-stop",
+          "status": "pass"
+        },
+        {
+          "case": "unreferenced-timer-liveness",
+          "status": "pass"
+        },
+        {
+          "case": "busy-close-and-nowait",
+          "status": "pass"
+        },
+        {
+          "case": "prepare-check-phases",
+          "status": "pass"
+        },
+        {
+          "case": "thread-to-loop-async-wakeup",
+          "status": "pass"
+        },
+        {
+          "case": "threadpool-work-and-main-callback",
+          "status": "pass"
+        },
+        {
+          "case": "pipe-readiness-and-poll-close",
+          "status": "pass"
+        },
+        {
+          "case": "real-file-async-write-read-and-errors",
+          "status": "pass"
+        },
+        {
+          "case": "process-title-explicit-unsupported",
+          "status": "pass"
+        },
+        {
+          "case": "filesystem-watch-explicit-unsupported",
+          "status": "pass"
+        }
+      ],
+      "cases": 13,
+      "failures": 0
+    },
+    {
+      "host": "firefox",
+      "hostVersion": "155.0",
+      "rawReport": {
+        "path": ".context/node-libuv-assessment/final-browser/browser-firefox.json",
+        "bytes": 3606,
+        "sha256": "2120d7bc8788d0134213fb533920843c4a57b8417cd2472387e2e6ca34da1738"
+      },
+      "programSha256": "30f6491fd6849fe4a7b64b10203678cf3d329bc47881c883f00907c44b7b0edd",
+      "kernelSha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c",
+      "result": {
+        "exitCode": 0,
+        "stdout": "{\"case\":\"public-layout\",\"status\":\"pass\"}\n{\"case\":\"empty-loop\",\"status\":\"pass\"}\n{\"case\":\"timer-deadline-and-close\",\"status\":\"pass\"}\n{\"case\":\"repeating-timer-stop\",\"status\":\"pass\"}\n{\"case\":\"unreferenced-timer-liveness\",\"status\":\"pass\"}\n{\"case\":\"busy-close-and-nowait\",\"status\":\"pass\"}\n{\"case\":\"prepare-check-phases\",\"status\":\"pass\"}\n{\"case\":\"thread-to-loop-async-wakeup\",\"status\":\"pass\"}\n{\"case\":\"threadpool-work-and-main-callback\",\"status\":\"pass\"}\n{\"case\":\"pipe-readiness-and-poll-close\",\"status\":\"pass\"}\n{\"case\":\"real-file-async-write-read-and-errors\",\"status\":\"pass\"}\n{\"case\":\"process-title-explicit-unsupported\",\"status\":\"pass\"}\n{\"case\":\"filesystem-watch-explicit-unsupported\",\"status\":\"pass\"}\n{\"kind\":\"libuv-backend-controls\",\"cases\":13,\"failures\":0}\n",
+        "stderr": "",
+        "combined": "{\"case\":\"public-layout\",\"status\":\"pass\"}\n{\"case\":\"empty-loop\",\"status\":\"pass\"}\n{\"case\":\"timer-deadline-and-close\",\"status\":\"pass\"}\n{\"case\":\"repeating-timer-stop\",\"status\":\"pass\"}\n{\"case\":\"unreferenced-timer-liveness\",\"status\":\"pass\"}\n{\"case\":\"busy-close-and-nowait\",\"status\":\"pass\"}\n{\"case\":\"prepare-check-phases\",\"status\":\"pass\"}\n{\"case\":\"thread-to-loop-async-wakeup\",\"status\":\"pass\"}\n{\"case\":\"threadpool-work-and-main-callback\",\"status\":\"pass\"}\n{\"case\":\"pipe-readiness-and-poll-close\",\"status\":\"pass\"}\n{\"case\":\"real-file-async-write-read-and-errors\",\"status\":\"pass\"}\n{\"case\":\"process-title-explicit-unsupported\",\"status\":\"pass\"}\n{\"case\":\"filesystem-watch-explicit-unsupported\",\"status\":\"pass\"}\n{\"kind\":\"libuv-backend-controls\",\"cases\":13,\"failures\":0}\n",
+        "hostDiagnostics": []
+      },
+      "observations": [
+        {
+          "case": "public-layout",
+          "status": "pass"
+        },
+        {
+          "case": "empty-loop",
+          "status": "pass"
+        },
+        {
+          "case": "timer-deadline-and-close",
+          "status": "pass"
+        },
+        {
+          "case": "repeating-timer-stop",
+          "status": "pass"
+        },
+        {
+          "case": "unreferenced-timer-liveness",
+          "status": "pass"
+        },
+        {
+          "case": "busy-close-and-nowait",
+          "status": "pass"
+        },
+        {
+          "case": "prepare-check-phases",
+          "status": "pass"
+        },
+        {
+          "case": "thread-to-loop-async-wakeup",
+          "status": "pass"
+        },
+        {
+          "case": "threadpool-work-and-main-callback",
+          "status": "pass"
+        },
+        {
+          "case": "pipe-readiness-and-poll-close",
+          "status": "pass"
+        },
+        {
+          "case": "real-file-async-write-read-and-errors",
+          "status": "pass"
+        },
+        {
+          "case": "process-title-explicit-unsupported",
+          "status": "pass"
+        },
+        {
+          "case": "filesystem-watch-explicit-unsupported",
+          "status": "pass"
+        }
+      ],
+      "cases": 13,
+      "failures": 0
+    },
+    {
+      "host": "webkit",
+      "hostVersion": "26.6",
+      "rawReport": {
+        "path": ".context/node-libuv-assessment/final-browser/browser-webkit.json",
+        "bytes": 3604,
+        "sha256": "164b329fee658f187901369c78a434cb1963f2a92dae0bc77665afc25dca73f0"
+      },
+      "programSha256": "30f6491fd6849fe4a7b64b10203678cf3d329bc47881c883f00907c44b7b0edd",
+      "kernelSha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c",
+      "result": {
+        "exitCode": 0,
+        "stdout": "{\"case\":\"public-layout\",\"status\":\"pass\"}\n{\"case\":\"empty-loop\",\"status\":\"pass\"}\n{\"case\":\"timer-deadline-and-close\",\"status\":\"pass\"}\n{\"case\":\"repeating-timer-stop\",\"status\":\"pass\"}\n{\"case\":\"unreferenced-timer-liveness\",\"status\":\"pass\"}\n{\"case\":\"busy-close-and-nowait\",\"status\":\"pass\"}\n{\"case\":\"prepare-check-phases\",\"status\":\"pass\"}\n{\"case\":\"thread-to-loop-async-wakeup\",\"status\":\"pass\"}\n{\"case\":\"threadpool-work-and-main-callback\",\"status\":\"pass\"}\n{\"case\":\"pipe-readiness-and-poll-close\",\"status\":\"pass\"}\n{\"case\":\"real-file-async-write-read-and-errors\",\"status\":\"pass\"}\n{\"case\":\"process-title-explicit-unsupported\",\"status\":\"pass\"}\n{\"case\":\"filesystem-watch-explicit-unsupported\",\"status\":\"pass\"}\n{\"kind\":\"libuv-backend-controls\",\"cases\":13,\"failures\":0}\n",
+        "stderr": "",
+        "combined": "{\"case\":\"public-layout\",\"status\":\"pass\"}\n{\"case\":\"empty-loop\",\"status\":\"pass\"}\n{\"case\":\"timer-deadline-and-close\",\"status\":\"pass\"}\n{\"case\":\"repeating-timer-stop\",\"status\":\"pass\"}\n{\"case\":\"unreferenced-timer-liveness\",\"status\":\"pass\"}\n{\"case\":\"busy-close-and-nowait\",\"status\":\"pass\"}\n{\"case\":\"prepare-check-phases\",\"status\":\"pass\"}\n{\"case\":\"thread-to-loop-async-wakeup\",\"status\":\"pass\"}\n{\"case\":\"threadpool-work-and-main-callback\",\"status\":\"pass\"}\n{\"case\":\"pipe-readiness-and-poll-close\",\"status\":\"pass\"}\n{\"case\":\"real-file-async-write-read-and-errors\",\"status\":\"pass\"}\n{\"case\":\"process-title-explicit-unsupported\",\"status\":\"pass\"}\n{\"case\":\"filesystem-watch-explicit-unsupported\",\"status\":\"pass\"}\n{\"kind\":\"libuv-backend-controls\",\"cases\":13,\"failures\":0}\n",
+        "hostDiagnostics": []
+      },
+      "observations": [
+        {
+          "case": "public-layout",
+          "status": "pass"
+        },
+        {
+          "case": "empty-loop",
+          "status": "pass"
+        },
+        {
+          "case": "timer-deadline-and-close",
+          "status": "pass"
+        },
+        {
+          "case": "repeating-timer-stop",
+          "status": "pass"
+        },
+        {
+          "case": "unreferenced-timer-liveness",
+          "status": "pass"
+        },
+        {
+          "case": "busy-close-and-nowait",
+          "status": "pass"
+        },
+        {
+          "case": "prepare-check-phases",
+          "status": "pass"
+        },
+        {
+          "case": "thread-to-loop-async-wakeup",
+          "status": "pass"
+        },
+        {
+          "case": "threadpool-work-and-main-callback",
+          "status": "pass"
+        },
+        {
+          "case": "pipe-readiness-and-poll-close",
+          "status": "pass"
+        },
+        {
+          "case": "real-file-async-write-read-and-errors",
+          "status": "pass"
+        },
+        {
+          "case": "process-title-explicit-unsupported",
+          "status": "pass"
+        },
+        {
+          "case": "filesystem-watch-explicit-unsupported",
+          "status": "pass"
+        }
+      ],
+      "cases": 13,
+      "failures": 0
+    }
+  ],
+  "casesPerHost": 13,
+  "totalControls": 52,
+  "failures": 0,
+  "expectedUnsupportedControlsPerHost": 2,
+  "symbolInventory": {
+    "evidence": {
+      "path": ".context/node-libuv-assessment/public-symbol-inventory.json",
+      "bytes": 14965,
+      "sha256": "02e7b19327e8928c0eed06b48afb3762be252cd93474e85937f991283bcf345d"
+    },
+    "declaredPublicFunctions": 318,
+    "definedPublicFunctions": 308,
+    "missingPublicFunctions": [
+      "uv_cpu_info",
+      "uv_exepath",
+      "uv_get_available_memory",
+      "uv_get_constrained_memory",
+      "uv_get_free_memory",
+      "uv_get_total_memory",
+      "uv_interface_addresses",
+      "uv_loadavg",
+      "uv_resident_set_memory",
+      "uv_uptime"
+    ],
+    "symbolPresenceIsNotRuntimeProof": true
+  },
+  "attempts": [
+    {
+      "id": "libuv-backend-controls-build-1111-000354-8bb7",
+      "command": "scripts/dev-shell.sh bash .scratch/libuv-port.7M7JPg/build-controls.sh",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 4.5,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-backend-controls-build-1111-000354-8bb7.log",
+        "bytes": 2502,
+        "sha256": "d77509839a585199add14a5ecf3e3614112356f202166e294671d792fab2b25b"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-backend-controls-instrument-1111-000434-8ad3",
+      "command": "scripts/dev-shell.sh bash .scratch/libuv-port.7M7JPg/build-controls.sh",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 2.9,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-backend-controls-instrument-1111-000434-8ad3.log",
+        "bytes": 644,
+        "sha256": "fe159e9515e76adc766c0d76d6336cc472f0a2118ba4f53fb4f9c63b847cb753"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-browser-image-helper-1111-001612-5c74",
+      "command": "scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 118.3,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-browser-image-helper-1111-001612-5c74.log",
+        "bytes": 33850,
+        "sha256": "89e1f3b2542ffedc6c11d0138ad27ee66afecc8237d74d617104a7a2ead0a78e"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-controls-unbuffered-build-1111-000609-6a05",
+      "command": "scripts/dev-shell.sh bash .scratch/libuv-port.7M7JPg/build-controls.sh",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 3.2,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-controls-unbuffered-build-1111-000609-6a05.log",
+        "bytes": 2107,
+        "sha256": "b1a76a2ff2a392d9aa42a5d94927261cc0efb9f70c64dd4f80962c85ebc7dd85"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-empty-image-browser-controls-1111-002115-d9e4",
+      "command": "scripts/dev-shell.sh bash .scratch/libuv-port.7M7JPg/run-final-browsers.sh",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 33.8,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-empty-image-browser-controls-1111-002115-d9e4.log",
+        "bytes": 5840,
+        "sha256": "d5f181a97931fe3f299c45012bce241ef8652af4087dcf15172ddf21ddc90cb9"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-feature-build-link-1110-235537-4576",
+      "command": "scripts/dev-shell.sh bash .scratch/libuv-port.7M7JPg/feature-build-and-link.sh",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 9.5,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-feature-build-link-1110-235537-4576.log",
+        "bytes": 7993,
+        "sha256": "d8c2f206115bd7d2e00a7f75c0c9c29e0d894d34c98253b31d0d8f95a3c543d7"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-final-node-controls-1111-001004-8b6d",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx scripts/run-libuv-backend-controls.ts .scratch/libuv-port.7M7JPg/final-controls/libuv-backend-controls.wasm .context/node-libuv-assessment/node-controls-final.json",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 6.1,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-final-node-controls-1111-001004-8b6d.log",
+        "bytes": 396,
+        "sha256": "42110a952483b2e5b79a4430204c147d7de65ddfcc420110302bd361bf7e5534"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-final-package-1111-000835-21c1",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh libuv",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 25.9,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-final-package-1111-000835-21c1.log",
+        "bytes": 341,
+        "sha256": "5dd62fcc4f729d6a713dd5f4761df6eb8380b3cd75e9dbf8b5a234e32bf52141"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-libuv-assessment/job-logs/libuv-final-package-1111-000835-21c1-package-0.log",
+          "bytes": 27378,
+          "sha256": "6887d5a7ba87d341884608cb428fc765a35419b174f1c5cca63ef9a721deb187"
+        }
+      ]
+    },
+    {
+      "id": "libuv-final-probe-build-1111-000948-1429",
+      "command": "scripts/dev-shell.sh bash packages/registry/libuv/test/build-controls.sh /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/libuv-port.7M7JPg/final-controls",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 7.5,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-final-probe-build-1111-000948-1429.log",
+        "bytes": 17675,
+        "sha256": "db81ae64ed891bf9fc53b38e02effa14a769e17be89c1a0a91951bc3ac742f7f"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-final-three-browser-controls-1111-002008-319e",
+      "command": "scripts/dev-shell.sh bash .scratch/libuv-port.7M7JPg/run-final-browsers.sh",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 12.7,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-final-three-browser-controls-1111-002008-319e.log",
+        "bytes": 19643,
+        "sha256": "d79815ec2d61dd9aeacaba82f49cfd2e71b67ad1639286a036d7a3b3d4cf430e"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-focused-three-browser-controls-1111-001316-9717",
+      "command": "scripts/dev-shell.sh apps/browser-demos/node_modules/.bin/playwright test --config .context/node-libuv-assessment/browser/playwright.config.ts --project chromium --project firefox --project webkit",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 5.0,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-focused-three-browser-controls-1111-001316-9717.log",
+        "bytes": 6393,
+        "sha256": "61c8ee55449acca1484c9ebe44ba9921e87b6bcd822ad4ff33467ba6d809a87b"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-minimal-browser-controls-1111-001355-cab1",
+      "command": "scripts/dev-shell.sh apps/browser-demos/node_modules/.bin/playwright test --config .context/node-libuv-assessment/browser/playwright.config.ts --project chromium --project firefox --project webkit",
+      "exitCode": 130,
+      "signal": null,
+      "durationSeconds": 138.7,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-minimal-browser-controls-1111-001355-cab1.log",
+        "bytes": 11559,
+        "sha256": "a0b6b919a235a18946d53afd1b4b1619a7b1344398ffdc1f3f713bba30cf6046"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-node-controls-1111-000501-68d5",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx .scratch/libuv-port.7M7JPg/run-controls.ts",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 5.5,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-node-controls-1111-000501-68d5.log",
+        "bytes": 5477,
+        "sha256": "4c93519a00f146cb317e9e64812652299261e0b7c56adc24d8891e4b36e0e8df"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-node-controls-unbuffered-1111-000625-c44e",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx .scratch/libuv-port.7M7JPg/run-controls.ts",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 6.9,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-node-controls-unbuffered-1111-000625-c44e.log",
+        "bytes": 16030,
+        "sha256": "ac8194c972ffa894f61ac25e15322c1a7e483e4c2878989654b81090f1f83f2f"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-posix-package-1111-000114-a69d",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh libuv",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 23.5,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-posix-package-1111-000114-a69d.log",
+        "bytes": 3006,
+        "sha256": "edd8ab0fb5c21b24f4b68b94e9b1929f529454fae320745e374b03fe3e41db60"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-libuv-assessment/job-logs/libuv-posix-package-1111-000114-a69d-package-0.log",
+          "bytes": 27310,
+          "sha256": "524082c2871d56ca7be93e9f9cbb9a224fc3c7bad169c4aab8cbffd018f6f09e"
+        }
+      ]
+    },
+    {
+      "id": "libuv-posix-package-outputs-1111-000204-07dd",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh libuv",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 27.8,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-posix-package-outputs-1111-000204-07dd.log",
+        "bytes": 349,
+        "sha256": "b545922c6f19175b190d73b67518953747687f4d22bf23ae2c28e911ca45cfdd"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-libuv-assessment/job-logs/libuv-posix-package-outputs-1111-000204-07dd-package-0.log",
+          "bytes": 27346,
+          "sha256": "2e1897acc8ccbc7d8a1192580ca43ffdbf272a0373a68b9eb7c9e5121881748a"
+        }
+      ]
+    },
+    {
+      "id": "libuv-three-browser-controls-1111-001004-3521",
+      "command": "scripts/dev-shell.sh node_modules/.bin/playwright test --config .context/node-libuv-assessment/browser/playwright.config.ts --project chromium --project firefox --project webkit",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 3.9,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-three-browser-controls-1111-001004-3521.log",
+        "bytes": 4931,
+        "sha256": "9f8e94db0bc3ae7227609e838aa6353e78ab79aa777094aaeeb53ebeef656fd3"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-three-browser-controls-app-runner-1111-001047-2f16",
+      "command": "scripts/dev-shell.sh apps/browser-demos/node_modules/.bin/playwright test --config .context/node-libuv-assessment/browser/playwright.config.ts --project chromium --project firefox --project webkit",
+      "exitCode": 143,
+      "signal": 15,
+      "durationSeconds": 118.2,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-three-browser-controls-app-runner-1111-001047-2f16.log",
+        "bytes": 2224335,
+        "sha256": "90db178751b710002a9c6f20c728078109c172ae4d0f1050c291de8731f2c462"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "libuv-typed-thread-package-1111-000708-11a7",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh libuv",
+      "exitCode": 0,
+      "signal": null,
+      "durationSeconds": 19.9,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-typed-thread-package-1111-000708-11a7.log",
+        "bytes": 348,
+        "sha256": "dbf2d9771431fb135441ef218ae27638e6673007f0ec93918750c42ee768746d"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-libuv-assessment/job-logs/libuv-typed-thread-package-1111-000708-11a7-package-0.log",
+          "bytes": 27378,
+          "sha256": "1360ec3060c278036323d28c62ca125ebdb7ad8489e334e75270bc0ceef5b6a0"
+        }
+      ]
+    },
+    {
+      "id": "libuv-unmodified-build-1110-235259-4969",
+      "command": "scripts/dev-shell.sh bash .scratch/libuv-port.7M7JPg/unmodified-build.sh",
+      "exitCode": 1,
+      "signal": null,
+      "durationSeconds": 14.2,
+      "log": {
+        "path": ".context/node-libuv-assessment/job-logs/libuv-unmodified-build-1110-235259-4969.log",
+        "bytes": 8688,
+        "sha256": "083d4ae2b3c2838d51c2b75a59c712fece7e153dcf6efa69251efabf26bb9aac"
+      },
+      "packageLogs": []
+    }
+  ],
+  "failureHistory": [
+    "Unmodified upstream CMake build lacks pthread naming declarations. _GNU_SOURCE permits a common archive, but minimal executable linkage lacks seven platform functions.",
+    "Initial package compiled and installed but manifest directory in files output failed validation; corrected to individual CMake files.",
+    "First probe build invoked instrumenter without required output argument; corrected harness invocation.",
+    "Two Node runs trapped at incompatible upstream pthread callback cast; unbuffered run confirms seven earlier loop/timer controls passed. Typed callback/argument wrapper fixes the actual C signature mismatch; not an outside runtime defect.",
+    "Browser harness first loaded duplicate Playwright installations; corrected to the app runner.",
+    "Ordinary browser setup started unrelated historical ABI56 SDK/core/fixture-tool provisioning; stopped with SIGTERM before pinned cohort publication. Temporary build outputs remain under target/program-baseline; no ABI55 production observed. Both pinned cohort output sets remained absent.",
+    "Focused browser startup used unknown test-runner build input, then lacked image-builder helpers; helpers provisioned normally. Missing-helper attempt timed out Chromium, interrupted Firefox and did not run WebKit, with cleanup error.",
+    "One later run failed on all three browsers before guest execution because default /etc seeding requested missing canonical rootfs. Explicit empty filesystem seedEtc:false matches focused Node host scope; final three browser tests pass."
+  ],
+  "warnings": {
+    "browserStorageCleanup": {
+      "status": "warning",
+      "message": "EACCES: permission denied, rmdir '/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/validation-scratch/32e702e4-8469-49e0-94d6-0122a61e20f9/tmp/kandelo-playwright-storage-iAC2Yx/firefox/Downloads'",
+      "root": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/validation-scratch/32e702e4-8469-49e0-94d6-0122a61e20f9/tmp/kandelo-playwright-storage-iAC2Yx"
+    },
+    "libraryCompiler": "two existing signed/unsigned CMSG_NXTHDR comparisons; Rust/development tooling emitted retained dead-code and Vite native-config warnings",
+    "probeLinker": "two unused LLVM sjlj/legacy-eh flag warnings retained"
+  },
+  "nodeSourceRehash": {
+    "files": 493,
+    "allBytesMatch": true,
+    "sourceManifestSha256": "7e131abb50f48efbfd1503d09f99934f399a1c82fcdc567fc39395425dcab8fd"
+  },
+  "limits": [
+    "The SpiderMonkey/Node embedding remains revision26 and is not linked to this libuv package. Original principal body still stops on task_queue.",
+    "No user CJS/ESM startup or module compatibility proof; full backend catalog/roadmap remains incomplete.",
+    "Ten public OS functions missing; socket/DNS/spawn/signal/cancellation/fork/OOM and complete teardown not validated.",
+    "Empty guest filesystems, no partial/canonical product images, no overall suites. Full products and successor-ABI campaign rebuilds remain deferred. Unintended fixture provisioning was canceled and separately recorded.",
+    "ABI55 history/external archive untouched; no kernel/libc/SDK/host source edits. Browser cleanup warning remains separate from empty guest stderr/host diagnostics.",
+    "Raw result projection omits only redundant stdoutBytes/stderrBytes; retained raw report hashes above bind complete reports."
+  ],
+  "next": "Adapt native Node scheduler to genuine libuv loop/handles while preserving realm/GC/callback ownership, then genuine task_queue/async callback scopes and wider original startup closure; broader roadmap remains behind user review gate.",
+  "testedInputsWereUncommitted": true
+}

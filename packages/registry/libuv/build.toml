@@ -1,0 +1,13 @@
+script_path = "packages/registry/libuv/build-libuv.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "6c7c6a240f986b31b37cc219ea1c047ad42ea026"
+revision = 2
+inputs = [
+  "packages/registry/libuv/build-libuv.sh",
+  "packages/registry/libuv/patches/0001-kandelo-posix-backend.patch",
+  "packages/registry/libuv/patches/0002-typed-pthread-entry.patch",
+  "packages/registry/libuv/src/kandelo-proctitle.c",
+  "scripts/package-build-roots.sh",
+  "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/Platform/Kandelo.cmake",
+]
