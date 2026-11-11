@@ -17,6 +17,14 @@ bool DispatchRuntimeTimers(JSContext* cx, JS::HandleObject runtime,
                            int* dispatched,
                            int64_t* nextDelay);
 JSObject* InspectRuntimeTimers(JSContext* cx, JS::HandleObject runtime);
+// The canonical loop owns the actual async handle. Native producers may only
+// send its wake token; attaching, ref changes and retirement stay foreground.
+using RuntimeForegroundCallback = bool (*)(JSContext*, void*);
+using RuntimeForegroundPending = bool (*)(void*);
+void* AttachRuntimeForeground(JSContext*, JS::HandleObject, void*,
+                              RuntimeForegroundCallback, RuntimeForegroundPending);
+int SendRuntimeForeground(void*);
+void DetachRuntimeForeground(JSContext*, JS::HandleObject, void*);
 }  // namespace kandelo::node
 
 #endif

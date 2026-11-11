@@ -31,7 +31,9 @@
     "continuationPartialCatalog": "continuation-contracts.json",
     "continuationEngineEvidence": "continuation-engine-check.json",
     "bufferPartialCatalog": "buffer-contracts.json",
-    "bufferMemoryEvidence": "buffer-memory-engine-check.json"
+    "bufferMemoryEvidence": "buffer-memory-engine-check.json",
+    "environmentPartialCatalog": "environment-contracts.json",
+    "environmentEvidence": "environment-engine-check.json"
   },
   "implementation": [
     {
@@ -201,7 +203,13 @@
       "area": "native ArrayBuffer detach-key prerequisite for original Buffer",
       "sourceStatus": "actual engine-traced key, SameValue-authorized detach and transfer/serialization/JSAPI enforcement; 23 controls per host plus 12 shared native reference cases",
       "evidence": "buffer-memory-engine-check.json",
-      "remaining": "complete original node_buffer.cc not imported/compiled; stable Environment/cleanup/weak handle/foreground callback ownership, general allocation/copy/alignment/prototype and full original binding/startup remain incomplete"
+      "remaining": "complete original node_buffer.cc not imported/compiled; stable Environment/cleanup/weak handles/foreground dispatch now have verified foundation, while original CallbackInfo/adoption/general allocation/copy/alignment/prototype and full original binding/startup remain incomplete"
+    },
+    {
+      "area": "stable native Environment, weak ArrayBuffer handles and foreground cleanup work",
+      "sourceStatus": "stable Isolate-bound owner, native intrusive cleanup, actual weak-zone handles, move-only queue on canonical libuv async handle, real metadata GC credits and context shutdown hook;14controls and3exit drivers pass per host",
+      "evidence": "environment-engine-check.json",
+      "remaining": "complete original Buffer CallbackInfo/adoption not compiled; full native callback/resource/fatal policy, independently owned delayed producers, general Global API, worker/fork/cancel/OOM and exceptional shutdown remain unproven"
     }
   ],
   "runtimeConformance": {
@@ -303,6 +311,20 @@
       "nativeSharedCases": 12,
       "evidence": "buffer-memory-engine-check.json",
       "scope": "real engine memory primitives through privileged controls; original Buffer binding and startup not accepted"
+    },
+    "environmentPrerequisite": {
+      "hosts": [
+        "Node",
+        "Chromium",
+        "Firefox",
+        "WebKit"
+      ],
+      "controlsPerHost": 14,
+      "exitDriversPerHost": 3,
+      "guestProcesses": 16,
+      "failures": 0,
+      "evidence": "environment-engine-check.json",
+      "scope": "native embedding ownership/queue/GC/cleanup controls; original Buffer and startup not accepted"
     }
   },
   "validationLimits": {

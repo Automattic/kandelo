@@ -2048,7 +2048,8 @@
       "contract": "custom FreeCallback lifetime",
       "source": "whole original CallbackInfo class and New(env,data,len,callback,hint)",
       "requirement": "stable process Environment, cleanup queue, genuine weak Global<ArrayBuffer>, mutex-protected callback retirement, external-memory accounting and move-only foreground SetImmediateThreadsafe; clean/drain before JSContext destruction; never store current frame-local Environment",
-      "status": "missing; current frame-local codec Environment is unsafe for escaping callback owners"
+      "status": "stable Environment/cleanup/weak ArrayBuffer handle/foreground queue foundation verified on four hosts; complete original CallbackInfo still not compiled or exercised with backing-store adoption",
+      "evidence": "environment-engine-check.json"
     },
     {
       "contract": "fast method metadata",
@@ -2135,5 +2136,12 @@
     "originalBindingImplemented": false,
     "nativeCallbackLifetimeImplemented": false,
     "scope": "privileged engine controls, not original Buffer binding or startup acceptance"
+  },
+  "environmentPrerequisite": {
+    "implemented": true,
+    "namedControlsPerHost": 14,
+    "exitDriversPerHost": 3,
+    "originalCallbackInfoCompiled": false,
+    "evidence": "environment-engine-check.json"
   }
 }

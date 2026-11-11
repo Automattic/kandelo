@@ -51,6 +51,7 @@ template<class T> class Maybe {
   Maybe()=default;
   explicit Maybe(T value):present_(true),value_(value) {}
   bool To(T* out) const { if(present_) *out=value_;return present_; }
+  bool IsNothing() const { return !present_; }
   T FromJust() const { if(!present_) Crash("Empty native codec result");return value_; }
   T FromMaybe(T fallback) const { return present_?value_:fallback; }
   void Check() const { if(!present_ || !value_) Crash("Failed native codec result"); }
@@ -90,12 +91,18 @@ class Value {
   MaybeLocal<String> ToString(Local<Context>);
 };
 std::unique_ptr<Value> RetainRoot(Isolate*,Local<Value>);
+struct GlobalRoot;
+std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate*,Local<Value>);
+Local<Value> ReadGlobalRoot(Isolate*,const std::shared_ptr<GlobalRoot>&);
+void MakeGlobalWeak(Isolate*,const std::shared_ptr<GlobalRoot>&);
 template<class T> class Global {
-  static_assert(std::is_same_v<T,Value>);
-  std::unique_ptr<Value> value_;
+  Isolate* isolate_=nullptr;
+  std::shared_ptr<GlobalRoot> value_;
  public:
-  void Reset(Isolate* isolate,Local<T> value) { value_=RetainRoot(isolate,value); }
-  Local<T> Get(Isolate*) const { return Local<T>(value_.get()); }
+  void Reset(Isolate* isolate,Local<T> value) { isolate_=isolate;value_=NewGlobalRoot(isolate,value); }
+  void Reset() { value_.reset();isolate_=nullptr; }
+  void SetWeak() { MakeGlobalWeak(isolate_,value_); }
+  Local<T> Get(Isolate* isolate) const { return ReadGlobalRoot(isolate,value_).template As<T>(); }
 };
 class Object : public Value {
  public:
@@ -200,7 +207,7 @@ class HandleScope {
 class ExternalMemoryAccounter {
   std::unique_ptr<MemoryAccount> account_;
  public:
-  ExternalMemoryAccounter();~ExternalMemoryAccounter();
+  explicit ExternalMemoryAccounter(bool keepOwner=true);~ExternalMemoryAccounter();
   void Increase(Isolate*,size_t);void Decrease(Isolate*,size_t);
 };
 Local<Value> Argument(Isolate*,int);
@@ -269,13 +276,79 @@ template<class T,size_t N=64> class ArrayBufferViewContents {
   explicit ArrayBufferViewContents(Local<Value>);
   T* data() const;size_t length() const;
 };
+class Environment;
+class Cleanable;
+class CleanableQueue;
+class CleanableLink {
+  friend class CleanableQueue;
+  Cleanable* item_;
+  CleanableQueue* queue_=nullptr;
+  CleanableLink* previous_=nullptr;
+  CleanableLink* next_=nullptr;
+ public:
+  explicit CleanableLink(Cleanable* item):item_(item) {}
+  ~CleanableLink();
+  void Remove();
+};
+class Cleanable {
+  friend class CleanableQueue;
+ protected:
+  CleanableLink cleanable_queue_{this};
+ private:
+  virtual void Clean()=0;
+ public:
+  virtual ~Cleanable()=default;
+};
+class CleanableQueue {
+  friend class CleanableLink;
+  Environment* environment_;
+  CleanableLink* first_=nullptr;
+  size_t size_=0;
+  void Remove(CleanableLink*);
+ public:
+  explicit CleanableQueue(Environment* environment):environment_(environment) {}
+  void PushFront(Cleanable*);
+  bool IsEmpty() const { return first_==nullptr; }
+  size_t size() const { return size_; }
+  void CleanAll();
+};
+struct EnvironmentData;
+struct NativeImmediate {
+  virtual ~NativeImmediate()=default;
+  virtual void Run(Environment*)=0;
+};
+template<class Callback> struct NativeImmediateCallback final : NativeImmediate {
+  Callback callback;
+  explicit NativeImmediateCallback(Callback input):callback(std::move(input)) {}
+  void Run(Environment* environment) override { callback(environment); }
+};
 class Environment {
- public: static Environment* GetCurrent(Local<Context>);
+  Isolate* isolate_;
+  std::unique_ptr<EnvironmentData> data_;
+ public:
+  explicit Environment(Isolate*);~Environment();
+  Environment(const Environment&)=delete;
+  static Environment* GetCurrent(Local<Context>);
   static Environment* GetCurrent(Isolate*);
   static Environment* GetCurrent(const FunctionCallbackInfo<Value>&);
   Isolate* isolate();Local<Context> context();Local<ObjectTemplate> i18n_converter_template();
   void set_trace_category_state_function(Local<Function>);
   bool async_context_frame_enabled() const;
+  CleanableQueue* cleanable_queue();
+  ExternalMemoryAccounter* external_memory_accounter();
+  JSObject* memory_owner(JSContext*);
+  void AssertForeground() const;
+  bool Initialize(JSContext*,JS::HandleObject);
+  bool IsClosed() const;
+  bool HasPending() const;
+  bool Drain(JSContext*);
+  void Shutdown(JSContext*);
+  EnvironmentData& data() { return *data_; }
+  void Post(std::unique_ptr<NativeImmediate>);
+  template<class Callback> void SetImmediateThreadsafe(Callback&& callback) {
+    using Stored=std::decay_t<Callback>;
+    Post(std::make_unique<NativeImmediateCallback<Stored>>(std::forward<Callback>(callback)));
+  }
 };
 class IsolateData {
  public: Isolate* isolate();void set_i18n_converter_template(Local<ObjectTemplate>);

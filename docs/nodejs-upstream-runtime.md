@@ -1383,7 +1383,8 @@ buffer/internal-buffer module references. Those references are a syntax
 index, not complete lazy/conditional/worker reachability. In particular,
 the original CallbackInfo retains an Environment and needs a genuine
 cleanup queue, weak ArrayBuffer handle and thread-safe foreground dispatch.
-The current frame-local codec Environment cannot safely serve that owner.
+At that checkpoint the frame-local codec Environment could not safely serve
+that owner; the stable ownership foundation below addresses that prerequisite.
 General Buffer allocation, stable alignment, principal-realm prototype,
 copy semantics and additional native string/number/handle contracts remain
 to be connected to the complete original source.
@@ -1402,3 +1403,61 @@ No images, canonical products, successor-ABI builds or overall suites ran.
 See [buffer-contracts.json](../tests/nodejs/upstream/buffer-contracts.json)
 and [buffer-memory-engine-check.json](../tests/nodejs/upstream/buffer-memory-engine-check.json)
 for contract coverage, exact artifacts, retained attempts and remaining work.
+
+
+## Stable native Environment and foreground cleanup
+
+Revision 40 moves the native codec Environment from temporary call frames into
+one actual Isolate-bound runtime State. Frames borrow the same owner. The
+registered context owner keeps its native address, canonical runtime and loop
+alive until foreground shutdown. Existing native BaseObject construction
+validates that owner. This supplies infrastructure for the original Buffer
+allocation callbacks; the complete node_buffer.cc binding is still not compiled.
+
+Weak Global<ArrayBuffer> handles use actual engine weak-zone callbacks. They
+update moving pointers, return rooted values in the active realm and clear
+unreachable buffers. A foreground registry retains native records while
+background owners release their references, so those threads do not destroy
+JS roots. Strong continuation handles remain actual PersistentRooted values.
+Generic nursery-object weak semantics and the rest of the Global API remain
+unproven.
+
+The Environment owns a native cleanup queue and a move-only foreground work
+queue. Producers post native data under a mutex and signal the real async
+handle in the existing libuv loop. The foreground owns ref changes, callbacks
+and checkpoints. Error recovery preserves the queued tail and re-arms real
+async delivery on re-entry; an empty queue releases the handle reference.
+Metadata accounting accumulates actual amounts without a State ownership
+cycle and advises SpiderMonkey through Add/RemoveAssociatedMemory on the real
+codec-state object. Existing external-string payload accounting stays with
+the actual engine string allocation.
+
+Every ShellContext calls the shutdown hook before unregistering context data.
+Cleanup retires membership before callbacks, handles reentrant registrations,
+drains native posts, closes admission and removes weak edges before context
+destruction. The worker hook is installed, but worker/fork/cancellation
+lifecycle is not validated. Full native callback/resource-ID/fatal policy,
+independently owned delayed producers, OOM and native callbacks creating JS
+exceptions during shutdown remain incomplete.
+
+Fourteen ownership/weak-handle/queue controls plus three natural/quit/error
+exit drivers pass on each host with identical engine/kernel bytes. They
+exercise native producer threads, moving GC during background weak-handle
+disposal, cumulative real allocation accounting, reentrant cleanup, caught
+work errors, tail preservation and cleanup-time posts. All previous 584
+selected observations also pass: 652 observations across 162 guest processes,
+including 32 expected assertion traps. These are private embedding controls,
+not a native Node differential or proof of the original CallbackInfo protocol.
+
+Retained build failures cover an unrooted JSString argument and include
+ordering. Final browser guest errors are empty; separate run-owned Firefox
+Library cleanup EACCES warnings remain. An earlier run also retained storage
+because its cleanup check still saw WebKit. Normal resolution reuses the tested
+revision-40 artifact. All 554 source records and all 443 JavaScript sources
+remain unchanged. No image, canonical product, successor ABI or overall suite
+was built. Startup still fails on missing native buffer; mksnapshot, CJS/ESM
+entrypaths and the complete backend catalog remain unfinished.
+
+See [environment-contracts.json](../tests/nodejs/upstream/environment-contracts.json)
+and [environment-engine-check.json](../tests/nodejs/upstream/environment-engine-check.json)
+for the exact artifacts, controls, source contracts and retained limitations.

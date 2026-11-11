@@ -41,11 +41,16 @@ struct TimerLoop {
   uv_check_t check{};
   uv_idle_t idle{};
   uv_prepare_t checkpointBridge{};
+  uv_async_t foreground{};
+  void* foregroundOwner=nullptr;
+  RuntimeForegroundCallback foregroundCallback=nullptr;
+  RuntimeForegroundPending foregroundPending=nullptr;
   bool initialized = false;
   bool timerInitialized = false;
   bool checkInitialized = false;
   bool idleInitialized = false;
   bool bridgeInitialized = false;
+  bool foregroundInitialized = false;
   // Borrowed only during uv_run from a stack root in DispatchRuntimeTimers.
   // No untraced JS edge or persistent/finalizer root is stored in native data.
   JSContext* cx = nullptr;
@@ -62,13 +67,15 @@ void Finalize(JS::GCContext*, JSObject* state) {
   if (value.isUndefined()) return;
   auto* data = static_cast<TimerLoop*>(value.toPrivate());
   MOZ_RELEASE_ASSERT(!data->running && !data->cx && !data->state);
+  MOZ_RELEASE_ASSERT(!data->foregroundOwner);
   // Foreground finalization closes every initialized owned handle, suppressing
   // future JS callbacks. Closing callbacks are null and cannot enter the GC.
   for (const auto& entry : {
       std::pair{reinterpret_cast<uv_handle_t*>(&data->timer), data->timerInitialized},
       std::pair{reinterpret_cast<uv_handle_t*>(&data->check), data->checkInitialized},
       std::pair{reinterpret_cast<uv_handle_t*>(&data->idle), data->idleInitialized},
-      std::pair{reinterpret_cast<uv_handle_t*>(&data->checkpointBridge), data->bridgeInitialized}}) {
+      std::pair{reinterpret_cast<uv_handle_t*>(&data->checkpointBridge), data->bridgeInitialized},
+      std::pair{reinterpret_cast<uv_handle_t*>(&data->foreground), data->foregroundInitialized}}) {
     if (entry.second) uv_close(entry.first, nullptr);
   }
   if (data->initialized) {
@@ -90,6 +97,7 @@ void OnTimer(uv_timer_t* handle);
 void OnCheck(uv_check_t* handle);
 void OnCheckpointBridge(uv_prepare_t* handle);
 void OnIdle(uv_idle_t*) {}  // Like Node: keep poll nonblocking for live immediates.
+void OnForeground(uv_async_t*);
 
 bool Report(JSContext* cx, const char* message) {
   if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "%s", message);
@@ -310,6 +318,17 @@ void OnCheckpointBridge(uv_prepare_t* handle) {
   // while the shell polls them. Its reference is scoped to that actual work.
   Checkpoint(static_cast<TimerLoop*>(handle->data));
 }
+void OnForeground(uv_async_t* handle) {
+  auto* data=static_cast<TimerLoop*>(handle->data);
+  if(!data->foregroundOwner)return;
+  MOZ_RELEASE_ASSERT(data->running&&data->cx&&data->state);
+  if(!data->okay||data->yielded)return;
+  ++data->dispatched;
+  const bool okay=data->foregroundCallback(data->cx,data->foregroundOwner);
+  if(!data->foregroundPending(data->foregroundOwner))uv_unref(reinterpret_cast<uv_handle_t*>(handle));
+  if(!okay){Fail(data);return;}
+  Checkpoint(data);
+}
 }  // namespace
 
 bool ReadGuestMonotonicMillis(JSContext* cx, uint64_t* result) {
@@ -336,7 +355,8 @@ JSObject* CreateRuntimeTimerState(JSContext* cx, double base) {
       sizeof(uv_timer_t) == uv_handle_size(UV_TIMER) &&
       sizeof(uv_check_t) == uv_handle_size(UV_CHECK) &&
       sizeof(uv_idle_t) == uv_handle_size(UV_IDLE) &&
-      sizeof(uv_prepare_t) == uv_handle_size(UV_PREPARE), "Node libuv public layout invariant");
+      sizeof(uv_prepare_t) == uv_handle_size(UV_PREPARE) &&
+      sizeof(uv_async_t) == uv_handle_size(UV_ASYNC), "Node libuv public layout invariant");
   if (!UvResult(cx, uv_loop_init(&data->loop))) return nullptr;
   data->initialized = true;
   if (!UvResult(cx, uv_timer_init(&data->loop, &data->timer))) return nullptr;
@@ -351,6 +371,9 @@ JSObject* CreateRuntimeTimerState(JSContext* cx, double base) {
   if (!UvResult(cx, uv_prepare_init(&data->loop, &data->checkpointBridge))) return nullptr;
   data->bridgeInitialized = true; data->checkpointBridge.data = data;
   uv_unref(reinterpret_cast<uv_handle_t*>(&data->checkpointBridge));
+  if(!UvResult(cx,uv_async_init(&data->loop,&data->foreground,OnForeground)))return nullptr;
+  data->foregroundInitialized=true;data->foreground.data=data;
+  uv_unref(reinterpret_cast<uv_handle_t*>(&data->foreground));
   JS::RootedObject immediate(cx, JS_NewUint32Array(cx, 3));
   if (!immediate) return nullptr;
   JS::RootedObject timeout(cx, JS_NewInt32Array(cx, 1));
@@ -412,6 +435,15 @@ bool DispatchRuntimeTimers(JSContext* cx, JS::HandleObject runtime,
     data->cx = nullptr; data->state = nullptr; data->checkpoint = nullptr;
     data->running = false;
   });
+  if(data->foregroundOwner){
+    auto* handle=reinterpret_cast<uv_handle_t*>(&data->foreground);
+    if(data->foregroundPending(data->foregroundOwner)){
+      uv_ref(handle);
+      // A caught callback error or checkpoint yield can leave queued work
+      // after the original async signal was consumed. Re-arm real delivery.
+      if(!UvResult(cx,uv_async_send(&data->foreground)))return false;
+    }else uv_unref(handle);
+  }
   if (externalReferences) {
     if (!UvResult(cx, uv_prepare_start(&data->checkpointBridge, OnCheckpointBridge))) return false;
     uv_ref(reinterpret_cast<uv_handle_t*>(&data->checkpointBridge));
@@ -426,6 +458,23 @@ bool DispatchRuntimeTimers(JSContext* cx, JS::HandleObject runtime,
   uv_unref(reinterpret_cast<uv_handle_t*>(&data->checkpointBridge));
   if (uv_loop_alive(&data->loop)) *nextDelay = std::max(0, uv_backend_timeout(&data->loop));
   return true;
+}
+
+void* AttachRuntimeForeground(JSContext* cx,JS::HandleObject runtime,void* owner,
+                              RuntimeForegroundCallback callback,RuntimeForegroundPending pending) {
+  JS::RootedObject wrapped(cx,GetRuntimeTimerState(cx,runtime,true));if(!wrapped)return nullptr;
+  JS::RootedObject state(cx,UnwrapState(cx,wrapped));if(!state)return nullptr;
+  auto* data=Native(state);MOZ_RELEASE_ASSERT(owner&&callback&&pending&&!data->foregroundOwner);
+  data->foregroundOwner=owner;data->foregroundCallback=callback;data->foregroundPending=pending;
+  return &data->foreground;
+}
+int SendRuntimeForeground(void* token) { return uv_async_send(static_cast<uv_async_t*>(token)); }
+void DetachRuntimeForeground(JSContext* cx,JS::HandleObject runtime,void* owner) {
+  JS::RootedObject wrapped(cx,GetRuntimeTimerState(cx,runtime,false));MOZ_RELEASE_ASSERT(wrapped);
+  JS::RootedObject state(cx,UnwrapState(cx,wrapped));MOZ_RELEASE_ASSERT(state);
+  auto* data=Native(state);MOZ_RELEASE_ASSERT(!data->running&&data->foregroundOwner==owner);
+  data->foregroundOwner=nullptr;data->foregroundCallback=nullptr;data->foregroundPending=nullptr;
+  uv_unref(reinterpret_cast<uv_handle_t*>(&data->foreground));
 }
 
 JSObject* InspectRuntimeTimers(JSContext* cx, JS::HandleObject runtime) {

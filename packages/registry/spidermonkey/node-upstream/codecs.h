@@ -11,5 +11,7 @@ bool DefineContinuationTestAPI(JSContext* cx, JS::HandleObject api);
 bool TraceNativeCallIsActive();
 JSObject* InspectCodecState(JSContext* cx, JS::HandleObject runtime);
 bool SetCodecGcStress(JSContext* cx, JS::HandleObject runtime, bool enabled);
+void ShutdownRuntimeCodecs(JSContext* cx);
+bool DefineEnvironmentTestAPI(JSContext* cx, JS::HandleObject api);
 }
 #endif

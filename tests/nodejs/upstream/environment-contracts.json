@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "scope": "Native Environment prerequisites for complete original Buffer and existing native units; not full Environment/Buffer/startup compatibility",
+  "sourceVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceFiles": [
+    {
+      "path": "src/env.h",
+      "role": "provenance",
+      "bytes": 53128,
+      "sha256": "2727db70801cd3d154790795f52aac30909279cfbbec5beab1c0b463a4aa55b8",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_buffer.h",
+      "role": "provenance",
+      "bytes": 3843,
+      "sha256": "42db024cf1ae62db1a9a23477ee9927e9b7ed04999bd4498371b144962a31525",
+      "builtinId": null
+    },
+    {
+      "path": "src/string_bytes.cc",
+      "role": "provenance",
+      "bytes": 29594,
+      "sha256": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d",
+      "builtinId": null
+    },
+    {
+      "path": "src/string_bytes.h",
+      "role": "provenance",
+      "bytes": 4614,
+      "sha256": "5e0b0f184d2e7b0556b5afb67bfaa28b3aa92c960a2dccff40006e1a1c1b86f2",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_i18n.cc",
+      "role": "provenance",
+      "bytes": 24681,
+      "sha256": "92609fad1107071d39f8211ccac9536257a63752db95e1160ae345d6618f76ff",
+      "builtinId": null
+    },
+    {
+      "path": "src/async_context_frame.cc",
+      "role": "provenance",
+      "bytes": 2750,
+      "sha256": "6de1a1e6c0eb2abf910628ffcb5722e5e33234d3725a2df27ce36349e091f9cc",
+      "builtinId": null
+    },
+    {
+      "path": "src/async_context_frame.h",
+      "role": "provenance",
+      "bytes": 903,
+      "sha256": "e2f173c35a8ea6b9afb670b1bbfb126890e29b8188108aa60c572bfe68345e92",
+      "builtinId": null
+    },
+    {
+      "path": "src/util.h",
+      "role": "provenance",
+      "bytes": 43448,
+      "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
+      "builtinId": null
+    },
+    {
+      "path": "src/util-inl.h",
+      "role": "provenance",
+      "bytes": 27698,
+      "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561",
+      "builtinId": null
+    }
+  ],
+  "originalBufferSource": {
+    "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+    "path": "src/node_buffer.cc",
+    "bytes": 76513,
+    "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2",
+    "importedIntoRuntime": false
+  },
+  "implementation": {
+    "owner": "stable State member bound to actual Isolate; one actual JSContext owner retains runtime until foreground ShellContext shutdown",
+    "callFrames": "borrow same Environment, no escaping frame-local Environment",
+    "cleanableQueue": "native intrusive membership retired before arbitrary cleanup; reentrant registrations drained",
+    "weakArrayBufferHandles": "engine weak-zone updates, foreground registry and real wrapped locals; background owners release native record references without JSAPI",
+    "foregroundQueue": "move-only native callbacks and actual canonical libuv async handle; no producer-thread JS roots",
+    "memory": "cumulative native byte accounting; Environment metadata uses actual codec-state JS object Add/RemoveAssociatedMemory; actual external-string payload already charged by engine",
+    "shutdown": "clean resources, drain posts, close admission, detach async callback, remove weak callback/edges and release runtime roots before JSContext destruction",
+    "errorRecovery": "preserve actual pending error and remaining queue, synchronize actual ref state and re-arm consumed async wake on re-entry"
+  },
+  "validation": {
+    "status": "14 engine/native-ownership controls plus 3 exit drivers pass per host on identical engine/kernel bytes",
+    "fixture": "environment-engine-controls.js",
+    "namedCases": 14,
+    "exitDrivers": 3,
+    "hosts": [
+      "Node",
+      "Chromium",
+      "Firefox",
+      "WebKit"
+    ],
+    "nativeReference": "not a native Node differential: private embedding primitives; original CallbackInfo not compiled yet",
+    "evidence": "environment-engine-check.json"
+  },
+  "remaining": [
+    "whole original node_buffer.cc/CallbackInfo not imported or compiled",
+    "general allocation/adoption/copy/alignment/prototype/string/number/escapable-root/fast-metadata APIs",
+    "additional Global API/nursery-object weak semantics not established",
+    "generic async callback/resource IDs/Promise lifecycle/fatal policy incomplete",
+    "worker hook installed but worker/fork/cancellation lifecycle unvalidated",
+    "independently owned delayed producer/request liveness and full concurrent teardown/OOM unproven",
+    "shutdown native callbacks creating JS exceptions remain an explicit fatal invariant",
+    "complete backend catalog and startup/CJS/ESM unachieved"
+  ],
+  "fullCatalogComplete": false,
+  "broaderRoadmapAuthorized": false
+}

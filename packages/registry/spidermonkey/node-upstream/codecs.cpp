@@ -27,6 +27,7 @@
 #include "js/experimental/TypedData.h"
 #include "js/GCAPI.h"
 #include "js/JSON.h"
+#include "js/MemoryFunctions.h"
 #include "js/Object.h"
 #include "js/PropertyAndElement.h"
 #include "js/SharedArrayBuffer.h"
@@ -65,12 +66,14 @@ namespace kandelo_node_codec_api {
 const JSClass icuBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct State {
   Isolate isolate;
+  native::Environment environment{&isolate};
+  std::vector<std::shared_ptr<GlobalRoot>> weakGlobals;
   std::atomic<size_t> externalBytes{0}, created{0}, released{0}, spans{0}, collections{0};
   bool stressGc=false;
   std::atomic<size_t> traceCreated{0},traceReleased{0};
   std::atomic<size_t> icuCreated{0},icuReleased{0};
 };
-enum class Domain { Decoder, Icu, Trace, Continuation };
+enum class Domain { Decoder, Icu, Trace, Continuation, Environment };
 const JSClass traceBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(3)};
 const JSClass continuationBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct Cell {
@@ -88,7 +91,6 @@ struct Frame {
   Domain domain;
   std::vector<std::unique_ptr<Value>> roots;
   std::vector<std::unique_ptr<native::SpanOwner>> spans;
-  native::Environment environment;
   Frame* previous;
   inline static thread_local Frame* current = nullptr;
   Frame(JSContext* cx, JS::HandleObject realm, std::shared_ptr<State> state,
@@ -179,6 +181,7 @@ Local<Value> Frame::OwnValue(JS::HandleValue value) {
   if (UnwrapView(cx, value)) return Own<ArrayBufferView>(value);
   if (value.isObject()) {
     auto* object=UnwrapObject(cx,value);
+    if (object && JS::IsArrayBufferObject(object)) return Own<ArrayBuffer>(value);
     if (object && object->is<js::ArrayObject>()) return Own<Array>(value);
     if (JS::IsCallable(&value.toObject())) return Own<Function>(value);
     return Own<Object>(value);
@@ -314,16 +317,38 @@ size_t String::WriteUtf8V2(Isolate* isolate, char* output, size_t length, WriteF
   auto written = JS_EncodeStringToUTF8BufferPartial(f.cx, string, mozilla::Span<char>(output, length));
   if (!written) { JS_ReportOutOfMemory(f.cx); return 0; } return std::get<1>(*written);
 }
-struct MemoryAccount { std::shared_ptr<State> state; size_t bytes=0; };
-ExternalMemoryAccounter::ExternalMemoryAccounter() : account_(std::make_unique<MemoryAccount>()) {}
+struct MemoryAccount {
+  std::weak_ptr<State> state;
+  std::shared_ptr<State> retained;
+  bool keepOwner;
+  size_t bytes=0;
+  explicit MemoryAccount(bool keep):keepOwner(keep) {}
+};
+// External string resources must retain their Isolate through their destructor.
+// The Environment's own cumulative account uses weak ownership to avoid a cycle.
+ExternalMemoryAccounter::ExternalMemoryAccounter(bool keepOwner) : account_(std::make_unique<MemoryAccount>(keepOwner)) {}
 ExternalMemoryAccounter::~ExternalMemoryAccounter() { MOZ_RELEASE_ASSERT(account_->bytes==0); }
 void ExternalMemoryAccounter::Increase(Isolate* isolate, size_t bytes) {
-  MOZ_RELEASE_ASSERT(!account_->state); account_->state=isolate->owner.lock(); MOZ_RELEASE_ASSERT(account_->state);
-  account_->bytes=bytes; account_->state->externalBytes.fetch_add(bytes); account_->state->created.fetch_add(1);
+  auto state=isolate->owner.lock();MOZ_RELEASE_ASSERT(state);
+  auto previous=account_->state.lock();MOZ_RELEASE_ASSERT(!previous||previous==state);
+  account_->state=state;if(account_->keepOwner)account_->retained=state;
+  MOZ_RELEASE_ASSERT(bytes<=SIZE_MAX-account_->bytes);account_->bytes+=bytes;
+  state->externalBytes.fetch_add(bytes);state->created.fetch_add(1);
+  if(!account_->keepOwner){
+    auto& frame=Current(isolate);state->environment.AssertForeground();
+    JS::RootedObject owner(frame.cx,state->environment.memory_owner(frame.cx));CHECK(owner);
+    JS::AddAssociatedMemory(owner,bytes,JS::MemoryUse::Embedding1);
+  }
 }
 void ExternalMemoryAccounter::Decrease(Isolate* isolate, size_t bytes) {
-  MOZ_RELEASE_ASSERT(account_->state && &account_->state->isolate==isolate && account_->bytes==bytes);
-  account_->state->externalBytes.fetch_sub(bytes); account_->state->released.fetch_add(1); account_->bytes=0;
+  auto state=account_->state.lock();
+  MOZ_RELEASE_ASSERT(state && &state->isolate==isolate && account_->bytes>=bytes);
+  state->externalBytes.fetch_sub(bytes);state->released.fetch_add(1);account_->bytes-=bytes;
+  if(!account_->keepOwner){
+    auto& frame=Current(isolate);state->environment.AssertForeground();
+    JS::RootedObject owner(frame.cx,state->environment.memory_owner(frame.cx));CHECK(owner);
+    JS::RemoveAssociatedMemory(owner,bytes,JS::MemoryUse::Embedding1);
+  }
   // Keep the actual native owner until this accounter is destroyed. The source
   // resource's destructor still holds its Isolate pointer after this call.
 }
@@ -451,9 +476,9 @@ Utf8Value::Utf8Value(Isolate* isolate,Local<Value> input) {
   size_t length=JS::GetDeflatedUTF8StringLength(linear);
   AllocateSufficientStorage(length+1);std::memcpy(out(),bytes.get(),length+1);SetLength(length);
 }
-Environment* Environment::GetCurrent(Local<Context> context) { return &Current(context->isolate).environment; }
+Environment* Environment::GetCurrent(Local<Context> context) { return &Current(context->isolate).state->environment; }
 Environment* Environment::GetCurrent(const FunctionCallbackInfo<Value>& args) { return GetCurrent(args.GetIsolate()->GetCurrentContext()); }
-Isolate* Environment::isolate() { return &Frame::current->state->isolate; }
+Isolate* Environment::isolate() { return isolate_; }
 Local<Context> Environment::context() { return isolate()->GetCurrentContext(); }
 Isolate* IsolateData::isolate() { return &Frame::current->state->isolate; }
 void IsolateData::set_i18n_converter_template(Local<ObjectTemplate> value) {
@@ -482,8 +507,9 @@ void FinalizeConverter(JS::GCContext*,JSObject* object) {
 }
 const JSClassOps converterOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,FinalizeConverter};
 const JSClass converterClass={"Converter",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
-BaseObject::BaseObject(Environment*,Local<Object> input) {
+BaseObject::BaseObject(Environment* environment,Local<Object> input) {
   auto& f=*Frame::current;JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
+  CHECK(environment==&f.state->environment);
   CHECK(object && JS::GetClass(object)==(f.domain==api::Domain::Trace?&categoryClass:&converterClass) && JS::GetReservedSlot(object,0).isUndefined());
   owner_=std::make_unique<NativeObjectOwner>(f,object);
   // Keep ownership in the traced graph after MakeWeak drops the native root.
@@ -492,7 +518,7 @@ BaseObject::BaseObject(Environment*,Local<Object> input) {
   (owner_->category?owner_->state->traceCreated:owner_->state->icuCreated).fetch_add(1);
 }
 BaseObject::~BaseObject() { (owner_->category?owner_->state->traceReleased:owner_->state->icuReleased).fetch_add(1); }
-Environment* BaseObject::env() { CHECK(owner_->state==Frame::current->state);return &Frame::current->environment; }
+Environment* BaseObject::env() { CHECK(owner_->state==Frame::current->state);return &owner_->state->environment; }
 void BaseObject::MakeWeak() { CHECK(owner_->root);owner_->root.reset(); }
 BaseObject* BaseObject::Unwrap(Local<Object> input) {
   auto& f=*Frame::current;JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
@@ -617,7 +643,9 @@ std::shared_ptr<State> Data(JSContext* cx,JS::HandleObject runtime) {
   JS::RootedObject state(cx,kandelo::node::GetRuntimeCodecState(cx,runtime,true)); if (!state) return {};
   state=js::CheckedUnwrapDynamic(state,cx,false); if (!state) return {};
   MOZ_RELEASE_ASSERT(JS::GetClass(state)==&stateClass);
-  return *static_cast<std::shared_ptr<State>*>(JS::GetReservedSlot(state,0).toPrivate());
+  auto data=*static_cast<std::shared_ptr<State>*>(JS::GetReservedSlot(state,0).toPrivate());
+  if (!data->environment.Initialize(cx,runtime)) return {};
+  return data;
 }
 bool Invoke(JSContext* cx,unsigned argc,JS::Value* vp) {
   auto args=JS::CallArgsFromVp(argc,vp);JS::RootedObject callee(cx,&args.callee());
@@ -750,4 +778,5 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 }
 
 #include "shell/node-upstream/continuation-codecs-inl.h"
+#include "shell/node-upstream/environment-codecs-inl.h"
 #include "shell/node-upstream/trace-codecs-inl.h"
