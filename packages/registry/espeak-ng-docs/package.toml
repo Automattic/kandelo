@@ -1,0 +1,32 @@
+kind = "program"
+name = "espeak-ng-docs"
+version = "1.52.0"
+kernel_abi = 56
+depends_on = []
+
+[[host_tools]]
+name = "ronn"
+version_constraint = ">=0.10"
+install_hints = { darwin = "provided by flake.nix (pkgs.ronn); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ronn); enter scripts/dev-shell.sh" }
+
+# Upstream manual page for the `espeak-ng` package.
+# The source, SHA-256 and version are the `espeak-ng` package's own, so the
+# page describes the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/espeak-ng/espeak-ng/archive/refs/tags/1.52.0.tar.gz"
+sha256 = "bb4338102ff3b49a81423da8a1a158b420124b055b60fa76cfb4b18677130a23"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://github.com/espeak-ng/espeak-ng/blob/1.52.0/COPYING"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/espeak-ng-docs/build-espeak-ng-docs.sh"
+
+[[outputs]]
+name = "espeak-ng-docs"
+wasm = "espeak-ng-docs.zip"
+fork_instrumentation = "disabled"

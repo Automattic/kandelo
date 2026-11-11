@@ -266,6 +266,12 @@ describe.skipIf(!available)(
         ["1 login", /Authenticate\s+a\s+user/],
         ["8 sudo-lite", /checking\s+the\s+caller's\s+password/],
         ["1 kandelo-publish", /Publish\s+a\s+file\s+or\s+a\s+command's\s+output/],
+        ["1 llvm-cov", /emit\s+coverage\s+information/],
+        ["1 espeak-ng", /multi-lingual\s+software\s+speech\s+synthesizer/],
+        // ar is llvm-ar, so its page is a link to llvm-ar(1).
+        ["1 ar", /LLVM\s+archiver/],
+        ["1 wasm-tools", /Validate\s+a\s+WebAssembly\s+binary/],
+        ["1 cc", /Kandelo\s+SDK\s+driver/],
         // An alias page: retro-nes is fceumm under a shorter name.
         ["1 retro-nes", /FCEUmm\s+libretro\s+core/],
       ];

@@ -127,6 +127,10 @@ name = "wasm-tools"
 class = "user-software"
 
 [[packages]]
+name = "wasm-tools-docs"
+class = "browser-product"
+
+[[packages]]
 name = "binaryen"
 class = "platform"
 
@@ -165,6 +169,10 @@ class = "platform"
 [[packages]]
 name = "clang"
 class = "platform"
+
+[[packages]]
+name = "clang-docs"
+class = "browser-product"
 
 [[packages]]
 name = "cli11"

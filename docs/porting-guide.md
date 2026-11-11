@@ -307,17 +307,18 @@ script is a page list on top of `scripts/install-package-man-pages.sh`
   separate documentation toolchain is not a substitution; see the next
   item.
 - A page upstream generates during its own build comes from upstream's
-  generator, run over the pinned source. `kandelo_man_pages_build_scdoc`
-  and `kandelo_man_pages_scdoc` render scdoc pages (`sway-docs`);
-  `scripts/xmlto-man.sh` stands in for `xmlto man` over DocBook
-  (`dbus-docs`, and `git-docs` through git's own `Documentation/Makefile`),
-  running the `xsltproc` that `flake.nix` declares.
-  Generators that are not part of the dev shell (scdoc, AsciiDoc, DocBook
-  XSL, the DocBook DTD) are pinned `kind = "source"` packages the docs
-  package depends on. A host tool that only reaches the dev shell through
-  another package's dependencies is not declared: `./run.sh setup`,
-  `local-build` and `partial` leave it off a package build's `PATH`. A
-  generator that stamps a date gets the release's date from
+  generator, run over the pinned source. The generators come from the dev
+  shell (`flake.nix`): scdoc (`kandelo_man_pages_scdoc`, as in
+  `sway-docs`), asciidoc and xmlto with DocBook (`dbus-docs`, and
+  `git-docs` through git's own `Documentation/Makefile`), Sphinx over
+  LLVM's command guide (`clang-docs` and `rust-coverage-tools-docs`, both
+  through `scripts/llvm-command-guide-man-pages.sh`) and ronn
+  (`espeak-ng-docs`). A docs recipe declares each one as a `[[host_tools]]`
+  entry. Add a missing generator to the dev shell rather than vendoring
+  it. A tool that only reaches the dev shell through another package's
+  dependencies is not declared: `./run.sh setup`, `local-build` and
+  `partial` leave it off a package build's `PATH`. A generator that
+  stamps a date gets the release's date from
   `kandelo_man_pages_release_date`, because the dev shell pins the build
   clock to 1980.
 - When configure decides what a page says (paths, defaults, enabled
@@ -410,10 +411,6 @@ These commands are in the shell image but have no page yet. `man` reports
 | `git-remote-http` (also installed as `git-remote-https`, `git-remote-ftp`, `git-remote-ftps`) | Upstream has no page for it, and it is a helper git runs, with no `--help`; `gitremote-helpers(7)` documents remote helpers |
 | `egrep`, `fgrep` | Upstream ships no page: they are scripts that run `grep -E` and `grep -F`, and `grep(1)` does not describe them |
 | `dmesg`, `logger` | Toybox has no pages, and help2man cannot lay out its help: options start at column 0 with tab-separated descriptions, so they run together |
-| `espeak-ng` | Upstream builds its page with ronn (Ruby), which the docs build does not have |
-| `llvm-cov`, `llvm-profdata`, and the LLVM binary tools (`llvm-ar`, `llvm-nm`, `llvm-objdump`, `llvm-strip` and the rest, also installed as `ar`, `nm`, `objdump`, `strip` and so on) | LLVM builds its pages with Sphinx, which the docs build does not have |
-| `wasm-tools` | Upstream ships no page; its `--help` has not been laid out as one yet |
-| `cc`, `c89`, `c99`, `c++`, `kandelo-cc` and the `wasm32posix-*` tools | They are one program, `kandelo-cc`, which has no `--help` of its own yet; its source is a build input of every package, so adding one rebuilds them all |
 | `posix-utils-lite` commands (`cal`, `ed`, `pax`, `ps` and the rest) | Most are placeholders being replaced by upstream implementations, whose pages come with them |
 
 ### The man-page index

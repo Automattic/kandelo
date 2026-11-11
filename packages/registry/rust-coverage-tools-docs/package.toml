@@ -1,0 +1,32 @@
+kind = "program"
+name = "rust-coverage-tools-docs"
+version = "22.1.2"
+kernel_abi = 56
+depends_on = []
+
+[[host_tools]]
+name = "sphinx-build"
+version_constraint = ">=7.2"
+install_hints = { darwin = "provided by flake.nix (pkgs.python3Packages.sphinx); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.python3Packages.sphinx); enter scripts/dev-shell.sh" }
+
+# Upstream manual pages for the `rust-coverage-tools` package (llvm-cov and llvm-profdata).
+# The source, SHA-256 and version are the `rust-coverage-tools` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/rust-lang/llvm-project/archive/1cb4e3833c1919c2e6fb579a23ac0e2b22587b7e.tar.gz"
+sha256 = "de8712069787f4f2b306a5ff667cd18dcbdad75d9ccfab0ee9e23fde241c89f2"
+provider = "archive"
+
+[license]
+spdx = "Apache-2.0 WITH LLVM-exception"
+url = "https://github.com/rust-lang/llvm-project/blob/1cb4e3833c1919c2e6fb579a23ac0e2b22587b7e/LICENSE.TXT"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/rust-coverage-tools-docs/build-rust-coverage-tools-docs.sh"
+
+[[outputs]]
+name = "rust-coverage-tools-docs"
+wasm = "rust-coverage-tools-docs.zip"
+fork_instrumentation = "disabled"

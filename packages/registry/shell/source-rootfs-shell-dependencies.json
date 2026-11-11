@@ -522,6 +522,31 @@
       "role": "lazy-archive"
     },
     {
+      "name": "kandelo-cc-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "rust-coverage-tools-docs",
+      "version": "22.1.2",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "clang-docs",
+      "version": "21.1.7",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "wasm-tools-docs",
+      "version": "1.263.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "espeak-ng-docs",
+      "version": "1.52.0",
+      "role": "lazy-archive"
+    },
+    {
       "name": "man-index",
       "version": "1.14.6",
       "role": "lazy-file"
