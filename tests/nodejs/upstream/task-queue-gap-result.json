@@ -1,0 +1,166 @@
+{
+  "rawReport": {
+    "path": ".context/node-task-queue/weakref-runner-result.json",
+    "bytes": 21753,
+    "sha256": "fb0722208db9c7aba12f3c99e2e19ff4b752552566865eeb23a799ff0bb3f0d8"
+  },
+  "report": {
+    "schema": 1,
+    "completedAt": "2026-11-11T07:07:19.235Z",
+    "scope": "Task queue integration prerequisites and verified exception-routing gap; no task_queue implementation or Node startup claim",
+    "program": {
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm",
+      "bytes": 51286498,
+      "sha256": "bea78557e487470f657c2ee8efe84a9dee109a8305d58b93f13e20ba16907e06"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "fixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/task-queue-gap-controls.js",
+      "bytes": 2777,
+      "sha256": "08b2edd56fc56855928d90921a7c59f7ee18e52878bb02864aa2df8b85351e80"
+    },
+    "runner": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/scripts/run-nodejs-job-queue-gap.ts",
+      "bytes": 5443,
+      "sha256": "89e744752d5bfb56e7f38259431e26e3c46d722d5da559e9dffe523983839ec6"
+    },
+    "guestRuns": [
+      {
+        "mode": "primitives",
+        "status": "verified-observation",
+        "result": {
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"task-queue-shell-primitives\",\"observations\":[{\"name\":\"real-engine-fifo-and-jobs-enqueued-during-checkpoint\",\"status\":\"observed\"},{\"name\":\"nested-checkpoint-does-not-reenter-current-job\",\"status\":\"observed\"},{\"name\":\"actual-engine-rejection-and-handler-added-events\",\"status\":\"observed\"}],\"scope\":\"Shell queue primitives only; native task_queue/ticks/callback scopes are absent\"}\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        "detail": {
+          "kind": "task-queue-shell-primitives",
+          "observations": [
+            {
+              "name": "real-engine-fifo-and-jobs-enqueued-during-checkpoint",
+              "status": "observed"
+            },
+            {
+              "name": "nested-checkpoint-does-not-reenter-current-job",
+              "status": "observed"
+            },
+            {
+              "name": "actual-engine-rejection-and-handler-added-events",
+              "status": "observed"
+            }
+          ],
+          "scope": "Shell queue primitives only; native task_queue/ticks/callback scopes are absent"
+        }
+      },
+      {
+        "mode": "exception",
+        "status": "verified-observation",
+        "result": {
+          "exitCode": 3,
+          "stdout": "{\"kind\":\"task-queue-shell-exception-gap\",\"caught\":false,\"order\":[\"throw\",\"after\"],\"scope\":\"Raw shell queue diagnostic; no Node fatal-exception routing\"}\n",
+          "stderr": "-e:28:20 Error: TASK_QUEUE_SHELL_EXCEPTION_GAP\nStack:\n  @-e:28:20\n",
+          "hostDiagnostics": []
+        },
+        "detail": {
+          "kind": "task-queue-shell-exception-gap",
+          "caught": false,
+          "order": [
+            "throw",
+            "after"
+          ],
+          "scope": "Raw shell queue diagnostic; no Node fatal-exception routing"
+        }
+      },
+      {
+        "mode": "weakref",
+        "status": "verified-observation",
+        "result": {
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"task-queue-shell-weakref-observation\",\"before\":true,\"after\":false,\"scope\":\"Raw shell nested checkpoint and kept-object behavior; not Node task_queue\"}\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        "detail": {
+          "kind": "task-queue-shell-weakref-observation",
+          "before": true,
+          "after": false,
+          "scope": "Raw shell nested checkpoint and kept-object behavior; not Node task_queue"
+        }
+      }
+    ],
+    "nativeReference": {
+      "program": {
+        "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+        "bytes": 147346864,
+        "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+      },
+      "fixture": {
+        "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/task-queue-native-controls.cjs",
+        "bytes": 3862,
+        "sha256": "be379b2d4494fb3274e18e8b94e8247726b335d97a18dbc14ad09fd663c551a2"
+      },
+      "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+      "args": [
+        "--expose-internals",
+        "--expose-gc",
+        "--no-warnings",
+        "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/task-queue-native-controls.cjs"
+      ],
+      "environmentKeys": [
+        "PATH",
+        "LANG",
+        "TZ"
+      ],
+      "exit": 0,
+      "signal": null,
+      "stdout": "{\"kind\":\"task-queue-native-reference\",\"version\":\"v26.13.0\",\"cases\":6,\"failures\":0,\"observations\":[{\"name\":\"actual-binding-layout-and-native-method-lengths\",\"status\":\"pass\"},{\"name\":\"real-engine-fifo-and-jobs-enqueued-during-checkpoint\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-does-not-reenter-current-job\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-keeps-current-job-weakref-target-alive\",\"status\":\"pass\"},{\"name\":\"microtask-exception-enters-original-node-fatal-policy\",\"status\":\"pass\"},{\"name\":\"actual-native-rejection-event-promise-and-reason-identity\",\"status\":\"pass\"}],\"limits\":[\"Already bootstrapped pinned native runtime; not guest startup or full queue/async conformance\"]}\n",
+      "stderr": "",
+      "detail": {
+        "kind": "task-queue-native-reference",
+        "version": "v26.13.0",
+        "cases": 6,
+        "failures": 0,
+        "observations": [
+          {
+            "name": "actual-binding-layout-and-native-method-lengths",
+            "status": "pass"
+          },
+          {
+            "name": "real-engine-fifo-and-jobs-enqueued-during-checkpoint",
+            "status": "pass"
+          },
+          {
+            "name": "nested-checkpoint-does-not-reenter-current-job",
+            "status": "pass"
+          },
+          {
+            "name": "nested-checkpoint-keeps-current-job-weakref-target-alive",
+            "status": "pass"
+          },
+          {
+            "name": "microtask-exception-enters-original-node-fatal-policy",
+            "status": "pass"
+          },
+          {
+            "name": "actual-native-rejection-event-promise-and-reason-identity",
+            "status": "pass"
+          }
+        ],
+        "limits": [
+          "Already bootstrapped pinned native runtime; not guest startup or full queue/async conformance"
+        ]
+      }
+    },
+    "failures": 0,
+    "limits": [
+      "Node outer host only; no new browser queue probes",
+      "Selected existing shell primitives are not Node's task_queue binding",
+      "Native reference is already bootstrapped; no full async hooks, rejection/fatal policy or lifecycle differential"
+    ]
+  }
+}

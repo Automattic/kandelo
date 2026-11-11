@@ -743,3 +743,16 @@ output/error/exit startup acceptance and the full backend catalog remain open.
 No partial/canonical product images, full product/ABI campaigns or overall suites
 ran. Exact inputs, artifacts, per-host results, failures and limits are in
 [timers-libuv-engine-check.json](../tests/nodejs/upstream/timers-libuv-engine-check.json).
+
+The next startup seam is cataloged in
+[task-queue-contracts.md](../tests/nodejs/upstream/task-queue-contracts.md).
+Selected Node-host probes confirm actual shell queue FIFO, nested suppression
+and promise event identity, but also two integration gaps: job exceptions use
+shell reporting/error exit rather than Node's fatal policy, and nested shell
+checkpoints clear kept objects during the active job. Six pinned native
+reference controls cover the corresponding binding contracts separately.
+These are measured prerequisites and gaps, not a task_queue implementation or
+startup success. Native Node callback/error routing and checkpoint ownership
+must address them while preserving the real engine queue and unchanged JS
+tick/rejection policy. No new browser queue probe or package rebuild belongs
+to this source inventory; earlier four-host timer evidence remains separate.

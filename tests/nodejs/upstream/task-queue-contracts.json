@@ -1,0 +1,407 @@
+{
+  "schema": 1,
+  "scope": "Partial task_queue/callback native backend catalog and startup implementation order; complete graph catalog remains open",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "upstreamJavaScriptChanged": false,
+  "bindingImplemented": false,
+  "upstreamStartup": false,
+  "sources": {
+    "nodeSourceArchive": {
+      "path": "/Users/brandon/kandelo-preservation/davao-20261109T062614Z/node-upstream-restart/reference-archives/node-v26.13.0.tar.gz",
+      "bytes": 127162302,
+      "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+    },
+    "nodeSourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+    "nodeNativeFiles": [
+      {
+        "path": ".context/node-task-queue/source/node/src/node_task_queue.cc",
+        "bytes": 6692,
+        "sha256": "f4f00a90ad1f4e0520b86b19c9f13538c25d3badb9d342d8792b5cd5e4aca951",
+        "upstreamPath": "src/node_task_queue.cc"
+      },
+      {
+        "path": ".context/node-task-queue/source/node/src/env.h",
+        "bytes": 53128,
+        "sha256": "2727db70801cd3d154790795f52aac30909279cfbbec5beab1c0b463a4aa55b8",
+        "upstreamPath": "src/env.h"
+      },
+      {
+        "path": ".context/node-task-queue/source/node/src/env-inl.h",
+        "bytes": 31879,
+        "sha256": "f1849fd70267de7467ad49f06b67fb63bddd29f01cfc208e01c9776b54be8f41",
+        "upstreamPath": "src/env-inl.h"
+      },
+      {
+        "path": ".context/node-task-queue/source/node/src/env.cc",
+        "bytes": 99205,
+        "sha256": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8",
+        "upstreamPath": "src/env.cc"
+      },
+      {
+        "path": ".context/node-task-queue/source/node/src/api/callback.cc",
+        "bytes": 13742,
+        "sha256": "0488c28167ecd95e8406bfd86bf1d226acb17a5e6b547b573873de8777305c36",
+        "upstreamPath": "src/api/callback.cc"
+      },
+      {
+        "path": ".context/node-task-queue/source/node/src/node_errors.cc",
+        "bytes": 45641,
+        "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d",
+        "upstreamPath": "src/node_errors.cc"
+      },
+      {
+        "path": ".context/node-task-queue/source/node/src/api/environment.cc",
+        "bytes": 41700,
+        "sha256": "9c80f4adda1ed6ee32d90818841aba2484e3fc366916dcbb6298289f484ce8dc",
+        "upstreamPath": "src/api/environment.cc"
+      }
+    ],
+    "engineFiles": [
+      {
+        "path": ".context/node-task-queue/source/mozilla/js/src/vm/JSContext.cpp",
+        "bytes": 44058,
+        "sha256": "ea8ca4738dffd0bf20d5b3f2aea3e49cfa7b0ff4f84b3a80b536a3e63a458c51",
+        "upstreamPath": "js/src/vm/JSContext.cpp",
+        "retainedInputPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/.spidermonkey-140.11.0esr-rev15-wasm32-abi56-48c92497e453fa2c58de15088619703dfbed10db397e96df85bbd1817ded4693.work-74356-1/source-inputs/primary-source/js/src/vm/JSContext.cpp"
+      },
+      {
+        "path": ".context/node-task-queue/source/mozilla/js/src/vm/JSContext.h",
+        "bytes": 41270,
+        "sha256": "3a10b3cc9c0aacd16f9e8a793d9ae6f187b842f3a98e9e4c7edbe5534d7b2d81",
+        "upstreamPath": "js/src/vm/JSContext.h",
+        "retainedInputPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/.spidermonkey-140.11.0esr-rev15-wasm32-abi56-48c92497e453fa2c58de15088619703dfbed10db397e96df85bbd1817ded4693.work-74356-1/source-inputs/primary-source/js/src/vm/JSContext.h"
+      },
+      {
+        "path": ".context/node-task-queue/source/mozilla/js/public/Promise.h",
+        "bytes": 28846,
+        "sha256": "ca19d5d01676d5c402138b670e6b5a6fe9248c747a24b45438fe02182d7f8662",
+        "upstreamPath": "js/public/Promise.h",
+        "retainedInputPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/.spidermonkey-140.11.0esr-rev15-wasm32-abi56-48c92497e453fa2c58de15088619703dfbed10db397e96df85bbd1817ded4693.work-74356-1/source-inputs/primary-source/js/public/Promise.h"
+      },
+      {
+        "path": ".context/node-task-queue/source/mozilla/js/src/jsfriendapi.h",
+        "bytes": 30896,
+        "sha256": "4494b5ec8a82b6ba2669190e953c0c0a496190f2f221fef421fa9e1d55dad2fd",
+        "upstreamPath": "js/src/jsfriendapi.h",
+        "retainedInputPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/.spidermonkey-140.11.0esr-rev15-wasm32-abi56-48c92497e453fa2c58de15088619703dfbed10db397e96df85bbd1817ded4693.work-74356-1/source-inputs/primary-source/js/src/jsfriendapi.h"
+      },
+      {
+        "path": ".context/node-task-queue/source/mozilla/js/src/shell/js.cpp",
+        "bytes": 435703,
+        "sha256": "9b9b2f1b513784ab985ecdb6abaf05d41c30066bb5e1db0e3d8ed50f0f82cc91",
+        "upstreamPath": "js/src/shell/js.cpp",
+        "retainedInputPath": "/Users/brandon/.cache/kandelo/source-only/source-only-v1/compiled/programs/.spidermonkey-140.11.0esr-rev15-wasm32-abi56-48c92497e453fa2c58de15088619703dfbed10db397e96df85bbd1817ded4693.work-74356-1/source-inputs/primary-source/js/src/shell/js.cpp"
+      }
+    ],
+    "engineSourceLimit": "Retained original-source context from the earlier revision15 resolver workspace; individual hashes retained, not a fresh whole-Mozilla-archive verification or revision27 generated-source identity claim. Current behavior is separately probed on the identified revision27 artifact.",
+    "literalSearchScope": "All 493 imported files rehashed; 443 registered JS sources. Exact textual internalBinding/task_queues require spellings only; not an exhaustive dynamic/lazy graph catalog.",
+    "directBindingConsumers": [
+      {
+        "path": "lib/internal/async_hooks.js",
+        "line": 84,
+        "text": "const { enqueueMicrotask } = internalBinding('task_queue');",
+        "fileSha256": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533"
+      },
+      {
+        "path": "lib/internal/process/promises.js",
+        "line": 19,
+        "text": "} = internalBinding('task_queue');",
+        "fileSha256": "71664086abbc69a14af10a216bd2066fdff28046888bca3ec04df5f6d1b6fe24"
+      },
+      {
+        "path": "lib/internal/process/task_queues.js",
+        "line": 17,
+        "text": "} = internalBinding('task_queue');",
+        "fileSha256": "71fac2b5855102504d67fd228e3466a46aacbf9cd44126320b677fd31d53a472"
+      },
+      {
+        "path": "lib/internal/timers.js",
+        "line": 92,
+        "text": "} = internalBinding('task_queue');",
+        "fileSha256": "8ef50a8988efbec26a40514518e89789acc2f7085418c2cc526f89f72cf8251e"
+      }
+    ],
+    "literalTaskQueuesModuleConsumers": [
+      {
+        "path": "lib/inspector.js",
+        "line": 28,
+        "text": "const { queueMicrotask } = require('internal/process/task_queues');",
+        "fileSha256": "0b967712491f7ce3330529c5dd64deac8c91a7b1c894628258e1e32225e73d39"
+      },
+      {
+        "path": "lib/internal/bench_runner/harness.js",
+        "line": 52,
+        "text": "const { queueMicrotask } = require('internal/process/task_queues');",
+        "fileSha256": "5ac15f984980de109c4f86825a7ea8b19c2b1c4dc28185eb4f6fc71390756c61"
+      },
+      {
+        "path": "lib/internal/blob.js",
+        "line": 78,
+        "text": "const { queueMicrotask } = require('internal/process/task_queues');",
+        "fileSha256": "8e00aeaeef33fa10e8a184931f625f1d3cdf6d2148c4e9a8782625658dc39963"
+      },
+      {
+        "path": "lib/internal/bootstrap/node.js",
+        "line": 231,
+        "text": "} = require('internal/process/task_queues');",
+        "fileSha256": "02a0489fb6713fc59e8fc95582ebd44a50b0f4c4a48d6e1c7879724ac6b93332"
+      },
+      {
+        "path": "lib/internal/bootstrap/web/exposed-window-or-worker.js",
+        "line": 39,
+        "text": "} = require('internal/process/task_queues');",
+        "fileSha256": "71be83894cb75264ca62839408c575ac8acd2c91765ff3e0ecc3d27765f2c810"
+      },
+      {
+        "path": "lib/internal/events/abort_listener.js",
+        "line": 36,
+        "text": "    queueMicrotask ??= require('internal/process/task_queues').queueMicrotask;",
+        "fileSha256": "fa7d14991f7fe53e646cd89b12eaff000ca729d6ec2ee4359cf4081f49cfa4f5"
+      },
+      {
+        "path": "lib/internal/streams/iter/classic.js",
+        "line": 55,
+        "text": "} = require('internal/process/task_queues');",
+        "fileSha256": "f2e28011ea438161d7b635faf153a5b3c715cb2b1d1cc2246f4daf716bd553af"
+      },
+      {
+        "path": "lib/internal/test_runner/harness.js",
+        "line": 34,
+        "text": "const { queueMicrotask } = require('internal/process/task_queues');",
+        "fileSha256": "61038f76fac819889060054aff83e10e9087104716270ab8f816a12ff019176b"
+      },
+      {
+        "path": "lib/internal/test_runner/test.js",
+        "line": 45,
+        "text": "const { queueMicrotask } = require('internal/process/task_queues');",
+        "fileSha256": "3190b1f181a179e9c7c876999837861be2818861ab3a0148cb977ac1b751a5f3"
+      },
+      {
+        "path": "lib/internal/webstreams/readablestream.js",
+        "line": 86,
+        "text": "} = require('internal/process/task_queues');",
+        "fileSha256": "e0846f67d4c4391dbf813d71403ff1a03cd279cbb7da5f2187110227cf282e06"
+      },
+      {
+        "path": "lib/internal/webstreams/writablestream.js",
+        "line": 96,
+        "text": "} = require('internal/process/task_queues');",
+        "fileSha256": "50171e6cba9bade99ff2975fbbf832df42b90aec8fbcc4fffbc30a33135e9e9b"
+      },
+      {
+        "path": "lib/net.js",
+        "line": 133,
+        "text": "const { queueMicrotask } = require('internal/process/task_queues');",
+        "fileSha256": "24db4f4a58808f0935265b1a71150989cec8601e971f07ca531d16004f3d6c43"
+      }
+    ]
+  },
+  "surface": [
+    {
+      "name": "tickInfo",
+      "kind": "shared-state",
+      "layout": "Uint8Array[2]: tick scheduled=0, rejection to warn=1",
+      "nativeAuthority": "src/env.h TickInfo; src/node_task_queue.cc Initialize",
+      "owner": "environment, live native/JS alias; per-realm binding admission",
+      "errors": "OOM, detachment, stale owner must fail honestly",
+      "status": "not implemented"
+    },
+    {
+      "name": "enqueueMicrotask",
+      "kind": "method",
+      "signature": "(function) -> undefined; native length0",
+      "nativeAuthority": "src/node_task_queue.cc EnqueueMicrotask",
+      "owner": "current context engine queue; traced job and callback",
+      "errors": "original function CHECK; actual enqueue OOM; callback errors use Node fatal routing",
+      "status": "not implemented"
+    },
+    {
+      "name": "runMicrotasks",
+      "kind": "method",
+      "signature": "() -> undefined; native length0",
+      "nativeAuthority": "src/node_task_queue.cc RunMicrotasks",
+      "owner": "environment engine queue, nested-checkpoint guard",
+      "errors": "Node fatal policy, shutdown/termination; no synchronous substitute rethrow or shell diagnostic policy",
+      "status": "not implemented"
+    },
+    {
+      "name": "setTickCallback",
+      "kind": "method",
+      "signature": "(function) -> undefined; native length0",
+      "nativeAuthority": "src/node_task_queue.cc SetTickCallback",
+      "owner": "environment retained actual callback; process receiver when native scope closes",
+      "errors": "original function CHECK; rooted registration/replacement and terminal admission",
+      "status": "not implemented"
+    },
+    {
+      "name": "promiseRejectEvents",
+      "kind": "constants",
+      "layout": "kPromiseRejectWithNoHandler=0; kPromiseHandlerAddedAfterReject=1",
+      "nativeAuthority": "src/node_task_queue.cc Initialize",
+      "owner": "binding contract maps actual engine events",
+      "errors": "never synthesize promises or replace reasons",
+      "status": "not implemented"
+    },
+    {
+      "name": "setPromiseRejectCallback",
+      "kind": "method",
+      "signature": "(function) -> undefined; native length0; callback(type,promise,value) with undefined receiver",
+      "nativeAuthority": "src/node_task_queue.cc SetPromiseRejectCallback and PromiseRejectCallback",
+      "owner": "environment retained handler; actual promise/reason and assigned async IDs",
+      "errors": "original function CHECK; engine callback cannot leak pending exception; native best-effort handler-error report",
+      "status": "not implemented"
+    }
+  ],
+  "prerequisites": [
+    {
+      "id": "engine-job-queue",
+      "owner": "SpiderMonkey embedding and engine checkpoint boundary",
+      "state": "Actual FIFO/reentrancy primitives observed; Node error routing and nested kept-object semantics not implemented"
+    },
+    {
+      "id": "async-wrap",
+      "owner": "native environment/engine",
+      "state": "Actual IDs/resources, shared hook fields, callback trampoline, before/after/destroy and promise hooks required; not implemented"
+    },
+    {
+      "id": "async-context-frame",
+      "owner": "engine continuation data plus native frame owner",
+      "state": "Real frame capture/restoration and truthful option configuration required; not implemented"
+    },
+    {
+      "id": "common-callback-scope",
+      "owner": "native environment",
+      "state": "Nested depth, stopping, restoration, clearing epochs and original ticks/rejection integration required; not implemented"
+    },
+    {
+      "id": "fatal-exception-and-exit",
+      "owner": "native errors/process lifecycle plus unchanged JS policy",
+      "state": "Original mutable process._fatalException contract, handler failure, reentrancy, exit/at-exit required; not implemented"
+    }
+  ],
+  "ownershipAndGc": [
+    "Protected environment state owns flags, principal process and registered callbacks; each realm retains admission owner",
+    "Trace callbacks/errors/promises/prior frames through moving GC; native scopes borrow only rooted values",
+    "Transactional publication and original function assertions; reject stale owner/detachment without manufacturing zero state",
+    "Only outer eligible checkpoints clear kept objects; nested checkpoints must not retire current job",
+    "Promise events refer to actual guest promises/reasons, with actual assigned async contexts and no foreign-thread JS roots"
+  ],
+  "lifecycleAndReferences": "Microtasks/ticks are not invented libuv handles; original live flags govern callback checkpoints. Existing real libuv handles own I/O liveness. Stop/quit/cancel/finalization must not execute retired callbacks or drain success after failure.",
+  "evidence": {
+    "report": "task-queue-gap-result.json",
+    "sourceHeadAtRun": "45f27fa68be3f364a9b7c75f39babc98f969ac9a",
+    "probeSourcesWereUncommitted": true,
+    "host": "Node",
+    "guestPrimitiveObservations": 3,
+    "guestExpectedGapObservations": 2,
+    "guestProcessDrivers": 3,
+    "nativeReferenceControls": 6,
+    "verificationFailures": 0,
+    "browserQueueProbes": "not run",
+    "sameArtifactAsTimerFourHostChecks": true
+  },
+  "verifiedGaps": [
+    {
+      "area": "exception-policy",
+      "guest": "Shell queue reports original thrown job on stderr, continues queue and exits3",
+      "native": "Actual Node uncaughtException listener sees original error; handled job continues with exit0",
+      "nativeSource": "src/node_errors.cc TriggerUncaughtException",
+      "engineSource": "js/src/vm/JSContext.cpp InternalJobQueue::runJobs; shell script environment preparer",
+      "next": "Route actual engine job failures through native Node scope/error policy"
+    },
+    {
+      "area": "nested-kept-object-cleanup",
+      "guest": "Raw nested shell drain: WeakRef target exists before, collected after forced GC within same job",
+      "native": "Current job WeakRef target remains alive across nested runMicrotasks checkpoint",
+      "engineSource": "js/src/vm/JSContext.cpp js::RunJobs unconditionally calls ClearKeptObjects after runJobs returns",
+      "next": "Guard nested checkpoint before kept-object cleanup; retain actual engine FIFO and non-reentrancy"
+    }
+  ],
+  "notAnUpstreamRuntimeDefectClaim": "These are differences in existing shell embedding primitives, not a confirmed external runtime bug or a workaround.",
+  "archivedReuseCandidates": [
+    {
+      "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+      "upstreamPath": "third_party/node-core/callback-execution-stack.h",
+      "path": ".context/node-task-queue/source/frozen/callback-execution-stack.h",
+      "bytes": 5553,
+      "sha256": "44b4bad6ad7332268ecef4e459dc89a616897d21d1669804218ba46323fd4f15",
+      "disposition": "Mechanism candidate only; adapt against actual Node and engine ownership contracts, no former public JS policy reuse or runtime proof"
+    },
+    {
+      "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+      "upstreamPath": "third_party/node-core/callback-scope.h",
+      "path": ".context/node-task-queue/source/frozen/callback-scope.h",
+      "bytes": 2772,
+      "sha256": "d96d00a3eb9ea3c1151ce65afcf35427f98f9bfd80719bc155837cc32d83b254",
+      "disposition": "Mechanism candidate only; adapt against actual Node and engine ownership contracts, no former public JS policy reuse or runtime proof"
+    }
+  ],
+  "startupOrder": [
+    "Protected environment state and actual engine enqueue/checkpoint/rejection registration, with real exception and kept-object semantics",
+    "Actual async IDs/resources/frames and common native callback scope required by unchanged JS consumers",
+    "Connect original tick/rejection callbacks to outer shell/libuv scopes; validate original policy and failure restoration",
+    "Reexecute original principal body and record its next actual blocker without substitute modules or fabricated bindings",
+    "Identified-artifact startup checks on all four hosts; separate CJS/ESM, full graph reconciliation and later user review gate"
+  ],
+  "validationObligations": [
+    "Binding names/descriptors/native lengths/original assertions; live state identity and callback replacement",
+    "FIFO/reentrancy and WeakRef kept-object lifecycle; actual promise event order/reason identity",
+    "Original nextTick/microtask/rejection interleaving via unchanged modules, including callbacks enqueuing more work",
+    "Nested async scopes, enabled/disabled hooks, continuation frames, thrown hooks and clearing epoch recovery",
+    "Handled/unhandled errors/rejections, fatal handler failure, original process exit codes and at-exit",
+    "Cross-realm admission, moving GC, teardown/OOM/security/cancellation/fork/thread ownership",
+    "Node/Chromium/Firefox/WebKit identified-artifact parity and actual empty/simple startup"
+  ],
+  "limits": [
+    "Literal consumers are not complete lazy/computed/conditional/worker/exception graph coverage",
+    "No task_queue binding implementation, original public async module equivalence or successful Node startup",
+    "Selected Node-host shell probes and already-bootstrapped native references only; no new browser queue probes",
+    "No package/kernel/libc/SDK/host/ABI changes in this audit; no product image, successor-ABI campaign or overall suite"
+  ],
+  "attempts": [
+    {
+      "id": "node-task-queue-gap-1111-020259-f1b4",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx .context/node-task-queue/run-gap.ts",
+      "exitCode": 0,
+      "durationSeconds": 7.8,
+      "log": {
+        "path": ".context/node-task-queue/node-task-queue-gap-1111-020259-f1b4.log",
+        "bytes": 1017,
+        "sha256": "845faf27db20c7fbe37e1e421d2e6f400f5c8b0c9c289ca1b32702f454ad48db"
+      }
+    },
+    {
+      "id": "node-task-queue-retained-runner-1111-020445-7396",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx scripts/run-nodejs-job-queue-gap.ts /Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm .scratch/node-synthetic.nBdKzX/native-node .context/node-task-queue/retained-runner-result.json",
+      "exitCode": 0,
+      "durationSeconds": 25.6,
+      "log": {
+        "path": ".context/node-task-queue/node-task-queue-retained-runner-1111-020445-7396.log",
+        "bytes": 1017,
+        "sha256": "845faf27db20c7fbe37e1e421d2e6f400f5c8b0c9c289ca1b32702f454ad48db"
+      }
+    },
+    {
+      "id": "node-task-queue-weakref-1111-020709-1438",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx scripts/run-nodejs-job-queue-gap.ts /Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev27-wasm32-abi56-d6a57e47298e2aa627b38e8e06454a522feb159d3940400cef41390e05595b46/js.wasm .scratch/node-synthetic.nBdKzX/native-node .context/node-task-queue/weakref-runner-result.json",
+      "exitCode": 0,
+      "durationSeconds": 10.1,
+      "log": {
+        "path": ".context/node-task-queue/node-task-queue-weakref-1111-020709-1438.log",
+        "bytes": 1161,
+        "sha256": "4651d54741dae6a6b232e077a2da08b507216cc811e4bd05f36f70e95cee6c72"
+      }
+    },
+    {
+      "id": "node-libuv-postcommit-resolver-1111-015648-473e",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh spidermonkey",
+      "exitCode": 0,
+      "durationSeconds": 9.0,
+      "log": {
+        "path": ".context/node-task-queue/node-libuv-postcommit-resolver-1111-015648-473e.log",
+        "bytes": 375,
+        "sha256": "2cb289c8f6c78c27a2741399eedd9d248de5cd35b049288af5ae272997760971"
+      }
+    }
+  ]
+}

@@ -10,7 +10,8 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 493
+    "importedFiles": 493,
+    "taskQueuePartialCatalog": "task-queue-contracts.json"
   },
   "implementation": [
     {
@@ -108,6 +109,12 @@
       "evidence": "libuv-backend-engine-check.json",
       "remaining": "ten public OS functions missing; wider socket/DNS/spawn/signals/cancel/fork/OOM/full lifecycle and full conformance unvalidated",
       "integrationEvidence": "timers-libuv-engine-check.json"
+    },
+    {
+      "area": "task queue and native callback scope prerequisites",
+      "sourceStatus": "partial catalog and selected Node-host shell/native probes; native task_queue remains missing",
+      "evidence": "task-queue-gap-result.json",
+      "remaining": "actual binding, native error routing, nested kept-object checkpoint guard, async/frame/callback scopes and unchanged JS policy integration"
     }
   ],
   "runtimeConformance": {
@@ -336,6 +343,18 @@
       "nativeOnlyPollBlocking": "UV_RUN_DEFAULT",
       "legacyNativeWatchBridge": "UV_RUN_NOWAIT plus existing shell polling",
       "fullPhaseSemanticsReason": "Libuv phases are real; complete Node callback/async scopes remain incomplete"
+    },
+    "taskQueue": {
+      "inventory": "task-queue-contracts.json",
+      "explanation": "task-queue-contracts.md",
+      "evidence": "task-queue-gap-result.json",
+      "bindingImplemented": false,
+      "actualEnginePrimitivesObserved": true,
+      "nativeNodeExceptionRouting": false,
+      "nestedKeptObjectCleanupCorrect": false,
+      "nativeAsyncCallbackScopesComplete": false,
+      "originalTaskQueuesModuleEquivalence": false,
+      "probeScope": "Node outer host, existing shell primitives only; guest error exit3 and within-job WeakRef collection are measured gaps, not passing Node semantics"
     }
   },
   "nativeDifferentialControls": {
@@ -405,6 +424,14 @@
       "directBindingCases": 14,
       "isolatedControls": 4,
       "totalCases": 18
+    },
+    "taskQueue": {
+      "reference": "Node26.13.0Darwinarm64",
+      "cases": 6,
+      "failures": 0,
+      "evidence": "task-queue-gap-result.json",
+      "guestRun": false,
+      "limits": "Already bootstrapped direct native binding reference; guest shell primitives measured separately, native task_queue remains missing"
     }
   },
   "focusedGuestEngineControls": {
@@ -473,7 +500,12 @@
       "timersDriverFailures": 0,
       "timersSuccessHostDiagnostics": 0,
       "timersFatalControls": 2,
-      "timersFatalExpectedHostDiagnosticsEach": 1
+      "timersFatalExpectedHostDiagnosticsEach": 1,
+      "taskQueueGapEvidence": "task-queue-gap-result.json",
+      "taskQueueShellObservationDrivers": 3,
+      "taskQueueShellPrimitiveObservations": 3,
+      "taskQueueShellConfirmedGaps": 2,
+      "taskQueueBindingCases": "not implemented"
     },
     "Chromium": {
       "evidence": "timers-libuv-engine-check.json",
@@ -501,7 +533,7 @@
     }
   },
   "nextWork": [
-    "Implement genuine task_queue/async callback scopes over the actual engine job queue and libuv-backed environment; original principal bootstrap remains missing task_queue",
+    "Implement task_queue and common async callback scopes over the actual engine queue; route original Node errors and guard nested kept-object cleanup, preserving measured FIFO/reentrancy. Original principal bootstrap still lacks task_queue",
     "Finish truthful process/config/options/exit lifecycle and complete timer phase/error integration; no placeholder backends or copied native-reference fields",
     "Continue complete backend catalog while integrating startup; actual user CJS/ESM and four-host startup remain unrun"
   ]
