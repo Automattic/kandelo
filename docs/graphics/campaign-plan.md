@@ -64,7 +64,7 @@ Unverified old drafts must be reconciled against current main before use.
 
 | ID | Deliverable | Status at this checkpoint | Principal dependency / acceptance |
 | --- | --- | --- | --- |
-| R1 | Cage crashes, startup and performance diagnosis | Draft #1678: integrated normal build, memory and gameplay pass; desktop/performance validation active | Normal candidate, all-engine regressions, retained failures; other crashes and native-feel work remain open |
+| R1 | Cage crashes, startup and performance diagnosis | #1678 ready for bounded review; Cage/Sway and memory pass; timing risks remain open | Normal candidate, all-engine regressions, retained failures; other crashes and native-feel work remain open |
 | M1 | Trustworthy input-to-visible measurement | Open; tooling exists, qualification unfinished | Selected-display qualification, original input identity, overhead and uncertainty |
 | M2 | Frozen desktop and game baselines | Open; historical probes retained | M1 for visible latency; pinned workloads, main and native controls |
 | Q1 | Stage A production policy and native-operation audit closure | Production increment shipped; closure open | Exact audit inventory, graphics gate, shader harness and full per-case comparisons |
@@ -804,3 +804,54 @@ PR #1678 remains draft. Remaining blur relative to Sway is the sole approved
 visual follow-up; no other gate is waived. Full R1, native-feel and native
 Safari acceptance are not claimed. B2–B6/C1–C3 remain paused; no merge or
 promotion is authorized.
+
+
+### R1 bounded review checkpoint — 2026-11-11 afternoon
+
+[PR #1678](https://github.com/Automattic/kandelo/pull/1678) is ready for
+review, not merged. Its feature branch remains in Sydney. Current report
+commit is `35048db899`; measured runtime candidate is `00afdb7a33`, with
+runtime sources unchanged from integration `b718daade0`. Destination remains
+pinned develop `200d7bbfac`; normal control runtime source is unchanged at
+that target, with disclosed build/test preparation at `541d6e0ee5`.
+
+Current functional evidence: canonical graph278/278, memory18/18 with four
+mixed switching cycles per engine, prepared-host257/257, actual Steel Sky
+Cage/Sway6/6, native fork16/16, Node/Chromium POSIXkill5/5each, compatibility
+6/6 and official ABI/layout/baseline check pass. Program56/host6 are
+unchanged. Full desktop118/120 includes Cage15/15 and Sway12/12. Chromium
+and WebKit archive-import SDL initialization failures reproduce in the
+fresh current-target control (1/3); they remain failures. The first119/120
+run and its Sway first-paint test correction remain separately retained.
+
+All nine enabled Node/Chromium benchmark suites finish in both orders:
+eight invocations, three rounds each, two parents per host/revision overall.
+Node has17/20 and Chromium10/11 threshold flags in forward/reverse
+comparisons. Focused controls retain lower Node pipe throughput10.6–13.2%
+and higher getpid latency6.4–6.6%; startup/SQL flags also remain. Host load,
+CPU/heap profiles, graphics-group isolation and an equal-worker-code control
+are documented. Identical-code controls themselves vary, but do not dismiss
+the original flags or establish the candidate's cause. No speculative
+production optimization or private diagnostic variant is proposed.
+
+All12 actual cursor profiles were collected;11 qualify, including all6
+candidate cases. Baseline Chromium3840 has one position and leaves the
+strict whole inventory red. At1920DPR1, callback p50 changes68.4→17.7ms
+in Chromium,68.0→17.7ms in Firefox and47.1→37.4ms in WebKit. These are
+single instrumented callback observations, not native presentation/FPS.
+Actual input delivery and the changed guest-pixel policy are recorded.
+
+The live normal candidate remains
+http://127.0.0.1:56525/?vfs=%2F__kandelo_source_only_assets__%2Fbc5ec7b4185daa82fee26cdd5534cb4f3111ec738899f6286f734575c9a56780%2Fshell.vfs.zst&profile=cage.
+All18 preserved cohorts and14HTTP identities across7 selected previews
+match. The current base control runs separately on56526; old previews
+remain preserved. No further shared-cache collection was performed.
+
+The [completed report](https://github.com/Automattic/kandelo/blob/35048db899a7d70eacd0e86910ba5c6d7cde75b9/docs/graphics/cage-reliability-2026-11.md#completed-integrated-measurements--2026-11-11)
+records original failures, exact sources/products and all measurement limits.
+Readiness is for review of the bounded increment. Unexplained timing
+penalties remain merge risks; no broad neutrality, full R1/native-feel,
+native Safari or full POSIX/graphics conformance acceptance is claimed.
+Blur is the only approved visual follow-up; no other finding is waived or
+reclassified as fixed. B2–B6/C1–C3 remain paused. No merge/promotion was
+performed, and no CI check rollup was reported by the final PR query.
