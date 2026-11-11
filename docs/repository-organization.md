@@ -129,6 +129,11 @@ or validates the claims written in a note.
 
 ## CI Path Categories
 
+See the [develop CI transition review](ci-transition-review.md) for the
+legacy-workflow inventory, disabled execution state, and daily-gate adaptation
+decisions. Path categories below help select local/PR checks; they must not
+narrow the full daily promotion gate.
+
 The layout is designed so later CI path filters can make conservative, explainable decisions:
 
 | Changed path | Likely relevant checks |
