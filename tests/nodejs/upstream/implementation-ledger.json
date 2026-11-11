@@ -23,7 +23,9 @@
     "processVersionsEngineEvidence": "process-versions-engine-check.json",
     "processVersionsSyntaxIndex": "process-versions-consumers.json",
     "icuPartialCatalog": "icu-contracts.json",
-    "icuEngineEvidence": "icu-engine-check.json"
+    "icuEngineEvidence": "icu-engine-check.json",
+    "traceEventsPartialCatalog": "trace-events-contracts.json",
+    "standaloneTracingEvidence": "v8-tracing-component-check.json"
   },
   "implementation": [
     {
@@ -169,6 +171,12 @@
       "sourceStatus": "two whole native units compiled against real rooted engine API; actual Converter template/native UConverter/owner-realm admission and GC retirement;23controls per host",
       "evidence": "icu-engine-check.json",
       "remaining": "legacy conversion build gap, original Buffer allocation/prototype backend, unvalidated helper paths/reentrant buffers/full security/OOM/teardown, complete startup"
+    },
+    {
+      "area": "standalone original tracing library prerequisite",
+      "sourceStatus": "normal v8-tracing14.6.202.34 package compiles7whole original V8 units with real guest clocks/IDs and complete Node libuv mutex;9controls on allfourhosts; relocated CMake/pkg-config consumers pass",
+      "evidence": "v8-tracing-component-check.json",
+      "remaining": "not linked into SpiderMonkey; original Node agent/writer/buffer/traced metadata, native trace binding and whole engine intrinsics/observer/external-buffer lifetime still missing; not V8 JS engine support"
     }
   ],
   "runtimeConformance": {
@@ -215,6 +223,21 @@
       "failures": 0,
       "scope": "focused standalone loop/threads/pipe/filesystem and two explicit unsupported boundaries; not Node startup or complete libuv compatibility",
       "evidence": "libuv-backend-engine-check.json"
+    },
+    "standaloneTracingComponent": {
+      "hosts": [
+        "Node",
+        "Chromium",
+        "Firefox",
+        "WebKit"
+      ],
+      "casesPerHost": 9,
+      "selectedObservations": 36,
+      "relocatedNodeObservations": 18,
+      "processDrivers": 6,
+      "failures": 0,
+      "evidence": "v8-tracing-component-check.json",
+      "scope": "standalone original controller/category/object/ring/JSON and guest native effects; not Node trace binding, V8 JS engine or startup"
     }
   },
   "validationLimits": {
@@ -253,7 +276,14 @@
     "packageRuntimeScope": "23 ICU controls per host plus287 prior Node cases;379 engine case observations/104 drivers/27 expected fatal exits; original bootstrap reaches trace_events",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "Existing Mozilla Linux triplet/defines remain; linked libuv uses the true Kandelo build and explicit public-layout selector before legacy macros",
-    "symbolicWasmNamesRetained": true
+    "symbolicWasmNamesRetained": true,
+    "pendingDependencyMetadata": {
+      "libuvRevision": 4,
+      "libuvRuntimeArchiveByteIdentical": true,
+      "evidence": "v8-tracing-component-check.json",
+      "existingGuestEngineRebuiltThisPhase": false,
+      "standaloneTracingLinkedIntoEngine": false
+    }
   },
   "startupPrerequisites": {
     "nodePrivateKeySemantics": {
@@ -596,6 +626,21 @@
       "principalNextBinding": "trace_events",
       "stackLimitPolicyNextBinding": "mksnapshot",
       "startupAccepted": false
+    },
+    "traceEvents": {
+      "inventory": "trace-events-contracts.json",
+      "componentEvidence": "v8-tracing-component-check.json",
+      "standaloneControllerImplemented": true,
+      "wholeOriginalLibraryTranslationUnits": 7,
+      "componentCasesPerHost": 9,
+      "relocatedConsumerCases": 18,
+      "linkedIntoGuestEngine": false,
+      "nativeNodeBindingImplemented": false,
+      "nodeAgentAndWriterImplemented": false,
+      "engineExtraBindingIntrinsicsImplemented": false,
+      "observerCallbackAndExternalBufferOwnershipImplemented": false,
+      "principalStillMissing": "trace_events",
+      "fullStartupAccepted": false
     }
   },
   "nativeDifferentialControls": {

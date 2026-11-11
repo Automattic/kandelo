@@ -12,6 +12,11 @@ The recipe therefore selects deps/uv from the pinned Node archive, keeping
 its existing patch set. The added patch selects upstream posix-poll.c and
 posix-hrtime.c for CMAKE_SYSTEM_NAME=Kandelo. It never defines __linux__.
 
+Revision 4 makes the installed static pkg-config paths relative to the pkg-config
+file. The revision 3 and revision 4 runtime archives are byte-identical; relocated
+CMake and pkg-config tracing consumers pass on Node. See
+[v8-tracing-component-check.json](../../../tests/nodejs/upstream/v8-tracing-component-check.json).
+
 Consumers must use the installed CMake target libuv::uv_a or
 pkg-config --cflags --libs libuv-static. Both supply
 UV_PLATFORM_KANDELO=1, which selects the matching public uv_loop_t layout.

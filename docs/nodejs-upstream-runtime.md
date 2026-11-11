@@ -249,7 +249,7 @@ now has the focused guest evidence below. Neither those controls nor the
 distinct key controls establish the complete Node engine contract.
 
 A subsequent focused native control confirmed eleven covered hidden-key
-expectations against the exact pinned Node26.13.0 Darwin arm64 binary,
+expectations against the exact pinned Node.js 26.13.0 Darwin arm64 binary,
 including both public untransferable-marker cases. Its flags/hash/outcomes and
 coverage limits are in `private-key-native-reference.json`; the unchanged
 control source is `private-key-native-controls.cjs`. These are reference
@@ -1128,3 +1128,47 @@ full graph catalog and ordered roadmap remain unfinished. No image, full product
 successor-ABI campaign or overall suite ran. See
 [icu-contracts.json](../tests/nodejs/upstream/icu-contracts.json) and
 [icu-engine-check.json](../tests/nodejs/upstream/icu-engine-check.json).
+
+
+## Standalone tracing library prerequisite
+
+The missing trace-events binding needs a real controller, native agent and
+engine extra-binding functions. The new `v8-tracing` package provides the first
+prerequisite: seven complete original translation units for the Node-bundled V8
+controller, config, event object, ring buffer, JSON writer, fatal logging and
+abort mode. The component version 14.6.202.34 comes from the audited archive's
+V8 version header; it does not identify a running V8 JavaScript engine and does
+not add `process.versions.v8`.
+
+The native target-header patch recognizes Kandelo/wasm32 explicitly. Private
+clock, process/thread ID, printing and termination facilities call guest
+libc/kernel APIs. The mutex adapter uses the whole original Node `node_mutex.h`
+over resolved libuv. Category matching, enabled bytes, observer transitions,
+copy/convertable ownership, ring handles and JSON serialization remain original
+library algorithms. No upstream JavaScript changed, and the existing 532 source
+records remain identical.
+
+Nine controls pass on each of Node, Chromium, Firefox and WebKit with identical
+program/kernel bytes. Two compile-only checks verify actual target identity and
+precedence over the existing embedding Linux macro. The initial selector was
+placed in the feature-header block; the new check exposed that mistake, and the
+corrected OS detector now takes precedence. Relocated CMake and pkg-config consumers pass separately
+on Node:54 selected case observations across six guest processes. The first
+relocation check exposed libuv's installed pkg-config file retaining its original
+cache prefix. Revision 4 fixes that metadata; its runtime archive is byte-identical
+to revision 3. The initial compiler-driver error, unsupported target/missing Abseil
+probe, incomplete private declarations and relocation failure remain retained.
+The first browser run retained storage because WebKit was still running; the
+final run reports a separate Firefox profile-cleanup permission warning.
+
+This library is not linked into SpiderMonkey yet. Original Node agent/writer/
+buffer classes, trace binding, engine intrinsics, per-environment handler and
+native external byte ownership remain incomplete. The original controller uses
+process-global category storage, which must outlive every future guest JS view.
+Broader file/rotation/error, clocks, locking, cancellation, OOM/security and
+process/worker teardown behavior remain unproven. The existing engine was not
+rebuilt this phase: its identified ICU evidence remains separate, principal
+bootstrap still stops on trace_events and stack-limit policy on mksnapshot.
+No product images, full products, successor-ABI builds or overall suites ran.
+See [trace-events-contracts.json](../tests/nodejs/upstream/trace-events-contracts.json)
+and [v8-tracing-component-check.json](../tests/nodejs/upstream/v8-tracing-component-check.json).

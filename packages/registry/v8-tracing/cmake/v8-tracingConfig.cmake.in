@@ -1,0 +1,4 @@
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+find_dependency(libuv CONFIG REQUIRED)
+include("${CMAKE_CURRENT_LIST_DIR}/v8-tracingTargets.cmake")

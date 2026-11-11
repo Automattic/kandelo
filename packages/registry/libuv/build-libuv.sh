@@ -15,6 +15,7 @@ kandelo_package_stage_primary_source libuv "$NODE_SOURCE" "$KANDELO_PACKAGE_WORK
 SOURCE_DIR="$NODE_SOURCE/deps/uv"
 patch -d "$SOURCE_DIR" -p1 < "$SCRIPT_DIR/patches/0001-kandelo-posix-backend.patch"
 patch -d "$SOURCE_DIR" -p1 < "$SCRIPT_DIR/patches/0002-typed-pthread-entry.patch"
+patch -d "$SOURCE_DIR" -p1 < "$SCRIPT_DIR/patches/0003-relocatable-static-pkgconfig.patch"
 cp "$SCRIPT_DIR/src/kandelo-proctitle.c" "$SOURCE_DIR/src/unix/kandelo-proctitle.c"
 
 cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \

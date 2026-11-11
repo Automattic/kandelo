@@ -1,0 +1,47 @@
+kind = "library"
+name = "v8-tracing"
+version = "14.6.202.34"
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = ["libcxx@21.1.7", "libuv@1.52.1"]
+
+[source]
+# The exact standalone tracing units bundled with the audited Node target.
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz"
+sha256 = "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+provider = "archive"
+
+[license]
+spdx = "BSD-3-Clause AND MIT"
+url = "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/deps/v8/LICENSE"
+
+[build]
+script_path = "packages/registry/v8-tracing/build-v8-tracing.sh"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.16"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.7"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[outputs]
+libs = ["lib/libv8-tracing.a"]
+headers = ["include/libplatform", "include/v8-platform.h", "include/v8-source-location.h", "include/v8config.h"]
+pkgconfig = ["lib/pkgconfig/v8-tracing.pc"]
+files = [
+  "lib/cmake/v8-tracing/v8-tracingConfig.cmake",
+  "lib/cmake/v8-tracing/v8-tracingConfigVersion.cmake",
+  "lib/cmake/v8-tracing/v8-tracingTargets.cmake",
+  "lib/cmake/v8-tracing/v8-tracingTargets-release.cmake",
+  "share/doc/v8-tracing/LICENSE-v8",
+  "share/doc/v8-tracing/LICENSE-node",
+]

@@ -1,0 +1,71 @@
+--- a/include/v8config.h
++++ b/include/v8config.h
+@@ -96,7 +96,12 @@
+ //  V8_OS_WIN           - Microsoft Windows
+ //  V8_OS_ZOS           - z/OS
+ 
+-#if defined(__ANDROID__)
++#if defined(V8_PLATFORM_KANDELO)
++# define V8_OS_KANDELO 1
++# define V8_OS_POSIX 1
++# define V8_OS_STRING "kandelo"
++
++#elif defined(__ANDROID__)
+ # define V8_OS_ANDROID 1
+ # define V8_OS_LINUX 1
+ # define V8_OS_POSIX 1
+@@ -227,6 +232,9 @@
+ # endif
+ 
+ // Fall back to the detected host OS.
++#ifdef V8_OS_KANDELO
++# define V8_TARGET_OS_KANDELO
++#endif
+ #ifdef V8_OS_ANDROID
+ # define V8_TARGET_OS_ANDROID
+ #endif
+@@ -257,7 +265,9 @@
+ 
+ #endif  // V8_HAVE_TARGET_OS
+ 
+-#if defined(V8_TARGET_OS_ANDROID)
++#if defined(V8_TARGET_OS_KANDELO)
++# define V8_TARGET_OS_STRING "kandelo"
++#elif defined(V8_TARGET_OS_ANDROID)
+ # define V8_TARGET_OS_STRING "android"
+ #elif defined(V8_TARGET_OS_FUCHSIA)
+ # define V8_TARGET_OS_STRING "fuchsia"
+@@ -869,7 +879,10 @@
+ // The V8_HOST_ARCH_* macros correspond to the architecture on which V8, as a
+ // virtual machine and compiler, runs. Don't confuse this with the architecture
+ // on which V8 is built.
+-#if defined(_M_X64) || defined(__x86_64__)
++#if defined(__wasm32__)
++#define V8_HOST_ARCH_WASM32 1
++#define V8_HOST_ARCH_32_BIT 1
++#elif defined(_M_X64) || defined(__x86_64__)
+ #define V8_HOST_ARCH_X64 1
+ #if defined(__x86_64__) && __SIZEOF_POINTER__ == 4  // Check for x32.
+ #define V8_HOST_ARCH_32_BIT 1
+@@ -921,7 +934,9 @@
+     !V8_TARGET_ARCH_PPC64 && !V8_TARGET_ARCH_S390X &&                     \
+     !V8_TARGET_ARCH_RISCV64 && !V8_TARGET_ARCH_LOONG64 &&                 \
+     !V8_TARGET_ARCH_RISCV32
+-#if defined(_M_X64) || defined(__x86_64__)
++#if defined(__wasm32__)
++#define V8_TARGET_ARCH_WASM32 1
++#elif defined(_M_X64) || defined(__x86_64__)
+ #define V8_TARGET_ARCH_X64 1
+ #elif defined(_M_IX86) || defined(__i386__)
+ #define V8_TARGET_ARCH_IA32 1
+@@ -949,7 +964,9 @@
+ #endif
+ 
+ // Determine architecture pointer size.
+-#if V8_TARGET_ARCH_IA32
++#if V8_TARGET_ARCH_WASM32
++#define V8_TARGET_ARCH_32_BIT 1
++#elif V8_TARGET_ARCH_IA32
+ #define V8_TARGET_ARCH_32_BIT 1
+ #elif V8_TARGET_ARCH_X64
+ #if !V8_TARGET_ARCH_32_BIT && !V8_TARGET_ARCH_64_BIT

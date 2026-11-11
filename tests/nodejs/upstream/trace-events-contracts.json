@@ -1,0 +1,301 @@
+{
+  "schema": 1,
+  "binding": "trace_events",
+  "status": "startup binding remains missing; standalone original tracing library component and OS/locking prerequisites implemented separately",
+  "sourceVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceFiles": [
+    {
+      "upstreamPath": "src/node_trace_events.cc",
+      "retainedPath": ".context/node-trace-events/source/src/node_trace_events.cc",
+      "bytes": 8004,
+      "sha256": "d49d2ee967961a72bc879fb4eb228f2670b58559a03619800fad6650b6efdc5e",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/agent.h",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/agent.h",
+      "bytes": 3493,
+      "sha256": "f3641f429fb4f84615f81b6bcf72972dfd2342a08ade4f555b72789331e34f1a",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/agent.cc",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/agent.cc",
+      "bytes": 892,
+      "sha256": "b44ad5be81bb0d7ee977e48ec564cccab6f933e9e70a0b31fbc5386ed2436b13",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/agent_legacy.h",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/agent_legacy.h",
+      "bytes": 4283,
+      "sha256": "e3b06518a9aa499d73bf63e49183cabf6e97a3d54b911427c056ab0aaab8bffd",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/agent_legacy.cc",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/agent_legacy.cc",
+      "bytes": 10547,
+      "sha256": "a8c6b9b1c22e75069695157f9b91522d751e66e233530685d0aa507ae7c71422",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/node_trace_buffer.h",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/node_trace_buffer.h",
+      "bytes": 2583,
+      "sha256": "4929ba7396e3ded365fcf51a4e2d9684573a36dc1947ee8c09b37028035cf8fc",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/node_trace_buffer.cc",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/node_trace_buffer.cc",
+      "bytes": 6729,
+      "sha256": "c77c172a032b4b021448df06802d2839daa4e9435d5510a7ef9402cb200db62a",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/node_trace_writer.h",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/node_trace_writer.h",
+      "bytes": 2402,
+      "sha256": "e2f01c16f6d727476702537de5451eb2c2deb2ed0c4bc354302dfb4683ad6d15",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/node_trace_writer.cc",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/node_trace_writer.cc",
+      "bytes": 7173,
+      "sha256": "ca8879fd79d9fad8c506de88ca30601ae8d3624c67634e7fdda2914e956d3b55",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/traced_value.h",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/traced_value.h",
+      "bytes": 4672,
+      "sha256": "0ad60c64d85b9cc76c2293575f21c07bbbacdc7f20517aab70e0b171f4c7224f",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/traced_value.cc",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/traced_value.cc",
+      "bytes": 7486,
+      "sha256": "acbee56fb6c7093904797e0d07c3eb37cfe27780b067f0f9bf624aee2db08cc4",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/trace_event_helper.h",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/trace_event_helper.h",
+      "bytes": 1098,
+      "sha256": "707181ab1d4e6e42d5c83263aa100f549fa1b0280eeb9e4cf8a2036e76d27674",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/tracing/trace_event_helper.cc",
+      "retainedPath": ".context/node-trace-events/source/src/tracing/trace_event_helper.cc",
+      "bytes": 1422,
+      "sha256": "8115b429ed3c22d4db2ee7de0d48fca85cccfb50963986e1f8a53d90179a2fde",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "deps/v8/src/builtins/builtins-trace.cc",
+      "retainedPath": ".context/node-trace-events/source/deps/v8/src/builtins/builtins-trace.cc",
+      "bytes": 8310,
+      "sha256": "13b02d7ba55ae3b504a8f85c2b740ae026a354f0ee87837568103eede1c28802",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/env.cc",
+      "retainedPath": ".context/node-trace-events/source/src/env.cc",
+      "bytes": 99205,
+      "sha256": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8",
+      "compiledForNodeBinding": false
+    },
+    {
+      "upstreamPath": "src/env.h",
+      "retainedPath": ".context/node-trace-events/source/src/env.h",
+      "bytes": 53128,
+      "sha256": "2727db70801cd3d154790795f52aac30909279cfbbec5beab1c0b463a4aa55b8",
+      "compiledForNodeBinding": false
+    }
+  ],
+  "coverage": {
+    "literalNativeConsumerFiles": 4,
+    "originalJsFiles": 443,
+    "fullGraphReconciled": false,
+    "lazyConditionalWorkerExceptionalClosureComplete": false
+  },
+  "literalConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/lib/trace_events.js",
+      "line": 22,
+      "text": "} = internalBinding('trace_events');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/trace_events.js",
+      "line": 8,
+      "text": "} = internalBinding('trace_events');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/bootstrap/node.js",
+      "line": 241,
+      "text": "const { setTraceCategoryStateUpdateHandler } = internalBinding('trace_events');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/pre_execution.js",
+      "line": 574,
+      "text": "  const { isTraceCategoryEnabled } = internalBinding('trace_events');"
+    }
+  ],
+  "exports": [
+    {
+      "name": "hasAgent",
+      "signature": "() -> boolean",
+      "behavior": "actual process-wide Agent::GetInstance() identity",
+      "errors": "no success stub or copied native-reference flag",
+      "owner": "guest native tracing agent",
+      "implementedInGuestEngine": false
+    },
+    {
+      "name": "getEnabledCategories",
+      "signature": "() -> string|undefined",
+      "behavior": "sorted union of actual per-writer multiset category refs; undefined if empty",
+      "errors": "source assumes real agent",
+      "owner": "original agent and rooted string bridge",
+      "implementedInGuestEngine": false
+    },
+    {
+      "name": "setTraceCategoryStateUpdateHandler",
+      "signature": "(function) -> undefined",
+      "behavior": "retain actual per-environment callback; original bootstrap/node:241 registers perThreadSetup.toggleTraceCategoryState",
+      "errors": "original CHECK IsFunction remains fatal",
+      "owner": "engine realm/environment and tracing observer",
+      "implementedInGuestEngine": false
+    },
+    {
+      "name": "getCategoryEnabledBuffer",
+      "signature": "(string) -> Uint8Array",
+      "behavior": "actual stable byte from controller category storage; original V8-sandbox build returns undefined for source fallback",
+      "errors": "original CHECK IsString remains fatal; do not claim V8 sandbox to bypass real external storage",
+      "owner": "engine external-buffer lifetime and process tracing controller",
+      "implementedInGuestEngine": false
+    },
+    {
+      "name": "CategorySet",
+      "signature": "new (Array categories) -> native BaseObject",
+      "behavior": "source creates std::set strings, weak native owner, real template/instance fields",
+      "errors": "original CHECK array/non-null agent; actual getters and UTF8 coercion can throw",
+      "owner": "native class/template and original NodeCategorySet",
+      "implementedInGuestEngine": false
+    },
+    {
+      "name": "CategorySet.prototype.enable",
+      "signature": "() -> undefined",
+      "behavior": "check real filesystem write permission/path; start tracing writer and enable actual category refs once",
+      "errors": "real permission/file/worker/backend failures; source does not synthesize output",
+      "owner": "native class, agent/writer, guest OS",
+      "implementedInGuestEngine": false
+    },
+    {
+      "name": "CategorySet.prototype.disable",
+      "signature": "() -> undefined",
+      "behavior": "disable own active category refs once, maintaining other category sets",
+      "errors": "original CHECK native unwrap; no fabricated handles",
+      "owner": "original class and agent",
+      "implementedInGuestEngine": false
+    },
+    {
+      "name": "isTraceCategoryEnabled",
+      "signature": "(string) -> boolean",
+      "behavior": "whole original engine builtin reads actual controller byte",
+      "errors": "actual TypeError for non-string category; no coercion",
+      "owner": "engine extra-binding adapter + standalone controller",
+      "implementedInGuestEngine": false
+    },
+    {
+      "name": "trace",
+      "signature": "(number phase,string category,string name,number|null|undefined id,data?) -> boolean",
+      "behavior": "whole original engine builtin validates category; early false only on real disabled category; then phase/name/id, real engine JSON.stringify, and actual trace event submission",
+      "errors": "original TypeErrors; cyclic/BigInt/throwing JSON/toJSON exceptions retained; native effects and owned converted data",
+      "owner": "engine extra-binding adapter, original builtin + controller",
+      "implementedInGuestEngine": false
+    },
+    {
+      "name": "usePerfetto",
+      "signature": "boolean",
+      "behavior": "actual compiled tracing mode, never copied native reference build flags",
+      "errors": "legacy standalone component built, not a linked Node trace binding yet",
+      "owner": "actual build configuration",
+      "implementedInGuestEngine": false
+    }
+  ],
+  "sourcePolicy": {
+    "originalJsChanged": false,
+    "nativeAlgorithmExcerptsAllowed": false,
+    "sourceAvailabilityIsRuntimeSupport": false
+  },
+  "scheduling": {
+    "agent": "process-wide controller and native tracing worker/uv_loop; async buffer flush and serialized file requests",
+    "observers": "controller Start/Stop invokes source observers synchronously; TrackingTraceStateObserver env.cc690 only enters JS for owns_process_state, can_call_into_js and actual principal realm, with rooted callback/verbose try-catch",
+    "ownership": "JS enabledTracingObjects SafeSet retains enabled public Tracing owners; native CategorySet is weak and its destructor does not itself disable categories; source refs belong to actual agent writer",
+    "threads": "Node agent creates actual uv_thread after async handles exist; joins on Stop; never invoke JS directly from writer thread"
+  },
+  "lifetime": {
+    "categoryBytes": "original V8 component has process-wide static category arrays and allocated names; use one real process owner, retain controller through guest external views and native class owners; no temporary copies",
+    "nativeObjects": "proper JS constructor/prototype/receiver/private-kind validation and traced owner realm; do not store borrowed stack Environment",
+    "callbacks": "trace handler remains rooted per environment; unsubscribe/retire observers before terminal realm or GC cleanup can invoke JS",
+    "writer": "real guest file descriptor, owned queued byte strings, request completion/close/flush and thread/loop teardown; source path substitutions pid/rotation are real",
+    "refState": "source tracing loop and async handles have real uv reference state; source JS liveness and agent shutdown must be owned explicitly"
+  },
+  "prerequisites": [
+    {
+      "area": "standalone V8 controller/config/object/ring buffer/JSON writer",
+      "status": "normal library port; component evidence in v8-tracing-component-check.json; not yet linked into engine"
+    },
+    {
+      "area": "Node agent/buffer/writer/helper/traced values",
+      "status": "whole originals reviewed; uncompiled and unintegrated"
+    },
+    {
+      "area": "whole native node_trace_events.cc",
+      "status": "reviewed, not compiled against native rooted API"
+    },
+    {
+      "area": "whole V8 builtins-trace.cc",
+      "status": "reviewed, requires genuine SpiderMonkey handles/primitive conversions/error metadata/JSON API bridge; not compiled"
+    },
+    {
+      "area": "source metadata/permissions/options",
+      "status": "trace process metadata must reuse actual runtime metadata; no V8/addon metadata copying; tracing CLI/file permission integration incomplete"
+    },
+    {
+      "area": "native external ArrayBuffer",
+      "status": "actual category byte and controller owner lifetime needed; existing typed-view borrows are not this owner"
+    },
+    {
+      "area": "native observer and callback scope",
+      "status": "actual current realm/process/can-call lifecycle and source callback policy; incomplete"
+    }
+  ],
+  "validationObligations": [
+    "unchanged original internal/trace_events and internal/util/debuglog execution, principal bootstrap advancing honestly",
+    "live category bytes across start/stop, duplicate/overlapping CategorySet counts, sorted categories, public SafeSet lifecycle",
+    "source errors/arity/assertions, constructor/template/receivers, array getters/UTF8 coercion and actual engine JSON reentrancy",
+    "GC moving/weak/finalization, foreign realm admission, failed realm callbacks, external view lifetime and process teardown",
+    "actual tracing worker/async wakeup, event/buffer ownership/overflow/drop, pid/tid/clock fields",
+    "native guest file output, path/pid/rotation, permissions, open/write/partial-write/flush/cancel/close failures and timeouts",
+    "actual native-reference comparison, Node/Chromium/Firefox/WebKit identified-artifact engine controls; component evidence cannot substitute",
+    "no complete public tracing compatibility, OOM/security/worker lifecycle or broad data coverage established by component"
+  ],
+  "archivedReuse": {
+    "index": ".context/node-icu/reuse-audit.md",
+    "policy": "reuse native ownership/worker mechanisms only against actual original contracts; no public tracing/performance shims or success no-ops",
+    "fullReuseMapComplete": false
+  },
+  "startup": {
+    "implemented": false,
+    "principalCurrentGap": "trace_events",
+    "stackLimitCurrentGap": "mksnapshot",
+    "fullStartupAccepted": false
+  },
+  "broaderRoadmapAuthorized": false
+}

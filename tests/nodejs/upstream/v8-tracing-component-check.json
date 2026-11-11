@@ -1,0 +1,656 @@
+{
+  "schema": 1,
+  "verifiedAt": "2026-11-11T17:08:03.781719+00:00",
+  "sourceHeadAtBuild": "11279f76bce19f5cfc17c049ba581d826b3fdabd",
+  "testedInputsWereUncommitted": true,
+  "newPackageWasUntrackedAtBuild": true,
+  "scope": "Standalone original V8 tracing library with real guest OS/libuv primitives, not a V8 JS engine or native Node trace binding/agent/startup",
+  "program": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/v8-tracing-controls-selector/v8-tracing-component-controls.wasm",
+    "bytes": 758554,
+    "sha256": "337ec9380287931115d447a776822acda53e136cc026fac6ac2499095e693421"
+  },
+  "kernel": {
+    "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+    "bytes": 2958224,
+    "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+  },
+  "library": {
+    "prefix": "/Users/brandon/.cache/kandelo/libs/v8-tracing-14.6.202.34-rev1-wasm32-abi56-9de40960a61dbe17cdd8da36d19e1dd97f22b1b6dde44131167a79b17e2bd4cb",
+    "version": "14.6.202.34",
+    "revision": 1,
+    "archive": {
+      "path": "/Users/brandon/.cache/kandelo/libs/v8-tracing-14.6.202.34-rev1-wasm32-abi56-9de40960a61dbe17cdd8da36d19e1dd97f22b1b6dde44131167a79b17e2bd4cb/lib/libv8-tracing.a",
+      "bytes": 3768190,
+      "sha256": "6c75ea0980235e9f0e139b822b8e1bfd0240af40c313f1541c1de0cd4c1b6b1b"
+    }
+  },
+  "retainedProgram": {
+    "path": ".context/node-trace-events/runtime/component-controls.wasm",
+    "bytes": 758554,
+    "sha256": "337ec9380287931115d447a776822acda53e136cc026fac6ac2499095e693421"
+  },
+  "retainedLibrary": {
+    "path": ".context/node-trace-events/runtime/libv8-tracing.a",
+    "bytes": 3768190,
+    "sha256": "6c75ea0980235e9f0e139b822b8e1bfd0240af40c313f1541c1de0cd4c1b6b1b"
+  },
+  "sourceArchive": {
+    "path": "/Users/brandon/kandelo-preservation/davao-20261109T062614Z/node-upstream-restart/reference-archives/node-v26.13.0.tar.gz",
+    "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+  },
+  "wholeOriginalFiles": [
+    {
+      "upstreamPath": "deps/v8/src/libplatform/tracing/trace-buffer.cc",
+      "identity": {
+        "path": ".context/node-trace-events/source/deps/v8/src/libplatform/tracing/trace-buffer.cc",
+        "bytes": 3539,
+        "sha256": "785f47a04460fc9567b1832275498855a02959d9e0405cbc676d1b7028dc02d6"
+      },
+      "completeFile": true,
+      "compiledUnchanged": true
+    },
+    {
+      "upstreamPath": "deps/v8/src/libplatform/tracing/trace-config.cc",
+      "identity": {
+        "path": ".context/node-trace-events/source/deps/v8/src/libplatform/tracing/trace-config.cc",
+        "bytes": 1174,
+        "sha256": "9d6be6c50fd475486b82acaafe9998bd4cd237b7c60154b1b1df5678dc0eeb60"
+      },
+      "completeFile": true,
+      "compiledUnchanged": true
+    },
+    {
+      "upstreamPath": "deps/v8/src/libplatform/tracing/trace-object.cc",
+      "identity": {
+        "path": ".context/node-trace-events/source/deps/v8/src/libplatform/tracing/trace-object.cc",
+        "bytes": 4532,
+        "sha256": "8312ab18b094b37d99b88dab669562d535d1632c3e039485e4ae969884fff062"
+      },
+      "completeFile": true,
+      "compiledUnchanged": true
+    },
+    {
+      "upstreamPath": "deps/v8/src/libplatform/tracing/trace-writer.cc",
+      "identity": {
+        "path": ".context/node-trace-events/source/deps/v8/src/libplatform/tracing/trace-writer.cc",
+        "bytes": 7052,
+        "sha256": "8e12c3f0978c3e152285f411013a27932a746b13a7a9f0e9fed171ec54002e3e"
+      },
+      "completeFile": true,
+      "compiledUnchanged": true
+    },
+    {
+      "upstreamPath": "deps/v8/src/libplatform/tracing/tracing-controller.cc",
+      "identity": {
+        "path": ".context/node-trace-events/source/deps/v8/src/libplatform/tracing/tracing-controller.cc",
+        "bytes": 13636,
+        "sha256": "7bc5e2509311adddd45323a9f3fe5f45c6506515fee36df96337d7379859ffe4"
+      },
+      "completeFile": true,
+      "compiledUnchanged": true
+    },
+    {
+      "upstreamPath": "deps/v8/src/base/abort-mode.cc",
+      "identity": {
+        "path": ".context/node-trace-events/source/deps/v8/src/base/abort-mode.cc",
+        "bytes": 322,
+        "sha256": "bfdb1cf3dccac62d5ec0023b4987f3eeb84d9ed4e89e4329fd3a9417e3050325"
+      },
+      "completeFile": true,
+      "compiledUnchanged": true
+    },
+    {
+      "upstreamPath": "deps/v8/src/base/logging.cc",
+      "identity": {
+        "path": ".context/node-trace-events/source/deps/v8/src/base/logging.cc",
+        "bytes": 8128,
+        "sha256": "dfa561ee0359e48466b42c58d26cb31d67f4e77aa42742a2b94d8691494e546a"
+      },
+      "completeFile": true,
+      "compiledUnchanged": true
+    },
+    {
+      "upstreamPath": "src/node_mutex.h",
+      "identity": {
+        "path": ".context/node-trace-events/source/src/node_mutex.h",
+        "bytes": 8585,
+        "sha256": "13208fe79bf345733d992eb7e1c598817fdab79ab859a2b81cec92b0e1763572"
+      },
+      "completeFile": true,
+      "compiledUnchanged": true
+    },
+    {
+      "upstreamPath": "deps/v8/include/v8-version.h",
+      "identity": {
+        "path": ".context/node-trace-events/source/deps/v8/include/v8-version.h",
+        "bytes": 773,
+        "sha256": "ce7ce832371e2ffd6e56bd51f3b3f819262a01366074c660f6ea8e0d8e3b5ba3"
+      },
+      "completeFile": true,
+      "compiledUnchanged": false
+    },
+    {
+      "upstreamPath": "deps/v8/include/v8config.h",
+      "identity": {
+        "path": ".context/node-trace-events/source/deps/v8/include/v8config.h",
+        "bytes": 37285,
+        "sha256": "8c5863fa045d38345f0702b11b8307423b942044198dd9bad5989476775c3d38"
+      },
+      "completeFile": true,
+      "compiledUnchanged": false
+    },
+    {
+      "upstreamPath": "deps/v8/src/tracing/trace-event-no-perfetto.h",
+      "identity": {
+        "path": ".context/node-trace-events/source/deps/v8/src/tracing/trace-event-no-perfetto.h",
+        "bytes": 58188,
+        "sha256": "7f7a7af18448f3679672d818c9d95bf27fedef599fb0fca9810c050b0d5c7f01"
+      },
+      "completeFile": true,
+      "compiledUnchanged": false
+    }
+  ],
+  "completeUnchangedTranslationUnits": 7,
+  "wholeOriginalNodeMutexUsed": true,
+  "privatePrimitiveAdapter": {
+    "owner": "guest libc/kernel clocks, pid/tid, printing and termination; libuv via complete Node mutex helper",
+    "notExportedAsCompleteV8BaseApi": true
+  },
+  "targetHeaderPatch": {
+    "patch": {
+      "path": "packages/registry/v8-tracing/patches/0001-kandelo-wasm32-config.patch",
+      "bytes": 2172,
+      "sha256": "8fdd56443c536c64948f048fa721729a6428e8585b49d112b7469851efbbff03"
+    },
+    "original": {
+      "path": ".context/node-trace-events/source/deps/v8/include/v8config.h",
+      "bytes": 37285,
+      "sha256": "8c5863fa045d38345f0702b11b8307423b942044198dd9bad5989476775c3d38"
+    },
+    "installed": {
+      "path": "/Users/brandon/.cache/kandelo/libs/v8-tracing-14.6.202.34-rev1-wasm32-abi56-9de40960a61dbe17cdd8da36d19e1dd97f22b1b6dde44131167a79b17e2bd4cb/include/v8config.h",
+      "bytes": 37738,
+      "sha256": "6468b4208b93b3646c74588101caf790961712a108a21aac4f28f0a1c5886901"
+    },
+    "linuxIdentityAdded": false
+  },
+  "fixturePrimitiveMetadataVerified": true,
+  "testedInputs": [
+    {
+      "path": "packages/registry/libuv/README.md",
+      "bytes": 5027,
+      "sha256": "ffe5588180a6f09eef07a55c1da2721fd5c459e39d738bcae588225da3bc1f7d"
+    },
+    {
+      "path": "packages/registry/libuv/build-libuv.sh",
+      "bytes": 1503,
+      "sha256": "bbccbf5ca7e56c62f29f51e7343d5ad67d2b6c97563a8a271af768e4fbc2b1d2"
+    },
+    {
+      "path": "packages/registry/libuv/build.toml",
+      "bytes": 613,
+      "sha256": "0c2de0a74d14dcbe8ca3e541dd7a0f3f947d4f05dc2093e96bc578b77fc812c0"
+    },
+    {
+      "path": "packages/registry/libuv/package.toml",
+      "bytes": 1833,
+      "sha256": "8d2febf060cc5cc646d6a6edd12889fdf0d337b0edebfb7b4098da28ba6872fa"
+    },
+    {
+      "path": "packages/registry/libuv/patches/0001-kandelo-posix-backend.patch",
+      "bytes": 1730,
+      "sha256": "214265144499c42db0769900c44561282592e73785b2f010b2cdfd9a771631f0"
+    },
+    {
+      "path": "packages/registry/libuv/patches/0002-typed-pthread-entry.patch",
+      "bytes": 1710,
+      "sha256": "f67cf80f289d7f101134de83d27262f09fb87c39936aa903a1d3dde45354d346"
+    },
+    {
+      "path": "packages/registry/libuv/patches/0003-relocatable-static-pkgconfig.patch",
+      "bytes": 277,
+      "sha256": "c634ab8bae91fdef82a891404503cd007bd6e056cbe2687bc3bd9314dd755a92"
+    },
+    {
+      "path": "packages/registry/libuv/src/kandelo-proctitle.c",
+      "bytes": 600,
+      "sha256": "06dc646f327c3895860cfdf7f892cfe4aed69d3cf19392c524e1259424c710d8"
+    },
+    {
+      "path": "packages/registry/libuv/test/CMakeLists.txt",
+      "bytes": 329,
+      "sha256": "e74af959942f623ddf83b7908bc233bbb2b79d7bf7c687630c616c74f382df2d"
+    },
+    {
+      "path": "packages/registry/libuv/test/backend-controls.c",
+      "bytes": 10519,
+      "sha256": "c746b6617a614a7f946de46b0105171f4e16299b2c90edd89ec523d05edc8318"
+    },
+    {
+      "path": "packages/registry/libuv/test/build-controls.sh",
+      "bytes": 1102,
+      "sha256": "c740a257084465bc466577b5f2be51bc9bb8089aaf2c41a626d51da347638151"
+    },
+    {
+      "path": "packages/registry/v8-tracing/README.md",
+      "bytes": 3140,
+      "sha256": "27768fe1900978ca894147d32e0170bba5f5f5ce684ac176f0ac604a18d32806"
+    },
+    {
+      "path": "packages/registry/v8-tracing/build-v8-tracing.sh",
+      "bytes": 1353,
+      "sha256": "19e3c7995f9f247261de4f35c23002270b434f7394afd904bee171cf0a3b3d4d"
+    },
+    {
+      "path": "packages/registry/v8-tracing/build.toml",
+      "bytes": 940,
+      "sha256": "6a9663a291513a05e0d33bd7c3f4e8e9a6b7b7781e27f7bfb99c8c9003ad2e6a"
+    },
+    {
+      "path": "packages/registry/v8-tracing/cmake/CMakeLists.txt",
+      "bytes": 2638,
+      "sha256": "d225d397aa69edad87e6ce3f361472041976df002ef0e294cc708be5aeb5b696"
+    },
+    {
+      "path": "packages/registry/v8-tracing/cmake/v8-tracing.pc.in",
+      "bytes": 328,
+      "sha256": "51f16aad37b0905dc481dc88bd9bb3ad999d0bcad6ae6b40fa7bfa4c904bd651"
+    },
+    {
+      "path": "packages/registry/v8-tracing/cmake/v8-tracingConfig.cmake.in",
+      "bytes": 149,
+      "sha256": "62cf2e4995e7f5e74d3632137a89a697c2c98cfa36ab52d085cf855b287ba966"
+    },
+    {
+      "path": "packages/registry/v8-tracing/package.toml",
+      "bytes": 1609,
+      "sha256": "2246ebc4e091332f69f8940d4aad5dd10289eaa842d603b45e9a4fdcfa2d3981"
+    },
+    {
+      "path": "packages/registry/v8-tracing/patches/0001-kandelo-wasm32-config.patch",
+      "bytes": 2172,
+      "sha256": "8fdd56443c536c64948f048fa721729a6428e8585b49d112b7469851efbbff03"
+    },
+    {
+      "path": "packages/registry/v8-tracing/src/include/src/base/platform/mutex.h",
+      "bytes": 235,
+      "sha256": "47e4af27f3afc05b136b329ced97dc365e4c8e74d81594c3994eef45f66be80a"
+    },
+    {
+      "path": "packages/registry/v8-tracing/src/include/src/base/platform/platform.h",
+      "bytes": 464,
+      "sha256": "9f4401900be70e63d6ab47f9894bd8c487d357248d43025f8f994164c5c45010"
+    },
+    {
+      "path": "packages/registry/v8-tracing/src/include/src/base/platform/time.h",
+      "bytes": 399,
+      "sha256": "930c1356e92b477655ccfe8f06bf0f0d788c68fe48201bf3fdc8d44f340431c5"
+    },
+    {
+      "path": "packages/registry/v8-tracing/src/include/util.h",
+      "bytes": 43,
+      "sha256": "b42a5b3da1c19d5bf10a4d50fd541ac07210f0e7c5672f918d1c6de0474bddb6"
+    },
+    {
+      "path": "packages/registry/v8-tracing/src/platform.cpp",
+      "bytes": 1087,
+      "sha256": "085d764ded82405069035bc2c1309b63f86595dd10cc81c909d87fb84df6c002"
+    },
+    {
+      "path": "packages/registry/v8-tracing/test/CMakeLists.txt",
+      "bytes": 781,
+      "sha256": "d0aded94b8547fdf6c0c4e8252ffa50ef7743a2199208f05316ee13b7bd8fddc"
+    },
+    {
+      "path": "packages/registry/v8-tracing/test/build-controls.sh",
+      "bytes": 1411,
+      "sha256": "9d8a83d45811df7a5b82535d4c1e9708d77f4b38d7f2578f4c2fd428ed64f973"
+    },
+    {
+      "path": "packages/registry/v8-tracing/test/component-controls.cpp",
+      "bytes": 7080,
+      "sha256": "ffd2427d7d00f8ffff2470c7ec07cb733a5c4784af0880523e09a2787e603dd7"
+    },
+    {
+      "path": "packages/registry/v8-tracing/test/target-selectors.cpp",
+      "bytes": 820,
+      "sha256": "ecacc201877ef60363c8b2c285cd5bf8a483c187c3c6c61f52c56adfa9c479f1"
+    },
+    {
+      "path": "scripts/package-build-roots.sh",
+      "bytes": 43483,
+      "sha256": "a6ef104ebdf8a88edff4467d039c710730f47a0029777638a619250b56a2a384"
+    },
+    {
+      "path": "scripts/run-v8-tracing-controls.ts",
+      "bytes": 2300,
+      "sha256": "31640fbed0f3f199017ffce986d2e770b5056b4821465be0d1dff019ec85339d"
+    },
+    {
+      "path": "sdk/cmake/Platform/Kandelo.cmake",
+      "bytes": 624,
+      "sha256": "f5e71eccc2d9555bd732dbcc2e8362a5cba04da663f2603c35c035f8009db831"
+    },
+    {
+      "path": "sdk/cmake/kandelo-toolchain.cmake",
+      "bytes": 770,
+      "sha256": "77ec98d46ec471804385953298526d450891c796b05d6793fbca4d4523d26f44"
+    },
+    {
+      "path": "tests/nodejs/upstream/v8-tracing-browser/playwright.config.ts",
+      "bytes": 209,
+      "sha256": "e4b7f4d827e589da63253a8aff12b6a19a230707ec9ccb22a8ddf401965c5604"
+    },
+    {
+      "path": "tests/nodejs/upstream/v8-tracing-browser/v8-tracing.spec.ts",
+      "bytes": 3754,
+      "sha256": "ffbac72719df7ba2306e7c137157edaa7948c88cf99df2cd086d23f31f06c757"
+    },
+    {
+      "path": "tests/nodejs/upstream/v8-tracing-component-assertions.ts",
+      "bytes": 2648,
+      "sha256": "56197da9ffe3ba60b7546eb3841f54916c6a5410ed476b17a3d7ea5e94f19593"
+    }
+  ],
+  "casesPerHost": 9,
+  "fourHostCaseObservations": 36,
+  "relocatedConsumerCases": 18,
+  "totalSelectedCaseObservations": 54,
+  "processDrivers": 6,
+  "runs": [
+    {
+      "host": "Node",
+      "rawReport": {
+        "path": ".context/node-trace-events/component-node-final.json",
+        "bytes": 68832,
+        "sha256": "e9e14576773c84e97d9604a88941aaa8ec525c315919399934ef6e5200b0b35c"
+      },
+      "cases": 9,
+      "drivers": 1,
+      "hostVersion": "v24.15.0"
+    },
+    {
+      "host": "chromium",
+      "rawReport": {
+        "path": ".context/node-trace-events/component-browser-target/browser-chromium.json",
+        "bytes": 10346,
+        "sha256": "08ef293075a299dab7fa5f3549d4b7603f1285ee8bb9e0cecbc254cd62630d4a"
+      },
+      "cases": 9,
+      "drivers": 1,
+      "hostVersion": "153.0.8010.12"
+    },
+    {
+      "host": "firefox",
+      "rawReport": {
+        "path": ".context/node-trace-events/component-browser-target/browser-firefox.json",
+        "bytes": 10337,
+        "sha256": "0d684883dee9035d6da1fcc204882e9c66f14b1696e15efc101ab1fd0b679721"
+      },
+      "cases": 9,
+      "drivers": 1,
+      "hostVersion": "155.0"
+    },
+    {
+      "host": "webkit",
+      "rawReport": {
+        "path": ".context/node-trace-events/component-browser-target/browser-webkit.json",
+        "bytes": 10335,
+        "sha256": "923f51c2f4a24bc0568bb2b1f92baf8adb891c1c230322ed60da808682100b53"
+      },
+      "cases": 9,
+      "drivers": 1,
+      "hostVersion": "26.6"
+    }
+  ],
+  "relocation": {
+    "consumers": [
+      {
+        "consumer": "cmake",
+        "rawReport": {
+          "path": ".context/node-trace-events/relocated-cmake-node.json",
+          "bytes": 68816,
+          "sha256": "7173284ef582b5a0080552b658f0f604dc0626d2c8d2b3703f7fcdb59a228d95"
+        },
+        "program": {
+          "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/v8-tracing-relocated.Zx4lpH/cmake-controls.wasm",
+          "bytes": 758237,
+          "sha256": "ed4160ac9e4d0892b6eb785e5482380f938656a1cd9b49d228d28b1bd70ebce4"
+        },
+        "cases": 9,
+        "drivers": 1
+      },
+      {
+        "consumer": "pkgconfig",
+        "rawReport": {
+          "path": ".context/node-trace-events/relocated-pkgconfig-node.json",
+          "bytes": 68820,
+          "sha256": "ad325dc587957611b921863bb6b2a2b2230c2901611840fec5e903d1c3e16482"
+        },
+        "program": {
+          "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/v8-tracing-relocated.Zx4lpH/pkgconfig-controls.wasm",
+          "bytes": 636041,
+          "sha256": "d612b9c787e169a6ef8af1f2ea925ed4266a28bfa12ea0ceceb0e59255ecbf8e"
+        },
+        "cases": 9,
+        "drivers": 1
+      }
+    ],
+    "compileEvidence": {
+      "path": ".context/node-trace-events/relocation-compile.json",
+      "bytes": 1716,
+      "sha256": "47f5274078bf86d01425eaddc2be93bb07bcbcd880d608ebbb1795343d706b45"
+    },
+    "ownAndDependencyPathsRelocated": true
+  },
+  "libuvMetadataFix": {
+    "evidence": {
+      "path": ".context/node-trace-events/libuv-metadata-only.json",
+      "bytes": 536,
+      "sha256": "cbaaeeebc83c91b813b2969aae8c51ba37fa8ff49a6e61c3361624f259a764de"
+    },
+    "revision": 4,
+    "runtimeArchiveByteIdentical": true,
+    "archiveSha256": "6f792478cf73eecad95b5bfd2ad1c29625e8983f3c66d113d68e132266a4d9bd"
+  },
+  "sourceManifest": {
+    "identity": {
+      "path": "third_party/nodejs/sources.json",
+      "bytes": 124933,
+      "sha256": "f7d404ce79b85fa81c48c3e12388e6c1ee10c92046be1c6358f3b7b3ef189ab0"
+    },
+    "files": 532,
+    "originalJsFiles": 443,
+    "allRecordsUnchanged": true
+  },
+  "attempts": [
+    {
+      "id": "node-v8-tracing-browsers-1111-114112-853b",
+      "command": "scripts/dev-shell.sh bash .context/node-trace-events/run-component-browsers.sh /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/v8-tracing-controls-first/v8-tracing-component-controls.wasm",
+      "exitCode": 0,
+      "durationSeconds": 16.0,
+      "log": {
+        "path": ".context/node-trace-events/runtime/job-logs/node-v8-tracing-browsers-1111-114112-853b.log",
+        "bytes": 5719,
+        "sha256": "b333981f24220421f0d1fab931e02769dc644a5d54fe876330d75dd86e589659"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-v8-tracing-browsers-final-1111-115002-517e",
+      "command": "scripts/dev-shell.sh bash .context/node-trace-events/run-component-browsers.sh /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/v8-tracing-controls-final/v8-tracing-component-controls.wasm /Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-trace-events/component-browser-final",
+      "exitCode": 0,
+      "durationSeconds": 10.8,
+      "log": {
+        "path": ".context/node-trace-events/runtime/job-logs/node-v8-tracing-browsers-final-1111-115002-517e.log",
+        "bytes": 6075,
+        "sha256": "5f4b0b56d4ec17d179df3c48bdb883cf2b8677acbdfc098374add8d6c7a5b9b2"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-v8-tracing-browsers-target-1111-120315-4624",
+      "command": "scripts/dev-shell.sh bash .context/node-trace-events/run-component-browsers.sh /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/v8-tracing-controls-selector/v8-tracing-component-controls.wasm /Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-trace-events/component-browser-target",
+      "exitCode": 0,
+      "durationSeconds": 15.9,
+      "log": {
+        "path": ".context/node-trace-events/runtime/job-logs/node-v8-tracing-browsers-target-1111-120315-4624.log",
+        "bytes": 6078,
+        "sha256": "a3a86e6f3a80182f2c8141101de04e827405291b634ebeca6826685621020864"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-v8-tracing-library-1111-113450-3a79",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh v8-tracing wasm32",
+      "exitCode": 0,
+      "durationSeconds": 17.4,
+      "log": {
+        "path": ".context/node-trace-events/runtime/job-logs/node-v8-tracing-library-1111-113450-3a79.log",
+        "bytes": 360,
+        "sha256": "e1f295dc59222e5047287fb7d8e8d1c01c628d18ff07904d02d8805463729f5b"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-trace-events/runtime/job-logs/node-v8-tracing-library-1111-113450-3a79-package-0.log",
+          "bytes": 21594,
+          "sha256": "91a19425ed28979fe222975fb83e380e065e7c1b94dcc23f208ddf2abfb35307"
+        }
+      ]
+    },
+    {
+      "id": "node-v8-tracing-relocatable-libuv-1111-114537-12d0",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh v8-tracing wasm32",
+      "exitCode": 0,
+      "durationSeconds": 38.6,
+      "log": {
+        "path": ".context/node-trace-events/runtime/job-logs/node-v8-tracing-relocatable-libuv-1111-114537-12d0.log",
+        "bytes": 370,
+        "sha256": "73620e2f25b95e67774fb1ccf40059f6c815a9fe941f5b66f56cfa7c23059b03"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-trace-events/runtime/job-logs/node-v8-tracing-relocatable-libuv-1111-114537-12d0-package-0.log",
+          "bytes": 33227,
+          "sha256": "1ac9ab08c7e7150f75594d5daa5a1bfa061e04d883fec206a3eba9a200c4d50f"
+        }
+      ]
+    },
+    {
+      "id": "node-v8-tracing-target-selector-1111-120002-62f8",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh v8-tracing wasm32",
+      "exitCode": 0,
+      "durationSeconds": 17.8,
+      "log": {
+        "path": ".context/node-trace-events/runtime/job-logs/node-v8-tracing-target-selector-1111-120002-62f8.log",
+        "bytes": 368,
+        "sha256": "ddedebb91fe442fe8223b54035beb16be4a70eb77afac46dff2de80c3527fe5c"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-trace-events/runtime/job-logs/node-v8-tracing-target-selector-1111-120002-62f8-package-0.log",
+          "bytes": 21790,
+          "sha256": "c3d30da7bcc3627bcf9c74e67b155eabc2c06815f029072251f4987fdfc2e950"
+        }
+      ]
+    }
+  ],
+  "retainedFailures": [
+    {
+      "path": ".context/node-trace-events/probe-driver-wrong-compiler.log",
+      "bytes": 15887,
+      "sha256": "4ecd7986d815087568cd174974f447afba5b57e630e9eb00f918f3b77c838966"
+    },
+    {
+      "path": ".context/node-trace-events/probe-original.log",
+      "bytes": 17671,
+      "sha256": "12bbbd3778057b87c42ed7a08321f7b878a95cbbb1032c85bee50ba9f134eac4"
+    },
+    {
+      "path": ".context/node-trace-events/build-component-missing-stream-header.log",
+      "bytes": 72634,
+      "sha256": "a4c13e144b9732cfad5fa52e36eea6169ca827803e2a86c7be38244f0060795d"
+    },
+    {
+      "path": ".context/node-trace-events/build-component-missing-assert-header.log",
+      "bytes": 31623,
+      "sha256": "803233338bb37d1c729872443909b184068ded1a43b0002e1d8b644b7933d42f"
+    },
+    {
+      "path": ".context/node-trace-events/build-component-missing-os-declarations.log",
+      "bytes": 32440,
+      "sha256": "d66bcef4af4d50b4b0b1091b7a1c83fce6d048ef343c1d843f664c4359b3c143"
+    },
+    {
+      "path": ".context/node-trace-events/check-relocation-uv-absolute-prefix.log",
+      "bytes": 33862,
+      "sha256": "e8fc69bd6eec21c6c593f7f90326311041ce0d34b843ae365ba536bee8aca3c4"
+    },
+    {
+      "path": ".context/node-trace-events/target-selector-before-fix.log",
+      "bytes": 52434,
+      "sha256": "6cfe27bd915d6ee11a6b3a5ee01fc39cdf2957f4091642575b2aa6429d4fcfd4"
+    }
+  ],
+  "failuresExplained": [
+    "Initial probe driver named a nonexistent compiler; corrected to declared wasm32posix-c++ before actual probe",
+    "Unadapted V8 headers reject wasm32 and native V8 mutex requires unavailable Abseil; explicit target header extension and complete Node libuv mutex adapter",
+    "Private platform declarations initially omitted stream/assert includes and ExitProcess/arraysize context; corrected before complete-unit compilation",
+    "Relocated pkg-config dependency retained original libuv cache prefix; owning libuv recipe now uses relative installed paths; runtime archive byte-identical",
+    "Initial target selector was inserted in feature-header block; compile-only replay of legacy embedding Linux macro exposed the mistake; corrected OS detector and positive selector checks retained"
+  ],
+  "whitespace": {
+    "authoredSourceClean": true,
+    "standardUnifiedPatchContextWarnings": {
+      "path": ".context/node-trace-events/patch-context-whitespace.json",
+      "bytes": 2036,
+      "sha256": "1061c69f998168b5110046bc5912955c7f5d2316b481b9accaf4bf186c0cbe2e"
+    }
+  },
+  "compileOnlyTargetControls": {
+    "cases": 2,
+    "source": {
+      "path": "packages/registry/v8-tracing/test/target-selectors.cpp",
+      "bytes": 820,
+      "sha256": "ecacc201877ef60363c8b2c285cd5bf8a483c187c3c6c61f52c56adfa9c479f1"
+    },
+    "evidence": {
+      "path": ".context/node-trace-events/build-controls-selector.log",
+      "bytes": 51588,
+      "sha256": "079d7d1e04cc6d99cc8c97e72ae1ec2947e08c7f68d082a47b50477d480f5796"
+    },
+    "normalAndLegacyEmbeddingMacroPass": true
+  },
+  "browserCleanupWarnings": [
+    {
+      "path": ".context/node-trace-events/component-browser-before-libuv-metadata/browser-cleanup.json",
+      "bytes": 246,
+      "sha256": "ca0b9762f2a2c291ee9ccc4121f88a1ed4ea785125e57641b892433987823ffe"
+    },
+    {
+      "path": ".context/node-trace-events/component-browser-target/browser-cleanup.json",
+      "bytes": 409,
+      "sha256": "42d2d7c0500acc9824a4d40fc714f0607ef689256e6496fcedca85ad8c1905f3"
+    }
+  ],
+  "linkedIntoSpiderMonkey": false,
+  "nodeTracingAgentImplemented": false,
+  "wholeOriginalNativeTraceBindingExecuted": false,
+  "upstreamStartupAccepted": false,
+  "principalCurrentGap": "trace_events",
+  "stackLimitCurrentGap": "mksnapshot",
+  "completeBackendCatalog": false,
+  "limits": [
+    "No V8 JavaScript engine/JIT capability or process.versions.v8 advertised",
+    "Seven original translation units do not implement Node trace-event binding, writer agent or engine extra-binding intrinsics",
+    "Process-global category arrays require coherent one-process controller ownership; simultaneous controllers and guest external JS view lifetimes unproven",
+    "Full file streaming/rotation/open/write/partial-write errors, native agent thread/uv_loop lifecycle, cancellation/OOM/security/fork/worker teardown unvalidated",
+    "Clock API use and positive duration are not CPU-time conformance or performance evidence",
+    "Release library preserves upstream conditional DCHECK policy; no broad malformed-native-API/fatal differential",
+    "Core SpiderMonkey artifact unchanged and not rebuilt/retested this phase; prior ICU evidence remains on its own exact artifact",
+    "Full public/internal graph catalog and startup empty/simple/CJS/ESM acceptance incomplete",
+    "No product/image/successor-ABI rebuilds or overall suites"
+  ],
+  "verificationFailures": 0
+}
