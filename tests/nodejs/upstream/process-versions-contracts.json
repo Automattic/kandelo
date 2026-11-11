@@ -1,29 +1,29 @@
 {
   "schema": 1,
   "binding": "initial process.versions metadata",
-  "status": "missing; original bootstrap blocker at internal/util:78; source/descriptor review only",
+  "status": "initial native process metadata implemented from actual source/build/library identities; focused four-host evidence, complete process metadata and startup unfinished",
   "sourceFiles": [
     {
       "upstreamPath": "src/node_metadata.cc",
-      "path": ".context/node-process-versions/source/src/node_metadata.cc",
+      "path": "third_party/nodejs/upstream/src/node_metadata.cc",
       "bytes": 5771,
       "sha256": "f1539327f72ff6a47a5bfb8692d49e5ba5d8b1c739be50aa6995073af52191d7"
     },
     {
       "upstreamPath": "src/node_metadata.h",
-      "path": ".context/node-process-versions/source/src/node_metadata.h",
+      "path": "third_party/nodejs/upstream/src/node_metadata.h",
       "bytes": 5563,
       "sha256": "fc100c3c02ccde5d2a5775628501ceae8bc55bfe288ad1526da2f32adfc1393a"
     },
     {
       "upstreamPath": "src/node_process_object.cc",
-      "path": ".context/node-process-versions/source/src/node_process_object.cc",
+      "path": "third_party/nodejs/upstream/src/node_process_object.cc",
       "bytes": 8595,
       "sha256": "301c1819a6cd59a48bd28f4c2252298137b6631cc33dda0ddb55dd8067d48957"
     },
     {
       "upstreamPath": "src/node_version.h",
-      "path": ".context/node-process-versions/source/src/node_version.h",
+      "path": "third_party/nodejs/upstream/src/node_version.h",
       "bytes": 4637,
       "sha256": "94a454d9b6f16efa15ee55d3c0c130a6c69425b5bea358888a9735ddc7d62b8f"
     }
@@ -340,29 +340,121 @@
   ],
   "coverage": {
     "literalConsumerLines": 13,
-    "fullGraphReconciled": false
+    "fullGraphReconciled": false,
+    "parsedOriginalSources": 443,
+    "syntaxReferences": 22,
+    "syntaxIndex": "process-versions-consumers.json",
+    "computedFieldsFound": 0,
+    "aliasHandling": "conservative file-wide alias candidates; scope/reachability/dataflow not complete"
   },
   "contracts": {
     "owner": "native process metadata, installed on actual initial realm process; ordinary new process instances do not acquire metadata automatically",
     "source": "complete src/node_process_object.cc creates actual versions object; node first then sorted original Metadata::Versions::pairs entries; original read-only property definitions",
     "engine": "process must identify actual SpiderMonkey engine; copying native V8 version or Node V8-addon ABI would be false",
-    "libraries": "libuv, OpenSSL, zlib, zstd, nbytes and simdutf are actual linked libraries; derive values from their build/runtime APIs, not Darwin reference",
+    "libraries": "actual resolved guest libuv/OpenSSL/zlib/zstd APIs and nbytes/simdutf build headers; no native-reference values copied",
     "sourceVersions": "Node/acorn/Undici/Amaro source availability does not establish all runtime capability; imported vendored bytes and executable backends remain separate",
-    "intl": "runtime timezone/CLDR initialization can fail; retain true ICU initialization/error state",
+    "intl": "ICU/unicode build identities and actual CLDR/timezone data; CLDR query/API and timezone errors preserve native initialization failure",
     "scheduling": "metadata construction synchronous; getters/proxies/inherited setters and object mutation/descriptor behavior need explicit validation",
     "ownership": "root returned object and all constructed strings through allocation/GC; each actual realm process owns object; constructor prototype remains separate"
   },
   "obstacles": [
-    "Whole native node_metadata.cc unconditionally references V8 and multiple currently unlinked libraries; cannot supply placeholder dependency versions to compile it",
-    "Original node_process_object.cc has wider process creation/method dependencies; no SetVersions function extraction",
-    "Native module ABI/N-API and V8 identity are unsupported contracts today; do not fill their version fields from source constants as a support claim"
+    "Full original V8 Metadata/process factories remain unported; their V8/addon and unlinked-library constants are not exposed as implemented capabilities",
+    "Complete process release/configuration/environment/CLI metadata, security/OOM/full teardown and all optional consumers remain unfinished",
+    "Principal original bootstrap now needs actual icu binding; original stack-limit policy needs actual mksnapshot state/callback backend"
   ],
   "nextWork": [
-    "Inventory all alias/computed consumers and actual linked source/runtime versions",
-    "Determine complete native metadata/process-object integration using real optional capabilities and explicit missing backends; preserve whole original sources",
-    "Validate descriptors and values from actual guest library/engine evidence with moving GC on all four hosts",
-    "Rerun original bootstrap and separate empty/simple/CJS/ESM acceptance; retain each new honest failure"
+    "Implement genuine icu binding required by internal/util/inspect; preserve actual Intl capability instead of disabling it",
+    "Implement real source-only snapshot mode and callback ownership for mksnapshot; actual V8 serialization remains an engine boundary",
+    "Continue original Buffer/process/startup closure and complete all graph/runtime validation obligations",
+    "Complete full dependency/backend catalog and ordered roadmap, then stop for user review before broader implementation"
   ],
   "startupAccepted": false,
-  "broaderRoadmapAuthorized": false
+  "broaderRoadmapAuthorized": false,
+  "implementation": {
+    "owner": "packages/registry/spidermonkey/node-upstream/process-versions.cpp",
+    "sourceVersion": "complete verified original node_version.h used unchanged",
+    "factory": "actual rooted SpiderMonkey object/string/property operations; full original V8 Metadata/process factories admitted for provenance, not executed",
+    "fields": {
+      "node": "26.13.0",
+      "cldr": "47.0",
+      "icu": "77.1",
+      "nbytes": "0.1.4",
+      "openssl": "3.3.2",
+      "simdutf": "7.7.0",
+      "spidermonkey": "JavaScript-C140.11.0",
+      "tz": "2026b",
+      "unicode": "16.0",
+      "uv": "1.52.1",
+      "zlib": "1.3.1",
+      "zstd": "1.5.6"
+    },
+    "propertyAttributes": "matches authenticated native descriptor/reference controls; non-writable, enumerable, configurable data properties; ordinary mutable object",
+    "scheduling": "synchronous; actual native API errors and engine allocation failures propagate; no asynchronous handles, refs or cancellation",
+    "gc": "each initial process owns its rooted copied strings/object, no static JS roots or native string borrows survive return; moving GC and realm isolation covered",
+    "optionalCapabilities": "unlinked libraries, V8, addon ABI, Node-API and Amaro omitted; imported JS availability does not advertise backend support",
+    "zlib": "entire resolved zlib.h/zconf.h staged to avoid Mozilla exported prefixed 1.3.2 API; actual embedding library is resolved1.3.1",
+    "icu": "complete unchanged Mozilla-vendored ICU ulocdata.cpp compiled for actual CLDR query; no extracted ICU function"
+  },
+  "validation": {
+    "evidence": "process-versions-engine-check.json",
+    "casesPerHost": 12,
+    "hosts": [
+      "Node",
+      "Chromium",
+      "Firefox",
+      "WebKit"
+    ],
+    "nativeReferenceCases": 4,
+    "priorNodeCases": 275,
+    "guestCaseObservations": 323,
+    "driverRuns": 98,
+    "expectedFatalExits": 24,
+    "normalGuestPath": true,
+    "startupAccepted": false
+  },
+  "startup": {
+    "principalFailure": {
+      "operation": "principal-bootstrap-node",
+      "status": "missing-backend",
+      "name": "Error",
+      "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+      "message": "Native Node binding 'icu' is not implemented",
+      "stack": "Error: Native Node binding 'icu' is not implemented\n    at internalBinding (node:internal/bootstrap/realm:172:34)\n    at node:internal/util/inspect:2958:30\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/timers:125:28\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/bootstrap/node:69:31\n    at -e:12:11",
+      "compiledBuiltinIds": [
+        "internal/bootstrap/realm",
+        "internal/errors",
+        "internal/assert",
+        "internal/bootstrap/node",
+        "internal/timers",
+        "internal/async_hooks",
+        "internal/validators",
+        "internal/util",
+        "internal/options",
+        "internal/util/types",
+        "internal/linkedlist",
+        "internal/priority_queue",
+        "internal/util/inspect"
+      ]
+    },
+    "stackLimitFailure": {
+      "operation": "original-stack-limit-policy",
+      "status": "missing-backend",
+      "name": "Error",
+      "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+      "message": "Native Node binding 'mksnapshot' is not implemented",
+      "stack": "Error: Native Node binding 'mksnapshot' is not implemented\n    at internalBinding (node:internal/bootstrap/realm:172:34)\n    at node:internal/v8/startup_snapshot:19:20\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at isErrorStackTraceLimitWritable (node:internal/errors:250:14)\n    at -e:18:40",
+      "compiledBuiltinIds": [
+        "internal/bootstrap/realm",
+        "internal/errors",
+        "internal/assert",
+        "internal/v8/startup_snapshot",
+        "internal/validators",
+        "internal/util",
+        "internal/options",
+        "internal/util/types"
+      ]
+    },
+    "typedOriginalNodeError": "returned",
+    "emptySimpleCjsEsm": "unproven"
+  }
 }

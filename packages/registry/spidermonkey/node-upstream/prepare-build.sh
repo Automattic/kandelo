@@ -22,6 +22,8 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/builtin-compiler.h" \
     "$node_consumer/private-key-test-api.cpp" \
     "$node_consumer/private-key-test-api.h" \
+    "$node_consumer/process-versions.cpp" \
+    "$node_consumer/process-versions.h" \
     "$node_consumer/per-context.cpp" \
     "$node_consumer/module-wrap.cpp" \
     "$node_consumer/module-wrap.h" \
@@ -53,17 +55,27 @@ cp "$node_import/native/builtin-source-registry.cpp" \
 # Keep the portable registry's include names independent of Mozilla shell paths.
 # Mozilla's checker treats js/src as the root of internal header include names.
 cp "$node_import/native/builtin-source-registry.h" "$mozilla_source/js/src/"
-python3 - "$node_import" "$mozilla_source/js/src" <<'PY'
+python3 - "$node_import" "$mozilla_source/js/src" "$5" <<'PY'
 import hashlib, json, pathlib, sys
-root, output_dir = map(pathlib.Path, sys.argv[1:])
+root, output_dir, zlib_include = map(pathlib.Path, sys.argv[1:])
 records = json.loads((root/'sources.json').read_bytes())['files']
 for source_name, output_name in [('src/env_properties.h', 'node-env-properties.h'),
-                                 ('src/node_exit_code.h', 'node-exit-code.h')]:
+                                 ('src/node_exit_code.h', 'node-exit-code.h'),
+                                 ('src/node_version.h', 'node-version.h')]:
     record = next(r for r in records if r['path'] == source_name)
     source = (root/'upstream'/record['path']).read_bytes()
     if len(source) != record['bytes'] or hashlib.sha256(source).hexdigest() != record['sha256']:
         raise ValueError('original Node header identity mismatch: ' + source_name)
     (output_dir/output_name).write_bytes(source)
+# Mozilla exports a prefixed bundled zlib header ahead of consumer CFLAGS.
+# This embedding uses the resolver's library, so retain its complete header pair.
+headers = output_dir/'shell/node-upstream/process-versions-deps'
+headers.mkdir(parents=True, exist_ok=True)
+for name in ['zlib.h', 'zconf.h']:
+    source = (zlib_include/name).read_bytes()
+    (headers/name).write_bytes(source)
+    print(json.dumps({'resolvedHeader': str(zlib_include/name),
+                      'bytes': len(source), 'sha256': hashlib.sha256(source).hexdigest()}))
 PY
 python3 "$repo_root/scripts/generate-nodejs-async-metadata.py" \
     --manifest "$node_import/sources.json" \

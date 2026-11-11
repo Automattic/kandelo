@@ -56,6 +56,8 @@ def select_sources(members, prefix):
                        'src/string_decoder-inl.h', 'src/string_bytes.cc',
                        'src/string_bytes.h', 'src/node_buffer.h',
                        'src/node_errors.h',
+                       'src/node_version.h', 'src/node_metadata.h',
+                       'src/node_metadata.cc', 'src/node_process_object.cc',
                        'src/node_options.cc', 'src/node_options.h',
                        'src/node_options-inl.h', 'src/node_mutex.h',
                        'src/quic/guard.h', 'deps/ncrypto/ncrypto.h',

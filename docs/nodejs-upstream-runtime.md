@@ -13,9 +13,10 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry now calls complete `internal/bootstrap/node`
 with protected state, passes native configuration and reaches the missing
-`process.versions` provider in original `internal/util`, after executing the
+`icu` binding in original `internal/util/inspect`, after executing the
 original async-hooks module, native constants initializer and engine type
-predicates, native options and the original string-decoder binding through real backends.
+predicates, native options, the original string-decoder binding and native process
+version metadata through real backends.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -65,7 +66,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 523 files after complete native source/header additions; every
+manifest has 527 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -1016,7 +1017,7 @@ storage. This is tracked as the suspected
 An authenticated unmodified Mozilla 140.11.0 native shell did not crash on the
 first reduced case; that outcome is retained and the defect is not called confirmed.
 
-Original principal bootstrap and original stack-limit policy now reach
+The revision-33 principal bootstrap and original stack-limit policy reached
 `TypeError: can't access property "openssl", process.versions is undefined`
 at `node:internal/util:78`. The next prerequisite is a truthful native versions
 provider from actual source/build/library identities. Buffer allocation/prototype
@@ -1025,11 +1026,49 @@ and complete graph reconciliation remain open. No partial/canonical image, full
 product, successor-ABI campaign or overall suite ran. See
 [decoder-engine-check.json](../tests/nodejs/upstream/decoder-engine-check.json).
 
-The next partial inventory retains four complete upstream metadata/process
-sources and native property descriptors. It distinguishes actual linked library
-versions from imported source versions and unsupported V8/addon identities.
-The original native metadata constructor has unconditional dependencies on V8
-and currently unlinked libraries; placeholder versions and extracted process
-functions are excluded. Alias/computed consumers and the full integration
-approach remain open in
-[process-versions-contracts.json](../tests/nodejs/upstream/process-versions-contracts.json).
+## Native process version metadata
+
+Revision 34 initializes `version` and `versions` on the actual initial realm
+process through the native embedding. The complete original `node_version.h`
+supplies source-version data. Four whole upstream process/metadata files are
+admitted for provenance and contract review; the original V8-dependent metadata
+constructor and process factory are not claimed as executed. No upstream
+JavaScript or native function excerpt is substituted.
+
+The provider reports the actual SpiderMonkey implementation, resolved libuv,
+OpenSSL, zlib, zstd, nbytes and simdutf, plus the engine's ICU, Unicode, CLDR and
+timezone data. Unsupported V8, addon ABI, Node-API and Amaro entries remain
+absent. Imported vendored sources do not enable their runtime features. Ordinary
+data properties retain the native reference's read-only/configurable/enumerable
+attributes, node-first ordering and ordinary mutable object prototype. Each
+initial realm process owns its own metadata; constructor instances remain empty.
+
+The first link exposed Mozilla's omission of the declared CLDR-query API. The
+build now compiles the complete unchanged ICU `ulocdata.cpp` unit and queries
+the installed data. The first runtime comparison then exposed Mozilla's exported
+prefixed zlib header selecting its internal 1.3.2 library. The embedding now stages
+the resolver's complete `zlib.h`/`zconf.h` pair and calls its actual 1.3.1 library,
+matching the embedding's dependency and native constants. Mozilla's own prefixed
+zlib remains separate. Neither failure is hidden by a copied version string.
+
+Twelve metadata controls pass on Node, Chromium, Firefox and WebKit using
+identical engine/kernel bytes. Four native reference controls verify property,
+constructor and collection behavior separately. The same engine passes all 275
+prior Node cases: 323 selected engine case observations, 98 process drivers and
+24 expected fatal exits overall. The browser harness reports a separate macOS
+permission warning cleaning its Firefox Downloads directory.
+
+Original `internal/util` now executes, including encoding normalization and
+actual crypto/TypeScript capability checks. Principal bootstrap reaches missing
+`icu` at `internal/util/inspect:2958`; original stack-limit policy reaches missing
+`mksnapshot` at `internal/v8/startup_snapshot:19`. Typed original Node errors still
+return. Empty/simple, CJS/ESM and browser startup acceptance remain unfinished.
+
+The metadata syntax index parses all 443 original JavaScript sources and records
+22 references with conservative alias handling. This is not complete dataflow,
+worker, lazy or exceptional-path reconciliation. Full process metadata, remaining
+native binding closure and the full backend catalog/roadmap remain open. No full
+product, image, successor-ABI rebuild or overall suite ran. See
+[process-versions-contracts.json](../tests/nodejs/upstream/process-versions-contracts.json),
+[process-versions-consumers.json](../tests/nodejs/upstream/process-versions-consumers.json)
+and [process-versions-engine-check.json](../tests/nodejs/upstream/process-versions-engine-check.json).

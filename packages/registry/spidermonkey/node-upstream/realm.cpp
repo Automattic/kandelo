@@ -39,6 +39,7 @@
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/options.h"
 #include "shell/node-upstream/per-context.h"
+#include "shell/node-upstream/process-versions.h"
 #include "shell/node-upstream/task-queue.h"
 #include "shell/node-upstream/timers.h"
 #include "shell/node-upstream/types.h"
@@ -370,7 +371,8 @@ JSObject* ProcessObject(JSContext* cx, JS::HandleObject runtime) {
       !JS_DefineProperty(cx, process, "platform", platform, JSPROP_ENUMERATE | JSPROP_READONLY) ||
       !JS_DefineProperty(cx, process, "arch", machine, JSPROP_ENUMERATE | JSPROP_READONLY) ||
       !JS_DefineProperty(cx, process, "pid", int32_t(pid), JSPROP_ENUMERATE | JSPROP_READONLY) ||
-      !JS_DefineProperty(cx, process, "ppid", ParentPid, nullptr, JSPROP_ENUMERATE)) return nullptr;
+      !JS_DefineProperty(cx, process, "ppid", ParentPid, nullptr, JSPROP_ENUMERATE) ||
+      !InitializeProcessVersions(cx, process)) return nullptr;
   return process;
 }
 

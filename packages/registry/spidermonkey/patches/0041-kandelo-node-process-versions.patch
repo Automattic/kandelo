@@ -1,0 +1,26 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -43,2 +43,3 @@
+     "node-upstream/private-key-test-api.cpp",
++    "node-upstream/process-versions.cpp",
+     "node-upstream/realm.cpp",
+@@ -102 +103,2 @@
+ SOURCES["node-upstream/string-bytes-upstream.cpp"].flags += ["-std=c++20"]
++SOURCES["node-upstream/process-versions.cpp"].flags += ["-std=c++20"]
+--- a/config/external/icu/i18n/moz.build
++++ b/config/external/icu/i18n/moz.build
+@@ -19 +19,4 @@
+ SOURCES += sources
++# The process metadata provider queries actual installed CLDR data through
++# the complete upstream ICU unit, omitted from Mozilla's ordinary subset.
++SOURCES += ["/intl/icu/source/i18n/ulocdata.cpp"]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -45,2 +45,3 @@
+ ignored_js_src_dirs = [
++    "js/src/shell/node-upstream/process-versions-deps/",  # complete resolved library headers
+     "js/src/shell/node-upstream/codecs-upstream/",  # complete verified Node native sources
+@@ -59,2 +60,3 @@
+     [
++        "shell/node-upstream/process-versions-deps/zlib.h",
+         "shell/node-upstream/codecs-upstream/errors.generated.h",

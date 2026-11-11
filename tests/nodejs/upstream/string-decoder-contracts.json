@@ -626,13 +626,20 @@
   "startup": {
     "dependency": "Original internal/util eagerly reads encodings at line76; original public string_decoder requires whole buffer and internal/util modules",
     "accepted": false,
-    "observedNextFailure": {
+    "emptySimpleCjsEsm": "unproven",
+    "revision33Failure": {
       "name": "TypeError",
       "message": "can't access property \"openssl\", process.versions is undefined",
       "source": "node:internal/util:78:18",
       "artifactEvidence": ".context/node-string-decoder/bootstrap-gap-probe.json"
     },
-    "emptySimpleCjsEsm": "unproven"
+    "observedNextFailure": {
+      "name": "Error",
+      "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+      "message": "Native Node binding 'icu' is not implemented",
+      "source": "node:internal/util/inspect:2958",
+      "evidence": "process-versions-engine-check.json"
+    }
   },
   "deferred": [
     "Full products/product images/successor-ABI builds and overall suites",
@@ -660,7 +667,7 @@
   },
   "implementationPrerequisites": [
     "Complete original Buffer binding and public Buffer closure before claiming public StringDecoder",
-    "Complete process.versions from actual build/runtime/library identities; never copy native reference versions or pretend SpiderMonkey is V8",
+    "Complete wider process metadata and startup-required native bindings",
     "Complete graph reconciliation including lazy, conditional, worker and exceptional paths"
   ]
 }

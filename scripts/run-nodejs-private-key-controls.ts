@@ -7,8 +7,8 @@ import { runCentralizedProgram } from "../host/test/centralized-test-helper";
 
 const [programArgument, reportArgument, modeArgument = "private-keys"] = process.argv.slice(2);
 if (!programArgument || !reportArgument || process.argv.length > 5 ||
-    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config", "timers", "task-queue", "async-wrap", "constants", "types", "options", "decoder"].includes(modeArgument)) {
-  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config|timers|task-queue|async-wrap|constants|types|options|decoder]");
+    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config", "timers", "task-queue", "async-wrap", "constants", "types", "options", "decoder", "process-versions"].includes(modeArgument)) {
+  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config|timers|task-queue|async-wrap|constants|types|options|decoder|process-versions]");
 }
 const perContext = modeArgument === "per-context";
 const synthetic = modeArgument === "synthetic-modules";
@@ -20,16 +20,17 @@ const nativeConstants = modeArgument === "constants";
 const nativeTypes = modeArgument === "types";
 const nativeOptions = modeArgument === "options";
 const nativeDecoder = modeArgument === "decoder";
+const nativeVersions = modeArgument === "process-versions";
 const nativeAsync = modeArgument === "async-wrap";
 const nativeTasks = modeArgument === "task-queue";
 const processConfig = modeArgument === "process-config";
 const realmLibrary = modeArgument === "realm-library";
-const expectedKind = nativeDecoder ? "native-decoder-controls" : nativeOptions ? "native-options-controls" : nativeTypes ? "native-types-controls" : nativeConstants ? "native-constants-controls" : nativeAsync ? "native-async-wrap-controls" : nativeTasks ? "native-task-queue-controls" : nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
-const expectedCases = nativeDecoder ? 22 : nativeOptions ? 14 : nativeTypes ? 21 : nativeConstants ? 10 : nativeAsync ? 20 : nativeTasks ? 26 : nativeTimers ? 27 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
+const expectedKind = nativeVersions ? "native-process-versions-controls" : nativeDecoder ? "native-decoder-controls" : nativeOptions ? "native-options-controls" : nativeTypes ? "native-types-controls" : nativeConstants ? "native-constants-controls" : nativeAsync ? "native-async-wrap-controls" : nativeTasks ? "native-task-queue-controls" : nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
+const expectedCases = nativeVersions ? 12 : nativeDecoder ? 22 : nativeOptions ? 14 : nativeTypes ? 21 : nativeConstants ? 10 : nativeAsync ? 20 : nativeTasks ? 26 : nativeTimers ? 27 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
 const program = resolve(programArgument);
 const reportPath = resolve(reportArgument);
 const kernel = resolveBinary("kernel.wasm");
-const fixturePath = resolve(nativeDecoder ? "tests/nodejs/upstream/decoder-engine-controls.js" : nativeOptions ? "tests/nodejs/upstream/options-engine-controls.js" : nativeTypes ? "tests/nodejs/upstream/types-engine-controls.js" : nativeConstants ? "tests/nodejs/upstream/constants-engine-controls.js" : nativeAsync ? "tests/nodejs/upstream/async-wrap-engine-controls.js" : nativeTasks ? "tests/nodejs/upstream/task-queue-engine-controls.js" : nativeTimers ? "tests/nodejs/upstream/timers-engine-controls.js" : processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
+const fixturePath = resolve(nativeVersions ? "tests/nodejs/upstream/process-versions-engine-controls.js" : nativeDecoder ? "tests/nodejs/upstream/decoder-engine-controls.js" : nativeOptions ? "tests/nodejs/upstream/options-engine-controls.js" : nativeTypes ? "tests/nodejs/upstream/types-engine-controls.js" : nativeConstants ? "tests/nodejs/upstream/constants-engine-controls.js" : nativeAsync ? "tests/nodejs/upstream/async-wrap-engine-controls.js" : nativeTasks ? "tests/nodejs/upstream/task-queue-engine-controls.js" : nativeTimers ? "tests/nodejs/upstream/timers-engine-controls.js" : processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
   : "tests/nodejs/upstream/private-key-engine-controls.js");
 const fixture = readFileSync(fixturePath, "utf8").replace("// @shared-controls",
   nativeAsync ? readFileSync("tests/nodejs/upstream/async-wrap-shared-controls.js", "utf8") : "// no shared controls").replace("// @shared-constants-controls", nativeConstants ? readFileSync("tests/nodejs/upstream/constants-shared-controls.js", "utf8") : "// no shared constants").replace("// @shared-types-controls", nativeTypes ? readFileSync("tests/nodejs/upstream/types-shared-controls.js", "utf8") : "// no shared types").replace("// @shared-options-controls", nativeOptions ? readFileSync("tests/nodejs/upstream/options-shared-controls.js", "utf8") : "// no shared options").replace("// @shared-decoder-controls", nativeDecoder ? readFileSync("tests/nodejs/upstream/decoder-shared-controls.js", "utf8") : "// no shared decoder controls");
@@ -83,7 +84,7 @@ await run("node-mode-refuses-native-test-controls", ["node", "--kandelo-test-ups
 await run(modeArgument + "-controls", ["js", "--kandelo-test-upstream",
   ...(synthetic ? ["--enable-import-attributes"] : []), "-e", fixture], (result) => {
   expect(result.exitCode === 0, JSON.stringify(result));
-  if (nativeDecoder || nativeOptions || nativeTypes || nativeAsync || nativeConstants) expect(result.stderr === "" && result.hostDiagnostics.length === 0, JSON.stringify(result));
+  if (nativeVersions || nativeDecoder || nativeOptions || nativeTypes || nativeAsync || nativeConstants) expect(result.stderr === "" && result.hostDiagnostics.length === 0, JSON.stringify(result));
   const rows = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   expect(rows.length === 1, "expected one complete engine result");
   const row = rows[0];

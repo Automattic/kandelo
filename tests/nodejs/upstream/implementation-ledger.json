@@ -10,7 +10,7 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 523,
+    "importedFiles": 527,
     "taskQueuePartialCatalog": "task-queue-contracts.json",
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
     "constantsPartialCatalog": "constants-contracts.json",
@@ -19,7 +19,9 @@
     "stringDecoderPartialCatalog": "string-decoder-contracts.json",
     "nativeCodecEvidence": "native-codec-engine-check.json",
     "decoderEngineEvidence": "decoder-engine-check.json",
-    "processVersionsPartialCatalog": "process-versions-contracts.json"
+    "processVersionsPartialCatalog": "process-versions-contracts.json",
+    "processVersionsEngineEvidence": "process-versions-engine-check.json",
+    "processVersionsSyntaxIndex": "process-versions-consumers.json"
   },
   "implementation": [
     {
@@ -79,9 +81,9 @@
     },
     {
       "area": "eager Buffer/process/fs/options/task queues/timers/async binding closure",
-      "sourceStatus": "Genuine initial process/config, timers/task queues/partial async, constants/types, original native options and original decoder/StringBytes implemented in bounded scope; wider Buffer/fs/process closure incomplete",
+      "sourceStatus": "Genuine initial process/config, timers/task queues/partial async, constants/types, original native options and original decoder/StringBytes implemented in bounded scope; wider Buffer/fs/process closure incomplete; actual process version provider implemented",
       "remaining": "contract inventory and dependency-ordered owning backends; no placeholder export objects",
-      "evidence": "decoder-engine-check.json"
+      "evidence": "process-versions-engine-check.json"
     },
     {
       "area": "generated runtime configuration",
@@ -101,9 +103,9 @@
     },
     {
       "area": "native initial process prototype/constructor, shared exit-info and config",
-      "sourceStatus": "partial genuine native state; original principal body invoked through protected slots and reaches missing process.versions in internal/util",
-      "evidence": "decoder-engine-check.json",
-      "remaining": "actual exit dispatch, full process/version/environment/options/config JSON/FIPS and wider startup binding closure; full native lifecycle/security/OOM/browser differential"
+      "sourceStatus": "partial genuine native state with actual version/engine/library metadata; original principal body reaches missing icu, original stack-limit policy reaches missing mksnapshot",
+      "evidence": "process-versions-engine-check.json",
+      "remaining": "full process/release/environment/configuration/exit-dispatch and native ICU/snapshot/Buffer closure; lifecycle/security/OOM and complete startup"
     },
     {
       "area": "native timers binding and event scheduler",
@@ -153,6 +155,12 @@
       "sourceStatus": "Two complete unchanged native translation units linked to normal codec packages; real roots, shared/resizable view borrows, strings/external finalizers/accounting and typed callback owners;22controls per host",
       "evidence": "decoder-engine-check.json",
       "remaining": "Complete original Buffer/public StringDecoder and StringBytes Write/Size runtime coverage; full OOM/security/worker teardown and original startup"
+    },
+    {
+      "area": "native initial process version metadata",
+      "sourceStatus": "whole original source version header and actual resolved library/engine/data identities;12controls per host,4native reference controls; native V8 metadata factory remains unported",
+      "evidence": "process-versions-engine-check.json",
+      "remaining": "full process/optional metadata and alias/worker/conditional/exceptional graph reconciliation; original startup still blocked on icu/mksnapshot"
     }
   ],
   "runtimeConformance": {
@@ -224,17 +232,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 33,
+    "packageRevision": 34,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "decoder-engine-check.json",
+    "evidence": "process-versions-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "22decoder cases per host and253priorNodecases;341engine case observations/95drivers/24expectedfatals; original bootstrap reaches process.versions",
+    "packageRuntimeScope": "12metadata cases per host plus275priorNodecases;323engine case observations/98drivers/24expectedfatal exits; original bootstrap reaches icu",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "Existing Mozilla Linux triplet/defines remain; linked libuv uses the true Kandelo build and explicit public-layout selector before legacy macros",
     "symbolicWasmNamesRetained": true
@@ -330,7 +338,7 @@
     },
     "realmLibrary": {
       "inventory": "realm-library-contracts.md",
-      "implementationEvidence": "decoder-engine-check.json",
+      "implementationEvidence": "process-versions-engine-check.json",
       "originalBodyExecuted": true,
       "originalLoaderClosuresRetained": true,
       "oneOriginalBuiltinCache": true,
@@ -343,14 +351,14 @@
         "canonical errors callbacks",
         "canonical util.privateSymbols"
       ],
-      "principalBootstrapGap": "Original principal body passes native decoder initialization and reaches missing process.versions.openssl at internal/util:78",
+      "principalBootstrapGap": "Native metadata and complete original internal/util execute; principal body reaches icu at internal/util/inspect:2958",
       "principalBootstrapCompleted": false,
       "cjsEntry": false,
       "esmEntry": false
     },
     "processConfig": {
       "inventory": "process-config-contracts.md",
-      "evidence": "decoder-engine-check.json",
+      "evidence": "process-versions-engine-check.json",
       "distinctMutableProcessPrototype": true,
       "nativeEmptyInstanceConstructor": true,
       "effectiveReceiverSemantics": true,
@@ -361,7 +369,9 @@
       "principalNodeBodyAttempted": true,
       "principalNodeBodyCompleted": false,
       "fullProcessAndConfig": false,
-      "originalCachedBindingPolicyPreserved": true
+      "originalCachedBindingPolicyPreserved": true,
+      "initialVersionMetadata": true,
+      "metadataInventory": "process-versions-contracts.json"
     },
     "timers": {
       "inventory": "timers-contracts.md",
@@ -511,9 +521,24 @@
       "guestCasesPerHost": 22,
       "completeOriginalNativeUnitsLinked": 2,
       "publicStringDecoderAccepted": false,
-      "nextStartupGap": "process.versions",
+      "nextStartupGap": "icu (principal body); mksnapshot (stack-limit policy)",
       "engineOwnership": "real rooted handles, stable/pinned backing spans, shared per-runtime accounting and actual external-string finalizers",
       "fullOwnershipEquivalence": false
+    },
+    "processVersions": {
+      "inventory": "process-versions-contracts.json",
+      "evidence": "process-versions-engine-check.json",
+      "implemented": true,
+      "fullNativeMetadataFactoryPorted": false,
+      "actualVersionFields": 12,
+      "casesPerHost": 12,
+      "nativeReferenceCases": 4,
+      "syntaxSourcesParsed": 443,
+      "syntaxReferences": 22,
+      "sourceIdentityUnchanged": true,
+      "copiedNativeVersionTable": false,
+      "v8AddonOrNapiSupportAdvertised": false,
+      "startupAccepted": false
     }
   },
   "nativeDifferentialControls": {
@@ -664,8 +689,8 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "decoder-engine-check.json",
-      "regressionScope": "Same revision33 engine passes22decoder cases plus253priorNodecases;83Node drivers with24expectedfatal exits",
+      "currentArtifactEvidence": "process-versions-engine-check.json",
+      "regressionScope": "Same revision34 engine passes12metadata cases plus275priorNodecases;86Node drivers with24expectedfatal exits",
       "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
@@ -740,66 +765,93 @@
       "optionsDriverRuns": 10,
       "decoderCases": 22,
       "decoderDriverRuns": 6,
-      "decoderFatalControls": 3
+      "decoderFatalControls": 3,
+      "processVersionsCases": 12,
+      "processVersionsDriverRuns": 3
     },
     "Chromium": {
-      "evidence": "decoder-engine-check.json",
-      "decoderCases": 22,
-      "decoderFailures": 0,
+      "evidence": "process-versions-engine-check.json",
+      "processVersionsCases": 12,
+      "processVersionsFailures": 0,
       "driverRuns": 4,
       "driverFailures": 0,
-      "scope": "revision33 original native decoder/StringBytes binding and native job-draining/error/quit controls; no upstream startup acceptance",
-      "historicalRevision32": {
-        "evidence": "options-engine-check.json",
-        "optionsCases": 14,
-        "optionsFailures": 0,
-        "cppCoreComponentCases": 23,
-        "driverRuns": 27,
+      "scope": "revision34 native process metadata and job draining/error/quit checks; no upstream startup acceptance",
+      "historicalRevision33": {
+        "evidence": "decoder-engine-check.json",
+        "decoderCases": 22,
+        "decoderFailures": 0,
+        "driverRuns": 4,
         "driverFailures": 0,
-        "historicalTypesEvidence": "types-engine-check.json",
-        "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+        "scope": "revision33 original native decoder/StringBytes binding and native job-draining/error/quit controls; no upstream startup acceptance",
+        "historicalRevision32": {
+          "evidence": "options-engine-check.json",
+          "optionsCases": 14,
+          "optionsFailures": 0,
+          "cppCoreComponentCases": 23,
+          "driverRuns": 27,
+          "driverFailures": 0,
+          "historicalTypesEvidence": "types-engine-check.json",
+          "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+        }
       }
     },
     "Firefox": {
-      "evidence": "decoder-engine-check.json",
-      "decoderCases": 22,
-      "decoderFailures": 0,
+      "evidence": "process-versions-engine-check.json",
+      "processVersionsCases": 12,
+      "processVersionsFailures": 0,
       "driverRuns": 4,
       "driverFailures": 0,
-      "scope": "revision33 original native decoder/StringBytes binding and native job-draining/error/quit controls; no upstream startup acceptance",
-      "historicalRevision32": {
-        "evidence": "options-engine-check.json",
-        "optionsCases": 14,
-        "optionsFailures": 0,
-        "cppCoreComponentCases": 23,
-        "driverRuns": 27,
+      "scope": "revision34 native process metadata and job draining/error/quit checks; no upstream startup acceptance",
+      "historicalRevision33": {
+        "evidence": "decoder-engine-check.json",
+        "decoderCases": 22,
+        "decoderFailures": 0,
+        "driverRuns": 4,
         "driverFailures": 0,
-        "historicalTypesEvidence": "types-engine-check.json",
-        "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+        "scope": "revision33 original native decoder/StringBytes binding and native job-draining/error/quit controls; no upstream startup acceptance",
+        "historicalRevision32": {
+          "evidence": "options-engine-check.json",
+          "optionsCases": 14,
+          "optionsFailures": 0,
+          "cppCoreComponentCases": 23,
+          "driverRuns": 27,
+          "driverFailures": 0,
+          "historicalTypesEvidence": "types-engine-check.json",
+          "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+        }
       }
     },
     "WebKit": {
-      "evidence": "decoder-engine-check.json",
-      "decoderCases": 22,
-      "decoderFailures": 0,
+      "evidence": "process-versions-engine-check.json",
+      "processVersionsCases": 12,
+      "processVersionsFailures": 0,
       "driverRuns": 4,
       "driverFailures": 0,
-      "scope": "revision33 original native decoder/StringBytes binding and native job-draining/error/quit controls; no upstream startup acceptance",
-      "historicalRevision32": {
-        "evidence": "options-engine-check.json",
-        "optionsCases": 14,
-        "optionsFailures": 0,
-        "cppCoreComponentCases": 23,
-        "driverRuns": 27,
+      "scope": "revision34 native process metadata and job draining/error/quit checks; no upstream startup acceptance",
+      "historicalRevision33": {
+        "evidence": "decoder-engine-check.json",
+        "decoderCases": 22,
+        "decoderFailures": 0,
+        "driverRuns": 4,
         "driverFailures": 0,
-        "historicalTypesEvidence": "types-engine-check.json",
-        "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+        "scope": "revision33 original native decoder/StringBytes binding and native job-draining/error/quit controls; no upstream startup acceptance",
+        "historicalRevision32": {
+          "evidence": "options-engine-check.json",
+          "optionsCases": 14,
+          "optionsFailures": 0,
+          "cppCoreComponentCases": 23,
+          "driverRuns": 27,
+          "driverFailures": 0,
+          "historicalTypesEvidence": "types-engine-check.json",
+          "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+        }
       }
     }
   },
   "nextWork": [
-    "Implement truthful native process.versions from actual source/build/library identities without copied V8/native-reference metadata",
-    "Continue startup-required original Buffer/util/process/native closure and native callback/Promise lifecycle/frame contracts",
+    "Implement actual icu binding required by original internal/util/inspect, with native source review and actual engine/guest dependencies",
+    "Review and implement real mksnapshot mode/callback ownership for source initialization; preserve explicit serialization boundaries",
+    "Continue startup-required original Buffer/process/native closure and callback/Promise lifecycle/frame contracts",
     "Genuine empty/simple output/errors/jobs/exit and separate CJS/ESM entrypaths on all four hosts",
     "Complete full graph catalog and dependency-ordered roadmap, nested guest Wasm last unless startup requires it; stop for user review before broader implementation"
   ]

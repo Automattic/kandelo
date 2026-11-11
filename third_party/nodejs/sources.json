@@ -3586,6 +3586,20 @@
       "builtinId": null
     },
     {
+      "path": "src/node_metadata.cc",
+      "role": "provenance",
+      "bytes": 5771,
+      "sha256": "f1539327f72ff6a47a5bfb8692d49e5ba5d8b1c739be50aa6995073af52191d7",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_metadata.h",
+      "role": "provenance",
+      "bytes": 5563,
+      "sha256": "fc100c3c02ccde5d2a5775628501ceae8bc55bfe288ad1526da2f32adfc1393a",
+      "builtinId": null
+    },
+    {
       "path": "src/node_mutex.h",
       "role": "provenance",
       "bytes": 8585,
@@ -3614,6 +3628,13 @@
       "builtinId": null
     },
     {
+      "path": "src/node_process_object.cc",
+      "role": "provenance",
+      "bytes": 8595,
+      "sha256": "301c1819a6cd59a48bd28f4c2252298137b6631cc33dda0ddb55dd8067d48957",
+      "builtinId": null
+    },
+    {
       "path": "src/node_realm.cc",
       "role": "provenance",
       "bytes": 14435,
@@ -3632,6 +3653,13 @@
       "role": "provenance",
       "bytes": 5643,
       "sha256": "ec187d3a5bf4a1bf3e5f9842fedce3cacdd485850cdf8a9905aa2a7ac34a1438",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_version.h",
+      "role": "provenance",
+      "bytes": 4637,
+      "sha256": "94a454d9b6f16efa15ee55d3c0c130a6c69425b5bea358888a9735ddc7d62b8f",
       "builtinId": null
     },
     {
