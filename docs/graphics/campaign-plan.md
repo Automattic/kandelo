@@ -64,7 +64,7 @@ Unverified old drafts must be reconciled against current main before use.
 
 | ID | Deliverable | Status at this checkpoint | Principal dependency / acceptance |
 | --- | --- | --- | --- |
-| R1 | Cage crashes, startup and performance diagnosis | Frozen repairs verified; draft #1678 integrated develop; new normal products building | Normal candidate, all-engine regressions, retained failures; other crashes and native-feel work remain open |
+| R1 | Cage crashes, startup and performance diagnosis | Draft #1678: integrated normal build, memory and gameplay pass; desktop/performance validation active | Normal candidate, all-engine regressions, retained failures; other crashes and native-feel work remain open |
 | M1 | Trustworthy input-to-visible measurement | Open; tooling exists, qualification unfinished | Selected-display qualification, original input identity, overhead and uncertainty |
 | M2 | Frozen desktop and game baselines | Open; historical probes retained | M1 for visible latency; pinned workloads, main and native controls |
 | Q1 | Stage A production policy and native-operation audit closure | Production increment shipped; closure open | Exact audit inventory, graphics gate, shader harness and full per-case comparisons |
@@ -760,3 +760,47 @@ The old main control remains separate. PR #1678 stays draft pending fresh
 normal preview and combined regression, memory, parity, compatibility, ABI
 and appropriate comparison evidence. B2–B6/C1–C3 remain paused; no PR merge
 or promotion is authorized by this checkpoint.
+
+
+### R1 integrated functional checkpoint — 2026-11-11
+
+Candidate `db4a24c5ea` retains the R1 runtime from integration `b718daade0`
+against pinned develop `200d7bbfac`. Its fresh normal graph completes
+278/278 nodes and the host TypeScript build. The normal preview is
+http://127.0.0.1:56525/?vfs=%2F__kandelo_source_only_assets__%2Fbc5ec7b4185daa82fee26cdd5534cb4f3111ec738899f6286f734575c9a56780%2Fshell.vfs.zst&profile=cage.
+Actual HTTP shell/kernel identities and a visible GLES, shifted-input,
+repaint and exit-zero check pass. All earlier previews remain preserved.
+
+The unchanged memory gate passes source 300/300, Node teardown 3/3,
+Bun teardown 7/7 and browser 18/18, including four mixed switching cycles
+in each engine. Prepared-product host checks pass 257/257 across 26 files;
+native fork passes 16/16 and POSIX kill passes 5/5 on Node and Chromium.
+Actual `scummvm-play steel-sky` reaches the city and game menu under both
+Cage and Sway on Chromium, Firefox and WebKit (6/6). Frozen-program
+compatibility passes 6/6. The full 120-case desktop inventory is still
+running; no complete-inventory claim is made at this checkpoint.
+
+Integration exposed npm manual aliases outside the allowed image hierarchy.
+The owner fix installs them at `/usr/lib/npm/man` and adds the same early
+layout guard to direct shell serialization. Installer/composer checks pass
+45/45 and all-engine manual-path checks pass 3/3. The measured compressed
+shell is 1,107,317 bytes, under its tightened 1,110,000-byte budget; raw-eager
+and file caps are unchanged. Original graph failures remain retained.
+Two prepared host cases initially exceeded their unchanged five-second
+limits while resolving fixtures. Preparing the normal verified image before
+the runtime checks repairs test construction; kernel boot, guest assertions
+and teardown keep their original budgets. Original 255/257 results and
+stage diagnostics remain retained; this is not a product-startup speed claim.
+
+The comparison checkout has pinned develop runtime plus the same disclosed
+build and test preparation (`6e9d97ea2b`). Its own normal SDK/product and
+benchmark-input build is still active. The official ABI script, matched
+nine-suite Node/browser comparisons in both orders and twelve cursor
+observations remain outstanding. Earlier Node 24.15/main measurements remain
+historical; the current declared environment is Node 24.22.1, with test engines
+Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6.
+
+PR #1678 remains draft. Remaining blur relative to Sway is the sole approved
+visual follow-up; no other gate is waived. Full R1, native-feel and native
+Safari acceptance are not claimed. B2–B6/C1–C3 remain paused; no merge or
+promotion is authorized.
