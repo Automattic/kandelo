@@ -282,6 +282,20 @@
       "builtinId": null
     },
     {
+      "path": "deps/v8/src/strings/unicode-inl.h",
+      "role": "provenance",
+      "bytes": 8880,
+      "sha256": "566025e868e954aeff90bdb4bb0a2bf293d5370411940caf938689af60edc31b",
+      "builtinId": null
+    },
+    {
+      "path": "deps/v8/src/strings/unicode.h",
+      "role": "provenance",
+      "bytes": 11302,
+      "sha256": "43619577faa4959143fad0cb875d7b34547e678fbf8e1cd975c8bab2380f2b9f",
+      "builtinId": null
+    },
+    {
       "path": "deps/v8/third_party/abseil-cpp/LICENSE",
       "role": "license",
       "bytes": 11361,
@@ -377,6 +391,13 @@
       "role": "license",
       "bytes": 1087,
       "sha256": "3f712e5fbdfdbd5ee7d9b8c8152580220df55de47f4eba2f26c95c4de19ad096",
+      "builtinId": null
+    },
+    {
+      "path": "deps/v8/third_party/utf8-decoder/utf8-decoder.h",
+      "role": "provenance",
+      "bytes": 3229,
+      "sha256": "6d076c3193c3062d0f439611b5b6eb5bdfa75206f6d75ecac3b5d31d084f673f",
       "builtinId": null
     },
     {

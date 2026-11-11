@@ -49,7 +49,7 @@ namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3, NodeComplete = 4 };
-enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -192,10 +192,9 @@ JSObject* ConfigBinding(JSContext* cx, JS::HandleObject state) {
 #if JS_HAS_INTL_API
   if (!flag("hasIntl", true)) return nullptr;
 #endif
-  // These describe this embedding's actual build/policy. No V8 tracing agent,
-  // inspector or NODE_OPTIONS parser is registered; full web bootstrap is the
-  // selected default, so lack of a backend must not gate those sources away.
-  if (!flag("hasInspector", false) || !flag("noBrowserGlobals", false) ||
+  // Capability adoption requires its native binding and engine primitives,
+  // independently of which third-party libraries happen to be linked.
+  if (!flag("hasTracing", true) || !flag("hasInspector", false) || !flag("noBrowserGlobals", false) ||
       !JS_DefineProperty(cx, binding, "bits", int32_t(8 * sizeof(intptr_t)), JSPROP_ENUMERATE | JSPROP_READONLY) ||
       !JS_DefineProperty(cx, binding, "fipsMode", FipsConfig, nullptr, JSPROP_ENUMERATE) ||
       !JS_DefineFunction(cx, binding, "getDefaultLocale", DefaultLocale, 0, 0)) return nullptr;
@@ -254,6 +253,11 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
       if (!binding) return false;
       JS::SetReservedSlot(state, Options, JS::ObjectValue(*binding));
     }
+  }
+  else if (name == "trace_events") {
+    JS::Value cached=JS::GetReservedSlot(state,TraceEvents);
+    if(cached.isObject())binding=&cached.toObject();
+    else {binding=CreateTraceBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,TraceEvents,JS::ObjectValue(*binding));}
   }
   else if (name == "icu") {
     JS::Value cached=JS::GetReservedSlot(state,Icu);

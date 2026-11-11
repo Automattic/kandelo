@@ -14,6 +14,7 @@
 #include "js/String.h"
 #include "js/Wrapper.h"
 #include "shell/jsshell.h"
+#include "shell/node-upstream/codecs.h"
 #include "shell/node-upstream/options.h"
 #include "shell/node-upstream/per-context.h"
 #include "shell/node-upstream/trace-agent-native-api.h"
@@ -63,6 +64,12 @@ AgentControl(JSContext* cx, unsigned argc, JS::Value* vp)
     return false;
   std::string name(encoded.get());
   if (name == "stop") {
+    // This privileged fixture control must not destroy the source agent while
+    // its tracing intrinsic or observer is still executing on this stack.
+    if (TraceNativeCallIsActive()) {
+      JS_ReportErrorASCII(cx, "Native tracing test teardown requires an idle native stack");
+      return false;
+    }
     ShutdownTraceProcess();
     std::string bytes;
     if (!ReadTraceFile(&bytes)) {

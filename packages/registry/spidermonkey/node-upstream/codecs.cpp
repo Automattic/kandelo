@@ -6,8 +6,10 @@
 #include <cmath>
 #include <cstdio>
 #include <locale.h>
+#include <set>
 #include <strings.h>
 #include <tuple>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -24,12 +26,16 @@
 #include "js/Exception.h"
 #include "js/experimental/TypedData.h"
 #include "js/GCAPI.h"
+#include "js/JSON.h"
 #include "js/Object.h"
 #include "js/PropertyAndElement.h"
 #include "js/SharedArrayBuffer.h"
 #include "js/Stack.h"
 #include "js/String.h"
+#include "js/TracingAPI.h"
 #include "js/Wrapper.h"
+#include "shell/jsshell.h"
+#include "shell/node-upstream/codec-agent-includes.h"
 #include "shell/node-upstream/codec-native-api.h"
 #include "shell/node-upstream/codecs-upstream/errors.generated.h"
 #define v8 kandelo_node_codec_api
@@ -41,11 +47,17 @@
 
 #include "shell/node-upstream/per-context.h"
 #include "shell/node-upstream/realm.h"
+#include "shell/node-upstream/trace-builtins-upstream/messages.generated.h"
+#include "shell/node-upstream/trace-native.h"
+#include "shell/node-upstream/trace-utf8-native.h"
+#include "shell/node-upstream/tracing-upstream/tracing/agent.h"
 #include "vm/ArrayBufferObject.h"
+#include "vm/ArrayObject.h"
 #include "vm/JSAtomUtils.h"
 #include "vm/JSFunction.h"
 #include "vm/StringType.h"
 
+namespace kandelo_node_codec_impl { extern const JSClass categoryClass; }
 namespace api = kandelo_node_codec_api;
 namespace native = kandelo_node_codec_impl;
 namespace kandelo_node_codec_api {
@@ -54,9 +66,11 @@ struct State {
   Isolate isolate;
   std::atomic<size_t> externalBytes{0}, created{0}, released{0}, spans{0}, collections{0};
   bool stressGc=false;
+  std::atomic<size_t> traceCreated{0},traceReleased{0};
   std::atomic<size_t> icuCreated{0},icuReleased{0};
 };
-enum class Domain { Decoder, Icu };
+enum class Domain { Decoder, Icu, Trace };
+const JSClass traceBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(3)};
 struct Cell {
   JS::PersistentRootedValue value;
   Cell(JSContext* cx, JS::HandleValue input) : value(cx, input) {}
@@ -65,6 +79,8 @@ struct Frame {
   JSContext* cx;
   JS::RootedObject realm;
   JS::RootedObject binding;
+  JS::RootedValue receiver;
+  std::shared_ptr<kandelo::node::TraceProcess> tracing;
   std::shared_ptr<State> state;
   JS::CallArgs* arguments;
   Domain domain;
@@ -75,7 +91,7 @@ struct Frame {
   inline static thread_local Frame* current = nullptr;
   Frame(JSContext* cx, JS::HandleObject realm, std::shared_ptr<State> state,
         JS::CallArgs* arguments = nullptr, Domain domain = Domain::Decoder)
-      : cx(cx), realm(cx, realm), binding(cx), state(std::move(state)), arguments(arguments), domain(domain),
+      : cx(cx), realm(cx, realm), binding(cx), receiver(cx), state(std::move(state)), arguments(arguments), domain(domain),
         previous(current) { current = this; }
   ~Frame();
   template<class T> Local<T> Own(JS::HandleValue value) {
@@ -127,6 +143,12 @@ Value::Value(std::unique_ptr<Cell> cell) : cell_(std::move(cell)) {}
 Value::~Value() = default;
 Cell& Value::cell() const { return *cell_; }
 bool Value::IsString() const { return cell().value.isString(); }
+bool Value::IsArray() const { auto* object=UnwrapObject(Frame::current->cx,cell().value);return object && object->is<js::ArrayObject>(); }
+bool Value::IsFunction() const { return cell().value.isObject() && JS::IsCallable(&cell().value.toObject()); }
+bool Value::IsNumber() const { return cell().value.isNumber(); }
+bool Value::IsUndefined() const { return cell().value.isUndefined(); }
+bool Value::IsNullOrUndefined() const { return cell().value.isNullOrUndefined(); }
+double Value::NumberValue(Value* value) { CHECK(value->IsNumber());return value->cell().value.toNumber(); }
 bool Value::IsArrayBufferView() const {
   return UnwrapView(Frame::current->cx, cell().value) != nullptr;
 }
@@ -153,11 +175,17 @@ Local<Value> Frame::OwnValue(JS::HandleValue value) {
   // actual engine value. A string-tagged base object is not a String object.
   if (value.isString()) return Own<String>(value);
   if (UnwrapView(cx, value)) return Own<ArrayBufferView>(value);
-  if (value.isObject()) return Own<Object>(value);
+  if (value.isObject()) {
+    auto* object=UnwrapObject(cx,value);
+    if (object && object->is<js::ArrayObject>()) return Own<Array>(value);
+    if (JS::IsCallable(&value.toObject())) return Own<Function>(value);
+    return Own<Object>(value);
+  }
   if (value.isNumber()) {
     double n=value.toNumber();
     if (std::isfinite(n) && !(n==0 && std::signbit(n)) && n>=INT32_MIN && n<=UINT32_MAX && std::trunc(n)==n)
       return Own<Integer>(value);
+    return Own<Number>(value);
   }
   return Own<Value>(value);
 }
@@ -193,6 +221,7 @@ static Local<Value> Error(Isolate* isolate, JSExnType type, const char* code, co
   JS::Rooted<mozilla::Maybe<JS::Value>> cause(f.cx, mozilla::Nothing()); JS::RootedValue error(f.cx);
   if (!filename || !message || !JS::CreateError(f.cx, type, stack, filename, 0,
       JS::ColumnNumberOneOrigin(1), nullptr, message, cause, &error)) return {};
+  if (!code) return f.OwnValue(error);
   JS::RootedObject object(f.cx, &error.toObject());
   JS::RootedString value(f.cx, JS_NewStringCopyZ(f.cx, code));
   if (!value) return {};
@@ -436,9 +465,10 @@ Local<ObjectTemplate> Environment::i18n_converter_template() {
 }
 struct NativeObjectOwner {
   std::shared_ptr<State> state;
+  bool category=false;
   std::unique_ptr<JS::PersistentRootedObject> root;
   NativeObjectOwner(Frame& frame,JS::HandleObject object):state(frame.state),
-      root(std::make_unique<JS::PersistentRootedObject>(frame.cx,object)) {}
+      root(std::make_unique<JS::PersistentRootedObject>(frame.cx,object)) { category=frame.domain==api::Domain::Trace; }
 };
 void FinalizeConverter(JS::GCContext*,JSObject* object) {
   auto value=JS::GetReservedSlot(object,0);
@@ -452,17 +482,19 @@ const JSClassOps converterOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,F
 const JSClass converterClass={"Converter",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
 BaseObject::BaseObject(Environment*,Local<Object> input) {
   auto& f=*Frame::current;JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
-  CHECK(object && JS::GetClass(object)==&converterClass && JS::GetReservedSlot(object,0).isUndefined());
+  CHECK(object && JS::GetClass(object)==(f.domain==api::Domain::Trace?&categoryClass:&converterClass) && JS::GetReservedSlot(object,0).isUndefined());
   owner_=std::make_unique<NativeObjectOwner>(f,object);
   // Keep ownership in the traced graph after MakeWeak drops the native root.
   JS::SetReservedSlot(object,1,JS::ObjectValue(*f.realm));
-  JS::SetReservedSlot(object,0,JS::PrivateValue(this));owner_->state->icuCreated.fetch_add(1);
+  JS::SetReservedSlot(object,0,JS::PrivateValue(this));
+  (owner_->category?owner_->state->traceCreated:owner_->state->icuCreated).fetch_add(1);
 }
-BaseObject::~BaseObject() { owner_->state->icuReleased.fetch_add(1); }
+BaseObject::~BaseObject() { (owner_->category?owner_->state->traceReleased:owner_->state->icuReleased).fetch_add(1); }
+Environment* BaseObject::env() { CHECK(owner_->state==Frame::current->state);return &Frame::current->environment; }
 void BaseObject::MakeWeak() { CHECK(owner_->root);owner_->root.reset(); }
 BaseObject* BaseObject::Unwrap(Local<Object> input) {
   auto& f=*Frame::current;JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
-  if (!object || JS::GetClass(object)!=&converterClass) return nullptr;
+  if (!object || JS::GetClass(object)!=(f.domain==api::Domain::Trace?&categoryClass:&converterClass)) return nullptr;
   auto value=JS::GetReservedSlot(object,0);if (value.isUndefined()) return nullptr;
   JS::RootedObject realm(f.cx,&JS::GetReservedSlot(object,1).toObject());
   if (!kandelo::node::CheckRealmLibraryActive(f.cx,realm)) return nullptr;
@@ -516,6 +548,7 @@ MaybeLocal<Object> Copy(Isolate*, const char*, size_t) { Crash("Original Buffer 
 }  // namespace kandelo_node_codec_impl
 
 namespace kandelo_node_codec_api {
+void SetTraceFieldCount(JSObject*,int);
 Frame::~Frame() { current=previous; }
 native::SpanOwner& Frame::Borrow(Local<Value> input) {
   JS::RootedObject object(cx, UnwrapView(cx, Input(input))); CHECK_NOT_NULL(object);
@@ -552,7 +585,9 @@ void FunctionTemplate::SetClassName(Local<String> name) {
 }
 void ObjectTemplate::SetInternalFieldCount(int count) {
   CHECK(count==native::BaseObject::kInternalFieldCount);
-  js::SetFunctionNativeReserved(&cell().value.toObject(),0,JS::Int32Value(count));
+  if (Frame::current->domain==Domain::Trace) {
+    SetTraceFieldCount(&cell().value.toObject(),count);
+  } else js::SetFunctionNativeReserved(&cell().value.toObject(),0,JS::Int32Value(count));
 }
 MaybeLocal<Object> ObjectTemplate::NewInstance(Local<Context> context) {
   auto& f=Current(context->isolate);if (JS_IsExceptionPending(f.cx)) return {};
@@ -564,7 +599,8 @@ MaybeLocal<Object> ObjectTemplate::NewInstance(Local<Context> context) {
 }
 namespace {
 using Callback=void(*)(const FunctionCallbackInfo<Value>&);
-struct CallbackOwner { Callback callback;Domain domain; };
+struct CallbackOwner { Callback callback;Domain domain;bool constructor=false,categoryReceiver=false;int fieldCount=0; };
+JSFunction* TraceFunction(Frame&,const char*,Callback,unsigned,bool,bool);
 void FinalizeCallback(JS::GCContext*,JSObject* object) {
   auto value=JS::GetReservedSlot(object,0); if (!value.isUndefined()) delete static_cast<CallbackOwner*>(value.toPrivate());
 }
@@ -574,7 +610,7 @@ void Finalize(JS::GCContext*,JSObject* object) {
   auto value=JS::GetReservedSlot(object,0); if (!value.isUndefined()) delete static_cast<std::shared_ptr<State>*>(value.toPrivate());
 }
 const JSClassOps stateOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,Finalize};
-const JSClass stateClass={"NodeCodecState",JSCLASS_HAS_RESERVED_SLOTS(1)|JSCLASS_FOREGROUND_FINALIZE,&stateOps};
+const JSClass stateClass={"NodeCodecState",JSCLASS_HAS_RESERVED_SLOTS(2)|JSCLASS_FOREGROUND_FINALIZE,&stateOps};
 std::shared_ptr<State> Data(JSContext* cx,JS::HandleObject runtime) {
   JS::RootedObject state(cx,kandelo::node::GetRuntimeCodecState(cx,runtime,true)); if (!state) return {};
   state=js::CheckedUnwrapDynamic(state,cx,false); if (!state) return {};
@@ -594,6 +630,27 @@ bool Invoke(JSContext* cx,unsigned argc,JS::Value* vp) {
   auto* callback=static_cast<CallbackOwner*>(JS::GetReservedSlot(closure,0).toPrivate());
   auto state=Data(cx,runtime); if (!state) return false; Frame frame(cx,realm,state,&args,callback->domain);
   frame.binding=&JS::GetReservedSlot(closure,1).toObject();
+  frame.receiver=args.thisv();
+  if (callback->domain==Domain::Trace) {
+    frame.tracing=kandelo::node::GetTraceProcess(cx,realm);if (!frame.tracing) return false;
+    if (callback->categoryReceiver) {
+      JS::RootedObject receiver(cx,UnwrapObject(cx,args.thisv()));
+      if (!receiver || JS::GetClass(receiver)!=&native::categoryClass) {
+        if (!JS_IsExceptionPending(cx)) state->isolate.ThrowException(Error(&state->isolate,JSEXN_TYPEERR,nullptr,"Illegal invocation"));
+        return false;
+      }
+    }
+    if (callback->constructor) {
+      if (args.isConstructing()) {
+        CHECK(callback->fieldCount==native::BaseObject::kInternalFieldCount);
+        JS::RootedObject instance(cx,JS_NewObjectForConstructor(cx,&native::categoryClass,args));
+        if (!instance) return false;frame.receiver.setObject(*instance);args.rval().setObject(*instance);
+      } else {
+        JS::RootedObject receiver(cx,args.thisv().isNullOrUndefined()?JS::CurrentGlobalOrNull(cx):JS::ToObject(cx,args.thisv()));
+        if (!receiver) return false;frame.receiver.setObject(*receiver);
+      }
+    }
+  }
   if (callback->domain==Domain::Decoder) {
     auto input=Argument(&state->isolate,0); CHECK(input->IsArrayBufferView());
     auto& span=frame.Borrow(input);
@@ -613,6 +670,13 @@ Local<FunctionTemplate> NewFunctionTemplate(Isolate* isolate,std::nullptr_t empt
 }
 void SetMethod(Local<Context> context,Local<Object> target,const char* name,void(*callback)(const FunctionCallbackInfo<Value>&)) {
   auto& f=Current(context->isolate);
+  if (f.domain==Domain::Trace) {
+    JS::RootedFunction function(f.cx,api::TraceFunction(f,"",callback,0,false,false));CHECK_NOT_NULL(function);
+    JS::RootedObject targetObject(f.cx,&target->cell().value.toObject());
+    JS::RootedValue value(f.cx,JS::ObjectValue(*JS_GetFunctionObject(function)));
+    CHECK(JS_SetProperty(f.cx,targetObject,name,value));
+    JS::Rooted<JSAtom*> atom(f.cx,js::Atomize(f.cx,name,std::strlen(name)));CHECK(atom);function->setAtom(atom);return;
+  }
   bool ownProperties=f.domain==Domain::Icu;
   JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,api::Invoke,0,0,ownProperties?name:"")); CHECK_NOT_NULL(function);
   JS::RootedObject object(f.cx,JS_GetFunctionObject(function)),binding(f.cx,&target->cell().value.toObject());
@@ -634,6 +698,13 @@ void SetMethod(Isolate* isolate,Local<ObjectTemplate> target,const char* name,vo
 }
 }
 namespace kandelo::node {
+bool TraceNativeCallIsActive() {
+  // A JSON getter or observer can enter another native binding before it
+  // reaches the private teardown control. Inspect the entire native stack.
+  for (auto* frame=api::Frame::current;frame;frame=frame->previous)
+    if (frame->domain==api::Domain::Trace) return true;
+  return false;
+}
 JSObject* CreateCodecState(JSContext* cx) {
   JS::RootedObject object(cx,JS_NewObject(cx,&api::stateClass)); if (!object) return nullptr;
   auto state=std::make_shared<api::State>(); state->isolate.owner=state;
@@ -664,7 +735,8 @@ JSObject* InspectCodecState(JSContext* cx,JS::HandleObject runtime) {
   for (const auto& item:std::initializer_list<std::pair<const char*,size_t>>{
       {"externalBytes",state->externalBytes.load()},{"created",state->created.load()},
       {"released",state->released.load()},{"spans",state->spans.load()},{"collections",state->collections.load()},
-      {"icuCreated",state->icuCreated.load()},{"icuReleased",state->icuReleased.load()}}) {
+      {"icuCreated",state->icuCreated.load()},{"icuReleased",state->icuReleased.load()},
+      {"traceCreated",state->traceCreated.load()},{"traceReleased",state->traceReleased.load()}}) {
     JS::RootedValue value(cx,JS::DoubleValue(double(item.second)));
     if (!JS_DefineProperty(cx,object,item.first,value,JSPROP_ENUMERATE)) return nullptr;
   }
@@ -674,3 +746,5 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
   auto state=api::Data(cx,runtime); if (!state) return false; state->stressGc=enabled; return true;
 }
 }
+
+#include "shell/node-upstream/trace-codecs-inl.h"

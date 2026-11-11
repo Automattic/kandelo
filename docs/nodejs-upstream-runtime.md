@@ -11,15 +11,13 @@ realm owner retains the actual original loader closures. Original JavaScript
 owns builtin caching, exposure policy and moduleLoadList. The eager native
 realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
-The native principal-body entry now calls complete `internal/bootstrap/node`
-with protected state, passes native configuration and reaches the missing
-`trace_events` binding in original `internal/trace_events`, after executing the
-original async-hooks module, native constants initializer and engine type
-predicates, native options, the original string-decoder binding and native process
-version metadata and complete original native ICU through real backends.
-The original native tracing agent and its standalone library are now linked
-into the engine and have focused four-host controls; their JS binding and
-engine intrinsics remain missing.
+The native principal-body entry calls complete `internal/bootstrap/node` with
+protected state. It now executes the original internal tracing helper and
+reaches the missing `async_context_frame` binding in original
+`internal/async_context_frame`. The original native tracing agent, binding,
+V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
+Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
+four hosts; full observer exception/fatal routing remains incomplete.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -69,7 +67,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 532 files after complete native source/header additions; every
+manifest has 552 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -1236,3 +1234,63 @@ open.
 No product images, full products, successor-ABI builds or overall suites ran.
 See [trace-agent-engine-check.json](../tests/nodejs/upstream/trace-agent-engine-check.json)
 for exact inputs, artifacts, checks and retained failures.
+
+## Original tracing binding and engine intrinsics
+
+Revision 37 compiles complete, unchanged `node_trace_events.cc` and
+`builtins-trace.cc`. Three additional original Unicode/UTF-8 decoder headers
+bring the authenticated import to 552 files; all 549 prior records and all
+443 JavaScript sources remain unchanged. The encoder uses the complete
+original V8 implementation, including its WTF-8 policy. No upstream function
+body was extracted or rewritten.
+
+The shared native value bridge now supplies actual rooted functions, arrays,
+receivers, constructors and prototype methods. CategorySet objects retain
+their real native source owner and traced realm; weak finalization deletes
+that owner once. Actual external ArrayBuffers expose the controller's stable
+category bytes directly. Their deleters retain native process state, while
+foreground process shutdown remains responsible for removing observers,
+flushing the source writer and joining its worker. Collecting a view never
+joins a tracing thread.
+
+The original intrinsics validate their own arguments and emit their own
+TypeErrors. JSON traversal uses SpiderMonkey's actual ToJSON operation,
+preserving getters, toJSON, reentrancy, cycles, BigInt and thrown identities.
+The original trace payload owns the converted bytes. One traced environment
+observer retains the current handler across realm replacement and moving GC,
+checks actual principal/callback-owner state and invokes the real synchronous
+controller notifications. The privileged test teardown control rejects calls
+from an active tracing stack, preventing a JSON getter or observer from
+removing the agent beneath an original native call.
+
+Twenty-one shared controls and the trace file's category/name/phase/id/data
+projection match the pinned native Node reference. Twenty-nine binding and
+ownership controls, five source-fatal assertion drivers and three real exit
+flush/status drivers run on each host. They exercise long Unicode names,
+32-bit numeric conversions, original internal/trace_events execution,
+constructor/receiver shape, live flag aliases, cross-realm ownership, observer
+replacement, failed-owner retirement and native finalization. The same engine
+also passes the prior 310 Node controls and nine native-agent controls.
+Expected native aborts and browser Wasm-trap diagnostics remain recorded.
+
+The first build exposed libuv's NO_DATA macro colliding with SpiderMonkey's
+buffer enum. A declaration-order prelude loads the actual buffer types before
+libuv; no OS identity or upstream source change fixes this. Later builds
+caught a const override mismatch and include ordering. Test failures include
+an uninitialized private file reader, one added fixture syntax error, stale
+hasTracing metadata expectations, and browser-specific intentional-trap console
+text. Retained reports distinguish each attempt from the corrected checks.
+
+The original principal body now stops at `async_context_frame:10`, through
+`internal/timers:130`. The stack-limit policy still requires `mksnapshot`.
+Original public trace_events also depends on the unfinished worker closure;
+these controls do not establish public compatibility. Native verbose observer
+exception routing, permission-policy adoption, source writer open-failure
+shutdown, rotation/cancellation/partial writes, transfer edge behavior,
+heap snapshots and full security/OOM/worker teardown remain open. Normal Node
+mode still uses the legacy bootstrap; genuine empty/simple startup and CJS/ESM
+entrypaths are incomplete.
+
+No images, full products, successor ABI or overall suites were built or run.
+See [trace-binding-engine-check.json](../tests/nodejs/upstream/trace-binding-engine-check.json)
+for exact source/artifact identities, selected results and retained failures.

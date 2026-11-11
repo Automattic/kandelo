@@ -10,10 +10,14 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <set>
+#include <string>
 #include <utility>
+#include "js/TypeDecls.h"
 
+namespace kandelo::node { struct TraceProcess; }
 namespace kandelo_node_codec_api {
-class Value; class Object; class String; class Isolate; class ObjectTemplate; class FunctionTemplate;
+class Value; class Object; class String; class Function; class Isolate; class ObjectTemplate; class FunctionTemplate;
 struct Cell; struct Frame; struct View; struct MemoryAccount; struct State;
 [[noreturn]] void Crash(const char*);
 template<class T> class Local {
@@ -24,6 +28,7 @@ template<class T> class Local {
   template<class U> Local(Local<U> input):pointer_(input.get()) {}
   T* get() const { return pointer_; }
   T* operator->() const { return pointer_; }
+  T* operator*() const { return pointer_; }
   bool IsEmpty() const { return !pointer_; }
   template<class U> Local<U> As() const { return Local<U>(static_cast<U*>(pointer_)); }
 };
@@ -58,7 +63,7 @@ template<> class Maybe<void> {
 template<class T> Maybe<T> Just(T value) { return Maybe<T>(value); }
 template<class T> Maybe<T> Nothing() { return {}; }
 inline Maybe<void> JustVoid() { return Maybe<void>(true); }
-struct Context { Isolate* isolate; };
+struct Context { Isolate* isolate; Local<Object> GetExtrasBindingObject(); };
 class Value {
   std::unique_ptr<Cell> cell_;
  public:
@@ -66,6 +71,12 @@ class Value {
   virtual ~Value();
   Cell& cell() const;
   bool IsString() const;
+  bool IsArray() const;
+  bool IsFunction() const;
+  bool IsNumber() const;
+  bool IsUndefined() const;
+  bool IsNullOrUndefined() const;
+  static double NumberValue(Value*);
   bool IsArrayBufferView() const;
   bool IsArrayBuffer() const;
   bool IsSharedArrayBuffer() const;
@@ -80,21 +91,38 @@ class Object : public Value {
  public:
   using Value::Value;
   Maybe<bool> Set(Local<Context>,Local<Value>,Local<Value>);
+  MaybeLocal<Value> Get(Local<Context>,Local<Value>);
 };
+class Function : public Object { public: using Object::Object; };
 class Array : public Object {
  public:
   using Object::Object;
   static Local<Array> New(Isolate*);
   Maybe<bool> Set(Local<Context>,int32_t,Local<Value>);
+  uint32_t Length() const;
+  MaybeLocal<Value> Get(Local<Context>,uint32_t);
 };
 class ArrayBufferView : public Object { public: using Object::Object; };
-class ArrayBuffer : public Object { public: using Object::Object; };
+struct BackingStore {
+  void* data; size_t size; void(*deleter)(void*,size_t,void*); void* userData;
+  std::shared_ptr<kandelo::node::TraceProcess> process;
+  BackingStore(void*,size_t,void(*)(void*,size_t,void*),void*,std::shared_ptr<kandelo::node::TraceProcess>);
+  BackingStore(const BackingStore&)=delete;
+  ~BackingStore();
+};
+class ArrayBuffer : public Object {
+ public: using Object::Object;
+  static std::unique_ptr<BackingStore> NewBackingStore(void*,size_t,void(*)(void*,size_t,void*),void*);
+  static Local<ArrayBuffer> New(Isolate*,std::unique_ptr<BackingStore>);
+};
 class Uint8Array : public ArrayBufferView {
  public:
   using ArrayBufferView::ArrayBufferView;
   static const size_t kMaxLength;
+  static Local<Uint8Array> New(Local<ArrayBuffer>,size_t,size_t);
 };
-class Integer : public Value { public: using Value::Value;static Local<Integer> New(Isolate*,int);int64_t Value() const; };
+class Number : public Value { public: using Value::Value; };
+class Integer : public Number { public: using Number::Number;static Local<Integer> New(Isolate*,int);int64_t Value() const; };
 using Int32=Integer;
 using Uint32=Integer;
 class ObjectTemplate : public Object {
@@ -136,13 +164,20 @@ class String : public Value {
   static MaybeLocal<String> NewExternalOneByte(Isolate*,ExternalOneByteStringResource*);
   static MaybeLocal<String> NewExternalTwoByte(Isolate*,ExternalStringResource*);
   size_t Length() const;
+  size_t length() const { return Length(); }
+  enum class Utf8EncodingFlag { kNullTerminate };
+  static size_t Utf8Length(Isolate*,Local<String>);
+  static size_t WriteUtf8(Isolate*,Local<String>,char*,size_t,Utf8EncodingFlag);
   void WriteV2(Isolate*,size_t,size_t,uint16_t*);
   size_t WriteUtf8V2(Isolate*,char*,size_t,WriteFlags);
 };
+struct Factory { Isolate* isolate; Local<Value> undefined_value(); };
 class Isolate {
  public:
   std::weak_ptr<State> owner;
   Context context{this};
+  Factory factory_{this};
+  Factory* factory() { return &factory_; }
   Local<Context> GetCurrentContext();
   void ThrowException(Local<Value>);
 };
@@ -157,10 +192,14 @@ class ExternalMemoryAccounter {
   void Increase(Isolate*,size_t);void Decrease(Isolate*,size_t);
 };
 Local<Value> Argument(Isolate*,int);
+Local<Value> True(Isolate*);
+Local<Value> False(Isolate*);
 void Return(Isolate*,Local<Value>);
 void ReturnNumber(Isolate*,double);
 void ReturnBoolean(Isolate*,bool);
 int ArgumentCount(Isolate*);
+Local<Object> Receiver(Isolate*);
+void ReturnRaw(Isolate*, const JS::Value&);
 template<class T> class ReturnValue {
   Isolate* isolate_;
  public: explicit ReturnValue(Isolate* isolate):isolate_(isolate) {}
@@ -176,6 +215,7 @@ template<class T> class FunctionCallbackInfo {
   Isolate* GetIsolate() const { return isolate_; }
   int Length() const { return ArgumentCount(isolate_); }
   Local<Value> operator[](int index) const { return Argument(isolate_,index); }
+  Local<Object> This() const { return Receiver(isolate_); }
   ReturnValue<T> GetReturnValue() const { return ReturnValue<T>(isolate_); }
 };
 struct CatchScope;
@@ -221,17 +261,24 @@ class Environment {
  public: static Environment* GetCurrent(Local<Context>);
   static Environment* GetCurrent(const FunctionCallbackInfo<Value>&);
   Isolate* isolate();Local<Context> context();Local<ObjectTemplate> i18n_converter_template();
+  void set_trace_category_state_function(Local<Function>);
 };
 class IsolateData {
  public: Isolate* isolate();void set_i18n_converter_template(Local<ObjectTemplate>);
 };
 struct NativeObjectOwner;
+class MemoryTracker {
+ public: virtual ~MemoryTracker()=default;
+  virtual void TrackField(const char*,const std::set<std::string>&)=0;
+};
 class BaseObject {
   std::unique_ptr<NativeObjectOwner> owner_;
  public:
   static constexpr int kInternalFieldCount=2;
   BaseObject(Environment*,Local<Object>);virtual ~BaseObject();
   void MakeWeak();static BaseObject* Unwrap(Local<Object>);
+  Environment* env();
+  virtual void MemoryInfo(MemoryTracker*) const { Crash("Native heap snapshot traversal is not implemented"); }
 };
 template<class T> bool Unwrap(T** output,Local<Object> object) {
   *output=static_cast<T*>(BaseObject::Unwrap(object));return *output!=nullptr;
@@ -244,6 +291,10 @@ template<class T> class ScopeLeave {
 template<class T> auto OnScopeLeave(T callback) { return ScopeLeave<T>(std::move(callback)); }
 Local<String> OneByteString(Isolate*,const char*);
 Local<FunctionTemplate> NewFunctionTemplate(Isolate*,std::nullptr_t);
+Local<FunctionTemplate> NewFunctionTemplate(Isolate*,void(*)(const FunctionCallbackInfo<Value>&));
+void SetProtoMethod(Isolate*,Local<FunctionTemplate>,const char*,void(*)(const FunctionCallbackInfo<Value>&));
+void SetConstructorFunction(Local<Context>,Local<Object>,const char*,Local<FunctionTemplate>);
+MaybeLocal<Value> ToV8Value(Local<Context>,const std::string&,Isolate*);
 bool StringEqualNoCase(const char*,const char*);
 void THROW_ERR_INVALID_ARG_TYPE(Isolate*,const char*);
 void THROW_ERR_ENCODING_INVALID_ENCODED_DATA(Isolate*,const char*,const char*);
@@ -251,6 +302,7 @@ namespace Buffer {
 MaybeLocal<Object> MissingAllocation(Environment*);
 template<class T,size_t N> MaybeLocal<Object> New(Environment* env,MaybeStackBuffer<T,N>*) { return MissingAllocation(env); }
 }
+
 Local<Value> ERR_STRING_TOO_LONG(Isolate*);
 Local<Value> ERR_BUFFER_TOO_LARGE(Isolate*);
 Local<Value> ERR_MEMORY_ALLOCATION_FAILED(Isolate*);
@@ -261,6 +313,13 @@ class ExternalReferenceRegistry {
   void Register(void(*)(const FunctionCallbackInfo<Value>&)) { Crash("Native snapshot external-reference registry is not implemented"); }
   template<class T> void Register(T);
 };
+}
+namespace kandelo_trace_adapter {
+using namespace kandelo_node_codec_api;
+using Initializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
+extern Initializer initializer;
+void IsTraceCategoryEnabled(const FunctionCallbackInfo<Value>&);
+void Trace(const FunctionCallbackInfo<Value>&);
 }
 namespace kandelo_icu_adapter {
 using namespace kandelo_node_codec_api;
@@ -276,6 +335,17 @@ extern Initializer initializer;
 }
 #define NODE_WANT_INTERNALS 1
 #define NODE_EXTERN
+#ifdef CHECK
+#undef CHECK
+#undef CHECK_EQ
+#undef CHECK_NE
+#undef CHECK_LE
+#undef CHECK_LT
+#undef CHECK_GE
+#undef CHECK_NULL
+#undef CHECK_NOT_NULL
+#undef UNREACHABLE
+#endif
 #define CHECK(x) do { if(!(x)) kandelo_node_codec_api::Crash(#x); } while(false)
 #define CHECK_EQ(x,y) CHECK((x)==(y))
 #define CHECK_NE(x,y) CHECK((x)!=(y))

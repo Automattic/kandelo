@@ -10,13 +10,13 @@ function thrown(callback){try{callback()}catch(error){return error}throw new Err
 function check(name,callback){try{callback();observations.push({name,status:'pass'})}catch(error){let stack;try{stack=error.stack}catch{}failures++;observations.push({name,status:'fail',error:{name:error.name,message:error.message,code:error.code,stack}})}}
 check('config-identity-and-readonly-real-build-fields',()=>{
   assertEq(realm.internalBinding('config'),config);
-  for(const [name,value] of Object.entries({bits:32,isDebugBuild:false,hasOpenSSL:true,openSSLIsBoringSSL:false,hasIntl:typeof Intl==='object',hasInspector:false,noBrowserGlobals:false})){
+  for(const [name,value] of Object.entries({bits:32,isDebugBuild:false,hasOpenSSL:true,openSSLIsBoringSSL:false,hasIntl:typeof Intl==='object',hasInspector:false,hasTracing:true,noBrowserGlobals:false})){
     assertEq(config[name],value);const descriptor=Object.getOwnPropertyDescriptor(config,name);
     assertEq(descriptor.writable,false);assertEq(descriptor.enumerable,true);
   }
 });
 check('config-does-not-copy-unimplemented-native-feature-metadata',()=>{
-  for(const name of ['hasNodeOptions','hasTracing','hasSmallICU'])assertEq(name in config,false);
+  for(const name of ['hasNodeOptions','hasSmallICU'])assertEq(name in config,false);
   assertEq(thrown(()=>config.fipsMode).code,'ERR_KANDELO_NOT_IMPLEMENTED');
   assertEq(thrown(()=>realm.internalBinding('builtins').config).code,'ERR_KANDELO_NOT_IMPLEMENTED');
 });
@@ -76,8 +76,8 @@ check('native-node-stage-uses-protected-state-and-preserves-actual-missing-backe
   failed=context();failed.builtins=failed.realm.internalBinding('builtins');const exports=api.getContextExports(failed.global),descriptor=Object.getOwnPropertyDescriptor(exports,'primordials');let reads=0;
   Object.defineProperty(exports,'primordials',{get(){reads++;throw new Error('diagnostic container used')},configurable:true});
   let error;try{error=thrown(()=>api.runNodeBootstrap(failed.global))}finally{Object.defineProperty(exports,'primordials',descriptor)}
-  assertEq(reads,0);assertEq(error.name,'Error');assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message,"Native Node binding 'trace_events' is not implemented");
-  assertEq(error.stack.includes('node:internal/trace_events:'),true);
+  assertEq(reads,0);assertEq(error.name,'Error');assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message,"Native Node binding 'async_context_frame' is not implemented");
+  assertEq(error.stack.includes('node:internal/async_context_frame:'),true);
   failed.error=error;
 });
 check('failed-node-body-is-terminal-and-diagnostics-do-not-expose-partial-loaders',()=>{

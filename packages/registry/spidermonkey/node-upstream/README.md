@@ -83,3 +83,12 @@ exit/at-exit, AsyncWrap/resource scopes, assigned promise async contexts and
 active module-evaluation checkpoints remain explicit unfinished contracts.
 The errors binding expands the complete original exit-code enum header with
 native property attributes. Constants do not establish process-exit support.
+
+The tracing binding compiles complete original Node and V8 source units over
+this rooted native value bridge. CategorySet has a real native owner and traced
+realm, category flags use actual external ArrayBuffers, and engine JSON and the
+whole original UTF-16 encoder supply owned payloads. One traced environment
+observer follows actual principal and callback-owner admission; full verbose
+exception/fatal routing remains incomplete. Process shutdown removes observers
+before flushing/joining the original agent. See trace-events-contracts.json and
+the tracing binding receipt under tests/nodejs/upstream for bounded evidence.

@@ -45,6 +45,8 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/codecs.cpp" \
     "$node_consumer/codecs.h" \
     "$node_consumer/codec-native-api.h" \
+    "$node_consumer/codec-agent-includes.h" \
+    "$node_consumer/codec-buffer-types.h" \
     "$node_consumer/decoder-upstream.cpp" \
     "$node_consumer/icu-upstream.cpp" \
     "$node_consumer/encoding-upstream.cpp" \
@@ -59,6 +61,14 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/trace-trace-event-helper-upstream.cpp" \
     "$node_consumer/trace-native.cpp" \
     "$node_consumer/trace-native.h" \
+    "$node_consumer/trace-binding-native-api.h" \
+    "$node_consumer/trace-binding-upstream.cpp" \
+    "$node_consumer/trace-builtin-native-api.h" \
+    "$node_consumer/trace-builtins-upstream.cpp" \
+    "$node_consumer/trace-unicode-native-api.h" \
+    "$node_consumer/trace-utf8-native.h" \
+    "$node_consumer/trace-utf8-native.cpp" \
+    "$node_consumer/trace-codecs-inl.h" \
     "$node_consumer/trace-shutdown.h" \
     "$node_consumer/trace-agent-test-api.cpp" \
     "$node_consumer/trace-agent-test-api.h" \

@@ -29,7 +29,7 @@ check('original-method-registration-uses-set-before-naming-with-actual-setter-gc
 });
 check('whole-original-bootstrap-passes-options-and-preserves-next-failure',()=>{
   const target=newGlobal({newCompartment:true});api.initializeContext(target);const other=api.initializeRealm(target),b=other.internalBinding('options');
-  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'Error');assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message,"Native Node binding 'trace_events' is not implemented");bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
+  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'Error');assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message,"Native Node binding 'async_context_frame' is not implemented");bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
   assertEq(thrown(()=>b.parseNodeOptionsEnvVar('--not-reusable')).message.includes('Previous Node realm initialization failed'),true);
 });
 check('actual-cpp-profile-parser-applies-env-before-cli-without-marking-bootstrap-complete',()=>{

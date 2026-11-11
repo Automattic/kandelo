@@ -10,7 +10,7 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 532,
+    "importedFiles": 552,
     "taskQueuePartialCatalog": "task-queue-contracts.json",
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
     "constantsPartialCatalog": "constants-contracts.json",
@@ -25,7 +25,9 @@
     "icuPartialCatalog": "icu-contracts.json",
     "icuEngineEvidence": "icu-engine-check.json",
     "traceEventsPartialCatalog": "trace-events-contracts.json",
-    "standaloneTracingEvidence": "v8-tracing-component-check.json"
+    "standaloneTracingEvidence": "v8-tracing-component-check.json",
+    "traceBindingEngineEvidence": "trace-binding-engine-check.json",
+    "nativeTraceAgentEvidence": "trace-agent-engine-check.json"
   },
   "implementation": [
     {
@@ -61,8 +63,8 @@
     {
       "area": "shared Node realm and native binding loader",
       "sourceStatus": "partial native owner implemented; complete original realm library loader executes through privileged Node-host controls",
-      "remaining": "principal node body passes native ICU and original internal/util/inspect, stops at trace_events through internal/util/debuglog; remaining native/web/thread/environment closure and full startup incomplete",
-      "evidence": "icu-engine-check.json"
+      "remaining": "principal body executes original internal tracing helpers and stops at async_context_frame; wider native/web/thread/environment closure and full startup incomplete",
+      "evidence": "trace-binding-engine-check.json"
     },
     {
       "area": "structured Error stack/CallSite/limit contracts",
@@ -107,8 +109,8 @@
     },
     {
       "area": "native initial process prototype/constructor, shared exit-info and config",
-      "sourceStatus": "partial genuine native state with actual version/engine/library metadata; original principal body reaches missing trace_events, original stack-limit policy reaches missing mksnapshot",
-      "evidence": "icu-engine-check.json",
+      "sourceStatus": "partial genuine native state, real versions and adopted tracing capability; principal body reaches async_context_frame and stack-limit policy reaches mksnapshot",
+      "evidence": "trace-binding-engine-check.json",
       "remaining": "full process/release/environment/configuration/exit-dispatch and trace/snapshot/Buffer closure; lifecycle/security/OOM and complete startup"
     },
     {
@@ -164,7 +166,7 @@
       "area": "native initial process version metadata",
       "sourceStatus": "whole original source version header and actual resolved library/engine/data identities;12controls per host,4native reference controls; native V8 metadata factory remains unported",
       "evidence": "process-versions-engine-check.json",
-      "remaining": "full process/optional metadata and alias/worker/conditional/exceptional graph reconciliation; original startup still blocked on icu/mksnapshot"
+      "remaining": "full process/optional metadata and graph reconciliation; principal startup now blocked on async_context_frame/mksnapshot"
     },
     {
       "area": "complete original native ICU and encoding source",
@@ -176,12 +178,19 @@
       "area": "standalone original tracing library prerequisite",
       "sourceStatus": "normal v8-tracing14.6.202.34 package compiles7whole original V8 units with real guest clocks/IDs and complete Node libuv mutex;9controls on allfourhosts; relocated CMake/pkg-config consumers pass",
       "evidence": "v8-tracing-component-check.json",
-      "remaining": "not linked into SpiderMonkey; original Node agent/writer/buffer/traced metadata, native trace binding and whole engine intrinsics/observer/external-buffer lifetime still missing; not V8 JS engine support"
+      "remaining": "linked into engine with whole Node agent and original binding/intrinsics; full tracing backend/public compatibility and observer exception routing remain incomplete",
+      "integrationEvidence": "trace-binding-engine-check.json"
+    },
+    {
+      "area": "complete original tracing binding and engine intrinsics",
+      "sourceStatus": "whole original Node and V8 translation units over real engine values/JSON/UTF8/errors, native constructor, external flag bytes and per-runtime observer",
+      "evidence": "trace-binding-engine-check.json",
+      "remaining": "full observer exception/fatal policy, permission adoption, source writer failure/rotation/cancel, worker/security/OOM/transfer/snapshot and public tracing closure"
     }
   ],
   "runtimeConformance": {
     "Node": {
-      "upstreamStartup": "not run",
+      "upstreamStartup": "principal body attempted; fails at async_context_frame; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
@@ -189,7 +198,7 @@
       "completeCoreCompatibility": "not established"
     },
     "Chromium": {
-      "upstreamStartup": "not run",
+      "upstreamStartup": "principal body attempted; fails at async_context_frame; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
@@ -197,7 +206,7 @@
       "completeCoreCompatibility": "not established"
     },
     "Firefox": {
-      "upstreamStartup": "not run",
+      "upstreamStartup": "principal body attempted; fails at async_context_frame; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
@@ -205,7 +214,7 @@
       "completeCoreCompatibility": "not established"
     },
     "WebKit": {
-      "upstreamStartup": "not run",
+      "upstreamStartup": "principal body attempted; fails at async_context_frame; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
@@ -238,6 +247,19 @@
       "failures": 0,
       "evidence": "v8-tracing-component-check.json",
       "scope": "standalone original controller/category/object/ring/JSON and guest native effects; not Node trace binding, V8 JS engine or startup"
+    },
+    "tracingBinding": {
+      "hosts": [
+        "Node",
+        "Chromium",
+        "Firefox",
+        "WebKit"
+      ],
+      "bindingCasesPerHost": 29,
+      "fatalCasesPerHost": 5,
+      "exitCasesPerHost": 3,
+      "evidence": "trace-binding-engine-check.json",
+      "scope": "bounded native binding, original internal helper, engine ownership and actual guest file projection; not startup acceptance or public module compatibility"
     }
   },
   "validationLimits": {
@@ -263,17 +285,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 35,
+    "packageRevision": 37,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "icu-engine-check.json",
+    "evidence": "trace-binding-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "23 ICU controls per host plus287 prior Node cases;379 engine case observations/104 drivers/27 expected fatal exits; original bootstrap reaches trace_events",
+    "packageRuntimeScope": "29 tracing binding controls plus5fatal and3exit drivers per host; prior310Node controls and9agent cases checked separately; principal body reaches async_context_frame",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "Existing Mozilla Linux triplet/defines remain; linked libuv uses the true Kandelo build and explicit public-layout selector before legacy macros",
     "symbolicWasmNamesRetained": true,
@@ -281,8 +303,8 @@
       "libuvRevision": 4,
       "libuvRuntimeArchiveByteIdentical": true,
       "evidence": "v8-tracing-component-check.json",
-      "existingGuestEngineRebuiltThisPhase": false,
-      "standaloneTracingLinkedIntoEngine": false
+      "existingGuestEngineRebuiltThisPhase": true,
+      "standaloneTracingLinkedIntoEngine": true
     }
   },
   "startupPrerequisites": {
@@ -376,7 +398,7 @@
     },
     "realmLibrary": {
       "inventory": "realm-library-contracts.md",
-      "implementationEvidence": "process-versions-engine-check.json",
+      "implementationEvidence": "trace-binding-engine-check.json",
       "originalBodyExecuted": true,
       "originalLoaderClosuresRetained": true,
       "oneOriginalBuiltinCache": true,
@@ -394,8 +416,8 @@
         "status": "missing-backend",
         "name": "Error",
         "code": "ERR_KANDELO_NOT_IMPLEMENTED",
-        "message": "Native Node binding 'trace_events' is not implemented",
-        "stack": "Error: Native Node binding 'trace_events' is not implemented\n    at internalBinding (node:internal/bootstrap/realm:172:34)\n    at node:internal/trace_events:8:20\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/util/debuglog:25:12\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/timers:126:20\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)",
+        "message": "Native Node binding 'async_context_frame' is not implemented",
+        "stack": "Error: Native Node binding 'async_context_frame' is not implemented\n    at internalBinding (node:internal/bootstrap/realm:172:34)\n    at node:internal/async_context_frame:10:20\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/timers:130:34\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/bootstrap/node:69:31\n    at error< (-e:90:30)\n    at thrown (-e:9:26)",
         "compiledBuiltinIds": [
           "internal/bootstrap/realm",
           "internal/errors",
@@ -411,7 +433,9 @@
           "internal/priority_queue",
           "internal/util/inspect",
           "internal/util/debuglog",
-          "internal/trace_events"
+          "internal/trace_events",
+          "internal/constants",
+          "internal/async_context_frame"
         ]
       },
       "principalBootstrapCompleted": false,
@@ -514,9 +538,9 @@
       "libzstdDecoderBytesUnchanged": true,
       "mozillaZlibHeaderPrecedenceFixedForThisBinding": true,
       "upstreamStartup": false,
-      "currentStartupEvidence": "icu-engine-check.json",
+      "currentStartupEvidence": "trace-binding-engine-check.json",
       "historicalBootstrapNextBinding": "types",
-      "currentBootstrapNextBinding": "trace_events; stack-limit policy mksnapshot"
+      "currentBootstrapNextBinding": "async_context_frame; stack-limit policy mksnapshot"
     },
     "types": {
       "inventory": "types-contracts.json",
@@ -531,8 +555,8 @@
       "completeOriginalInternalTypesModuleExecuted": true,
       "bootstrapNextBinding": "options",
       "upstreamStartup": false,
-      "currentStartupEvidence": "icu-engine-check.json",
-      "currentBootstrapNextBinding": "trace_events; stack-limit policy mksnapshot"
+      "currentStartupEvidence": "trace-binding-engine-check.json",
+      "currentBootstrapNextBinding": "async_context_frame; stack-limit policy mksnapshot"
     },
     "options": {
       "inventory": "options-contracts.json",
@@ -552,8 +576,8 @@
       "cppCoreProbeCasesPerHost": 23,
       "nextBinding": "string_decoder",
       "upstreamStartup": false,
-      "currentStartupEvidence": "icu-engine-check.json",
-      "currentBootstrapNextBinding": "trace_events; stack-limit policy mksnapshot"
+      "currentStartupEvidence": "trace-binding-engine-check.json",
+      "currentBootstrapNextBinding": "async_context_frame; stack-limit policy mksnapshot"
     },
     "stringDecoder": {
       "inventory": "string-decoder-contracts.json",
@@ -589,8 +613,8 @@
       "nextStartupGap": "icu (principal body); mksnapshot (stack-limit policy)",
       "engineOwnership": "real rooted handles, stable/pinned backing spans, shared per-runtime accounting and actual external-string finalizers",
       "fullOwnershipEquivalence": false,
-      "currentStartupEvidence": "icu-engine-check.json",
-      "currentBootstrapNextBinding": "trace_events; stack-limit policy mksnapshot"
+      "currentStartupEvidence": "trace-binding-engine-check.json",
+      "currentBootstrapNextBinding": "async_context_frame; stack-limit policy mksnapshot"
     },
     "processVersions": {
       "inventory": "process-versions-contracts.json",
@@ -606,8 +630,8 @@
       "copiedNativeVersionTable": false,
       "v8AddonOrNapiSupportAdvertised": false,
       "startupAccepted": false,
-      "currentStartupEvidence": "icu-engine-check.json",
-      "currentBootstrapNextBinding": "trace_events; stack-limit policy mksnapshot"
+      "currentStartupEvidence": "trace-binding-engine-check.json",
+      "currentBootstrapNextBinding": "async_context_frame; stack-limit policy mksnapshot"
     },
     "icu": {
       "inventory": "icu-contracts.json",
@@ -623,7 +647,7 @@
       "actualNativeConverterOwnership": true,
       "failedOwnerForeignUseRejected": true,
       "fullContractEquivalence": false,
-      "principalNextBinding": "trace_events",
+      "principalNextBinding": "async_context_frame",
       "stackLimitPolicyNextBinding": "mksnapshot",
       "startupAccepted": false
     },
@@ -634,13 +658,16 @@
       "wholeOriginalLibraryTranslationUnits": 7,
       "componentCasesPerHost": 9,
       "relocatedConsumerCases": 18,
-      "linkedIntoGuestEngine": false,
-      "nativeNodeBindingImplemented": false,
-      "nodeAgentAndWriterImplemented": false,
-      "engineExtraBindingIntrinsicsImplemented": false,
-      "observerCallbackAndExternalBufferOwnershipImplemented": false,
-      "principalStillMissing": "trace_events",
-      "fullStartupAccepted": false
+      "linkedIntoGuestEngine": true,
+      "nativeNodeBindingImplemented": true,
+      "nodeAgentAndWriterImplemented": true,
+      "engineExtraBindingIntrinsicsImplemented": true,
+      "observerCallbackAndExternalBufferOwnershipImplemented": true,
+      "principalStillMissing": "async_context_frame",
+      "fullStartupAccepted": false,
+      "engineEvidence": "trace-binding-engine-check.json",
+      "observerExceptionPolicyComplete": false,
+      "publicModuleCompatibilityEstablished": false
     }
   },
   "nativeDifferentialControls": {
@@ -777,6 +804,14 @@
       "evidence": "icu-native-reference.json",
       "comparison": "icu-engine-check.json",
       "fullEngineOrPublicEquivalence": false
+    },
+    "traceBinding": {
+      "reference": "Node26.13.0Darwinarm64",
+      "sharedCases": 21,
+      "fatalAssertions": 5,
+      "observerExceptionReferenceOnly": true,
+      "evidence": "trace-binding-native-reference.json",
+      "limits": "Selected observations and real trace-file event projection; full observer fatal routing and public compatibility remain incomplete"
     }
   },
   "focusedGuestEngineControls": {
@@ -802,8 +837,8 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "process-versions-engine-check.json",
-      "regressionScope": "Same revision34 engine passes12metadata cases plus275priorNodecases;86Node drivers with24expectedfatal exits",
+      "currentArtifactEvidence": "trace-binding-engine-check.json",
+      "regressionScope": "same revision37 engine passes310priorbinding controls,9nativeagent controls and37tracingbinding/exit/fatal observations",
       "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
@@ -886,8 +921,12 @@
       "icuFatalControls": 3,
       "icuEvidence": "icu-engine-check.json",
       "icuFailures": 0,
-      "currentArtifactRegressionCases": 287,
-      "currentArtifactTotalCases": 310
+      "currentArtifactRegressionCases": 319,
+      "currentArtifactTotalCases": 356,
+      "traceBindingEvidence": "trace-binding-engine-check.json",
+      "traceBindingCases": 29,
+      "traceBindingFatalControls": 5,
+      "traceBindingExitControls": 3
     },
     "Chromium": {
       "evidence": "icu-engine-check.json",
@@ -921,7 +960,11 @@
             "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
           }
         }
-      }
+      },
+      "traceBindingEvidence": "trace-binding-engine-check.json",
+      "traceBindingCases": 29,
+      "traceBindingFatalControls": 5,
+      "traceBindingExitControls": 3
     },
     "Firefox": {
       "evidence": "icu-engine-check.json",
@@ -955,7 +998,11 @@
             "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
           }
         }
-      }
+      },
+      "traceBindingEvidence": "trace-binding-engine-check.json",
+      "traceBindingCases": 29,
+      "traceBindingFatalControls": 5,
+      "traceBindingExitControls": 3
     },
     "WebKit": {
       "evidence": "icu-engine-check.json",
@@ -989,11 +1036,15 @@
             "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
           }
         }
-      }
+      },
+      "traceBindingEvidence": "trace-binding-engine-check.json",
+      "traceBindingCases": 29,
+      "traceBindingFatalControls": 5,
+      "traceBindingExitControls": 3
     }
   },
   "nextWork": [
-    "Implement actual trace_events controller/binding required by original internal/util/debuglog; review full original native source and engine extra-binding contracts; no fake disabled flags or trace no-ops",
+    "Implement actual engine continuation-preserved data and original async_context_frame binding now required by internal/timers; preserve Promise/await/realm/GC semantics, no synchronous-only substitute",
     "Implement real mksnapshot source-mode/callback ownership; preserve explicit V8 serialization boundary",
     "Continue startup-required original Buffer/process/native closure and callback/Promise lifecycle/frame contracts",
     "Genuine empty/simple output/errors/jobs/exit and separate CJS/ESM entrypaths on all four hosts",

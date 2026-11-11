@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "binding": "trace_events",
-  "status": "startup binding remains missing; original native tracing library and agent integrated separately into engine",
+  "status": "whole original native binding and tracing intrinsics integrated; bounded four-host controls, full observer exception policy and public compatibility incomplete",
   "sourceVersion": "26.13.0",
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
   "sourceFiles": [
@@ -10,7 +10,7 @@
       "retainedPath": ".context/node-trace-events/source/src/node_trace_events.cc",
       "bytes": 8004,
       "sha256": "d49d2ee967961a72bc879fb4eb228f2670b58559a03619800fad6650b6efdc5e",
-      "compiledForNodeBinding": false,
+      "compiledForNodeBinding": true,
       "importedPath": "third_party/nodejs/upstream/src/node_trace_events.cc",
       "compiledForNativeAgent": false
     },
@@ -127,7 +127,7 @@
       "retainedPath": ".context/node-trace-events/source/deps/v8/src/builtins/builtins-trace.cc",
       "bytes": 8310,
       "sha256": "13b02d7ba55ae3b504a8f85c2b740ae026a354f0ee87837568103eede1c28802",
-      "compiledForNodeBinding": false,
+      "compiledForNodeBinding": true,
       "importedPath": "third_party/nodejs/upstream/deps/v8/src/builtins/builtins-trace.cc",
       "compiledForNativeAgent": false
     },
@@ -147,6 +147,27 @@
       "compiledForNodeBinding": false,
       "importedPath": "third_party/nodejs/upstream/src/env.h",
       "compiledForNativeAgent": false
+    },
+    {
+      "upstreamPath": "deps/v8/src/strings/unicode-inl.h",
+      "importedPath": "third_party/nodejs/upstream/deps/v8/src/strings/unicode-inl.h",
+      "bytes": 8880,
+      "sha256": "566025e868e954aeff90bdb4bb0a2bf293d5370411940caf938689af60edc31b",
+      "compiledForNodeBinding": true
+    },
+    {
+      "upstreamPath": "deps/v8/src/strings/unicode.h",
+      "importedPath": "third_party/nodejs/upstream/deps/v8/src/strings/unicode.h",
+      "bytes": 11302,
+      "sha256": "43619577faa4959143fad0cb875d7b34547e678fbf8e1cd975c8bab2380f2b9f",
+      "compiledForNodeBinding": true
+    },
+    {
+      "upstreamPath": "deps/v8/third_party/utf8-decoder/utf8-decoder.h",
+      "importedPath": "third_party/nodejs/upstream/deps/v8/third_party/utf8-decoder/utf8-decoder.h",
+      "bytes": 3229,
+      "sha256": "6d076c3193c3062d0f439611b5b6eb5bdfa75206f6d75ecac3b5d31d084f673f",
+      "compiledForNodeBinding": true
     }
   ],
   "coverage": {
@@ -184,7 +205,7 @@
       "behavior": "actual process-wide Agent::GetInstance() identity",
       "errors": "no success stub or copied native-reference flag",
       "owner": "guest native tracing agent",
-      "implementedInGuestEngine": false
+      "implementedInGuestEngine": true
     },
     {
       "name": "getEnabledCategories",
@@ -192,7 +213,7 @@
       "behavior": "sorted union of actual per-writer multiset category refs; undefined if empty",
       "errors": "source assumes real agent",
       "owner": "original agent and rooted string bridge",
-      "implementedInGuestEngine": false
+      "implementedInGuestEngine": true
     },
     {
       "name": "setTraceCategoryStateUpdateHandler",
@@ -200,7 +221,8 @@
       "behavior": "retain actual per-environment callback; original bootstrap/node:241 registers perThreadSetup.toggleTraceCategoryState",
       "errors": "original CHECK IsFunction remains fatal",
       "owner": "engine realm/environment and tracing observer",
-      "implementedInGuestEngine": false
+      "implementedInGuestEngine": true,
+      "remaining": "verbose native exception routing through process fatal machinery remains incomplete; pending engine exception is preserved"
     },
     {
       "name": "getCategoryEnabledBuffer",
@@ -208,7 +230,7 @@
       "behavior": "actual stable byte from controller category storage; original V8-sandbox build returns undefined for source fallback",
       "errors": "original CHECK IsString remains fatal; do not claim V8 sandbox to bypass real external storage",
       "owner": "engine external-buffer lifetime and process tracing controller",
-      "implementedInGuestEngine": false
+      "implementedInGuestEngine": true
     },
     {
       "name": "CategorySet",
@@ -216,7 +238,7 @@
       "behavior": "source creates std::set strings, weak native owner, real template/instance fields",
       "errors": "original CHECK array/non-null agent; actual getters and UTF8 coercion can throw",
       "owner": "native class/template and original NodeCategorySet",
-      "implementedInGuestEngine": false
+      "implementedInGuestEngine": true
     },
     {
       "name": "CategorySet.prototype.enable",
@@ -224,7 +246,7 @@
       "behavior": "check real filesystem write permission/path; start tracing writer and enable actual category refs once",
       "errors": "real permission/file/worker/backend failures; source does not synthesize output",
       "owner": "native class, agent/writer, guest OS",
-      "implementedInGuestEngine": false
+      "implementedInGuestEngine": true
     },
     {
       "name": "CategorySet.prototype.disable",
@@ -232,7 +254,7 @@
       "behavior": "disable own active category refs once, maintaining other category sets",
       "errors": "original CHECK native unwrap; no fabricated handles",
       "owner": "original class and agent",
-      "implementedInGuestEngine": false
+      "implementedInGuestEngine": true
     },
     {
       "name": "isTraceCategoryEnabled",
@@ -240,7 +262,7 @@
       "behavior": "whole original engine builtin reads actual controller byte",
       "errors": "actual TypeError for non-string category; no coercion",
       "owner": "engine extra-binding adapter + standalone controller",
-      "implementedInGuestEngine": false
+      "implementedInGuestEngine": true
     },
     {
       "name": "trace",
@@ -248,15 +270,15 @@
       "behavior": "whole original engine builtin validates category; early false only on real disabled category; then phase/name/id, real engine JSON.stringify, and actual trace event submission",
       "errors": "original TypeErrors; cyclic/BigInt/throwing JSON/toJSON exceptions retained; native effects and owned converted data",
       "owner": "engine extra-binding adapter, original builtin + controller",
-      "implementedInGuestEngine": false
+      "implementedInGuestEngine": true
     },
     {
       "name": "usePerfetto",
       "signature": "boolean",
       "behavior": "actual compiled tracing mode, never copied native reference build flags",
-      "errors": "legacy standalone component built, not a linked Node trace binding yet",
+      "errors": "actual legacy tracing component selected; no V8 JavaScript engine advertised",
       "owner": "actual build configuration",
-      "implementedInGuestEngine": false
+      "implementedInGuestEngine": true
     }
   ],
   "sourcePolicy": {
@@ -280,31 +302,31 @@
   "prerequisites": [
     {
       "area": "standalone V8 controller/config/object/ring buffer/JSON writer",
-      "status": "normal resolved library linked into revision-36 engine; standalone component and engine/agent evidence remain separate"
+      "status": "normal resolved library linked into engine; component evidence remains separate"
     },
     {
       "area": "Node agent/buffer/writer/helper/traced values",
-      "status": "six whole original translation units compiled and linked into engine with real guest file/worker primitives; original JS binding still missing"
+      "status": "six whole original translation units and real guest file/worker providers linked"
     },
     {
-      "area": "whole native node_trace_events.cc",
-      "status": "reviewed, not compiled against native rooted API"
+      "area": "whole native node_trace_events.cc and V8 builtins-trace.cc",
+      "status": "both original complete units compiled unchanged against actual rooted engine primitives"
     },
     {
-      "area": "whole V8 builtins-trace.cc",
-      "status": "whole builtin imported but not compiled; genuine handles/error/JSON bridge incomplete; original WTF-8 encoder verified independently against native builtin bytes, not yet adopted"
+      "area": "original UTF-16 to WTF-8 encoder",
+      "status": "complete original unicode/decoder headers adopted; long paired-Unicode names/categories and real file data checked; full byte edge coverage remains open"
     },
     {
       "area": "source metadata/permissions/options",
-      "status": "actual shared native versions provider and complete original CLI parser adopted; permission-policy adoption explicitly rejected; broader security/error paths incomplete"
+      "status": "same real native versions provider and original parser; unsupported permission mode rejected explicitly; wider security/error paths incomplete"
     },
     {
       "area": "native external ArrayBuffer",
-      "status": "actual category byte and controller owner lifetime needed; existing typed-view borrows are not this owner"
+      "status": "actual stable category byte exposed through external ArrayBuffer and direct Uint8Array; traced owner and explicit foreground process shutdown; transfer edge equivalence unvalidated"
     },
     {
       "area": "native observer and callback scope",
-      "status": "actual current realm/process/can-call lifecycle and source callback policy; incomplete"
+      "status": "one traced environment observer, actual principal/callback owner admission and synchronous real notifications; native verbose exception/fatal policy incomplete"
     }
   ],
   "validationObligations": [
@@ -324,13 +346,13 @@
   },
   "startup": {
     "implemented": false,
-    "principalCurrentGap": "trace_events",
+    "principalCurrentGap": "async_context_frame",
     "stackLimitCurrentGap": "mksnapshot",
     "fullStartupAccepted": false
   },
   "broaderRoadmapAuthorized": false,
   "nativeAgentIntegration": {
-    "scope": "native prerequisite only; not original trace_events binding, public module compatibility or Node startup",
+    "scope": "native agent prerequisite; binding/intrinsic evidence is separate in nativeBindingIntegration",
     "wholeOriginalTranslationUnits": [
       "src/tracing/agent.cc",
       "src/tracing/agent_legacy.cc",
@@ -347,12 +369,40 @@
       "evidence": ".context/node-trace-events/agent-diagnostic-start.json",
       "classification": "guest VFS correctly rejects write; writer failure-path/native-reference investigation remains open; no outside-runtime defect attribution"
     },
-    "originalBindingImplemented": false,
-    "externalCategoryViewsImplemented": false,
-    "javascriptObserverImplemented": false,
+    "originalBindingImplemented": true,
+    "externalCategoryViewsImplemented": true,
+    "javascriptObserverImplemented": true,
     "fullBackendCatalogComplete": false,
     "engineEvidence": "tests/nodejs/upstream/trace-agent-engine-check.json",
     "fourHostSelectedControls": 9,
     "priorNodeControls": 310
+  },
+  "nativeBindingIntegration": {
+    "engineEvidence": "tests/nodejs/upstream/trace-binding-engine-check.json",
+    "nativeReference": "tests/nodejs/upstream/trace-binding-native-reference.json",
+    "wholeOriginalTranslationUnits": [
+      "src/node_trace_events.cc",
+      "deps/v8/src/builtins/builtins-trace.cc"
+    ],
+    "enginePrimitives": [
+      "real rooted callback frame/receiver",
+      "native FunctionTemplate constructor/prototypes and receiver checks",
+      "real external ArrayBuffer/static category byte ownership",
+      "whole original UTF-16/WTF-8 encoder",
+      "actual engine ToJSON and native TypeErrors",
+      "one rooted per-runtime JS trace observer"
+    ],
+    "sharedNativeCases": 21,
+    "engineCasesPerHost": 29,
+    "fatalCasesPerHost": 5,
+    "exitCasesPerHost": 3,
+    "principalBootstrap": "unchanged body now reaches missing async_context_frame at internal/async_context_frame:10",
+    "limits": [
+      "Full public trace_events depends on original worker closure; compatibility not established",
+      "Observer throwing handler: native reference invokes uncaughtException; full owning engine fatal route not implemented",
+      "Permission-policy adoption, source writer EROFS shutdown failure, rotation/partial-write/cancel/OOM remain open",
+      "External buffer transfer behavior, worker tracing and heap/snapshot traversal remain unvalidated",
+      "Normal runtime remains on legacy bootstrap; empty/simple upstream startup and CJS/ESM entrypaths not achieved"
+    ]
   }
 }

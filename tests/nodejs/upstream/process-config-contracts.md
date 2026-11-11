@@ -45,9 +45,10 @@ binding has per-realm identity and read-only data fields:
 The locale is the actual engine's BCP47 runtime locale, which can differ from
 an embedding host or native V8 on another operating system. Public JavaScript
 mutation of Intl does not supply it. The existing build uses complete Mozilla
-Intl data, no V8 tracing platform, and no NODE_OPTIONS parser registration;
-optional hasSmallICU/hasTracing/hasNodeOptions fields are absent. This is not
-permission to silently accept unsupported options when CLI integration is
+Intl data, the original options parser and a standalone native tracing component.
+Optional hasSmallICU/hasNodeOptions fields are absent. The original tracing
+binding and engine intrinsics now support the actual hasTracing=true capability.
+This is not permission to silently accept unsupported options when CLI integration is
 implemented. Linking OpenSSL does not implement the full Node crypto binding.
 The original fipsMode constant's integration semantics are not established;
 access raises ERR_KANDELO_NOT_IMPLEMENTED rather than copying a reference flag.
