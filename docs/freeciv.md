@@ -201,6 +201,28 @@ selects Freeciv's fullscreen option so its drawing and pointer coordinates
 match the display mode. Inside Wayland it uses a normal window. An
 explicit `--` GUI argument block overrides the fullscreen default.
 
+### Known Wayland window-size limitation
+
+Typing `freeciv` inside Cage can enlarge the SDL window without rebuilding
+Freeciv's original scene. The rendered menu and its hit targets then disagree.
+An independent native Linux ARM64 control reproduced this with Cage 0.3.1,
+Freeciv 3.2.6 and SDL 2.32.10: the actual window and renderer were 1366×764,
+but the scene texture remained 640×480. SDL delivered the resize events.
+
+The verified temporary workaround inside Cage is:
+
+```sh
+freeciv -- --fullscreen
+```
+
+This aligns the initial scene and window dimensions. The portable Freeciv
+correction should respect the actual configured window size at startup.
+Handling later compositor-driven changes, including Sway adding or removing
+neighboring tiles, is separate work and remains unvalidated. The wrapper
+continues to preserve ordinary Wayland windowed launches. See the
+[Cage follow-up handoff](graphics/cage-reliability-2026-11.md#follow-up-handoff--2026-11-11)
+for the native control and the remaining scope.
+
 ## Display and input ownership
 
 The image declares Kandelo's generic `presentation.displayScale: 1.5`.

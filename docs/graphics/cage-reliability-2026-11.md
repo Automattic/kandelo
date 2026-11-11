@@ -14,15 +14,61 @@ orders, with three rounds per invocation. Cursor observations qualify
 11/12 cases, including all six candidate cases. The 1920-wide cursor
 callback measurements improve on all three engines. Repeated Node I/O
 penalties remain an explicit review risk; broad performance neutrality,
-complete R1 and native-feel acceptance are not claimed. No merge is authorized.
+complete R1 and native-feel acceptance are not claimed. No merge or promotion
+has been performed.
 
-[Current normal Cage preview](http://127.0.0.1:56525/?vfs=%2F__kandelo_source_only_assets__%2Fbc5ec7b4185daa82fee26cdd5534cb4f3111ec738899f6286f734575c9a56780%2Fshell.vfs.zst&profile=cage).
+[Current normal Cage preview](http://127.0.0.1:56527/?vfs=%2F__kandelo_source_only_assets__%2F8576f037e676152fd0347df8fad4339f65f90f94ab4d09ef660592ba0fd03275%2Fshell.vfs.zst&profile=cage).
 The [completed measurements](#completed-integrated-measurements--2026-11-11) and
 [integration record](#integration-with-develop--2026-11-11) below separate
 current results from retained earlier failures. The remaining text-sharpness
 gap relative to Sway is the maintainer-approved visual follow-up. Full R1,
 native-feel and native Safari acceptance are not claimed; B2–B6/C1–C3 remain
 paused.
+
+## Follow-up handoff — 2026-11-11
+
+The activity-title correction at `e9e2ca7c7079` changes shell image metadata
+to **Cage kiosk** and **Sway tiling desktop**, with shell revision 98. The
+canonical graph passes 278/278, metadata/activity checks 141/141, the shell
+layout audit passes, and a Chromium check observes both rendered titles.
+This follow-up leaves the measured rendering policy and runtime unchanged.
+The older preview on port 56525 and the other preserved previews remain
+available separately.
+
+The next worktree should start from the actual merged `develop` commit once
+#1678 lands, retaining these boundaries:
+
+- **Cage sharpness:** the profile still declares `displayScale: 1`. Native
+  device-pixel output and compositor/client scaling already exist. Compare
+  sharpness, cursor response and actual Steel Sky gameplay in Firefox before
+  changing that policy; 2× density produces four times as many pixels.
+- **Freeciv under Wayland:** typing `freeciv` inside Cage exposes a scene/window
+  geometry mismatch. An independent native Linux ARM64 control reproduces it
+  with Debian Cage 0.3.1 and Freeciv 3.2.6, using upstream SDL 2.32.10 instead
+  of Debian's SDL3 compatibility layer. Ordinary launch keeps a 640×480 scene
+  in a 1366×764 window: the visible Quit click fails, while a click near the
+  middle exits. Explicit `freeciv -- --fullscreen` aligns dimensions and the
+  visible Quit works. Both native cases also pass with the observation-only
+  logging shim removed. This is headless functional evidence, with native
+  Wayland virtual-pointer input, rather than a GPU performance measurement.
+  Correct initial window sizing in portable Freeciv source first; later live
+  resizing and Sway tile changes need their own coverage. No Freeciv repair or
+  upstream submission is part of #1678. The temporary workaround is documented
+  in [Freeciv](../freeciv.md#known-wayland-window-size-limitation).
+- **Existing acceptance limits:** the Node timing penalties, baseline-reproduced
+  archive-import failures, unqualified large Chromium pointer control and
+  native Safari/full-conformance gaps remain as recorded below. They are not
+  cleared by the title correction or the native Freeciv experiment.
+
+Sydney retains the latest title/build receipt at
+`.context/cage-title-followup-delivery.json`, the browser Freeciv reproduction
+at `.context/freeciv-pointer-20261111/`, and native binaries' identities, fixture
+sources, screenshots, logs and original fixture failures at
+`.context/freeciv-native-20261111/`. The native test container
+`kandelo-freeciv-native-1111` is stopped. Preserve these records and the running
+previews when archiving the workspace. The separate campaign-plan branch remains
+`brandonpayton/graphics-campaign-plan` at `a0e5113a4d1f9b2000775c4c016129caacdd85be`;
+this handoff does not activate the broader B2–B6/C1–C3 sequence.
 
 ## Frozen validation before integration
 
