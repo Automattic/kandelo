@@ -536,8 +536,13 @@ case "$suite" in
         ;;
     cargo-xtask)
         # Package-system automation unit tests (tools/xtask/**): package
-        # resolver, binaries-dir placement, and archive staging/naming. Pure
-        # host-target cargo tests; no wasm sysroots or prepared workspace needed.
+        # resolver, binaries-dir placement, and archive staging/naming. Host-
+        # target cargo tests; no prepared workspace needed. The process import
+        # audit tests read the kernel import contract from both sysroots'
+        # libc.a, and one CLI test builds them as a side effect, so prepare
+        # them first rather than let test order decide what the audit sees.
+        bash "$REPO_ROOT/scripts/build-musl.sh" --ensure
+        bash "$REPO_ROOT/scripts/build-musl.sh" --ensure --arch wasm64posix
         HOST_TARGET="$(host_target)"
         cargo test -p xtask --target "$HOST_TARGET" -- \
             "${disabled_software_cargo_test_args[@]}"

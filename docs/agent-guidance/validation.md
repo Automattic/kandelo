@@ -153,7 +153,7 @@ Core validation surface:
 | Suite | Command | Primary evidence for |
 |---|---|---|
 | Workspace Rust tests | `cargo test --workspace --exclude xtask --target <host-target>` | Any change under `crates/`: kernel, fork-instrument, shared, wasm-local-root-spill, and future workspace crates. `--target` is required because the default wasm32 target has no host runner; xtask has its own always-run suite. |
-| Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename |
+| Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename. The process import audit tests need both musl sysroots (`scripts/build-musl.sh`, also with `--arch wasm64posix`); the CI-shaped suite builds them first. |
 | Runtime workaround repros | `scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh runtime-workarounds` | Whether each confirmed outside defect still reproduces (registry: `tests/runtime-workarounds/`). Run it in the dev shell: the Bun repros judge the dev shell's pinned Bun version. |
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |
