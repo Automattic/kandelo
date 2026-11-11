@@ -7,6 +7,9 @@ import { NodeTimeProvider } from "../src/vfs/time";
 import { lookupComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { ABI_SYSCALLS, CH_ARGS, CH_ARG_SIZE, CH_DATA, CH_ERRNO, CH_RETURN, CH_SYSCALL, CH_TOTAL_SIZE } from "../src/generated/abi";
 
+const PROT_READ_WRITE = 0x3n;
+const MAP_SHARED_FIXED = 0x11n;
+
 // A genuine externally provided Memory deliberately has no trusted constructor
 // descriptor. Exercise real Rust fallback through the normal selected kernel,
 // channel dispatch and kernel-file mapping exports, without overriding results.
@@ -58,6 +61,9 @@ describe("normal kernel native-comparison fallback", () => {
     const fd = call(ABI_SYSCALLS.MemfdCreate, [BigInt(pointer + CH_DATA), 0n], new TextEncoder().encode("snapshot-fallback\0"));
     expect(fd).toBeGreaterThanOrEqual(0n);
     expect(call(ABI_SYSCALLS.Ftruncate, [fd, 4096n])).toBe(0n);
+    // As the kernel worker does: the process's mmap prepares the kernel-file
+    // mapping, then the host commits it once process memory covers it.
+    expect(call(ABI_SYSCALLS.Mmap, [65536n, 4096n, PROT_READ_WRITE, MAP_SHARED_FIXED, fd, 0n])).toBe(65536n);
     expect(exports.kernel_shared_mapping_file_track(pid, 65536n, Number(fd), 4096n, 0n, 1, BigInt(processMemory.buffer.byteLength))).toBe(0);
     const expected = Uint8Array.from({ length: 4096 }, (_, i) => (i * 31 + 23) & 255);
     new Uint8Array(processMemory.buffer, 65536, expected.length).set(expected);

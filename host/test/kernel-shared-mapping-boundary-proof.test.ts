@@ -15,6 +15,8 @@ import { ABI_SYSCALLS, CH_ARGS, CH_ARG_SIZE, CH_DATA, CH_ERRNO, CH_RETURN, CH_SY
 // proved unchanged. A kernel built with `shared-mapping-proof-verify`
 // compares anyway and counts the confirmed proof.
 const ENTRY = 3, COMPLETION = 0, FORCED = 1, LEGACY_UNCHANGED = 2;
+const PROT_READ_WRITE = 0x3n;
+const MAP_SHARED_FIXED = 0x11n;
 
 describe("kernel shared-mapping lazy boundaries", () => {
   async function boot() {
@@ -65,7 +67,10 @@ describe("kernel shared-mapping lazy boundaries", () => {
     expect(call(ABI_SYSCALLS.Ftruncate, [fd, 4096n])).toBe(0n);
     // Two mappings of one memfd in one process: each alias observes the
     // other, so both are pulled at every completion of the process.
+    // As the kernel worker does: each mmap prepares a kernel-file mapping,
+    // then the host commits it once process memory covers it.
     for (const addr of [65536n, 131072n]) {
+      expect(call(ABI_SYSCALLS.Mmap, [addr, 4096n, PROT_READ_WRITE, MAP_SHARED_FIXED, fd, 0n])).toBe(addr);
       expect(exports.kernel_shared_mapping_file_track(pid, addr, Number(fd), 4096n, 0n, 1, BigInt(processMemory.buffer.byteLength))).toBe(0);
     }
     const sync = (force: number) => {
