@@ -297,7 +297,7 @@ script is a page list on top of `scripts/install-package-man-pages.sh`
   the image installs under a second name, such as `unxz` for `xz`;
   `+dir` links every page staged before it into another man tree, for a
   program that looks pages up in its own directory (`npm-docs` links npm's
-  pages into `/usr/local/lib/npm/man` for `npm help`; `npm help` itself
+  pages into `/usr/lib/npm/man` for `npm help`; `npm help` itself
   does not run yet, because it loads `node:readline/promises`, which
   Kandelo's node does not provide).
 - `kandelo_man_pages_substitute <in> <out> <token=value>...` fills in a

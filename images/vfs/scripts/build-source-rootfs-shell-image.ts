@@ -23,6 +23,7 @@ import {
   type ExperimentalTerminalProgram,
   type ExperimentalTerminalSession,
 } from "../../../web-libs/kandelo-session/src/experimental-terminal-session";
+import { assertKandeloFilesystemLayout } from "./filesystem-layout";
 import {
   ensureDirRecursive,
   serializeImage,
@@ -1923,6 +1924,9 @@ export async function buildSourceRootfsShellImage(
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demo, 0o644);
 
+  // WHY: this composer serializes directly for its size gate; enforce the
+  // same layout contract as saveImage before publishing deferred archives.
+  assertKandeloFilesystemLayout(fs);
   // Checked before saving so a rejected composition writes no output.
   requireLazyShellPrograms(sourceEagerPrograms, fs);
   requireLazyShellData(fs, selection);

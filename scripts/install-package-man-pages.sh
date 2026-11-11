@@ -65,7 +65,7 @@
 #         less.nro:less.1     -> share/man/man1/less.1  (less keeps troff in .nro)
 #         unxz.1=xz.1         -> share/man/man1/unxz.1 -> xz.1
 #         tic.1m              -> share/man/man1/tic.1m
-#         +local/lib/npm/man  -> local/lib/npm/man/man<N>/<page> symlinks to
+#         +lib/npm/man  -> lib/npm/man/man<N>/<page> symlinks to
 #                                every page staged earlier, for a program that
 #                                looks pages up in its own directory (npm help)
 #
