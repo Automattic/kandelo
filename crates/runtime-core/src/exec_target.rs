@@ -1143,6 +1143,7 @@ fn finish_commit(
     // nothing to it.
     proc.main_channel_addr = 0;
     proc.exec_generation = next_generation;
+    proc.entropy_reads.clear();
 
     let competing: Vec<_> = proc.prepared_exec_targets.drain().collect();
     for stale in competing {

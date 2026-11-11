@@ -12,10 +12,14 @@ import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_PENDING,
+  CHANNEL_REQUEST_FLAG_CANCELLATION_POINT,
+  CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
   CH_ARGS,
   CH_ARG_SIZE,
   CH_DATA_SIZE,
+  ENTROPY_READ_PENDING,
   CH_ERRNO,
+  CH_REQUEST_FLAGS,
   CH_RETURN,
   CH_STATUS,
   CH_SYSCALL,
@@ -78,6 +82,7 @@ interface TransferHarness {
   capacity: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
   execute: ReturnType<typeof vi.fn>;
+  guestExecute: ReturnType<typeof vi.fn>;
   channelExecute: ReturnType<typeof vi.fn>;
   onKernelFatal: ReturnType<typeof vi.fn>;
   gate: KernelEntryGate;
@@ -160,6 +165,14 @@ function makeTransferHarness(
     view.setUint32(CH_ERRNO, 0, true);
     return 0;
   });
+  const guestExecute = vi.fn((pointer: number | bigint) => {
+    const view = new DataView(kernelMemory.buffer, Number(pointer));
+    const random = view.getUint32(CH_SYSCALL, true) === ABI_SYSCALLS.Getrandom;
+    const length = view.getBigInt64(CH_ARGS + (random ? 1 : 2) * CH_ARG_SIZE, true);
+    view.setBigInt64(CH_RETURN, length, true);
+    view.setUint32(CH_ERRNO, 0, true);
+    return Number(length);
+  });
   const onKernelFatal = vi.fn();
 
   const gate = new KernelEntryGate();
@@ -186,10 +199,12 @@ function makeTransferHarness(
     kernel_blocking_retry_release: vi.fn(() => 0),
     kernel_blocking_retry_token: vi.fn(() => 701n),
     kernel_handle_channel: () => 0,
+    kernel_handle_guest_io: guestExecute,
     kernel_dequeue_signal: () => 0,
     kernel_drain_wakeup_events: () => 0,
     kernel_get_process_exit_signal: () => 0,
     kernel_get_process_state: () => 0,
+    kernel_rootfs_take_compaction_request: () => 0,
     // Large-transfer EAGAIN follows the same blocking retry contract as the
     // ordinary channel path. Model a blocking descriptor unless a focused
     // case replaces this export.
@@ -255,6 +270,7 @@ function makeTransferHarness(
     capacity,
     cancel,
     execute,
+    guestExecute,
     channelExecute,
     onKernelFatal,
     gate,
@@ -409,48 +425,6 @@ function addChannel(
 }
 
 describe("kernel-owned large transfer reservation protocol", () => {
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s accepts the exact owned capacity and rejects capacity + 1",
-    (_name, pointerWidth) => {
-      const ownedCapacity = LARGE_LENGTH;
-      const exact = makeTransferHarness(pointerWidth);
-      exact.kernelExports.kernel_transfer_scratch_capacity = () =>
-        kernelPointer(pointerWidth, ownedCapacity);
-
-      invokeLargeWrite(exact, ownedCapacity);
-
-      expect(exact.begin).toHaveBeenCalledWith(
-        kernelPointer(pointerWidth, ownedCapacity),
-      );
-      expect(exact.execute).toHaveBeenCalledOnce();
-      expect(exact.cancel).toHaveBeenCalledOnce();
-      expect(readChannelCompletion(exact.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: ownedCapacity,
-        errno: 0,
-      });
-
-      const over = makeTransferHarness(pointerWidth);
-      over.kernelExports.kernel_transfer_scratch_capacity = () =>
-        kernelPointer(pointerWidth, ownedCapacity);
-
-      invokeLargeWrite(over, ownedCapacity + 1);
-
-      expect(over.begin).toHaveBeenCalledWith(
-        kernelPointer(pointerWidth, ownedCapacity + 1),
-      );
-      expect(over.execute).not.toHaveBeenCalled();
-      expect(over.cancel).toHaveBeenCalledOnce();
-      expect(readChannelCompletion(over.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: -1,
-        errno: EIO,
-      });
-    },
-  );
 
   it.each([
     ["wasm32", 4],
@@ -771,186 +745,9 @@ describe("kernel-owned large transfer reservation protocol", () => {
     },
   );
 
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s keeps nested channel imports behind followers while a selected handler makes sequential exports",
-    async (_name, pointerWidth) => {
-      const harness = makeTransferHarness(pointerWidth);
-      const selected = makeChannel(42);
-      const nested = makeChannel(43);
-      addChannel(harness, selected, pointerWidth);
-      addChannel(harness, nested, pointerWidth);
-      new Uint8Array(selected.memory.buffer).fill(
-        0x42,
-        1024,
-        1024 + LARGE_LENGTH,
-      );
-      new Uint8Array(nested.memory.buffer)[2048] = 0x43;
-      writeSyscall(
-        selected,
-        ABI_SYSCALLS.Write,
-        [7n, 1024n, BigInt(LARGE_LENGTH)],
-      );
-      writeSyscall(nested, ABI_SYSCALLS.Write, [8n, 2048n, 1n]);
-      const order: string[] = [];
-      harness.kernelExports.kernel_transfer_scratch_begin = vi.fn((
-        minimumCapacity: number | bigint,
-      ) => {
-        order.push("begin");
-        return harness.begin(minimumCapacity);
-      });
-      harness.kernelExports.kernel_transfer_scratch_pointer = vi.fn((
-        token: bigint,
-      ) => {
-        order.push("pointer");
-        return harness.pointer(token);
-      });
-      harness.kernelExports.kernel_transfer_scratch_capacity = vi.fn((
-        token: bigint,
-      ) => {
-        order.push("capacity");
-        return harness.capacity(token);
-      });
-      harness.kernelExports.kernel_transfer_io_execute = vi.fn(() => {
-        order.push("execute");
-        harness.worker.handleSyscall(nested);
-        expect(order).not.toContain("nested");
-        expect(() => harness.worker.ptyMasterRead(7))
-          .toThrow(/PTY master read/);
-        return LARGE_LENGTH;
-      });
-      harness.kernelExports.kernel_transfer_scratch_cancel = vi.fn((
-        token: bigint,
-      ) => {
-        order.push("cancel");
-        return harness.cancel(token);
-      });
-      harness.kernelExports.kernel_handle_channel = vi.fn((
-        pointer: number | bigint,
-      ) => {
-        order.push("nested");
-        const view = new DataView(
-          harness.kernelBytes.buffer,
-          Number(pointer),
-        );
-        view.setBigInt64(CH_RETURN, 1n, true);
-        view.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-      harness.kernelExports.kernel_pty_master_read = vi.fn(() => {
-        order.push("stolen");
-        return 0;
-      });
 
-      harness.gate.invokeKernelExport("outer", () => {
-        harness.worker.retrySyscall(selected);
-        harness.gate.runOrDeferVoidIngress(
-          "follower",
-          () => {
-            order.push("follower");
-          },
-        );
-      });
-      await Promise.resolve();
 
-      expect(order).toEqual([
-        "begin",
-        "pointer",
-        "capacity",
-        "execute",
-        "cancel",
-        "follower",
-        "nested",
-      ]);
-      expect(readChannelCompletion(selected).status)
-        .toBe(CHANNEL_STATUS_COMPLETE);
-      expect(readChannelCompletion(nested).status)
-        .toBe(CHANNEL_STATUS_COMPLETE);
-    },
-  );
 
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s propagates begin ENOMEM without consulting or cancelling a token",
-    (_name, pointerWidth) => {
-      const harness = makeTransferHarness(pointerWidth);
-      harness.kernelExports.kernel_transfer_scratch_begin =
-        vi.fn(() => -BigInt(ENOMEM));
-
-      invokeLargeWrite(harness);
-
-      expect(harness.pointer).not.toHaveBeenCalled();
-      expect(harness.capacity).not.toHaveBeenCalled();
-      expect(harness.execute).not.toHaveBeenCalled();
-      expect(harness.cancel).not.toHaveBeenCalled();
-      expect(readChannelCompletion(harness.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: -1,
-        errno: ENOMEM,
-      });
-    },
-  );
-
-  it.each([
-    ["wasm32 null pointer", 4, 0, LARGE_LENGTH],
-    ["wasm32 zero capacity", 4, 2 * 65_536, 0],
-    ["wasm32 end-of-memory range", 4, 4 * 65_536 - 8, LARGE_LENGTH],
-    ["wasm64 null pointer", 8, 0, LARGE_LENGTH],
-    ["wasm64 zero capacity", 8, 2 * 65_536, 0],
-    ["wasm64 end-of-memory range", 8, 4 * 65_536 - 8, LARGE_LENGTH],
-  ] as const)(
-    "%s is cancelled exactly once before any execute",
-    (_name, pointerWidth, pointerValue, capacityValue) => {
-      const harness = makeTransferHarness(pointerWidth);
-      harness.kernelExports.kernel_transfer_scratch_pointer = () =>
-        kernelPointer(pointerWidth, pointerValue);
-      harness.kernelExports.kernel_transfer_scratch_capacity = () =>
-        kernelPointer(pointerWidth, capacityValue);
-
-      invokeLargeWrite(harness);
-
-      expect(harness.execute).not.toHaveBeenCalled();
-      expect(harness.cancel).toHaveBeenCalledOnce();
-      expect(harness.cancel).toHaveBeenCalledWith(101n);
-      expect(readChannelCompletion(harness.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: -1,
-        errno: EIO,
-      });
-    },
-  );
-
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s uses and settles a fresh token for sequential operations",
-    (_name, pointerWidth) => {
-      const harness = makeTransferHarness(pointerWidth);
-
-      invokeLargeWrite(harness);
-      expect(readChannelCompletion(harness.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: LARGE_LENGTH,
-        errno: 0,
-      });
-      invokeLargeWrite(harness);
-
-      expect(harness.execute.mock.calls.map((call) => call[2]))
-        .toEqual([101n, 102n]);
-      expect(harness.cancel.mock.calls.map((call) => call[0]))
-        .toEqual([101n, 102n]);
-      expect(readChannelCompletion(harness.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: LARGE_LENGTH,
-        errno: 0,
-      });
-    },
-  );
 
   // The sendmsg/recvmsg cases that stood here died with their subject. They
   // proved the HOST's staging of a caller-native `msghdr` into the fixed
@@ -964,126 +761,8 @@ describe("kernel-owned large transfer reservation protocol", () => {
 
 
 
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s defers a reentrant channel without replacing its mailbox or outer bytes",
-    async (_name, pointerWidth) => {
-      const harness = makeTransferHarness(pointerWidth);
-      const nestedChannel = makeChannel(42);
-      addChannel(harness, nestedChannel, pointerWidth);
-      writeSyscall(
-        nestedChannel,
-        ABI_SYSCALLS.Write,
-        [7n, 2048n, BigInt(LARGE_LENGTH)],
-      );
-      const outerPayload = Uint8Array.from(
-        { length: LARGE_LENGTH },
-        (_, index) => (index * 17 + 3) % 251,
-      );
-      harness.processBytes.set(outerPayload, 1024);
-      const execute = vi.fn(() => {
-        if (execute.mock.calls.length === 1) {
-          expect(harness.worker.currentHandlePid).toBe(harness.channel.pid);
-          harness.worker.handleSyscall(nestedChannel);
-          harness.worker.handleSyscall(nestedChannel);
-          expect(readChannelCompletion(nestedChannel).status)
-            .toBe(CHANNEL_STATUS_PENDING);
-          expect(
-            harness.kernelBytes.slice(
-              harness.transferOffset,
-              harness.transferOffset + LARGE_LENGTH,
-            ),
-          ).toEqual(outerPayload);
-        }
-        return LARGE_LENGTH;
-      });
-      harness.kernelExports.kernel_transfer_io_execute = execute;
 
-      writeSyscall(
-        harness.channel,
-        ABI_SYSCALLS.Write,
-        [7n, 1024n, BigInt(LARGE_LENGTH)],
-      );
-      harness.worker.handleSyscall(harness.channel);
 
-      expect(harness.begin).toHaveBeenCalledOnce();
-      expect(harness.cancel).toHaveBeenCalledOnce();
-      expect(execute).toHaveBeenCalledOnce();
-      expect(readChannelCompletion(harness.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: LARGE_LENGTH,
-        errno: 0,
-      });
-      expect(readChannelCompletion(nestedChannel).status)
-        .toBe(CHANNEL_STATUS_PENDING);
-
-      await Promise.resolve();
-
-      expect(execute).toHaveBeenCalledTimes(2);
-      expect(readChannelCompletion(nestedChannel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: LARGE_LENGTH,
-        errno: 0,
-      });
-    },
-  );
-
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s converts a result above the requested length to EIO and settles",
-    (_name, pointerWidth) => {
-      const harness = makeTransferHarness(pointerWidth);
-      harness.kernelExports.kernel_transfer_io_execute =
-        vi.fn(() => LARGE_LENGTH + 1);
-
-      invokeLargeWrite(harness);
-
-      expect(harness.cancel).toHaveBeenCalledOnce();
-      expect(readChannelCompletion(harness.channel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        retVal: -1,
-        errno: EIO,
-      });
-    },
-  );
-
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s cancels EAGAIN scratch before parking the retry",
-    (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = makeTransferHarness(pointerWidth);
-      const order: string[] = [];
-      class RecordingRetryMap extends Map<unknown, unknown> {
-        override set(key: unknown, value: unknown): this {
-          order.push("retry");
-          return super.set(key, value);
-        }
-      }
-      harness.worker.pendingPollRetries = new RecordingRetryMap();
-      harness.kernelExports.kernel_transfer_io_execute =
-        vi.fn(() => -EAGAIN);
-      harness.kernelExports.kernel_transfer_scratch_cancel =
-        vi.fn(() => {
-          order.push("cancel");
-          return 0;
-        });
-
-      invokeLargeWrite(harness);
-
-      expect(order).toEqual(["cancel", "retry"]);
-      expect(readChannelCompletion(harness.channel).status)
-        .toBe(CHANNEL_STATUS_PENDING);
-      expect(harness.worker.pendingPollRetries.has(harness.channel)).toBe(true);
-      vi.clearAllTimers();
-    },
-  );
 });
 
 describe("kernel transfer fatal latch", () => {
@@ -1183,33 +862,22 @@ describe("kernel transfer fatal latch", () => {
         expect(deferredBeforeTrap).not.toHaveBeenCalled();
         throw transferTrap;
       });
-      harness.kernelExports.kernel_transfer_io_execute = execute;
+      harness.kernelExports.kernel_handle_guest_io = execute;
       const consoleError = vi.spyOn(console, "error").mockImplementation(
         () => {},
       );
 
       expect(() => harness.worker.handleSyscall(harness.channel))
-        .toThrow(/kernel export kernel_transfer_io_execute failed/);
+        .toThrow(/kernel export kernel_handle_guest_io failed/);
       await Promise.resolve();
 
       expect(execute).toHaveBeenCalledOnce();
       expect(harness.cancel).not.toHaveBeenCalled();
-      expect(harness.worker.currentHandlePid).toBe(777);
       expect(harness.worker.isKernelInitialized()).toBe(false);
       expect(harness.onKernelFatal).toHaveBeenCalledOnce();
-      const failure = harness.onKernelFatal.mock.calls[0]?.[0] as
-        (Error & { trappedCause?: unknown }) | undefined;
-      expect(failure).toMatchObject({
-        name: "KernelTransferExecuteTrapError",
-        message:
-          "kernel transfer execute trapped with a global reservation active",
-      });
-      const trappedExport = failure?.trappedCause as
-        (Error & { cause?: unknown }) | undefined;
-      expect(trappedExport).toMatchObject({
-        message: "kernel export kernel_transfer_io_execute failed",
-      });
-      expect(trappedExport?.cause).toBe(transferTrap);
+      const failure = harness.onKernelFatal.mock.calls[0]?.[0] as Error & { cause?: unknown };
+      expect(failure.message).toContain("kernel export kernel_handle_guest_io failed");
+      expect(failure.cause).toBe(transferTrap);
       expect(harness.channel.handling).toBe(true);
       expect(deferredChannel.handling).toBe(true);
       expect(readChannelCompletion(harness.channel).status)
@@ -1230,46 +898,6 @@ describe("kernel transfer fatal latch", () => {
     },
   );
 
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "%s cancel failure is kernel-fatal after restoring the selected pid",
-    async (_name, pointerWidth) => {
-      const harness = makeTransferHarness(pointerWidth);
-      harness.processBytes.fill(0x72, 1024, 1024 + LARGE_LENGTH);
-      writeSyscall(
-        harness.channel,
-        ABI_SYSCALLS.Write,
-        [7n, 1024n, BigInt(LARGE_LENGTH)],
-      );
-      harness.worker.currentHandlePid = 888;
-      const execute = vi.fn(() => {
-        expect(harness.worker.currentHandlePid).toBe(harness.channel.pid);
-        return LARGE_LENGTH;
-      });
-      const cancel = vi.fn(() => -EINVAL);
-      harness.kernelExports.kernel_transfer_io_execute = execute;
-      harness.kernelExports.kernel_transfer_scratch_cancel = cancel;
-      const consoleError = vi.spyOn(console, "error").mockImplementation(
-        () => {},
-      );
-
-      expect(() => harness.worker.handleSyscall(harness.channel))
-        .toThrow(/kernel transfer reservation could not be settled/);
-      harness.worker.handleSyscall(harness.channel);
-      await Promise.resolve();
-
-      expect(execute).toHaveBeenCalledOnce();
-      expect(cancel).toHaveBeenCalledOnce();
-      expect(harness.worker.currentHandlePid).toBe(888);
-      expect(harness.worker.isKernelInitialized()).toBe(false);
-      expect(harness.onKernelFatal).toHaveBeenCalledOnce();
-      expect(readChannelCompletion(harness.channel).status)
-        .toBe(CHANNEL_STATUS_PENDING);
-      consoleError.mockRestore();
-    },
-  );
 });
 
 describe("vector I/O never reserves host transfer scratch", () => {
@@ -1383,4 +1011,244 @@ describe("ignored vector and message pointers", () => {
 
 
 
+});
+
+function setGuestResult(h: TransferHarness, result: bigint, errno = 0): void {
+  h.kernelExports.kernel_handle_guest_io = vi.fn((pointer: number | bigint) => {
+    const view = new DataView(h.kernelBytes.buffer, Number(pointer));
+    view.setBigInt64(CH_RETURN, result, true);
+    view.setUint32(CH_ERRNO, errno, true);
+    return errno ? -errno : Number(result);
+  });
+}
+
+function setEntropyPending(h: TransferHarness, token: bigint): void {
+  setGuestResult(h, token, ENTROPY_READ_PENDING >>> 0);
+  h.worker.processes.get(h.channel.pid).execGeneration = 0n;
+}
+
+describe("guest-address scalar I/O transport", () => {
+  it.each([4, 8] as const)("passes arguments once without allocating a payload at width %i", width => {
+    const h = makeTransferHarness(width);
+    invokeLargeWrite(h);
+    expect(h.guestExecute).toHaveBeenCalledOnce();
+    const pointer = Number(h.guestExecute.mock.calls[0][0]);
+    const view = new DataView(h.kernelBytes.buffer, pointer);
+    expect(view.getBigInt64(CH_ARGS + CH_ARG_SIZE, true)).toBe(1024n);
+    expect(view.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true)).toBe(BigInt(LARGE_LENGTH));
+    expect(h.begin).not.toHaveBeenCalled();
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(h.cancel).not.toHaveBeenCalled();
+    expect(readChannelCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: LARGE_LENGTH, errno: 0 });
+  });
+
+  it.each([4, 8] as const)("keeps the original getrandom size at width %i", width => {
+    const h = makeTransferHarness(width);
+    writeSyscall(h.channel, ABI_SYSCALLS.Getrandom, [1024n, BigInt(LARGE_LENGTH), 0n]);
+    h.worker.handleSyscall(h.channel);
+    expect(h.guestExecute).toHaveBeenCalledOnce();
+    expect(h.begin).not.toHaveBeenCalled();
+    expect(readChannelCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: LARGE_LENGTH, errno: 0 });
+  });
+
+  it.each([4, 8] as const)("propagates in-dispatch admission failure at width %i", width => {
+    const h = makeTransferHarness(width);
+    setGuestResult(h, -1n, ENOMEM);
+    invokeLargeWrite(h);
+    expect(h.begin).not.toHaveBeenCalled();
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(readChannelCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: ENOMEM });
+  });
+
+  it.each([4, 8] as const)("rejects counts above the captured request at width %i", width => {
+    const h = makeTransferHarness(width);
+    setGuestResult(h, BigInt(LARGE_LENGTH + 1));
+    invokeLargeWrite(h);
+    expect(readChannelCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: EIO });
+  });
+
+  it.each([4, 8] as const)("replays captured scalar arguments and token without host payload at width %i", async width => {
+    vi.useFakeTimers();
+    const h = makeTransferHarness(width);
+    const attempts: bigint[][] = [];
+    h.kernelExports.kernel_handle_guest_io = vi.fn((pointer: number | bigint, _capacity: number, _pid: number, token: bigint) => {
+      const view = new DataView(h.kernelBytes.buffer, Number(pointer));
+      attempts.push([view.getBigInt64(CH_ARGS, true), view.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
+        view.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true), token]);
+      view.setBigInt64(CH_RETURN, attempts.length === 1 ? -1n : BigInt(LARGE_LENGTH), true);
+      view.setUint32(CH_ERRNO, attempts.length === 1 ? EAGAIN : 0, true);
+      return 0;
+    });
+    invokeLargeWrite(h);
+    expect(readChannelCompletion(h.channel).status).toBe(CHANNEL_STATUS_PENDING);
+    const snapshot = h.worker.blockingRetrySnapshots.get(h.channel);
+    expect(snapshot.kind).toBe("guest-io");
+    expect(snapshot.request.adjustedArgs.slice(0, 3)).toEqual([7, 1024n, BigInt(LARGE_LENGTH)]);
+    // Retrying must use frozen metadata. Rust retains bytes and the OFD.
+    writeSyscall(h.channel, ABI_SYSCALLS.Write, [99n, 2048n, BigInt(LARGE_LENGTH + 1)]);
+    h.worker.retrySyscall(h.channel);
+    expect(attempts).toEqual([[7n, 1024n, BigInt(LARGE_LENGTH), 0n], [7n, 1024n, BigInt(LARGE_LENGTH), 701n]]);
+    expect(h.begin).not.toHaveBeenCalled();
+    expect(h.cancel).not.toHaveBeenCalled();
+    expect(readChannelCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: LARGE_LENGTH, errno: 0 });
+    vi.clearAllTimers();
+  });
+});
+
+describe("bounded entropy continuations", () => {
+  it.each([ABI_SYSCALLS.Getpid, ABI_SYSCALLS.Read, ABI_SYSCALLS.Write])(
+    "keeps ordinary syscall %i off the entropy and guest-address paths", syscallNr => {
+      const h = makeTransferHarness(4);
+      const lookup = vi.spyOn(h.worker.pendingEntropyReads, "get");
+      const ordinary = vi.fn((pointer: number | bigint) => {
+        const view = new DataView(h.kernelBytes.buffer, Number(pointer));
+        view.setBigInt64(CH_RETURN, 0n, true);
+        view.setUint32(CH_ERRNO, 0, true);
+        return 0;
+      });
+      h.kernelExports.kernel_handle_channel = ordinary;
+      writeSyscall(h.channel, syscallNr, [7n, 1024n, 32n]);
+      h.worker.handleSyscall(h.channel);
+      expect(ordinary).toHaveBeenCalledTimes(1);
+      expect(h.kernelExports.kernel_handle_guest_io).not.toHaveBeenCalled();
+      expect(lookup).not.toHaveBeenCalled();
+      expect(readChannelCompletion(h.channel).status).toBe(CHANNEL_STATUS_COMPLETE);
+    },
+  );
+
+  it.each(["handleSyscall", "retrySyscall"])(
+    "resumes the active entropy read through %s without reparsing a changed mailbox", ingress => {
+      vi.useFakeTimers();
+      const h = makeTransferHarness(4);
+      setEntropyPending(h, 904n);
+      const dispatch = h.kernelExports.kernel_handle_guest_io;
+      const step = vi.fn(() => 65536);
+      h.kernelExports.kernel_entropy_read_step = step;
+      writeSyscall(h.channel, ABI_SYSCALLS.Read, [7n, 1024n, BigInt(LARGE_LENGTH)]);
+      h.worker.handleSyscall(h.channel);
+      writeSyscall(h.channel, ABI_SYSCALLS.Getpid, [99n, 0n, 0n]);
+      h.worker[ingress](h.channel);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(step).toHaveBeenCalledWith(h.channel.pid, h.channel.pid, 904n, 0);
+      expect(readChannelCompletion(h.channel)).toEqual({
+        status: CHANNEL_STATUS_COMPLETE, retVal: 65536, errno: 0,
+      });
+      expect(h.worker.pendingEntropyReads.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each([4, 8] as const)("publishes one syscall after bounded turns at width %i", async width => {
+    vi.useFakeTimers();
+    const h = makeTransferHarness(width);
+    setEntropyPending(h, 901n);
+    const step = vi.fn().mockReturnValueOnce(ENTROPY_READ_PENDING).mockReturnValueOnce(LARGE_LENGTH);
+    h.kernelExports.kernel_entropy_read_step = step;
+    writeSyscall(h.channel, ABI_SYSCALLS.Read, [7n, 1024n, BigInt(LARGE_LENGTH)]);
+    h.worker.handleSyscall(h.channel);
+    expect(step).not.toHaveBeenCalled();
+    expect(readChannelCompletion(h.channel).status).toBe(CHANNEL_STATUS_PENDING);
+    expect(h.begin).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2);
+    expect(step).toHaveBeenCalledTimes(2);
+    expect(readChannelCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: LARGE_LENGTH, errno: 0 });
+    expect(h.worker.pendingEntropyReads.size).toBe(0);
+  });
+
+  it("cancels a stale registration without writing its mailbox", async () => {
+    vi.useFakeTimers();
+    const h = makeTransferHarness(4);
+    setEntropyPending(h, 902n);
+    const step = vi.fn(() => ENTROPY_READ_PENDING), cancel = vi.fn(() => 0);
+    h.kernelExports.kernel_entropy_read_step = step;
+    h.kernelExports.kernel_entropy_read_cancel = cancel;
+    writeSyscall(h.channel, ABI_SYSCALLS.Read, [7n, 1024n, BigInt(LARGE_LENGTH)]);
+    h.worker.handleSyscall(h.channel);
+    h.worker.processes.set(h.channel.pid, { ...h.worker.processes.get(h.channel.pid) });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(step).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith(h.channel.pid, h.channel.pid, 902n);
+    expect(readChannelCompletion(h.channel).status).toBe(CHANNEL_STATUS_PENDING);
+    expect(h.worker.pendingEntropyReads.size).toBe(0);
+  });
+
+  it("returns the delivered prefix on cancellation between batches", async () => {
+    vi.useFakeTimers();
+    const h = makeTransferHarness(4);
+    setEntropyPending(h, 903n);
+    const step = vi.fn(() => 65536);
+    h.kernelExports.kernel_entropy_read_step = step;
+    writeSyscall(h.channel, ABI_SYSCALLS.Read, [7n, 1024n, BigInt(LARGE_LENGTH)]);
+    new DataView(h.channel.memory.buffer).setUint32(CH_REQUEST_FLAGS,
+      CHANNEL_REQUEST_FLAG_CANCELLATION_POINT | CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED, true);
+    h.worker.handleSyscall(h.channel);
+    h.worker.pendingCancels.add(h.channel);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(step.mock.calls[0][3]).toBe(1);
+    expect(readChannelCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: 65536, errno: 0 });
+    expect(h.worker.pendingCancels.has(h.channel)).toBe(false);
+  });
+});
+function invokeWidenedSend(h: TransferHarness): void {
+  h.processBytes.fill(0x5b, 1024, 1024 + LARGE_LENGTH);
+  writeSyscall(h.channel, ABI_SYSCALLS.Send, [7n, 1024n, BigInt(LARGE_LENGTH), 0n]);
+  h.worker.handleSyscall(h.channel);
+}
+
+describe("remaining widened-channel reservation failures", () => {
+  it.each([4, 8] as const)("propagates admission failure without querying a token at width %i", width => {
+    const h = makeTransferHarness(width);
+    h.kernelExports.kernel_transfer_scratch_begin = vi.fn(() => -BigInt(ENOMEM));
+    invokeWidenedSend(h);
+    expect(h.pointer).not.toHaveBeenCalled();
+    expect(h.capacity).not.toHaveBeenCalled();
+    expect(h.channelExecute).not.toHaveBeenCalled();
+    expect(h.cancel).not.toHaveBeenCalled();
+    expect(readChannelCompletion(h.channel)).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: ENOMEM });
+  });
+
+  it.each([4, 8] as const)("settles invalid allocation descriptions before dispatch at width %i", width => {
+    for (const kind of ["null", "short", "outside-memory"] as const) {
+      const h = makeTransferHarness(width);
+      if (kind === "null") h.kernelExports.kernel_transfer_scratch_pointer = () => kernelPointer(width, 0);
+      if (kind === "short") h.kernelExports.kernel_transfer_scratch_capacity = () => kernelPointer(width, CH_TOTAL_SIZE - 1);
+      if (kind === "outside-memory") h.kernelExports.kernel_transfer_scratch_pointer = () => kernelPointer(width, h.kernelBytes.length - 8);
+      invokeWidenedSend(h);
+      expect(h.channelExecute, kind).not.toHaveBeenCalled();
+      expect(h.cancel, kind).toHaveBeenCalledExactlyOnceWith(101n);
+      expect(readChannelCompletion(h.channel), kind).toEqual({ status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: EIO });
+    }
+  });
+
+  it.each([4, 8] as const)("fail-stops execute traps without another cleanup export at width %i", async width => {
+    const h = makeTransferHarness(width);
+    const trap = new Error("widened channel execute trap");
+    h.kernelExports.kernel_transfer_channel_execute = vi.fn(() => { throw trap; });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => invokeWidenedSend(h)).toThrow();
+    await Promise.resolve();
+    expect(h.cancel).not.toHaveBeenCalled();
+    expect(h.onKernelFatal).toHaveBeenCalledOnce();
+    expect(h.worker.isKernelInitialized()).toBe(false);
+    expect(readChannelCompletion(h.channel).status).toBe(CHANNEL_STATUS_PENDING);
+  });
+
+  it.each([4, 8] as const)("fail-stops a refused cancellation before publication at width %i", async width => {
+    const h = makeTransferHarness(width);
+    const execute = vi.fn(() => {
+      const view = new DataView(h.kernelBytes.buffer, h.transferOffset);
+      view.setBigInt64(CH_RETURN, BigInt(LARGE_LENGTH), true);
+      view.setUint32(CH_ERRNO, 0, true);
+      return 0;
+    });
+    h.kernelExports.kernel_transfer_channel_execute = execute;
+    h.kernelExports.kernel_transfer_scratch_cancel = vi.fn(() => -EINVAL);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => invokeWidenedSend(h)).toThrow(/could not be settled/);
+    await Promise.resolve();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(h.onKernelFatal).toHaveBeenCalledOnce();
+    expect(h.worker.isKernelInitialized()).toBe(false);
+    expect(readChannelCompletion(h.channel).status).toBe(CHANNEL_STATUS_PENDING);
+  });
 });

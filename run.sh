@@ -219,6 +219,8 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_create_process_with_stdio
     kernel_dequeue_signal
     kernel_drain_wait_completions
+    kernel_entropy_read_cancel
+    kernel_entropy_read_step
     kernel_epoll_wait_finish
     kernel_epoll_wait_token
     kernel_exchange_activate
@@ -258,6 +260,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_get_socket_timeout_ms
     kernel_handle_channel
     kernel_handle_channel_record
+    kernel_handle_guest_io
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
@@ -298,6 +301,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_reap_exited_child
     kernel_remove_process
     kernel_reset_tcp_connection
+    kernel_rootfs_take_compaction_request
     kernel_set_current_tid
     kernel_set_cwd
     kernel_set_main_channel_addr

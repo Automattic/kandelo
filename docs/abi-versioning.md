@@ -18,6 +18,12 @@ convention — CI enforces it.
 
 ## Supported persistent-program baseline
 
+Kernel-host adapter version 7 adds bounded entropy-read continuations, a
+nonallocating process-range validation import, and a private guest-address I/O
+transport. Selection, allocation admission and retained write payloads are
+kernel-owned; ordinary readv dispatch needs no separate entropy probe. The host and kernel must be rebuilt together. Guest program ABI
+56 and its supported digest are unchanged; existing guest binaries remain valid.
+
 Program ABI 56 is the supported baseline; ABI 55 was retired before release.
 The separate `abi/supported-program-baseline.json` gate preserves the current program digest across
 kernel/host rebuilds; ordinary snapshot regeneration or a program version bump

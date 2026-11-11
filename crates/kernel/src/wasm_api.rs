@@ -374,6 +374,7 @@ unsafe extern "C" {
     /// `publish_transfer_directly`.
     fn host_publish_wait_completion(pid: i32, channel_addr: u64, ret: i64, errno: u32) -> i32;
     fn host_proc_read_bytes(pid: i32, addr: u64, dst_ptr: *mut u8, len: u32) -> i32;
+    fn host_proc_validate_range(pid: i32, addr: u64, len: u32) -> i32;
     /// Compare a complete process range against a live initialized Rust
     /// snapshot. 0 is equal, 1 differs, and a negative value is an errno.
     /// The host may read but never mutate or retain the snapshot allocation.
@@ -1268,6 +1269,13 @@ impl HostIO for WasmHostIO {
 
     fn proc_read_bytes(&mut self, pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
         unsafe { host_proc_read_bytes(pid, addr, dst.as_mut_ptr(), dst.len() as u32) }
+    }
+
+    fn proc_validate_range(&mut self, pid: i32, addr: u64, len: usize) -> i32 {
+        match u32::try_from(len) {
+            Ok(len) => unsafe { host_proc_validate_range(pid, addr, len) },
+            Err(_) => -(Errno::EFAULT as i32),
+        }
     }
 
     fn kms_mode_info(&mut self, connector_id: u32) -> wasm_posix_shared::dri::WpkDrmModeModeinfo {
@@ -5341,7 +5349,9 @@ enum ChannelTransport {
     Record,
 }
 
-fn handle_owned_channel_allocation(
+// Specialize the private guest-address transport at compile time. Ordinary
+// raw/record calls retain their original transport and parking decisions.
+fn handle_owned_channel_allocation<const GUEST_IO: bool>(
     offset: usize,
     allocation_capacity: usize,
     pid: u32,
@@ -5488,22 +5498,16 @@ fn handle_owned_channel_allocation(
     let activation = activation.and_then(|()| fence_channel_storage(syscall_nr, &args));
     let mut outcome = if let Err(error) = activation {
         ChannelDispatchOutcome::narrow(-(error as i32))
+    } else if GUEST_IO {
+        channel_guest_io(syscall_nr, &args)
     } else {
-        match channel_scalar::result_kind(syscall_nr) {
-            ChannelResultKind::I64 | ChannelResultKind::ProcessAddress => {
-                dispatch_channel_wide_result(syscall_nr, &args, scratch_region)
-            }
-            ChannelResultKind::I32 => ChannelDispatchOutcome::narrow(dispatch_channel_syscall(
-                syscall_nr,
-                &args,
-                scratch_region,
-            )),
-        }
+        dispatch_channel_result(syscall_nr, &args, scratch_region)
     };
     // A blocking transfer on a kernel pipe that would block parks here, after
     // the first attempt ran on the host-staged buffer (the hot path is
     // unchanged); see `park_blocked_transfer`.
     if has_task_binding
+        && !GUEST_IO
         && retry_token == 0
         && outcome.channel_errno == Errno::EAGAIN as u32
         && matches!(
@@ -5596,13 +5600,55 @@ pub extern "C" fn kernel_handle_channel(
         unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
         return -(Errno::EINVAL as i32);
     }
-    handle_owned_channel_allocation(
+    handle_owned_channel_allocation::<false>(
         scratch_ptr,
         capacity as usize,
         pid,
         retry_token,
         ChannelTransport::Raw,
     )
+}
+
+/// Dispatch large scalar I/O using the original guest address and length.
+/// Only this private transport interprets these pointer slots as guest memory;
+/// ordinary raw/record channels retain their existing scratch interpretation.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_handle_guest_io(scratch_ptr: usize, capacity: u32,
+    pid: u32, retry_token: i64) -> i32 {
+    if capacity as usize != wasm_posix_shared::channel::MIN_CHANNEL_SIZE {
+        unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
+        return -(Errno::EINVAL as i32);
+    }
+    handle_owned_channel_allocation::<true>(scratch_ptr, capacity as usize, pid,
+        retry_token, ChannelTransport::Raw)
+}
+
+fn guest_io_result(result: Result<syscalls::GuestIoOutcome, Errno>) -> ChannelDispatchOutcome {
+    match result {
+        Ok(syscalls::GuestIoOutcome::Complete(n)) => ChannelDispatchOutcome::narrow(n as i32),
+        Ok(syscalls::GuestIoOutcome::EntropyPending(token)) => ChannelDispatchOutcome {
+            channel_result: token,
+            channel_errno: crate::entropy_read::ENTROPY_READ_PENDING as u32,
+            export_result: crate::entropy_read::ENTROPY_READ_PENDING,
+        },
+        Err(error) => ChannelDispatchOutcome::narrow(-(error as i32)),
+    }
+}
+
+fn channel_guest_io(syscall: u32, args: &[i64; 6]) -> ChannelDispatchOutcome {
+    let (_gkl, tid, proc, locks) = unsafe { get_process_tid_and_advisory_locks() };
+    let random = syscall == wasm_posix_shared::abi::extended_syscalls::SYS_GETRANDOM;
+    // Normalize C unsigned values to the caller's width, independently of the
+    // kernel's address model. Cross-memory imports prove the actual range.
+    let unsigned = |value: i64| if proc.pointer_width == 4 { value as u32 as u64 } else { value as u64 };
+    let address = unsigned(args[if random { 0 } else { 1 }]);
+    let length = unsigned(args[if random { 1 } else { 2 }]);
+    let mut host = WasmHostIO;
+    let result = guest_io_result(syscalls::sys_guest_io(proc, &mut host, locks, tid,
+        syscall, args[0] as i32, address, length, args[3]));
+    syscalls::drain_deferred_scm_rights_releases(locks, &mut host);
+    let _ = deliver_pending_signals_for_tid_with_locks(proc, locks, &mut host, tid);
+    result
 }
 
 /// Dispatch one request whose guest set `REQUEST_FLAG_OPAQUE_RECORD`.
@@ -5624,7 +5670,7 @@ pub extern "C" fn kernel_handle_channel_record(
         unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
         return -(Errno::EINVAL as i32);
     }
-    handle_owned_channel_allocation(
+    handle_owned_channel_allocation::<false>(
         scratch_ptr,
         capacity as usize,
         pid,
@@ -5819,12 +5865,30 @@ fn dispatch_channel_mremap(
     result
 }
 
-fn dispatch_channel_wide_result(
+fn dispatch_channel_result(
     nr: u32,
     args: &[i64; 6],
     scratch_region: ChannelScratchRegion,
 ) -> ChannelDispatchOutcome {
     match (nr, channel_scalar::result_kind(nr)) {
+        // Keep the continuation token in this read's typed result. No global
+        // pending-marker scan or second process-table lookup is needed.
+        (82, ChannelResultKind::I32) => {
+            let width = match current_caller_pointer_width().and_then(|width| {
+                unsafe { validate_channel_scratch_arguments(nr, args, scratch_region, width) }
+                    .map(|_| width)
+            }) {
+                Ok(width) => width,
+                Err(error) => return ChannelDispatchOutcome::narrow(-(error as i32)),
+            };
+            channel_vector_io(nr, args[0] as i32,
+                channel_scalar::process_address_argument(nr, args, 1) as u64,
+                crate::msghdr::caller_iovec_count(args[2] as i32), u32::from(width),
+                syscalls::VectorIoKind::Read)
+        }
+        (_, ChannelResultKind::I32) => {
+            ChannelDispatchOutcome::narrow(dispatch_channel_syscall(nr, args, scratch_region))
+        }
         (5, ChannelResultKind::I64) => {
             ChannelDispatchOutcome::exact(dispatch_channel_lseek(args, scratch_region))
         }
@@ -9964,6 +10028,34 @@ fn execute_transfer_io_for_task(
     result
 }
 
+/// Execute a bounded batch. i32::MIN means pending, not a guest errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_entropy_read_step(pid: u32, tid: u32, token: i64, interrupted: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Err(error) = table.bind_current_tid(pid, tid) { return -(error as i32); }
+    let result: Result<i32, Errno> = (|| {
+        let (proc, locks) = table.current_process_and_advisory_locks().ok_or(Errno::ESRCH)?;
+        let mut batch = proc.entropy_reads.take(tid, token)?;
+        let result = batch.step(proc, &mut WasmHostIO, interrupted != 0);
+        if result == crate::entropy_read::ENTROPY_READ_PENDING { proc.entropy_reads.put_back(batch); }
+        let _ = deliver_pending_signals_for_tid_with_locks(proc, locks, &mut WasmHostIO, tid);
+        Ok(result)
+    })();
+    table.clear_current_tid_binding();
+    result.unwrap_or_else(|error| -(error as i32))
+}
+
+/// Idempotent retirement may target an exited/replaced task, but never calls
+/// host code or accesses that task's former address space.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_entropy_read_cancel(pid: u32, tid: u32, token: i64) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) { let _ = proc.entropy_reads.take(tid, token); }
+    0
+}
+
 /// Execute one large scalar or vector I/O operation against a Reserved token.
 ///
 /// Vector syscall numbers deliberately map to exactly one scalar kernel
@@ -10020,7 +10112,7 @@ pub extern "C" fn kernel_transfer_channel_execute(
 
         // handle_owned_channel_allocation consumes the exact binding and runs
         // the same SCM_RIGHTS cleanup boundary as the ordinary channel.
-        let _syscall_mirror = handle_owned_channel_allocation(
+        let _syscall_mirror = handle_owned_channel_allocation::<false>(
             bytes.as_mut_ptr() as usize,
             bytes.len(),
             pid,
@@ -14224,12 +14316,12 @@ fn channel_vector_io(
     iovcnt: u32,
     pointer_width: u32,
     kind: syscalls::VectorIoKind,
-) -> i32 {
+) -> ChannelDispatchOutcome {
     let (_gkl, tid, proc, advisory_locks) = unsafe { get_process_tid_and_advisory_locks() };
     let mut host = WasmHostIO;
 
     let result = match caller_pointer_width_byte(pointer_width) {
-        Err(error) => -(error as i32),
+        Err(error) => ChannelDispatchOutcome::narrow(-(error as i32)),
         Ok(width) => match syscalls::sys_vector_io(
             proc,
             &mut host,
@@ -14242,11 +14334,8 @@ fn channel_vector_io(
             width,
             kind,
         ) {
-            Ok(n) => match i32::try_from(n) {
-                Ok(n) => n,
-                Err(_) => -(Errno::EOVERFLOW as i32),
-            },
-            Err(error) => -(error as i32),
+            Ok(outcome) => guest_io_result(Ok(outcome)),
+            Err(error) => ChannelDispatchOutcome::narrow(-(error as i32)),
         },
     };
 
@@ -14264,7 +14353,7 @@ fn channel_writev(fd: i32, iov_addr: u64, iovcnt: u32, pointer_width: u32) -> i3
         iovcnt,
         pointer_width,
         syscalls::VectorIoKind::Write,
-    )
+    ).export_result
 }
 
 /// readv -- one read, whose returned prefix scatters into the caller's buffers.
@@ -14276,7 +14365,7 @@ fn channel_readv(fd: i32, iov_addr: u64, iovcnt: u32, pointer_width: u32) -> i32
         iovcnt,
         pointer_width,
         syscalls::VectorIoKind::Read,
-    )
+    ).export_result
 }
 
 /// Accept only the `RWF_*` flags this kernel implements.
@@ -14310,7 +14399,7 @@ fn channel_preadv(
         syscalls::VectorIoKind::Pread {
             offset: joined_positioned_offset(offset_lo, offset_hi),
         },
-    )
+    ).export_result
 }
 
 /// pwritev/pwritev2 -- positioned gather write. The offset arrives split.
@@ -14332,7 +14421,7 @@ fn channel_pwritev(
         syscalls::VectorIoKind::Pwrite {
             offset: joined_positioned_offset(offset_lo, offset_hi),
         },
-    )
+    ).export_result
 }
 
 /// sendfile -- copy data between file descriptors.

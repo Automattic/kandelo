@@ -2,6 +2,7 @@
   "abi_surfaces": {
     "kernel_host": [
       "dri_cleanup_status",
+      "entropy_read_wire",
       "export_deny",
       "host_adapter",
       "kernel_exports",
@@ -1518,6 +1519,11 @@
     },
     "version": 1
   },
+  "entropy_read_wire": {
+    "pending_channel_errno": 2147483648,
+    "pending_channel_return": "positive process/task-bound token",
+    "pending_step_result": -2147483648
+  },
   "export_deny": {
     "deny_exact": [
       "__data_end",
@@ -2450,7 +2456,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 5,
+      "required_host_adapter_version": 7,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -2535,6 +2541,8 @@
       "kernel_create_process_with_stdio",
       "kernel_dequeue_signal",
       "kernel_drain_wait_completions",
+      "kernel_entropy_read_cancel",
+      "kernel_entropy_read_step",
       "kernel_epoll_wait_finish",
       "kernel_epoll_wait_token",
       "kernel_exchange_activate",
@@ -2574,6 +2582,7 @@
       "kernel_get_socket_timeout_ms",
       "kernel_handle_channel",
       "kernel_handle_channel_record",
+      "kernel_handle_guest_io",
       "kernel_has_sa_nocldstop",
       "kernel_host_adapter_manifest_len",
       "kernel_host_adapter_manifest_ptr",
@@ -2636,7 +2645,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 5,
+    "version": 7,
     "worker_features": [
       {
         "bit": 2,
@@ -4048,6 +4057,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_entropy_read_cancel",
+      "signature": "(i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_entropy_read_step",
+      "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_enum_procs",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -4410,6 +4429,11 @@
       "kind": "func",
       "name": "kernel_handle_channel_record",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_handle_guest_io",
+      "signature": "(i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -5891,6 +5915,12 @@
       "module": "env",
       "name": "host_proc_read_bytes",
       "signature": "(i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_proc_validate_range",
+      "signature": "(i32,i64,i32) -> (i32)"
     },
     {
       "kind": "func",

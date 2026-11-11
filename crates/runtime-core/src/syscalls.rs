@@ -135,13 +135,13 @@ pub fn current_tid_for_process(proc: &Process) -> u32 {
     }
 }
 
-pub(crate) fn require_io_fd(proc: &Process, fd: i32) -> Result<(), Errno> {
+pub(crate) fn require_io_fd(proc: &Process, fd: i32) -> Result<usize, Errno> {
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.is_path_only() {
         Err(Errno::EBADF)
     } else {
-        Ok(())
+        Ok(ofd_idx)
     }
 }
 
@@ -1189,6 +1189,7 @@ fn release_process_fb_binding(proc: &mut Process, host: &mut dyn HostIO) {
 
 pub fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
     proc.epoll_waits.clear();
+    proc.entropy_reads.clear();
     // A non-CLOEXEC fb fd survives exec, so it keeps device ownership.
     release_process_fb_binding(proc, host);
     // Device state belongs to surviving open descriptions, not the discarded
@@ -1278,6 +1279,7 @@ fn commit_exec_state_impl(
     }
     cancel_fifo_opens_for_process(proc);
     proc.epoll_waits.clear();
+    proc.entropy_reads.clear();
 
     if let Some(locks)=locks.as_deref_mut() {drain_owned_resources(proc,locks,host);} else {
         drain_owned_resources(proc,&mut AdvisoryLockManager::new(),host);
@@ -11986,6 +11988,7 @@ fn cleanup_process_for_exit(
     assert!(!proc.prepared_exec_targets.has_retiring(),
         "uncertain executable close requires real host cleanup containment");
     proc.epoll_waits.clear();
+    proc.entropy_reads.clear();
     // Prepared executable tokens are exact OFD leases owned by this image,
     // not guest descriptors. Retire them before the ordinary fd walk so exit,
     // signal death, and trap cleanup cannot leave host-visible authority alive.
@@ -21987,6 +21990,75 @@ impl VectorIoKind {
     }
 }
 
+/// Private dispatch outcome. Pending tokens are never guest return values.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GuestIoOutcome { Complete(usize), EntropyPending(i64) }
+
+fn start_entropy_read(proc: &mut Process, host: &mut dyn HostIO, tid: u32,
+    read: crate::entropy_read::EntropyRead) -> Result<GuestIoOutcome, Errno> {
+    // Admit the cursor before publishing any bytes. Taking and restoring an
+    // admitted entry cannot allocate, including after a partial batch.
+    if read.is_empty() { return Ok(GuestIoOutcome::Complete(0)); }
+    let token = proc.entropy_reads.begin(read)?;
+    let mut batch = proc.entropy_reads.take(tid, token)?;
+    let result = batch.step(proc, host, false);
+    if result == crate::entropy_read::ENTROPY_READ_PENDING {
+        proc.entropy_reads.put_back(batch);
+        Ok(GuestIoOutcome::EntropyPending(token))
+    } else if result < 0 {
+        Err(Errno::from_u32((-result) as u32).unwrap_or(Errno::EIO))
+    } else { Ok(GuestIoOutcome::Complete(result as usize)) }
+}
+
+/// Large scalar I/O uses caller addresses, not a request-sized host payload.
+/// The ordinary vector engine owns admission, a single gathered write and
+/// exact-OFD retries. No guest view or global scratch survives a yield.
+#[allow(clippy::too_many_arguments)]
+pub fn sys_guest_io(proc: &mut Process, host: &mut dyn HostIO,
+    locks: &mut AdvisoryLockManager, tid: u32, syscall: u32, fd: i32,
+    address: u64, length: u64, offset: i64) -> Result<GuestIoOutcome, Errno> {
+    use wasm_posix_shared::{Syscall, abi::extended_syscalls::SYS_GETRANDOM};
+    if syscall == SYS_GETRANDOM {
+        let read = crate::entropy_read::EntropyRead::prepare(proc, host, tid, syscall,
+            -1, address, length)?.ok_or(Errno::EINVAL)?;
+        return start_entropy_read(proc, host, tid, read);
+    }
+    let kind = match syscall {
+        n if n == Syscall::Read as u32 => VectorIoKind::Read,
+        n if n == Syscall::Write as u32 => VectorIoKind::Write,
+        n if n == Syscall::Pread as u32 => VectorIoKind::Pread { offset },
+        n if n == Syscall::Pwrite as u32 => VectorIoKind::Pwrite { offset },
+        _ => return Err(Errno::EINVAL),
+    };
+    let index = require_io_fd(proc, fd)?;
+    let operation = BlockingRetryOperation::from_syscall(syscall)?;
+    let request = match take_active_vector_io(proc, tid, operation)? {
+        Some(pending) => pending,
+        None => {
+            let length = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
+            if length > wasm_posix_shared::platform_limits::MAX_REPORTABLE_TRANSFER_BYTES {
+                return Err(Errno::EINVAL);
+            }
+            if length != 0 && (address == 0
+                || host.proc_validate_range(proc.pid as i32, address, length) < 0) {
+                return Err(Errno::EFAULT);
+            }
+            let mut entries = crate::IoBuffer::try_with_capacity(1)?;
+            entries.push(crate::msghdr::NativeIovec { base: address, len: length });
+            if kind == VectorIoKind::Read && crate::entropy_read::EntropyRead::is_device(proc, index)? {
+                let read = crate::entropy_read::EntropyRead::from_entries(proc, host, tid, entries)?;
+                return start_entropy_read(proc, host, tid, read);
+            }
+            let outgoing = if kind.is_write() {
+                crate::msghdr::gather(host, proc.pid as i32, &entries)?
+            } else { crate::IoBuffer::new() };
+            crate::blocked_retry::PendingVectorIo { entries, outgoing, total: length }
+        }
+    };
+    execute_vector_request(proc, host, locks, tid, syscall, fd, kind, request)
+        .map(GuestIoOutcome::Complete)
+}
+
 /// writev/readv/preadv/pwritev over the CALLER's own `struct iovec` table.
 ///
 /// The table and the buffers it names live in the calling process's address
@@ -22016,10 +22088,11 @@ pub fn sys_vector_io(
     iovcnt: u32,
     pointer_width: u8,
     kind: VectorIoKind,
-) -> Result<usize, Errno> {
+) -> Result<GuestIoOutcome, Errno> {
     // Reject a descriptor that cannot carry I/O before reading caller memory,
     // so a zero-length vector on a closed or path-only fd still fails.
-    require_io_fd(proc, fd)?;
+    let index = require_io_fd(proc, fd)?;
+    let entropy = kind == VectorIoKind::Read && crate::entropy_read::EntropyRead::is_device(proc, index)?;
     let operation = BlockingRetryOperation::from_syscall(syscall_nr)?;
     let pid = proc.pid as i32;
 
@@ -22028,6 +22101,10 @@ pub fn sys_vector_io(
         None => {
             let entries = crate::msghdr::read_iovecs(host, pid, iov_addr, iovcnt, pointer_width)?;
             let total = crate::msghdr::iovec_total(&entries)?;
+            if entropy {
+                let read = crate::entropy_read::EntropyRead::from_entries(proc, host, tid, entries)?;
+                return start_entropy_read(proc, host, tid, read);
+            }
             let outgoing = if kind.is_write() {
                 crate::msghdr::gather(host, pid, &entries)?
             } else {
@@ -22041,6 +22118,15 @@ pub fn sys_vector_io(
         }
     };
 
+    execute_vector_request(proc, host, locks, tid, syscall_nr, fd, kind, request)
+        .map(GuestIoOutcome::Complete)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_vector_request(proc: &mut Process, host: &mut dyn HostIO,
+    locks: &mut AdvisoryLockManager, tid: u32, syscall_nr: u32, fd: i32,
+    kind: VectorIoKind, request: crate::blocked_retry::PendingVectorIo) -> Result<usize, Errno> {
+    let pid = proc.pid as i32;
     let outcome = match kind {
         VectorIoKind::Write => sys_write(proc, host, fd, &request.outgoing),
         VectorIoKind::Pwrite { offset } => sys_pwrite(proc, host, fd, &request.outgoing, offset),
@@ -25943,6 +26029,11 @@ mod tests {
             0
         }
 
+        fn proc_validate_range(&mut self, _pid: i32, ptr: u64, len: usize) -> i32 {
+            if Self::proc_range(&self.proc_memory, ptr, len).is_some() { 0 }
+            else { -(Errno::EFAULT as i32) }
+        }
+
         fn proc_read_bytes(&mut self, _pid: i32, ptr: u64, dst: &mut [u8]) -> i32 {
             if ptr == 0 && self.proc_read_allows_address_zero {
                 let Some(source) = self.proc_memory.get(..dst.len()) else {
@@ -26408,7 +26499,10 @@ mod tests {
         let mut locks = AdvisoryLockManager::new();
         sys_vector_io(
             proc, host, &mut locks, 0, syscall_nr, fd, iov_addr, iovcnt, 4, kind,
-        )
+        ).map(|outcome| match outcome {
+            GuestIoOutcome::Complete(n) => n,
+            GuestIoOutcome::EntropyPending(_) => panic!("ordinary vector unexpectedly yielded"),
+        })
     }
 
     fn user_process(pid: u32) -> Process {
@@ -41249,6 +41343,109 @@ mod tests {
     }
 
     #[test]
+    fn guest_scalar_write_keeps_admitted_bytes_and_exact_ofd_over_retries() {
+        for width in [4, 8] {
+            let mut proc = Process::new(81_150);
+            proc.pointer_width = width;
+            let tid = proc.pid;
+            set_test_current_tid(tid);
+            let mut host = MockHostIO::new();
+            let mut locks = AdvisoryLockManager::new();
+            let fd = sys_open(&mut proc, &mut host, b"/original", O_WRONLY, 0).unwrap();
+            let handle = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap().host_handle;
+            let address = 4096;
+            let length = 65537;
+            host.proc_memory.resize(address + length, 0);
+            host.proc_memory.fill(0x61);
+            host.pwrite_error = Some(Errno::EAGAIN);
+            let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+            assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid,
+                Syscall::Write as u32, fd, address as u64, length as u64, 0), Err(Errno::EAGAIN));
+            let token = proc.blocked_retries.token_for(tid, BlockingRetryOperation::Write).unwrap();
+            let admitted = crate::io_buffer::IO_MEMORY.usage().0;
+            assert!(admitted >= baseline + length);
+            // A retry must not copy or validate the mutable source again.
+            host.proc_memory.clear();
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+            let replacement = sys_open(&mut proc, &mut host, b"/replacement", O_WRONLY, 0).unwrap();
+            assert_eq!(replacement, fd);
+            proc.blocked_retries.activate(tid, token, BlockingRetryOperation::Write).unwrap();
+            let retry_admission = crate::io_buffer::IO_MEMORY.usage().0;
+            {
+                let _limit = crate::io_buffer::test_budget(retry_admission);
+                assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid,
+                    Syscall::Write as u32, fd, address as u64, length as u64, 0), Err(Errno::EAGAIN));
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, retry_admission);
+            }
+            proc.blocked_retries.clear_active();
+            proc.blocked_retries.activate(tid, token, BlockingRetryOperation::Write).unwrap();
+            host.pwrite_error = None;
+            host.pwrite_calls.clear();
+            assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid,
+                Syscall::Write as u32, fd, address as u64, length as u64, 0), Ok(GuestIoOutcome::Complete(length)));
+            assert_eq!(host.pwrite_calls, vec![(handle, 0, vec![0x61; length])]);
+            proc.blocked_retries.clear_active();
+            release_blocking_retry_binding(&mut proc, &mut locks, &mut host, tid, token).unwrap();
+            assert!(crate::io_buffer::IO_MEMORY.usage().0 < admitted - length);
+            assert!(host.closed_handles.contains(&handle));
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, replacement).unwrap();
+            set_test_current_tid(0);
+        }
+    }
+
+    #[test]
+    fn guest_scalar_admission_refuses_before_backend_io_or_retry_binding() {
+        let mut proc = Process::new(81_151);
+        let tid = proc.pid;
+        let mut host = MockHostIO::new();
+        let mut locks = AdvisoryLockManager::new();
+        let fd = sys_open(&mut proc, &mut host, b"/admission", O_RDWR, 0).unwrap();
+        host.proc_memory.resize(4096 + 65537, 0);
+        host.proc_memory.fill(0x55);
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        // Allow one scalar destination entry, but no payload-sized staging.
+        let entry_credit = 2 * core::mem::size_of::<crate::msghdr::NativeIovec>();
+        {
+            let _limit = crate::io_buffer::test_budget(baseline + entry_credit);
+            for syscall in [Syscall::Write, Syscall::Read] {
+                assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid,
+                    syscall as u32, fd, 4096, 65537, 0), Err(Errno::ENOMEM));
+            }
+            assert!(host.pwrite_calls.is_empty());
+            assert!(host.pread_calls.is_empty());
+            assert_eq!(proc.blocked_retries.binding_count(), 0);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        assert!(host.proc_memory.iter().all(|&byte| byte == 0x55));
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn guest_scalar_write_keeps_one_datagram_and_positioned_offset() {
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+        let mut proc = Process::new(81_152);
+        let tid = proc.pid;
+        let mut host = MockHostIO::new();
+        let mut locks = AdvisoryLockManager::new();
+        let (sender, receiver) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        host.proc_memory.resize(4096 + 65537, 0);
+        host.proc_memory.fill(0x65);
+        assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid,
+            Syscall::Write as u32, sender, 4096, 65537, 0), Ok(GuestIoOutcome::Complete(65537)));
+        let mut received = vec![0; 65538];
+        assert_eq!(sys_read(&mut proc, &mut host, receiver, &mut received), Ok(65537));
+        assert!(received[..65537].iter().all(|&byte| byte == 0x65));
+        assert_eq!(sys_read(&mut proc, &mut host, receiver, &mut received), Err(Errno::EAGAIN));
+        let fd = sys_open(&mut proc, &mut host, b"/positioned-scalar", O_RDWR, 0).unwrap();
+        let offset = (1i64 << 53) + 17;
+        assert_eq!(sys_guest_io(&mut proc, &mut host, &mut locks, tid,
+            Syscall::Pwrite as u32, fd, 4096, 65537, offset), Ok(GuestIoOutcome::Complete(65537)));
+        assert_eq!(host.pwrite_calls.last().unwrap().1, offset);
+        assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_CUR), Ok(0));
+        for fd in [sender, receiver, fd] { sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap(); }
+    }
+
+    #[test]
     fn vector_io_allocation_failure_is_enomem() {
         use wasm_posix_shared::Syscall;
         let mut proc = Process::new(81_090);
@@ -41270,7 +41467,7 @@ mod tests {
                 assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
             }
             assert_eq!(sys_vector_io(&mut proc, &mut host, &mut locks, 0, Syscall::Readv as u32,
-                reader, table, 1, width, VectorIoKind::Read), Ok(64));
+                reader, table, 1, width, VectorIoKind::Read), Ok(GuestIoOutcome::Complete(64)));
             assert_eq!(&host.proc_memory[IOV_BUFFERS_ADDR as usize..IOV_BUFFERS_ADDR as usize + 64], &[b'R'; 64]);
             assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
         }

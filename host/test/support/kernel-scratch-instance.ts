@@ -255,6 +255,7 @@ function signatures(
       parameters: [pointer, i32, i32, i64],
       result: i32,
     },
+    kernel_handle_guest_io: { parameters: [pointer, i32, i32, i64], result: i32 },
     kernel_blocking_retry_token: {
       parameters: [i32, i32, i32],
       result: i64,
@@ -652,6 +653,8 @@ function signatures(
       parameters: [i32, i32, i64, pointer, i32, i32, i64, i64],
       result: i32,
     },
+    kernel_entropy_read_step: { parameters: [i32, i32, i64, i32], result: i32 },
+    kernel_entropy_read_cancel: { parameters: [i32, i32, i64], result: i32 },
     kernel_transfer_channel_execute: {
       parameters: [i32, i32, i64, i64],
       result: i32,
@@ -874,6 +877,9 @@ export function createKernelScratchTestInstance(
       // inject a fault still overrides it through resolveExports.
       const implementation = resolveExports()[name]
         ?? waitDeadlineDefaults[name];
+      // Ordinary synthetic descriptors are not entropy producers. Tests for
+      // entropy continuations override these exports explicitly.
+      if (implementation === undefined && name === "kernel_entropy_read_cancel") return 0;
       // Structural fixtures without terminal mutations have no coalesced
       // readiness to consume. Explicit mocks still support fault injection.
       if (name === "kernel_take_pty_readiness_changed" && implementation === undefined) {

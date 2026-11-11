@@ -808,7 +808,8 @@ export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
 export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
-export const HOST_ADAPTER_VERSION = 5 as const;
+export const HOST_ADAPTER_VERSION = 7 as const;
+export const ENTROPY_READ_PENDING = -2147483648 as const;
 export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
 export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;
 export const HOST_ADAPTER_MANIFEST_SIZE = 40 as const;
@@ -831,6 +832,8 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_create_process_with_stdio",
   "kernel_dequeue_signal",
   "kernel_drain_wait_completions",
+  "kernel_entropy_read_cancel",
+  "kernel_entropy_read_step",
   "kernel_epoll_wait_finish",
   "kernel_epoll_wait_token",
   "kernel_exchange_activate",
@@ -870,6 +873,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_get_socket_timeout_ms",
   "kernel_handle_channel",
   "kernel_handle_channel_record",
+  "kernel_handle_guest_io",
   "kernel_has_sa_nocldstop",
   "kernel_host_adapter_manifest_len",
   "kernel_host_adapter_manifest_ptr",

@@ -3815,6 +3815,23 @@ describe("WebAssembly memory write audit", () => {
         0n,
       );
     `;
+    const guestTransportWorker = worker(safeRunBody)
+      .replace(/(#executeCapacityOwnedChannel<T>\([\s\S]*?retryToken = 0n,)/,
+        "$1\n          guestIo = false,")
+      .replace('"kernel_handle_channel",', 'guestIo ? "kernel_handle_guest_io" : "kernel_handle_channel",')
+      .replace(/(this\.#executeCapacityOwnedChannel\([\s\S]*?0n,)/, "$1\n        false,");
+    for (const [name, source, accepted] of [
+      ["dynamic guest transport", guestTransportWorker, false],
+      ["arbitrary export", guestTransportWorker.replace('"kernel_handle_guest_io"', '"kernel_ioctl"'), false],
+      ["reversed transport", guestTransportWorker.replace('guestIo ? ', '!guestIo ? '), false],
+      ["captured selector", guestTransportWorker.replace('guestIo ? ', '(queueMicrotask(() => guestIo), guestIo) ? '), false],
+    ] as const) {
+      const findings = auditVirtual({
+        "host/src/kernel-scratch.ts": scratchModule,
+        "host/src/kernel-worker.ts": source,
+      }, [seed]).findings.filter(finding => finding.kind === "scratch-address-contract");
+      expect(findings.length === 0, name).toBe(accepted);
+    }
     for (const alteredWorker of [
       worker(safeRunBody, { conditionalReservedStage: true }),
       worker(safeRunBody, { conditionalReservedExport: true }),

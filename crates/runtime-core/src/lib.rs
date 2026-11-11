@@ -32,6 +32,7 @@ pub use prepared_map::PreparedMap;
 mod retained_dirents;
 pub mod dri;
 pub mod epoll;
+pub mod entropy_read;
 pub mod exec_target;
 pub mod executable_backing;
 pub mod fd;

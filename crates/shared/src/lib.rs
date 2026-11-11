@@ -2246,7 +2246,10 @@ pub mod abi {
     ///    and exact DRM file/grant identities across kernel-host imports.
     /// 4: main's initial-process launch and persistent-storage interfaces,
     ///    combined with the unpublished graphics contracts above.
-    pub const HOST_ADAPTER_VERSION: u32 = 5;
+    pub const HOST_ADAPTER_VERSION: u32 = 7;
+    /// A bounded entropy batch yielded without completing its guest syscall.
+    /// Negative errno values occupy -1..=-4095; this is transport-only status.
+    pub const ENTROPY_READ_PENDING: i32 = i32::MIN;
     pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
 
     pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;
@@ -2368,6 +2371,8 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_create_process_with_stdio"),
         HostAdapterKernelExport::required("kernel_dequeue_signal"),
         HostAdapterKernelExport::required("kernel_drain_wait_completions"),
+        HostAdapterKernelExport::required("kernel_entropy_read_cancel"),
+        HostAdapterKernelExport::required("kernel_entropy_read_step"),
         HostAdapterKernelExport::required("kernel_epoll_wait_finish"),
         HostAdapterKernelExport::optional("kernel_epoll_wait_retry_state"),
         HostAdapterKernelExport::required("kernel_epoll_wait_token"),
@@ -2408,6 +2413,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_get_socket_timeout_ms"),
         HostAdapterKernelExport::required("kernel_handle_channel"),
         HostAdapterKernelExport::required("kernel_handle_channel_record"),
+        HostAdapterKernelExport::required("kernel_handle_guest_io"),
         HostAdapterKernelExport::required("kernel_has_sa_nocldstop"),
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_len"),
         HostAdapterKernelExport::required("kernel_host_adapter_manifest_ptr"),
