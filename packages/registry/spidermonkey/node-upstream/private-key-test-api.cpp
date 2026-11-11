@@ -337,7 +337,7 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
   };
   JS::RootedObject api(cx, JS_NewPlainObject(cx));
   if (!api || !JS_DefineFunctions(cx, api, functions) ||
-      !DefineTraceAgentTestAPI(cx, api)) {
+      !DefineTraceAgentTestAPI(cx, api) || !DefineContinuationTestAPI(cx, api)) {
     return false;
   }
   JS::RootedObject global(cx, JS::CurrentGlobalOrNull(cx));

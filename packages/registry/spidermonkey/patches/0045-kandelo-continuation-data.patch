@@ -1,0 +1,174 @@
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -115,7 +115,16 @@
+ #endif
+ 
+  private:
+-  using Queue = js::TraceableFifo<JSObject*, 0, SystemAllocPolicy>;
++  struct QueuedJob {
++    JSObject* job;
++    JS::Value context;
++
++    void trace(JSTracer* trc) {
++      JS::GCPolicy<JSObject*>::trace(trc, &job, "queued job");
++      JS::GCPolicy<JS::Value>::trace(trc, &context, "queued async context");
++    }
++  };
++  using Queue = js::TraceableFifo<QueuedJob, 0, SystemAllocPolicy>;
+ 
+   JS::PersistentRooted<Queue> queue;
+ 
+@@ -590,6 +599,19 @@
+  private:
+   // Indicates if an exception is pending and the reason for it.
+   js::ContextData<JS::ExceptionStatus> status;
++  js::ContextData<JS::PersistentRooted<JS::Value>> kandeloContinuationData_;
++
++ public:
++  // Private embedding state, rooted independently of the active realm. Job
++  // host data takes a snapshot at reaction registration, not resolution.
++  JS::Value& kandeloContinuationData() {
++    if (!kandeloContinuationData_.ref().initialized()) {
++      kandeloContinuationData_.ref().init(this);
++    }
++    return kandeloContinuationData_.ref().get();
++  }
++
++ private:
+   js::ContextData<JS::PersistentRooted<JS::Value>>
+       unwrappedException_; /* most-recently-thrown exception */
+   js::ContextData<JS::PersistentRooted<js::SavedFrame*>>
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -13,6 +13,7 @@
+ #include "mozilla/CheckedInt.h"
+ #include "mozilla/DebugOnly.h"
+ #include "mozilla/MemoryReporting.h"
++#include "mozilla/ScopeExit.h"
+ #include "mozilla/Sprintf.h"
+ #include "mozilla/Utf8.h"  // mozilla::ConvertUtf16ToUtf8
+ 
+@@ -772,8 +773,8 @@
+     return nullptr;
+   }
+ 
+-  for (const JSObject* unwrappedJob : queue.get()) {
+-    RootedObject job(cx, const_cast<JSObject*>(unwrappedJob));
++  for (const auto& entry : queue.get()) {
++    RootedObject job(cx, entry.job);
+     if (!cx->compartment()->wrap(cx, &job)) {
+       return nullptr;
+     }
+@@ -814,9 +815,24 @@
+   JS::ClearKeptObjects(cx);
+ }
+ 
++// Even an undefined snapshot needs an object: otherwise a reaction
++// registered outside a scope could inherit its resolver's later scope.
++class KandeloContinuationSnapshot : public NativeObject {
++ public:
++  static const JSClass class_;
++};
++const JSClass KandeloContinuationSnapshot::class_ = {
++    "KandeloContinuationSnapshot", JSCLASS_HAS_RESERVED_SLOTS(1)};
++
+ bool InternalJobQueue::getHostDefinedData(
+     JSContext* cx, JS::MutableHandle<JSObject*> data) const {
+-  data.set(nullptr);
++  RootedValue snapshot(cx, cx->kandeloContinuationData());
++  if (!cx->compartment()->wrap(cx, &snapshot)) return false;
++  Rooted<KandeloContinuationSnapshot*> record(
++      cx, NewBuiltinClassInstance<KandeloContinuationSnapshot>(cx));
++  if (!record) return false;
++  record->setReservedSlot(0, snapshot);
++  data.set(record);
+   return true;
+ }
+ 
+@@ -826,7 +842,16 @@
+                                          JS::HandleObject allocationSite,
+                                          JS::HandleObject hostDefinedData) {
+   MOZ_ASSERT(job);
+-  if (!queue.pushBack(job)) {
++  RootedValue snapshot(cx, cx->kandeloContinuationData());
++  if (hostDefinedData) {
++    RootedObject data(cx, CheckedUnwrapStatic(hostDefinedData));
++    if (!data || !data->is<KandeloContinuationSnapshot>()) {
++      JS_ReportErrorASCII(cx, "Invalid promise async-context host data");
++      return false;
++    }
++    snapshot = data->as<KandeloContinuationSnapshot>().getReservedSlot(0);
++  }
++  if (!queue.pushBack(QueuedJob{job, snapshot})) {
+     ReportOutOfMemory(cx);
+     return false;
+   }
+@@ -863,8 +888,14 @@
+ 
+       cx->runtime()->offThreadPromiseState.ref().internalDrain(cx);
+ 
+-      job = queue.front();
++      job = queue.front().job;
++      RootedValue snapshot(cx, queue.front().context);
+       queue.popFront();
++      RootedValue priorContext(cx, cx->kandeloContinuationData());
++      cx->kandeloContinuationData() = snapshot;
++      auto restoreContext = mozilla::MakeScopeExit([&] {
++        cx->kandeloContinuationData() = priorContext;
++      });
+ 
+       // If the next job is the last job in the job queue, allow
+       // skipping the standard job queuing behavior.
+@@ -916,7 +947,7 @@
+     return nullptr;
+   }
+ 
+-  return queue.get().front();
++  return queue.get().front().job;
+ }
+ 
+ class js::InternalJobQueue::SavedQueue : public JobQueue::SavedJobQueue {
+@@ -1012,6 +1043,7 @@
+                      js::MallocArena),
+       debuggerMutations(this, 0),
+       status(this, JS::ExceptionStatus::None),
++      kandeloContinuationData_(this),
+       unwrappedException_(this),
+       unwrappedExceptionStack_(this),
+ #ifdef DEBUG
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -34,6 +34,7 @@
+     "node-upstream/codecs.cpp",
+     "node-upstream/constants-upstream/node_constants.cc",
+     "node-upstream/constants.cpp",
++    "node-upstream/continuation-upstream.cpp",
+     "node-upstream/decoder-upstream.cpp",
+     "node-upstream/encoding-upstream.cpp",
+     "node-upstream/error-stack.cpp",
+@@ -186,3 +187,7 @@
+     "-I%s/node-upstream/tracing-upstream" % SRCDIR,
+     "-I%s/node-upstream/trace-builtins-upstream" % SRCDIR,
+ ]
++
++SOURCES["node-upstream/continuation-upstream.cpp"].flags += [
++    "-std=c++20",
++]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -43,6 +43,7 @@
+ # We don't bother checking files in these directories, because they're (a) auxiliary or (b)
+ # imported code that doesn't follow our coding style.
+ ignored_js_src_dirs = [
++    "js/src/shell/node-upstream/continuation-upstream/",  # complete original Node unit
+     "js/src/shell/node-upstream/trace-binding-upstream/",  # complete original Node binding
+     "js/src/shell/node-upstream/trace-builtins-upstream/",  # complete original V8 units
+     "js/src/shell/node-upstream/tracing-upstream/",  # complete verified Node native sources
+@@ -63,6 +64,7 @@
+ # We ignore #includes of these files, because they don't follow the usual rules.
+ included_inclnames_to_ignore = set(
+     [
++        "shell/node-upstream/continuation-upstream/async_context_frame.cc",
+         "shell/node-upstream/trace-binding-upstream/node_trace_events.cc",
+         "shell/node-upstream/trace-builtins-upstream/src/builtins/builtins-trace.cc",
+         "shell/node-upstream/trace-builtins-upstream/src/strings/unicode-inl.h",

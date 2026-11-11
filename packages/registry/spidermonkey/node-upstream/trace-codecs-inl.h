@@ -52,7 +52,7 @@ namespace {
 JSFunction* TraceFunction(Frame& frame,const char* name,Callback callback,unsigned length,bool constructor,bool receiver) {
   JS::RootedFunction fn(frame.cx,js::NewFunctionWithReserved(frame.cx,Invoke,length,constructor?JSFUN_CONSTRUCTOR:0,name));if(!fn)return nullptr;
   JS::RootedObject object(frame.cx,JS_GetFunctionObject(fn)),closure(frame.cx,JS_NewObject(frame.cx,&callbackClass));if(!closure)return nullptr;
-  JS::SetReservedSlot(closure,0,JS::PrivateValue(new CallbackOwner{callback,Domain::Trace,constructor,receiver,0}));
+  JS::SetReservedSlot(closure,0,JS::PrivateValue(new CallbackOwner{callback,frame.domain,constructor,receiver,0}));
   JS::SetReservedSlot(closure,1,JS::ObjectValue(*frame.binding));
   js::SetFunctionNativeReserved(object,0,JS::ObjectValue(*frame.realm));js::SetFunctionNativeReserved(object,1,JS::ObjectValue(*closure));
   if(constructor){
@@ -66,11 +66,15 @@ void SetTraceFieldCount(JSObject* object,int count) {
   auto value=js::GetFunctionNativeReserved(object,1);auto* callback=static_cast<CallbackOwner*>(JS::GetReservedSlot(&value.toObject(),0).toPrivate());callback->fieldCount=count;
 }
 Local<Object> Context::GetExtrasBindingObject() {
-  auto& f=Current(isolate);CHECK(JS::GetClass(f.binding)==&traceBindingClass);
+  auto& f=Current(isolate);CHECK((f.domain==Domain::Trace&&JS::GetClass(f.binding)==&traceBindingClass)||(f.domain==Domain::Continuation&&JS::GetClass(f.binding)==&continuationBindingClass));
   auto cached=JS::GetReservedSlot(f.binding,0);
   if(cached.isObject()){JS::RootedValue value(f.cx,cached);return f.Own<Object>(value);}
   JS::RootedObject extras(f.cx,JS_NewObjectWithGivenProto(f.cx,nullptr,nullptr));if(!extras)return {};
-  for(auto entry:{std::tuple{"isTraceCategoryEnabled",kandelo_trace_adapter::IsTraceCategoryEnabled,1u},std::tuple{"trace",kandelo_trace_adapter::Trace,5u}}){
+  using Entry=std::tuple<const char*,Callback,unsigned>;
+  std::vector<Entry> entries;
+  if(f.domain==Domain::Trace)entries={{"isTraceCategoryEnabled",kandelo_trace_adapter::IsTraceCategoryEnabled,1u},{"trace",kandelo_trace_adapter::Trace,5u}};
+  else entries={{"getContinuationPreservedEmbedderData",kandelo_continuation_adapter::Get,0u},{"setContinuationPreservedEmbedderData",kandelo_continuation_adapter::Set,1u}};
+  for(auto entry:entries){
     JS::RootedFunction fn(f.cx,TraceFunction(f,std::get<0>(entry),std::get<1>(entry),std::get<2>(entry),false,false));if(!fn)return {};
     JS::RootedObject object(f.cx,JS_GetFunctionObject(fn));if(!JS_DefineProperty(f.cx,extras,std::get<0>(entry),object,JSPROP_ENUMERATE))return {};
   }

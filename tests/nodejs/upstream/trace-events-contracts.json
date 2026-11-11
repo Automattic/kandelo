@@ -346,7 +346,7 @@
   },
   "startup": {
     "implemented": false,
-    "principalCurrentGap": "async_context_frame",
+    "principalCurrentGap": "buffer",
     "stackLimitCurrentGap": "mksnapshot",
     "fullStartupAccepted": false
   },
@@ -396,7 +396,7 @@
     "engineCasesPerHost": 29,
     "fatalCasesPerHost": 5,
     "exitCasesPerHost": 3,
-    "principalBootstrap": "unchanged body now reaches missing async_context_frame at internal/async_context_frame:10",
+    "principalBootstrap": "unchanged body now reaches buffer during setupBuffer; current artifact evidence in continuation-engine-check.json",
     "limits": [
       "Full public trace_events depends on original worker closure; compatibility not established",
       "Observer throwing handler: native reference invokes uncaughtException; full owning engine fatal route not implemented",

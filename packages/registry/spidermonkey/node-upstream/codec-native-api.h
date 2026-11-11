@@ -8,10 +8,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include "js/TypeDecls.h"
 
@@ -86,6 +88,14 @@ class Value {
   bool IsTrue() const;
   Maybe<uint32_t> Uint32Value(Local<Context>);
   MaybeLocal<String> ToString(Local<Context>);
+};
+std::unique_ptr<Value> RetainRoot(Isolate*,Local<Value>);
+template<class T> class Global {
+  static_assert(std::is_same_v<T,Value>);
+  std::unique_ptr<Value> value_;
+ public:
+  void Reset(Isolate* isolate,Local<T> value) { value_=RetainRoot(isolate,value); }
+  Local<T> Get(Isolate*) const { return Local<T>(value_.get()); }
 };
 class Object : public Value {
  public:
@@ -179,6 +189,8 @@ class Isolate {
   Factory factory_{this};
   Factory* factory() { return &factory_; }
   Local<Context> GetCurrentContext();
+  Local<Value> GetContinuationPreservedEmbedderDataV2();
+  void SetContinuationPreservedEmbedderDataV2(Local<Value>);
   void ThrowException(Local<Value>);
 };
 class HandleScope {
@@ -259,9 +271,11 @@ template<class T,size_t N=64> class ArrayBufferViewContents {
 };
 class Environment {
  public: static Environment* GetCurrent(Local<Context>);
+  static Environment* GetCurrent(Isolate*);
   static Environment* GetCurrent(const FunctionCallbackInfo<Value>&);
   Isolate* isolate();Local<Context> context();Local<ObjectTemplate> i18n_converter_template();
   void set_trace_category_state_function(Local<Function>);
+  bool async_context_frame_enabled() const;
 };
 class IsolateData {
  public: Isolate* isolate();void set_i18n_converter_template(Local<ObjectTemplate>);
@@ -320,6 +334,14 @@ using Initializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
 extern Initializer initializer;
 void IsTraceCategoryEnabled(const FunctionCallbackInfo<Value>&);
 void Trace(const FunctionCallbackInfo<Value>&);
+}
+namespace kandelo_continuation_adapter {
+using namespace kandelo_node_codec_api;
+using Initializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
+extern Initializer initializer;
+void Get(const FunctionCallbackInfo<Value>&);
+void Set(const FunctionCallbackInfo<Value>&);
+bool WithFrame(Isolate*,Local<Value>,const std::function<bool()>&);
 }
 namespace kandelo_icu_adapter {
 using namespace kandelo_node_codec_api;

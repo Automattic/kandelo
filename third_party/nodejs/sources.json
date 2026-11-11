@@ -3530,6 +3530,20 @@
       "builtinId": null
     },
     {
+      "path": "src/async_context_frame.cc",
+      "role": "provenance",
+      "bytes": 2750,
+      "sha256": "6de1a1e6c0eb2abf910628ffcb5722e5e33234d3725a2df27ce36349e091f9cc",
+      "builtinId": null
+    },
+    {
+      "path": "src/async_context_frame.h",
+      "role": "provenance",
+      "bytes": 903,
+      "sha256": "e2f173c35a8ea6b9afb670b1bbfb126890e29b8188108aa60c572bfe68345e92",
+      "builtinId": null
+    },
+    {
       "path": "src/async_wrap.cc",
       "role": "provenance",
       "bytes": 27422,

@@ -13,11 +13,13 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry calls complete `internal/bootstrap/node` with
 protected state. It now executes the original internal tracing helper and
-reaches the missing `async_context_frame` binding in original
-`internal/async_context_frame`. The original native tracing agent, binding,
+reaches the missing `buffer` binding in original `buffer.js`. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
-four hosts; full observer exception/fatal routing remains incomplete.
+four hosts. Continuation-preserved engine data and the complete original
+async-context native source are also integrated; active JavaScript consumers
+remain guarded until genuine bootstrap completes. Full observer exception/fatal
+routing remains incomplete.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -67,7 +69,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 552 files after complete native source/header additions; every
+manifest has 554 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -1294,3 +1296,56 @@ entrypaths are incomplete.
 No images, full products, successor ABI or overall suites were built or run.
 See [trace-binding-engine-check.json](../tests/nodejs/upstream/trace-binding-engine-check.json)
 for exact source/artifact identities, selected results and retained failures.
+
+## Continuation-preserved engine data
+
+Revision 38 adds actual continuation data to SpiderMonkey's JSContext and
+compiles the complete original `async_context_frame.cc` and header. The
+canonical native value bridge supplies the source's actual current/set/exchange
+operations and persistent `Global<Value>` root. The source Scope constructor
+and destructor exchange/restore the real value. Its setter reads the actual
+original async-context option under the original CLI mutex; the default stays
+true. Engine get/set intrinsics remain available independently of the optional
+Node library mode, matching the authenticated disabled-option reference.
+
+The existing engine JobQueue hook captures a real snapshot when a reaction is
+registered, including an undefined value. The typed FIFO traces each native
+job and its retained value. Promise reactions use their registration snapshot;
+direct native microtasks capture at enqueue. Each job installs its snapshot and
+restores the prior rooted value through scope exit, including throw and quit
+paths. Wrapping occurs at real realm boundaries. This uses adapted native
+snapshot/queue/restoration mechanisms from archived patch0040, without its old
+public JavaScript surface. Raw Promise lifecycle hooks, AsyncWrap IDs and common
+native callback scopes remain separate unfinished contracts.
+
+Twenty raw shared controls match native Node. Twenty-seven engine/native-scope
+controls plus seven additional drivers pass on each host with identical engine
+and kernel bytes. They exercise pending/settled reactions, undefined capture,
+thenables and errors, Promise combinators, async functions/generators, repeated
+await, actual native microtasks, arbitrary rooted values, moving GC, foreign
+realm values/jobs, original native Scope nesting/throw/async capture, actual
+option gating, error recovery, checkpoint restoration and real exit statuses.
+The same engine passes all 310 prior Node controls, nine native-agent controls
+and 37 tracing binding/exit/fatal observations. These selected checks do not
+establish complete async lifecycle or public AsyncLocalStorage compatibility.
+
+The first 28-case fixture reports four real failures from the original
+pre-bootstrap options guard. The engine cases passed; active original Frame,
+AsyncLocalStorage and RunScope checks attempted their actual upstream code and
+received ERR_OPTIONS_BEFORE_BOOTSTRAPPING. Their native counterparts pass after
+real native bootstrap. Those four guest consumer checks remain deferred and
+recorded until genuine startup completes. No completion flag or JavaScript
+module was substituted. The first expanded native-reference driver also had a
+duplicate binding declaration; its harness failure and corrected run are kept.
+
+Principal bootstrap now executes original internal/timers, original events and
+abort-listener dependencies, then stops at the missing buffer binding in
+setupBuffer. The stack-limit policy still stops at mksnapshot. The import has
+554 authenticated records, with all 552 prior records and all 443 JavaScript
+sources unchanged. Four-host startup, empty/simple evaluation, separate CJS/ESM
+entrypaths and the full backend catalog remain incomplete. No images, full
+products, successor ABI or overall suites were built or run.
+
+See [continuation-contracts.json](../tests/nodejs/upstream/continuation-contracts.json)
+and [continuation-engine-check.json](../tests/nodejs/upstream/continuation-engine-check.json)
+for exact coverage, retained failures, ownership limits and artifact identities.

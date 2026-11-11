@@ -129,6 +129,17 @@ Native async_wrap.setPromiseHooks feeds real promise init(parent), before, after
 
 **Limits:** Existing source engine patches contain relevant lifecycle work, including 0195-node-mapping-curves-promise-fetch.patch. Parent audit covers its exact artifact limitations; no runtime inference made here.
 
+Current continuation implementation: the revision-38 engine stores a genuine
+rooted value per JSContext, captures real host-defined reaction snapshots and
+traces/restores queued values across Promise, thenable, await, generator and
+microtask execution. The complete original async_context_frame.cc and its Scope
+compile unchanged over those primitives. Raw Promise lifecycle hooks and assigned
+async-resource/ID scopes remain separate unfinished contracts. Active original
+Frame/AsyncLocalStorage consumers still reach ERR_OPTIONS_BEFORE_BOOTSTRAPPING;
+those four checks are deferred until real startup, with their failures retained.
+See continuation-contracts.json and continuation-engine-check.json for bounded
+implementation, source identities and four-host evidence.
+
 ### E07: Side-effect-free engine introspection
 
 util binding must inspect actual promise state/result, proxy target/handler, collection iterator entries and own properties without executing user getters, consuming iterators or triggering proxy traps. types binding needs real engine brands across realms. Call-site/source information must come from real frames. JS-level duck typing is insufficient.

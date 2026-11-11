@@ -45,6 +45,7 @@
 #undef node
 #undef v8
 
+#include "shell/node-upstream/options.h"
 #include "shell/node-upstream/per-context.h"
 #include "shell/node-upstream/realm.h"
 #include "shell/node-upstream/trace-builtins-upstream/messages.generated.h"
@@ -69,8 +70,9 @@ struct State {
   std::atomic<size_t> traceCreated{0},traceReleased{0};
   std::atomic<size_t> icuCreated{0},icuReleased{0};
 };
-enum class Domain { Decoder, Icu, Trace };
+enum class Domain { Decoder, Icu, Trace, Continuation };
 const JSClass traceBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(3)};
+const JSClass continuationBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct Cell {
   JS::PersistentRootedValue value;
   Cell(JSContext* cx, JS::HandleValue input) : value(cx, input) {}
@@ -747,4 +749,5 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 }
 }
 
+#include "shell/node-upstream/continuation-codecs-inl.h"
 #include "shell/node-upstream/trace-codecs-inl.h"

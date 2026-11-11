@@ -49,7 +49,7 @@ namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3, NodeComplete = 4 };
-enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Continuation, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -253,6 +253,11 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
       if (!binding) return false;
       JS::SetReservedSlot(state, Options, JS::ObjectValue(*binding));
     }
+  }
+  else if (name == "async_context_frame") {
+    JS::Value cached=JS::GetReservedSlot(state,Continuation);
+    if(cached.isObject())binding=&cached.toObject();
+    else {binding=CreateContinuationBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,Continuation,JS::ObjectValue(*binding));}
   }
   else if (name == "trace_events") {
     JS::Value cached=JS::GetReservedSlot(state,TraceEvents);

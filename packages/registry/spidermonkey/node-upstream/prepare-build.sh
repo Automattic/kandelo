@@ -45,6 +45,9 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/codecs.cpp" \
     "$node_consumer/codecs.h" \
     "$node_consumer/codec-native-api.h" \
+    "$node_consumer/continuation-native-api.h" \
+    "$node_consumer/continuation-upstream.cpp" \
+    "$node_consumer/continuation-codecs-inl.h" \
     "$node_consumer/codec-agent-includes.h" \
     "$node_consumer/codec-buffer-types.h" \
     "$node_consumer/decoder-upstream.cpp" \
@@ -114,6 +117,9 @@ python3 "$repo_root/scripts/prepare-nodejs-codecs.py" \
 python3 "$repo_root/scripts/prepare-nodejs-options.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/options-upstream"
+python3 "$repo_root/scripts/prepare-nodejs-continuation.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$shell_sources/continuation-upstream"
 python3 "$repo_root/scripts/prepare-nodejs-tracing.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/tracing-upstream"
