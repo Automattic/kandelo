@@ -1,4 +1,0 @@
-[shell/wasm32] Error: shell image exceeds its eager-content budget in packages/registry/shell/eager-budget.json:
-[shell/wasm32]   eager files: 156 exceeds the budget of 150 (recorded 146 when the budget was set; +10 since)
-[shell/wasm32]   current: 2,414,611 eager bytes in 156 files
-[shell/wasm32] Largest eager directories (bytes, files, directory):

@@ -161,6 +161,11 @@ pub struct Datagram {
     pub dst_addr6: [u8; 16],
     pub src_port: u16,
     pub src_sock_idx: Option<usize>,
+    /// AF_UNIX: the sending socket's `endpoint_id`, so a queued datagram can
+    /// be told apart from one sent by a different socket that later occupied
+    /// the same `(pid, slot)`. Zero for AF_INET/AF_INET6 and netlink, which
+    /// identify their senders by address.
+    pub src_endpoint_id: u64,
     /// IPv6 traffic class associated with this datagram.
     pub ipv6_tclass: u32,
     /// Sender credentials captured when the datagram was queued. AF_UNIX
@@ -756,6 +761,42 @@ pub struct PeerCred {
     pub gid: u32,
 }
 
+/// A machine-wide name for one socket endpoint.
+///
+/// `(pid, sock_idx)` alone cannot name a socket across time: both slots and
+/// pids are reused. `endpoint_id` pins the exact socket, so an association
+/// that outlives its peer's `close()` fails truthfully instead of following a
+/// stranger into the slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnixDgramEndpoint {
+    pub pid: u32,
+    pub sock_idx: usize,
+    pub endpoint_id: u64,
+}
+
+/// Monotonic source of socket endpoint identities.
+///
+/// SAFETY: access is serialized -- the kernel services one syscall at a time.
+struct GlobalSocketEndpointIds(UnsafeCell<u64>);
+unsafe impl Sync for GlobalSocketEndpointIds {}
+static SOCKET_ENDPOINT_IDS: GlobalSocketEndpointIds = GlobalSocketEndpointIds(UnsafeCell::new(0));
+
+/// Allocate the next socket endpoint identity.
+///
+/// Never returns zero, which encodes "no association recorded". A `u64` at one
+/// identity per socket creation cannot be exhausted by a running machine.
+fn next_socket_endpoint_id() -> u64 {
+    // SAFETY: single-threaded kernel; no reference outlives this call.
+    unsafe {
+        let next = SOCKET_ENDPOINT_IDS.0.get();
+        *next = (*next).wrapping_add(1);
+        if *next == 0 {
+            *next = 1;
+        }
+        *next
+    }
+}
+
 /// Per-socket kernel state.
 ///
 /// `Clone` is hand-written (not derived) so that fork/spawn cloning
@@ -772,6 +813,31 @@ pub struct SocketInfo {
     pub state: SocketState,
     /// Index of peer socket (for connected Unix domain pairs).
     pub peer_idx: Option<usize>,
+    /// This socket endpoint's machine-wide identity, unique for the life of
+    /// the kernel.
+    ///
+    /// WHY: neither a socket slot number nor a pid is a stable name. Slots are
+    /// handed back lowest-free-first by `publish_prepared`, and pids are
+    /// recycled, so `(pid, slot)` can come to name a completely different
+    /// socket. An AF_UNIX datagram association outlives its peer's `close()`
+    /// (POSIX associates with the socket, not its pathname), so it records
+    /// this identity and refuses whatever else later occupies the slot.
+    /// Fork copies it: parent and child slots hold the same inherited
+    /// endpoint, and the owning pid tells the two associations apart.
+    pub endpoint_id: u64,
+    /// `endpoint_id` of the peer an AF_UNIX datagram socket is associated
+    /// with. Zero means no datagram association is recorded.
+    pub peer_endpoint_id: u64,
+    /// PID owning `peer_idx` when an AF_UNIX datagram association names a
+    /// socket in another process.
+    ///
+    /// WHY `Option` rather than always recording the owner: `None` means
+    /// "`peer_idx` is a slot in my own table", which is what `peer_idx` has
+    /// always meant. A fork child inherits a same-process association as a
+    /// pointer into its own copied table, exactly as before machine-wide
+    /// datagram routing existed, while a foreign association is inherited as
+    /// the foreign endpoint it is.
+    pub peer_owner_pid: Option<u32>,
     /// Index into the global pipe table for the receive buffer.
     pub recv_buf_idx: Option<usize>,
     /// Index into the global pipe table for the send buffer.
@@ -865,7 +931,10 @@ impl SocketInfo {
             sock_type,
             protocol,
             state: SocketState::Unbound,
+            endpoint_id: next_socket_endpoint_id(),
+            peer_endpoint_id: 0,
             peer_idx: None,
+            peer_owner_pid: None,
             recv_buf_idx: None,
             send_buf_idx: None,
             shut_rd: false,
@@ -924,6 +993,38 @@ impl SocketInfo {
         Ok(())
     }
 
+    /// The peer this AF_UNIX datagram socket is associated with, named so the
+    /// association cannot follow a different socket into the same slot.
+    ///
+    /// `owner_pid` is the pid of the process holding *this* socket, used when
+    /// the association is process-local. `None` when no datagram association
+    /// is recorded, which includes every stream socket.
+    pub fn unix_dgram_peer(&self, owner_pid: u32) -> Option<UnixDgramEndpoint> {
+        // A datagram association, and only a datagram one. `socketpair` also
+        // records a peer slot for a stream pair, because MSG_OOB needs it, so
+        // without this a stream socket would answer here and contradict the
+        // contract above. Every caller happens to re-test the type today; one
+        // reading only the contract would not.
+        if self.sock_type != SocketType::Dgram {
+            return None;
+        }
+        if self.peer_endpoint_id == 0 {
+            return None;
+        }
+        Some(UnixDgramEndpoint {
+            pid: self.peer_owner_pid.unwrap_or(owner_pid),
+            sock_idx: self.peer_idx?,
+            endpoint_id: self.peer_endpoint_id,
+        })
+    }
+
+    /// Record the peer of an AF_UNIX datagram association.
+    pub fn set_unix_dgram_peer(&mut self, owner_pid: u32, peer: UnixDgramEndpoint) {
+        self.peer_owner_pid = (peer.pid != owner_pid).then_some(peer.pid);
+        self.peer_idx = Some(peer.sock_idx);
+        self.peer_endpoint_id = peer.endpoint_id;
+    }
+
     /// Get a stored socket option value.
     pub fn get_option(&self, level: u32, optname: u32) -> Option<u32> {
         for opt in &self.options {
@@ -966,7 +1067,10 @@ impl SocketInfo {
             sock_type: self.sock_type,
             protocol: self.protocol,
             state: self.state,
+            endpoint_id: self.endpoint_id,
+            peer_endpoint_id: self.peer_endpoint_id,
             peer_idx: self.peer_idx,
+            peer_owner_pid: self.peer_owner_pid,
             recv_buf_idx: self.recv_buf_idx,
             send_buf_idx: self.send_buf_idx,
             shut_rd: self.shut_rd,

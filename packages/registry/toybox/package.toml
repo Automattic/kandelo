@@ -1,0 +1,40 @@
+kind = "program"
+name = "toybox"
+version = "0.8.15"
+# toybox (Rob Landley): a small single-binary POSIX utility suite. Kandelo
+# builds two applets from it as standalone programs, and nothing else.
+#
+# `dmesg` (toys/lsb/dmesg.c, 187 lines) reads the kernel log through exactly
+# the two surfaces this platform provides -- /dev/kmsg by default and
+# klogctl() with -S or as a fallback -- and includes no linux/ headers.
+#
+# `logger` (toys/posix/logger.c, 98 lines) is the POSIX utility, and it logs
+# through openlog()/syslog()/closelog(). That is musl's syslog(3) over
+# AF_UNIX to /dev/log, which is the path a ported program uses, so it is the
+# honest end-to-end client for the syslog facility. sysklogd ships a `logger`
+# too, but that one links sysklogd's own libsyslog instead of the system's,
+# so it would not exercise the platform path at all.
+kernel_abi = 55
+depends_on = []
+
+[source]
+url = "https://landley.net/toybox/downloads/toybox-0.8.15.tar.gz"
+sha256 = "44e2bab43dfe2c171743297631ce558c6d9ed38b87a66fd751cef617574b375e"
+provider = "archive"
+
+[license]
+spdx = "0BSD"
+url = "https://github.com/landley/toybox/blob/master/LICENSE"
+
+[build]
+script_path = "packages/registry/toybox/build-toybox.sh"
+
+[[outputs]]
+name = "dmesg"
+wasm = "dmesg.wasm"
+fork_instrumentation = "disabled"
+
+[[outputs]]
+name = "logger"
+wasm = "logger.wasm"
+fork_instrumentation = "disabled"

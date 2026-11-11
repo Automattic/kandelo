@@ -22,6 +22,14 @@ codegen-units=1
 incremental=false
 `,
   "developer-tools/src/lib.rs": source,
+  "developer-tools/selected-compiler.rs": `use std::os::unix::process::CommandExt;
+fn main() {
+    std::fs::write("/home/maker/project/developer-tools/compiler-selected", b"configured compiler ran\\n").unwrap();
+    let error = std::process::Command::new("/usr/bin/rustc")
+        .args(std::env::args_os().skip(1)).exec();
+    panic!("configured compiler exec failed: {}", error);
+}
+`,
 };
 
 interface GuestToolHost {
@@ -94,5 +102,13 @@ export async function exerciseRustDevtools(host: GuestToolHost, env: string[]) {
   const doctests = await run("doctests", "cargo", ["test", "--offline", "-j1", "--doc", "--", "--test-threads=1"], 0, 600_000);
   require(doctests.stdout.includes("test result: ok. 1 passed; 0 failed"),
     "the documentation example must execute, rather than report an empty run");
+  await run("build-configured-compiler", "rustc", [
+    "selected-compiler.rs", "-Cdebuginfo=0", "-Ccodegen-units=1", "-o", "selected-rustc.wasm",
+  ]);
+  await run("configured-compiler", "cargo", ["check", "--offline", "-j1", "--config",
+    "build.rustc='/home/maker/project/developer-tools/selected-rustc.wasm'",
+  ]);
+  require((await read("compiler-selected")) === "configured compiler ran\n",
+    "Cargo must honor --config build.rustc instead of the default SDK alias");
   return { results, formattedSource, docsHtml };
 }

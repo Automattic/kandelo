@@ -1,0 +1,9 @@
+script_path = "packages/registry/sysklogd/build-sysklogd.sh"
+inputs = [
+  "packages/registry/sysklogd/build-sysklogd.sh",
+  "packages/registry/sysklogd/patches/0001-path-log-matches-the-libc-syslog-path.patch",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision = 1

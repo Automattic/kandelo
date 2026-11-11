@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "domain": "kandelo-rust-sdk-components-v1",
+  "required": ["cargo", "cargo-clippy", "cargo-fmt", "clippy-driver", "kandelo-rustc", "kandelo-sdk", "rust-std", "rustc", "rustdoc", "rustfmt", "wasm-fork-instrument"],
+  "optional": ["rust-profiler-runtime"]
+}

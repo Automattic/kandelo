@@ -28,21 +28,74 @@ pub struct Artifact {
     pub bytes: MappedArtifact,
     pub decision: Decision,
     pub emission: Option<EmitReport>,
+    /// Source-map v3 for these exact bytes, when explicitly requested. No map
+    /// is allocated or parsed in the default instrumentation path.
+    pub source_map: Option<MappedArtifact>,
 }
 
-pub fn instrument(input: &[u8], options: &Options, mut limits: Limits) -> Result<Artifact> {
+pub fn instrument(input: &[u8], options: &Options, limits: Limits) -> Result<Artifact> {
+    instrument_inner(input, options, limits, None)
+}
+
+pub fn instrument_with_debug(
+    input: &[u8],
+    options: &Options,
+    limits: Limits,
+    debug: crate::debug_info::Limits,
+) -> Result<Artifact> {
+    instrument_inner(input, options, limits, Some((debug, true)))
+}
+
+/// Preserve available source locations while admitting builds without DWARF.
+/// Present but malformed or over-budget metadata is an error.
+pub fn instrument_with_optional_debug(
+    input: &[u8],
+    options: &Options,
+    limits: Limits,
+    debug: crate::debug_info::Limits,
+) -> Result<Artifact> {
+    instrument_inner(input, options, limits, Some((debug, false)))
+}
+
+fn instrument_inner(
+    input: &[u8],
+    options: &Options,
+    mut limits: Limits,
+    debug: Option<(crate::debug_info::Limits, bool)>,
+) -> Result<Artifact> {
+    let lines = debug
+        .map(|(debug, required)| {
+            if required {
+                crate::debug_info::LineTable::read(input, debug).map(Some)
+            } else {
+                crate::debug_info::LineTable::read_if_present(input, debug)
+            }
+        })
+        .transpose()?
+        .flatten()
+        .map(std::sync::Arc::new);
     let progress = crate::progress::Progress::new("transform");
     progress.note(format_args!("analysis, {} input bytes", input.len()));
     let analysis = analyze(input, options, limits.analysis)?;
     let mut raw = ArtifactSpool::new(limits.output_bytes)?;
     if !analysis.decision.participates {
         copy_without_custom(input, &mut raw, |name| {
-            name == crate::facts::SECTION || name == crate::facts::CODE_HASH_SECTION
+            name == crate::facts::SECTION
+                || name == crate::facts::CODE_HASH_SECTION
+                || name == crate::debug_info::SECTION
         })?;
+        let bytes = raw.freeze()?;
+        let source_map = lines
+            .as_ref()
+            .map(|lines| {
+                lines.copied_map(input, bytes.bytes(), debug.unwrap().0.section_bytes as u64)
+            })
+            .transpose()?;
         return Ok(Artifact {
-            bytes: raw.freeze()?,
+            bytes,
             decision: analysis.decision,
             emission: None,
+            source_map,
         });
     }
     limits.pipeline.emission.max_spooled_section_bytes = limits
@@ -52,6 +105,9 @@ pub fn instrument(input: &[u8], options: &Options, mut limits: Limits) -> Result
         .min(limits.output_bytes);
     progress.note(format_args!("freeze plan"));
     let (mut pipeline, decision) = analysis.freeze(limits.pipeline)?;
+    if let Some(lines) = &lines {
+        pipeline.enable_debug(debug.unwrap().0.rows, lines.clone())?;
+    }
     progress.note(format_args!("emission"));
     let emission = pipeline.emit(&mut raw)?;
     metadata::write(
@@ -61,6 +117,7 @@ pub fn instrument(input: &[u8], options: &Options, mut limits: Limits) -> Result
         &mut raw,
         limits.pipeline.metadata_bytes,
     )?;
+    let debug_records = pipeline.take_debug();
     drop(pipeline);
     let raw = raw.freeze()?;
     progress.note(format_args!("declare features"));
@@ -77,11 +134,15 @@ pub fn instrument(input: &[u8], options: &Options, mut limits: Limits) -> Result
         bytes.bytes().len()
     ));
     validate(bytes.bytes())?;
+    let source_map = debug_records
+        .map(|records| records.finish(bytes.bytes(), debug.unwrap().0.section_bytes as u64))
+        .transpose()?;
     progress.note(format_args!("complete"));
     Ok(Artifact {
         bytes,
         decision,
         emission: Some(emission),
+        source_map,
     })
 }
 

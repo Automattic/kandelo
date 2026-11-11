@@ -96,6 +96,7 @@ mod package_matrix;
 mod partial_image;
 mod pkg_manifest;
 mod program_env_imports;
+mod program_extensions;
 mod package_imports;
 mod recipe_tree_guard;
 mod remote_fetch;
@@ -145,6 +146,7 @@ fn main() -> ExitCode {
         "vfs-image" => vfs_image_describe::run(&rest),
         "dump-abi" => dump_abi::run(rest),
         "check-program-env-imports" => program_env_imports::run(rest),
+        "program-extensions" => program_extensions::run(rest),
         "check-package-imports" => package_imports::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),

@@ -5,6 +5,16 @@ use wasm_encoder::reencode::Error;
 /// can compose constructor provenance and table/segment tracking at original
 /// program points without introducing a second instruction arena.
 pub trait NativeSourceHooks: Reencode {
+    /// A lowered source operation's exact emitted range. Generated activation
+    /// setup, replay and helper bodies do not call this hook.
+    fn record_source_range(
+        &mut self,
+        _source: &SourceInstruction<'_>,
+        _start: usize,
+        _end: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
     fn emit_native_source(
         &mut self,
         _source: &SourceInstruction<'_>,
@@ -63,7 +73,10 @@ impl<T: NativeSourceHooks> ContinuationHooks for Calls<'_, '_, '_, T> {
     {
         if let ReferenceCallKind::Direct(function) = call.kind {
             if self.catalog.can_replay_lexically(function) {
+                let start = output.byte_len();
                 output.instruction(&self.instruction(source.operation.clone())?);
+                self.hooks
+                    .record_source_range(source, start, output.byte_len())?;
                 ensure!(
                     output.byte_len() <= limit,
                     "activation call exceeds output budget"
@@ -83,7 +96,10 @@ impl<T: NativeSourceHooks> ContinuationHooks for Calls<'_, '_, '_, T> {
             .catalog
             .support
             .lookup_transport(target, &params, &results)?;
+        let start = output.byte_len();
         output.instruction(&Instruction::Call(transport));
+        self.hooks
+            .record_source_range(source, start, output.byte_len())?;
         ensure!(
             output.byte_len() <= limit,
             "activation call exceeds output budget"

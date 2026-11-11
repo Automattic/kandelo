@@ -1,0 +1,55 @@
+{
+  "context": {
+    "browser_selection": null,
+    "command": [
+      "bash",
+      "scripts/run-sortix-tests.sh",
+      "basic",
+      "dlfcn/dlclose",
+      "dlfcn/dlopen",
+      "dlfcn/dlsym",
+      "termios/tcgetwinsize"
+    ],
+    "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+    "base_commit": "a3490ca0f48d7c249592925cb7b4ac1ab74b9c2a",
+    "note": "commit is base_commit plus only a refreshed packages/registry/shell/eager-budget.json, needed to build the image; runtime unchanged.",
+    "date": "2026-11-09T17:32:41.671440+00:00",
+    "excerpt_source_lines": [
+      828,
+      829,
+      842
+    ],
+    "exit_code": 1,
+    "fixture_control": "Normal Node wrapper compiled all three shared fixtures before browser rerun; exact upstream assertions unchanged",
+    "host": "node",
+    "phase": "node",
+    "repo_root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree",
+    "shared_fixtures": [
+      {
+        "path": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/.context/sortix-volume/main-os-test/build/basic/dlfcn/dlclose.so",
+        "sha256": "2c91eaed0790bc07b5a800e884430a6456c3576ca46cf769c9393cb005f27a7b",
+        "size": 421
+      },
+      {
+        "path": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/.context/sortix-volume/main-os-test/build/basic/dlfcn/dlopen.so",
+        "sha256": "2c91eaed0790bc07b5a800e884430a6456c3576ca46cf769c9393cb005f27a7b",
+        "size": 421
+      },
+      {
+        "path": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/.context/sortix-volume/main-os-test/build/basic/dlfcn/dlsym.so",
+        "sha256": "2c91eaed0790bc07b5a800e884430a6456c3576ca46cf769c9393cb005f27a7b",
+        "size": 421
+      }
+    ],
+    "source_root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/.context/sortix-volume/main-os-test",
+    "suite": "sortix-basic-four-fixture-corrected"
+  },
+  "counts": {
+    "FAIL": 1
+  },
+  "source_sha256": "75108b4ccc38bf7e23479313ed70ff856b04937dfa9c9b5e6e3d8f250ae734bf",
+  "cases": {
+    "[runner exit]": {"outcome":"error","reason":"runner exited 1; inspect the console log for errors omitted by the reporter"},
+    "basic/termios/tcgetwinsize": {"outcome":"fail","reason":"FAIL basic/termios/tcgetwinsize"}
+  }
+}

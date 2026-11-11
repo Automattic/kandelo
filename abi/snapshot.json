@@ -4,6 +4,7 @@
       "dri_cleanup_status",
       "entropy_read_wire",
       "export_deny",
+      "extension_requests",
       "host_adapter",
       "kernel_exports",
       "kernel_imports",
@@ -1544,6 +1545,28 @@
     "value_capture_prefixes": [
       "__abi_"
     ]
+  },
+  "extension_requests": {
+    "KLOG_V1": 600,
+    "KMSG_CAPACITY_BYTES": 131072,
+    "descriptors": {
+      "600": [
+        {
+          "argIndex": 1,
+          "copyOutLength": {
+            "maxValue": 131072,
+            "multiplier": 1,
+            "type": "return-value"
+          },
+          "direction": "out",
+          "nullable": true,
+          "size": {
+            "argIndex": 2,
+            "type": "arg"
+          }
+        }
+      ]
+    }
   },
   "gl_buffer_snapshot_draw": {
     "attribute_bytes": 32,
@@ -6040,7 +6063,7 @@
       "kind": "memory",
       "maximum_pages": 16384,
       "memory64": false,
-      "minimum_pages": 19,
+      "minimum_pages": 21,
       "module": "env",
       "name": "memory",
       "shared": true

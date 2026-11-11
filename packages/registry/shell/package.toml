@@ -57,6 +57,7 @@ depends_on = [
   "elinks@0.20.0",
   "ffmpeg@9.0",
   "retro-emulators@0.1.0",
+  "game-import@0.1.0",
   "vim-browser-bundle@9.1.0900",
   "freeciv-browser-bundle@3.2.6",
   "nethack-browser-bundle@3.6.7",
@@ -67,6 +68,10 @@ depends_on = [
   "mandoc-browser-bundle@1.14.6",
   "coreutils-docs@9.6",
   "lsof-docs@0.1.0",
+  "curl-docs@8.11.1",
+  "wget-docs@1.25.0",
+  "perl-docs@5.40.3",
+  "man-index@1.14.6",
   "attr-docs@2.5.2",
   "bash-docs@5.2.37",
   "bc-docs@1.07.1",
@@ -108,6 +113,11 @@ depends_on = [
   "cargo@1.97.0-nightly-2026-04-27",
   "rustc@1.97.0-nightly-2026-04-27",
   "kandelo-rustc@0.1.0",
+  "rust-profiler-runtime-bundle@1.97.0-nightly-2026-04-27",
+  "rust-coverage-tools@22.1.2",
+  "rust-docs@1.97.0-nightly-2026-04-27",
+  "toybox@0.8.15",
+  "sysklogd@2.8.0",
 ]
 
 # Composite VFS image for the browser shell demo: the rootfs package plus exact

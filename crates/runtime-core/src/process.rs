@@ -4544,6 +4544,7 @@ mod tests {
             dst_addr6: [0; 16],
             src_port: 12345,
             src_sock_idx: None,
+            src_endpoint_id: 0,
             ipv6_tclass: 0,
             src_pid: parent_pid,
             src_uid: 0,

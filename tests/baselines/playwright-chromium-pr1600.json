@@ -1,0 +1,18 @@
+{
+  "suite": "playwright",
+  "host": "chromium",
+  "commit": "e4bca8639e4b6853080ca7f3a09b0e95488c9d50",
+  "date": "2026-10-30",
+  "command": [
+    "scripts/dev-shell.sh",
+    "bash",
+    "-c",
+    "export KANDELO_PLAYWRIGHT_PORT=5613; cd apps/browser-demos; npx playwright test test/dock-action-dispatch.spec.ts test/dri-egl-resize.spec.ts test/kandelo-ffmpeg.spec.ts:224 test/kandelo-kms-context-loss.spec.ts test/kandelo-network-session.spec.ts test/kandelo-omarchy.spec.ts test/kandelo-wayland.spec.ts test/kandelo-wordpress.spec.ts:251 test/network-session-dialogs.spec.ts test/pty-signal-sleep.spec.ts test/theme-contrast.spec.ts test/terminal-links.spec.ts test/terminal-autofocus.spec.ts test/terminal-repaint.spec.ts --project=chromium --workers=1 --retries=0 --reporter=list"
+  ],
+  "exit_code": 1,
+  "source_log": "/Users/brandon/conductor/archived-contexts/kandelo/batched-follow-ups-for-main-correctness/main-validation-v1/playwright-chromium.log",
+  "source_log_sha256": "64b86450da3625b04512c9ebb4a88bd26acf37116a14baa07bb056e094bf6fad",
+  "source_lines": [95, 97, 116, 118, 152, 154, 182, 184, 210, 212, 239, 241, 306, 308, 366, 368, 406, 408, 446, 448, 486, 488, 526, 528, 563, 565, 603, 605, 642, 644, 672, 674, 693, 695, 711, 713, 729, 731, 747, 749, 765, 767, 790, 792, 815, 817, 840, 842, 865, 867, 890, 892, 915, 917],
+  "excerpt": "playwright-chromium-pr1600.log",
+  "note": "Selected specs only, not the complete suite; retries disabled."
+}

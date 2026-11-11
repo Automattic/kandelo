@@ -551,6 +551,22 @@ from user handlers. Replay reconstructs the selected catch inside its original
 try; normal results bypass all capture tails. The dispatcher tracks these
 added labels when remapping source branches and handler destinations.
 
+A catch selection belongs to one dynamic entry of its try. Re-entering that
+try during ordinary execution retires its previous selector and retained
+exception recipe; entering a different try preserves the current selection.
+This matters for input loops using `setjmp`/`longjmp`: a later fork must resume
+the current loop iteration rather than repeatedly replaying an earlier jump.
+The frame format and program ABI are unchanged. Rebuild affected prepared
+programs with the corrected instrumenter through the normal package build.
+
+Nested re-entry fixtures keep two aliases to each of an outer and inner
+exception alive while their tries are re-entered. They capture after a catch,
+after ordinary re-entry, and after rethrowing an alias and re-entering again.
+Fresh-instance replay and live allocation-failure recovery check the exact
+catch selection, alias recipes, vector payloads, externref identity and call
+sequence on both pointer widths with shared and inline frame codecs.
+Successive fresh child generations also restore and recapture these aliases.
+
 Node component fixtures execute scalar `catch` and `catch_ref` ownership on
 both pointer widths, with shared and inline frame codecs, empty or multi-value
 try inputs, normal try results, and forks inside the try or after its handlers.
@@ -1719,6 +1735,60 @@ contract.
 Do not add `--closed-world` or other whole-program GC type passes after
 instrumentation: they may rewrite the GC types the reference codecs
 describe in `kandelo.wpk_fork.gc_codec`.
+
+### Optional source-line maps
+
+`--debug-map` reads linked DWARF line information before the transform
+removes it. It records the actual emitted ranges of source operations,
+then passes a standard source map through the final Binaryen optimization.
+The flag fails if the input has no usable DWARF; `--keep-names` separately
+retains function names. `--debug-map-if-present` uses available line
+information but accepts absent or empty line tables; present malformed or
+oversized metadata still fails. Rust compiler entry points use this mode.
+Compile the linked input with debug information:
+
+```sh
+scripts/run-wasm-fork-instrument.sh linked-with-debug.wasm \
+  --debug-map --keep-names -o prepared.wasm
+scripts/run-wasm-fork-instrument.sh prepared.wasm --debug-location 0x1234
+```
+
+The lookup takes an **absolute module byte offset**, as reported by a Wasm
+frame with a program counter. It prints JSON containing the exact input
+module's SHA-256, the offset, and a one-based source line/column, or a null
+location when unresolved. A frame without an instruction offset cannot be
+resolved by this command. It never opens or fetches a source file.
+
+The optional `kandelo.debug.lines` custom section is appended after Code.
+Its format is the eight bytes `KDBG\x01\0\0\0`, the Code payload's absolute
+offset as a little-endian u64, the 32-byte SHA-256 of that payload, then a
+flat source-map v3 JSON document. Generated columns are absolute Wasm byte
+offsets on generated line zero. The binding rejects a map if another pass
+changes the code or moves it. The full module hash in lookup output binds
+the observation to the actual final artifact; the map's `file` field is
+never treated as identity. Regenerate maps through the preparation pipeline
+after further transformations. Ordinary preparation removes an old embedded
+map rather than copying stale locations.
+
+Source operations lowered to semantic helper calls retain their call-site
+locations. Generated helper bodies, activation setup/replay and surrounding
+table/segment bookkeeping remain unmapped. Overlapping conflicting DWARF
+locations remain unresolved. Optimization can remove functions. When a map is requested, the final
+Binaryen pass disables function inlining: otherwise it can replace a mapped
+source call with an unmapped generated helper body. Other optimizations still
+run, and earlier compiler inlining is unchanged. This map does not recreate
+logical inline frames, locals or variable values.
+DWARF and map bytes, line rows, filenames and paths have explicit budgets;
+exceeding one fails preparation. Filenames are diagnostic metadata, never
+permission to read host files. The source-map reader covers linked DWARF 4
+and 5 line tables, including separate compilation units.
+
+`tests/debug_lines.rs` checks actual Node frame offsets from compiled C and
+Rust before/after native instrumentation and optimization, plus failure
+before destination replacement. The shared worker consumes these maps for
+[Rust backtraces](rust-target.md#source-diagnostics-and-backtraces), using the
+[versioned stack capture interface](program-extensions.md). Source maps do
+not implement breakpoints, stepping or local-variable inspection.
 
 ## Dispatch schemes
 

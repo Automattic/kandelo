@@ -8,6 +8,68 @@ import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 // The ordinary interactive shell and coreutils, in a small real filesystem.
 // The public shell demo is also checked manually; this keeps the regression
 // independent of its service tree, gallery and terminal presentation.
+test("PTY Bash runs external commands after repeated Ctrl-C at its prompt", async ({ page, baseURL }) => {
+  test.setTimeout(180_000);
+  const image = KandeloImageFs.create();
+  image.mkdir("/bin", 0o755);
+  image.mkdir("/tmp", 0o1777);
+  image.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash.wasm")), 0o755);
+  image.writeFile("/bin/sleep", readFileSync(resolveBinary("programs/coreutils.wasm")), 0o755);
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+  const result = await page.evaluate(async ({ moduleUrl, imageBytes }) => {
+    const { BrowserKernel } = await import(/* @vite-ignore */ moduleUrl);
+    let output = "";
+    const diagnostics: string[] = [];
+    const kernel = new BrowserKernel({
+      onHostDiagnostic: (event: { message: string }) => diagnostics.push(event.message),
+    });
+    const waitUntil = async (condition: () => boolean) => {
+      const deadline = performance.now() + 60_000;
+      while (!condition()) {
+        if (performance.now() >= deadline) throw new Error(`PTY recovery timed out: ${output}`);
+        await new Promise((done) => setTimeout(done, 10));
+      }
+    };
+    try {
+      await kernel.initFromImage({ vfsImage: new Uint8Array(imageBytes) });
+      const shell = await kernel.spawnFromVfs("/bin/bash", ["bash", "--noprofile", "--norc", "-i"], {
+        pty: true,
+        env: ["PATH=/bin", "HOME=/", "PS1=RECOVERY_PROMPT> ", "TERM=dumb"],
+      });
+      kernel.onPtyOutput(shell.pid, (data: Uint8Array) => { output += new TextDecoder().decode(data); });
+      await waitUntil(() => output.includes("RECOVERY_PROMPT> "));
+      const transcripts: string[] = [];
+      for (let attempt = 0; attempt < 3; attempt++) {
+        output = "";
+        if (attempt === 1) {
+          kernel.ptyWrite(shell.pid, new TextEncoder().encode("discard_this_line"));
+          await waitUntil(() => output.includes("discard_this_line"));
+          output = "";
+        }
+        kernel.ptyWrite(shell.pid, new Uint8Array([3]));
+        await waitUntil(() => output.includes("RECOVERY_PROMPT> "));
+        output = "";
+        kernel.ptyWrite(shell.pid, new TextEncoder().encode(`sleep 0; printf 'RECOVERED_%s:%s\\n' ${attempt} "$?"\n`));
+        await waitUntil(() => output.includes(`RECOVERED_${attempt}:0`));
+        await waitUntil(() => output.includes("RECOVERY_PROMPT> "));
+        transcripts.push(output);
+      }
+      kernel.ptyWrite(shell.pid, new TextEncoder().encode("exit\n"));
+      await shell.exit;
+      return { transcripts, diagnostics };
+    } finally {
+      await kernel.destroy();
+    }
+  }, {
+    moduleUrl: new URL(`/@fs/${resolve(import.meta.dirname, "../../../host/src/browser-kernel-host.ts")}`, baseURL).href,
+    imageBytes: Array.from(await image.saveImage()),
+  });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    expect(result.transcripts[attempt]).toContain(`RECOVERED_${attempt}:0`);
+  }
+  expect(result.diagnostics).toEqual([]);
+});
+
 test("PTY Ctrl-C interrupts a foreground kernel sleep with status 130", async ({ page, baseURL }) => {
   // Booting bash can take tens of seconds on a loaded machine; only the
   // Ctrl-C response below is timed strictly.
@@ -52,6 +114,7 @@ test("PTY Ctrl-C interrupts a foreground kernel sleep with status 130", async ({
       kernel.ptyWrite(shell.pid, new TextEncoder().encode("sleep 30\n"));
       // The trace arrives after dispatch, so this observes a parked sleep.
       await waitUntil(() => sleepingPid !== undefined);
+      const interruptedPid = sleepingPid!;
       const started = performance.now();
       kernel.ptyWrite(shell.pid, new Uint8Array([3]));
       await waitUntil(() => output.includes("INTERRUPT_PROMPT> "), 1_000);
@@ -60,11 +123,13 @@ test("PTY Ctrl-C interrupts a foreground kernel sleep with status 130", async ({
       output = "";
       kernel.ptyWrite(shell.pid, new TextEncoder().encode("printf 'INTERRUPT_%s:%s\\n' STATUS \"$?\"\n"));
       await waitUntil(() => output.includes("INTERRUPT_STATUS:130"));
+      kernel.ptyWrite(shell.pid, new TextEncoder().encode("sleep 0; printf 'AFTER_INTERRUPT_%s:%s\\n' RECOVERED \"$?\"\n"));
+      await waitUntil(() => output.includes("AFTER_INTERRUPT_RECOVERED:0"));
       const transcript = output;
       kernel.ptyWrite(shell.pid, new TextEncoder().encode("exit\n"));
       await shell.exit;
       unsubscribe();
-      return { elapsedMs, exitStatus: exits.get(sleepingPid!), transcript, diagnostics };
+      return { elapsedMs, exitStatus: exits.get(interruptedPid), transcript, diagnostics };
     } finally {
       await kernel.destroy();
     }
@@ -76,6 +141,7 @@ test("PTY Ctrl-C interrupts a foreground kernel sleep with status 130", async ({
   expect(result.elapsedMs).toBeLessThan(1_000);
   expect(result.exitStatus).toBe(130);
   expect(result.transcript).toContain("INTERRUPT_STATUS:130");
+  expect(result.transcript).toContain("AFTER_INTERRUPT_RECOVERED:0");
   expect(result.diagnostics).toEqual([]);
 });
 

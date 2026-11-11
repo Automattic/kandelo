@@ -3,12 +3,32 @@
 
 pub type Result<T> = std::result::Result<T, String>;
 
+#[cfg(any(target_os = "kandelo", test))]
+mod abi_contract;
+
+#[cfg(any(target_os = "kandelo", test))]
+mod sdk_identity;
+
+#[cfg(any(target_os = "kandelo", test))]
+mod sdk_cargo;
+
 pub fn tool_main(tool: &str, args: &[String]) -> Result<i32> {
     match tool {
+        "cargo" => cargo_main(args),
         "rustdoc" => rustdoc_main(args),
         "clippy-driver" => clippy_main(args),
         _ => compiler_main(args),
     }
+}
+
+#[cfg(not(target_os = "kandelo"))]
+fn cargo_main(_args: &[String]) -> Result<i32> {
+    Err("the installed Cargo entry point is available inside Kandelo".into())
+}
+
+#[cfg(target_os = "kandelo")]
+fn cargo_main(args: &[String]) -> Result<i32> {
+    sdk_cargo::run(args)
 }
 
 #[cfg(any(target_os = "kandelo", test))]
@@ -104,6 +124,9 @@ fn run_compiler(compiler: &str, args: &[String]) -> Result<i32> {
     use std::process::Command;
 
     let compiler_args = compiler_arguments(args);
+    if sdk_cargo::verbose_version_query(args) {
+        return sdk_cargo::compiler_version(compiler, &compiler_args);
+    }
     // Queries and metadata-only compiles need no post-link work. Replace
     // this wrapper so they do not keep an extra process and fork snapshot.
     if !emits_link(args) {
@@ -193,19 +216,29 @@ fn run_compiler(compiler: &str, args: &[String]) -> Result<i32> {
         if !bytes.starts_with(b"\0asm\x01\0\0\0") {
             continue;
         }
-        if imports_fork(&bytes)? {
-            let status = Command::new("wasm-fork-instrument")
-                .arg(&output)
-                .arg("-o")
-                .arg(&output)
-                .status()
-                .map_err(|error| format!("starting wasm-fork-instrument: {error}"))?;
-            if !status.success() {
-                return Err(format!(
-                    "preparing Rust executable {} failed ({status})",
-                    output.display()
-                ));
-            }
+        // Every linked Wasm output needs the same preparation, including
+        // non-fork executables that capture backtraces. Missing DWARF is
+        // normal for release builds; invalid debug metadata is an error.
+        let status = Command::new("wasm-fork-instrument")
+            .arg(&output)
+            .arg("-o")
+            .arg(&output)
+            .args(["--keep-names", "--debug-map-if-present"])
+            .status()
+            .map_err(|error| format!("starting wasm-fork-instrument: {error}"))?;
+        if !status.success() {
+            return Err(format!(
+                "preparing Rust executable {} failed ({status})",
+                output.display()
+            ));
+        }
+        let prepared = std::fs::read(&output)
+            .map_err(|error| format!("reading {}: {error}", output.display()))?;
+        if let Some(stamped) =
+            abi_contract::stamp(&prepared, env!("KANDELO_GUEST_PROGRAM_ABI_DIGEST"))?
+        {
+            std::fs::write(&output, stamped)
+                .map_err(|error| format!("stamping {}: {error}", output.display()))?;
         }
     }
     Ok(0)
@@ -314,25 +347,6 @@ mod tests {
             Some("a b")
         );
     }
-}
-
-#[cfg(target_os = "kandelo")]
-fn imports_fork(bytes: &[u8]) -> Result<bool> {
-    use wasmparser::{Parser, Payload, TypeRef};
-    for payload in Parser::new(0).parse_all(bytes) {
-        if let Payload::ImportSection(section) = payload.map_err(|error| error.to_string())? {
-            for import in section {
-                let import = import.map_err(|error| error.to_string())?;
-                if import.module == "kernel"
-                    && import.name == "kernel_fork"
-                    && matches!(import.ty, TypeRef::Func(_))
-                {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-    Ok(false)
 }
 
 #[cfg(any(target_os = "kandelo", test))]

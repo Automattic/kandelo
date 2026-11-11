@@ -226,7 +226,7 @@ pub enum BlockingRetryTarget {
 /// The kernel only reaches EAGAIN with zero bytes transferred (see
 /// `sys_write`, which returns a short count whenever any byte moved), so
 /// replaying the whole retained request can never write the same byte twice.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PendingVectorIo {
     /// The caller's decoded table, or one internal entry for scalar I/O.
     pub entries: crate::IoBuffer<crate::msghdr::NativeIovec>,

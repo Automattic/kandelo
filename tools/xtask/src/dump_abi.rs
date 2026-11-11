@@ -201,6 +201,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             clipboard_header_out.display()
         );
         println!("abi TS bindings up-to-date: {}", ts_out.display());
+        crate::program_extensions::run(vec!["--check".to_owned()])?;
         return Ok(());
     }
 
@@ -228,6 +229,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     println!("wrote {}", ts_out.display());
     write_file(&host_imports_out, &host_imports)?;
     println!("wrote {}", host_imports_out.display());
+    crate::program_extensions::run(Vec::new())?;
     Ok(())
 }
 
@@ -3959,8 +3961,17 @@ fixedSize: {}, maxCallerSize: {} }},\n",
     }
     out.push_str("];\n\n");
 
+    out.push_str(&format!(
+        "/* Kernel request serving the kandelo.klog.v1 program extension\n\
+         * (kernel-host surface; see shared::extension_requests). */\n\
+         export const EXTENSION_REQUEST_KLOG_V1 = {} as const;\n\n",
+        shared::extension_requests::KLOG_V1
+    ));
     out.push_str("export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {\n");
-    for entry in shared::host_abi::SYSCALL_ARG_DESCRIPTORS {
+    for entry in shared::host_abi::SYSCALL_ARG_DESCRIPTORS
+        .iter()
+        .chain(shared::host_abi::EXTENSION_REQUEST_DESCRIPTORS)
+    {
         out.push_str(&format!("  {}: [\n", entry.syscall_number));
         for desc in entry.args {
             out.push_str(&format!("    {},\n", ts_syscall_arg_desc(desc)));
@@ -4806,6 +4817,10 @@ fn declared_snapshot_sections() -> Sections {
     s.add(Program, "host_intercepted_syscalls", host_intercepted_syscalls());
     s.add(KernelHost, "host_adapter", host_adapter());
     s.add(Program, "syscall_arg_descriptors", syscall_arg_descriptors());
+    // Kernel requests the process worker issues to serve a program extension.
+    // Kernel-host surface: no program marshals them, so they stay out of the
+    // program digest (see `shared::extension_requests`).
+    s.add(KernelHost, "extension_requests", extension_requests());
     s.add(Program, "ioctl_request_contracts", ioctl_request_contracts());
     s.add(Program, "ioctl_request_families", ioctl_request_families());
     s.add(Program, "channel_status_codes", channel_status_codes());
@@ -6860,6 +6875,28 @@ fn syscall_arg_descriptors() -> Value {
         descriptors.insert(entry.syscall_number.to_string(), Value::Array(args));
     }
     Value::Object(descriptors.into_iter().collect())
+}
+
+fn extension_requests() -> Value {
+    let mut requests: JsonMap = BTreeMap::new();
+    requests.insert(
+        "KLOG_V1".into(),
+        json!(shared::extension_requests::KLOG_V1),
+    );
+    requests.insert(
+        "KMSG_CAPACITY_BYTES".into(),
+        json!(shared::extension_requests::KMSG_CAPACITY_BYTES),
+    );
+    let mut descriptors: JsonMap = BTreeMap::new();
+    for entry in shared::host_abi::EXTENSION_REQUEST_DESCRIPTORS {
+        let args = entry.args.iter().map(syscall_arg_desc_json).collect();
+        descriptors.insert(entry.syscall_number.to_string(), Value::Array(args));
+    }
+    requests.insert(
+        "descriptors".into(),
+        Value::Object(descriptors.into_iter().collect()),
+    );
+    Value::Object(requests.into_iter().collect())
 }
 
 fn ioctl_request_contracts() -> Value {

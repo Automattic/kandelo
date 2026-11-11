@@ -2259,6 +2259,10 @@ export const IOCTL_REQUEST_FAMILIES: IoctlRequestFamily[] = [
   { dir: 2, magic: 69, nrFirst: 27, nrLast: 27, direction: "out", fixedSize: null, maxCallerSize: 256 },
 ];
 
+/* Kernel request serving the kandelo.klog.v1 program extension
+* (kernel-host surface; see shared::extension_requests). */
+export const EXTENSION_REQUEST_KLOG_V1 = 600 as const;
+
 export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   1: [
     { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
@@ -2754,5 +2758,8 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   384: [
     { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 }, nullable: true },
     { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 }, nullable: true },
+  ],
+  600: [
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, nullable: true, copyOutLength: { type: "return-value", multiplier: 1, maxValue: 131072 } },
   ],
 };

@@ -15,6 +15,8 @@ use wasm_posix_shared::{Errno, WasmStat};
 use crate::lock::{FileId, KernelFileKind};
 use crate::process::Process;
 
+pub(crate) const PROCFS_DEV: u64 = 0x50;
+
 /// Sentinel host_handle for procfs directory OFDs.
 pub const PROCFS_DIR_HANDLE: i64 = -150;
 
@@ -107,17 +109,44 @@ impl ProcfsEntry {
     }
 }
 
-/// Minimal kernel-owned mount table for tools such as GNU coreutils `df`.
-///
-/// The current kernel has no runtime mount/umount path and does not yet receive
-/// the host VFS mount router's table. Keep this to filesystems owned directly
-/// by the Rust kernel: the root view plus its procfs/devfs/sysfs virtual
-/// filesystems.
-pub const MOUNTS_CONTENT: &[u8] =
-    b"kandelo-root / kandelo-vfs rw 0 0\nproc /proc proc rw,nosuid,nodev,noexec 0 0\ndevfs /dev devfs rw,nosuid 0 0\nsysfs /sys sysfs ro,nosuid,nodev,noexec 0 0\n";
-
-const MOUNTINFO_CONTENT: &[u8] =
-    b"1 0 0:1 / / rw - kandelo-vfs kandelo-root rw\n2 1 0:2 / /proc rw,nosuid,nodev,noexec - proc proc rw,nosuid,nodev,noexec\n3 1 0:3 / /dev rw,nosuid - devfs devfs rw,nosuid\n4 1 0:4 / /sys ro,nosuid,nodev,noexec - sysfs sysfs ro\n";
+/// Render the kernel-owned mounts from the same scratch registry that routes
+/// filesystem operations. Host directory mounts are not yet enumerated here.
+/// Both procfs formats and `/etc/mtab` consume this one view.
+pub fn generate_mounts(mountinfo: bool) -> Result<crate::IoBuffer<u8>, Errno> {
+    let mut content = crate::IoBuffer::try_with_capacity(1024)?;
+    let mut entry = |id: usize, parent: usize, dev: u64, path: &[u8], source: &str,
+                     kind: &str, options: &str| -> Result<(), Errno> {
+        let path = core::str::from_utf8(path).map_err(|_| Errno::EIO)?;
+        if mountinfo {
+            // Use the same device encoding as stat and the guest libc so
+            // readers can join mountinfo records to stat().st_dev.
+            let major = crate::device_id::major(dev);
+            let minor = crate::device_id::minor(dev);
+            // nosuid/nodev/noexec belong to the mount, not the superblock.
+            let super_options = if options.starts_with("ro") { "ro" } else { "rw" };
+            content.try_write_fmt(format_args!(
+                "{id} {parent} {major}:{minor} / {path} {options} - {kind} {source} {super_options}\n"))
+        } else {
+            content.try_write_fmt(format_args!("{source} {path} {kind} {options} 0 0\n"))
+        }
+    };
+    entry(1, 0, crate::rootfs::ROOTFS_DEV, b"/", "kandelo-root", "kandelo-vfs",
+          if crate::rootfs::is_nosuid() { "rw,nosuid" } else { "rw" })?;
+    entry(2, 1, PROCFS_DEV, b"/proc", "proc", "proc", "rw,nosuid,nodev,noexec")?;
+    entry(3, 1, crate::devfs::DEVFS_DEV, b"/dev", "devfs", "devfs", "rw,nosuid")?;
+    entry(4, 1, crate::sysfs::ST_DEV, b"/sys", "sysfs", "sysfs", "ro,nosuid,nodev,noexec")?;
+    for (index, (path, dev, kind)) in crate::tmpfs::mounts().enumerate() {
+        // /dev/shm and exchange sit beneath other mounts, not directly on /.
+        let parent = crate::tmpfs::mounts().enumerate()
+            .filter(|(_, (prefix, _, _))| path.len() > prefix.len()
+                && path.starts_with(prefix) && path[prefix.len()] == b'/')
+            .max_by_key(|(_, (prefix, _, _))| prefix.len())
+            .map(|(index, _)| 5 + index)
+            .unwrap_or(if path.starts_with(b"/dev/") { 3 } else { 1 });
+        entry(5 + index, parent, dev, path, kind, kind, "rw,nosuid")?;
+    }
+    Ok(content)
+}
 
 /// Return the process scope of an entry, if it is under `/proc/<pid>`.
 ///
@@ -581,8 +610,8 @@ fn write_maps_line(buf: &mut crate::IoBuffer<u8>, line: &MapsLine, name_column: 
     let s = if line.shared { 's' } else { 'p' };
     // dev_t decoded as libc's major()/minor() decode it, so the column
     // matches what a program computes from its own fstat.
-    let major = ((line.dev >> 32) & 0xffff_f000) | ((line.dev >> 8) & 0x0fff);
-    let minor = ((line.dev >> 12) & 0xffff_ff00) | (line.dev & 0x00ff);
+    let major = crate::device_id::major(line.dev);
+    let minor = crate::device_id::minor(line.dev);
     buf.try_write_fmt(format_args!("{:08x}-{:08x} {}{}{}{} {:08x} {:02x}:{:02x} {} ",
         line.start, line.end, r, w, x, s, line.offset, major, minor, line.ino))?;
     if let Some(name) = &line.name {
@@ -648,7 +677,7 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
     if entry.is_symlink() && !follow_symlinks {
         let (pid, etype) = entry_ids(entry);
         return WasmStat {
-            st_dev: 0x50,
+            st_dev: PROCFS_DEV,
             st_ino: procfs_ino(pid, etype),
             st_mode: S_IFLNK | 0o777,
             st_nlink: 1,
@@ -669,7 +698,7 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
     if entry.is_dir() {
         let (pid, etype) = entry_ids(entry);
         return WasmStat {
-            st_dev: 0x50,
+            st_dev: PROCFS_DEV,
             st_ino: procfs_ino(pid, etype),
             st_mode: S_IFDIR | 0o555,
             st_nlink: 2,
@@ -690,7 +719,7 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
     // Regular file
     let (pid, etype) = entry_ids(entry);
     WasmStat {
-        st_dev: 0x50,
+        st_dev: PROCFS_DEV,
         st_ino: procfs_ino(pid, etype),
         st_mode: S_IFREG | 0o444,
         st_nlink: 1,
@@ -869,7 +898,7 @@ pub(crate) fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<cr
                 }
             }
         }
-        ProcfsEntry::Mounts => crate::IoBuffer::copy_from(MOUNTS_CONTENT),
+        ProcfsEntry::Mounts => generate_mounts(false),
         // Kernel-wide state, not process-scoped: a shared-mapping writeback
         // loss is data corruption in one process that any operator or program
         // may need to see, so there is no pid to validate here.
@@ -884,11 +913,11 @@ pub(crate) fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<cr
         }
         ProcfsEntry::PidMounts(pid) => {
             validate_pid(proc, *pid)?;
-            crate::IoBuffer::copy_from(MOUNTS_CONTENT)
+            generate_mounts(false)
         }
         ProcfsEntry::PidMountinfo(pid) => {
             validate_pid(proc, *pid)?;
-            crate::IoBuffer::copy_from(MOUNTINFO_CONTENT)
+            generate_mounts(true)
         }
         ProcfsEntry::NetTcp(pid) => {
             if let Some(pid) = pid {
@@ -1653,14 +1682,38 @@ mod tests {
         let proc = Process::new(1);
         let mounts = generate_content(&proc, &ProcfsEntry::Mounts).unwrap();
         let mounts_str = core::str::from_utf8(&mounts).unwrap();
-        assert!(mounts_str.contains("kandelo-root / kandelo-vfs rw 0 0"));
+        assert!(mounts_str.contains("kandelo-root / kandelo-vfs rw"));
         assert!(mounts_str.contains("proc /proc proc rw,nosuid,nodev,noexec 0 0"));
         assert!(mounts_str.contains("devfs /dev devfs rw,nosuid 0 0"));
         assert!(mounts_str.contains("sysfs /sys sysfs ro,nosuid,nodev,noexec 0 0"));
 
+        for path in ["/tmp", "/run", "/dev/shm"] {
+            assert!(mounts_str.contains(&alloc::format!("tmpfs {path} tmpfs rw,nosuid 0 0\n")));
+        }
+        assert!(mounts_str.contains("kandelo-exchange /run/kandelo/exchange kandelo-exchange rw,nosuid 0 0\n"));
+        assert_eq!(mounts_str.lines().count(), 8);
+
         let mountinfo = generate_content(&proc, &ProcfsEntry::PidMountinfo(1)).unwrap();
         let mountinfo_str = core::str::from_utf8(&mountinfo).unwrap();
         assert!(mountinfo_str.contains(" - kandelo-vfs kandelo-root "));
+        assert!(mountinfo_str.starts_with("1 0 0:471040 / / rw"));
+        assert!(mountinfo_str.contains("2 1 0:80 / /proc "));
+        assert!(mountinfo_str.contains("3 1 0:5 / /dev "));
+        assert!(mountinfo_str.contains("4 1 0:82 / /sys "));
+        for (index, (path, dev, _)) in crate::tmpfs::mounts().enumerate() {
+            let line = mountinfo_str.lines().find(|line|
+                line.split_whitespace().nth(4).unwrap().as_bytes() == path).unwrap();
+            let fields: Vec<_> = line.split_whitespace().collect();
+            assert_eq!(fields[0].parse::<usize>().unwrap(), 5 + index);
+            let (major, minor) = fields[2].split_once(':').unwrap();
+            let major: u64 = major.parse().unwrap();
+            let minor: u64 = minor.parse().unwrap();
+            let device = ((major & 0xfffff000) << 32) | ((major & 0xfff) << 8)
+                | ((minor & 0xffffff00) << 12) | (minor & 0xff);
+            assert_eq!(device, dev);
+        }
+        assert!(mountinfo_str.contains("7 3 0:475140 / /dev/shm "));
+        assert!(mountinfo_str.contains("8 6 0:475141 / /run/kandelo/exchange "));
         assert!(mountinfo_str.contains(" - proc proc "));
         assert!(mountinfo_str.contains(" - devfs devfs "));
         assert!(mountinfo_str.contains(" /sys ro,nosuid,nodev,noexec - sysfs sysfs ro\n"));

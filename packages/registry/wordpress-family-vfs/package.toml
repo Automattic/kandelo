@@ -2,7 +2,7 @@ kind = "program"
 name = "wordpress-family-vfs"
 version = "0.1.0"
 kernel_abi = 55
-depends_on = ["lamp@0.1.0", "wordpress@7.0", "service-activity-tools@0.1.0"]
+depends_on = ["lamp@0.1.0", "wordpress@7.0", "service-activity-tools@0.1.0", "sysklogd@2.8.0"]
 
 [source]
 provider = "repository"

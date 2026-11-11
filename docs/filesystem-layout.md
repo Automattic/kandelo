@@ -16,10 +16,11 @@ missing platform capabilities to claim full-system FHS conformance.
 | `/lib` | Libraries required by essential programs, if any; static WebAssembly programs need no invented dynamic loader |
 | `/usr/bin` | Ordinary user commands, language runtimes, development tools, public Kandelo commands and game launchers |
 | `/usr/sbin` | Service daemons and nonessential administration, such as mariadbd, redis-server and php-fpm |
-| `/usr/libexec` | Private executable helpers; game engines, the Rust compiler behind its SDK entry point, and the service control helper |
+| `/usr/libexec` | Private executable helpers; game engines, upstream Cargo and the Rust compiler behind their SDK entry points, and the service control helper |
 | `/usr/lib` | Libraries, runtime modules, npm, Erlang and the private Qt installation tree |
 | `/usr/lib/kandelo/wasm32posix` | Guest SDK sysroot, glue and cross-compilation configuration |
-| `/usr/lib/rustlib` | Matching target specification and prebuilt standard library for the experimental guest Rust compiler |
+| `/usr/lib/rustlib` | Matching target specification, prebuilt standard library and profiler runtime for the guest Rust compiler |
+| `/usr/share/kandelo/rust-sdk` | The experimental Rust SDK's static build-component identity manifest |
 | `/usr/share` | Architecture-independent application data, manuals, terminfo, licenses and demo catalogs |
 | `/usr/local` | Local administrator additions; shipped images may create empty directories but install no files here |
 | `/etc` | Machine configuration, accounts, service definitions and Kandelo demo metadata |

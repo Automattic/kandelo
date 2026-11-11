@@ -1,0 +1,107 @@
+#!/bin/sh
+# The Kandelo exchange handler for a dropped ROM, on every shell machine: it
+# keeps the drop in ~/roms and starts the emulator on its first ROM, so
+# dropping a game, or a folder of them, on the machine plays it. The
+# machine's view brings the display forward when the emulator binds /dev/fb0.
+#
+# WHY it takes every drop and reads contents: ROM collections name files
+# .rom, .bin or nothing at all, and arrive as folders, so no extension rule
+# can pick them out. A drop with no ROM in it goes to exchange-save, exactly
+# as the 99-save catch-all would have handled it.
+#
+# The emulator runs outside any terminal (kxchgd gives handlers /dev/null as
+# stdin), so it reads keys from the machine's keyboard device rather than
+# from a terminal (packages/registry/retro-emulators/frontend/main.c).
+#
+# A dropped ROM replaces the game that is playing: the handler stops the
+# emulator a previous drop or a terminal started (its pid file names it) and
+# waits until it is gone, so the display is free. A display held by another
+# program is not taken; the emulator's own failure (EBUSY on /dev/fb0) is
+# reported as the batch's status.
+batch="$1"
+status() { setfattr -n user.kandelo.status -v "$1" "$batch" 2>/dev/null || true; }
+RUNTIME=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+PIDFILE=$RUNTIME/retro.pid
+LOG=$RUNTIME/retro.log
+
+# A ROM is recognised by its contents (retro-run --identify), not its name:
+# collections name ROMs .rom, .bin or nothing at all, and arrive as folders.
+# Only names that could be a ROM are read, so a dropped photo or archive
+# costs one directory walk. The first ROM in path order is played.
+could_be_rom() {
+    base=${1##*/}
+    case "$base" in
+        .*) return 1 ;;
+        *.*) ;;
+        *) return 0 ;;
+    esac
+    case "$base" in
+        *.[nN][eE][sS]|*.[sS][fF][cC]|*.[sS][mM][cC]|*.[mM][dD]|*.[gG][eE][nN]|*.[sS][mM][dD]) return 0 ;;
+        *.[sS][mM][sS]|*.[gG][gG]|*.[rR][oO][mM]|*.[bB][iI][nN]) return 0 ;;
+    esac
+    return 1
+}
+rom=$(find "$batch" -type f | sort | while IFS= read -r f; do
+    could_be_rom "$f" || continue
+    /usr/bin/retro-run --identify "$f" >/dev/null 2>&1 && { printf '%s\n' "$f"; break; }
+done)
+# Not a game: what any other drop gets.
+[ -n "$rom" ] || exec /usr/libexec/kandelo/exchange-save "$batch"
+
+# The batch is removed when this handler exits, so the drop is kept in
+# ~/roms as it arrived: a file as itself, a folder with what is in it.
+dir="$HOME/roms"
+mkdir -p "$dir" || { status "failed: could not create $dir"; exit 1; }
+for entry in "$batch"/*; do
+    cp -Rf "$entry" "$dir/" || { status "failed: could not store $(basename "$entry") in $dir"; exit 1; }
+done
+path=${rom#"$batch"/}
+name=${rom##*/}
+
+# The game runs as a command in a terminal of its own, typed at the prompt:
+# the user sees what the drop ran, and once the game exits, Up and Enter run
+# it again. kandelo-page-terminal asks the page for that terminal. Where nothing
+# outside the machine opens one (the Node host, or no page taking outputs),
+# the game starts in the background instead, as below.
+quoted=$(printf '%s' "$path" | sed "s/'/'\\\\''/g")
+if /usr/bin/kandelo-page-terminal --display --title "$name" "retro-run ~/roms/'$quoted'" 2>/dev/null; then
+    status "opened a terminal: retro-run ~/roms/$path"
+    exit 0
+fi
+
+old=$(cat "$PIDFILE" 2>/dev/null)
+if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
+    status "stopping the current game"
+    kill -TERM "$old"
+    tries=0
+    while kill -0 "$old" 2>/dev/null; do
+        tries=$((tries + 1))
+        [ "$tries" -le 50 ] || { status "failed: the running emulator (pid $old) did not stop"; exit 1; }
+        sleep 0.1
+    done
+fi
+rm -f "$PIDFILE"
+
+status "starting $name"
+/usr/bin/retro-run "$dir/$path" </dev/null >"$LOG" 2>&1 &
+pid=$!
+# The emulator publishes its pid once it holds the display, sound and
+# keyboard. The first start of a core fetches it, which can take a while.
+tries=0
+while :; do
+    [ "$(cat "$PIDFILE" 2>/dev/null)" = "$pid" ] && { status "playing $name"; exit 0; }
+    if ! kill -0 "$pid" 2>/dev/null; then
+        # The emulator's own lines start with "[" and its key list with
+        # "Keys for" or two spaces; the last other line is the error.
+        why=$(grep -v -e '^\[' -e '^Keys for ' -e '^  ' "$LOG" | tail -n 1)
+        [ -n "$why" ] || why=$(tail -n 1 "$LOG")
+        case "$why" in
+            "open /dev/fb0: "*busy*) why="another program holds the display; stop it and drop the ROM again" ;;
+        esac
+        status "failed: $why"
+        exit 1
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -le 1200 ] || { status "failed: the emulator did not start within 2 minutes (see $LOG)"; exit 1; }
+    sleep 0.1
+done

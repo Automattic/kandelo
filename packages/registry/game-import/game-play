@@ -1,0 +1,5 @@
+#!/bin/sh
+# `game-play DIRECTORY|ZIP`: run the game importer (game-import.py) on a
+# path and start the matching player.
+export PYTHONHOME=/usr
+exec /usr/bin/python3 /usr/libexec/kandelo/game-import.py play "$@"

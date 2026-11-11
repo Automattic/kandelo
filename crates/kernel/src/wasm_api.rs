@@ -59,7 +59,6 @@ use crate::lifecycle::{
 
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
-    fn host_debug_log(ptr: *const u8, len: u32);
     // The handle-only filesystem contract. Every one of these resolves exactly
     // one path component relative to a directory handle the host previously
     // issued; the kernel owns namespace resolution, mount routing, `..`, and
@@ -2360,7 +2359,10 @@ pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32)
         }
         crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
     }) {
-        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
+        Ok(count) => {
+            crate::rootfs::record_root_image_loaded(&mut host, count);
+            i32::try_from(count).unwrap_or(i32::MAX)
+        }
         Err(error) => -(error as i32),
     }
 }
@@ -2410,7 +2412,10 @@ pub extern "C" fn kernel_rootfs_load_persistent_image(
             crate::rootfs::ByteReq::Image { offset } => host.image_read(bytes, offset),
         },
     ) {
-        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
+        Ok(count) => {
+            crate::rootfs::record_root_image_loaded(&mut host, count);
+            i32::try_from(count).unwrap_or(i32::MAX)
+        }
         Err(error) => -(error as i32),
     }
 }
@@ -5623,7 +5628,8 @@ pub extern "C" fn kernel_handle_guest_io(scratch_ptr: usize, capacity: u32,
         retry_token, ChannelTransport::Raw)
 }
 
-fn guest_io_result(result: Result<syscalls::GuestIoOutcome, Errno>) -> ChannelDispatchOutcome {
+fn guest_io_result(result: Result<syscalls::GuestIoOutcome, Errno>, tid: u32,
+    syscall: u32, fd: i32) -> ChannelDispatchOutcome {
     match result {
         Ok(syscalls::GuestIoOutcome::Complete(n)) => ChannelDispatchOutcome::narrow(n as i32),
         Ok(syscalls::GuestIoOutcome::EntropyPending(token)) => ChannelDispatchOutcome {
@@ -5631,6 +5637,19 @@ fn guest_io_result(result: Result<syscalls::GuestIoOutcome, Errno>) -> ChannelDi
             channel_errno: crate::entropy_read::ENTROPY_READ_PENDING as u32,
             export_result: crate::entropy_read::ENTROPY_READ_PENDING,
         },
+        Ok(syscalls::GuestIoOutcome::UnixDatagramWrite(request)) => {
+            // Process/lock borrows in the caller have reached their last use.
+            // Keep the active exact-OFD binding installed through completion.
+            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+            let pid = table.current_pid();
+            let mut host = WasmHostIO;
+            let result = syscalls::complete_guest_unix_datagram_write(
+                table, pid, &mut host, tid, syscall, fd, request);
+            if let Some((proc, locks)) = table.process_and_advisory_locks(pid) {
+                let _ = deliver_pending_signals_for_tid_with_locks(proc, locks, &mut host, tid);
+            }
+            guest_io_result(result, tid, syscall, fd)
+        }
         Err(error) => ChannelDispatchOutcome::narrow(-(error as i32)),
     }
 }
@@ -5644,11 +5663,11 @@ fn channel_guest_io(syscall: u32, args: &[i64; 6]) -> ChannelDispatchOutcome {
     let address = unsigned(args[if random { 0 } else { 1 }]);
     let length = unsigned(args[if random { 1 } else { 2 }]);
     let mut host = WasmHostIO;
-    let result = guest_io_result(syscalls::sys_guest_io(proc, &mut host, locks, tid,
-        syscall, args[0] as i32, address, length, args[3]));
+    let result = syscalls::sys_guest_io(proc, &mut host, locks, tid,
+        syscall, args[0] as i32, address, length, args[3]);
     syscalls::drain_deferred_scm_rights_releases(locks, &mut host);
     let _ = deliver_pending_signals_for_tid_with_locks(proc, locks, &mut host, tid);
-    result
+    guest_io_result(result, tid, syscall, args[0] as i32)
 }
 
 /// Dispatch one request whose guest set `REQUEST_FLAG_OPAQUE_RECORD`.
@@ -5922,6 +5941,33 @@ const _: extern "C" fn(u32, u32, u32, *mut i32, u32) -> i32 = kernel_socketpair;
 const _: extern "C" fn(i32, u32, u32, *mut u8, u32, *mut u32, u32) -> i32 = kernel_getsockopt;
 const _: extern "C" fn(*mut u8, u32, u32, i32) -> i32 = kernel_poll;
 const _: extern "C" fn(i32, *mut u8, u32, *mut u8, u32, *mut u8, u32, i32) -> i32 = kernel_select;
+
+/// Refuse syscall `nr`, which has no implementation, with `ENOSYS`, and record
+/// the refusal in the kernel log (`/dev/kmsg`, `klogctl`) so the gap is
+/// visible to whoever is assembling an image or porting software.
+///
+/// Only the dispatcher arms that have no implementation call this. An
+/// implemented syscall that returns `ENOSYS` for an argument it rejects does
+/// not, and neither do `execve`/`fork` below: the host answers those before
+/// they reach the kernel, so the `ENOSYS` there is a guard and not a gap.
+/// The log call is on this refusal path only, never on a path that succeeds.
+fn refuse_unimplemented_syscall(nr: u32) -> i32 {
+    let mut host = WasmHostIO;
+    let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+    crate::kmsg::klog_unimplemented_syscall(&mut host, pid, nr);
+    -(Errno::ENOSYS as i32)
+}
+
+/// [`refuse_unimplemented_syscall`] for a number the dispatcher has no arm
+/// for at all. A guest picks the number, so these share one rate-limit slot
+/// instead of one apiece: a sweep of distinct numbers must not write enough
+/// records to push the boot log out of the ring.
+fn refuse_unknown_syscall(nr: u32) -> i32 {
+    let mut host = WasmHostIO;
+    let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+    crate::kmsg::klog_unknown_syscall(&mut host, pid, nr);
+    -(Errno::ENOSYS as i32)
+}
 
 /// Dispatch a syscall by number with raw musl arguments.
 ///
@@ -6467,6 +6513,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         74 => kernel_umask(a1 as u32) as i32, // SYS_UMASK
         75 => kernel_uname(channel_mut_ptr!(0, u8), 390), // SYS_UNAME (musl passes 1 arg; struct utsname = 6x65 = 390)
         76 => kernel_sysconf(a1) as i32,                  // SYS_SYSCONF
+        // `kandelo.klog.v1` (klogctl(action, buf, len)), issued by the process
+        // worker for a program that imports the extension. The buffer is
+        // nullable: the size and clear actions pass none. Musl's own
+        // SYS_SYSLOG (304) is not a base syscall and reaches the
+        // unimplemented arm, which answers ENOSYS.
+        wasm_posix_shared::extension_requests::KLOG_V1 => {
+            kernel_syslog(a1 as i32, channel_mut_ptr!(1, u8), a3 as i32)
+        }
         120 => kernel_getrandom(channel_mut_ptr!(0, u8), process_size_u32!(1), a3 as u32), // SYS_GETRANDOM
         109 => {
             // SYS_REALPATH: (path, buf, buf_len)
@@ -7016,7 +7070,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         }
         // clock_settime — always return EPERM (cannot set clock in Wasm sandbox)
         226 => -(Errno::EPERM as i32), // SYS_CLOCK_SETTIME
-        // sched_yield — no-op in Wasm (single-threaded per worker)
+        // sched_yield — a legitimate no-op: POSIX only asks for 0 on success, and
+        // each process thread is its own host Worker, so the host scheduler
+        // already interleaves them. Audited as honest; see docs/posix-status.md.
         229 => 0, // SYS_SCHED_YIELD
 
         // statx — musl: (dirfd, path, flags, mask, statxbuf)
@@ -7688,7 +7744,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let len = channel_cstr_len!(p);
             kernel_lchown(p, len, a2 as u32, a3 as u32)
         }
-        307 => 0, // SYS_FADVISE64: advisory, always succeed
+        // posix_fadvise advice "may be ignored entirely" (POSIX), so succeeding
+        // without acting on it is the correct implementation, not a stub.
+        // Audited as honest; see docs/posix-status.md.
+        307 => 0, // SYS_FADVISE64: advice is permitted to be ignored
 
         // POSIX timers
         326 => kernel_timer_create(
@@ -7913,7 +7972,15 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         ),
 
         // -- Memory/sync stubs --
-        257 => 0, // SYS_MEMBARRIER: no-op (single-threaded per process in Wasm)
+        // membarrier: QUERY reports an empty command mask and every barrier
+        // command is EINVAL. Threads are real Workers over one shared memory, so
+        // the old "single-threaded" no-op was false, and answering 0 also hid the
+        // failure musl's signal-based fallback keys on. See sys_membarrier and
+        // docs/posix-status.md.
+        257 => match syscalls::sys_membarrier(a1 as i32, a2 as i32) {
+            Ok(mask) => mask,
+            Err(e) => -(e as i32),
+        }, // SYS_MEMBARRIER
         273 => match sync_rootfs_mappings_and_persistence() {
             Ok(()) => 0,
             Err(error) => -(error as i32),
@@ -7950,10 +8017,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         } // SYS_MSYNC
 
         // -- Process stubs --
-        287 => 0, // SYS_PERSONALITY: return 0 (current personality, PER_LINUX)
+        // personality(2) is Linux-only and absent from POSIX. Kandelo has no
+        // execution-domain concept to report, and answering 0 would assert
+        // PER_LINUX, a compatibility claim this platform does not make.
+        287 => refuse_unimplemented_syscall(nr), // SYS_PERSONALITY
 
         // -- Filesystem --
-        304 => 0, // SYS_SYSLOG (kernel log): no-op (not the libc syslog)
         306 => {
             // SYS_RENAMEAT2: (olddirfd, oldpath, newdirfd, newpath, flags)
             // Ignore flags (RENAME_NOREPLACE, RENAME_EXCHANGE) — delegate to renameat
@@ -7986,7 +8055,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 result
             }
         }
-        323 => 0, // SYS_SYNC_FILE_RANGE: advisory, no-op
+        // sync_file_range carries durability semantics (a caller told 0 believes
+        // the range reached storage), so unlike fadvise it cannot be ignored.
+        // Syncing the whole file is a correct, conservative implementation of
+        // syncing a range: fsync provides at least what the range call promises.
+        // The (offset, nbytes, flags) arguments are deliberately not interpreted,
+        // so no marshalling is added; the cost is over-syncing and not rejecting
+        // flag bits Linux would call EINVAL.
+        323 => kernel_fsync(a1), // SYS_SYNC_FILE_RANGE: (fd, offset, nbytes, flags)
         325 => {
             // SYS_GETCPU: (cpu*, node*, unused)
             let cpu_ptr = channel_mut_ptr!(0, u32);
@@ -8108,9 +8184,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         // events, which defeats the polling fallback in Qt's
         // QFileSystemWatcher and glib's GFileMonitor — both only fall
         // back when inotify_init fails. ---
-        247 | 381 => -(Errno::ENOSYS as i32), // SYS_INOTIFY_INIT1 / SYS_INOTIFY_INIT
-        248 => -(Errno::ENOSYS as i32),       // SYS_INOTIFY_ADD_WATCH
-        249 => -(Errno::ENOSYS as i32),       // SYS_INOTIFY_RM_WATCH
+        // Each is reported to the kernel log (`dmesg`) as it is refused.
+        247..=249 | 381 => refuse_unimplemented_syscall(nr), // SYS_INOTIFY_INIT1 / ADD_WATCH / RM_WATCH / INIT
 
         // --- mknod/mknodat: create regular files and FIFOs ---
         // S_IFIFO nodes are real named pipes (see `crate::fifo`); other node
@@ -8577,11 +8652,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         | 348..=349
         | 362..=369
         | 373..=376 => {
-            // Remaining stubs: return ENOSYS
-            -(Errno::ENOSYS as i32)
+            // Remaining stubs: return ENOSYS, and say so in the kernel log.
+            refuse_unimplemented_syscall(nr)
         }
 
-        _ => -(Errno::ENOSYS as i32),
+        // A number with no handler and no entry in any table: reported, but
+        // through one shared rate-limit slot (see `refuse_unknown_syscall`).
+        _ => refuse_unknown_syscall(nr),
     }
 }
 
@@ -9888,12 +9965,16 @@ fn channel_read(fd: i32, buf: &mut [u8]) -> i32 {
 fn channel_write(fd: i32, buf: &[u8]) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_write(proc, &mut host, fd, buf) {
-        Ok(n) => n as i32,
-        Err(e) => -(e as i32),
-    };
+    let result = syscalls::sys_write(proc, &mut host, fd, buf);
+    // `write()` on a connected datagram socket *is* `send()`, so it owes the
+    // same machine-wide retry rather than reporting a reachable peer refused.
+    let unix_dgram_retry =
+        needs_cross_process_unix_dgram_retry(proc, fd, result == Err(Errno::ECONNREFUSED));
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
+    errno_encoded(
+        complete_cross_process_unix_dgram_send(unix_dgram_retry, fd, buf, 0, None)
+            .unwrap_or(result),
+    )
 }
 
 /// Seek within a file. The 64-bit offset is passed as two 32-bit halves
@@ -9984,6 +10065,10 @@ fn execute_transfer_io_for_task(
     // ordinary channel dispatch. write_operation_budget, directed signals,
     // and SCM_RIGHTS cleanup must see the actual issuing TID, not ambient
     // state from the preceding mailbox.
+    // A large `write()` reaches the same `sys_write` as the channel-sized one,
+    // so a refused AF_UNIX datagram owes the same machine-wide retry here.
+    // Buffer size must not change which peers a socket can reach.
+    let mut unix_dgram_retry = false;
     let result = (|| {
         let (proc, advisory_locks) = table
             .current_process_and_advisory_locks()
@@ -10013,12 +10098,52 @@ fn execute_transfer_io_for_task(
                 result = Err(error);
             }
         }
+        unix_dgram_retry = matches!(
+            crate::transfer::io_operation_for_syscall(original_syscall),
+            Ok(TransferIoOperation::Write)
+        ) && needs_cross_process_unix_dgram_retry(
+            proc,
+            fd,
+            result == Err(Errno::ECONNREFUSED),
+        );
         proc.blocked_retries.clear_active();
         proc.blocked_retries.clear_dispatch();
         syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
         let _ = deliver_pending_signals_for_tid_with_locks(proc, advisory_locks, &mut host, tid);
         result
     })();
+    // This function already holds a live `&mut ProcessTable`, so it completes
+    // the retry through that borrow rather than re-deriving a second one from
+    // the global `UnsafeCell`. The closure's `Process` references above have
+    // reached their last use.
+    let result = if unix_dgram_retry {
+        let mut host = WasmHostIO;
+        let mut retried =
+            syscalls::cross_process_unix_dgram_send(table, pid, &mut host, fd, bytes, 0, None);
+        if let Some((proc, advisory_locks)) = table.process_and_advisory_locks(pid) {
+            // A full queue in the receiving process must park this caller
+            // exactly as a full local one does. The binding is keyed by tid
+            // and is independent of the active/dispatch state the closure
+            // above already cleared.
+            if retried == Err(Errno::EAGAIN) {
+                if let Err(error) = syscalls::ensure_blocking_retry_ofd_binding(
+                    proc,
+                    advisory_locks,
+                    &mut host,
+                    tid,
+                    original_syscall,
+                    fd,
+                    None,
+                ) {
+                    retried = Err(error);
+                }
+            }
+            let _ = deliver_pending_signals_for_tid_with_locks(proc, advisory_locks, &mut host, tid);
+        }
+        retried
+    } else {
+        result
+    };
 
     // All ordinary success and errno paths consume this one-shot task
     // authority. A host-import exception traps the Wasm call before cleanup;
@@ -12774,8 +12899,20 @@ pub fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) -> i32 {
         Err(Errno::ECONNREFUSED) if addr_len >= 3 => {
             let family = u16::from_le_bytes([addr[0], addr[1]]);
             if family == 1 {
-                // AF_UNIX — try cross-process connect
-                match cross_process_unix_connect(table, pid, &mut host, fd, addr) {
+                // AF_UNIX — try cross-process connect. Datagram and stream
+                // associations are different mechanisms: a datagram records
+                // the foreign endpoint it will send to, while a stream builds
+                // a global pipe pair and queues an accept. Dispatch on the
+                // socket rather than reinterpreting one as the other.
+                let datagram = table
+                    .get(pid)
+                    .is_some_and(|proc| syscalls::unix_datagram_socket_index(proc, fd).is_some());
+                let outcome = if datagram {
+                    syscalls::cross_process_unix_dgram_connect(table, pid, &mut host, fd, addr)
+                } else {
+                    cross_process_unix_connect(table, pid, &mut host, fd, addr)
+                };
+                match outcome {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
                 }
@@ -13223,6 +13360,58 @@ fn cross_process_unix_connect(
     Ok(())
 }
 
+/// Whether a refused send should be retried machine-wide, decided while the
+/// sender is still borrowed.
+///
+/// Only an AF_UNIX datagram socket that was refused qualifies: the retry
+/// re-validates the destination and reports `ECONNREFUSED` again for a peer
+/// the process-local path had already decided, so this gate costs one
+/// descriptor lookup and never changes an accepted send.
+fn needs_cross_process_unix_dgram_retry(proc: &Process, fd: i32, refused: bool) -> bool {
+    refused && syscalls::unix_datagram_socket_index(proc, fd).is_some()
+}
+
+/// Finish a refused AF_UNIX datagram send machine-wide, or `None` when no
+/// retry was warranted and the caller keeps its own result.
+///
+/// WHY the two-phase shape: `get_process*()` returns mutable references backed
+/// by the global `UnsafeCell`, so re-entering `PROCESS_TABLE` while one is
+/// live could alias the sender. Callers therefore decide the retry from
+/// borrowed state and invoke this helper after that reference's last use.
+///
+/// A reliable datagram send can raise SIGPIPE for a read-shut peer, and the
+/// caller's own signal-delivery pass already ran before this point, so this
+/// function runs its own.
+fn complete_cross_process_unix_dgram_send(
+    retry: bool,
+    fd: i32,
+    buf: &[u8],
+    flags: u32,
+    addr: Option<&[u8]>,
+) -> Option<Result<usize, Errno>> {
+    if !retry {
+        return None;
+    }
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let pid = table.current_pid();
+    let mut host = WasmHostIO;
+    let result =
+        syscalls::cross_process_unix_dgram_send(table, pid, &mut host, fd, buf, flags, addr);
+    if let Some((proc, advisory_locks)) = table.process_and_advisory_locks(pid) {
+        deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    }
+    Some(result)
+}
+
+/// Collapse a syscall result into the negative-errno convention the exported
+/// wrappers return.
+fn errno_encoded(result: Result<usize, Errno>) -> i32 {
+    match result {
+        Ok(n) => n as i32,
+        Err(e) => -(e as i32),
+    }
+}
+
 /// Finish a machine-local IPv4 UDP send after all direct references into the
 /// process table have reached their last use.
 ///
@@ -13317,9 +13506,15 @@ pub extern "C" fn kernel_send(fd: i32, buf_ptr: *const u8, buf_len: u32, flags: 
     let cross_process_udp = (result >= 0)
         .then(|| syscalls::cross_process_loopback_udp_route(proc, &mut host, fd, None))
         .flatten();
+    let unix_dgram_retry = needs_cross_process_unix_dgram_retry(
+        proc,
+        fd,
+        result == -(Errno::ECONNREFUSED as i32),
+    );
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     complete_cross_process_loopback_udp(cross_process_udp, buf);
-    result
+    complete_cross_process_unix_dgram_send(unix_dgram_retry, fd, buf, flags, None)
+        .map_or(result, errno_encoded)
 }
 
 /// Receive data from a socket. Returns bytes received or negative errno.
@@ -13825,9 +14020,21 @@ pub fn kernel_sendto(
             )
         })
         .flatten();
+    let unix_dgram_retry = needs_cross_process_unix_dgram_retry(
+        proc,
+        fd,
+        result == -(Errno::ECONNREFUSED as i32),
+    );
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     complete_cross_process_loopback_udp(cross_process_udp, buf);
-    result
+    complete_cross_process_unix_dgram_send(
+        unix_dgram_retry,
+        fd,
+        buf,
+        flags,
+        (!addr.is_empty()).then_some(addr),
+    )
+    .map_or(result, errno_encoded)
 }
 
 /// Receive data with sender address. Returns bytes received or negative errno.
@@ -14181,6 +14388,45 @@ pub extern "C" fn kernel_uname(buf_ptr: *mut u8, buf_len: u32) -> i32 {
     result
 }
 
+/// `klogctl`: read or discard kernel log records.
+///
+/// Returns the bytes copied for a read action, a byte count for a size
+/// action, 0 for a bare clear, or a negative errno.
+///
+/// Not a Wasm export: the libc glue reaches it through the syscall channel's
+/// dispatch table, and no host path calls it, so exporting it would only widen
+/// the kernel's surface.
+///
+/// `buf_ptr` is either null or the start of `len` writable bytes of channel
+/// scratch whose extent `channel_mut_ptr!` has already proved at the dispatch
+/// site; this is the same contract every other pointer-taking arm here has.
+pub fn kernel_syslog(action: i32, buf_ptr: *mut u8, len: i32) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    // `None` means the caller supplied no usable buffer: a negative length,
+    // which is not a size, or a null pointer for an argument it left out. The
+    // read actions refuse that; the size and clear actions never look.
+    // A zero length gets a valid empty slice instead of a null pointer,
+    // because Rust requires a non-null aligned address even for an empty
+    // borrow, and because the channel canonicalizes an empty borrow to the
+    // scratch allocation's start rather than passing the caller's own null.
+    let mut empty: [u8; 0] = [];
+    let buf = if len < 0 || buf_ptr.is_null() {
+        None
+    } else if len == 0 {
+        Some(&mut empty[..])
+    } else {
+        Some(unsafe { core::slice::from_raw_parts_mut(buf_ptr, len as usize) })
+    };
+    let uid = syscalls::sys_geteuid(proc);
+    let result = match syscalls::sys_syslog(action, buf, uid) {
+        Ok(value) => value,
+        Err(e) => -(e as i32),
+    };
+    let mut host = WasmHostIO;
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
 /// Get configurable system variables. Returns the value on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_sysconf(name: i32) -> i64 {
@@ -14321,8 +14567,8 @@ fn channel_vector_io(
     let mut host = WasmHostIO;
 
     let result = match caller_pointer_width_byte(pointer_width) {
-        Err(error) => ChannelDispatchOutcome::narrow(-(error as i32)),
-        Ok(width) => match syscalls::sys_vector_io(
+        Err(error) => Err(error),
+        Ok(width) => syscalls::sys_vector_io(
             proc,
             &mut host,
             advisory_locks,
@@ -14333,15 +14579,12 @@ fn channel_vector_io(
             iovcnt,
             width,
             kind,
-        ) {
-            Ok(outcome) => guest_io_result(Ok(outcome)),
-            Err(error) => ChannelDispatchOutcome::narrow(-(error as i32)),
-        },
+        ),
     };
 
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
+    guest_io_result(result, tid, syscall_nr, fd)
 }
 
 /// writev -- gather the caller's buffers and write them as one operation.
@@ -14466,7 +14709,7 @@ fn kernel_sendfile_with_count(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, coun
 
 /// statx -- extended file stat.
 /// Delegates to fstatat and fills the statx buffer from WasmStat.
-/// statx struct layout: we write a simplified version compatible with musl expectations.
+/// Serializes Kandelo's fixed-width statx layout for both guest data models.
 /// Returns 0 on success, negative errno on error.
 pub fn kernel_statx(
     dirfd: i32,
@@ -14482,48 +14725,11 @@ pub fn kernel_statx(
 
     let result = match syscalls::sys_statx(proc, &mut host, dirfd, path, flags, mask) {
         Ok(st) => {
-            // Fill statx struct (256 bytes)
-            // We fill the key fields that musl expects
             let buf = unsafe { slice::from_raw_parts_mut(statx_ptr, 256) };
-            // Zero out first
-            for b in buf.iter_mut() {
-                *b = 0;
+            match crate::process_wire::write_statx(buf, &st) {
+                Ok(()) => 0,
+                Err(error) => -(error as i32),
             }
-            // stx_mask (u32 @ 0): STATX_BASIC_STATS = 0x07ff
-            buf[0..4].copy_from_slice(&0x07ffu32.to_le_bytes());
-            // stx_blksize (u32 @ 4): default 4096
-            buf[4..8].copy_from_slice(&4096u32.to_le_bytes());
-            // stx_attributes (u64 @ 8): 0
-            // stx_nlink (u32 @ 16)
-            buf[16..20].copy_from_slice(&st.st_nlink.to_le_bytes());
-            // stx_uid (u32 @ 20)
-            buf[20..24].copy_from_slice(&st.st_uid.to_le_bytes());
-            // stx_gid (u32 @ 24)
-            buf[24..28].copy_from_slice(&st.st_gid.to_le_bytes());
-            // stx_mode (u16 @ 28)
-            buf[28..30].copy_from_slice(&(st.st_mode as u16).to_le_bytes());
-            // stx_ino (u64 @ 32)
-            buf[32..40].copy_from_slice(&st.st_ino.to_le_bytes());
-            // stx_size (u64 @ 40)
-            buf[40..48].copy_from_slice(&st.st_size.to_le_bytes());
-            // stx_blocks (u64 @ 48): size / 512
-            let blocks = (st.st_size + 511) / 512;
-            buf[48..56].copy_from_slice(&blocks.to_le_bytes());
-            // stx_attributes_mask (u64 @ 56): 0
-            // stx_atime (statx_timestamp @ 64): tv_sec(i64) + tv_nsec(u32) + pad(i32) = 16 bytes
-            buf[64..72].copy_from_slice(&st.st_atime_sec.to_le_bytes());
-            buf[72..76].copy_from_slice(&st.st_atime_nsec.to_le_bytes());
-            // stx_btime (@ 80): 0 (birth time not tracked)
-            // stx_ctime (@ 96)
-            buf[96..104].copy_from_slice(&st.st_ctime_sec.to_le_bytes());
-            buf[104..108].copy_from_slice(&st.st_ctime_nsec.to_le_bytes());
-            // stx_mtime (@ 112)
-            buf[112..120].copy_from_slice(&st.st_mtime_sec.to_le_bytes());
-            buf[120..124].copy_from_slice(&st.st_mtime_nsec.to_le_bytes());
-            // stx_rdev_major (u32 @ 128), stx_rdev_minor (u32 @ 132)
-            // stx_dev_major (u32 @ 136), stx_dev_minor (u32 @ 140)
-            buf[136..140].copy_from_slice(&(st.st_dev as u32).to_le_bytes());
-            0
         }
         Err(e) => -(e as i32),
     };

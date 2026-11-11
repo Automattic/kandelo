@@ -7,6 +7,50 @@ import { ensureDirRecursive, writeVfsFile } from "../../images/vfs/scripts/vfs-i
 const decode = (fs: KandeloImageFs, path: string) => new TextDecoder().decode(fs.readFile(path));
 
 describe("image-owned service activities", () => {
+  it("supervises a syslog daemon the activities can log to, without letting it block boot", () => {
+    // Logging is infrastructure, not an activity: no port, no page, and it has
+    // to be up before whatever activity is enabled starts talking to it.
+    // `machine` is what kandelo-init always starts, so waiting for it there is
+    // what makes it run on every boot whichever activity is selected.
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/etc/dinit.d");
+    writeVfsFile(fs, "/etc/dinit.d/web-php", "type = internal\n");
+    // The daemon requires the image's own config; a real product inherits it
+    // from the rootfs, which declares it in MANIFEST.
+    writeVfsFile(fs, "/etc/syslog.conf", "*.info\t\t\t-/var/log/messages\n");
+    installServiceActivities(
+      fs,
+      [{ target: "web-php", port: 8080 }],
+      new Uint8Array([0]),
+      "",
+      new TextEncoder().encode("exact syslogd bytes"),
+    );
+
+    expect(decode(fs, "/usr/sbin/syslogd")).toBe("exact syslogd bytes");
+    expect(fs.stat("/usr/sbin/syslogd").mode & 0o7777).toBe(0o755);
+    const service = decode(fs, "/etc/dinit.d/syslogd");
+    expect(service).toContain("/usr/sbin/syslogd");
+    // -F keeps it in the foreground, which dinit needs to supervise it.
+    expect(service).toContain("-F");
+
+    // waits-for, not depends-on: a machine whose logging failed should still
+    // serve its pages. Losing the log is worth reporting, not worth refusing
+    // to boot.
+    const machine = decode(fs, "/etc/dinit.d/machine");
+    expect(machine).toContain("waits-for = syslogd");
+    expect(machine).not.toContain("depends-on = syslogd");
+
+    // Each activity waits for it too, not just `machine`. kandelo-init passes
+    // both as dinit targets, so they start in parallel; without this an
+    // activity can log before the daemon has bound /dev/log and lose exactly
+    // the early messages that explain a failed start.
+    expect(decode(fs, "/etc/dinit.d/web-php")).toContain("waits-for = syslogd");
+
+    // It is not offered as something a user can switch between.
+    expect(JSON.parse(decode(fs, "/etc/kandelo/services.json")).services.map((s: {id: string}) => s.id))
+      .toEqual(["web-php"]);
+  });
+
   it("keeps the supervisor independent and separates current service state from boot enablement", () => {
     const fs = KandeloImageFs.create();
     ensureDirRecursive(fs, "/etc/dinit.d");

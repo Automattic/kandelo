@@ -1,5 +1,8 @@
 script_path = "packages/registry/fbdoom/build-fbdoom.sh"
 inputs = [
+  "packages/registry/fbdoom/doom-launch",
+  "packages/registry/fbdoom/doom-load-wad",
+  "packages/registry/fbdoom/fbdoom-wrapper",
   "packages/registry/fbdoom/doom-activity",
   "packages/registry/fbdoom/build-fbdoom.sh",
   "packages/registry/fbdoom/patches",
@@ -8,7 +11,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 17
+revision = 18
 
 [[git_inputs]]
 name       = "chocolate_doom"

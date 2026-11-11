@@ -854,6 +854,18 @@ impl ProcessTable {
         self.remove_process_inner(pid, true, io)
     }
 
+    /// Make the next allocation hand out `pid` again, so a test can observe
+    /// what a process that reuses a departed pid does.
+    ///
+    /// WHY: `allocate_task_id` only ever moves `next_task_id` forward, so a
+    /// pid is reused in practice after the sequence wraps at `MAX_TASK_ID` --
+    /// reachable on a long-lived machine, but not constructible in a test.
+    /// Nothing outside tests may rewind identity allocation.
+    #[cfg(test)]
+    pub fn force_next_task_id(&mut self, pid: u32) {
+        self.next_task_id = pid;
+    }
+
     #[cfg(test)]
     pub fn remove_process(&mut self, pid: u32) -> Option<RemoveProcessResult> {
         let mut io = CollectedRemovalIo::default();
@@ -1463,6 +1475,33 @@ impl ProcessTable {
             }
         });
         Some((caller?, peers, &mut self.advisory_locks))
+    }
+
+    /// Split the live records into one addressed process and its peers.
+    ///
+    /// Same disjointness as `current_process_peers_and_locks`, addressed by
+    /// pid rather than by the channel dispatch binding. Production readiness
+    /// checks reach `peers` through that channel-bound accessor; this one
+    /// exists so a test can drive the same `sys_poll_with_peers` entry point
+    /// without installing a dispatch binding.
+    #[cfg(test)]
+    pub fn process_and_peers(
+        &mut self,
+        pid: u32,
+    ) -> Option<(&mut Process, Vec<&mut Process>)> {
+        if pid == SYNTHETIC_INIT_PID {
+            return None;
+        }
+        let mut addressed = None;
+        let mut peers = Vec::new();
+        self.processes.for_each_mut(|proc| {
+            if proc.pid == pid {
+                addressed = Some(proc);
+            } else {
+                peers.push(proc);
+            }
+        });
+        Some((addressed?, peers))
     }
 
     /// Borrow an addressed process and the lock manager as disjoint fields.

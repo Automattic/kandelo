@@ -56,8 +56,10 @@ test("guest Cargo builds and runs a workspace with a build script on a persisten
     const lazyUrlMap = Object.fromEntries(assets.map(asset => [asset.url, origin + new URL(asset.url).pathname]));
     await page.goto(new URL("/trap-signal-test.html", baseURL).href);
     const modulePath = fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts", import.meta.url));
-    const results = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, lazyUrlMap, env, testArgs, failingArgs, wrongPanicArgs, diagnostics }) => {
+    const abiModulePath = fileURLToPath(new URL("../../../host/test/fixtures/rust-program-abi.ts", import.meta.url));
+    const results = await page.evaluate(async ({ moduleUrl, abiModuleUrl, kernelUrl, imageUrl, lazyUrlMap, env, testArgs, failingArgs, wrongPanicArgs, diagnostics }) => {
       const { BrowserKernel } = await import(moduleUrl);
+      const { assertRustProgramAbi } = await import(abiModuleUrl);
       const createHost = () => new BrowserKernel({ kernelOwnedFs: true, maxWorkers: 8,
         onHostDiagnostic: (event: unknown) => console.info("[cargo host diagnostic]", JSON.stringify(event)),
         onProcessEvent: diagnostics ? (event: unknown) => console.info("[cargo process]", JSON.stringify(event)) : undefined,
@@ -122,6 +124,9 @@ test("guest Cargo builds and runs a workspace with a build script on a persisten
         await run("/usr/bin/cargo", ["cargo", "metadata", "--offline", "--format-version=1"]);
         await run("/usr/bin/cargo", ["cargo", "check", "--offline"]);
         await run("/usr/bin/cargo", ["cargo", "run", "--offline", "-j1", "-p", "cargo-hello"]);
+        const compiled = await host.readFileFromVfs("/home/maker/project/target/debug/cargo-hello.wasm");
+        if (compiled === null) throw new Error("Cargo did not produce its executable");
+        assertRustProgramAbi(compiled, bootOptions.kernelWasm);
         await run("/usr/bin/cargo", ["cargo", "build", "--offline", "-j1"]);
         // This cold command links and prepares three separate libtest binaries.
         await run("/usr/bin/cargo", ["cargo", ...testArgs], 0, 600_000);
@@ -152,7 +157,8 @@ test("guest Cargo builds and runs a workspace with a build script on a persisten
         }
         return results;
       } finally { await host.destroy(); }
-    }, { moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href, kernelUrl, imageUrl, lazyUrlMap,
+    }, { moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href,
+      abiModuleUrl: new URL(`/@fs/${abiModulePath}`, baseURL).href, kernelUrl, imageUrl, lazyUrlMap,
       env: rustCompilerEnv, testArgs: cargoTestArgs, failingArgs: cargoFailingTestArgs,
       wrongPanicArgs: cargoWrongPanicArgs, diagnostics: process.env.KANDELO_CARGO_DIAGNOSTICS === "1" });
     expect(results[0]!.stdout).toContain("cargo 1.97.0-nightly");

@@ -183,6 +183,10 @@ name = "curl"
 class = "user-software"
 
 [[packages]]
+name = "curl-docs"
+class = "browser-product"
+
+[[packages]]
 name = "dash"
 class = "user-software"
 
@@ -269,6 +273,10 @@ class = "platform"
 [[packages]]
 name = "fribidi"
 class = "platform"
+
+[[packages]]
+name = "game-import"
+class = "user-software"
 
 [[packages]]
 name = "gawk"
@@ -571,6 +579,10 @@ name = "mandoc-docs"
 class = "browser-product"
 
 [[packages]]
+name = "man-index"
+class = "browser-product"
+
+[[packages]]
 name = "mandoc-browser-bundle"
 class = "browser-product"
 
@@ -677,6 +689,10 @@ class = "platform"
 [[packages]]
 name = "perl"
 class = "user-software"
+
+[[packages]]
+name = "perl-docs"
+class = "browser-product"
 
 [[packages]]
 name = "perl-browser-bundle"
@@ -883,6 +899,10 @@ name = "sudo-lite"
 class = "platform"
 
 [[packages]]
+name = "sysklogd"
+class = "platform"
+
+[[packages]]
 name = "tar"
 class = "user-software"
 
@@ -897,6 +917,10 @@ class = "user-software"
 [[packages]]
 name = "tmux-docs"
 class = "browser-product"
+
+[[packages]]
+name = "toybox"
+class = "platform"
 
 [[packages]]
 name = "termchat"
@@ -945,6 +969,10 @@ class = "user-software"
 [[packages]]
 name = "wget"
 class = "user-software"
+
+[[packages]]
+name = "wget-docs"
+class = "browser-product"
 
 [[packages]]
 name = "wordpress"
@@ -1047,6 +1075,22 @@ class = "user-software"
 [[packages]]
 name = "rust-llvm"
 class = "platform"
+
+[[packages]]
+name = "rust-profiler-runtime"
+class = "platform"
+
+[[packages]]
+name = "rust-profiler-runtime-bundle"
+class = "browser-product"
+
+[[packages]]
+name = "rust-coverage-tools"
+class = "user-software"
+
+[[packages]]
+name = "rust-docs"
+class = "browser-product"
 
 [[exclusions]]
 name = "erlang"

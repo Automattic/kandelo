@@ -53,6 +53,13 @@ const MAN_ARCHIVES = SHELL_LAZY_ARCHIVE_SPECS.filter(
   (spec) => spec.id === "man" || spec.id.endsWith("-docs"),
 ).map((spec) => spec.resolverPath.replace(/^programs\/wasm32\//, ""));
 
+// The man-page index is a lazy file beside the archives; bind it too when
+// the image under test carries one.
+const MAN_INDEX = "man-index.db";
+const MAN_ASSETS = existsSync(join(sourceOnlyProgramsDir, MAN_INDEX))
+  ? [...MAN_ARCHIVES, MAN_INDEX]
+  : MAN_ARCHIVES;
+
 const shellImagePath = usePartial
   ? join(partialDir, partialManifest!.file)
   : join(sourceOnlyProgramsDir, "shell.vfs.zst");
@@ -96,6 +103,17 @@ function closedLazyAsset(name: string): ClosedLazyAsset {
   };
 }
 
+function imageHasIndex(imageBytes: Uint8Array): boolean {
+  const fs = KandeloImageFs.create();
+  fs.loadImage(imageBytes);
+  try {
+    fs.lstat("/usr/share/man/mandoc.db");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function imagePages(imageBytes: Uint8Array): ManPage[] {
   const fs = KandeloImageFs.create();
   fs.loadImage(imageBytes);
@@ -130,18 +148,28 @@ describe.skipIf(!available)(
     it("renders each page, and each alias as the page it names", async () => {
       const pages = imagePages(imageBytes());
       expect(pages.length, "no pages under /usr/share/man").toBeGreaterThan(0);
+      const indexed = imageHasIndex(imageBytes());
 
-      const script = pages
-        .map(
-          ({ section, name }) =>
-            `printf '\\n@@BEGIN %s %s\\n' ${section} '${name}'; ` +
-            `man ${section} '${name}' 2>/tmp/man.err; rc=$?; ` +
-            `printf '\\n@@ERR\\n'; cat /tmp/man.err; ` +
-            `printf '\\n@@END %s\\n' "$rc"`,
-        )
-        .join("\n");
-      const { stdout, stderr, exitCode } = await runInShell(imageBytes(), script);
-      expect(exitCode, `stderr:\n${stderr}`).toBe(0);
+      // The commands go to bash as its -c argument, so they run in batches to
+      // stay under the argument-size limit (several hundred pages fail with
+      // E2BIG as one script).
+      const BATCH = 100;
+      let stdout = "";
+      for (let start = 0; start < pages.length; start += BATCH) {
+        const script = pages
+          .slice(start, start + BATCH)
+          .map(
+            ({ section, name }) =>
+              `printf '\\n@@BEGIN %s %s\\n' ${section} '${name}'; ` +
+              `man ${section} '${name}' 2>/tmp/man.err; rc=$?; ` +
+              `printf '\\n@@ERR\\n'; cat /tmp/man.err; ` +
+              `printf '\\n@@END %s\\n' "$rc"`,
+          )
+          .join("\n");
+        const batch = await runInShell(imageBytes(), script);
+        expect(batch.exitCode, `stderr:\n${batch.stderr}`).toBe(0);
+        stdout += batch.stdout;
+      }
 
       const rendered = new Map<string, string>();
       const failures: string[] = [];
@@ -154,13 +182,14 @@ describe.skipIf(!available)(
         const text = stripOverstrike(block.slice(header.length + 1, errAt));
         const err = block.slice(errAt + "\n@@ERR\n".length, end).trim();
         rendered.set(header, text);
-        // mandoc 1.14.6 warns whenever it finds a page by searching the
-        // manpath, which it must do because the image ships no mandoc.db
-        // index (the whatis/apropos gap in docs/porting-guide.md "Shell
-        // commands without man pages"). Any other diagnostic is a failure.
+        // mandoc 1.14.6 warns whenever it has to find a page by searching
+        // the manpath. With the man-page index (man-index) every page is in
+        // mandoc.db, so `man` must be silent; an image without the index
+        // (a partial image without every docs package) may only warn.
         const unexpected = err
           .split("\n")
-          .filter((line) => line !== "" && !/^man: outdated mandoc\.db lacks \S+ entry, run makewhatis \/usr\/share\/man$/.test(line));
+          .filter((line) => line !== "" && (indexed
+            || !/^man: outdated mandoc\.db lacks \S+ entry, run makewhatis \/usr\/share\/man$/.test(line)));
         if (status !== "0") failures.push(`${header}: man exited ${status}: ${err.slice(0, 200)}`);
         else if (unexpected.length > 0) failures.push(`${header}: ${unexpected.join("; ").slice(0, 200)}`);
         // Case-insensitive: docutils' manpage writer (sfwbar's pages) emits
@@ -189,6 +218,9 @@ describe.skipIf(!available)(
         ["1 grep", /print lines that match patterns/],
         ["1 unxz", /Compress or decompress \.xz and\s+\.lzma files/],
         ["1 man", /display manual pages/],
+        ["1 curl", /transfer a URL/],
+        ["1 wget", /The non-interactive network downloader/],
+        ["1 perlfunc", /Perl builtin functions/],
       ];
       const present = probes.filter(([page]) => pages.has(page));
       expect(present.length).toBeGreaterThan(0);
@@ -201,6 +233,23 @@ describe.skipIf(!available)(
         expect(block.split("\n@@BEGIN ")[0], `man ${page}`).toMatch(text);
       }
     }, 300_000);
+
+    it.skipIf(!available || !imageHasIndex(new Uint8Array(readFileSync(shellImagePath))))(
+      "searches the index with whatis and apropos",
+      async () => {
+        const { stdout, stderr, exitCode } = await runInShell(
+          imageBytes(),
+          "whatis grep; whatis 5 nanorc; apropos -s 1 decompress",
+        );
+        expect(exitCode, `stderr:\n${stderr}`).toBe(0);
+        expect(stderr).toBe("");
+        expect(stdout).toMatch(/^grep\(1\) - print lines that match patterns$/m);
+        expect(stdout).toMatch(/^nanorc\(5\) - /m);
+        // apropos lists all of a page's names, aliases included.
+        expect(stdout).toMatch(/^xz, [^(]*\bunxz\b[^(]*\(1\) - Compress or decompress/m);
+      },
+      120_000,
+    );
   },
 );
 
@@ -221,7 +270,7 @@ async function runInShell(
       : {
           rootfsLazyUrlBase: LAZY_URL_BASE,
           rootfsLazyAssetDirectory: LAZY_URL_BASE,
-          rootfsLazyAssets: MAN_ARCHIVES.map(closedLazyAsset),
+          rootfsLazyAssets: MAN_ASSETS.map(closedLazyAsset),
         }),
     onStdout: (_pid, bytes) => {
       stdout += decoder.decode(bytes, { stream: true });

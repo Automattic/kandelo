@@ -332,6 +332,8 @@ another port.
   This records the lazy references during image composition; no browser
   registration is needed. An existing runtime bundle may carry the pages
   instead if it already owns those paths; avoid registering them twice.
+  Then add the docs package to `man-index`'s `depends_on` (see "The man-page
+  index" below).
 - Select the docs package explicitly when testing a partial image; selecting
   the program alone does not select a separate docs archive. Include the
   man viewer (`mandoc-browser-bundle` in the shell) and verify
@@ -351,18 +353,26 @@ These commands are in the shell image but have no page yet. `man` reports
 
 | Commands | Why there is no page yet |
 |---|---|
-| `curl`, `wget`, `git`, `ffmpeg`, `ffprobe`, `ffplay`, `perl`, `foot`, `sway`, `swaymsg`, `swaybar`, `swaynag`, `swaybg`, `cage`, `labwc`, the `dbus-*` tools | Upstream builds the page with a separate documentation toolchain (curl's `managen`, texi2pod and pod2man, asciidoc, scdoc, xmlto) that the package build does not run yet |
+| `git`, `ffmpeg`, `ffprobe`, `ffplay`, `foot`, `sway`, `swaymsg`, `swaybar`, `swaynag`, `swaybg`, `cage`, `labwc`, the `dbus-*` tools | Upstream builds the page with a separate documentation toolchain (texi2pod and pod2man, asciidoc, scdoc, xmlto) that the package build does not run yet |
 | `freeciv`, `freeciv-server` | Pages are filled in by meson's `configure_file`, not a plain substitution |
 | `sudo` | Pages are produced by configure-generated sed scripts |
 | `clear`, `reset`, `tput`, `tset`, `tabs`, `tic`, `infocmp`, `toe`, `captoinfo`, `infotocap` | ncurses rewrites its pages with `edit_man.sh` at install time |
 | `redis-cli`, `sqlite3`, `termchat`, `composer`, `node`, `gem` | No upstream page in the pinned source; Kandelo's `node` is its own SpiderMonkey-based runtime, so upstream Node's page would describe a different program |
 | `posix-utils-lite` commands, `kandelo-exchange`, `kandelo-publish`, `login`, `sudo-lite`, `dos-play` and other Kandelo wrappers | Kandelo is upstream and has not written pages for them |
 
-The image also ships no `mandoc.db` index, so `whatis`, `apropos` and
-`man -k` are not available, and mandoc 1.14.6 prints
+### The man-page index
+
+`whatis`, `apropos` and `man -k` search `/usr/share/man/mandoc.db`, which
+the `man-index` package builds with `makewhatis` over every docs package's
+pages. It is a lazy file, fetched the first time `man` runs. A new docs
+package must also be added to `man-index`'s `depends_on`;
+`package-docs-source-parity.test.ts` fails until it is. The shell builder
+refuses to include the index in an image that lacks any of the docs
+packages it covers, so a partial image either selects them all or leaves
+`man-index` out. Without the index, mandoc 1.14.6 prints
 `outdated mandoc.db lacks <name>(<section>) entry, run makewhatis
-/usr/share/man` on standard error each time `man` finds a page. The page
-itself renders normally.
+/usr/share/man` on standard error each time `man` finds a page; the page
+itself still renders.
 
 ## Shipping runtime files: the lazy-archive pattern
 
@@ -1422,7 +1432,9 @@ directories. Staging does not publish that image.
 SQLite's upstream `test/testrunner.tcl` permutations can be run through
 Kandelo with `scripts/run-sqlite-project-unit-tests.sh`. The wrapper runs the
 existing official test runner on the Node host, the browser host, or both, and
-writes per-host artifacts plus `combined-summary.md` under `test-runs/`.
+writes per-host artifacts plus `combined-summary.md` under the ignored
+`test-runs/` directory. Copy selected evidence to retained storage when needed;
+do not commit raw runner databases or logs.
 
 Build the Tcl and SQLite testfixture prerequisites first:
 

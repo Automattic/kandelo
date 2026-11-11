@@ -1,0 +1,72 @@
+kind = "program"
+name = "man-index"
+version = "1.14.6"
+kernel_abi = 56
+depends_on = [
+  "attr-docs@2.5.2",
+  "bash-docs@5.2.37",
+  "bc-docs@1.07.1",
+  "byacc-docs@20241231",
+  "bzip2-docs@1.0.8",
+  "coreutils-docs@9.6",
+  "cpython-docs@3.13.3",
+  "curl-docs@8.11.1",
+  "diffutils-docs@3.10",
+  "elinks-docs@0.20.0",
+  "file-docs@5.45",
+  "findutils-docs@4.10.0",
+  "flex-docs@2.6.4",
+  "gawk-docs@5.3.0",
+  "grep-docs@3.11",
+  "gzip-docs@1.13",
+  "jq-docs@1.8.2",
+  "less-docs@668",
+  "lhasa-docs@0.4.0",
+  "love-docs@11.5-kandelo-kms",
+  "lsof-docs@0.1.0",
+  "m4-docs@1.4.19",
+  "make-docs@4.4.1",
+  "mandoc-docs@1.14.6",
+  "mariadb-docs@10.5.28",
+  "nano-docs@8.0",
+  "netcat-docs@0.7.1",
+  "nethack-docs@3.6.7",
+  "perl-docs@5.40.3",
+  "php-docs@8.5.12",
+  "ruby-docs@4.0.5",
+  "rust-docs@1.97.0-nightly-2026-04-27",
+  "scummvm-docs@2026.3.0",
+  "sed-docs@4.9",
+  "sfwbar-docs@1.0_beta17",
+  "tar-docs@1.35",
+  "tmux-docs@3.8",
+  "unzip-docs@6.0",
+  "vim-docs@9.1.0900",
+  "wget-docs@1.25.0",
+  "xz-docs@5.6.2",
+  "zip-docs@3.0",
+  "zstd-docs@1.5.6",
+]
+
+# mandoc.db, the index `apropos`, `whatis` and `man -k` search and that `man`
+# consults before searching directories. It covers every page the shell's
+# docs packages ship (the shell includes it only when it selects all of
+# them). It is built by makewhatis from mandoc compiled for the build host
+# from the same pinned mandoc source the shell's mandoc comes from, so the
+# index format is the one the guest reads.
+[source]
+url = "https://mandoc.bsd.lv/snapshots/mandoc-1.14.6.tar.gz"
+sha256 = "8bf0d570f01e70a6e124884088870cbed7537f36328d512909eb10cd53179d9c"
+provider = "archive"
+
+[license]
+spdx = "ISC"
+url = "https://mandoc.bsd.lv/"
+
+[build]
+script_path = "packages/registry/man-index/build-man-index.sh"
+
+[[outputs]]
+name = "man-index"
+wasm = "man-index.db"
+fork_instrumentation = "disabled"

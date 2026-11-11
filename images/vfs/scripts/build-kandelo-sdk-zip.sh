@@ -144,6 +144,13 @@ cp -RL "$HOST_CLANG_RESOURCE_DIR/include" "$STAGING/lib/llvm/lib/clang/21/"
 # --- lib/kandelo/wasm32posix/sysroot — musl + libc++ ---
 mkdir -p "$STAGING/lib/kandelo/wasm32posix/sysroot"
 cp -RL "$REPO_ROOT/sysroot/." "$STAGING/lib/kandelo/wasm32posix/sysroot/"
+# The sysroot's top-level .kandelo-* files are the build machine's freshness
+# stamps (hashes of this checkout's musl and stub inputs). They are not guest
+# content, nothing in the guest SDK reads them, and they differ between
+# checkouts whose libraries are byte-identical, which made this archive
+# differ per worktree under one cache key.
+find "$STAGING/lib/kandelo/wasm32posix/sysroot" -maxdepth 1 -type f \
+    -name '.kandelo-*' -delete
 mkdir -p "$STAGING/lib/kandelo/wasm32posix/sysroot/lib"
 cp "$LIBCXX_DIR/lib/libc++.a" "$STAGING/lib/kandelo/wasm32posix/sysroot/lib/libc++.a"
 cp "$LIBCXX_DIR/lib/libc++abi.a" "$STAGING/lib/kandelo/wasm32posix/sysroot/lib/libc++abi.a"

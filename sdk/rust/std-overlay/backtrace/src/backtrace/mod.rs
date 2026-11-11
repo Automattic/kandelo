@@ -170,14 +170,17 @@ cfg_if::cfg_if! {
         pub(crate) mod miri;
         use self::miri::trace as trace_imp;
         pub(crate) use self::miri::Frame as FrameImp;
+    } else if #[cfg(target_os = "kandelo")] {
+        pub(crate) mod kandelo;
+        use self::kandelo::trace as trace_imp;
+        pub(crate) use self::kandelo::Frame as FrameImp;
     } else if #[cfg(
         any(
             all(
                 unix,
                 not(target_os = "emscripten"),
                 not(all(target_os = "ios", target_arch = "arm")),
-                // Kandelo (wasm32) has no unwinder to walk the stack with;
-                // the noop backend reports backtraces as unsupported.
+                // Kandelo captures the VM stack without libunwind.
                 not(target_os = "kandelo"),
             ),
             all(

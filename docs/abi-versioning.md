@@ -27,9 +27,11 @@ kernel-owned; ordinary readv dispatch needs no separate entropy probe. The host 
 Program ABI 56 is the supported baseline; ABI 55 was retired before release.
 The separate `abi/supported-program-baseline.json` gate preserves the current program digest across
 kernel/host rebuilds; ordinary snapshot regeneration or a program version bump
-does not bypass it. The current gate also refuses additive program changes
-until an explicit required-extension contract is implemented. Kernel-host-only
-changes remain independently versioned and do not affect this baseline.
+does not bypass it. The gate also refuses additive changes to the base
+program surface. New interfaces use independently versioned, explicitly
+required [program imports](program-extensions.md) with their own admission
+checks. Kernel-host-only changes remain independently versioned and do not
+affect this baseline.
 
 Run `cargo xtask check-program-baseline` for the focused check. The ordinary
 ABI check and package/build/stamping entry points enforce it as well.
@@ -157,6 +159,25 @@ the kernel-host capability contract, so `HOST_ADAPTER_VERSION` advances
 from 4 to 5 and both hosts are rebuilt with the kernel. A genuinely new
 guest blocking or interruption contract would still require a program ABI
 bump under the rules below.
+
+### Kernel message ring and the `kandelo.klog.v1` extension
+
+The kernel message ring is 128 KiB of kernel memory, which raises the
+kernel Wasm's `env.memory` minimum from 19 pages to 21. A raised minimum
+is a stronger demand on the host, so the classifier reports a changed
+`kernel_imports` entry. Every host that pairs with this kernel already
+supplies 24 pages (`host/src/kernel.ts`).
+
+`klogctl` is served as the `kandelo.klog.v1` [program
+extension](program-extensions.md), not as base syscall 304. The process
+worker forwards the import as kernel-host request
+`extension_requests::KLOG_V1`, whose buffer descriptor lives in the new
+`extension_requests` kernel-host section rather than in
+`syscall_arg_descriptors`. Every program-surface section is therefore
+byte-identical to the ABI-56 baseline, and the program digest is
+unchanged. The kernel now answers 304 with `ENOSYS` rather than the old
+fake success. Together these are kernel-host changes, so
+`HOST_ADAPTER_VERSION` advances from 5 to 6.
 
 ### Scheduled optional kernel exports
 

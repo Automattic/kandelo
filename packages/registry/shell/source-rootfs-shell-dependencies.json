@@ -257,6 +257,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "game-import",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
       "name": "vim-browser-bundle",
       "version": "9.1.0900",
       "role": "lazy-archive"
@@ -305,6 +310,26 @@
       "name": "lsof-docs",
       "version": "0.1.0",
       "role": "lazy-archive"
+    },
+    {
+      "name": "curl-docs",
+      "version": "8.11.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "wget-docs",
+      "version": "1.25.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "perl-docs",
+      "version": "5.40.3",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "man-index",
+      "version": "1.14.6",
+      "role": "lazy-file"
     },
     {
       "name": "attr-docs",
@@ -509,6 +534,31 @@
     {
       "name": "kandelo-rustc",
       "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "rust-profiler-runtime-bundle",
+      "version": "1.97.0-nightly-2026-04-27",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "rust-coverage-tools",
+      "version": "22.1.2",
+      "role": "lazy-file"
+    },
+    {
+      "name": "rust-docs",
+      "version": "1.97.0-nightly-2026-04-27",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "toybox",
+      "version": "0.8.15",
+      "role": "lazy-file"
+    },
+    {
+      "name": "sysklogd",
+      "version": "2.8.0",
       "role": "lazy-file"
     }
   ]
