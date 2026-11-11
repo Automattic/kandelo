@@ -163,6 +163,10 @@ name = "composer"
 class = "user-software"
 
 [[packages]]
+name = "composer-docs"
+class = "browser-product"
+
+[[packages]]
 name = "coreutils-docs"
 class = "browser-product"
 
@@ -691,7 +695,15 @@ name = "node"
 class = "user-software"
 
 [[packages]]
+name = "node-docs"
+class = "browser-product"
+
+[[packages]]
 name = "node-browser-bundle"
+class = "browser-product"
+
+[[packages]]
+name = "npm-docs"
 class = "browser-product"
 
 [[packages]]
@@ -765,6 +777,10 @@ class = "user-software"
 [[packages]]
 name = "redis"
 class = "user-software"
+
+[[packages]]
+name = "redis-docs"
+class = "browser-product"
 
 [[packages]]
 name = "retro-emulators"
@@ -931,6 +947,10 @@ name = "sqlite-cli"
 class = "user-software"
 
 [[packages]]
+name = "sqlite-cli-docs"
+class = "browser-product"
+
+[[packages]]
 name = "sudo"
 class = "platform"
 
@@ -969,6 +989,10 @@ class = "platform"
 [[packages]]
 name = "termchat"
 class = "user-software"
+
+[[packages]]
+name = "termchat-docs"
+class = "browser-product"
 
 [[packages]]
 name = "tcl"

@@ -1,0 +1,26 @@
+kind = "program"
+name = "sqlite-cli-docs"
+version = "3.49.1"
+kernel_abi = 56
+depends_on = ["sqlite-cli@3.49.1", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual page for sqlite3, generated from what the program
+# prints for --help and --version while running inside Kandelo: the
+# program has no upstream manual page. The recipe is this repository's,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "blessing"
+url = "https://www.sqlite.org/copyright.html"
+
+[build]
+script_path = "packages/registry/sqlite-cli-docs/build-sqlite-cli-docs.sh"
+
+[[outputs]]
+name = "sqlite-cli-docs"
+wasm = "sqlite-cli-docs.zip"
+fork_instrumentation = "disabled"

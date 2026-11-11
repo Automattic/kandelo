@@ -377,6 +377,36 @@
       "role": "lazy-archive"
     },
     {
+      "name": "composer-docs",
+      "version": "2.10.3",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "node-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "npm-docs",
+      "version": "10.9.2",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "redis-docs",
+      "version": "7.2.5",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "sqlite-cli-docs",
+      "version": "3.49.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "termchat-docs",
+      "version": "1.3.1",
+      "role": "lazy-archive"
+    },
+    {
       "name": "man-index",
       "version": "1.14.6",
       "role": "lazy-file"
