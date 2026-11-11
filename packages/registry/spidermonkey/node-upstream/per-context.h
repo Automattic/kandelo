@@ -29,6 +29,7 @@ bool HasRuntimeTimerState(JSObject* runtime);
 JSObject* GetRuntimeTaskState(JSContext* cx, JS::HandleObject runtime, bool create);
 bool HasRuntimeTaskState(JSObject* runtime);
 JSObject* GetRuntimeAsyncState(JSContext* cx, JS::HandleObject runtime, bool create);
+JSObject* GetRuntimeCodecState(JSContext* cx, JS::HandleObject runtime, bool create);
 JSObject* GetRuntimeOptionsState(JSContext* cx, JS::HandleObject runtime, bool create);
 bool RegisterRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime,
                                    JS::HandleObject realm, JS::HandleObject process);

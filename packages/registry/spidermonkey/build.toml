@@ -11,6 +11,7 @@ inputs = [
   "scripts/prepare-nodejs-constants.py",
   "scripts/generate-nodejs-types.py",
   "scripts/prepare-nodejs-options.py",
+  "scripts/prepare-nodejs-codecs.py",
   "scripts/nodejs-builtin-metadata.cpp",
   "packages/registry/node-compat/bootstrap.js",
   "scripts/package-build-roots.sh",
@@ -20,4 +21,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 32
+revision    = 33

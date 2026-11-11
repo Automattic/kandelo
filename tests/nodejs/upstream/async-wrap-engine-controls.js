@@ -57,7 +57,7 @@ check('actual-hook-and-trampoline-owners-survive-moving-gc',()=>{
 });
 check('whole-bootstrap-preserves-next-real-backend-failure',()=>{
   const target=newGlobal({newCompartment:true});api.initializeContext(target);const other=api.initializeRealm(target),b=other.internalBinding('async_wrap');
-  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message.includes("binding 'string_decoder'"),true);bootstrapFailure={code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
+  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'TypeError');assertEq(error.code,undefined);assertEq(error.message.includes("process.versions is undefined"),true);bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
   assertEq(thrown(()=>b.pushAsyncContext(3,2)).message.includes('Previous Node realm initialization failed'),true);
 });
 binding.clearAsyncIdStack();queue.runMicrotasks();

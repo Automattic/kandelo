@@ -195,6 +195,16 @@ fi
 }
 export WASM_POSIX_DEP_LIBUV_DIR="$LIBUV_PREFIX"
 
+NBYTES_PREFIX="${WASM_POSIX_DEP_NBYTES_DIR:-}"
+if [ -z "$NBYTES_PREFIX" ]; then NBYTES_PREFIX="$(resolve_dep nbytes)"; fi
+SIMDUTF_PREFIX="${WASM_POSIX_DEP_SIMDUTF_DIR:-}"
+if [ -z "$SIMDUTF_PREFIX" ]; then SIMDUTF_PREFIX="$(resolve_dep simdutf)"; fi
+for codec_prefix in "$NBYTES_PREFIX" "$SIMDUTF_PREFIX"; do
+    [ -d "$codec_prefix/include" ] || { echo "ERROR: missing codec headers at $codec_prefix" >&2; exit 1; }
+done
+export WASM_POSIX_DEP_NBYTES_DIR="$NBYTES_PREFIX"
+export WASM_POSIX_DEP_SIMDUTF_DIR="$SIMDUTF_PREFIX"
+
 if [ "$RESOLVER_BUILD" -eq 1 ]; then
     export WASM_POSIX_DEP_WORK_DIR="$WORK_DIR"
     export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
@@ -203,7 +213,7 @@ if [ "$RESOLVER_BUILD" -eq 1 ]; then
     export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
     SYSROOT="$(
         kandelo_package_prepare_private_sysroot spidermonkey "$SYSROOT" \
-            libcxx openssl zlib libzstd libuv
+            libcxx openssl zlib libzstd libuv nbytes simdutf
     )"
     export WASM_POSIX_SYSROOT="$SYSROOT"
 fi
@@ -409,9 +419,9 @@ fi
 bash "$SCRIPT_DIR/node-upstream/prepare-build.sh" \
     "$REPO_ROOT" "$SRC_DIR" "$OBJ_DIR" "$MACOS_SDK_DIR" "$ZLIB_PREFIX/include" "$ZSTD_PREFIX/include"
 
-export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -DUV_PLATFORM_KANDELO=1"
-export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -DUV_PLATFORM_KANDELO=1"
-export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a $LIBUV_PREFIX/lib/libuv.a -lpthread -Wl,-z,stack-size=16777216"
+export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -DUV_PLATFORM_KANDELO=1"
+export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -DUV_PLATFORM_KANDELO=1"
+export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a $LIBUV_PREFIX/lib/libuv.a $NBYTES_PREFIX/lib/libnbytes.a $SIMDUTF_PREFIX/lib/libsimdutf.a -lpthread -Wl,-z,stack-size=16777216"
 
 if [ -f "$OBJ_DIR/config.status" ] && {
     ! grep -q 'getrandom_backend' "$OBJ_DIR/config.status" ||
@@ -470,14 +480,14 @@ cp "$JS_BIN" "$BIN_DIR/js.wasm"
 WASM_OPT="${WASM_OPT:-wasm-opt}"
 if command -v "$WASM_OPT" >/dev/null 2>&1; then
     echo "==> Optimizing js.wasm with wasm-opt -O2..."
-    "$WASM_OPT" -O2 "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm"
+    "$WASM_OPT" -O2 -g "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm"
 else
     echo "WARNING: wasm-opt not found; leaving unoptimized js.wasm." >&2
 fi
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "==> Applying fork instrumentation to js.wasm..."
-"$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm.instr"
+"$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" --keep-names -o "$BIN_DIR/js.wasm.instr"
 mv "$BIN_DIR/js.wasm.instr" "$BIN_DIR/js.wasm"
 
 JS_SIZE="$(wc -c < "$BIN_DIR/js.wasm" | tr -d ' ')"

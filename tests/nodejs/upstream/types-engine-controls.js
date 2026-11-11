@@ -39,8 +39,8 @@ check('native-predicate-inspection-ignores-poisoned-public-constructor-propertie
 });
 check('whole-original-bootstrap-passes-types-and-invalidates-failed-realm-functions',()=>{
   const target=newGlobal({newCompartment:true});api.initializeContext(target);const other=api.initializeRealm(target),b=other.internalBinding('types'),predicate=b.isMap;
-  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message.includes("binding 'string_decoder'"),true);
-  bootstrapFailure={code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
+  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'TypeError');assertEq(error.code,undefined);assertEq(error.message.includes("process.versions is undefined"),true);
+  bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
   assertEq(thrown(()=>predicate(new Map())).message.includes('Previous Node realm initialization failed'),true);assertEq(thrown(()=>predicate()).message.includes('Previous Node realm initialization failed'),true);assertEq(types.isMap(new Map()),true);
 });
 print(JSON.stringify({kind:'native-types-controls',cases:observations.length,failures,observations,classificationMatrix,bootstrapFailure,limits:['Actual engine native predicates and complete original internal/util/types execution, not successful Node startup','Opaque borrowed pointer carrier is not a resource handle or Node-API implementation','Security-denied wrappers, OOM and complete teardown remain unvalidated']}));if(failures)quit(1);

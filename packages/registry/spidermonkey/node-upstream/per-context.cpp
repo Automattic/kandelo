@@ -24,6 +24,7 @@
 #include "js/Wrapper.h"
 #include "shell/node-upstream/async-wrap.h"
 #include "shell/node-upstream/builtin-compiler.h"
+#include "shell/node-upstream/codecs.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/module-wrap.h"
 #include "shell/node-upstream/options.h"
@@ -47,7 +48,7 @@ static constexpr SymbolSpec kSymbols[] = {
 static_assert(std::size(kSymbols) == 49);
 
 enum Phase { Initializing = 1, Ready = 2, Failed = 3 };
-enum RuntimeSlot { RuntimePhase, ContextKey, ExitInfo, TimerBase, TimerState, TaskState, AsyncState, OptionsState,
+enum RuntimeSlot { RuntimePhase, ContextKey, ExitInfo, TimerBase, TimerState, TaskState, AsyncState, OptionsState, CodecState,
                    PrincipalRealm, PrincipalProcess, FirstSymbol };
 static const JSClass kRuntimeClass = {
     "KandeloNodeRuntime", JSCLASS_HAS_RESERVED_SLOTS(FirstSymbol + std::size(kSymbols))};
@@ -386,6 +387,22 @@ JSObject* GetRuntimeOptionsState(JSContext* cx, JS::HandleObject runtime, bool c
       state = CreateOptionsState(cx);
       if (!state) return nullptr;
       JS::SetReservedSlot(runtime, OptionsState, JS::ObjectValue(*state));
+    }
+  }
+  if (state && !JS_WrapObject(cx, &state)) return nullptr;
+  return state;
+}
+JSObject* GetRuntimeCodecState(JSContext* cx, JS::HandleObject runtime, bool create) {
+  if (!RuntimeReady(cx, runtime)) return nullptr;
+  JS::RootedObject state(cx);
+  {
+    JSAutoRealm home(cx, runtime);
+    JS::Value cached = JS::GetReservedSlot(runtime, CodecState);
+    if (cached.isObject()) state = &cached.toObject();
+    else if (create) {
+      state = CreateCodecState(cx);
+      if (!state) return nullptr;
+      JS::SetReservedSlot(runtime, CodecState, JS::ObjectValue(*state));
     }
   }
   if (state && !JS_WrapObject(cx, &state)) return nullptr;

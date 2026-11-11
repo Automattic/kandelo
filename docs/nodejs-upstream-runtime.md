@@ -12,10 +12,10 @@ owns builtin caching, exposure policy and moduleLoadList. The eager native
 realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry now calls complete `internal/bootstrap/node`
-with protected state, passes native configuration and stops on missing
-`string_decoder` through original internal/util/buffer dependencies, after executing the
+with protected state, passes native configuration and reaches the missing
+`process.versions` provider in original `internal/util`, after executing the
 original async-hooks module, native constants initializer and engine type
-predicates and native options through real backends.
+predicates, native options and the original string-decoder binding through real backends.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -65,7 +65,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 516 files after complete native source/header additions; every
+manifest has 523 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -938,21 +938,18 @@ and [options-contracts.json](../tests/nodejs/upstream/options-contracts.json).
 
 ## Decoder dependency inventory
 
-The next missing binding remains `string_decoder`. Its partial catalog records
+The `string_decoder` partial catalog records
 ten original exports, two literal native consumers and eight literal public-module
 consumers, including the lazy TextDecoder path. The original decoder stores its
 streaming state in actual guest buffer bytes and calls the native StringBytes
 codec layer. An encodings table alone does not implement that binding.
 
-Thirteen controls pass on the pinned native reference and retain 280 selected
-chunk/output/state records for later guest comparison. Complete unchanged
-nbytes 0.1.4 and V8-vendored simdutf 7.7.0 sources compile with Kandelo's SDK in
-a separate source preflight. These are compile-only objects, not linked codec
-runtime, production package integration or guest binding evidence. No engine,
-kernel, ABI or imported JavaScript changed in this inventory step.
+The initial inventory retained thirteen native controls and 280 selected
+chunk/output/state records. Its separate compile-only codec preflight remains
+historical evidence; the linked revision-33 integration is described below.
 
-Real view/backing-allocation lifetime across GC, strings/external-memory ownership,
-native errors and the original Buffer closure remain prerequisites. Archived codec
+The catalog distinguishes native view/string ownership from the still incomplete
+public Buffer closure. Archived codec
 regression requirements and retained-allocation owners are reuse candidates;
 the old handwritten public codecs are excluded. See
 [string-decoder-contracts.json](../tests/nodejs/upstream/string-decoder-contracts.json)
@@ -973,10 +970,66 @@ and bounded output, Node byte primitives and actual implementation selection.
 These are native library controls, not the SpiderMonkey Node runtime or complete
 codec conformance. No product image or supported-package-set entry is added.
 
-The complete original decoder and StringBytes translation units also compile
-unchanged against a declaration interface. Their unresolved engine operations are
-retained as implementation obligations. Those objects are not runtime-linked;
-actual roots, backing allocation lifetime, external strings/accounting, errors,
-method registration and the original Buffer closure remain missing. The startup
-probe still reaches `string_decoder`. Exact artifacts, inputs, failed attempts
+The earlier declaration-only preflight compiled the complete original decoder
+and StringBytes translation units. Those historical objects do not establish
+runtime behavior. Exact artifacts, inputs, failed attempts
 and limits are in [native-codec-engine-check.json](../tests/nodejs/upstream/native-codec-engine-check.json).
+
+## Original native decoder and StringBytes integration
+
+Revision 33 links both resolved codec libraries and executes the complete,
+unchanged original decoder and StringBytes translation units. Six whole native
+files are staged byte-identically. The complete original encoding enum and three
+error type/code/message records supply verified metadata; no codec algorithm or
+JavaScript function is extracted. All prior 516 imported records and all 443
+JavaScript source records remain unchanged.
+
+The engine bridge owns real rooted values, typed callback metadata and actual
+ArrayBufferView storage, including view offsets, shared memory, aliasing and
+resizable buffers. It stabilizes inline backing storage before pinning lengths
+and restores only pins acquired by the current owner. Strings use actual engine
+allocation and external-string finalizers. Per-runtime shared native state keeps
+external-resource accounting alive until final disposal without permanent JS
+roots or JavaScript callbacks from finalizers.
+
+Twenty-two binding controls pass on Node, Chromium, Firefox and WebKit using
+identical engine/kernel bytes. Sixteen shared controls, export descriptors and
+280 chunk/output/state records match the authenticated native Node reference.
+Additional controls collect during native borrows, retain cached functions across
+GC, use cross-realm views and observe external Latin1/UTF16 resource retirement.
+Three invalid-state/input drivers retain fatal exits on Node. This is bounded
+native binding evidence; public StringDecoder and complete Buffer behavior are
+not established.
+
+The same artifact passes all 253 prior Node-host engine cases. Across these
+selected engine checks there are 341 case observations, 95 process drivers and
+24 expected fatal exits. Browser job-draining/error/quit-status drivers also
+pass. The browser harness retained its storage after reporting WebKit still
+running; the cleanup warning is separate from empty guest/host diagnostics.
+
+The initial aliasing failure came from calling the engine's stabilization helper
+on already pinned out-of-line storage; the bridge now inspects the actual storage
+kind first. A later GC trap narrowed to resizable storage. Engine patch 0040
+preserves full maximum capacity and zero-filled growth when converting inline
+storage. This is tracked as the suspected
+[resizable-buffer capacity defect](../tests/runtime-workarounds/FIREFOX-RAB-NONINLINE-CAPACITY/entry.md).
+An authenticated unmodified Mozilla 140.11.0 native shell did not crash on the
+first reduced case; that outcome is retained and the defect is not called confirmed.
+
+Original principal bootstrap and original stack-limit policy now reach
+`TypeError: can't access property "openssl", process.versions is undefined`
+at `node:internal/util:78`. The next prerequisite is a truthful native versions
+provider from actual source/build/library identities. Buffer allocation/prototype
+support, complete StringBytes Write/Size coverage, OOM/security/worker teardown
+and complete graph reconciliation remain open. No partial/canonical image, full
+product, successor-ABI campaign or overall suite ran. See
+[decoder-engine-check.json](../tests/nodejs/upstream/decoder-engine-check.json).
+
+The next partial inventory retains four complete upstream metadata/process
+sources and native property descriptors. It distinguishes actual linked library
+versions from imported source versions and unsupported V8/addon identities.
+The original native metadata constructor has unconditional dependencies on V8
+and currently unlinked libraries; placeholder versions and extracted process
+functions are excluded. Alias/computed consumers and the full integration
+approach remain open in
+[process-versions-contracts.json](../tests/nodejs/upstream/process-versions-contracts.json).

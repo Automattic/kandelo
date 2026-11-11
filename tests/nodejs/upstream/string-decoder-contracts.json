@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "binding": "string_decoder",
-  "status": "missing guest binding; source review, native reference and compile-only codec prerequisites recorded",
+  "status": "complete original decoder/StringBytes linked through real engine bridge; 22 focused controls pass on each host, public Buffer closure and startup incomplete",
   "sourcePin": {
     "schema": 1,
     "version": "26.13.0",
@@ -114,31 +114,31 @@
   "sourceFiles": [
     {
       "upstreamPath": "src/string_decoder.cc",
-      "path": ".context/node-string-decoder/source/src/string_decoder.cc",
+      "path": "third_party/nodejs/upstream/src/string_decoder.cc",
       "bytes": 12319,
       "sha256": "34bedf8a3d3b455c89b59fdda5fa622f4c2c9e6eceeb72c7cbfee17e7f62fced"
     },
     {
       "upstreamPath": "src/string_decoder.h",
-      "path": ".context/node-string-decoder/source/src/string_decoder.h",
+      "path": "third_party/nodejs/upstream/src/string_decoder.h",
       "bytes": 1480,
       "sha256": "3aa815d829ebc12ae1e02e3aaaa38808629c247f1a46a049978e9025ce55d76c"
     },
     {
       "upstreamPath": "src/string_decoder-inl.h",
-      "path": ".context/node-string-decoder/source/src/string_decoder-inl.h",
+      "path": "third_party/nodejs/upstream/src/string_decoder-inl.h",
       "bytes": 701,
       "sha256": "b6a7c217f30939eb36454e6931098de164aeaa24c236f936071b7f7d9eac1437"
     },
     {
       "upstreamPath": "src/string_bytes.cc",
-      "path": ".context/node-string-decoder/source/src/string_bytes.cc",
+      "path": "third_party/nodejs/upstream/src/string_bytes.cc",
       "bytes": 29594,
       "sha256": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d"
     },
     {
       "upstreamPath": "src/string_bytes.h",
-      "path": ".context/node-string-decoder/source/src/string_bytes.h",
+      "path": "third_party/nodejs/upstream/src/string_bytes.h",
       "bytes": 4614,
       "sha256": "5e0b0f184d2e7b0556b5afb67bfaa28b3aa92c960a2dccff40006e1a1c1b86f2"
     },
@@ -150,7 +150,7 @@
     },
     {
       "upstreamPath": "src/node_buffer.h",
-      "path": ".context/node-string-decoder/source/src/node_buffer.h",
+      "path": "third_party/nodejs/upstream/src/node_buffer.h",
       "bytes": 3843,
       "sha256": "42db024cf1ae62db1a9a23477ee9927e9b7ed04999bd4498371b144962a31525"
     },
@@ -186,13 +186,13 @@
     },
     {
       "upstreamPath": "src/util.h",
-      "path": ".context/node-string-decoder/source/src/util.h",
+      "path": "third_party/nodejs/upstream/src/util.h",
       "bytes": 43448,
       "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
     },
     {
       "upstreamPath": "src/node.h",
-      "path": ".context/node-string-decoder/source/src/node.h",
+      "path": "third_party/nodejs/upstream/src/node.h",
       "bytes": 76346,
       "sha256": "83185475268b1b2d9f5ffdbec1bb2062ebe70674869dde96fe6cd526dc9b2a79"
     }
@@ -438,52 +438,52 @@
     {
       "name": "kIncompleteCharactersStart",
       "kind": "metadata",
-      "implementation": "missing guest binding; native initializer reviewed"
+      "implementation": "complete original initializer through actual engine property/function adapters; focused native-reference comparison passes on four hosts"
     },
     {
       "name": "kIncompleteCharactersEnd",
       "kind": "metadata",
-      "implementation": "missing guest binding; native initializer reviewed"
+      "implementation": "complete original initializer through actual engine property/function adapters; focused native-reference comparison passes on four hosts"
     },
     {
       "name": "kMissingBytes",
       "kind": "metadata",
-      "implementation": "missing guest binding; native initializer reviewed"
+      "implementation": "complete original initializer through actual engine property/function adapters; focused native-reference comparison passes on four hosts"
     },
     {
       "name": "kBufferedBytes",
       "kind": "metadata",
-      "implementation": "missing guest binding; native initializer reviewed"
+      "implementation": "complete original initializer through actual engine property/function adapters; focused native-reference comparison passes on four hosts"
     },
     {
       "name": "kEncodingField",
       "kind": "metadata",
-      "implementation": "missing guest binding; native initializer reviewed"
+      "implementation": "complete original initializer through actual engine property/function adapters; focused native-reference comparison passes on four hosts"
     },
     {
       "name": "kNumFields",
       "kind": "metadata",
-      "implementation": "missing guest binding; native initializer reviewed"
+      "implementation": "complete original initializer through actual engine property/function adapters; focused native-reference comparison passes on four hosts"
     },
     {
       "name": "encodings",
       "kind": "metadata",
-      "implementation": "missing guest binding; native initializer reviewed"
+      "implementation": "complete original initializer through actual engine property/function adapters; focused native-reference comparison passes on four hosts"
     },
     {
       "name": "kSize",
       "kind": "metadata",
-      "implementation": "missing guest binding; native initializer reviewed"
+      "implementation": "complete original initializer through actual engine property/function adapters; focused native-reference comparison passes on four hosts"
     },
     {
       "name": "decode",
       "kind": "method",
-      "implementation": "missing guest binding; native initializer reviewed"
+      "implementation": "complete original initializer through actual engine property/function adapters; focused native-reference comparison passes on four hosts"
     },
     {
       "name": "flush",
       "kind": "method",
-      "implementation": "missing guest binding; native initializer reviewed"
+      "implementation": "complete original initializer through actual engine property/function adapters; focused native-reference comparison passes on four hosts"
     }
   ],
   "methods": [
@@ -548,7 +548,7 @@
     "nativeReference": "string-decoder-native-reference.json",
     "nativeControls": 13,
     "nativeChunkStateRecords": 280,
-    "guestBindingControlsRun": false,
+    "guestBindingControlsRun": true,
     "codecPreflightJob": "node-string-decoder-codec-preflight-1111-070920-5075",
     "codecPreflightScope": "Complete unchanged native codec source compilation only, not linked runtime/conformance",
     "codecPreflightLog": {
@@ -599,7 +599,21 @@
     },
     "resolvedCodecControlsPerHost": 17,
     "completeNativeTranslationUnitsCompileAgainstDeclarationsOnly": 2,
-    "guestDecoderOrStringBytesRuntimeLinked": false
+    "guestDecoderOrStringBytesRuntimeLinked": false,
+    "bridgeEvidence": "decoder-engine-check.json",
+    "guestCasesPerHost": 22,
+    "hosts": [
+      "Node",
+      "Chromium",
+      "Firefox",
+      "WebKit"
+    ],
+    "sharedNativeControls": 16,
+    "sharedChunkStateRecords": 280,
+    "allSharedObservationsCompared": true,
+    "allMatrixRecordsCompared": true,
+    "expectedFatalNodeDrivers": 3,
+    "priorNodeRegressionCases": 253
   },
   "obligations": [
     "Exact native export/field/descriptor and method registration comparisons",
@@ -612,7 +626,12 @@
   "startup": {
     "dependency": "Original internal/util eagerly reads encodings at line76; original public string_decoder requires whole buffer and internal/util modules",
     "accepted": false,
-    "nextBindingStill": "string_decoder",
+    "observedNextFailure": {
+      "name": "TypeError",
+      "message": "can't access property \"openssl\", process.versions is undefined",
+      "source": "node:internal/util:78:18",
+      "artifactEvidence": ".context/node-string-decoder/bootstrap-gap-probe.json"
+    },
     "emptySimpleCjsEsm": "unproven"
   },
   "deferred": [
@@ -620,5 +639,28 @@
     "Nested guest Wasm last unless required by genuine startup",
     "Broader backend roadmap requires user review after startup and full catalog"
   ],
-  "codecFoundationEvidence": "native-codec-engine-check.json"
+  "codecFoundationEvidence": "native-codec-engine-check.json",
+  "engineBridge": {
+    "owner": "packages/registry/spidermonkey/node-upstream/codecs.cpp",
+    "sourcePolicy": "six complete native files staged byte-identically; full node_errors.h imported for verified type/message metadata; no native algorithm excerpts or rewritten JavaScript",
+    "strings": "real SpiderMonkey Latin1/UTF16 strings, UTF8 conversion and concatenation; source-created external resources use engine finalizers and per-runtime shared-state accounting",
+    "roots": "each invocation owns real persistent value roots and typed adapter objects; each native function owns its callback metadata in a traced reserved slot; runtime state has no permanent JS roots",
+    "views": "real unwrapped view/backing storage with actual offsets/byte lengths; inline backing is stabilized before length pinning; call-scope persistent roots retain views and pins are restored only by the owner that changed them",
+    "aliasing": "same view reuses frame borrow; distinct aliasing views share actual out-of-line storage without a copy; shared storage is always pinned by engine policy",
+    "resizableStorage": "engine patch0040 preserves maximum capacity and zero-fill during non-inline stabilization; suspected FIREFOX-RAB-NONINLINE-CAPACITY; strengthened growth/shrink/GC controls pass on four hosts",
+    "errors": "verified original error type/code/message metadata; actual engine string/buffer capacities; source fatal checks retained, with explicit state-allocation bounds before native access",
+    "scheduling": "synchronous only, no asynchronous handles, cancellation or libuv references",
+    "lifecycle": "runtime state shared by original external resource memory accounters, survives carrier retirement until final resource; external finalizers do not run JS",
+    "engineLimitations": [
+      "Buffer::Copy explicitly fails; complete Buffer prototype/allocation backend missing",
+      "full StringBytes Write/Size paths compile but are not covered by decoder runtime controls",
+      "OOM equivalence, denied wrappers, security/worker teardown and foreign-pinned inline storage unvalidated",
+      "inherited setter resolving a method name during native registration remains a fatal boundary"
+    ]
+  },
+  "implementationPrerequisites": [
+    "Complete original Buffer binding and public Buffer closure before claiming public StringDecoder",
+    "Complete process.versions from actual build/runtime/library identities; never copy native reference versions or pretend SpiderMonkey is V8",
+    "Complete graph reconciliation including lazy, conditional, worker and exceptional paths"
+  ]
 }

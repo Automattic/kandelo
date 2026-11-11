@@ -1,0 +1,368 @@
+{
+  "schema": 1,
+  "binding": "initial process.versions metadata",
+  "status": "missing; original bootstrap blocker at internal/util:78; source/descriptor review only",
+  "sourceFiles": [
+    {
+      "upstreamPath": "src/node_metadata.cc",
+      "path": ".context/node-process-versions/source/src/node_metadata.cc",
+      "bytes": 5771,
+      "sha256": "f1539327f72ff6a47a5bfb8692d49e5ba5d8b1c739be50aa6995073af52191d7"
+    },
+    {
+      "upstreamPath": "src/node_metadata.h",
+      "path": ".context/node-process-versions/source/src/node_metadata.h",
+      "bytes": 5563,
+      "sha256": "fc100c3c02ccde5d2a5775628501ceae8bc55bfe288ad1526da2f32adfc1393a"
+    },
+    {
+      "upstreamPath": "src/node_process_object.cc",
+      "path": ".context/node-process-versions/source/src/node_process_object.cc",
+      "bytes": 8595,
+      "sha256": "301c1819a6cd59a48bd28f4c2252298137b6631cc33dda0ddb55dd8067d48957"
+    },
+    {
+      "upstreamPath": "src/node_version.h",
+      "path": ".context/node-process-versions/source/src/node_version.h",
+      "bytes": 4637,
+      "sha256": "94a454d9b6f16efa15ee55d3c0c130a6c69425b5bea358888a9735ddc7d62b8f"
+    }
+  ],
+  "nativePropertyDescriptors": {
+    "processVersionsDescriptor": {
+      "key": "versions",
+      "writable": false,
+      "configurable": true,
+      "enumerable": true,
+      "type": "object"
+    },
+    "versionsProperties": [
+      {
+        "key": "node",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "acorn",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "ada",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "amaro",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "ares",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "brotli",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "cldr",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "icu",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "libffi",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "lief",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "llhttp",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "merve",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "modules",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "napi",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "nbytes",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "ncrypto",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "nghttp2",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "nghttp3",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "ngtcp2",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "openssl",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "simdjson",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "simdutf",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "sqlite",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "tz",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "undici",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "unicode",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "uv",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "uvwasi",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "v8",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "zlib",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      },
+      {
+        "key": "zstd",
+        "writable": false,
+        "configurable": true,
+        "enumerable": true,
+        "type": "string"
+      }
+    ],
+    "prototypeIsObjectPrototype": true,
+    "extensible": true
+  },
+  "literalConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/deps/undici/undici.js",
+      "line": 7282,
+      "text": "const [major, minor] = process.versions.node.split(\".\").map((n) => parseInt(n, 10));",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/deps/undici/undici.js",
+      "line": 15815,
+      "text": "if (typeof process.versions.icu === \"string\") {",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/http.js",
+      "line": 177,
+      "text": "if (httpsProxy && !!process.versions.openssl) {",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/webidl.js",
+      "line": 701,
+      "text": "StringPrototypeSplit(process.versions.openssl, '.');",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/debugger/inspect_repl.js",
+      "line": 1178,
+      "text": "expression: 'process.versions.v8',",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/print_help.js",
+      "line": 20,
+      "text": "const hasCrypto = Boolean(process.versions.openssl);",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/pre_execution.js",
+      "line": 709,
+      "text": "process.versions.openssl !== undefined &&",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util/types.js",
+      "line": 93,
+      "text": "if (!process.versions.openssl) {",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util/types.js",
+      "line": 109,
+      "text": "if (!process.versions.openssl) {",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util.js",
+      "line": 78,
+      "text": "const noCrypto = !process.versions.openssl;",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util.js",
+      "line": 79,
+      "text": "const noTypeScript = !process.versions.amaro;",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/v8_prof_polyfill.js",
+      "line": 105,
+      "text": "const message = versionCheck(peekline(), process.versions.v8);",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/v8_prof_polyfill.js",
+      "line": 141,
+      "text": "// whereas process.versions.v8 is either \"$major.$minor.$build-$embedder\" or",
+      "coverage": "literal process.versions only; aliases/computed/worker/exceptional reachability not reconciled"
+    }
+  ],
+  "coverage": {
+    "literalConsumerLines": 13,
+    "fullGraphReconciled": false
+  },
+  "contracts": {
+    "owner": "native process metadata, installed on actual initial realm process; ordinary new process instances do not acquire metadata automatically",
+    "source": "complete src/node_process_object.cc creates actual versions object; node first then sorted original Metadata::Versions::pairs entries; original read-only property definitions",
+    "engine": "process must identify actual SpiderMonkey engine; copying native V8 version or Node V8-addon ABI would be false",
+    "libraries": "libuv, OpenSSL, zlib, zstd, nbytes and simdutf are actual linked libraries; derive values from their build/runtime APIs, not Darwin reference",
+    "sourceVersions": "Node/acorn/Undici/Amaro source availability does not establish all runtime capability; imported vendored bytes and executable backends remain separate",
+    "intl": "runtime timezone/CLDR initialization can fail; retain true ICU initialization/error state",
+    "scheduling": "metadata construction synchronous; getters/proxies/inherited setters and object mutation/descriptor behavior need explicit validation",
+    "ownership": "root returned object and all constructed strings through allocation/GC; each actual realm process owns object; constructor prototype remains separate"
+  },
+  "obstacles": [
+    "Whole native node_metadata.cc unconditionally references V8 and multiple currently unlinked libraries; cannot supply placeholder dependency versions to compile it",
+    "Original node_process_object.cc has wider process creation/method dependencies; no SetVersions function extraction",
+    "Native module ABI/N-API and V8 identity are unsupported contracts today; do not fill their version fields from source constants as a support claim"
+  ],
+  "nextWork": [
+    "Inventory all alias/computed consumers and actual linked source/runtime versions",
+    "Determine complete native metadata/process-object integration using real optional capabilities and explicit missing backends; preserve whole original sources",
+    "Validate descriptors and values from actual guest library/engine evidence with moving GC on all four hosts",
+    "Rerun original bootstrap and separate empty/simple/CJS/ESM acceptance; retain each new honest failure"
+  ],
+  "startupAccepted": false,
+  "broaderRoadmapAuthorized": false
+}

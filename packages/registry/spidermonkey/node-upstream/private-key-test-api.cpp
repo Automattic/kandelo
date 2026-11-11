@@ -18,6 +18,7 @@
 #include "js/Wrapper.h"
 #include "shell/jsshell.h"
 #include "shell/node-upstream/async-wrap.h"
+#include "shell/node-upstream/codecs.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
 #include "shell/node-upstream/types.h"
@@ -39,6 +40,19 @@ bool ConfigureNativeOptions(JSContext* cx, unsigned argc, JS::Value* vp) {
   JS::RootedObject runtime(cx, js::shell::GetShellContext(cx)->upstreamNodeRuntime);
   if (!ConfigureCurrentOptions(cx, runtime, arguments, environment)) return false;
   args.rval().setUndefined(); return true;
+}
+bool SetNativeCodecGcStress(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  if (!args.get(0).isBoolean()) { JS_ReportErrorASCII(cx, "Native codec GC control requires a boolean"); return false; }
+  JS::RootedObject runtime(cx, js::shell::GetShellContext(cx)->upstreamNodeRuntime);
+  if (!SetCodecGcStress(cx, runtime, args[0].toBoolean())) return false;
+  args.rval().setUndefined(); return true;
+}
+bool InspectNativeCodecs(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject runtime(cx, js::shell::GetShellContext(cx)->upstreamNodeRuntime);
+  JS::RootedObject snapshot(cx, InspectCodecState(cx, runtime)); if (!snapshot) return false;
+  args.rval().setObject(*snapshot); return true;
 }
 bool InspectNativeOptions(JSContext* cx, unsigned argc, JS::Value* vp) {
   auto args = JS::CallArgsFromVp(argc, vp);
@@ -299,6 +313,8 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
       JS_FN("newExternal", NewExternal, 0, 0),
       JS_FN("configureOptions", ConfigureNativeOptions, 2, 0),
       JS_FN("inspectOptions", InspectNativeOptions, 0, 0),
+      JS_FN("inspectCodecs", InspectNativeCodecs, 0, 0),
+      JS_FN("stressCodecGc", SetNativeCodecGcStress, 1, 0),
       JS_FN("readExternal", ReadExternal, 1, 0),
       JS_FN("initializePrivateKey", InitializePrivateKey, 3, 0),
       JS_FN("initializeContext", InitializeContext, 0, 0),

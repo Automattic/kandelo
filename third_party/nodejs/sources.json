@@ -3537,6 +3537,13 @@
       "builtinId": null
     },
     {
+      "path": "src/node_buffer.h",
+      "role": "provenance",
+      "bytes": 3843,
+      "sha256": "42db024cf1ae62db1a9a23477ee9927e9b7ed04999bd4498371b144962a31525",
+      "builtinId": null
+    },
+    {
       "path": "src/node_builtins.cc",
       "role": "provenance",
       "bytes": 37013,
@@ -3562,6 +3569,13 @@
       "role": "provenance",
       "bytes": 3729,
       "sha256": "2d6ad6acdba0376bf8286eb3ebd03fd3706bd7fd78f799527fa4ecaca216cec8",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_errors.h",
+      "role": "provenance",
+      "bytes": 23299,
+      "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8",
       "builtinId": null
     },
     {
@@ -3632,6 +3646,41 @@
       "role": "provenance",
       "bytes": 83,
       "sha256": "678ed1d8a58647c6ba17aedaf6a9ff51cffb4d949981f40f699661c712962693",
+      "builtinId": null
+    },
+    {
+      "path": "src/string_bytes.cc",
+      "role": "provenance",
+      "bytes": 29594,
+      "sha256": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d",
+      "builtinId": null
+    },
+    {
+      "path": "src/string_bytes.h",
+      "role": "provenance",
+      "bytes": 4614,
+      "sha256": "5e0b0f184d2e7b0556b5afb67bfaa28b3aa92c960a2dccff40006e1a1c1b86f2",
+      "builtinId": null
+    },
+    {
+      "path": "src/string_decoder-inl.h",
+      "role": "provenance",
+      "bytes": 701,
+      "sha256": "b6a7c217f30939eb36454e6931098de164aeaa24c236f936071b7f7d9eac1437",
+      "builtinId": null
+    },
+    {
+      "path": "src/string_decoder.cc",
+      "role": "provenance",
+      "bytes": 12319,
+      "sha256": "34bedf8a3d3b455c89b59fdda5fa622f4c2c9e6eceeb72c7cbfee17e7f62fced",
+      "builtinId": null
+    },
+    {
+      "path": "src/string_decoder.h",
+      "role": "provenance",
+      "bytes": 1480,
+      "sha256": "3aa815d829ebc12ae1e02e3aaaa38808629c247f1a46a049978e9025ce55d76c",
       "builtinId": null
     },
     {

@@ -10,14 +10,16 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 516,
+    "importedFiles": 523,
     "taskQueuePartialCatalog": "task-queue-contracts.json",
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
     "constantsPartialCatalog": "constants-contracts.json",
     "typesPartialCatalog": "types-contracts.json",
     "optionsPartialCatalog": "options-contracts.json",
     "stringDecoderPartialCatalog": "string-decoder-contracts.json",
-    "nativeCodecEvidence": "native-codec-engine-check.json"
+    "nativeCodecEvidence": "native-codec-engine-check.json",
+    "decoderEngineEvidence": "decoder-engine-check.json",
+    "processVersionsPartialCatalog": "process-versions-contracts.json"
   },
   "implementation": [
     {
@@ -77,9 +79,9 @@
     },
     {
       "area": "eager Buffer/process/fs/options/task queues/timers/async binding closure",
-      "sourceStatus": "Genuine initial process/config, timers/task queues/partial async, constants/types and original native options implemented in bounded scope; wider buffer/fs/process/native closure incomplete",
+      "sourceStatus": "Genuine initial process/config, timers/task queues/partial async, constants/types, original native options and original decoder/StringBytes implemented in bounded scope; wider Buffer/fs/process closure incomplete",
       "remaining": "contract inventory and dependency-ordered owning backends; no placeholder export objects",
-      "evidence": "options-engine-check.json"
+      "evidence": "decoder-engine-check.json"
     },
     {
       "area": "generated runtime configuration",
@@ -99,8 +101,8 @@
     },
     {
       "area": "native initial process prototype/constructor, shared exit-info and config",
-      "sourceStatus": "partial genuine native state; original principal body invoked through protected slots and stops on string_decoder",
-      "evidence": "options-engine-check.json",
+      "sourceStatus": "partial genuine native state; original principal body invoked through protected slots and reaches missing process.versions in internal/util",
+      "evidence": "decoder-engine-check.json",
       "remaining": "actual exit dispatch, full process/version/environment/options/config JSON/FIPS and wider startup binding closure; full native lifecycle/security/OOM/browser differential"
     },
     {
@@ -132,7 +134,7 @@
       "area": "native constants metadata and original initializer",
       "sourceStatus": "complete original constants translation unit/header through actual rooted property builder,425target primitive definitions;10binding controls plus43header comparisons/4effects per host",
       "evidence": "constants-engine-check.json",
-      "remaining": "Metadata is not operational backend support; complete startup/util/options closure and actual codec integration remain incomplete"
+      "remaining": "Metadata is not operational backend support; complete startup/util/process/Buffer closure remains incomplete"
     },
     {
       "area": "native engine type predicates",
@@ -145,6 +147,12 @@
       "sourceStatus": "Original parser/declarations/storage/validation/serializers compile unchanged; actual rooted engine values and six authentic bootstrap guards; original internal/options executes",
       "evidence": "options-engine-check.json",
       "remaining": "Full outer CLI/config/security/engine adoption, post-bootstrap metadata, lifecycle/security/OOM and complete startup remain open"
+    },
+    {
+      "area": "complete original native string decoder and StringBytes engine bridge",
+      "sourceStatus": "Two complete unchanged native translation units linked to normal codec packages; real roots, shared/resizable view borrows, strings/external finalizers/accounting and typed callback owners;22controls per host",
+      "evidence": "decoder-engine-check.json",
+      "remaining": "Complete original Buffer/public StringDecoder and StringBytes Write/Size runtime coverage; full OOM/security/worker teardown and original startup"
     }
   ],
   "runtimeConformance": {
@@ -216,19 +224,20 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 32,
+    "packageRevision": 33,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "options-engine-check.json",
+    "evidence": "decoder-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "14options cases per host plus239priorNodecases; separate23-case complete-source C++ component probe per host; original bootstrap reaches string_decoder",
+    "packageRuntimeScope": "22decoder cases per host and253priorNodecases;341engine case observations/95drivers/24expectedfatals; original bootstrap reaches process.versions",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
-    "targetingDebt": "Existing Mozilla Linux triplet/defines remain; linked libuv uses the true Kandelo build and explicit public-layout selector before legacy macros"
+    "targetingDebt": "Existing Mozilla Linux triplet/defines remain; linked libuv uses the true Kandelo build and explicit public-layout selector before legacy macros",
+    "symbolicWasmNamesRetained": true
   },
   "startupPrerequisites": {
     "nodePrivateKeySemantics": {
@@ -321,7 +330,7 @@
     },
     "realmLibrary": {
       "inventory": "realm-library-contracts.md",
-      "implementationEvidence": "options-engine-check.json",
+      "implementationEvidence": "decoder-engine-check.json",
       "originalBodyExecuted": true,
       "originalLoaderClosuresRetained": true,
       "oneOriginalBuiltinCache": true,
@@ -334,14 +343,14 @@
         "canonical errors callbacks",
         "canonical util.privateSymbols"
       ],
-      "principalBootstrapGap": "Original principal body passes options and stops on string_decoder through original buffer/util closure",
+      "principalBootstrapGap": "Original principal body passes native decoder initialization and reaches missing process.versions.openssl at internal/util:78",
       "principalBootstrapCompleted": false,
       "cjsEntry": false,
       "esmEntry": false
     },
     "processConfig": {
       "inventory": "process-config-contracts.md",
-      "evidence": "options-engine-check.json",
+      "evidence": "decoder-engine-check.json",
       "distinctMutableProcessPrototype": true,
       "nativeEmptyInstanceConstructor": true,
       "effectiveReceiverSemantics": true,
@@ -473,14 +482,13 @@
     },
     "stringDecoder": {
       "inventory": "string-decoder-contracts.json",
-      "bindingImplemented": false,
+      "bindingImplemented": true,
       "codecDependencyFilesVerified": 26,
-      "completeUnchangedCodecSourcesCompileOnly": true,
-      "normalProductionRecipeIntegration": false,
+      "completeUnchangedCodecSourcesCompileOnly": false,
+      "normalProductionRecipeIntegration": true,
       "nativeReferenceControls": 13,
       "nativeChunkStateRecords": 280,
-      "guestEvidence": null,
-      "nextBindingStill": "string_decoder",
+      "guestEvidence": "decoder-engine-check.json",
       "completeNativeFilesVerified": 14,
       "sourceReviewScope": "Decoder and StringBytes contracts plus selected Buffer/view helpers; wider closure remains unreviewed",
       "codecPackages": {
@@ -496,9 +504,16 @@
           "WebKit"
         ],
         "evidence": "native-codec-engine-check.json",
-        "linkedIntoNodeEngine": false
+        "linkedIntoNodeEngine": true
       },
-      "originalNativeUnitsCompileAgainstDeclarationsOnly": 2
+      "originalNativeUnitsCompileAgainstDeclarationsOnly": 0,
+      "sharedNativeReferenceControls": 16,
+      "guestCasesPerHost": 22,
+      "completeOriginalNativeUnitsLinked": 2,
+      "publicStringDecoderAccepted": false,
+      "nextStartupGap": "process.versions",
+      "engineOwnership": "real rooted handles, stable/pinned backing spans, shared per-runtime accounting and actual external-string finalizers",
+      "fullOwnershipEquivalence": false
     }
   },
   "nativeDifferentialControls": {
@@ -649,8 +664,8 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "options-engine-check.json",
-      "regressionScope": "Same revision32 engine passes14options cases plus239priorNodecases and7additionalprofiledrivers; separate23-case C++ component artifact",
+      "currentArtifactEvidence": "decoder-engine-check.json",
+      "regressionScope": "Same revision33 engine passes22decoder cases plus253priorNodecases;83Node drivers with24expectedfatal exits",
       "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
@@ -722,42 +737,69 @@
       "typesDriverRuns": 3,
       "optionsCases": 14,
       "optionsEvidence": "options-engine-check.json",
-      "optionsDriverRuns": 10
+      "optionsDriverRuns": 10,
+      "decoderCases": 22,
+      "decoderDriverRuns": 6,
+      "decoderFatalControls": 3
     },
     "Chromium": {
-      "evidence": "options-engine-check.json",
-      "optionsCases": 14,
-      "optionsFailures": 0,
-      "cppCoreComponentCases": 23,
-      "driverRuns": 27,
+      "evidence": "decoder-engine-check.json",
+      "decoderCases": 22,
+      "decoderFailures": 0,
+      "driverRuns": 4,
       "driverFailures": 0,
-      "historicalTypesEvidence": "types-engine-check.json",
-      "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+      "scope": "revision33 original native decoder/StringBytes binding and native job-draining/error/quit controls; no upstream startup acceptance",
+      "historicalRevision32": {
+        "evidence": "options-engine-check.json",
+        "optionsCases": 14,
+        "optionsFailures": 0,
+        "cppCoreComponentCases": 23,
+        "driverRuns": 27,
+        "driverFailures": 0,
+        "historicalTypesEvidence": "types-engine-check.json",
+        "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+      }
     },
     "Firefox": {
-      "evidence": "options-engine-check.json",
-      "optionsCases": 14,
-      "optionsFailures": 0,
-      "cppCoreComponentCases": 23,
-      "driverRuns": 27,
+      "evidence": "decoder-engine-check.json",
+      "decoderCases": 22,
+      "decoderFailures": 0,
+      "driverRuns": 4,
       "driverFailures": 0,
-      "historicalTypesEvidence": "types-engine-check.json",
-      "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+      "scope": "revision33 original native decoder/StringBytes binding and native job-draining/error/quit controls; no upstream startup acceptance",
+      "historicalRevision32": {
+        "evidence": "options-engine-check.json",
+        "optionsCases": 14,
+        "optionsFailures": 0,
+        "cppCoreComponentCases": 23,
+        "driverRuns": 27,
+        "driverFailures": 0,
+        "historicalTypesEvidence": "types-engine-check.json",
+        "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+      }
     },
     "WebKit": {
-      "evidence": "options-engine-check.json",
-      "optionsCases": 14,
-      "optionsFailures": 0,
-      "cppCoreComponentCases": 23,
-      "driverRuns": 27,
+      "evidence": "decoder-engine-check.json",
+      "decoderCases": 22,
+      "decoderFailures": 0,
+      "driverRuns": 4,
       "driverFailures": 0,
-      "historicalTypesEvidence": "types-engine-check.json",
-      "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+      "scope": "revision33 original native decoder/StringBytes binding and native job-draining/error/quit controls; no upstream startup acceptance",
+      "historicalRevision32": {
+        "evidence": "options-engine-check.json",
+        "optionsCases": 14,
+        "optionsFailures": 0,
+        "cppCoreComponentCases": 23,
+        "driverRuns": 27,
+        "driverFailures": 0,
+        "historicalTypesEvidence": "types-engine-check.json",
+        "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
+      }
     }
   },
   "nextWork": [
-    "Implement genuine string_decoder required by original buffer/util startup closure",
-    "Continue startup-required buffer/util/process/native closure and native callback/Promise lifecycle/frame contracts",
+    "Implement truthful native process.versions from actual source/build/library identities without copied V8/native-reference metadata",
+    "Continue startup-required original Buffer/util/process/native closure and native callback/Promise lifecycle/frame contracts",
     "Genuine empty/simple output/errors/jobs/exit and separate CJS/ESM entrypaths on all four hosts",
     "Complete full graph catalog and dependency-ordered roadmap, nested guest Wasm last unless startup requires it; stop for user review before broader implementation"
   ]

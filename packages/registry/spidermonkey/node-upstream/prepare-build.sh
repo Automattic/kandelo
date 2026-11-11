@@ -40,6 +40,11 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/constants-builder.h" \
     "$node_consumer/types.cpp" \
     "$node_consumer/types.h" \
+    "$node_consumer/codecs.cpp" \
+    "$node_consumer/codecs.h" \
+    "$node_consumer/codec-native-api.h" \
+    "$node_consumer/decoder-upstream.cpp" \
+    "$node_consumer/string-bytes-upstream.cpp" \
     "$node_consumer/options.cpp" \
     "$node_consumer/options.h" \
     "$node_consumer/options-native-api.h" \
@@ -66,6 +71,9 @@ python3 "$repo_root/scripts/generate-nodejs-async-metadata.py" \
 python3 "$repo_root/scripts/generate-nodejs-types.py" \
     --manifest "$node_import/sources.json" \
     --output "$mozilla_source/js/src/node-types.generated.h"
+python3 "$repo_root/scripts/prepare-nodejs-codecs.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$shell_sources/codecs-upstream"
 python3 "$repo_root/scripts/prepare-nodejs-options.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/options-upstream"

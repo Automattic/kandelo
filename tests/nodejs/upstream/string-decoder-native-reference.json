@@ -114,7 +114,7 @@
       "name": "incremental-known-output-utf8",
       "status": "pass",
       "detail": {
-        "actual": "A\u00e9\ud83d\ude00",
+        "actual": "Aé😀",
         "state": [
           240,
           159,
@@ -130,7 +130,7 @@
       "name": "incremental-known-output-utf16le",
       "status": "pass",
       "detail": {
-        "actual": "A\ud83d\ude00",
+        "actual": "A😀",
         "state": [
           0,
           222,
@@ -146,7 +146,7 @@
       "name": "incremental-known-output-ascii",
       "status": "pass",
       "detail": {
-        "actual": "AA\u007f",
+        "actual": "AA",
         "state": [
           0,
           0,
@@ -162,7 +162,7 @@
       "name": "incremental-known-output-latin1",
       "status": "pass",
       "detail": {
-        "actual": "A\u00c1\u00ff",
+        "actual": "AÁÿ",
         "state": [
           0,
           0,
@@ -270,5 +270,30 @@
       }
     }
   ],
-  "scope": "Pinned native reference only; no guest implementation or startup evidence"
+  "scope": "Pinned native reference only; no guest implementation or startup evidence",
+  "sharedReference": {
+    "program": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+      "bytes": 147346864,
+      "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+    },
+    "fixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/decoder-native-controls.cjs",
+      "bytes": 491,
+      "sha256": "112c1d35414a860ab3977d685ece513a8238e4e5fe971c611926424c5a26ced6"
+    },
+    "sharedFixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/decoder-shared-controls.js",
+      "bytes": 6555,
+      "sha256": "9fc6db7db3a1f9de2ba56a7bdea7ffd5657da8509703ec0ea430d5e86814618c"
+    },
+    "cases": 16,
+    "matrixRecords": 280,
+    "observationsSha256": "f7725115944c11584a4cab18e579591dcfe3d79b595da541063d09c89e9c289b",
+    "matrixSha256": "9578ec572e8a2e89be24f146ea1af24d77829088401e81fbf805acc6043d2ede",
+    "rawReport": {
+      "path": ".context/node-string-decoder/shared-native-decoder.json",
+      "sha256": "c9979346b93b2c2972586247cacb45eae484eed6aa973de6c666b2a376a566ca"
+    }
+  }
 }
