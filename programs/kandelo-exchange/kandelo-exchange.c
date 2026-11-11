@@ -13,11 +13,14 @@
  *   kandelo-exchange handler remove NAME
  *   kandelo-exchange handler mask NAME
  *       Manage rules in /etc/kandelo/exchange-handlers.d/ (NAME.handler).
- *       Changes take effect on the next batch. */
+ *       Changes take effect on the next batch. `list` judges each rule for
+ *       the account in /etc/kandelo/exchange.conf, as kxchgd does. */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <kandelo/exchange.h>
+#include <pwd.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -28,6 +31,9 @@
 
 #include "kx-rules.h"
 #include "kx-util.h"
+
+/* Where kxchgd reads the handler account. */
+#define KX_CONF "/etc/kandelo/exchange.conf"
 
 extern char **environ;
 
@@ -71,8 +77,11 @@ static const char help_text[] =
 	KX_RULES_ETC ", which take precedence over files of\n"
 	"the same name in " KX_RULES_VENDOR ".\n"
 	"list prints every rule with its source directory and settings, marking\n"
-	"rules that are masked or ignored for unsafe ownership or permissions\n"
-	"(judged for the calling user) or invalid syntax. add writes a new rule,\n"
+	"rules that are masked or ignored for unsafe ownership or permissions or\n"
+	"invalid syntax. It judges them as the exchange agent does, for the\n"
+	"account named by \"user NAME\" in " KX_CONF ", which\n"
+	"handlers run as; when run by root it reads the rules as that account.\n"
+	"list fails if that file names no valid account. add writes a new rule,\n"
 	"replacing one of the same name; the batch directory is given to PROGRAM\n"
 	"as its first argument, before ARG. remove deletes a rule from\n"
 	KX_RULES_ETC ", and mask writes an empty rule there,\n"
@@ -172,10 +181,68 @@ static void rule_path(char *out, size_t size, const char *name)
 	snprintf(out, size, KX_RULES_ETC "/%s%s", name, kx_ends_with(name, ".handler") ? "" : ".handler");
 }
 
+/* The handler account: the `user NAME` line of exchange.conf, read with
+ * kxchgd's rules (programs/kandelo-exchange/kxchgd.c, read_conf) -- comments
+ * and blank lines allowed, any other line invalid -- so `handler list`
+ * judges rules for the account the agent switches to, and refuses a file
+ * the agent would refuse. */
+static int read_handler_account(char *user, size_t size)
+{
+	char line[256];
+	int found = 0;
+	FILE *file = fopen(KX_CONF, "r");
+	if (!file) {
+		fprintf(stderr, "kandelo-exchange: cannot read %s: %s\n", KX_CONF, strerror(errno));
+		return -1;
+	}
+	while (fgets(line, sizeof line, file)) {
+		char key[32], value[128], extra[2];
+		char *hash = strchr(line, '#');
+		int n;
+		if (hash) *hash = '\0';
+		n = sscanf(line, "%31s %127s %1s", key, value, extra);
+		if (n <= 0) continue;
+		if (n == 2 && strcmp(key, "user") == 0 && !found) {
+			snprintf(user, size, "%s", value);
+			found = 1;
+			continue;
+		}
+		fprintf(stderr, "kandelo-exchange: %s: invalid line: %s", KX_CONF, line);
+		fclose(file);
+		return -1;
+	}
+	fclose(file);
+	if (!found) fprintf(stderr, "kandelo-exchange: %s names no user\n", KX_CONF);
+	return found ? 0 : -1;
+}
+
 static int cmd_list(void)
 {
 	static struct kx_rules rules;
-	kx_load_rules(&rules, getuid());
+	char user[128];
+	struct passwd *pw;
+	uid_t handler_uid;
+	if (read_handler_account(user, sizeof user) != 0) return 1;
+	pw = getpwnam(user);
+	if (!pw) {
+		fprintf(stderr, "kandelo-exchange: unknown user %s in %s\n", user, KX_CONF);
+		return 1;
+	}
+	handler_uid = pw->pw_uid;
+	/* The agent reads rules after switching to the account, so a rule it
+	 * cannot open is ignored as unsafe. Root can do the same and see exactly
+	 * what the agent sees; any other caller reads with its own access. This
+	 * process only lists, so the switch need not be undone. */
+	if (getuid() == 0 && handler_uid != 0) {
+		char name[128];
+		gid_t gid = pw->pw_gid;
+		snprintf(name, sizeof name, "%s", pw->pw_name);
+		if (initgroups(name, gid) != 0 || setgid(gid) != 0 || setuid(handler_uid) != 0) {
+			fprintf(stderr, "kandelo-exchange: cannot switch to %s: %s\n", name, strerror(errno));
+			return 1;
+		}
+	}
+	kx_load_rules(&rules, handler_uid);
 	for (int i = 0; i < rules.count; i++) {
 		const struct kx_rule *r = &rules.rule[i];
 		printf("%-28s %s", r->name, r->dir);

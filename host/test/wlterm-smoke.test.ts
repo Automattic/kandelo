@@ -25,7 +25,8 @@
  *     WLTERM_EXIT code=0.
  *
  * The same input path runs under sway's configured WAYLAND_DISPLAY.
- * wlterm exits 0; cage forwards its status and sway is stopped through IPC.
+ * wlterm exits with the shell's status, 0 here; cage forwards it and sway is
+ * stopped through IPC.
  * Normal compositor and shell artifacts are required, never skipped.
  */
 import { describe, expect, it } from "vitest";
@@ -199,12 +200,14 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         expect(out.value, `signal death reported as an exit code.\n${dump()}`)
           .not.toContain("WLTERM_EXIT code=");
 
+        // wlterm exits as a shell reports a signal death, 128 + N, and cage
+        // forwards its client's status.
         const cageCode = await Promise.race([
           cageExit,
           new Promise<number>((_, reject) =>
             setTimeout(() => reject(new Error(`cage timed out.\n${dump()}`)), 25_000)),
         ]);
-        expect(cageCode, `cage exit.\n${dump()}`).toBe(0);
+        expect(cageCode, `cage exit.\n${dump()}`).toBe(128 + SIGKILL);
       } finally {
         await host.destroy().catch(() => {});
       }

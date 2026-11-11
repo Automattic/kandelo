@@ -7,9 +7,10 @@
  *   kandelo-publish --stream --name NAME [--mime TYPE] [--from ID]... -- CMD [ARGS...]
  *       Publish a FIFO and run CMD with its stdout on it. The stream is
  *       declared `complete` only if CMD exits 0, `aborted exit N` or
- *       `aborted signal N` otherwise. (There is deliberately no form that
- *       reads its own stdin: it could not tell a finished producer from a
- *       crashed one.)
+ *       `aborted signal N` otherwise, and kandelo-publish exits with CMD's
+ *       status as a shell reports it (128+N for signal N). (There is
+ *       deliberately no form that reads its own stdin: it could not tell a
+ *       finished producer from a crashed one.)
  *   kandelo-publish --complete PATH
  *   kandelo-publish --abort PATH REASON
  *       Declare how a published stream ended, for programs that manage
@@ -75,7 +76,10 @@ static const char help_text[] =
 	"line of at most 256 bytes. A stream's end can be declared only once.\n"
 	"\n"
 	"Exit status is 0 on success, 64 for invalid arguments, and 1 when\n"
-	"publishing fails or a streamed COMMAND does not exit with status 0.\n"
+	"publishing fails. With --stream, once COMMAND has run the exit status\n"
+	"is COMMAND's, or 128 plus the signal number if a signal ended it; it is\n"
+	"127 if COMMAND could not be started, and 1 if COMMAND exited with\n"
+	"status 0 but the end of the stream could not be declared.\n"
 	"\n"
 	"Options:\n"
 	"      --from ID     record that the output was derived from the exchange\n"
@@ -205,27 +209,42 @@ int main(int argc, char **argv)
 		rc = posix_spawnp(&pid, argv[i], &actions, NULL, argv + i, environ);
 		posix_spawn_file_actions_destroy(&actions);
 		if (rc != 0) {
+			/* 127, as kandelo-exchange run and a shell report a command
+			 * that could not be started; the stream says the same. */
 			errno = rc;
 			kx_stream_end(published, "exit 127");
 			close(out);
-			return die("run", argv[i]);
+			die("run", argv[i]);
+			return 127;
 		}
-		while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+		while (waitpid(pid, &status, 0) < 0) {
+			if (errno == EINTR) continue;
+			/* No status to pass on: the stream must still not look complete. */
+			kx_stream_end(published, "lost the producer's status");
+			close(out);
+			return die("wait for", argv[i]);
 		}
 		char reason[64];
 		const char *abort_reason = NULL;
+		int command_status = 0;
 		if (WIFSIGNALED(status)) {
 			snprintf(reason, sizeof reason, "signal %d", WTERMSIG(status));
 			abort_reason = reason;
+			command_status = 128 + WTERMSIG(status);
 		} else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-			snprintf(reason, sizeof reason, "exit %d", WIFEXITED(status) ? WEXITSTATUS(status) : 1);
+			command_status = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+			snprintf(reason, sizeof reason, "exit %d", command_status);
 			abort_reason = reason;
 		}
 		/* Declared before the last writer closes, so the host sees it at EOF. */
 		int declared = kx_stream_end(published, abort_reason) == 0;
 		if (!declared) die("declare the end of", published);
 		close(out);
-		return abort_reason || !declared ? 1 : 0;
+		/* COMMAND's status, as a shell or `kandelo-exchange run` reports it,
+		 * so a caller can tell how the producer ended. A failure of our own
+		 * after a successful COMMAND must still not read as success. */
+		if (command_status != 0) return command_status;
+		return declared ? 0 : 1;
 	}
 
 	if (i != argc - 1) return usage();

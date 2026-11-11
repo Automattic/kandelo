@@ -20,8 +20,9 @@ $XDG_DATA_HOME/kandelo/game-imports (by default
 beside it, into NAME.unpacked. The copy stays there afterwards, so the
 game can be played again from it. An import may hold at most 1,024 entries
 and 512 MiB, 16 directory levels deep; links, special files, encrypted
-ZIPs and ZIP64 archives are refused. For a DIRECTORY, a new directory
-under game-imports holds only the configuration ScummVM's detection writes.
+ZIPs and ZIP64 archives are refused. For a DIRECTORY, a directory under
+game-imports holds only the configuration ScummVM's detection writes; it
+is the same for every run on that DIRECTORY and replaced each time.
 
 When exactly one game is found, it is started, unless it is a DOS program
 whose kind is uncertain: a .COM or .BAT file, or an LE/LX program without a
@@ -29,8 +30,8 @@ known DOS extender. Otherwise game-play lists what it found and starts the
 one whose number is entered at the terminal; 0 cancels. Choosing needs a
 terminal on standard input. game-play asks the page showing the machine to
 open a terminal running the chosen game's command, with
-kandelo-page-terminal(1); when no page takes the request, it runs the game
-itself.
+kandelo-page-terminal(1); when no page takes the request, or the machine
+has no kandelo-page-terminal, it runs the game itself.
 
 The exit status is 1 when the input cannot be imported or inspected, or
 contains no game it can play; otherwise it is 0, or the game's own status

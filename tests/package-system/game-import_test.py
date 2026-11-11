@@ -201,6 +201,29 @@ class ImportTests(unittest.TestCase):
                 self.assertTrue(request.call_args.args[1])
                 self.assertEqual(game.shlex.split(request.call_args.args[0]), ['dos-play', argv[1]])
 
+    def test_missing_page_terminal_is_a_refusal_not_a_crash(self):
+        with patch.object(game.subprocess, 'run', side_effect=FileNotFoundError):
+            self.assertFalse(game.request_terminal('dos-play /a', True))
+
+    def test_directory_detection_reuses_one_metadata_directory(self):
+        games = self.root / 'games'
+        games.mkdir()
+        (games / 'PLAY.EXE').write_bytes(mz())
+        seen = []
+
+        def detect(root, metadata):
+            seen.append(metadata)
+            (metadata / 'scummvm.ini').write_text('[scummvm]\n')
+            return []
+
+        with patch.dict(os.environ, {'XDG_DATA_HOME': str(self.root / 'data')}):
+            for _ in range(2):
+                with patch.object(game, 'detect', side_effect=detect), self.assertRaises(game.ImportRejected):
+                    game.main(['play', str(games)])
+        self.assertEqual(seen[0], seen[1])
+        detections = sorted((self.root / 'data/kandelo/game-imports').glob('detection-*'))
+        self.assertEqual(detections, [seen[0]])
+
     def test_streams_are_not_opened_as_game_files(self):
         source = self.root / 'stream'
         os.mkfifo(source)
