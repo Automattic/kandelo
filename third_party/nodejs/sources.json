@@ -3474,6 +3474,13 @@
       "builtinId": null
     },
     {
+      "path": "src/node_exit_code.h",
+      "role": "provenance",
+      "bytes": 3271,
+      "sha256": "7f1429f80db6bf171f1b17133268a141b4dcef7cc4dcb33483fa9e3f24f7957d",
+      "builtinId": null
+    },
+    {
       "path": "src/node_realm.cc",
       "role": "provenance",
       "bytes": 14435,

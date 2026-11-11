@@ -34,6 +34,7 @@
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
+#include "shell/node-upstream/task-queue.h"
 #include "shell/node-upstream/timers.h"
 
 namespace kandelo::node {
@@ -41,7 +42,7 @@ namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3 };
-enum Slot { Status, Global, Process, Primordials, Builtins, Util, Config, Timers, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, Builtins, Util, Config, Timers, TaskQueue, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -230,6 +231,15 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
       JS::SetReservedSlot(state, Timers, JS::ObjectValue(*binding));
     }
   }
+  else if (name == "task_queue") {
+    JS::Value cached = JS::GetReservedSlot(state, TaskQueue);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = CreateTaskQueueBinding(cx, runtime, state);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, TaskQueue, JS::ObjectValue(*binding));
+    }
+  }
   else if (name == "module_wrap") binding = GetCurrentContextModuleWrapBinding(cx, runtime);
   else if (name == "errors") binding = GetErrorStackBinding(cx);
   else if (name == "util") {
@@ -319,6 +329,10 @@ JSObject* AllocateRealmLibraryState(JSContext* cx) {
   JS::SetReservedSlot(state, Status, JS::Int32Value(Initializing));
   JS::SetReservedSlot(state, NodeStatus, JS::Int32Value(NodeNotStarted));
   JS::SetReservedSlot(state, Global, JS::ObjectValue(*JS::CurrentGlobalOrNull(cx))); return state;
+}
+bool RealmLibraryIsFailed(JSObject* state) {
+  MOZ_RELEASE_ASSERT(JS::GetClass(state) == &kRealm);
+  return JS::GetReservedSlot(state, Status) == JS::Int32Value(Failed);
 }
 bool CheckRealmLibraryActive(JSContext* cx, JS::HandleObject state) {
   MOZ_RELEASE_ASSERT(JS::GetClass(state) == &kRealm);

@@ -31,19 +31,23 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/realm.h" \
     "$node_consumer/timers.cpp" \
     "$node_consumer/timers.h" \
+    "$node_consumer/task-queue.cpp" \
+    "$node_consumer/task-queue.h" \
     "$node_consumer/per-context.h" "$shell_sources/"
 # Keep the portable registry's include names independent of Mozilla shell paths.
 # Mozilla's checker treats js/src as the root of internal header include names.
 cp "$node_import/native/builtin-source-registry.h" "$mozilla_source/js/src/"
-python3 - "$node_import" "$mozilla_source/js/src/node-env-properties.h" <<'PY'
+python3 - "$node_import" "$mozilla_source/js/src" <<'PY'
 import hashlib, json, pathlib, sys
-root, output = map(pathlib.Path, sys.argv[1:])
-record = next(r for r in json.loads((root/'sources.json').read_bytes())['files']
-              if r['path'] == 'src/env_properties.h')
-source = (root/'upstream'/record['path']).read_bytes()
-if len(source) != record['bytes'] or hashlib.sha256(source).hexdigest() != record['sha256']:
-    raise ValueError('original Node env_properties.h identity mismatch')
-output.write_bytes(source)
+root, output_dir = map(pathlib.Path, sys.argv[1:])
+records = json.loads((root/'sources.json').read_bytes())['files']
+for source_name, output_name in [('src/env_properties.h', 'node-env-properties.h'),
+                                 ('src/node_exit_code.h', 'node-exit-code.h')]:
+    record = next(r for r in records if r['path'] == source_name)
+    source = (root/'upstream'/record['path']).read_bytes()
+    if len(source) != record['bytes'] or hashlib.sha256(source).hexdigest() != record['sha256']:
+        raise ValueError('original Node header identity mismatch: ' + source_name)
+    (output_dir/output_name).write_bytes(source)
 PY
 
 host_sdk_flags=()

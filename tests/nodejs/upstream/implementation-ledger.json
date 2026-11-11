@@ -10,7 +10,7 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 493,
+    "importedFiles": 494,
     "taskQueuePartialCatalog": "task-queue-contracts.json"
   },
   "implementation": [
@@ -47,8 +47,8 @@
     {
       "area": "shared Node realm and native binding loader",
       "sourceStatus": "partial native owner implemented; complete original realm library loader executes through privileged Node-host controls",
-      "remaining": "principal node body stops on missing task_queue; remaining native closure and web/thread/ownership/env stages, full lifecycle/security/OOM and four-host startup",
-      "evidence": "timers-engine-check.json"
+      "remaining": "principal node body stops on missing async_wrap; remaining native closure and web/thread/ownership/env stages, full lifecycle/security/OOM and four-host startup",
+      "evidence": "task-queue-engine-check.json"
     },
     {
       "area": "structured Error stack/CallSite/limit contracts",
@@ -112,9 +112,9 @@
     },
     {
       "area": "task queue and native callback scope prerequisites",
-      "sourceStatus": "partial catalog and selected Node-host shell/native probes; native task_queue remains missing",
-      "evidence": "task-queue-gap-result.json",
-      "remaining": "actual binding, native error routing, nested kept-object checkpoint guard, async/frame/callback scopes and unchanged JS policy integration"
+      "sourceStatus": "partial native state/engine queue/checkpoint binding;26controls pass on each host, full native async/fatal scopes still incomplete",
+      "evidence": "task-queue-engine-check.json",
+      "remaining": "actual async_wrap IDs/resources/frames/common callback scopes, assigned promise contexts and full native fatal/exit lifecycle"
     }
   ],
   "runtimeConformance": {
@@ -186,17 +186,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 27,
+    "packageRevision": 28,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "timers-libuv-engine-check.json",
+    "evidence": "task-queue-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "Real libuv timer owner/loop on all four hosts plus prior Node engine/realm cases; original principal body still stops on task_queue",
+    "packageRuntimeScope": "26native task queue/enum cases per host and162priorNodecases; original principal body reaches missing async_wrap",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "Existing Mozilla Linux triplet/defines remain; linked libuv uses the true Kandelo build and explicit public-layout selector before legacy macros"
   },
@@ -291,7 +291,7 @@
     },
     "realmLibrary": {
       "inventory": "realm-library-contracts.md",
-      "implementationEvidence": "timers-libuv-engine-check.json",
+      "implementationEvidence": "task-queue-engine-check.json",
       "originalBodyExecuted": true,
       "originalLoaderClosuresRetained": true,
       "oneOriginalBuiltinCache": true,
@@ -304,14 +304,14 @@
         "canonical errors callbacks",
         "canonical util.privateSymbols"
       ],
-      "principalBootstrapGap": "Native complete-body invocation passes timers and stops on missing task_queue through original internal/timers",
+      "principalBootstrapGap": "Original complete principal body passes timers/task_queue/exit enum and stops on missing async_wrap at internal/async_hooks:14 through internal/timers:106",
       "principalBootstrapCompleted": false,
       "cjsEntry": false,
       "esmEntry": false
     },
     "processConfig": {
       "inventory": "process-config-contracts.md",
-      "evidence": "timers-libuv-engine-check.json",
+      "evidence": "task-queue-engine-check.json",
       "distinctMutableProcessPrototype": true,
       "nativeEmptyInstanceConstructor": true,
       "effectiveReceiverSemantics": true,
@@ -326,7 +326,7 @@
     },
     "timers": {
       "inventory": "timers-contracts.md",
-      "evidence": "timers-libuv-engine-check.json",
+      "evidence": "task-queue-engine-check.json",
       "actualGuestClock": true,
       "runtimeSharedInfoArrays": true,
       "realDeadlineAndReferences": true,
@@ -347,14 +347,21 @@
     "taskQueue": {
       "inventory": "task-queue-contracts.json",
       "explanation": "task-queue-contracts.md",
-      "evidence": "task-queue-gap-result.json",
-      "bindingImplemented": false,
+      "evidence": "task-queue-engine-check.json",
+      "bindingImplemented": true,
       "actualEnginePrimitivesObserved": true,
       "nativeNodeExceptionRouting": false,
-      "nestedKeptObjectCleanupCorrect": false,
+      "nestedKeptObjectCleanupCorrect": true,
       "nativeAsyncCallbackScopesComplete": false,
       "originalTaskQueuesModuleEquivalence": false,
-      "probeScope": "Node outer host, existing shell primitives only; guest error exit3 and within-job WeakRef collection are measured gaps, not passing Node semantics"
+      "probeScope": "26raw task queue/enum controls on each host with same bytes; prior162Nodecases; not successful Node startup",
+      "bindingComplete": false,
+      "historicalShellGapEvidence": "task-queue-gap-result.json",
+      "rejectionIdentityAndReasonDelivered": true,
+      "assignedPromiseAsyncContexts": false,
+      "activeModuleEvaluationCheckpoint": false,
+      "fullFatalExitAtExit": false,
+      "nativeProcessExceptionCallbackSeam": true
     }
   },
   "nativeDifferentialControls": {
@@ -429,9 +436,10 @@
       "reference": "Node26.13.0Darwinarm64",
       "cases": 6,
       "failures": 0,
-      "evidence": "task-queue-gap-result.json",
+      "evidence": "task-queue-native-reference.json",
       "guestRun": false,
-      "limits": "Already bootstrapped direct native binding reference; guest shell primitives measured separately, native task_queue remains missing"
+      "limits": "Six already-bootstrapped raw binding references; fourteen native exit enum values/attributes compared separately. Not full async/fatal policy or startup equivalence",
+      "nativeExitCodeConstants": 14
     }
   },
   "focusedGuestEngineControls": {
@@ -457,8 +465,8 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "timers-libuv-engine-check.json",
-      "regressionScope": "Same revision27 libuv-linked artifact passes 27 timers plus 135 prior cases and drivers; raw reports retained in .context/node-uv-integration",
+      "currentArtifactEvidence": "task-queue-engine-check.json",
+      "regressionScope": "Same revision28 artifact passes26taskqueue cases plus162priorNodecases and49Nodeprocess drivers; current raw reports retained in .context/node-task-queue-impl",
       "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
@@ -493,7 +501,7 @@
       "processConfigDriverRuns": 3,
       "processConfigDriverFailures": 0,
       "processConfigSuccessHostDiagnostics": 0,
-      "timersEvidence": "timers-libuv-engine-result.json",
+      "timersEvidence": "task-queue-engine-check.json",
       "timersCases": 27,
       "timersFailures": 0,
       "timersDriverRuns": 8,
@@ -505,35 +513,47 @@
       "taskQueueShellObservationDrivers": 3,
       "taskQueueShellPrimitiveObservations": 3,
       "taskQueueShellConfirmedGaps": 2,
-      "taskQueueBindingCases": "not implemented"
+      "taskQueueShellGapScope": "historical revision27 ordinary shell probes; current native binding/checkpoint evidence is separate",
+      "taskQueueBindingCases": 26,
+      "priorTimersEvidence": "timers-libuv-engine-result.json",
+      "taskQueueEvidence": "task-queue-engine-check.json",
+      "taskQueueDriverRuns": 13,
+      "taskQueueDriverFailures": 0,
+      "taskQueueFatalControls": 5,
+      "taskQueueFatalExpectedHostDiagnosticsEach": 1,
+      "taskQueueExplicitDiagnosticControls": 2,
+      "taskQueueDetachedStateErrorExit": 3
     },
     "Chromium": {
-      "evidence": "timers-libuv-engine-check.json",
-      "timersCases": 27,
-      "timersFailures": 0,
+      "evidence": "task-queue-engine-check.json",
+      "taskQueueCases": 26,
+      "taskQueueFailures": 0,
       "driverRuns": 4,
       "driverFailures": 0,
-      "scope": "timer binding/engine controls, natural unref exits and callback quit; not Node startup or full backend compatibility"
+      "historicalTimerEvidence": "timers-libuv-engine-check.json",
+      "scope": "revision28 task queue/enum binding controls, natural queued exit, quit23 and preserved original unhandled error3; not Node startup or full async/fatal scope compatibility"
     },
     "Firefox": {
-      "evidence": "timers-libuv-engine-check.json",
-      "timersCases": 27,
-      "timersFailures": 0,
+      "evidence": "task-queue-engine-check.json",
+      "taskQueueCases": 26,
+      "taskQueueFailures": 0,
       "driverRuns": 4,
       "driverFailures": 0,
-      "scope": "timer binding/engine controls, natural unref exits and callback quit; not Node startup or full backend compatibility"
+      "historicalTimerEvidence": "timers-libuv-engine-check.json",
+      "scope": "revision28 task queue/enum binding controls, natural queued exit, quit23 and preserved original unhandled error3; not Node startup or full async/fatal scope compatibility"
     },
     "WebKit": {
-      "evidence": "timers-libuv-engine-check.json",
-      "timersCases": 27,
-      "timersFailures": 0,
+      "evidence": "task-queue-engine-check.json",
+      "taskQueueCases": 26,
+      "taskQueueFailures": 0,
       "driverRuns": 4,
       "driverFailures": 0,
-      "scope": "timer binding/engine controls, natural unref exits and callback quit; not Node startup or full backend compatibility"
+      "historicalTimerEvidence": "timers-libuv-engine-check.json",
+      "scope": "revision28 task queue/enum binding controls, natural queued exit, quit23 and preserved original unhandled error3; not Node startup or full async/fatal scope compatibility"
     }
   },
   "nextWork": [
-    "Implement task_queue and common async callback scopes over the actual engine queue; route original Node errors and guard nested kept-object cleanup, preserving measured FIFO/reentrancy. Original principal bootstrap still lacks task_queue",
+    "Implement actual async_wrap shared hook/ID/resource/frame and common native callback scopes over the real engine queue; original principal body now reaches async_wrap, and full fatal/exit policy remains incomplete",
     "Finish truthful process/config/options/exit lifecycle and complete timer phase/error integration; no placeholder backends or copied native-reference fields",
     "Continue complete backend catalog while integrating startup; actual user CJS/ESM and four-host startup remain unrun"
   ]

@@ -25,6 +25,8 @@ enum ExitInfoField { kExiting = 0, kExitCode, kHasExitCode, kExitInfoFieldCount 
 JSObject* GetRuntimeExitInfo(JSContext* cx, JS::HandleObject runtime);
 JSObject* GetRuntimeTimerState(JSContext* cx, JS::HandleObject runtime, bool create);
 bool HasRuntimeTimerState(JSObject* runtime);
+JSObject* GetRuntimeTaskState(JSContext* cx, JS::HandleObject runtime, bool create);
+bool HasRuntimeTaskState(JSObject* runtime);
 bool RegisterRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime,
                                    JS::HandleObject realm, JS::HandleObject process);
 JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime);

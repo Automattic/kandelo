@@ -81,5 +81,8 @@ check("actual-native-rejection-event-promise-and-reason-identity", () => {
   queue.runMicrotasks();
 });
 writeSync(1, JSON.stringify({ kind: "task-queue-native-reference", version: process.version,
+  exitCodes: internalBinding("errors").exitCodes,
+  exitCodesDescriptor: Object.getOwnPropertyDescriptor(internalBinding("errors"), "exitCodes"),
+  exitCodeEntryDescriptor: Object.getOwnPropertyDescriptor(internalBinding("errors").exitCodes, "kGenericUserError"),
   cases: observations.length, failures: 0, observations,
   limits: ["Already bootstrapped pinned native runtime; not guest startup or full queue/async conformance"] }) + "\n");

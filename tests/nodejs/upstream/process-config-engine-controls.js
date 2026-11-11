@@ -76,7 +76,7 @@ check('native-node-stage-uses-protected-state-and-preserves-actual-missing-backe
   failed=context();failed.builtins=failed.realm.internalBinding('builtins');const exports=api.getContextExports(failed.global),descriptor=Object.getOwnPropertyDescriptor(exports,'primordials');let reads=0;
   Object.defineProperty(exports,'primordials',{get(){reads++;throw new Error('diagnostic container used')},configurable:true});
   let error;try{error=thrown(()=>api.runNodeBootstrap(failed.global))}finally{Object.defineProperty(exports,'primordials',descriptor)}
-  assertEq(reads,0);assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message.includes("binding 'task_queue'"),true);
+  assertEq(reads,0);assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message.includes("binding 'async_wrap'"),true);
   assertEq(error.stack.includes('node:internal/timers:'),true);
   failed.error=error;
 });

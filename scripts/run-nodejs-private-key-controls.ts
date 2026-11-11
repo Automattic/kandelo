@@ -7,8 +7,8 @@ import { runCentralizedProgram } from "../host/test/centralized-test-helper";
 
 const [programArgument, reportArgument, modeArgument = "private-keys"] = process.argv.slice(2);
 if (!programArgument || !reportArgument || process.argv.length > 5 ||
-    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config", "timers"].includes(modeArgument)) {
-  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config|timers]");
+    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config", "timers", "task-queue"].includes(modeArgument)) {
+  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config|timers|task-queue]");
 }
 const perContext = modeArgument === "per-context";
 const synthetic = modeArgument === "synthetic-modules";
@@ -16,14 +16,15 @@ const moduleWrap = modeArgument === "module-wrap";
 const dynamicImport = modeArgument === "dynamic-import";
 const errorStack = modeArgument === "error-stack";
 const nativeTimers = modeArgument === "timers";
+const nativeTasks = modeArgument === "task-queue";
 const processConfig = modeArgument === "process-config";
 const realmLibrary = modeArgument === "realm-library";
-const expectedKind = nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
-const expectedCases = nativeTimers ? 27 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
+const expectedKind = nativeTasks ? "native-task-queue-controls" : nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
+const expectedCases = nativeTasks ? 26 : nativeTimers ? 27 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
 const program = resolve(programArgument);
 const reportPath = resolve(reportArgument);
 const kernel = resolveBinary("kernel.wasm");
-const fixturePath = resolve(nativeTimers ? "tests/nodejs/upstream/timers-engine-controls.js" : processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
+const fixturePath = resolve(nativeTasks ? "tests/nodejs/upstream/task-queue-engine-controls.js" : nativeTimers ? "tests/nodejs/upstream/timers-engine-controls.js" : processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
   : "tests/nodejs/upstream/private-key-engine-controls.js");
 const fixture = readFileSync(fixturePath, "utf8");
 function identity(path: string) {
@@ -113,6 +114,36 @@ if (realmLibrary) {
       expect(result.stderr.includes("Node internal loaders registration invariant"), JSON.stringify(result));
       expect(!result.stdout.includes("UNEXPECTED_"), JSON.stringify(result));
     });
+}
+if (nativeTasks) {
+  const setup = "__kandeloUpstreamTest.initializeContext();const realm=__kandeloUpstreamTest.initializeRealm();const queue=realm.internalBinding('task_queue');";
+  for (const [name, operation, assertion] of [
+    ["enqueue-function-invariant", "queue.enqueueMicrotask(undefined)", "Node microtask function invariant"],
+    ["tick-function-invariant", "queue.setTickCallback(false)", "Node task queue callback function invariant"],
+    ["reject-function-invariant", "queue.setPromiseRejectCallback({})", "Node task queue callback function invariant"],
+    ["unregistered-tick-invariant", "queue.tickInfo[0]=1;drainJobQueue()", "Node tick callback was not registered"],
+    ["unregistered-rejection-invariant", "Promise.reject({})", "Node promise rejection callback was not registered"],
+  ]) {
+    await run(name, ["js", "--kandelo-test-upstream", "-e", setup + "try{" + operation + ";print('UNEXPECTED_RETURN')}catch(error){print('UNEXPECTED_CATCH')}"], (result) => {
+      expect(result.exitCode === 132 && result.stderr.includes(assertion), JSON.stringify(result));
+      expect(result.hostDiagnostics.length === 1 && !result.stdout.includes("UNEXPECTED_"), JSON.stringify(result));
+    });
+  }
+  await run("queued-job-natural-exit", ["js", "--kandelo-test-upstream", "-e", setup + "queue.enqueueMicrotask(()=>print('MICROTASK_DONE'));"], (result) => {
+    expect(result.exitCode === 0 && result.stdout.trim() === "MICROTASK_DONE" && result.stderr === "" && result.hostDiagnostics.length === 0, JSON.stringify(result));
+  });
+  await run("queued-job-quit-status", ["js", "--kandelo-test-upstream", "-e", setup + "queue.enqueueMicrotask(()=>quit(23));"], (result) => {
+    expect(result.exitCode === 23 && result.stderr === "" && result.hostDiagnostics.length === 0, JSON.stringify(result));
+  });
+  await run("detached-live-tick-state-is-an-explicit-failure", ["js", "--kandelo-test-upstream", "-e", setup + "detachArrayBuffer(queue.tickInfo.buffer);try{drainJobQueue()}catch(error){if(!error.message.includes('tickInfo backing array'))throw error;print('DETACHED_TICK_STATE_REJECTED')}"], (result) => {
+    expect(result.exitCode === 3 && result.stdout.trim() === "DETACHED_TICK_STATE_REJECTED" && result.stderr.includes("tickInfo backing array") && result.hostDiagnostics.length === 0, JSON.stringify(result));
+  });
+  await run("promise-handler-exceptions-are-reported-without-false-exit", ["js", "--kandelo-test-upstream", "-e", setup + "let calls=0;queue.setPromiseRejectCallback(()=>{calls++;throw new Error('PROMISE_REJECT_HANDLER_SENTINEL')});const promise=Promise.reject({});promise.catch(()=>{});queue.runMicrotasks();if(calls!==2)throw new Error('callback count');print('REJECTION_DIAGNOSTIC_ONLY')"], (result) => {
+    expect(result.exitCode === 0 && result.stdout.trim() === "REJECTION_DIAGNOSTIC_ONLY" && result.stderr.includes("PROMISE_REJECT_HANDLER_SENTINEL") && result.hostDiagnostics.length === 0, JSON.stringify(result));
+  });
+  await run("assigned-promise-async-context-remains-explicit", ["js", "--kandelo-test-upstream", "-e", setup + "let calls=0,reject;queue.setPromiseRejectCallback(()=>calls++);const symbols=__kandeloUpstreamTest.inspectContext().perIsolateSymbols;const promise=new Promise((resolve,r)=>reject=r);promise[symbols.async_id_symbol]=1;promise[symbols.trigger_async_id_symbol]=0;reject({});promise.catch(()=>{});queue.runMicrotasks();if(calls!==0)throw new Error('fabricated async context');print('ASSIGNED_ASYNC_CONTEXT_GAP')"], (result) => {
+    expect(result.exitCode === 0 && result.stdout.trim() === "ASSIGNED_ASYNC_CONTEXT_GAP" && result.stderr.includes("Native promise async-context entry is not implemented") && result.hostDiagnostics.length === 0, JSON.stringify(result));
+  });
 }
 if (nativeTimers) {
   await run("timer-callback-quit-preserves-requested-shell-exit", ["js", "--kandelo-test-upstream", "-e",

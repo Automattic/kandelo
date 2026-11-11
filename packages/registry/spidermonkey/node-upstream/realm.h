@@ -12,6 +12,7 @@ bool RejectRepeatedRealmLibraryInitialization(JSContext* cx, JS::HandleObject st
 // Executes only the original node.js body, not web/switches/bootstrap completion.
 bool RunNodeBootstrap(JSContext* cx, JS::HandleObject state);
 bool CheckRealmLibraryActive(JSContext* cx, JS::HandleObject state);
+bool RealmLibraryIsFailed(JSObject* state);
 JSObject* RealmLibrarySnapshot(JSContext* cx, JS::HandleObject state, bool inspect);
 }  // namespace kandelo::node
 

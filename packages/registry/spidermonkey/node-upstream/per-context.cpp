@@ -26,6 +26,7 @@
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/module-wrap.h"
 #include "shell/node-upstream/realm.h"
+#include "shell/node-upstream/task-queue.h"
 #include "shell/node-upstream/timers.h"
 
 namespace kandelo::node {
@@ -44,7 +45,7 @@ static constexpr SymbolSpec kSymbols[] = {
 static_assert(std::size(kSymbols) == 49);
 
 enum Phase { Initializing = 1, Ready = 2, Failed = 3 };
-enum RuntimeSlot { RuntimePhase, ContextKey, ExitInfo, TimerBase, TimerState,
+enum RuntimeSlot { RuntimePhase, ContextKey, ExitInfo, TimerBase, TimerState, TaskState,
                    PrincipalRealm, PrincipalProcess, FirstSymbol };
 static const JSClass kRuntimeClass = {
     "KandeloNodeRuntime", JSCLASS_HAS_RESERVED_SLOTS(FirstSymbol + std::size(kSymbols))};
@@ -317,6 +318,26 @@ JSObject* GetRuntimeTimerState(JSContext* cx, JS::HandleObject runtime, bool cre
       state = CreateRuntimeTimerState(cx, JS::GetReservedSlot(runtime, TimerBase).toNumber());
       if (!state) return nullptr;
       JS::SetReservedSlot(runtime, TimerState, JS::ObjectValue(*state));
+    }
+  }
+  if (state && !JS_WrapObject(cx, &state)) return nullptr;
+  return state;
+}
+bool HasRuntimeTaskState(JSObject* runtime) {
+  return runtime && JS::GetClass(runtime) == &kRuntimeClass &&
+         JS::GetReservedSlot(runtime, TaskState).isObject();
+}
+JSObject* GetRuntimeTaskState(JSContext* cx, JS::HandleObject runtime, bool create) {
+  if (!RuntimeReady(cx, runtime)) return nullptr;
+  JS::RootedObject state(cx);
+  {
+    JSAutoRealm home(cx, runtime);
+    JS::Value value = JS::GetReservedSlot(runtime, TaskState);
+    if (value.isObject()) state = &value.toObject();
+    else if (create) {
+      state = CreateRuntimeTaskState(cx);
+      if (!state) return nullptr;
+      JS::SetReservedSlot(runtime, TaskState, JS::ObjectValue(*state));
     }
   }
   if (state && !JS_WrapObject(cx, &state)) return nullptr;

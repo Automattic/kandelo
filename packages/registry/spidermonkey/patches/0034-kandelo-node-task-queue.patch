@@ -1,0 +1,73 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -188,6 +188,7 @@
+ #include "shell/kandelo-node-bootstrap.h"
+ #include "shell/node-upstream/per-context.h"
+ #include "shell/node-upstream/private-key-test-api.h"
++#include "shell/node-upstream/task-queue.h"
+ #include "shell/node-upstream/timers.h"
+ #include "shell/OSObject.h"
+ #include "shell/ShellModuleObjectWrapper.h"
+@@ -3494,6 +3495,14 @@
+   MOZ_ASSERT(!JS_IsExceptionPending(cx));
+ 
+   AutoRealm ar(cx, global);
++  if (kandelo::node::HasRuntimeTaskState(GetShellContext(cx)->upstreamNodeRuntime.get())) {
++    // The genuine queue supplies the pending job exception. Its native Node
++    // owner handles or preserves it before the shell's reporting policy runs.
++    if (!closure(cx) && JS_IsExceptionPending(cx) &&
++        kandelo::node::HandleRuntimeJobException(cx)) return;
++    AutoReportException are(cx);
++    return;
++  }
+   AutoReportException are(cx);
+   if (!closure(cx)) {
+     return;
+@@ -3734,7 +3743,7 @@
+ static bool UpstreamNodeJobCheckpoint(JSContext* cx, bool* yield) {
+   ShellContext* sc = GetShellContext(cx);
+   if (sc->quitting) return false;
+-  js::RunJobs(cx);
++  if (!kandelo::node::CheckpointRuntimeTasks(cx)) return false;
+   if (sc->quitting) return false;
+   MaybeRunFinalizationRegistryCleanupTasks(cx);
+   *yield = KandeloSocketHasWatches();
+@@ -3748,8 +3757,8 @@
+   }
+ 
+   while (true) {
+-    // Run microtasks.
+-    js::RunJobs(cx);
++    // The native Node owner supplies its real tick/microtask checkpoint.
++    if (!kandelo::node::CheckpointRuntimeTasks(cx)) return sc->quitting;
+     if (sc->quitting) {
+       return true;
+     }
+@@ -3907,6 +3916,7 @@
+     JS::PromiseRejectionHandlingState state, void* data) {
+   AutoReportException are(cx);
+ 
++  if (kandelo::node::ForwardRuntimePromiseRejection(cx, promise, state)) return;
+   if (!TrackUnhandledRejections(cx, promise, state)) {
+     return;
+   }
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -97,6 +97,7 @@
+   void runJobs(JSContext* cx) override;
+   bool empty() const override;
+   bool isDrainingStopped() const override { return interrupted_; }
++  bool isDraining() const { return draining_; }
+ 
+   // If we are currently in a call to runJobs(), make that call stop processing
+   // jobs once the current one finishes, and return. If we are not currently in
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -35,6 +35,7 @@
+     "node-upstream/per-context.cpp",
+     "node-upstream/private-key-test-api.cpp",
+     "node-upstream/realm.cpp",
++    "node-upstream/task-queue.cpp",
+     "node-upstream/timers.cpp",
+ ]
+ 

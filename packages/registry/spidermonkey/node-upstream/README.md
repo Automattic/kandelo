@@ -71,3 +71,15 @@ job checkpoints at callback boundaries. Existing non-libuv native watches use a
 bounded NOWAIT bridge; the native-only path blocks in libuv's poller. Public
 layout invariants are checked before libuv writes allocated state. Full async
 callback scopes, fatal recovery and wider startup remain separate unfinished work.
+
+`task-queue.cpp` supplies protected shared tick flags and retained native
+callback registrations over the actual engine job queue. Native job adapters
+trace arbitrary callables without a second FIFO or Promise wrapper. Nested
+checkpoints return before kept-object cleanup. The native checkpoint invokes
+the registered original tick callback from live flags; microtask-only entry
+stays separate. Job errors can enter the actual process `_fatalException`
+callback, preserving failures when that policy cannot handle them. Full fatal
+exit/at-exit, AsyncWrap/resource scopes, assigned promise async contexts and
+active module-evaluation checkpoints remain explicit unfinished contracts.
+The errors binding expands the complete original exit-code enum header with
+native property attributes. Constants do not establish process-exit support.

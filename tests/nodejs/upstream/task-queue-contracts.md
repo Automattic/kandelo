@@ -3,7 +3,9 @@
 Target: unchanged Node.js 26.13.0 at
 `18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. This is a partial backend
 inventory and startup implementation order, not a completed binding or the
-full backend roadmap. Exact reviewed source identities, literal consumers
+full backend roadmap. The raw native binding is now partially implemented;
+original public task-queue modules and complete async/fatal policy remain
+unfinished. Exact reviewed source identities, literal consumers
 and selected runtime observations are in
 [task-queue-contracts.json](task-queue-contracts.json) and
 [task-queue-gap-result.json](task-queue-gap-result.json).
@@ -84,14 +86,14 @@ observations across three isolated guest processes establish:
   immediately before that checkpoint. The selected pinned native Node control
   keeps the current job's target alive across its nested checkpoint.
 
-Source review explains the two gaps. `InternalJobQueue::runJobs` catches job
+The revision-27 source review explains the two gaps. `InternalJobQueue::runJobs` catches job
 exceptions and reports them through the shell's script-environment preparer.
 `js::RunJobs` calls `ClearKeptObjects` even when its underlying queue returns
 early because a drain is already active. Wrapping the shell globals would
 inherit these policies. Reuse the actual engine queue with native Node error
 routing and an outer-checkpoint guard that prevents nested kept-object cleanup.
-The existing script-environment preparer is a candidate exception entry point;
-its integration and behavior still require implementation and validation.
+The revision-28 integration below uses the existing script-environment preparer
+as the native job-exception seam.
 No outside runtime defect or workaround is claimed by these shell API probes.
 
 Six separately executed pinned native reference controls cover binding layout,
@@ -108,24 +110,68 @@ including web bootstrap, streams, networking and test/benchmark runners. This
 is an exact-spelling search over the pinned import, not complete dynamic,
 conditional, worker or exceptional reachability accounting.
 
-## Startup implementation order
+## Native integration and remaining startup order
 
-1. Add protected environment task state and per-realm binding admission, then
-   native enqueue/checkpoint and rejection registration over the real engine
-   queue. Preserve the observed FIFO and nested suppression; correct Node
-   exception routing and nested kept-object cleanup at the owning seam.
-2. Implement the native async ID/resource/frame and common callback-scope
+Revision 28 implements the six raw export/shared-state entries with protected
+environment state and per-realm binding admission. Native job adapters retain
+actual callables in traced slots and enqueue into the real engine FIFO; they
+do not wrap a Promise or supply a second queue. The actual engine draining flag
+guards nested native and shell checkpoints before kept-object cleanup. Live
+flags use Node's exact-one test. Outer native checkpoints dispatch the retained
+tick callback with the principal process receiver; microtask-only entry stays
+separate. Invalid functions and missing registrations preserve native assertions.
+
+The script-environment preparer forwards actual job exceptions to the native
+owner while its checkpoint is active. A callable, mutable principal process
+`_fatalException` receives the original error and `fromPromise=false`; every
+result except exactly false is treated as handled, matching that native seam.
+Missing/throwing/exactly-false policy stops the checkpoint and preserves the
+actual error instead of claiming a handled error or successful process exit.
+Full fatal exit/at-exit and original global uncaught-exception JS policy remain
+unfinished. The full native async-resource callback scope is not implemented.
+
+Actual rejected promises/reasons and handler-added events reach the registered
+native callback with explicit event translation. Callback errors are reported
+without a false shell error exit. Promises carrying assigned async IDs encounter
+an explicit missing-context diagnostic instead of invented ID/resource state.
+Checkpoints during active module evaluation also fail explicitly. No complete
+AsyncWrap/frame/hook, rejection-policy or public queue compatibility follows.
+
+The unchanged principal body first reached absent `errors.exitCodes`; this
+intermediate TypeError and the first 24-of-25 control result remain retained.
+Importing the complete pinned native enum header and expanding its macro
+supplies all fourteen constants with native attributes. Their values match
+the pinned executable. This is constant identity, not process-exit support.
+Original bootstrap now reaches missing `async_wrap` at internal/async_hooks:14
+through internal/timers:106. Original stack-limit policy still lacks constants.
+
+Twenty-six selected controls pass on Node, Chromium, Firefox and WebKit using
+identical engine/kernel bytes, including actual FIFO, nested WeakRef liveness,
+moving GC, cross-realm promises/callbacks, original failure identity and libuv
+checkpoint integration. Separate drivers retain natural job draining, quit
+status, unsupported/error boundaries and fatal assertions. The same artifact
+passes the prior 162 cases on Node. Six native references and fourteen enum
+values are checked separately. Exact artifacts, source identities, failures,
+diagnostics and limits are in
+[task-queue-engine-check.json](task-queue-engine-check.json).
+
+The original shell-primitives gap receipt above is historical revision-27
+evidence; the ordinary shell path without native task state retains its policy.
+These new controls remain raw binding/checkpoint evidence, not successful Node
+startup, original public queue equivalence or full callback-scope conformance.
+
+1. Implement the native async ID/resource/frame and common callback-scope
    prerequisites needed by the unchanged modules. Preserve current exception,
    scope depth, clearing epochs and restoration through reentrant callbacks.
    Hook/option policy comes from unchanged upstream JS and actual configuration.
-3. Connect outer shell/libuv entry and callback completion to the original
+2. Complete outer shell/libuv callback scopes around the original
    retained tick callback and promise policy. Keep microtask-only checkpoints
    distinct from complete nextTick/rejection checkpoints. Validate original
    exceptions, handled/unhandled rejection timing, natural liveness and exit.
-4. Reexecute the original principal body, record its next actual missing
+3. Reexecute the original principal body, record its next actual missing
    backend, and extend the dependency inventory from that result. The binding
    becoming loadable alone does not establish usable public timers or startup.
-5. Repeat the resulting identified-artifact startup checks on Node, Chromium,
+4. Repeat the resulting identified-artifact startup checks on Node, Chromium,
    Firefox and WebKit; keep CJS and ESM entry acceptance separate. Full products,
    successor-ABI campaigns and overall suites remain deferred.
 

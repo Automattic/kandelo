@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "scope": "Partial task_queue/callback native backend catalog and startup implementation order; complete graph catalog remains open",
+  "scope": "Partial task_queue/callback native backend catalog, implemented raw binding/checkpoint seam and remaining startup order; full graph catalog remains open",
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
   "upstreamJavaScriptChanged": false,
-  "bindingImplemented": false,
+  "bindingImplemented": true,
   "upstreamStartup": false,
   "sources": {
     "nodeSourceArchive": {
@@ -94,7 +94,7 @@
       }
     ],
     "engineSourceLimit": "Retained original-source context from the earlier revision15 resolver workspace; individual hashes retained, not a fresh whole-Mozilla-archive verification or revision27 generated-source identity claim. Current behavior is separately probed on the identified revision27 artifact.",
-    "literalSearchScope": "All 493 imported files rehashed; 443 registered JS sources. Exact textual internalBinding/task_queues require spellings only; not an exhaustive dynamic/lazy graph catalog.",
+    "literalSearchScope": "All494current imported files rehashed, including one added native enum header; prior443registered JS sources and all literal consumer anchors unchanged. Not complete dynamic/lazy graph coverage.",
     "directBindingConsumers": [
       {
         "path": "lib/internal/async_hooks.js",
@@ -204,7 +204,7 @@
       "nativeAuthority": "src/env.h TickInfo; src/node_task_queue.cc Initialize",
       "owner": "environment, live native/JS alias; per-realm binding admission",
       "errors": "OOM, detachment, stale owner must fail honestly",
-      "status": "not implemented"
+      "status": "implemented runtime-owned live storage; detached storage fails, full lifecycle/OOM/security proof remains open"
     },
     {
       "name": "enqueueMicrotask",
@@ -213,7 +213,7 @@
       "nativeAuthority": "src/node_task_queue.cc EnqueueMicrotask",
       "owner": "current context engine queue; traced job and callback",
       "errors": "original function CHECK; actual enqueue OOM; callback errors use Node fatal routing",
-      "status": "not implemented"
+      "status": "implemented actual engine queue with traced native callable adapter and original fatal function invariant"
     },
     {
       "name": "runMicrotasks",
@@ -222,7 +222,7 @@
       "nativeAuthority": "src/node_task_queue.cc RunMicrotasks",
       "owner": "environment engine queue, nested-checkpoint guard",
       "errors": "Node fatal policy, shutdown/termination; no synchronous substitute rethrow or shell diagnostic policy",
-      "status": "not implemented"
+      "status": "implemented admitted engine checkpoints with real drain guard; active module evaluation and complete fatal exit remain gaps"
     },
     {
       "name": "setTickCallback",
@@ -231,7 +231,7 @@
       "nativeAuthority": "src/node_task_queue.cc SetTickCallback",
       "owner": "environment retained actual callback; process receiver when native scope closes",
       "errors": "original function CHECK; rooted registration/replacement and terminal admission",
-      "status": "not implemented"
+      "status": "implemented protected callback/realm ownership and outer live-flag process receiver seam; full AsyncWrap/native resource scopes remain incomplete"
     },
     {
       "name": "promiseRejectEvents",
@@ -240,7 +240,7 @@
       "nativeAuthority": "src/node_task_queue.cc Initialize",
       "owner": "binding contract maps actual engine events",
       "errors": "never synthesize promises or replace reasons",
-      "status": "not implemented"
+      "status": "implemented native values0/1 and immutable constant descriptors"
     },
     {
       "name": "setPromiseRejectCallback",
@@ -249,14 +249,14 @@
       "nativeAuthority": "src/node_task_queue.cc SetPromiseRejectCallback and PromiseRejectCallback",
       "owner": "environment retained handler; actual promise/reason and assigned async IDs",
       "errors": "original function CHECK; engine callback cannot leak pending exception; native best-effort handler-error report",
-      "status": "not implemented"
+      "status": "implemented actual promise/reason/event delivery and best-effort callback diagnostics; assigned async contexts remain explicit missing behavior"
     }
   ],
   "prerequisites": [
     {
       "id": "engine-job-queue",
       "owner": "SpiderMonkey embedding and engine checkpoint boundary",
-      "state": "Actual FIFO/reentrancy primitives observed; Node error routing and nested kept-object semantics not implemented"
+      "state": "Actual FIFO retained; native process callback seam and nested kept-object guard pass selected checks on four hosts; full original policy/async/fatal semantics incomplete"
     },
     {
       "id": "async-wrap",
@@ -288,17 +288,22 @@
   ],
   "lifecycleAndReferences": "Microtasks/ticks are not invented libuv handles; original live flags govern callback checkpoints. Existing real libuv handles own I/O liveness. Stop/quit/cancel/finalization must not execute retired callbacks or drain success after failure.",
   "evidence": {
-    "report": "task-queue-gap-result.json",
-    "sourceHeadAtRun": "45f27fa68be3f364a9b7c75f39babc98f969ac9a",
-    "probeSourcesWereUncommitted": true,
-    "host": "Node",
-    "guestPrimitiveObservations": 3,
-    "guestExpectedGapObservations": 2,
-    "guestProcessDrivers": 3,
+    "report": "task-queue-engine-check.json",
+    "sourceHeadAtBuild": "98e46e5ee6c6f46351a68d9c7ab52652d611f4c6",
+    "sourceInputsWereUncommitted": true,
+    "taskQueueCasesPerHost": 26,
+    "hosts": [
+      "Node",
+      "Chromium",
+      "Firefox",
+      "WebKit"
+    ],
+    "priorNodeCases": 162,
+    "guestProcessDrivers": 61,
     "nativeReferenceControls": 6,
+    "nativeExitCodeConstants": 14,
     "verificationFailures": 0,
-    "browserQueueProbes": "not run",
-    "sameArtifactAsTimerFourHostChecks": true
+    "historicalShellGapEvidence": "task-queue-gap-result.json"
   },
   "verifiedGaps": [
     {
@@ -307,14 +312,18 @@
       "native": "Actual Node uncaughtException listener sees original error; handled job continues with exit0",
       "nativeSource": "src/node_errors.cc TriggerUncaughtException",
       "engineSource": "js/src/vm/JSContext.cpp InternalJobQueue::runJobs; shell script environment preparer",
-      "next": "Route actual engine job failures through native Node scope/error policy"
+      "next": "Complete genuine native callback scopes and fatal/exit routing through unchanged original policy",
+      "historicalArtifact": "revision27 shell primitives",
+      "currentStatus": "Native checkpoint can call actual mutable principal process policy with original error; full original fatal/exit/at-exit remains incomplete, and unhandled failure is preserved"
     },
     {
       "area": "nested-kept-object-cleanup",
       "guest": "Raw nested shell drain: WeakRef target exists before, collected after forced GC within same job",
       "native": "Current job WeakRef target remains alive across nested runMicrotasks checkpoint",
       "engineSource": "js/src/vm/JSContext.cpp js::RunJobs unconditionally calls ClearKeptObjects after runJobs returns",
-      "next": "Guard nested checkpoint before kept-object cleanup; retain actual engine FIFO and non-reentrancy"
+      "next": "Retain guard while implementing full native callback/resource/module lifecycle",
+      "historicalArtifact": "revision27 shell primitives",
+      "currentStatus": "Native task checkpoints test actual engine draining flag before kept-object cleanup; current-job WeakRef selected controls pass on all four hosts"
     }
   ],
   "notAnUpstreamRuntimeDefectClaim": "These are differences in existing shell embedding primitives, not a confirmed external runtime bug or a workaround.",
@@ -337,9 +346,8 @@
     }
   ],
   "startupOrder": [
-    "Protected environment state and actual engine enqueue/checkpoint/rejection registration, with real exception and kept-object semantics",
-    "Actual async IDs/resources/frames and common native callback scope required by unchanged JS consumers",
-    "Connect original tick/rejection callbacks to outer shell/libuv scopes; validate original policy and failure restoration",
+    "Actual async_wrap shared hook/ID/resource/frame and common native callback-scope prerequisites; original principal body now stops on async_wrap",
+    "Complete original tick/rejection callbacks and native fatal/exit policy through common shell/libuv resource scopes",
     "Reexecute original principal body and record its next actual blocker without substitute modules or fabricated bindings",
     "Identified-artifact startup checks on all four hosts; separate CJS/ESM, full graph reconciliation and later user review gate"
   ],
@@ -354,9 +362,11 @@
   ],
   "limits": [
     "Literal consumers are not complete lazy/computed/conditional/worker/exception graph coverage",
-    "No task_queue binding implementation, original public async module equivalence or successful Node startup",
-    "Selected Node-host shell probes and already-bootstrapped native references only; no new browser queue probes",
-    "No package/kernel/libc/SDK/host/ABI changes in this audit; no product image, successor-ABI campaign or overall suite"
+    "Partial raw task queue binding only; original public queue/rejection/fatal policy and successful Node startup remain incomplete",
+    "Active module evaluation and assigned promise async contexts are explicit gaps; full fatal/exit/at-exit and native async scopes incomplete",
+    "Current26taskqueue cases per host plus162priorNodecases; earlier shell-gap receipt and older browser timer artifact remain historical evidence",
+    "No kernel/libc/SDK/host/ABI change; one unchanged native enum header added, every original JS record unchanged",
+    "No product image, successor-ABI campaign or overall suite"
   ],
   "attempts": [
     {
@@ -403,5 +413,19 @@
         "sha256": "2cb289c8f6c78c27a2741399eedd9d248de5cd35b049288af5ae272997760971"
       }
     }
-  ]
+  ],
+  "bindingComplete": false,
+  "nativeExitCodeEnum": {
+    "source": {
+      "path": "src/node_exit_code.h",
+      "role": "provenance",
+      "bytes": 3271,
+      "sha256": "7f1429f80db6bf171f1b17133268a141b4dcef7cc4dcb33483fa9e3f24f7957d",
+      "builtinId": null
+    },
+    "sourcePath": "third_party/nodejs/upstream/src/node_exit_code.h",
+    "implementedConstants": 14,
+    "nativeValuesAndAttributesCompared": true,
+    "processExitBackendComplete": false
+  }
 }

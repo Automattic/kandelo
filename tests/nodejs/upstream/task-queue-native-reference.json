@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T07:34:46.578596+00:00",
+  "scope": "Already bootstrapped pinned native task_queue reference; not guest startup",
+  "program": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/task-queue-native-controls.cjs",
+    "bytes": 4126,
+    "sha256": "ad05756dfcfa64fbf12d05f80ad4f9a8b101a7111cafc6c8db0768924654c0cc"
+  },
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "args": [
+    "--expose-internals",
+    "--expose-gc",
+    "--no-warnings",
+    "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/task-queue-native-controls.cjs"
+  ],
+  "environmentKeys": [
+    "PATH",
+    "LANG",
+    "TZ"
+  ],
+  "exitCode": 0,
+  "stdout": "{\"kind\":\"task-queue-native-reference\",\"version\":\"v26.13.0\",\"exitCodes\":{\"kNoFailure\":0,\"kGenericUserError\":1,\"kInternalJSParseError\":3,\"kInternalJSEvaluationFailure\":4,\"kV8FatalError\":5,\"kInvalidFatalExceptionMonkeyPatching\":6,\"kExceptionInFatalExceptionHandler\":7,\"kInvalidCommandLineArgument\":9,\"kBootstrapFailure\":10,\"kInvalidCommandLineArgument2\":12,\"kUnsettledTopLevelAwait\":13,\"kStartupSnapshotFailure\":14,\"kProcessTimeout\":124,\"kAbort\":134},\"exitCodesDescriptor\":{\"value\":{\"kNoFailure\":0,\"kGenericUserError\":1,\"kInternalJSParseError\":3,\"kInternalJSEvaluationFailure\":4,\"kV8FatalError\":5,\"kInvalidFatalExceptionMonkeyPatching\":6,\"kExceptionInFatalExceptionHandler\":7,\"kInvalidCommandLineArgument\":9,\"kBootstrapFailure\":10,\"kInvalidCommandLineArgument2\":12,\"kUnsettledTopLevelAwait\":13,\"kStartupSnapshotFailure\":14,\"kProcessTimeout\":124,\"kAbort\":134},\"writable\":false,\"enumerable\":true,\"configurable\":true},\"exitCodeEntryDescriptor\":{\"value\":1,\"writable\":false,\"enumerable\":true,\"configurable\":false},\"cases\":6,\"failures\":0,\"observations\":[{\"name\":\"actual-binding-layout-and-native-method-lengths\",\"status\":\"pass\"},{\"name\":\"real-engine-fifo-and-jobs-enqueued-during-checkpoint\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-does-not-reenter-current-job\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-keeps-current-job-weakref-target-alive\",\"status\":\"pass\"},{\"name\":\"microtask-exception-enters-original-node-fatal-policy\",\"status\":\"pass\"},{\"name\":\"actual-native-rejection-event-promise-and-reason-identity\",\"status\":\"pass\"}],\"limits\":[\"Already bootstrapped pinned native runtime; not guest startup or full queue/async conformance\"]}\n",
+  "stderr": "",
+  "detail": {
+    "kind": "task-queue-native-reference",
+    "version": "v26.13.0",
+    "exitCodes": {
+      "kNoFailure": 0,
+      "kGenericUserError": 1,
+      "kInternalJSParseError": 3,
+      "kInternalJSEvaluationFailure": 4,
+      "kV8FatalError": 5,
+      "kInvalidFatalExceptionMonkeyPatching": 6,
+      "kExceptionInFatalExceptionHandler": 7,
+      "kInvalidCommandLineArgument": 9,
+      "kBootstrapFailure": 10,
+      "kInvalidCommandLineArgument2": 12,
+      "kUnsettledTopLevelAwait": 13,
+      "kStartupSnapshotFailure": 14,
+      "kProcessTimeout": 124,
+      "kAbort": 134
+    },
+    "exitCodesDescriptor": {
+      "value": {
+        "kNoFailure": 0,
+        "kGenericUserError": 1,
+        "kInternalJSParseError": 3,
+        "kInternalJSEvaluationFailure": 4,
+        "kV8FatalError": 5,
+        "kInvalidFatalExceptionMonkeyPatching": 6,
+        "kExceptionInFatalExceptionHandler": 7,
+        "kInvalidCommandLineArgument": 9,
+        "kBootstrapFailure": 10,
+        "kInvalidCommandLineArgument2": 12,
+        "kUnsettledTopLevelAwait": 13,
+        "kStartupSnapshotFailure": 14,
+        "kProcessTimeout": 124,
+        "kAbort": 134
+      },
+      "writable": false,
+      "enumerable": true,
+      "configurable": true
+    },
+    "exitCodeEntryDescriptor": {
+      "value": 1,
+      "writable": false,
+      "enumerable": true,
+      "configurable": false
+    },
+    "cases": 6,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "actual-binding-layout-and-native-method-lengths",
+        "status": "pass"
+      },
+      {
+        "name": "real-engine-fifo-and-jobs-enqueued-during-checkpoint",
+        "status": "pass"
+      },
+      {
+        "name": "nested-checkpoint-does-not-reenter-current-job",
+        "status": "pass"
+      },
+      {
+        "name": "nested-checkpoint-keeps-current-job-weakref-target-alive",
+        "status": "pass"
+      },
+      {
+        "name": "microtask-exception-enters-original-node-fatal-policy",
+        "status": "pass"
+      },
+      {
+        "name": "actual-native-rejection-event-promise-and-reason-identity",
+        "status": "pass"
+      }
+    ],
+    "limits": [
+      "Already bootstrapped pinned native runtime; not guest startup or full queue/async conformance"
+    ]
+  }
+}

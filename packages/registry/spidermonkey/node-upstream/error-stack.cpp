@@ -11,6 +11,9 @@
 #include "jsapi.h"
 #include "jsfriendapi.h"
 #include "jsnum.h"
+#define NODE_WANT_INTERNALS 1
+#include "node-exit-code.h"
+#undef NODE_WANT_INTERNALS
 
 #include "js/Array.h"
 #include "js/CallAndConstruct.h"
@@ -404,6 +407,17 @@ JSObject* GetErrorStackBinding(JSContext* cx) {
       JS_FN("setPrepareStackTraceCallback", SetPrepare, 1, 0),
       JS_FN("setEnhanceStackForFatalException", SetEnhance, 2, 0), JS_FS_END};
   if (!binding || !JS_DefineFunctions(cx, binding, methods)) return nullptr;
+  JS::RootedObject exitCodes(cx, JS_NewPlainObject(cx));
+  if (!exitCodes || !JS_DefineProperty(cx, binding, "exitCodes", exitCodes,
+      JSPROP_ENUMERATE | JSPROP_READONLY)) return nullptr;
+  // Expand the complete pinned native enum; these are API constants, not
+  // evidence that the corresponding fatal/exit backends are implemented.
+#define EXIT_CONSTANT(Name, Code) \
+  if (!JS_DefineProperty(cx, exitCodes, "k" #Name, \
+      int32_t(::node::ExitCode::k##Name), \
+      JSPROP_ENUMERATE | JSPROP_READONLY | JSPROP_PERMANENT)) return nullptr;
+  EXIT_CODE_LIST(EXIT_CONSTANT)
+#undef EXIT_CONSTANT
   JS::SetReservedSlot(state, Binding, JS::ObjectValue(*binding)); return binding;
 }
 bool EnhanceFatalExceptionStack(JSContext* cx, JS::HandleValue error,

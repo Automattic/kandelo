@@ -13,8 +13,9 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry now calls complete `internal/bootstrap/node`
 with protected state, passes native configuration and stops on missing
-`task_queue` through the original internal/timers body, after admitting the
-real native timer backend. Complete Node startup, empty/simple evaluation,
+`async_wrap` through original internal/async_hooks, after admitting the
+real timer/task queue backends and original native exit-code constants.
+Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
 443-source guest payload readback is established. ModuleWrap-owned dynamic
@@ -59,12 +60,14 @@ configuration and V8 identity must not be copied to manufacture support.
 
 ## Source inventory
 
-`third_party/nodejs/sources.json` records 493 unchanged archive files:
+`third_party/nodejs/sources.json` records 494 unchanged archive files:
 427 library JavaScript files, 16 dependency JavaScript files, one library
-support file, 37 dependency license files and twelve provenance files. Its
+support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list.
 The original `src/env_properties.h` now supplies the native symbol inventory;
-its bytes are verified before staging into Mozilla's source tree.
+its bytes are verified before staging into Mozilla's source tree. The complete
+original `src/node_exit_code.h` similarly supplies the native errors enum;
+adding it left every prior source record and all JavaScript bytes unchanged.
 
 `scripts/index-nodejs-bindings.mjs` traverses every builtin source using the
 repository-declared Babel parser. The initial index has 443 parsed files,
@@ -756,3 +759,39 @@ startup success. Native Node callback/error routing and checkpoint ownership
 must address them while preserving the real engine queue and unchanged JS
 tick/rejection policy. No new browser queue probe or package rebuild belongs
 to this source inventory; earlier four-host timer evidence remains separate.
+
+## Native task queue checkpoints
+
+Revision 28 adds the actual native task queue state/registrations and engine
+enqueue/checkpoint path. Traced native job adapters retain arbitrary callables
+without a shadow FIFO or Promise wrapper. Native and shell nested checkpoints
+check the engine's real drain state before kept-object cleanup. The shared
+Uint8Array flags drive the retained original tick callback with the principal
+process receiver, separately from microtask-only entry.
+
+The native owner receives job errors through the script-environment preparer
+and can invoke the actual mutable process `_fatalException` callback. Real
+promise/reason identities and handler-added events reach the retained rejection
+callback. Full native AsyncWrap IDs/resources/frames, original public rejection
+policy, common callback scopes and fatal exit/at-exit remain incomplete.
+Assigned promise contexts and active module-evaluation checkpoints fail
+explicitly; unhandled/false/throwing fatal policy preserves the actual failure.
+
+The first integrated bootstrap exposed absent `errors.exitCodes`. Importing
+the complete pinned native header and expanding its enum supplies all fourteen
+constants and native property attributes, matching the pinned executable.
+The imported set is now 494 files; every previous record and all 443 registered
+JavaScript bodies remain unchanged. This does not establish process-exit support.
+Original principal bootstrap now stops on `async_wrap` through internal/async_hooks;
+the separate original stack-policy probe still stops on constants.
+
+Twenty-six task queue/enum controls pass on each host with identical
+engine/kernel bytes. The same artifact passes the prior 162 Node cases, with
+all eleven expected fatal controls retaining error exits/diagnostics. Six pinned
+native queue references pass separately. The first failed build, initial
+24-of-25 control run and intermediate bootstrap TypeError remain retained.
+The browser run also retains its macOS cleanup permission warning. These are
+raw binding/checkpoint results, not successful empty/simple or CJS/ESM startup.
+Full product/images/ABI campaigns and overall suites remain deferred. See
+[task-queue-engine-check.json](../tests/nodejs/upstream/task-queue-engine-check.json)
+for exact identities, per-host results, failures and limits.
