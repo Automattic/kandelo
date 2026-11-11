@@ -39,6 +39,7 @@ import {
   CH_TOTAL_SIZE,
   DIRENT_TYPES,
   EPOLL_EVENTS,
+  EXTENSION_REQUEST_KLOG_V1,
   FCNTL_COMMANDS,
   FD_FLAGS,
   FILE_MODES,
@@ -603,7 +604,21 @@ describe("generated host ABI bindings", () => {
     expect(STRUCT_SIZE_WASM_POLL_FD).toBe(snapshot.marshalled_structs.WasmPollFd.size);
     expect(STRUCT_SIZE_WASM_STATFS).toBe(snapshot.marshalled_structs.WasmStatfs.size);
 
-    expect(SYSCALL_ARGS).toEqual(snapshot.syscall_arg_descriptors);
+    // `cargo xtask dump-abi` chains the program-facing syscall descriptors
+    // and the kernel-host extension-request descriptors into one host table;
+    // the snapshot keeps them in separate surfaces so extension requests stay
+    // out of the program digest. Compare against their disjoint union.
+    const extensionDescriptors = snapshot.extension_requests.descriptors;
+    expect(
+      Object.keys(extensionDescriptors).filter(
+        (nr) => nr in snapshot.syscall_arg_descriptors,
+      ),
+    ).toEqual([]);
+    expect(EXTENSION_REQUEST_KLOG_V1).toBe(snapshot.extension_requests.KLOG_V1);
+    expect(SYSCALL_ARGS).toEqual({
+      ...snapshot.syscall_arg_descriptors,
+      ...extensionDescriptors,
+    });
   });
 
   it("match caller-native siginfo layouts for both pointer widths", () => {
