@@ -1,0 +1,26 @@
+kind = "program"
+name = "freeciv-docs"
+version = "3.2.6"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `freeciv` package (freeciv, freeciv-server and the SDL2 client).
+# The source, SHA-256 and version are the `freeciv` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://files.freeciv.org/stable/freeciv-3.2.6.tar.xz"
+sha256 = "b3ce15f54083b1fca146f62837a5f7d41d298537fa34940cca70eeb09c7a9c6e"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/freeciv/freeciv/blob/R3_2_6/COPYING"
+
+[build]
+script_path = "packages/registry/freeciv-docs/build-freeciv-docs.sh"
+
+[[outputs]]
+name = "freeciv-docs"
+wasm = "freeciv-docs.zip"
+fork_instrumentation = "disabled"

@@ -407,6 +407,16 @@
       "role": "lazy-archive"
     },
     {
+      "name": "freeciv-docs",
+      "version": "3.2.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "rubygems-docs",
+      "version": "4.0.5",
+      "role": "lazy-archive"
+    },
+    {
       "name": "man-index",
       "version": "1.14.6",
       "role": "lazy-file"

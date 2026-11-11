@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -131,6 +132,26 @@ describe("install_package_man_pages", () => {
     const result = install(["demo-docs", tree, "man/tic.1m"]);
     expect(result.status).toBe(0);
     expect(listing(result.out)).toMatch(/share\/man\/man1\/tic\.1m/);
+  });
+
+  it("mirrors staged pages into another man tree as relative symlinks", () => {
+    const tree = fixtureTree({ "npm.1": PAGE, "npmrc.5": PAGE });
+    const result = install(["demo-docs", tree, "npm.1", "npmrc.5", "+local/lib/npm/man"]);
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    const unpacked = join(result.root, "unpacked");
+    execFileSync("unzip", ["-q", join(result.out, "demo-docs.zip"), "-d", unpacked]);
+    expect(readlinkSync(join(unpacked, "local/lib/npm/man/man1/npm.1"))).toBe(
+      "../../../../../share/man/man1/npm.1",
+    );
+    expect(readFileSync(join(unpacked, "local/lib/npm/man/man5/npmrc.5"), "utf8")).toBe(PAGE);
+  });
+
+  it("refuses a mirror path that climbs out of the archive", () => {
+    const tree = fixtureTree({ "npm.1": PAGE });
+    const result = install(["demo-docs", tree, "npm.1", "+local/../../etc"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/invalid mirror/);
   });
 
   it("links an alias name to a page staged in the same section", () => {

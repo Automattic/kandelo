@@ -294,7 +294,12 @@ script is a page list on top of `scripts/install-package-man-pages.sh`
 - `install_package_man_pages <docs-pkg> "$SRC" <spec>...` stages each page
   and installs the ZIP. `relpath[:name]` copies a page (the section comes
   from the destination name); `alias.1=page.1` adds a symlink for a command
-  the image installs under a second name, such as `unxz` for `xz`.
+  the image installs under a second name, such as `unxz` for `xz`;
+  `+dir` links every page staged before it into another man tree, for a
+  program that looks pages up in its own directory (`npm-docs` links npm's
+  pages into `/usr/local/lib/npm/man` for `npm help`; `npm help` itself
+  does not run yet, because it loads `node:readline/promises`, which
+  Kandelo's node does not provide).
 - `kandelo_man_pages_substitute <in> <out> <token=value>...` fills in a
   page template the way upstream's own build does (`grep.in.1`,
   `php.1.in`). Take each value from the program package's configure flags
@@ -387,9 +392,7 @@ These commands are in the shell image but have no page yet. `man` reports
 
 | Commands | Why there is no page yet |
 |---|---|
-| `freeciv`, `freeciv-server` | Freeciv's meson build, which the package uses, fills the page templates with C-quoted strings (`.UR ""https://www.freeciv.org/""`), so mandoc drops the links and shows the quotes; this is an upstream defect, and the autotools rules that fill them correctly would be a second configuration |
 | `swaybar`, `git-remote-http` (also installed as `git-remote-https`, `git-remote-ftp`, `git-remote-ftps`) | Upstream has no page for them: `sway-bar(5)` and `swaybar-protocol(7)` document swaybar, and `gitremote-helpers(7)` documents remote helpers |
-| `gem` | RubyGems has no upstream page, and help2man runs its preformatted usage and example lines together (`gem install rake gem list --local ...` reads as one command), so the third tier does not give a usable page |
 | `posix-utils-lite` commands, `kandelo-exchange`, `kandelo-publish`, `login`, `sudo-lite`, `dos-play` and other Kandelo wrappers | Kandelo is upstream and has not written pages for them |
 
 ### The man-page index
