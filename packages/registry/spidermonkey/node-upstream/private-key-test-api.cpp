@@ -2,11 +2,15 @@
 
 #include "jsapi.h"
 
+#include "builtin/ModuleObject.h"
+#include "js/Array.h"
+#include "js/CallAndConstruct.h"
 #include "js/CallArgs.h"
 #include "js/Conversions.h"
 #include "js/ErrorReport.h"
 #include "js/friend/WindowProxy.h"
 #include "js/GlobalObject.h"
+#include "js/Modules.h"
 #include "js/PropertyAndElement.h"
 #include "js/Realm.h"
 #include "js/RootingAPI.h"
@@ -14,6 +18,7 @@
 #include "js/Wrapper.h"
 #include "shell/jsshell.h"
 #include "shell/node-upstream/per-context.h"
+#include "shell/ShellModuleObjectWrapper.h"
 
 namespace kandelo::node {
 namespace {
@@ -120,6 +125,85 @@ bool InspectContext(JSContext* cx, unsigned argc, JS::Value* vp) {
   return ContextOperationCall(cx, argc, vp, ContextOperation::Inspect);
 }
 
+bool EvaluateSyntheticForTesting(JSContext* cx, JS::HandleObject module,
+                                 JS::HandleValue callback) {
+  JS::RootedValue result(cx);
+  return JS::Call(cx, JS::UndefinedHandleValue, callback,
+                  JS::HandleValueArray::empty(), &result);
+}
+
+bool NewSyntheticModule(JSContext* cx, unsigned argc, JS::Value* vp) {
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  bool array = false;
+  if (argc != 2) {
+    JS_ReportErrorASCII(cx, "synthetic control requires names array and callback");
+    return false;
+  }
+  if (!JS::IsArrayObject(cx, args[0], &array)) return false;
+  if (!array || !args[1].isObject() || !JS::IsCallable(&args[1].toObject())) {
+    JS_ReportErrorASCII(cx, "synthetic control requires names array and callback");
+    return false;
+  }
+  JS::RootedObject names(cx, &args[0].toObject());
+  uint32_t length;
+  if (!JS::GetArrayLength(cx, names, &length)) return false;
+  JS::RootedValueVector values(cx);
+  if (!values.resize(length)) return false;
+  for (uint32_t i = 0; i < length; i++) {
+    if (!JS_GetElement(cx, names, i, values[i])) return false;
+  }
+  JS::RootedObject module(cx, JS::CreateSyntheticModule(
+      cx, values, EvaluateSyntheticForTesting, args[1]));
+  if (!module) return false;
+  JS::Rooted<js::ModuleObject*> record(cx, &module->as<js::ModuleObject>());
+  JS::RootedObject wrapper(cx, js::shell::ShellModuleObjectWrapper::create(cx, record));
+  if (!wrapper) return false;
+  args.rval().setObject(*wrapper);
+  return true;
+}
+
+JSObject* TestModuleArgument(JSContext* cx, JS::HandleValue value) {
+  if (!value.isObject() ||
+      !value.toObject().is<js::shell::ShellModuleObjectWrapper>()) {
+    JS_ReportErrorASCII(cx, "synthetic control requires a genuine shell module");
+    return nullptr;
+  }
+  JSObject* module = value.toObject().as<js::shell::ShellModuleObjectWrapper>().get();
+  if (JS::GetObjectRealmOrNull(module) != JS::GetCurrentRealmOrNull(cx)) {
+    JS_ReportErrorASCII(cx, "synthetic control requires a same-realm module");
+    return nullptr;
+  }
+  return module;
+}
+
+bool SetSyntheticExport(JSContext* cx, unsigned argc, JS::Value* vp) {
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  if (argc != 3 || !args[1].isString()) {
+    JS_ReportErrorASCII(cx, "synthetic export control requires module, name, value");
+    return false;
+  }
+  JS::RootedObject module(cx, TestModuleArgument(cx, args[0]));
+  if (!module) return false;
+  JS::RootedString name(cx, args[1].toString());
+  if (!JS::SetSyntheticModuleExport(cx, module, name, args[2])) return false;
+  args.rval().setUndefined();
+  return true;
+}
+
+bool ModuleNamespaceForTesting(JSContext* cx, unsigned argc, JS::Value* vp) {
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject module(cx, TestModuleArgument(cx, args.get(0)));
+  if (!module) return false;
+  if (module->as<js::ModuleObject>().status() == js::ModuleStatus::Unlinked) {
+    JS_ReportErrorASCII(cx, "Module must be linked before namespace access");
+    return false;
+  }
+  JS::RootedObject ns(cx, JS::GetModuleNamespace(cx, module));
+  if (!ns) return false;
+  args.rval().setObject(*ns);
+  return true;
+}
+
 }  // namespace
 
 bool DefinePrivateKeyTestAPI(JSContext* cx) {
@@ -129,6 +213,9 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
       JS_FN("initializeContext", InitializeContext, 0, 0),
       JS_FN("getContextExports", GetContextExports, 0, 0),
       JS_FN("inspectContext", InspectContext, 0, 0),
+      JS_FN("newSyntheticModule", NewSyntheticModule, 2, 0),
+      JS_FN("setSyntheticExport", SetSyntheticExport, 3, 0),
+      JS_FN("moduleNamespace", ModuleNamespaceForTesting, 1, 0),
       JS_FS_END,
   };
   JS::RootedObject api(cx, JS_NewPlainObject(cx));

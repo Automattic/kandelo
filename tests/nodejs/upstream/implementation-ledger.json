@@ -55,9 +55,16 @@
       "remaining": "use actual engine capture/frame machinery; provide lazy structured formatting/prepareStackTrace and stackTraceLimit; no replacement globals"
     },
     {
+      "area": "callback-backed synthetic module engine records and live export bindings",
+      "sourceStatus": "implemented; selected revision-20 package and 15 focused source/synthetic graph controls passed on Node host",
+      "evidence": "synthetic-module-engine-check.json",
+      "remaining": "native Node ModuleWrap owner/binding; full native differential, security/OOM/teardown/finalization and browser validation"
+    },
+    {
       "area": "module_wrap/contextify and CJS/ESM entrypaths",
-      "sourceStatus": "missing from new integration",
-      "remaining": "adapt reviewed native graph/compiler owners; real linking, identity, import.meta, sync/TLA and context contracts"
+      "sourceStatus": "native wrapper/bindings missing; genuine synthetic engine prerequisite now has bounded Node-host evidence",
+      "remaining": "implement native module/context owners and real source linking, identity, import.meta/dynamic import, sync/TLA, interrupts, microtasks and exact wrapper errors; CJS/ESM startup unrun",
+      "evidence": "module-wrap-contracts.md"
     },
     {
       "area": "eager Buffer/process/fs/options/task queues/timers/async binding closure",
@@ -126,7 +133,8 @@
     "successorAbiArtifactsDeferred": true,
     "abi55HistoryUnchanged": true,
     "threeOriginalContextInitializersExecuted": true,
-    "sourceTextModuleCompilerExercised": false
+    "sourceTextModuleCompilerExercised": false,
+    "engineSourceSyntheticGraphsExercised": true
   },
   "preservation": {
     "frozenCheckoutUnchanged": true,
@@ -134,17 +142,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 19,
+    "packageRevision": 20,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "per-context-engine-check.json",
+    "evidence": "synthetic-module-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "privileged JS-shell original per-context initializer and private-key controls on Node host; no upstream Node startup",
+    "packageRuntimeScope": "privileged JS-shell source/synthetic module, original context and private-key controls on Node host; no upstream Node startup",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "existing Linux triplet and __linux__/__unix__ defines are unchanged; target metadata/conformance remain unestablished"
   },
@@ -180,6 +188,16 @@
       "readyGetterPreservesIdentity": true,
       "explicitRepeatedInitialize": "reject",
       "originalInitializerSourcesExecuted": 3
+    },
+    "moduleWrap": {
+      "registrationInventory": "module-wrap-contracts.md",
+      "engineSyntheticPrerequisiteImplemented": true,
+      "engineEvidence": "synthetic-module-engine-check.json",
+      "nativeModuleWrapBindingImplemented": false,
+      "sourceModuleOwnerImplemented": false,
+      "importAttributes": "Real parser capability tested with --enable-import-attributes; Node embedding configuration still required",
+      "publicVmReference": "synthetic-module-native-reference.json",
+      "fullBindingContractAuditComplete": false
     }
   },
   "nativeDifferentialControls": {
@@ -190,6 +208,14 @@
       "evidence": "private-key-native-reference.json",
       "guestRun": false,
       "limits": "native reference only; missing native initialization/cross-realm/GC cases remain"
+    },
+    "syntheticModules": {
+      "reference": "Node26.13.0Darwinarm64",
+      "cases": 4,
+      "failures": 0,
+      "evidence": "synthetic-module-native-reference.json",
+      "guestRun": false,
+      "limits": "Public VM observations, not raw-engine or Node ModuleWrap guest equivalence; reentry/error/Promise behavior must be preserved at owning layer"
     }
   },
   "focusedGuestEngineControls": {
@@ -208,14 +234,22 @@
       "privateKeyFailures": 0,
       "privateKeyDriverRuns": 3,
       "privateKeyDriverFailures": 0,
-      "upstreamStartup": "not run"
+      "upstreamStartup": "not run",
+      "syntheticEvidence": "synthetic-module-engine-result.json",
+      "syntheticCases": 15,
+      "syntheticFailures": 0,
+      "syntheticDriverRuns": 3,
+      "syntheticDriverFailures": 0,
+      "syntheticHostDiagnostics": 0,
+      "currentArtifactEvidence": "synthetic-module-engine-check.json",
+      "regressionScope": "Same revision-20 artifact passes 14 original-context cases, 23 private-key cases and their drivers; raw regressions retained under .context/node-synthetic"
     },
     "Chromium": "not run",
     "Firefox": "not run",
     "WebKit": "not run"
   },
   "nextWork": [
-    "Implement genuine realm/process/native binding ownership, including the eager builtins/module_wrap/errors closure; execute internal/bootstrap/realm unchanged",
+    "Implement genuine native Node ModuleWrap/source-module/realm/process/binding ownership, using the tested synthetic engine records and eager builtins/module_wrap/errors/util closure; execute internal/bootstrap/realm unchanged",
     "Preserve source/engine failures; do not substitute public modules or native-reference configuration",
     "Continue complete backend catalog while integrating startup; CJS/ESM and four-host startup remain unrun"
   ]

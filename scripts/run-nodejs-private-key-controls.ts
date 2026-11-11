@@ -7,16 +7,17 @@ import { runCentralizedProgram } from "../host/test/centralized-test-helper";
 
 const [programArgument, reportArgument, modeArgument = "private-keys"] = process.argv.slice(2);
 if (!programArgument || !reportArgument || process.argv.length > 5 ||
-    !["private-keys", "per-context"].includes(modeArgument)) {
-  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context]");
+    !["private-keys", "per-context", "synthetic-modules"].includes(modeArgument)) {
+  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules]");
 }
 const perContext = modeArgument === "per-context";
-const expectedKind = perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
-const expectedCases = perContext ? 14 : 23;
+const synthetic = modeArgument === "synthetic-modules";
+const expectedKind = synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
+const expectedCases = synthetic ? 15 : perContext ? 14 : 23;
 const program = resolve(programArgument);
 const reportPath = resolve(reportArgument);
 const kernel = resolveBinary("kernel.wasm");
-const fixturePath = resolve(perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
+const fixturePath = resolve(synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
   : "tests/nodejs/upstream/private-key-engine-controls.js");
 const fixture = readFileSync(fixturePath, "utf8");
 function identity(path: string) {
@@ -60,7 +61,8 @@ await run("node-mode-refuses-native-test-controls", ["node", "--kandelo-test-ups
   expect(result.exitCode !== 0, JSON.stringify(result));
   expect(result.stderr.includes("upstream test controls require JS-shell mode"), JSON.stringify(result));
 });
-await run(modeArgument + "-controls", ["js", "--kandelo-test-upstream", "-e", fixture], (result) => {
+await run(modeArgument + "-controls", ["js", "--kandelo-test-upstream",
+  ...(synthetic ? ["--enable-import-attributes"] : []), "-e", fixture], (result) => {
   expect(result.exitCode === 0, JSON.stringify(result));
   const rows = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   expect(rows.length === 1, "expected one complete engine result");

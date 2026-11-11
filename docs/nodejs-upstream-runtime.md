@@ -10,6 +10,8 @@ the original symbol inventory across fresh per-global state. The upstream realm
 loader and Node bootstrap are not connected; startup, CJS/ESM entrypaths and
 browser execution remain unrun. This prerequisite does not establish module
 compatibility or guest readback of all 443 builtin sources.
+The engine also has callback-backed synthetic modules with focused source-graph
+evidence on the Node host. The native Node ModuleWrap binding is still missing.
 
 The target remains Node.js 26.13.0, Lithium LTS, source commit
 `18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. Verification on November 10,
@@ -362,3 +364,61 @@ Node realm/bootstrap, CJS/ESM startup, browsers and the complete backend catalog
 The package emitted 16 compiler warnings and the existing fork-facts mismatch
 diagnostic. Full products, successor-ABI campaign rebuilds and overall suites
 remain deferred; ABI 55 history is unchanged.
+
+## Synthetic module engine prerequisite
+
+Revision 20 extends SpiderMonkey's genuine synthetic module machinery beyond
+its original JSON-only evaluation path. `JS::CreateSyntheticModule` accepts
+unique string export names, native evaluation steps and a traced private value.
+`JS::SetSyntheticModuleExport` updates existing live bindings after linking.
+The module owns traced atoms/private state/evaluation Promise; namespaces and
+imports use the real engine module environment and graph. Public export names
+map to distinct local identifiers, including empty/numeric names and
+`*namespace*`, so they cannot collide with engine storage. JSON retains its
+original parser, type and evaluation path.
+
+The callback runs once and synchronously. Its Promise is published before
+embedding code can reenter, failures reject with the original exception, and
+source graphs propagate dependency failures. A reentrant graph cannot treat a
+still-evaluating synthetic dependency as complete. This is an engine API
+contract; the eventual native ModuleWrap must preserve Node's observable
+wrapper, status, callback receiver, error and Promise behavior separately.
+
+On the Node host, 15 guest controls passed with no host diagnostics, covering
+actual namespaces and live imports/reexports, dependency ordering/failure,
+top-level await, reentry, shared dependencies, arbitrary names, GC retention and
+the JSON path. The run enables the existing engine `--enable-import-attributes`
+parser option for JSON import syntax; the Node embedding must configure that
+capability before compiling sources that require it. All 14 original-context
+controls and 23 private-key controls also passed on the same artifact. The
+separate fatal-invariant regression retained its assertion, exit 132 and one
+expected host trap diagnostic.
+
+Three earlier package attempts failed on declaration ordering/header integration
+and a missing inline definition. One guest run recorded three control failures:
+the shell's intentionally hidden synthetic debug getters and disabled import
+attribute syntax. Corrected controls use actual link/evaluation/Promise
+operations and the real parser option; engine bytes did not change for that
+repeat. Full failures, final source/artifact identities and results are in
+`tests/nodejs/upstream/synthetic-module-engine-check.json` and its result receipt.
+
+```sh
+scripts/dev-shell.sh node_modules/.bin/tsx \
+  scripts/run-nodejs-private-key-controls.ts /absolute/path/to/js.wasm \
+  /absolute/path/to/new-report.json synthetic-modules
+```
+
+Four separate controls passed against the exact pinned native Node executable
+with `--experimental-vm-modules`. They include public VM reentry rejection,
+terminal error identity and distinct rejected Promises on repeated failed
+evaluation. They are reference observations, not guest/raw-engine equivalence.
+See `synthetic-module-native-reference.json` and `module-wrap-contracts.md`.
+The latter inventories the native ModuleWrap registration and prerequisites;
+full member/error/lifecycle and transitive-consumer coverage remains incomplete.
+
+There is no Node ModuleWrap binding or connected upstream realm/bootstrap yet.
+The original builtin source-text compiler helper, Node CJS/ESM entrypaths,
+browsers, complete native differential, security/OOM/finalization and startup
+remain unverified. The successful package emitted 16 compiler warnings and the
+existing instrumentation fallback diagnostic. No canonical image, full product,
+successor-ABI campaign rebuild or overall suite ran.

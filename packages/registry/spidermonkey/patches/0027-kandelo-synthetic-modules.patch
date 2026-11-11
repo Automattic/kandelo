@@ -1,0 +1,495 @@
+--- a/js/public/Modules.h
++++ b/js/public/Modules.h
+@@ -18,6 +18,7 @@
+ #include "js/CompileOptions.h"  // JS::ReadOnlyCompileOptions
+ #include "js/RootingAPI.h"      // JS::{Mutable,}Handle
+ #include "js/Value.h"           // JS::Value
++#include "js/ValueArray.h"      // JS::HandleValueArray
+ #include "js/Vector.h"          // js::Vector
+ 
+ struct JS_PUBLIC_API JSContext;
+@@ -197,7 +198,27 @@
+     SourceText<mozilla::Utf8Unit>& srcBuf);
+ 
+ /**
+- * Set a private value associated with a source text module record.
++ * Create a genuine callback-backed synthetic module in the current realm.
++ * Export names must be unique strings. Bindings initially contain undefined.
++ * Link before evaluation; evaluation steps run synchronously once, including
++ * when reached as a dependency of a source-text module. The engine caches its
++ * evaluation promise and propagates failures through the ordinary module graph.
++ * The private value is traced with the module; it must belong to this realm.
++ * The callback has static lifetime and must leave an exception pending on failure.
++ */
++using SyntheticModuleEvaluationSteps = bool (*)(JSContext* cx,
++                                                HandleObject module,
++                                                HandleValue privateValue);
++extern JS_PUBLIC_API JSObject* CreateSyntheticModule(
++    JSContext* cx, const HandleValueArray& exportNames,
++    SyntheticModuleEvaluationSteps evaluationSteps, HandleValue privateValue);
++
++/** Update an existing synthetic module's actual live export binding. */
++extern JS_PUBLIC_API bool SetSyntheticModuleExport(
++    JSContext* cx, HandleObject module, HandleString name, HandleValue value);
++
++/**
++ * Set a traced private value associated with a module record.
+  */
+ extern JS_PUBLIC_API void SetModulePrivate(JSObject* module,
+                                            const Value& value);
+--- a/js/src/builtin/ModuleObject.h
++++ b/js/src/builtin/ModuleObject.h
+@@ -407,6 +407,18 @@
+   mozilla::Span<const ExportEntry> indirectExportEntries() const;
+   mozilla::Span<const ExportEntry> starExportEntries() const;
+   const ExportNameVector& syntheticExportNames() const;
++  const ExportNameVector& syntheticBindingNames() const;
++  bool hasSyntheticEvaluationSteps() const;
++  void initSyntheticEvaluation(JS::SyntheticModuleEvaluationSteps steps,
++                               HandleValue privateValue,
++                               MutableHandle<ExportNameVector> bindingNames);
++  JS::SyntheticModuleEvaluationSteps syntheticEvaluationSteps() const;
++  Value syntheticPrivate() const;
++  void setSyntheticPrivate(const Value& value);
++  PromiseObject* syntheticEvaluationPromise() const;
++  void setSyntheticEvaluationPromise(PromiseObject* promise);
++  bool syntheticEvaluationAborted() const;
++  void setSyntheticEvaluationAborted();
+ 
+   IndirectBindingMap& importBindings();
+ 
+--- a/js/src/builtin/ModuleObject.cpp
++++ b/js/src/builtin/ModuleObject.cpp
+@@ -698,12 +698,23 @@
+ class js::SyntheticModuleFields {
+  public:
+   ExportNameVector exportNames;
++  ExportNameVector bindingNames;
++  JS::SyntheticModuleEvaluationSteps evaluationSteps = nullptr;
++  HeapPtr<Value> privateValue;
++  HeapPtr<PromiseObject*> evaluationPromise;
++  ModuleStatus status = ModuleStatus::Evaluated;  // Existing JSON behavior.
++  bool evaluationAborted = false;
+ 
+  public:
+   void trace(JSTracer* trc);
+ };
+ 
+-void SyntheticModuleFields::trace(JSTracer* trc) { exportNames.trace(trc); }
++void SyntheticModuleFields::trace(JSTracer* trc) {
++  exportNames.trace(trc);
++  bindingNames.trace(trc);
++  TraceEdge(trc, &privateValue, "SyntheticModuleFields::privateValue");
++  TraceEdge(trc, &evaluationPromise, "SyntheticModuleFields::evaluationPromise");
++}
+ 
+ ///////////////////////////////////////////////////////////////////////////
+ // CyclicModuleFields
+@@ -952,6 +963,56 @@
+   return syntheticModuleFields()->exportNames;
+ }
+ 
++const ExportNameVector& ModuleObject::syntheticBindingNames() const {
++  return hasSyntheticEvaluationSteps() ? syntheticModuleFields()->bindingNames
++                                       : syntheticExportNames();
++}
++
++bool ModuleObject::hasSyntheticEvaluationSteps() const {
++  return hasSyntheticModuleFields() && syntheticModuleFields()->evaluationSteps;
++}
++
++void ModuleObject::initSyntheticEvaluation(
++    JS::SyntheticModuleEvaluationSteps steps, HandleValue privateValue,
++    MutableHandle<ExportNameVector> bindingNames) {
++  MOZ_ASSERT(steps);
++  auto* fields = syntheticModuleFields();
++  fields->bindingNames = std::move(bindingNames.get());
++  fields->evaluationSteps = steps;
++  fields->privateValue = privateValue;
++  fields->status = ModuleStatus::Unlinked;
++}
++
++JS::SyntheticModuleEvaluationSteps ModuleObject::syntheticEvaluationSteps() const {
++  return syntheticModuleFields()->evaluationSteps;
++}
++
++Value ModuleObject::syntheticPrivate() const {
++  return syntheticModuleFields()->privateValue;
++}
++
++void ModuleObject::setSyntheticPrivate(const Value& value) {
++  syntheticModuleFields()->privateValue = value;
++}
++
++PromiseObject* ModuleObject::syntheticEvaluationPromise() const {
++  return syntheticModuleFields()->evaluationPromise;
++}
++
++void ModuleObject::setSyntheticEvaluationPromise(PromiseObject* promise) {
++  MOZ_ASSERT(!syntheticModuleFields()->evaluationPromise);
++  syntheticModuleFields()->evaluationPromise = promise;
++}
++
++bool ModuleObject::syntheticEvaluationAborted() const {
++  return syntheticModuleFields()->evaluationAborted;
++}
++
++void ModuleObject::setSyntheticEvaluationAborted() {
++  syntheticModuleFields()->evaluationAborted = true;
++}
++
++
+ void ModuleObject::initFunctionDeclarations(
+     UniquePtr<FunctionDeclarationVector> decls) {
+   cyclicModuleFields()->functionDeclarations = std::move(decls);
+@@ -1144,7 +1205,7 @@
+ 
+   // TODO: Bug 1885483: Provide filename for JSON modules
+   if (!hasCyclicModuleFields()) {
+-    return "(JSON module)";
++    return hasSyntheticEvaluationSteps() ? "(synthetic module)" : "(JSON module)";
+   }
+   return cyclicModuleFields()->scriptSourceObject->source()->filename();
+ }
+@@ -1155,11 +1216,8 @@
+ }
+ 
+ ModuleStatus ModuleObject::status() const {
+-  // Always return `ModuleStatus::Evaluated` so we can assert a module's status
+-  // without checking which kind it is, even though synthetic modules don't have
+-  // this field according to the spec.
+   if (hasSyntheticModuleFields()) {
+-    return ModuleStatus::Evaluated;
++    return syntheticModuleFields()->status;
+   }
+ 
+   ModuleStatus status = cyclicModuleFields()->status;
+@@ -1182,14 +1240,20 @@
+                  newStatus > status(),
+              "New module status inconsistent with current status");
+ 
+-  cyclicModuleFields()->status = newStatus;
++  if (hasSyntheticModuleFields()) {
++    syntheticModuleFields()->status = newStatus;
++  } else {
++    cyclicModuleFields()->status = newStatus;
++  }
+ }
+ 
+ bool ModuleObject::hasTopLevelAwait() const {
++  if (hasSyntheticModuleFields()) return false;
+   return cyclicModuleFields()->hasTopLevelAwait;
+ }
+ 
+ bool ModuleObject::isAsyncEvaluating() const {
++  if (hasSyntheticModuleFields()) return false;
+   return cyclicModuleFields()->getIsAsyncEvaluating();
+ }
+ 
+@@ -1220,6 +1284,7 @@
+ }
+ 
+ PromiseObject* ModuleObject::maybeTopLevelCapability() const {
++  if (hasSyntheticModuleFields()) return syntheticEvaluationPromise();
+   return cyclicModuleFields()->topLevelCapability;
+ }
+ 
+@@ -1314,12 +1379,14 @@
+ }
+ 
+ bool ModuleObject::hasTopLevelCapability() const {
++  if (hasSyntheticModuleFields()) return syntheticEvaluationPromise();
+   return cyclicModuleFields()->topLevelCapability;
+ }
+ 
+ bool ModuleObject::hadEvaluationError() const {
+   if (hasSyntheticModuleFields()) {
+-    return false;
++    auto* promise = syntheticEvaluationPromise();
++    return promise && promise->state() == JS::PromiseState::Rejected;
+   }
+ 
+   ModuleStatus fullStatus = cyclicModuleFields()->status;
+@@ -1338,6 +1405,10 @@
+ }
+ 
+ Value ModuleObject::maybeEvaluationError() const {
++  if (hasSyntheticModuleFields()) {
++    return hadEvaluationError() ? syntheticEvaluationPromise()->reason()
++                                : UndefinedValue();
++  }
+   return cyclicModuleFields()->evaluationError;
+ }
+ 
+--- a/js/src/vm/Modules.cpp
++++ b/js/src/vm/Modules.cpp
+@@ -13,6 +13,7 @@
+ #include "mozilla/Utf8.h"  // mozilla::Utf8Unit
+ 
+ #include <stdint.h>  // uint32_t
++#include <stdio.h>   // snprintf
+ 
+ #include "jstypes.h"  // JS_PUBLIC_API
+ 
+@@ -29,13 +30,16 @@
+ #include "js/RootingAPI.h"              // JS::MutableHandle
+ #include "js/Value.h"                   // JS::Value
+ #include "vm/EnvironmentObject.h"       // js::ModuleEnvironmentObject
++#include "vm/Interpreter.h"  // GetAndClearExceptionAndStack
+ #include "vm/JSAtomUtils.h"             // AtomizeString
+ #include "vm/JSContext.h"               // CHECK_THREAD, JSContext
+ #include "vm/JSObject.h"                // JSObject
+ #include "vm/JSONParser.h"              // JSONParser
+ #include "vm/List.h"                    // ListObject
+ #include "vm/Runtime.h"                 // JSRuntime
+-
++#include "vm/SavedFrame.h"              // SavedFrame
++
++#include "vm/EnvironmentObject-inl.h"  // setAliasedBinding
+ #include "vm/JSAtomUtils-inl.h"  // AtomToId
+ #include "vm/JSContext-inl.h"    // JSContext::{c,releaseC}heck
+ #include "vm/JSObject-inl.h"
+@@ -50,6 +54,7 @@
+                            MutableHandle<Value> rval);
+ static bool SyntheticModuleEvaluate(JSContext* cx, Handle<ModuleObject*> module,
+                                     MutableHandle<Value> rval);
++static bool ContainsElement(const ExportNameVector& list, JSAtom* atom);
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ // Public API
+@@ -200,18 +205,106 @@
+   return moduleObject;
+ }
+ 
++JS_PUBLIC_API JSObject* JS::CreateSyntheticModule(
++    JSContext* cx, const HandleValueArray& names,
++    SyntheticModuleEvaluationSteps steps, HandleValue privateValue) {
++  AssertHeapIsIdle();
++  CHECK_THREAD(cx);
++  cx->check(names, privateValue);
++  if (!steps) {
++    JS_ReportErrorASCII(cx, "Synthetic module requires evaluation steps");
++    return nullptr;
++  }
++  Rooted<ExportNameVector> exportNames(cx);
++  Rooted<ExportNameVector> bindingNames(cx);
++  for (size_t i = 0; i < names.length(); i++) {
++    if (!names[i].isString()) {
++      JS_ReportErrorASCII(cx, "Synthetic export names must be strings");
++      return nullptr;
++    }
++    Rooted<JSAtom*> atom(cx, AtomizeString(cx, names[i].toString()));
++    if (!atom) return nullptr;
++    if (ContainsElement(exportNames, atom)) {
++      JS_ReportErrorASCII(cx, "Duplicate synthetic export name");
++      return nullptr;
++    }
++    // Export names may be numeric, empty or even *namespace*. Use distinct
++    // local identifiers so they cannot collide with the internal namespace slot.
++    char localName[48];
++    snprintf(localName, sizeof(localName), "synthetic%zu", i);
++    Rooted<JSAtom*> binding(cx, Atomize(cx, localName, strlen(localName)));
++    if (!binding) return nullptr;
++    if (!exportNames.append(atom) || !bindingNames.append(binding)) {
++      ReportOutOfMemory(cx);
++      return nullptr;
++    }
++  }
++  Rooted<ModuleObject*> module(cx, ModuleObject::createSynthetic(cx, &exportNames));
++  if (!module) return nullptr;
++  module->initSyntheticEvaluation(steps, privateValue, &bindingNames);
++  RootedVector<Value> values(cx);
++  if (!values.resize(names.length())) return nullptr;
++  for (auto& value : values) value = UndefinedValue();
++  if (!ModuleObject::createSyntheticEnvironment(cx, module, values)) return nullptr;
++  return module;
++}
++
++JS_PUBLIC_API bool JS::SetSyntheticModuleExport(
++    JSContext* cx, HandleObject moduleObject, HandleString name, HandleValue value) {
++  AssertHeapIsIdle();
++  CHECK_THREAD(cx);
++  cx->check(moduleObject, name, value);
++  if (!moduleObject->is<ModuleObject>() ||
++      !moduleObject->as<ModuleObject>().hasSyntheticModuleFields()) {
++    JS_ReportErrorASCII(cx, "Expected a synthetic module");
++    return false;
++  }
++  Rooted<ModuleObject*> module(cx, &moduleObject->as<ModuleObject>());
++  Rooted<JSAtom*> atom(cx, AtomizeString(cx, name));
++  if (!atom) return false;
++  if (!ContainsElement(module->syntheticExportNames(), atom)) {
++    JS_ReportErrorASCII(cx, "Unknown synthetic export name");
++    return false;
++  }
++  if (module->status() == ModuleStatus::Unlinked) {
++    JS_ReportErrorASCII(cx, "Synthetic module must be linked before setting exports");
++    return false;
++  }
++  Rooted<ModuleEnvironmentObject*> env(cx, module->environment());
++  MOZ_ASSERT(env);
++  size_t index = 0;
++  while (module->syntheticExportNames()[index] != atom) index++;
++  Rooted<JSAtom*> binding(cx, module->syntheticBindingNames()[index]);
++  RootedId id(cx, AtomToId(binding));
++  auto property = env->lookup(cx, id);
++  MOZ_ASSERT(property.isSome());
++  env->setAliasedBinding(property->slot(), value);
++  return true;
++}
++
+ JS_PUBLIC_API void JS::SetModulePrivate(JSObject* module, const Value& value) {
++  if (module->as<ModuleObject>().hasSyntheticModuleFields()) {
++    module->as<ModuleObject>().setSyntheticPrivate(value);
++    return;
++  }
+   JSRuntime* rt = module->zone()->runtimeFromMainThread();
+   module->as<ModuleObject>().scriptSourceObject()->setPrivate(rt, value);
+ }
+ 
+ JS_PUBLIC_API void JS::ClearModulePrivate(JSObject* module) {
+   // |module| may be gray, be careful not to create edges to it.
++  if (module->as<ModuleObject>().hasSyntheticModuleFields()) {
++    module->as<ModuleObject>().setSyntheticPrivate(UndefinedValue());
++    return;
++  }
+   JSRuntime* rt = module->zone()->runtimeFromMainThread();
+   module->as<ModuleObject>().scriptSourceObject()->clearPrivate(rt);
+ }
+ 
+ JS_PUBLIC_API JS::Value JS::GetModulePrivate(JSObject* module) {
++  if (module->as<ModuleObject>().hasSyntheticModuleFields()) {
++    return module->as<ModuleObject>().syntheticPrivate();
++  }
+   return module->as<ModuleObject>().scriptSourceObject()->getPrivate();
+ }
+ 
+@@ -912,7 +1005,10 @@
+ 
+   // Step 3. Return ResolvedBinding Record { [[Module]]: module,
+   // [[BindingName]]: exportName }.
+-  return CreateResolvedBindingObject(cx, module, exportName, result);
++  size_t index = 0;
++  while (module->syntheticExportNames()[index] != exportName) index++;
++  Rooted<JSAtom*> binding(cx, module->syntheticBindingNames()[index]);
++  return CreateResolvedBindingObject(cx, module, binding, result);
+ }
+ 
+ // https://tc39.es/ecma262/#sec-getmodulenamespace
+@@ -1311,6 +1407,9 @@
+ // ES2023 16.2.1.5.1 Link
+ static bool ModuleLink(JSContext* cx, Handle<ModuleObject*> module) {
+   if (!module->hasCyclicModuleFields()) {
++    if (module->status() == ModuleStatus::Unlinked) {
++      module->setStatus(ModuleStatus::Linked);
++    }
+     return true;
+   }
+ 
+@@ -1367,7 +1466,9 @@
+   // Step 1. If module is not a Cyclic Module Record, then
+   if (!module->hasCyclicModuleFields()) {
+     // Step 1.a. Perform ? module.Link().
+-    // (Skipped as we have already created the environment for these modules).
++    // The environment already exists, but callback-backed modules still need
++    // the real linked transition before their evaluation steps may execute.
++    if (!ModuleLink(cx, module)) return false;
+     // Step 1.b. Return index.
+     *indexOut = index;
+     return true;
+@@ -1527,7 +1628,45 @@
+ static bool SyntheticModuleEvaluate(JSContext* cx,
+                                     Handle<ModuleObject*> moduleArg,
+                                     MutableHandle<Value> rval) {
+-  // Steps 1-12 happen elsewhere in the engine.
++  if (moduleArg->hasSyntheticEvaluationSteps()) {
++    if (moduleArg->status() == ModuleStatus::Unlinked) {
++      ThrowUnexpectedModuleStatus(cx, moduleArg->status());
++      return false;
++    }
++    if (moduleArg->syntheticEvaluationAborted()) {
++      JS_ReportErrorASCII(cx, "Previous synthetic evaluation was aborted");
++      return false;
++    }
++    if (auto* cached = moduleArg->syntheticEvaluationPromise()) {
++      rval.setObject(*cached);
++      return true;
++    }
++    Rooted<PromiseObject*> promise(cx, CreatePromiseObjectForAsync(cx));
++    if (!promise) return false;
++    // Publish the promise before arbitrary embedding code can reenter Evaluate.
++    moduleArg->setSyntheticEvaluationPromise(promise);
++    moduleArg->setStatus(ModuleStatus::Evaluating);
++    RootedValue data(cx, moduleArg->syntheticPrivate());
++    bool ok = moduleArg->syntheticEvaluationSteps()(cx, moduleArg, data);
++    moduleArg->setStatus(ModuleStatus::Evaluated);
++    if (ok) {
++      ok = AsyncFunctionReturned(cx, promise, JS::UndefinedHandleValue);
++    } else {
++      RootedValue error(cx);
++      Rooted<SavedFrame*> stack(cx);
++      // Termination/OOM without a catchable exception must stay an engine failure.
++      ok = cx->isExceptionPending() &&
++           GetAndClearExceptionAndStack(cx, &error, &stack) &&
++           AsyncFunctionThrown(cx, promise, error, stack);
++    }
++    if (!ok) {
++      moduleArg->setSyntheticEvaluationAborted();
++      return false;
++    }
++    rval.setObject(*promise);
++    return true;
++  }
++  // Existing JSON modules have no evaluation steps.
+ 
+   // Step 13. Let pc be ! NewPromiseCapability(%Promise%).
+   Rooted<PromiseObject*> resultPromise(cx, CreatePromiseObjectForAsync(cx));
+@@ -1688,10 +1827,22 @@
+                                   size_t index, size_t* indexOut) {
+   // Step 1: If module is not a Cyclic Module Record, then
+   if (!module->hasCyclicModuleFields()) {
+-    // Step 1.a. Let promise be ! module.Evaluate(). (Skipped)
+-    // Step 1.b. Assert: promise.[[PromiseState]] is not pending. (Skipped)
+-    // Step 1.c. If promise.[[PromiseState]] is rejected, then (Skipped)
+-    //   Step 1.c.i Return ThrowCompletion(promise.[[PromiseResult]]). (Skipped)
++    if (module->hasSyntheticEvaluationSteps()) {
++      RootedValue result(cx);
++      if (!SyntheticModuleEvaluate(cx, module, &result)) return false;
++      Rooted<PromiseObject*> promise(cx, &result.toObject().as<PromiseObject>());
++      // Synthetic evaluation is synchronous even in a graph with top-level await.
++      if (promise->state() == JS::PromiseState::Pending) {
++        JS_ReportErrorASCII(cx, "Synthetic dependency is already evaluating");
++        return false;
++      }
++      if (promise->state() == JS::PromiseState::Rejected) {
++        if (!JS::SetSettledPromiseIsHandled(cx, promise)) return false;
++        RootedValue error(cx, promise->reason());
++        cx->setPendingException(error, ShouldCaptureStack::Maybe);
++        return false;
++      }
++    }
+     // Step 1.d. Return index.
+     *indexOut = index;
+     return true;
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -8308,7 +8308,7 @@
+   }
+ 
+   JS::ModuleType moduleType = JS::ModuleType::JavaScript;
+-  if (module->hasSyntheticModuleFields()) {
++  if (module->hasSyntheticModuleFields() && !module->hasSyntheticEvaluationSteps()) {
+     moduleType = JS::ModuleType::JSON;
+   }
+ 
+--- a/js/src/vm/Scope.cpp
++++ b/js/src/vm/Scope.cpp
+@@ -175,7 +175,7 @@
+   slotIndex++;
+ 
+   // Add synthetic exports.
+-  for (JSAtom* exportName : module->syntheticExportNames()) {
++  for (JSAtom* exportName : module->syntheticBindingNames()) {
+     if (!addProperty(exportName->asPropertyName())) {
+       return nullptr;
+     }

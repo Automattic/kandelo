@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T00:15:41.383899+00:00",
+  "scope": "Pinned native Node public VM reference only; no guest or browser conformance",
+  "executableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+  "executableArchiveSha256": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceArchiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+  "controlPath": "tests/nodejs/upstream/synthetic-module-native-controls.cjs",
+  "controlSha256": "069defdf65e1701a9a04007b8f579b40be07cdd8ef90eede351fa76de232223d",
+  "minimalEnvironmentKeys": [
+    "PATH",
+    "LANG",
+    "TZ"
+  ],
+  "exit": 0,
+  "stderr": "(node:25331) ExperimentalWarning: VM Modules is an experimental feature and might change at any time\n(Use `native-node --trace-warnings ...` to show where the warning was created)\n",
+  "nativeResult": {
+    "kind": "native-synthetic-reference-only",
+    "version": "v26.13.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "v8": "14.6.202.34-node.40",
+    "execArgv": [
+      "--experimental-vm-modules"
+    ],
+    "cases": 4,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "arbitrary-live-synthetic-exports",
+        "status": "pass"
+      },
+      {
+        "name": "public-vm-reentry-rejected",
+        "status": "pass"
+      },
+      {
+        "name": "public-vm-terminal-failure-and-promise-results",
+        "status": "pass"
+      },
+      {
+        "name": "source-module-live-binding-and-failure-order",
+        "status": "pass"
+      }
+    ],
+    "limits": [
+      "Public VM wrapper observations are not raw engine API contracts",
+      "No guest runtime or Node ModuleWrap binding conformance",
+      "No browser/security-wrapper/OOM/finalization proof"
+    ]
+  },
+  "reviewedSourceInputs": [
+    {
+      "path": "deps/v8/src/objects/synthetic-module.cc",
+      "bytes": 5999,
+      "sha256": "e38a3f00626c816eb212d65f151a15c537fda3c40ff5b38bf4dd284ba23a6dbd"
+    },
+    {
+      "path": "src/module_wrap.cc",
+      "bytes": 59918,
+      "sha256": "ef6d3f20a46aaa844d9471b32e489bf60b7539681d6d9e3f7e230e1abddcb051"
+    },
+    {
+      "path": "src/module_wrap.h",
+      "bytes": 8318,
+      "sha256": "4206d52a828c9cb2efff385821354ae968e2b6d059828ebd6656c25cc379f07f"
+    }
+  ]
+}
