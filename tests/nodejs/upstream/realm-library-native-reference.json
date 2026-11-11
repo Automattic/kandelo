@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T02:57:56.541315+00:00",
+  "scope": "Exact pinned native realm/builtin loader reference only; native process already bootstrapped",
+  "executableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "controlPath": "tests/nodejs/upstream/realm-library-native-controls.cjs",
+  "controlSha256": "0016ae12044d167ddd3ae81c3366cade5cd5604c4e7ce6147db0d9176e25521f",
+  "environmentKeys": [
+    "PATH",
+    "LANG",
+    "TZ"
+  ],
+  "exit": 0,
+  "stderr": "(node:59326) internal/test/binding: These APIs are for internal testing only. Do not use them.\n(Use `native-node --trace-warnings ...` to show where the warning was created)\n",
+  "nativeResult": {
+    "kind": "native-realm-library-reference-only",
+    "version": "v26.13.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "v8": "14.6.202.34-node.40",
+    "execArgv": [
+      "--expose-internals"
+    ],
+    "builtinCount": 443,
+    "cases": 12,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "original-realm-source-remains-private-in-native-loader-policy",
+        "status": "pass"
+      },
+      {
+        "name": "native-builtin-ids-are-fresh-and-binding-is-frozen",
+        "status": "pass"
+      },
+      {
+        "name": "complete-original-assert-module-is-cached",
+        "status": "pass"
+      },
+      {
+        "name": "original-policy-rejects-public-exposure-of-the-realm-loader",
+        "status": "pass"
+      },
+      {
+        "name": "native-process-pid-is-readonly-and-metadata-is-real",
+        "status": "pass"
+      },
+      {
+        "name": "native-internal-binding-cache-preserves-identity",
+        "status": "pass"
+      },
+      {
+        "name": "original-policy-keeps-realm-private-and-builds-native-facades",
+        "status": "pass"
+      },
+      {
+        "name": "original-error-preparation-is-installed",
+        "status": "pass"
+      },
+      {
+        "name": "original-private-arrow-symbol-is-hidden-and-own-only",
+        "status": "pass"
+      },
+      {
+        "name": "unlinked-native-module-has-original-error-code",
+        "status": "pass"
+      },
+      {
+        "name": "native-source-loader-map-and-cache-reflect-real-state",
+        "status": "pass"
+      },
+      {
+        "name": "native-node-error-constructor-reference",
+        "status": "pass"
+      }
+    ],
+    "limits": [
+      "Native runtime already bootstrapped; not a guest startup reference",
+      "Different target capability/source availability may change builtin ids",
+      "Bounded reference only; no full native lifecycle/security/OOM differential"
+    ]
+  }
+}

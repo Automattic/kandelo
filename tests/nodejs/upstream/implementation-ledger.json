@@ -23,13 +23,13 @@
       "area": "immutable native source registry and original C++ wrapper metadata",
       "sourceStatus": "implemented; full host-native composition verified and three original context bodies used by the guest compiler",
       "evidence": "source-registry-composition.json",
-      "remaining": "full 443-source guest payload readback and native runtime builtin binding connection"
+      "remaining": "full 443-source guest payload readback and complete native builtins metadata/cache/source-text operations"
     },
     {
       "area": "SpiderMonkey builtin function/module compiler",
-      "sourceStatus": "selected package built; function compiler executes three complete original per-context initializers on the Node host",
+      "sourceStatus": "selected package executes original context, realm, error and assert bodies through actual native builtins binding",
       "evidence": "per-context-engine-check.json",
-      "remaining": "source-text module execution, full source-position/error/GC coverage and builtin-binding connection"
+      "remaining": "source-text module helper execution and full source-position/error/GC coverage"
     },
     {
       "area": "embedding-private engine key kind and property operations",
@@ -40,13 +40,14 @@
     {
       "area": "per-runtime symbols and canonical per-context initialization",
       "sourceStatus": "implemented; complete unchanged primordials/domexception/messageport sources execute, 14 focused Node-host controls pass",
-      "remaining": "connect real Node realm and binding owners; full security/OOM/teardown/finalization and browser contracts remain unproven",
+      "remaining": "principal Node bootstrap and full process/binding closure; full security/OOM/teardown/finalization and browser contracts remain unproven",
       "evidence": "per-context-engine-check.json"
     },
     {
       "area": "shared Node realm and native binding loader",
-      "sourceStatus": "not implemented in new architecture",
-      "remaining": "real initial process and one binding registry using the implemented module_wrap/errors context owners; unchanged internal/bootstrap/realm and upstream loader identity/caches/cycles"
+      "sourceStatus": "partial native owner implemented; complete original realm library loader executes through privileged Node-host controls",
+      "remaining": "principal bootstrap/node and wider binding/process closure; complete lifecycle/security/OOM and four-host startup",
+      "evidence": "realm-library-engine-check.json"
     },
     {
       "area": "structured Error stack/CallSite/limit contracts",
@@ -64,7 +65,7 @@
     {
       "area": "module_wrap/contextify and CJS/ESM entrypaths",
       "sourceStatus": "partial native ModuleWrap core and evaluation-phase dynamic import callback implemented; 19 binding and 14 callback controls pass on Node host",
-      "remaining": "default import.meta/contextify/cache/facade/deadline/signal and script/source/defer callback backends; full errors/lifecycle/security/OOM/browser differential; native realm/bootstrap and CJS/ESM startup unrun",
+      "remaining": "default import.meta/contextify/cache/facade/deadline/signal and script/source/defer callback backends; principal Node bootstrap and user CJS/ESM startup; full lifecycle/security/OOM/browser differential",
       "evidence": "dynamic-import-engine-check.json"
     },
     {
@@ -135,7 +136,9 @@
     "abi55HistoryUnchanged": true,
     "threeOriginalContextInitializersExecuted": true,
     "sourceTextModuleCompilerExercised": false,
-    "engineSourceSyntheticGraphsExercised": true
+    "engineSourceSyntheticGraphsExercised": true,
+    "originalRealmLibraryExecuted": true,
+    "principalNodeBootstrapCompleted": false
   },
   "preservation": {
     "frozenCheckoutUnchanged": true,
@@ -143,17 +146,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 23,
+    "packageRevision": 24,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "error-stack-engine-check.json",
+    "evidence": "realm-library-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "privileged native Error stack/ModuleWrap/dynamic-import and synthetic/context/private-key controls on Node host; no upstream Node startup",
+    "packageRuntimeScope": "complete original realm library loader plus 106 native engine prerequisite controls on Node host; no principal Node bootstrap or user entry",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "existing Linux triplet and __linux__/__unix__ defines are unchanged; target metadata/conformance remain unestablished"
   },
@@ -245,6 +248,26 @@
       "originalFilenameMetadata": "Captured from active engine ScriptSources separately from display/sourceURL names; unavailable historical filename metadata remains an explicit gap",
       "evidence": "error-stack-engine-check.json",
       "remaining": "receiver/function/type/method/eval/native/constructor/async/Promise/Wasm metadata, enclosing/position/script-hash methods, exact formatting and full security/OOM/lifecycle differential"
+    },
+    "realmLibrary": {
+      "inventory": "realm-library-contracts.md",
+      "implementationEvidence": "realm-library-engine-check.json",
+      "originalBodyExecuted": true,
+      "originalLoaderClosuresRetained": true,
+      "oneOriginalBuiltinCache": true,
+      "canonicalProtectedPrimordials": true,
+      "terminalFailureAndReentryProtected": true,
+      "guestProcessMetadata": "actual uname/getpid/getppid through guest libc/kernel; process remains partial",
+      "eagerNativeClosure": [
+        "builtins registry/compiler/loaders",
+        "canonical module_wrap",
+        "canonical errors callbacks",
+        "canonical util.privateSymbols"
+      ],
+      "principalBootstrapGap": "Complete internal/bootstrap/node invocation stops on missing config at original line 68",
+      "principalBootstrapCompleted": false,
+      "cjsEntry": false,
+      "esmEntry": false
     }
   },
   "nativeDifferentialControls": {
@@ -287,6 +310,14 @@
       "evidence": "error-stack-native-reference.json",
       "guestRun": false,
       "limits": "Separate exact native bounded stack reference; no full CallSite differential, browser or startup proof"
+    },
+    "realmLibrary": {
+      "reference": "Node26.13.0Darwinarm64",
+      "cases": 12,
+      "failures": 0,
+      "evidence": "realm-library-native-reference.json",
+      "guestRun": false,
+      "limits": "Already-bootstrapped native reference through original internal/modules/helpers; no full native lifecycle/security/OOM or guest startup differential"
     }
   },
   "focusedGuestEngineControls": {
@@ -312,8 +343,8 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "error-stack-engine-check.json",
-      "regressionScope": "Same revision-23 artifact passes 14 dynamic-import, 19 ModuleWrap, 15 synthetic, 14 context and 23 private-key cases and drivers; raw regressions retained under .context/node-error-stack",
+      "currentArtifactEvidence": "realm-library-engine-check.json",
+      "regressionScope": "Same revision-24 artifact passes 21 stack, 14 dynamic-import, 19 ModuleWrap, 15 synthetic, 14 context and 23 private-key cases and drivers; raw regressions retained under .context/node-realm",
       "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
@@ -333,15 +364,23 @@
       "errorStackFailures": 0,
       "errorStackDriverRuns": 3,
       "errorStackDriverFailures": 0,
-      "errorStackSuccessHostDiagnostics": 0
+      "errorStackSuccessHostDiagnostics": 0,
+      "realmLibraryEvidence": "realm-library-engine-result.json",
+      "realmLibraryCases": 16,
+      "realmLibraryFailures": 0,
+      "realmLibraryDriverRuns": 4,
+      "realmLibraryDriverFailures": 0,
+      "realmLibrarySuccessHostDiagnostics": 0,
+      "realmLibraryFatalControls": 1,
+      "realmLibraryFatalExpectedHostDiagnosticsEach": 1
     },
     "Chromium": "not run",
     "Firefox": "not run",
     "WebKit": "not run"
   },
   "nextWork": [
-    "Connect native realm/process/builtins/errors/util ownership and execute internal/bootstrap/realm unchanged, using actual guest metadata, canonical symbols/compiler and the implemented stack callbacks",
-    "Preserve source/engine failures; do not substitute public modules or native-reference configuration",
-    "Continue complete backend catalog while integrating startup; CJS/ESM and four-host startup remain unrun"
+    "Implement truthful native config/process state and the dependency-ordered eager principal bootstrap closure; use the actual original realm loader and protected primordials",
+    "Preserve real source/engine failures and assertions; no placeholder backends or copied native-reference configuration",
+    "Continue complete backend catalog while integrating startup; user CJS/ESM and four-host startup remain unrun"
   ]
 }

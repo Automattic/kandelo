@@ -432,7 +432,7 @@ if [ "$UPSTREAM_OBJECT_CHECK" -eq 1 ]; then
         ./mach --no-interactive build js/src/shell/builtin-compiler.o \
             js/src/shell/builtin-source-registry.o js/src/shell/per-context.o \
             js/src/shell/private-key-test-api.o js/src/shell/module-wrap.o \
-            js/src/shell/error-stack.o
+            js/src/shell/error-stack.o js/src/shell/realm.o
     )
     echo "==> Upstream Node object check complete; no package linked or installed."
     exit 0

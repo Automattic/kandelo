@@ -18,6 +18,9 @@ JSObject* GetCurrentContextExports(JSContext* cx, JS::HandleObject runtime);
 JSObject* GetCurrentContextErrorStackState(JSContext* cx, JS::HandleObject runtime);
 JSObject* GetCurrentContextModuleWrapBinding(JSContext* cx, JS::HandleObject runtime);
 JS::Symbol* GetRuntimeSymbol(JSContext* cx, JS::HandleObject runtime, const char* name);
+JSObject* CreateRuntimePrivateSymbolTable(JSContext* cx, JS::HandleObject runtime);
+bool InitializeCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime);
+JSObject* GetCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime, bool inspect);
 
 // Privileged diagnostics return a snapshot, never the canonical carrier/key.
 JSObject* InspectCurrentContextForTesting(JSContext* cx, JS::HandleObject runtime);

@@ -7,20 +7,21 @@ import { runCentralizedProgram } from "../host/test/centralized-test-helper";
 
 const [programArgument, reportArgument, modeArgument = "private-keys"] = process.argv.slice(2);
 if (!programArgument || !reportArgument || process.argv.length > 5 ||
-    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack"].includes(modeArgument)) {
-  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack]");
+    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library"].includes(modeArgument)) {
+  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library]");
 }
 const perContext = modeArgument === "per-context";
 const synthetic = modeArgument === "synthetic-modules";
 const moduleWrap = modeArgument === "module-wrap";
 const dynamicImport = modeArgument === "dynamic-import";
 const errorStack = modeArgument === "error-stack";
-const expectedKind = errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
-const expectedCases = errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
+const realmLibrary = modeArgument === "realm-library";
+const expectedKind = realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
+const expectedCases = realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
 const program = resolve(programArgument);
 const reportPath = resolve(reportArgument);
 const kernel = resolveBinary("kernel.wasm");
-const fixturePath = resolve(errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
+const fixturePath = resolve(realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
   : "tests/nodejs/upstream/private-key-engine-controls.js");
 const fixture = readFileSync(fixturePath, "utf8");
 function identity(path: string) {
@@ -31,6 +32,7 @@ const runs: Array<Record<string, unknown>> = [];
 let failures = 0;
 async function run(name: string, argv: string[], validate: (result: Awaited<ReturnType<typeof runCentralizedProgram>>) => unknown) {
   let result: Awaited<ReturnType<typeof runCentralizedProgram>> | undefined;
+  let guestPid: number | undefined;
   try {
     // No custom PlatformIO/onKernelReady: the helper uses NodeKernelHost and
     // its dedicated kernel worker, with real guest descriptors and syscalls.
@@ -41,9 +43,14 @@ async function run(name: string, argv: string[], validate: (result: Awaited<Retu
       argv,
       env: ["PATH=/usr/bin:/bin"],
       timeout: 120_000,
+      ...(realmLibrary ? { onStarted: (_proxy: unknown, pid: number) => { guestPid = pid; } } : {}),
     });
     const detail = validate(result);
-    runs.push({ name, status: "pass", ...result, detail });
+    if (realmLibrary && name === modeArgument + "-controls") {
+      const row = detail as { processMetadata: { pid: number } };
+      expect(row.processMetadata.pid === guestPid, "native process PID differs from the real kernel-assigned PID");
+    }
+    runs.push({ name, status: "pass", ...result, detail, ...(realmLibrary ? { guestPid } : {}) });
   } catch (error) {
     failures++;
     const failureKind = result ? "guest-control-failure"
@@ -96,6 +103,14 @@ if (moduleWrap) {
       expect(!result.stdout.includes("UNEXPECTED_"), JSON.stringify(result));
     });
   }
+}
+if (realmLibrary) {
+  await run("once-only-loaders-registration-invariant-is-fatal", ["js", "--kandelo-test-upstream", "-e",
+    "__kandeloUpstreamTest.initializeContext(); const realm = __kandeloUpstreamTest.initializeRealm(); try { realm.internalBinding('builtins').setInternalLoaders(() => {}, () => {}); print('UNEXPECTED_RETURN'); } catch (error) { print('UNEXPECTED_CATCH'); }"], (result) => {
+      expect(result.exitCode !== 0, JSON.stringify(result));
+      expect(result.stderr.includes("Node internal loaders registration invariant"), JSON.stringify(result));
+      expect(!result.stdout.includes("UNEXPECTED_"), JSON.stringify(result));
+    });
 }
 const report = {
   schema: 1, completedAt: new Date().toISOString(),

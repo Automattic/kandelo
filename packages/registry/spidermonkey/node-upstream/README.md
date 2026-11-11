@@ -19,20 +19,31 @@ helper introduces no std::string/vector allocations into the engine entrypath.
 The metadata build tool reuses original Node C++ classification instead of
 replicating source-kind policy in Python or JavaScript.
 
-The source recipe now registers this component in the real Mozilla shell
-build. Both translation units have compiled as wasm32 objects against the
-configured SpiderMonkey headers; they remain unlinked and inactive in the runtime.
-A host-native registry composition check does not validate these JSAPI calls,
-source line offsets, error propagation, realm identity, GC or guest startup.
-The source-derived API/ownership review is in
-`tests/nodejs/upstream/compiler-api-contracts.md`.
+The normal Mozilla package now compiles and links these translation units.
+Privileged JS-shell controls execute all three complete original context
+initializers, then the complete original `internal/bootstrap/realm` body.
+The normal Node entrypath still uses the existing compatibility bootstrap.
 
-The recipe declares the preparation helper, inputs/tools and Mozilla source
-list. Object compilation evidence is in
-`tests/nodejs/upstream/engine-object-compilation.json`; link verification is
-pending. Runtime integration still needs real per-context/per-realm state,
-private symbols, binding admission, structured stack hooks, job lifecycle and
-the startup binding closure. The existing adapter/bootstrap remains active.
-Do not wire placeholder bindings merely to advance bootstrap. Full product
-and successor-ABI rebuilds remain deferred; focused engine build scope must
-be reported before proceeding. No ABI version or fixture is changed here.
+`per-context.cpp` privately owns the runtime symbol inventory, per-global
+primordials, context exports and the realm-library owner. `realm.cpp` publishes
+that owner before any original JavaScript executes and records terminal
+initialization failure without replacing it on retry. Its native builtins
+binding invokes the immutable compiler and retains the actual loader closures
+registered by upstream JavaScript. The original `BuiltinModule` owns the only
+module cache, exposure policy and builtin facade path. Native records and
+function slots trace their owners; no host Node builtin supplies guest behavior.
+
+The initial process object reads guest `uname`, `getpid` and `getppid` through
+libc and kernel syscalls. Its process methods/configuration remain partial.
+Only the eager realm binding closure (builtins, module_wrap, errors and
+util.privateSymbols) is admitted. Unsupported native bindings and missing
+metadata/cache/source-text operations raise explicit implementation errors.
+A compilation-event diagnostic list does not stand in for native cache usage.
+
+See `tests/nodejs/upstream/realm-library-contracts.md` and its engine receipt
+for the current boundary. Realm-library readiness is distinct from principal
+bootstrap completion: `internal/bootstrap/node`, web/thread/ownership switches,
+process environment and user CJS/ESM entrypaths still need their real native
+backends and lifecycle. No full-product, successor-ABI, browser, fork or overall
+suite claim follows from these focused controls. Do not wire placeholder
+bindings merely to advance bootstrap.

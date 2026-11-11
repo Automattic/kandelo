@@ -3,21 +3,22 @@
 ## Current state
 
 The normal guest runtime still uses its existing compatibility bootstrap.
-The selected SpiderMonkey package now executes the complete, unchanged
-upstream primordials, DOMException and messageport context initializers through
-privileged diagnostic controls on the Node host. A native runtime owner shares
-the original symbol inventory across fresh per-global state. The upstream realm
-loader and Node bootstrap are not connected; startup, CJS/ESM entrypaths and
-browser execution remain unrun. This prerequisite does not establish module
-compatibility or guest readback of all 443 builtin sources.
-The engine also has callback-backed synthetic modules with focused source-graph
-evidence on the Node host. A partial native ModuleWrap binding now uses those
-records and actual source modules through privileged diagnostics. The upstream
-realm/binding loader remains disconnected. ModuleWrap-owned dynamic imports
-now invoke the registered native callback and adopt its result through real
-referrer-realm Promises; the unchanged upstream loader is not yet executing.
-Owned contexts also have lazy native Error stack preparation backed by real
-saved frames. Structured CallSite support remains partial.
+Through privileged JS-shell controls, the selected SpiderMonkey package now
+executes the complete, unchanged upstream primordials, DOMException,
+messageport and realm library loader on the Node host. A canonical native
+context owns the original symbol inventory and protected primordials; the
+realm owner retains the actual original loader closures. Original JavaScript
+owns builtin caching, exposure policy and moduleLoadList. The eager native
+realm closure uses the real ModuleWrap/Error owners and shared private symbols.
+
+This is the realm-library stage, not complete Node startup. A direct diagnostic
+call into the complete `internal/bootstrap/node` stops at its first eager
+missing native binding, `config`. Empty/simple evaluation, user CJS/ESM
+entrypaths and browser startup remain unrun. The native process and
+util/builtins bindings remain partial; no complete module compatibility or
+443-source guest payload readback is established. ModuleWrap-owned dynamic
+imports and genuine source/synthetic graphs have focused Node-host controls.
+Owned Error stacks use real saved frames, with partial structured CallSites.
 
 The target remains Node.js 26.13.0, Lithium LTS, source commit
 `18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. Verification on November 10,
@@ -196,7 +197,7 @@ normal package checks. This does not
 activate upstream Node or turn an older engine artifact into evidence for the
 new code. Revision 19 adds the native runtime/context owner and executes the
 three complete original initializers through diagnostic controls. The selected
-package builds; upstream realm/bootstrap integration remains unimplemented.
+package builds; later realm-library integration is described below, while principal Node bootstrap remains unfinished.
 
 The focused preparation check ran the actual recipe helper, built the host-only
 original-Node metadata producer using the declared SDK, verified all four staged
@@ -564,3 +565,33 @@ stack compatibility. Realm/process/binding loader integration, CJS/ESM entry,
 browser hosts, full native/security/OOM/lifecycle differential and the complete
 backend catalog remain open. No canonical image, full product, successor-ABI
 campaign rebuild, overall suite or fork-behavior validation ran.
+
+## Original realm library loader
+
+Revision 24 executes the complete original `internal/bootstrap/realm` body
+with its original four arguments. The native realm owner is published before
+execution, retains the actual loader closures and preserves original thrown
+values and terminal failure. It reads primordials from protected context state.
+Its frozen builtins binding exposes the real registry and compiler; upstream
+JavaScript supplies the only builtin cache and exposure policy. Guest process
+metadata comes from actual uname/getpid/getppid calls through libc/kernel.
+Missing bindings, configuration and cache/source-text operations fail explicitly.
+
+Sixteen focused guest controls pass, including original internal/errors/assert
+execution, cache/loader identity, private symbols, real kernel-assigned PID,
+original moduleLoadList, builtin ESM facade evaluation, failed/reentrant
+initialization and separate realms with GC. The same package passes the 106
+prior stack/dynamic-import/ModuleWrap/synthetic/context/private-key cases.
+Twelve separate pinned native reference controls pass. Native private-loader
+access policy required the original modules helper; no upstream source or
+require implementation was substituted. See `realm-library-contracts.md` and
+`realm-library-engine-check.json` for exact identities and limitations.
+
+Principal bootstrap remains unfinished: a complete-body diagnostic call stops
+at `internal/bootstrap/node:68` on the missing `config` binding. This failure
+is recorded separately from successful realm controls. The process object,
+configuration, exit-info, Buffer, timers, async context and wider eager backend
+closure still need implementation. The complete catalog/roadmap, real user
+CJS/ESM startup and four-host evidence remain open. No canonical image, full
+product, successor-ABI campaign rebuild, overall suite or fork-behavior
+validation ran.

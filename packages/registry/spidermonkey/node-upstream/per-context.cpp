@@ -24,6 +24,7 @@
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/module-wrap.h"
+#include "shell/node-upstream/realm.h"
 
 namespace kandelo::node {
 namespace {
@@ -47,7 +48,7 @@ static const JSClass kRuntimeClass = {
 enum ContextSlot {
   ContextPhase, OwningGlobal, RuntimeOwner, Exports, Primordials,
   PrivateSymbols, OrdinarySymbols, CompletedScripts, ModuleWrapBinding,
-  ErrorStackState, ContextSlots
+  ErrorStackState, RealmLibrary, ContextSlots
 };
 static const JSClass kContextClass = {
     "KandeloNodeContext", JSCLASS_HAS_RESERVED_SLOTS(ContextSlots)};
@@ -259,6 +260,44 @@ JS::Symbol* GetRuntimeSymbol(JSContext* cx, JS::HandleObject runtime, const char
   }
   Report(cx, "Unknown native runtime symbol");
   return nullptr;
+}
+
+JSObject* CreateRuntimePrivateSymbolTable(JSContext* cx, JS::HandleObject runtime) {
+  if (!RuntimeReady(cx, runtime)) return nullptr;
+  JS::RootedObject table(cx, JS_NewPlainObject(cx));
+  if (!table) return nullptr;
+  for (size_t i = 0; i < std::size(kSymbols); i++) {
+    if (!kSymbols[i].isPrivate) continue;
+    JS::RootedValue value(cx, JS::GetReservedSlot(runtime, FirstSymbol + i));
+    if (!JS_DefineProperty(cx, table, kSymbols[i].name, value, JSPROP_ENUMERATE)) return nullptr;
+  }
+  return table;
+}
+
+bool InitializeCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime) {
+  JS::RootedObject context(cx, ReadyContext(cx, runtime));
+  if (!context) return false;
+  JS::Value previous = JS::GetReservedSlot(context, RealmLibrary);
+  if (previous.isObject()) {
+    JS::RootedObject state(cx, &previous.toObject());
+    return RejectRepeatedRealmLibraryInitialization(cx, state);
+  }
+  JS::RootedObject state(cx, AllocateRealmLibraryState(cx));
+  if (!state) return false;
+  // Canonical publication precedes upstream execution: a reentrant or failed
+  // bootstrap must never install another owner or replace its loader closures.
+  JS::SetReservedSlot(context, RealmLibrary, JS::ObjectValue(*state));
+  JS::RootedObject primordials(cx, &JS::GetReservedSlot(context, Primordials).toObject());
+  return RunRealmLibrary(cx, state, primordials);
+}
+
+JSObject* GetCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime, bool inspect) {
+  JS::RootedObject context(cx, ReadyContext(cx, runtime));
+  if (!context) return nullptr;
+  JS::Value value = JS::GetReservedSlot(context, RealmLibrary);
+  if (!value.isObject()) { Report(cx, "Node realm has not been initialized"); return nullptr; }
+  JS::RootedObject state(cx, &value.toObject());
+  return RealmLibrarySnapshot(cx, state, inspect);
 }
 
 JSObject* GetCurrentContextModuleWrapBinding(JSContext* cx, JS::HandleObject runtime) {
