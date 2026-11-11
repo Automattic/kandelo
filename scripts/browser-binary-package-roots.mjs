@@ -33,10 +33,7 @@ export const localOnlyBrowserImports = new Set([
 export const registryPackagesWithoutBuildToml = new Set([
   // Verified upstream sources are consumed by other recipes and do not
   // publish compiled artifacts of their own.
-  "asciidoc-source",
   "bytepath-source",
-  "docbook-xml-source",
-  "docbook-xsl-source",
   "genesis-plus-gx-source",
   "libyaml-source",
   "ncurses-source",
@@ -46,7 +43,6 @@ export const registryPackagesWithoutBuildToml = new Set([
   "phpcacheadmin-source",
   "retro-rom-240p-md",
   "retro-rom-240p-snes",
-  "scdoc-source",
   "snes9x-source",
   "sqlite-amalgamation-source",
   "sqlite-cli",

@@ -17,10 +17,6 @@ dependency_only = [
   "sqlite-amalgamation-source",
   "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
-  "asciidoc-source",
-  "docbook-xml-source",
-  "docbook-xsl-source",
-  "scdoc-source",
 ]
 registry_non_roots = []
 
@@ -203,6 +199,10 @@ name = "kandelo-cc"
 class = "platform"
 
 [[packages]]
+name = "kandelo-cc-docs"
+class = "browser-product"
+
+[[packages]]
 name = "python-browser-bundle"
 class = "browser-product"
 
@@ -257,6 +257,10 @@ class = "browser-product"
 [[packages]]
 name = "espeak-ng"
 class = "user-software"
+
+[[packages]]
+name = "espeak-ng-docs"
+class = "browser-product"
 
 [[packages]]
 name = "expat"
@@ -1259,6 +1263,10 @@ class = "browser-product"
 [[packages]]
 name = "rust-coverage-tools"
 class = "user-software"
+
+[[packages]]
+name = "rust-coverage-tools-docs"
+class = "browser-product"
 
 [[packages]]
 name = "rust-docs"

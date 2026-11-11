@@ -10,7 +10,6 @@ REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 source "$REPO_ROOT/scripts/install-package-man-pages.sh"
 kandelo_man_pages_stage_source "$HERE"
 SRC="$KANDELO_MAN_PAGES_SOURCE"
-kandelo_man_pages_build_scdoc
 DATE="$(kandelo_man_pages_release_date "$WASM_POSIX_DEP_VERSION" 1.2.1=2024-04-28)"
 
 pages=(

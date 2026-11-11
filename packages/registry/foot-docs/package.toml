@@ -2,7 +2,13 @@ kind = "program"
 name = "foot-docs"
 version = "1.17.2"
 kernel_abi = 56
-depends_on = ["scdoc-source@1.11.3"]
+depends_on = []
+
+[[host_tools]]
+name = "scdoc"
+version_constraint = ">=1.11"
+probe = { args = ["-v"], version_regex = "scdoc (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh" }
 
 # Upstream manual pages for the `foot` package (foot, foot.ini and its control sequences).
 # The source, SHA-256 and version are the `foot` package's own, so the

@@ -5,11 +5,11 @@
 #
 # Upstream writes its pages in DocBook. configure fills in the template
 # (doc/dbus-daemon.1.xml.in) and doc/Makefile.am runs `xmlto man` over
-# the result. This does the same with the directories build-dbus.sh
-# configures dbus with, scripts/xmlto-man.sh for xmlto, and the DocBook
-# DTD the page declares (it uses the DTD's entities). The page has no
-# date of its own, so release-date.xsl dates it with the release date
-# instead of the build clock.
+# the result. This does the same, with the directories build-dbus.sh
+# configures dbus with and the dev shell's xmlto, DocBook XSL and DocBook
+# DTD (the page uses the DTD's entities). The page has no date of its own,
+# so the release-date.xsl layer dates it with the release date instead of
+# the build clock.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -32,11 +32,6 @@ for flag in --prefix=/usr --sysconfdir=/etc; do
     }
 done
 
-XSL="$WORK/docbook-xsl"
-DTD="$WORK/docbook-xml"
-kandelo_package_stage_source_dependency docbook-xsl-source "$XSL" "$WORK"
-kandelo_package_stage_source_dependency docbook-xml-source "$DTD" "$WORK"
-
 OUT="$SRC/kandelo-man"
 mkdir -p "$OUT"
 # configure's values: EXPANDED_DATADIR is $prefix/share.
@@ -46,8 +41,7 @@ kandelo_man_pages_substitute "$SRC/doc/dbus-daemon.1.xml.in" "$OUT/dbus-daemon.1
     @EXPANDED_SYSCONFDIR@=/etc
 (
     cd "$OUT"
-    DOCBOOK_XSL="$XSL" XML_CATALOG_FILES="$DTD/catalog.xml" \
-        "$REPO_ROOT/scripts/xmlto-man.sh" -m "$HERE/release-date.xsl" \
+    xmlto -m "$HERE/release-date.xsl" \
         --stringparam "kandelo.release.date=$DATE" man dbus-daemon.1.xml
 )
 

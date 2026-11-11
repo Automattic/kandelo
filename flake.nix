@@ -292,10 +292,22 @@
             # coreutils.wasm running inside Kandelo — help2man only
             # reformats already-faithful text into troff.
             pkgs.help2man
-            # libxslt provides `xsltproc`, which scripts/xmlto-man.sh runs
-            # over pinned DocBook XSL to render the DocBook man pages of
-            # dbus-docs and git-docs, as upstream's `xmlto man` does.
+            # The documentation generators upstream projects build their
+            # man pages with; the <pkg>-docs recipes run them on the pinned
+            # source (docs/porting-guide.md "Shipping man pages"). scdoc:
+            # sway, foot, swaybg, cage, labwc. asciidoc and xmlto, with
+            # DocBook XSL and the DocBook DTDs (whose XML catalogs reach
+            # xsltproc through XML_CATALOG_FILES): git, dbus. Sphinx: LLVM's
+            # command guide (llvm-cov, llvm-profdata). ronn: espeak-ng.
+            pkgs.scdoc
+            pkgs.asciidoc
+            pkgs.xmlto
             pkgs.libxslt
+            pkgs.docbook_xsl
+            pkgs.docbook_xml_dtd_44
+            pkgs.docbook_xml_dtd_45
+            pkgs.python3Packages.sphinx
+            pkgs.ronn
             # libfaketime provides `faketime`, which the determinism check
             # (scripts/check-determinism.sh → xtask check-determinism) uses to
             # run its two builds under distinct wall clocks. Without it the two

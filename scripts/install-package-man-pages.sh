@@ -30,14 +30,10 @@
 #       Print the date's Unix time (midnight UTC), the SOURCE_DATE_EPOCH a
 #       generator reads to date a page (scdoc, help2man).
 #
-#   kandelo_man_pages_build_scdoc
-#       Build scdoc for the build machine from the declared scdoc-source
-#       dependency and set KANDELO_SCDOC to it. scdoc is the page
-#       generator of the wlroots-family projects (sway, foot, labwc, ...).
-#
 #   kandelo_man_pages_scdoc <release-date> <in.scd> <out>
-#       Render one page with scdoc, dated <release-date>, the way
-#       upstream meson builds do (`scdoc < in > out`).
+#       Render one page with the dev shell's scdoc, dated <release-date>,
+#       the way upstream meson builds do (`scdoc < in > out`). scdoc is the
+#       page generator of the wlroots-family projects (sway, foot, labwc).
 #
 #   kandelo_man_pages_capture_help <spec.json> <capture-dir>
 #       For programs with no upstream manual: boot the declared kernel
@@ -184,23 +180,6 @@ kandelo_man_pages_date_epoch() {
     ' "$1"
 }
 
-kandelo_man_pages_build_scdoc() {
-    local work="${KANDELO_PACKAGE_WORK_DIR:-${WASM_POSIX_DEP_WORK_DIR:-}}"
-    if [ -z "$work" ]; then
-        echo "kandelo_man_pages_build_scdoc: requires KANDELO_PACKAGE_WORK_DIR" >&2
-        return 2
-    fi
-    local src="$work/scdoc-src"
-    kandelo_package_stage_source_dependency scdoc-source "$src" "$work" || return
-    # Upstream's Makefile links statically, which macOS cannot do; scdoc
-    # only runs here, so link it the build machine's default way.
-    make -C "$src" CC=cc LDFLAGS= scdoc > "$work/scdoc-build.log" 2>&1 || {
-        tail -40 "$work/scdoc-build.log" >&2
-        return 1
-    }
-    KANDELO_SCDOC="$src/scdoc"
-}
-
 kandelo_man_pages_scdoc() {
     local date="${1:-}" in="${2:-}" out="${3:-}" epoch
     if [ "$#" -ne 3 ] || [ -z "$date" ] || [ -z "$in" ] || [ -z "$out" ]; then
@@ -208,14 +187,10 @@ kandelo_man_pages_scdoc() {
             "kandelo_man_pages_scdoc <release-date> <in.scd> <out>" >&2
         return 2
     fi
-    if [ -z "${KANDELO_SCDOC:-}" ]; then
-        echo "kandelo_man_pages_scdoc: run kandelo_man_pages_build_scdoc first" >&2
-        return 2
-    fi
     # scdoc prints SOURCE_DATE_EPOCH as a UTC date.
     epoch="$(kandelo_man_pages_date_epoch "$date")" || return
     mkdir -p "$(dirname "$out")"
-    SOURCE_DATE_EPOCH="$epoch" "$KANDELO_SCDOC" < "$in" > "$out"
+    SOURCE_DATE_EPOCH="$epoch" scdoc < "$in" > "$out"
 }
 
 kandelo_man_pages_capture_help() {
