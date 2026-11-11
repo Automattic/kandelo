@@ -122,11 +122,12 @@ function imagePages(imageBytes: Uint8Array): ManPage[] {
     const match = /^man([1-9])$/.exec(dir);
     if (!match) continue;
     for (const file of fs.readDirNames(`/usr/share/man/${dir}`).sort()) {
-      const name = new RegExp(`^(.+)\\.${match[1]}$`).exec(file)?.[1];
+      // A page may carry a subsection suffix (ncurses' man1/tic.1m).
+      const name = new RegExp(`^(.+)\\.${match[1]}[a-z]*$`).exec(file)?.[1];
       if (!name) continue;
       const path = `/usr/share/man/${dir}/${file}`;
       const isLink = (fs.lstat(path).mode & S_IFMT) === S_IFLNK;
-      const target = isLink ? fs.readlink(path).replace(/\.[1-9]$/, "") : null;
+      const target = isLink ? fs.readlink(path).replace(/\.[1-9][a-z]*$/, "") : null;
       pages.push({ section: match[1], name, target });
     }
   }
@@ -231,6 +232,14 @@ describe.skipIf(!available)(
         // The TERM default that foot's build fills into the page.
         ["5 foot.ini", /environment variable TERM to\.\s+Default:\s+foot\b/],
         ["1 dbus-daemon", /Message bus daemon/],
+        ["1 ffmpeg", /ffmpeg media converter/],
+        ["1 ffmpeg-filters", /FFmpeg filters/],
+        ["8 sudo", /execute a command as another user/],
+        ["5 sudoers", /default sudo security policy plugin/],
+        ["1 tput", /query\s+terminfo database/],
+        // Upstream installs it as man1/tic.1m.
+        ["1 tic", /compile terminal descriptions/],
+        ["5 terminfo", /terminal capability database/],
       ];
       const present = probes.filter(([page]) => pages.has(page));
       expect(present.length).toBeGreaterThan(0);

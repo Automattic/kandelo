@@ -247,6 +247,10 @@ name = "ffmpeg"
 class = "user-software"
 
 [[packages]]
+name = "ffmpeg-docs"
+class = "browser-product"
+
+[[packages]]
 name = "file"
 class = "user-software"
 
@@ -639,6 +643,10 @@ name = "ncurses"
 class = "platform"
 
 [[packages]]
+name = "ncurses-docs"
+class = "browser-product"
+
+[[packages]]
 name = "readline"
 class = "platform"
 
@@ -925,6 +933,10 @@ class = "user-software"
 [[packages]]
 name = "sudo"
 class = "platform"
+
+[[packages]]
+name = "sudo-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sudo-lite"

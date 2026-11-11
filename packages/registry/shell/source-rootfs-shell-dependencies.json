@@ -362,6 +362,21 @@
       "role": "lazy-archive"
     },
     {
+      "name": "ffmpeg-docs",
+      "version": "9.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "ncurses-docs",
+      "version": "6.5",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "sudo-docs",
+      "version": "1.9.17p2",
+      "role": "lazy-archive"
+    },
+    {
       "name": "man-index",
       "version": "1.14.6",
       "role": "lazy-file"
