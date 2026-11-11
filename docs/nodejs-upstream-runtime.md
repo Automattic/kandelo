@@ -61,10 +61,12 @@ configuration and V8 identity must not be copied to manufacture support.
 
 ## Source inventory
 
-`third_party/nodejs/sources.json` records 494 unchanged archive files:
+The initial `third_party/nodejs/sources.json` import recorded 494 unchanged archive files:
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
-443 builtin source records cover more than the public module list.
+443 builtin source records cover more than the public module list. The current
+manifest has 516 files after complete native source/header additions; every
+original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
 original `src/node_exit_code.h` similarly supplies the native errors enum;
@@ -933,3 +935,25 @@ startup, the full backend catalog and roadmap remain open. No product images,
 full products, successor-ABI builds or overall suites ran. Full evidence, failures
 and partial contracts are in [options-engine-check.json](../tests/nodejs/upstream/options-engine-check.json)
 and [options-contracts.json](../tests/nodejs/upstream/options-contracts.json).
+
+## Decoder dependency inventory
+
+The next missing binding remains `string_decoder`. Its partial catalog records
+ten original exports, two literal native consumers and eight literal public-module
+consumers, including the lazy TextDecoder path. The original decoder stores its
+streaming state in actual guest buffer bytes and calls the native StringBytes
+codec layer. An encodings table alone does not implement that binding.
+
+Thirteen controls pass on the pinned native reference and retain 280 selected
+chunk/output/state records for later guest comparison. Complete unchanged
+nbytes 0.1.4 and V8-vendored simdutf 7.7.0 sources compile with Kandelo's SDK in
+a separate source preflight. These are compile-only objects, not linked codec
+runtime, production package integration or guest binding evidence. No engine,
+kernel, ABI or imported JavaScript changed in this inventory step.
+
+Real view/backing-allocation lifetime across GC, strings/external-memory ownership,
+native errors and the original Buffer closure remain prerequisites. Archived codec
+regression requirements and retained-allocation owners are reuse candidates;
+the old handwritten public codecs are excluded. See
+[string-decoder-contracts.json](../tests/nodejs/upstream/string-decoder-contracts.json)
+and [string-decoder-native-reference.json](../tests/nodejs/upstream/string-decoder-native-reference.json).

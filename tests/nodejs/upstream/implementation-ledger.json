@@ -15,7 +15,8 @@
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
     "constantsPartialCatalog": "constants-contracts.json",
     "typesPartialCatalog": "types-contracts.json",
-    "optionsPartialCatalog": "options-contracts.json"
+    "optionsPartialCatalog": "options-contracts.json",
+    "stringDecoderPartialCatalog": "string-decoder-contracts.json"
   },
   "implementation": [
     {
@@ -468,6 +469,19 @@
       "cppCoreProbeCasesPerHost": 23,
       "nextBinding": "string_decoder",
       "upstreamStartup": false
+    },
+    "stringDecoder": {
+      "inventory": "string-decoder-contracts.json",
+      "bindingImplemented": false,
+      "codecDependencyFilesVerified": 26,
+      "completeUnchangedCodecSourcesCompileOnly": true,
+      "normalProductionRecipeIntegration": false,
+      "nativeReferenceControls": 13,
+      "nativeChunkStateRecords": 280,
+      "guestEvidence": null,
+      "nextBindingStill": "string_decoder",
+      "completeNativeFilesVerified": 14,
+      "sourceReviewScope": "Decoder and StringBytes contracts plus selected Buffer/view helpers; wider closure remains unreviewed"
     }
   },
   "nativeDifferentialControls": {
@@ -585,6 +599,14 @@
       "coreErrorsMatched": 10,
       "envMetadataEntriesMatched": 152,
       "fullNodeCliOrPostBootstrapEquivalence": false
+    },
+    "stringDecoder": {
+      "reference": "Node26.13.0Darwinarm64",
+      "cases": 13,
+      "failures": 0,
+      "chunkStateRecords": 280,
+      "evidence": "string-decoder-native-reference.json",
+      "guestComparisonRun": false
     }
   },
   "focusedGuestEngineControls": {

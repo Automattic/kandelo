@@ -1,0 +1,620 @@
+{
+  "schema": 1,
+  "binding": "string_decoder",
+  "status": "missing guest binding; source review, native reference and compile-only codec prerequisites recorded",
+  "sourcePin": {
+    "schema": 1,
+    "version": "26.13.0",
+    "lts": "Lithium",
+    "verifiedOn": "2026-10-31",
+    "releaseIndex": "https://nodejs.org/dist/index.json",
+    "source": {
+      "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+      "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+      "tag": "v26.13.0",
+      "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+    },
+    "references": {
+      "darwin-arm64": {
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz",
+        "sha256": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6"
+      },
+      "darwin-x64": {
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-x64.tar.gz",
+        "sha256": "525c9b29bb0263d687de60a4cec0e2a6db876a8eb032369e5795eca71e7c358e"
+      },
+      "linux-arm64": {
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.gz",
+        "sha256": "439e9c438acdf6a6ffe47418da709153d66c4bed812e30a473faacb107dd2791"
+      },
+      "linux-x64": {
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.gz",
+        "sha256": "5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455"
+      }
+    }
+  },
+  "coverage": {
+    "literalNativeConsumers": 2,
+    "literalPublicModuleConsumers": 8,
+    "fullGraphReviewed": false,
+    "aliasConditionalWorkerExceptionalClosureComplete": false
+  },
+  "literalConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/child_process/serialization.js",
+      "line": 12,
+      "text": "const { StringDecoder } = require('string_decoder');",
+      "kind": "public module",
+      "reachability": "not fully traced"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/cipher.js",
+      "line": 62,
+      "text": "const { StringDecoder } = require('string_decoder');",
+      "kind": "public module",
+      "reachability": "not fully traced"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/encoding.js",
+      "line": 425,
+      "text": "    ({ StringDecoder } = require('string_decoder'));",
+      "kind": "public module",
+      "reachability": "lazy TextDecoder path"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/fs/promises.js",
+      "line": 115,
+      "text": "const { StringDecoder } = require('string_decoder');",
+      "kind": "public module",
+      "reachability": "not fully traced"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/readline/emitKeypressEvents.js",
+      "line": 22,
+      "text": "const { StringDecoder } = require('string_decoder');",
+      "kind": "public module",
+      "reachability": "not fully traced"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/readline/interface.js",
+      "line": 76,
+      "text": "const { StringDecoder } = require('string_decoder');",
+      "kind": "public module",
+      "reachability": "not fully traced"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/readable.js",
+      "line": 106,
+      "text": "const { StringDecoder } = require('string_decoder');",
+      "kind": "public module",
+      "reachability": "not fully traced"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util.js",
+      "line": 76,
+      "text": "const { encodings } = internalBinding('string_decoder');",
+      "kind": "native binding",
+      "reachability": "not fully traced"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/v8_prof_polyfill.js",
+      "line": 42,
+      "text": "const { StringDecoder } = require('string_decoder');",
+      "kind": "public module",
+      "reachability": "not fully traced"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/string_decoder.js",
+      "line": 41,
+      "text": "} = internalBinding('string_decoder');",
+      "kind": "native binding",
+      "reachability": "not fully traced"
+    }
+  ],
+  "sourceFiles": [
+    {
+      "upstreamPath": "src/string_decoder.cc",
+      "path": ".context/node-string-decoder/source/src/string_decoder.cc",
+      "bytes": 12319,
+      "sha256": "34bedf8a3d3b455c89b59fdda5fa622f4c2c9e6eceeb72c7cbfee17e7f62fced"
+    },
+    {
+      "upstreamPath": "src/string_decoder.h",
+      "path": ".context/node-string-decoder/source/src/string_decoder.h",
+      "bytes": 1480,
+      "sha256": "3aa815d829ebc12ae1e02e3aaaa38808629c247f1a46a049978e9025ce55d76c"
+    },
+    {
+      "upstreamPath": "src/string_decoder-inl.h",
+      "path": ".context/node-string-decoder/source/src/string_decoder-inl.h",
+      "bytes": 701,
+      "sha256": "b6a7c217f30939eb36454e6931098de164aeaa24c236f936071b7f7d9eac1437"
+    },
+    {
+      "upstreamPath": "src/string_bytes.cc",
+      "path": ".context/node-string-decoder/source/src/string_bytes.cc",
+      "bytes": 29594,
+      "sha256": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d"
+    },
+    {
+      "upstreamPath": "src/string_bytes.h",
+      "path": ".context/node-string-decoder/source/src/string_bytes.h",
+      "bytes": 4614,
+      "sha256": "5e0b0f184d2e7b0556b5afb67bfaa28b3aa92c960a2dccff40006e1a1c1b86f2"
+    },
+    {
+      "upstreamPath": "src/node_buffer.cc",
+      "path": ".context/node-string-decoder/source/src/node_buffer.cc",
+      "bytes": 76513,
+      "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2"
+    },
+    {
+      "upstreamPath": "src/node_buffer.h",
+      "path": ".context/node-string-decoder/source/src/node_buffer.h",
+      "bytes": 3843,
+      "sha256": "42db024cf1ae62db1a9a23477ee9927e9b7ed04999bd4498371b144962a31525"
+    },
+    {
+      "upstreamPath": "src/api/encoding.cc",
+      "path": ".context/node-string-decoder/source/src/api/encoding.cc",
+      "bytes": 5371,
+      "sha256": "83bdf541f5f835716291b01b4b31c51feea0a2d5a760e5be274ab95e4cc9c664"
+    },
+    {
+      "upstreamPath": "src/encoding_binding.cc",
+      "path": ".context/node-string-decoder/source/src/encoding_binding.cc",
+      "bytes": 19970,
+      "sha256": "98ff679373c2cdb4b594bc5be38f037ffe236b4c43a02930fb36cb83fa5a4cf6"
+    },
+    {
+      "upstreamPath": "src/encoding_binding.h",
+      "path": ".context/node-string-decoder/source/src/encoding_binding.h",
+      "bytes": 2025,
+      "sha256": "a3367da0f258452022823a05d8220da1e691474daca64c5e44fabd37059f91af"
+    },
+    {
+      "upstreamPath": "src/util.cc",
+      "path": ".context/node-string-decoder/source/src/util.cc",
+      "bytes": 32624,
+      "sha256": "d5ff5ddf59fea718016f5028ec54661ea8f92e37070d82c7dae2e39ab1e91172"
+    },
+    {
+      "upstreamPath": "src/util-inl.h",
+      "path": ".context/node-string-decoder/source/src/util-inl.h",
+      "bytes": 27698,
+      "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561"
+    },
+    {
+      "upstreamPath": "src/util.h",
+      "path": ".context/node-string-decoder/source/src/util.h",
+      "bytes": 43448,
+      "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
+    },
+    {
+      "upstreamPath": "src/node.h",
+      "path": ".context/node-string-decoder/source/src/node.h",
+      "bytes": 76346,
+      "sha256": "83185475268b1b2d9f5ffdbec1bb2062ebe70674869dde96fe6cd526dc9b2a79"
+    }
+  ],
+  "codecDependencyFiles": [
+    {
+      "upstreamPath": "deps/nbytes/.clang-format",
+      "path": ".context/node-string-decoder/source/deps/nbytes/.clang-format",
+      "bytes": 41,
+      "sha256": "b5a258515459118f009bc4c568091a548677a0685c98a37b232ae1e5fb647105"
+    },
+    {
+      "upstreamPath": "deps/nbytes/.gitignore",
+      "path": ".context/node-string-decoder/source/deps/nbytes/.gitignore",
+      "bytes": 24,
+      "sha256": "8518f5d4d483ff4cf94f92aab3f4816f9138730c1e795a5312cb94af6f68f9f5"
+    },
+    {
+      "upstreamPath": "deps/nbytes/.python-version",
+      "path": ".context/node-string-decoder/source/deps/nbytes/.python-version",
+      "bytes": 5,
+      "sha256": "7b55f8e67b5623c4bef3fa691288da9437d79d3aba156de48d481db32ac7d16d"
+    },
+    {
+      "upstreamPath": "deps/nbytes/.release-please-manifest.json",
+      "path": ".context/node-string-decoder/source/deps/nbytes/.release-please-manifest.json",
+      "bytes": 19,
+      "sha256": "94cd7b502bc527ab18a0373f6d4461c17e1b634b110eaea30ed29d04df9a7504"
+    },
+    {
+      "upstreamPath": "deps/nbytes/BUILD.gn",
+      "path": ".context/node-string-decoder/source/deps/nbytes/BUILD.gn",
+      "bytes": 635,
+      "sha256": "4299bc0b99263c5431705ea7f3cd922209ca81cf66ea419f57c07da91c358d31"
+    },
+    {
+      "upstreamPath": "deps/nbytes/CHANGELOG.md",
+      "path": ".context/node-string-decoder/source/deps/nbytes/CHANGELOG.md",
+      "bytes": 604,
+      "sha256": "7dfd27923c5aa15b309e3248081f5fcee4a651234e782de678a7a8e07986219b"
+    },
+    {
+      "upstreamPath": "deps/nbytes/CMakeLists.txt",
+      "path": ".context/node-string-decoder/source/deps/nbytes/CMakeLists.txt",
+      "bytes": 1697,
+      "sha256": "dd3661f4f5483b6d2ac5c004b059c6574898cb5b1be5db31fc1350e688057f23"
+    },
+    {
+      "upstreamPath": "deps/nbytes/LICENSE",
+      "path": ".context/node-string-decoder/source/deps/nbytes/LICENSE",
+      "bytes": 1064,
+      "sha256": "782ab5b8ae1540c1a2b102fdd00990ed268d4a3a98e90ad7fe724b489d7bb0f2"
+    },
+    {
+      "upstreamPath": "deps/nbytes/README.md",
+      "path": ".context/node-string-decoder/source/deps/nbytes/README.md",
+      "bytes": 240,
+      "sha256": "2b8bc2cca5b61333567dacb3056533e2c644b40e63f82d3c286f4df1b4a9c98a"
+    },
+    {
+      "upstreamPath": "deps/nbytes/include/nbytes.h",
+      "path": ".context/node-string-decoder/source/deps/nbytes/include/nbytes.h",
+      "bytes": 29815,
+      "sha256": "52c5253e3a3675faf8319af36066326f27dfd7ee2a9d6b5a49348007cb6ff12e"
+    },
+    {
+      "upstreamPath": "deps/nbytes/nbytes.gyp",
+      "path": ".context/node-string-decoder/source/deps/nbytes/nbytes.gyp",
+      "bytes": 325,
+      "sha256": "9895a9a6ba4ec8c6db68f90f5f54085dd071639c7b4932a3e10e0df2b625b850"
+    },
+    {
+      "upstreamPath": "deps/nbytes/nbytes.pc.in",
+      "path": ".context/node-string-decoder/source/deps/nbytes/nbytes.pc.in",
+      "bytes": 298,
+      "sha256": "afc0b2cbab4726e12c00ade80e284762d1475ebbf158af8cbe764f5b8a50eda2"
+    },
+    {
+      "upstreamPath": "deps/nbytes/pyproject.toml",
+      "path": ".context/node-string-decoder/source/deps/nbytes/pyproject.toml",
+      "bytes": 1002,
+      "sha256": "2a2f110a14177eec2f62d43e42470a93d15e79041efdf90c214c90b72eb61a1a"
+    },
+    {
+      "upstreamPath": "deps/nbytes/release-please-config.json",
+      "path": ".context/node-string-decoder/source/deps/nbytes/release-please-config.json",
+      "bytes": 157,
+      "sha256": "05f4ea585262b187da9c66621ebf6740fabd1bc9880d000b1459ae3808cd298f"
+    },
+    {
+      "upstreamPath": "deps/nbytes/src/CMakeLists.txt",
+      "path": ".context/node-string-decoder/source/deps/nbytes/src/CMakeLists.txt",
+      "bytes": 180,
+      "sha256": "d7282efdbba09e5c9adecb7098832c37b3ad6209e2014e6b3907fc7548abcf33"
+    },
+    {
+      "upstreamPath": "deps/nbytes/src/nbytes.cpp",
+      "path": ".context/node-string-decoder/source/deps/nbytes/src/nbytes.cpp",
+      "bytes": 8023,
+      "sha256": "b49555787f8fe74f5e3915485a268dded486a6afd496cf2f68f4d3c3147cb504"
+    },
+    {
+      "upstreamPath": "deps/nbytes/tests/CMakeLists.txt",
+      "path": ".context/node-string-decoder/source/deps/nbytes/tests/CMakeLists.txt",
+      "bytes": 211,
+      "sha256": "ec760897b23502e8b0539ff00827b3f300ec11b2b25a5657deca118bece9012f"
+    },
+    {
+      "upstreamPath": "deps/nbytes/tests/basic.cpp",
+      "path": ".context/node-string-decoder/source/deps/nbytes/tests/basic.cpp",
+      "bytes": 790,
+      "sha256": "5745ae40cdc289541726086414f45c7cded547f7f27b590885ffd9133b06d359"
+    },
+    {
+      "upstreamPath": "deps/nbytes/tools/run-clang-format.sh",
+      "path": ".context/node-string-decoder/source/deps/nbytes/tools/run-clang-format.sh",
+      "bytes": 2218,
+      "sha256": "a99e7cc717fe508f2e123947c3523d0a1d9a7121b73227001967269f3c62fdcf"
+    },
+    {
+      "upstreamPath": "deps/nbytes/unofficial.gni",
+      "path": ".context/node-string-decoder/source/deps/nbytes/unofficial.gni",
+      "bytes": 817,
+      "sha256": "f2aa002ece00b4249045611fb9e05a9c4ae25c9265237ba31e58a2c063ba6614"
+    },
+    {
+      "upstreamPath": "deps/v8/third_party/simdutf/BUILD.gn",
+      "path": ".context/node-string-decoder/source/deps/v8/third_party/simdutf/BUILD.gn",
+      "bytes": 882,
+      "sha256": "55c136acd9beca3f2646acb508056ad1fec73d4606c144c55e5780f36ab2c29b"
+    },
+    {
+      "upstreamPath": "deps/v8/third_party/simdutf/LICENSE",
+      "path": ".context/node-string-decoder/source/deps/v8/third_party/simdutf/LICENSE",
+      "bytes": 1059,
+      "sha256": "fc8dbc04e03ad4efc08a647ffe7f995b811a95bc04c0e85a56d5277c6593fa5f"
+    },
+    {
+      "upstreamPath": "deps/v8/third_party/simdutf/OWNERS",
+      "path": ".context/node-string-decoder/source/deps/v8/third_party/simdutf/OWNERS",
+      "bytes": 45,
+      "sha256": "df59d7a7497b7fdd2c1587fa2d6630eb438b97fea932c8c8c15d50aef5d4a264"
+    },
+    {
+      "upstreamPath": "deps/v8/third_party/simdutf/README.chromium",
+      "path": ".context/node-string-decoder/source/deps/v8/third_party/simdutf/README.chromium",
+      "bytes": 1120,
+      "sha256": "6473dd8c53339fc113f3c5de62a3a74b3b25fc222e986a1fe43daa49ccb2bb80"
+    },
+    {
+      "upstreamPath": "deps/v8/third_party/simdutf/simdutf.cpp",
+      "path": ".context/node-string-decoder/source/deps/v8/third_party/simdutf/simdutf.cpp",
+      "bytes": 2939448,
+      "sha256": "0fba908670006a7e22d7a602e8cd348763502f3b95e5880f2a131e43ed5af0e2"
+    },
+    {
+      "upstreamPath": "deps/v8/third_party/simdutf/simdutf.h",
+      "path": ".context/node-string-decoder/source/deps/v8/third_party/simdutf/simdutf.h",
+      "bytes": 276419,
+      "sha256": "0ace8c5b81085678b586e12ca6a99a6ea65a707f007a1121ee54356ff1991359"
+    }
+  ],
+  "nativeObservedExportDescriptors": {
+    "kIncompleteCharactersStart": {
+      "writable": true,
+      "enumerable": true,
+      "configurable": true,
+      "value": 0
+    },
+    "kIncompleteCharactersEnd": {
+      "writable": true,
+      "enumerable": true,
+      "configurable": true,
+      "value": 4
+    },
+    "kMissingBytes": {
+      "writable": true,
+      "enumerable": true,
+      "configurable": true,
+      "value": 4
+    },
+    "kBufferedBytes": {
+      "writable": true,
+      "enumerable": true,
+      "configurable": true,
+      "value": 5
+    },
+    "kEncodingField": {
+      "writable": true,
+      "enumerable": true,
+      "configurable": true,
+      "value": 6
+    },
+    "kNumFields": {
+      "writable": true,
+      "enumerable": true,
+      "configurable": true,
+      "value": 7
+    },
+    "encodings": {
+      "writable": true,
+      "enumerable": true,
+      "configurable": true,
+      "value": [
+        "ascii",
+        "utf8",
+        "base64",
+        "utf16le",
+        "latin1",
+        "hex",
+        "buffer",
+        "base64url"
+      ]
+    },
+    "kSize": {
+      "writable": true,
+      "enumerable": true,
+      "configurable": true,
+      "value": 7
+    },
+    "decode": {
+      "writable": true,
+      "enumerable": true,
+      "configurable": true,
+      "value": {
+        "type": "function",
+        "name": "decode",
+        "length": 0
+      }
+    },
+    "flush": {
+      "writable": true,
+      "enumerable": true,
+      "configurable": true,
+      "value": {
+        "type": "function",
+        "name": "flush",
+        "length": 0
+      }
+    }
+  },
+  "exports": [
+    {
+      "name": "kIncompleteCharactersStart",
+      "kind": "metadata",
+      "implementation": "missing guest binding; native initializer reviewed"
+    },
+    {
+      "name": "kIncompleteCharactersEnd",
+      "kind": "metadata",
+      "implementation": "missing guest binding; native initializer reviewed"
+    },
+    {
+      "name": "kMissingBytes",
+      "kind": "metadata",
+      "implementation": "missing guest binding; native initializer reviewed"
+    },
+    {
+      "name": "kBufferedBytes",
+      "kind": "metadata",
+      "implementation": "missing guest binding; native initializer reviewed"
+    },
+    {
+      "name": "kEncodingField",
+      "kind": "metadata",
+      "implementation": "missing guest binding; native initializer reviewed"
+    },
+    {
+      "name": "kNumFields",
+      "kind": "metadata",
+      "implementation": "missing guest binding; native initializer reviewed"
+    },
+    {
+      "name": "encodings",
+      "kind": "metadata",
+      "implementation": "missing guest binding; native initializer reviewed"
+    },
+    {
+      "name": "kSize",
+      "kind": "metadata",
+      "implementation": "missing guest binding; native initializer reviewed"
+    },
+    {
+      "name": "decode",
+      "kind": "method",
+      "implementation": "missing guest binding; native initializer reviewed"
+    },
+    {
+      "name": "flush",
+      "kind": "method",
+      "implementation": "missing guest binding; native initializer reviewed"
+    }
+  ],
+  "methods": [
+    {
+      "name": "decode",
+      "signature": "decode(state: ArrayBufferView, input: ArrayBufferView) -> string",
+      "source": "src/string_decoder.cc: DecodeData callback and StringDecoder::DecodeData",
+      "mutations": "Incomplete bytes and missing/buffered counts in actual state backing storage; encoding field preserved",
+      "errors": "Source fatal checks for non-view state/input and invalid native state/encoding; actual codec allocation/length exceptions propagate",
+      "scheduling": "Synchronous; no callback, request, cancellation or loop reference"
+    },
+    {
+      "name": "flush",
+      "signature": "flush(state: ArrayBufferView) -> string",
+      "source": "src/string_decoder.cc: FlushData callback and StringDecoder::FlushData",
+      "mutations": "Flushes original buffered bytes, clears counts on normal return; UCS2 drops odd trailing byte",
+      "errors": "Source fatal state/encoding checks and actual codec allocation/length exceptions; preserve upstream mutation ordering on failure",
+      "scheduling": "Synchronous; no callback, request, cancellation or loop reference"
+    }
+  ],
+  "sharedState": {
+    "owner": "Original public StringDecoder stores an actual Buffer of sizeof native StringDecoder; native functions reinterpret its real bytes",
+    "fieldsSource": "Complete original Fields enum and native initializer; no runtime table copied from this catalog",
+    "types": "State/input accept actual ArrayBufferViews; input observes byte offset/byte length; detached input native observation is empty",
+    "gc": "Retain actual state/input allocations across engine string allocation and moving GC; do not keep unprotected pointers into movable inline views",
+    "sharedResizable": "Native shared state/input controls pass; complete resizable/growable/detach/reentrant/worker contracts remain to be audited",
+    "lifecycle": "State bytes live with guest buffer; binding functions need actual realm/runtime owner and failure invalidation; no fabricated native handle"
+  },
+  "owningLayers": {
+    "engine": "View brands/backing ownership, strings, real roots, external strings and memory accounting, errors and native callbacks",
+    "native": "Complete original string_decoder and StringBytes algorithms; complete vendored nbytes/simdutf",
+    "libcKernel": "Real allocator/free and existing memory/thread foundations; no kernel or ABI edits established as necessary",
+    "host": "No host Node codec backend; same guest artifact required on Node and three browser hosts"
+  },
+  "prerequisites": [
+    "Import complete string_decoder.cc/.h/-inl.h and required StringBytes/codec files with exact identities and licenses",
+    "Resolve native nbytes0.1.4 and V8-vendored simdutf7.7.0 through normal package inputs; current object preflight is not production recipe integration",
+    "Compile complete original native decoder and StringBytes translation units with actual engine operations; no function extraction or rewritten streaming state machine",
+    "Implement real view/backing allocation lifetime and external string ownership/accounting, preserving GC and exception behavior",
+    "Use original initializer for encodings/field layout/method registration and original internal/util/public StringDecoder through the shared loader",
+    "Implement remaining original Buffer dependencies before claiming complete public StringDecoder execution"
+  ],
+  "reuseCandidates": [
+    {
+      "auditRef": "brandonpayton/node-upstream-core-audit",
+      "auditHead": "5674a1b00dbe5a53fd3b8e61bfeb3f8adbf8a898",
+      "path": "docs/nodejs-upstream-reuse-audit.md",
+      "section": "PR1605 codec boundaries",
+      "disposition": "Reuse malformed/split UTF8/UTF16, BOM/fatal, view-brand and EOF regression requirements; reject handwritten public codecs and ported JS streaming state machine"
+    },
+    {
+      "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+      "path": "third_party/node-core/retained-backing-store.h",
+      "disposition": "Reviewed actual allocation/span ownership and transactional prepare/commit; adapt only after current engine allocator/GC contract review, not transplanted or runtime-validated"
+    },
+    {
+      "path": ".context/davao-handoff/BACKEND-SALVAGE.md",
+      "disposition": "Retained allocation/callback ownership index; no evidence that old per-family JS environments satisfy the shared loader"
+    }
+  ],
+  "validation": {
+    "nativeReference": "string-decoder-native-reference.json",
+    "nativeControls": 13,
+    "nativeChunkStateRecords": 280,
+    "guestBindingControlsRun": false,
+    "codecPreflightJob": "node-string-decoder-codec-preflight-1111-070920-5075",
+    "codecPreflightScope": "Complete unchanged native codec source compilation only, not linked runtime/conformance",
+    "codecPreflightLog": {
+      "path": ".context/node-string-decoder/codec-preflight.log",
+      "bytes": 15970,
+      "sha256": "a4cc5fb0ac666f816228ecbd8877d2b357c176271fe3634b8f3ef18b42a6cc49"
+    },
+    "objects": [
+      {
+        "object": {
+          "path": ".scratch/node-codec-preflight.1vL05FBV/nbytes.o",
+          "bytes": 180401,
+          "sha256": "326b6367c041e549060f86e97d00e60ff27b8eb907bfbe25aa5b8914ba808787"
+        },
+        "retainedObject": {
+          "path": ".context/node-string-decoder/nbytes.o.gz",
+          "bytes": 15998,
+          "sha256": "7916170b4c21ee4c63cadee521123ae6207e16cbc03890658f3e8fccbdeea46e"
+        }
+      },
+      {
+        "object": {
+          "path": ".scratch/node-codec-preflight.1vL05FBV/simdutf.o",
+          "bytes": 225874,
+          "sha256": "cd9a2b7c6cf7e9425a300d772af7d96b1ae51d8411d7a4e5b9a08bb19b867b6f"
+        },
+        "retainedObject": {
+          "path": ".context/node-string-decoder/simdutf.o.gz",
+          "bytes": 116668,
+          "sha256": "e36175b7b1d6e5ba11032a221e002978011d49e773eb9be6370ef4bbdd3d2e05"
+        }
+      }
+    ],
+    "nativeFailureExtraction": {
+      "path": ".context/node-string-decoder/extract-missing-buffer-inl.log",
+      "bytes": 1130,
+      "sha256": "b727b8419894d6cb23362ddfad998f2f8185b6b47fed06c5d981c930b03b31a4"
+    },
+    "preflightDriver": {
+      "path": ".context/node-string-decoder/build-codec-preflight.sh",
+      "bytes": 1494,
+      "sha256": "abffa5bce483803e302e182a0c6782fe99c085cbb4123cbb1a617e1c0de3caf3"
+    },
+    "nativeReferenceDriver": {
+      "path": ".context/node-string-decoder/run-native-reference.py",
+      "bytes": 1245,
+      "sha256": "ac2c8b1fbdfdc8e40c0a9ea4d63f7c6116bf43c7f3bc6b5ba12adc57c410d6e3"
+    }
+  },
+  "obligations": [
+    "Exact native export/field/descriptor and method registration comparisons",
+    "Compare every selected native chunk/output/state record on identical guest engine/kernel bytes across all four hosts",
+    "Moving GC while view/string/external allocations are live, actual shared and resizable backing, detach/view offsets, overflow/OOM and safe retirement",
+    "Preserve original fatal checks separately from ordinary JS errors; never pad invalid state or invent replacement handles",
+    "Execute complete original internal/util and public string_decoder with real Buffer backends; startup acceptance remains separate",
+    "Catalog wider stream/readline/child/crypto/fs/encoding conditional and worker consumers without inferring compatibility from this literal inventory"
+  ],
+  "startup": {
+    "dependency": "Original internal/util eagerly reads encodings at line76; original public string_decoder requires whole buffer and internal/util modules",
+    "accepted": false,
+    "nextBindingStill": "string_decoder",
+    "emptySimpleCjsEsm": "unproven"
+  },
+  "deferred": [
+    "Full products/product images/successor-ABI builds and overall suites",
+    "Nested guest Wasm last unless required by genuine startup",
+    "Broader backend roadmap requires user review after startup and full catalog"
+  ]
+}

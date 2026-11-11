@@ -1,0 +1,274 @@
+{
+  "program": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/string-decoder-native-controls.cjs",
+    "bytes": 5268,
+    "sha256": "38e361a60360296641152c579031b410cbe086505806fb2650155b9e9cbb8c74"
+  },
+  "argv": [
+    "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "--expose-internals",
+    "--expose-gc",
+    "--no-warnings",
+    "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/string-decoder-native-controls.cjs"
+  ],
+  "rawReport": {
+    "path": ".context/node-string-decoder/native-reference.json",
+    "bytes": 307799,
+    "sha256": "d604588ed4c50c2993c5ffa0cc4cbf79ce8680da048d4e03860cc455f61440b8"
+  },
+  "exitCode": 0,
+  "stderr": "",
+  "cases": 13,
+  "failures": 0,
+  "chunkStateRecords": 280,
+  "observations": [
+    {
+      "name": "native-export-descriptors-and-encoding-layout",
+      "status": "pass",
+      "detail": {
+        "kIncompleteCharactersStart": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "value": 0
+        },
+        "kIncompleteCharactersEnd": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "value": 4
+        },
+        "kMissingBytes": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "value": 4
+        },
+        "kBufferedBytes": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "value": 5
+        },
+        "kEncodingField": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "value": 6
+        },
+        "kNumFields": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "value": 7
+        },
+        "encodings": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "value": [
+            "ascii",
+            "utf8",
+            "base64",
+            "utf16le",
+            "latin1",
+            "hex",
+            "buffer",
+            "base64url"
+          ]
+        },
+        "kSize": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "value": 7
+        },
+        "decode": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "value": {
+            "type": "function",
+            "name": "decode",
+            "length": 0
+          }
+        },
+        "flush": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "value": {
+            "type": "function",
+            "name": "flush",
+            "length": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "incremental-known-output-utf8",
+      "status": "pass",
+      "detail": {
+        "actual": "A\u00e9\ud83d\ude00",
+        "state": [
+          240,
+          159,
+          152,
+          128,
+          0,
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "incremental-known-output-utf16le",
+      "status": "pass",
+      "detail": {
+        "actual": "A\ud83d\ude00",
+        "state": [
+          0,
+          222,
+          0,
+          0,
+          0,
+          0,
+          3
+        ]
+      }
+    },
+    {
+      "name": "incremental-known-output-ascii",
+      "status": "pass",
+      "detail": {
+        "actual": "AA\u007f",
+        "state": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "incremental-known-output-latin1",
+      "status": "pass",
+      "detail": {
+        "actual": "A\u00c1\u00ff",
+        "state": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4
+        ]
+      }
+    },
+    {
+      "name": "incremental-known-output-hex",
+      "status": "pass",
+      "detail": {
+        "actual": "4142ff",
+        "state": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          5
+        ]
+      }
+    },
+    {
+      "name": "incremental-known-output-base64",
+      "status": "pass",
+      "detail": {
+        "actual": "AQIDBA==",
+        "state": [
+          4,
+          2,
+          3,
+          0,
+          0,
+          0,
+          2
+        ]
+      }
+    },
+    {
+      "name": "incremental-known-output-base64url",
+      "status": "pass",
+      "detail": {
+        "actual": "-____g",
+        "state": [
+          254,
+          255,
+          255,
+          0,
+          0,
+          0,
+          7
+        ]
+      }
+    },
+    {
+      "name": "input-view-offset-and-byte-length-use-actual-backing-memory",
+      "status": "pass",
+      "detail": "AB"
+    },
+    {
+      "name": "state-view-offset-writes-only-the-decoder-bytes",
+      "status": "pass",
+      "detail": [
+        165,
+        165,
+        226,
+        130,
+        172,
+        0,
+        0,
+        0,
+        1,
+        165,
+        165
+      ]
+    },
+    {
+      "name": "shared-input-and-state-are-real-backing-storage",
+      "status": "pass",
+      "detail": [
+        226,
+        130,
+        172,
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "name": "detached-input-is-observed-as-an-empty-view",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "record-chunk-boundaries-and-state-against-original-public-module",
+      "status": "pass",
+      "detail": {
+        "entries": 280
+      }
+    }
+  ],
+  "scope": "Pinned native reference only; no guest implementation or startup evidence"
+}
