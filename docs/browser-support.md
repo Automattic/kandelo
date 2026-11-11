@@ -3319,8 +3319,10 @@ filename, guest `path`, byteLength, sha256) — not the raw descriptor
 `boot.inputs`/`boot.parameters` fields verbatim. When `boot.parameters.runScript`
 names the "script" input, Bash runs it before displaying the initial shell's
 first prompt, using the interpreter recorded in `runScriptShell` (default
-`bash`). A blank line separates the terminal intro from the script's source
-and output, without echoing the filename or launch commands. The execution
+`bash`). After a blank line, `Running script:` introduces the source in the
+terminal's existing ANSI bright-blue palette color, which follows theme
+changes. A blank line separates the source from its output, which uses normal
+terminal colors. The filename and launch commands are not echoed. The execution
 command is added to Bash history, so Up Arrow recalls it for editing or
 rerunning. The startup hook clears itself before execution and runs only in
 the first terminal. The file remains available

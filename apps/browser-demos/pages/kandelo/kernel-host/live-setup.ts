@@ -1546,7 +1546,11 @@ function bootLinkPromptCommand(path: string, recordedShell: BootJsonValue | unde
   // Bash runs this before displaying its first prompt, without echoing a typed
   // command. Unset before execution so child shells cannot replay the setup.
   // Every new terminal uses the initial policy; only the first PTY runs it.
-  return `unset PROMPT_COMMAND; if [ "$(tty)" = /dev/pts/0 ]; then printf '\\n'; cat ${quote(path)}; history -s ${quote(command)}; ${command}; fi`;
+  // ANSI bright blue follows the terminal's existing theme palette, including
+  // later theme changes. Trim trailing source newlines for one blank separator,
+  // then reset attributes before the script can produce output.
+  const source = `printf '\\nRunning script:\\n\\033[94m%s\\033[0m\\n\\n' "$(cat ${quote(path)})"`;
+  return `unset PROMPT_COMMAND; if [ "$(tty)" = /dev/pts/0 ]; then ${source}; history -s ${quote(command)}; ${command}; fi`;
 }
 
 function persistenceIdentity(

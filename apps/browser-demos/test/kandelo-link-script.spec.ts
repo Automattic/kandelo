@@ -183,6 +183,42 @@ test("share dialog authors a script link that runs on open @slow", async ({ page
   expect(startup).toContain('echo "shared-script:$((40 + 2))"');
   expect(startup).not.toContain("kandelo-link.sh");
   expect(startup).not.toContain("PROMPT_COMMAND");
+  const terminalRows = opened.locator(".xterm:visible .xterm-rows > div");
+  const lines = await terminalRows.allTextContents();
+  const sourceLine = lines.findIndex(line => line.includes('echo "shared-script:'));
+  expect(lines[sourceLine - 1]?.trim()).toBe("Running script:");
+  expect(lines[sourceLine + 1]?.trim()).toBe("");
+  expect(lines[sourceLine + 2]?.trim()).toBe("shared-script:42");
+
+  // Source uses an existing indexed ANSI color: retained scrollback follows
+  // every theme, while script output keeps the normal foreground color.
+  const source = terminalRows.filter({ hasText: 'echo "shared-script:' }).locator("span").first();
+  const output = terminalRows.filter({ hasText: /^shared-script:42$/ }).locator("span").first();
+  for (const family of ["wordpress", "ubuntu", "kandelo"]) {
+    for (const mode of ["light", "dark"]) {
+      await opened.evaluate(({ family, mode }) => {
+        document.documentElement.dataset.kTheme = family;
+        document.documentElement.dataset.kMode = mode;
+      }, { family, mode });
+      const expected = await opened.locator(".xterm:visible").first().evaluate(node => {
+        const style = getComputedStyle(node);
+        const resolve = (token: string) => {
+          const sample = document.createElement("span");
+          sample.style.color = style.getPropertyValue(token).trim();
+          node.append(sample);
+          const color = getComputedStyle(sample).color;
+          sample.remove();
+          return color;
+        };
+        return { source: resolve("--k-shell-ansi-bright-blue"), output: resolve("--k-shell-text") };
+      });
+      await expect.poll(() => source.evaluate(node => getComputedStyle(node).color))
+        .toBe(expected.source);
+      await expect.poll(() => output.evaluate(node => getComputedStyle(node).color))
+        .toBe(expected.output);
+      expect(expected.source).not.toBe(expected.output);
+    }
+  }
 
   // Recall the real invocation through Bash itself, then execute it again.
   const input = opened.locator(".xterm:visible .xterm-helper-textarea").first();
