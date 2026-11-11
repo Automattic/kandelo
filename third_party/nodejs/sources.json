@@ -170,6 +170,13 @@
       "builtinId": "internal/deps/minimatch/index"
     },
     {
+      "path": "deps/ncrypto/ncrypto.h",
+      "role": "provenance",
+      "bytes": 75446,
+      "sha256": "bdbb7c65f6a6d8bcb7e8574a5ca6ae9b5fbc849625f0111e7bce4a627d98b0a8",
+      "builtinId": null
+    },
+    {
       "path": "deps/undici/LICENSE",
       "role": "license",
       "bytes": 1090,
@@ -3565,6 +3572,34 @@
       "builtinId": null
     },
     {
+      "path": "src/node_mutex.h",
+      "role": "provenance",
+      "bytes": 8585,
+      "sha256": "13208fe79bf345733d992eb7e1c598817fdab79ab859a2b81cec92b0e1763572",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_options-inl.h",
+      "role": "provenance",
+      "bytes": 19877,
+      "sha256": "1d3b7cd2dc488d09ad583f3df71cdbe40f71bcaa104191e7abe3b9a4fdbfb516",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_options.cc",
+      "role": "provenance",
+      "bytes": 99186,
+      "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_options.h",
+      "role": "provenance",
+      "bytes": 30788,
+      "sha256": "4241ccbfddad1f227888204f998427fa79e8c8332e9ea3f19b93b7a433ea3046",
+      "builtinId": null
+    },
+    {
       "path": "src/node_realm.cc",
       "role": "provenance",
       "bytes": 14435,
@@ -3590,6 +3625,13 @@
       "role": "provenance",
       "bytes": 79780,
       "sha256": "aa23343f3d6740eade97d6ddae8988b030bfd0ef82e6597da172c7234c5dc96e",
+      "builtinId": null
+    },
+    {
+      "path": "src/quic/guard.h",
+      "role": "provenance",
+      "bytes": 83,
+      "sha256": "678ed1d8a58647c6ba17aedaf6a9ff51cffb4d949981f40f699661c712962693",
       "builtinId": null
     },
     {

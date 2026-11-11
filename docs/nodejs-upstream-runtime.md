@@ -13,9 +13,9 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry now calls complete `internal/bootstrap/node`
 with protected state, passes native configuration and stops on missing
-`options` through original internal/util and validators, after executing the
+`string_decoder` through original internal/util/buffer dependencies, after executing the
 original async-hooks module, native constants initializer and engine type
-predicates through real backends.
+predicates and native options through real backends.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -896,3 +896,40 @@ permission warning and Mozilla targeting/fork limitations. No product images,
 full product or successor-ABI builds, or overall suites ran. Exact evidence and
 partial contracts are in [types-engine-check.json](../tests/nodejs/upstream/types-engine-check.json)
 and [types-contracts.json](../tests/nodejs/upstream/types-contracts.json).
+
+## Original native options parser
+
+Revision 32 compiles the complete original native options parser, storage,
+validation and serializers unchanged, with the original libuv mutex header.
+A private API adapter marshals actual rooted SpiderMonkey values and real
+realm/profile state. It emits no JavaScript or function excerpts. Seven original
+methods and both readonly enum inventories are registered by the original native
+initializer; the complete original `internal/options` module executes.
+
+Six queries preserve ERR_OPTIONS_BEFORE_BOOTSTRAPPING until genuine complete
+bootstrap. No test override opens that phase. Real native guest invocation inputs
+are parsed before realm.js; explicit private profile controls exercise the same
+original parser and real storage without claiming startup. Unimplemented engine,
+config/security/file adoption and memory queries fail explicitly. Kernel sysinfo
+placeholders are not published as actual available memory. Full CLI adoption and
+post-bootstrap metadata equivalence remain unfinished.
+
+Fourteen selected controls pass on each of Node, Chromium, Firefox and WebKit with
+identical engine/kernel bytes; six shared native controls pass separately. Seven
+additional Node profile drivers preserve actual errors and unsupported boundaries.
+The same engine passes 239 prior Node cases. A separate complete-source C++ probe
+has identical 23-case observations on all four hosts, with 114 selected native
+value comparisons, ten matching errors and 152 common environment metadata entries.
+Inspector/FFI build differences and raw namespace versus schema filtering are
+recorded. These remain component controls, not successful upstream startup.
+
+Method registration now follows original Set-before-name ordering and inherited
+setters. Setter failures remain fatal; name inspection during that late mutation
+fails explicitly until engine tracking is implemented.
+
+The original principal and stack-policy probes now reach missing `string_decoder`;
+typed NodeError construction still succeeds. Empty/simple and separate CJS/ESM
+startup, the full backend catalog and roadmap remain open. No product images,
+full products, successor-ABI builds or overall suites ran. Full evidence, failures
+and partial contracts are in [options-engine-check.json](../tests/nodejs/upstream/options-engine-check.json)
+and [options-contracts.json](../tests/nodejs/upstream/options-contracts.json).

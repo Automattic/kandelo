@@ -29,10 +29,13 @@ bool HasRuntimeTimerState(JSObject* runtime);
 JSObject* GetRuntimeTaskState(JSContext* cx, JS::HandleObject runtime, bool create);
 bool HasRuntimeTaskState(JSObject* runtime);
 JSObject* GetRuntimeAsyncState(JSContext* cx, JS::HandleObject runtime, bool create);
+JSObject* GetRuntimeOptionsState(JSContext* cx, JS::HandleObject runtime, bool create);
 bool RegisterRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime,
                                    JS::HandleObject realm, JS::HandleObject process);
 JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime);
 JSObject* GetRuntimePrincipalProcess(JSContext* cx, JS::HandleObject runtime);
+bool ConfigureCurrentOptions(JSContext* cx, JS::HandleObject runtime, JS::HandleObject arguments, JS::HandleString environment);
+JSObject* InspectCurrentOptions(JSContext* cx, JS::HandleObject runtime);
 JSObject* InspectCurrentTimerState(JSContext* cx, JS::HandleObject runtime);
 bool InitializeCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime);
 bool RunCurrentNodeBootstrap(JSContext* cx, JS::HandleObject runtime);

@@ -292,5 +292,6 @@
     "No full products/partial/canonical images, successor-ABI campaigns or overall suites"
   ],
   "currentTypesIntegrationEvidence": "types-engine-check.json",
-  "currentBootstrapGap": "options in internal/options:20 from internal/util:74 after genuine native types; prior gap observations remain historical"
+  "currentBootstrapGap": "string_decoder through original buffer/util after complete original native options integration; prior gaps remain historical",
+  "currentOptionsIntegrationEvidence": "options-engine-check.json"
 }

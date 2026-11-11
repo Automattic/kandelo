@@ -26,6 +26,7 @@
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/module-wrap.h"
+#include "shell/node-upstream/options.h"
 #include "shell/node-upstream/realm.h"
 #include "shell/node-upstream/task-queue.h"
 #include "shell/node-upstream/timers.h"
@@ -46,7 +47,7 @@ static constexpr SymbolSpec kSymbols[] = {
 static_assert(std::size(kSymbols) == 49);
 
 enum Phase { Initializing = 1, Ready = 2, Failed = 3 };
-enum RuntimeSlot { RuntimePhase, ContextKey, ExitInfo, TimerBase, TimerState, TaskState, AsyncState,
+enum RuntimeSlot { RuntimePhase, ContextKey, ExitInfo, TimerBase, TimerState, TaskState, AsyncState, OptionsState,
                    PrincipalRealm, PrincipalProcess, FirstSymbol };
 static const JSClass kRuntimeClass = {
     "KandeloNodeRuntime", JSCLASS_HAS_RESERVED_SLOTS(FirstSymbol + std::size(kSymbols))};
@@ -374,6 +375,23 @@ JSObject* GetRuntimeAsyncState(JSContext* cx, JS::HandleObject runtime, bool cre
   if (state && !JS_WrapObject(cx, &state)) return nullptr;
   return state;
 }
+JSObject* GetRuntimeOptionsState(JSContext* cx, JS::HandleObject runtime, bool create) {
+  if (!RuntimeReady(cx, runtime)) return nullptr;
+  JS::RootedObject state(cx);
+  {
+    JSAutoRealm home(cx, runtime);
+    JS::Value cached = JS::GetReservedSlot(runtime, OptionsState);
+    if (cached.isObject()) state = &cached.toObject();
+    else if (create) {
+      state = CreateOptionsState(cx);
+      if (!state) return nullptr;
+      JS::SetReservedSlot(runtime, OptionsState, JS::ObjectValue(*state));
+    }
+  }
+  if (state && !JS_WrapObject(cx, &state)) return nullptr;
+  return state;
+}
+
 bool RegisterRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime,
                                    JS::HandleObject realm, JS::HandleObject process) {
   if (!RuntimeReady(cx, runtime)) return false;
@@ -400,6 +418,17 @@ JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime) {
 }
 JSObject* GetRuntimePrincipalProcess(JSContext* cx, JS::HandleObject runtime) {
   return RuntimePrincipalObject(cx, runtime, PrincipalProcess);
+}
+bool ConfigureCurrentOptions(JSContext* cx, JS::HandleObject runtime, JS::HandleObject arguments, JS::HandleString environment) {
+  JS::RootedObject context(cx, ReadyContext(cx, runtime)); if (!context) return false;
+  JS::Value value = JS::GetReservedSlot(context, RealmLibrary);
+  if (!value.isObject()) return Report(cx, "Node realm has not been initialized");
+  JS::RootedObject realm(cx, &value.toObject());
+  return ConfigureOptions(cx, realm, arguments, environment);
+}
+JSObject* InspectCurrentOptions(JSContext* cx, JS::HandleObject runtime) {
+  if (!ReadyContext(cx, runtime)) return nullptr;
+  return InspectOptionsState(cx, runtime);
 }
 JSObject* InspectCurrentTimerState(JSContext* cx, JS::HandleObject runtime) {
   if (!ReadyContext(cx, runtime)) return nullptr;

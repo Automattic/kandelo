@@ -13,6 +13,9 @@ bool RejectRepeatedRealmLibraryInitialization(JSContext* cx, JS::HandleObject st
 bool RunNodeBootstrap(JSContext* cx, JS::HandleObject state);
 bool CheckRealmLibraryActive(JSContext* cx, JS::HandleObject state);
 bool RealmLibraryIsFailed(JSObject* state);
+JSObject* GetRealmRuntime(JSContext* cx, JS::HandleObject state);
+JSObject* GetRealmSafeMapPrototype(JSContext* cx, JS::HandleObject state);
+bool HasCompletedNodeBootstrap(JSContext* cx, JS::HandleObject state);
 JSObject* RealmLibrarySnapshot(JSContext* cx, JS::HandleObject state, bool inspect);
 }  // namespace kandelo::node
 

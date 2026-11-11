@@ -1,0 +1,229 @@
+{
+  "rawReport": {
+    "path": ".context/node-options/engine-result.json",
+    "bytes": 54171,
+    "sha256": "a8b6e745f201ee26096c6d18414047c8e7ade6ba18959918d14f064c38f23ed4"
+  },
+  "report": {
+    "schema": 1,
+    "completedAt": "2026-11-11T11:56:10.073Z",
+    "scope": "Focused SpiderMonkey guest-engine options controls on the Node host; no upstream Node startup",
+    "host": {
+      "version": "v24.15.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    },
+    "program": {
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev32-wasm32-abi56-9ecc33a97e197bfa30bbb5de563fc29da65b626aca3bc34ea30e601d960b539b/js.wasm",
+      "bytes": 51617743,
+      "sha256": "6e9660c3f98f6a4c4ab720c97124a4c6c654d0919e8475518bba5641bb7acc8d"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "fixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/options-engine-controls.js",
+      "bytes": 5109,
+      "sha256": "1c1be199aad7c67e21f3d43e87e2fef166824238e4b511cf58ccc2619c43d9f0"
+    },
+    "runner": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 23522,
+      "sha256": "4fccadf3b13a49940ffa7d5dda853e72bd436f96cbaf483f8a5dc0e1d08fceae"
+    },
+    "sharedFixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/options-shared-controls.js",
+      "bytes": 3077,
+      "sha256": "1a9bec3768d3d8c8738301d35cd47f156b23543c5a96219364dd0e40d7864b50"
+    },
+    "executedFixtureSha256": "87a798ae081ad87417043d29a4c090ea80b3937a1a8323e5c6eb92a01a1e78dd",
+    "runs": [
+      {
+        "name": "ordinary-shell-does-not-expose-native-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "node-mode-refuses-native-test-controls",
+        "status": "pass",
+        "exitCode": 3,
+        "stdout": "",
+        "stderr": "Error: upstream test controls require JS-shell mode\n",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "options-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "{\"kind\":\"native-options-controls\",\"cases\":14,\"failures\":0,\"observations\":[{\"name\":\"native-method-names-lengths-and-export-descriptors\",\"status\":\"pass\"},{\"name\":\"native-setting-and-type-enums-have-original-readonly-descriptors\",\"status\":\"pass\"},{\"name\":\"whole-original-env-parser-retains-quote-escape-and-empty-token-semantics\",\"status\":\"pass\"},{\"name\":\"whole-original-env-parser-preserves-errors\",\"status\":\"pass\"},{\"name\":\"native-env-string-coercion-calls-user-code-once-and-ignores-extra-arguments\",\"status\":\"pass\"},{\"name\":\"native-env-coercion-preserves-exception-identity-and-survives-reentrancy-gc\",\"status\":\"pass\"},{\"name\":\"all-six-guarded-methods-reject-before-genuine-bootstrap-completion\",\"status\":\"pass\"},{\"name\":\"complete-original-internal-options-body-executes-and-retains-its-lazy-guards\",\"status\":\"pass\"},{\"name\":\"cached-native-binding-functions-and-owner-survive-moving-gc\",\"status\":\"pass\"},{\"name\":\"foreign-realms-own-distinct-binding-functions\",\"status\":\"pass\"},{\"name\":\"original-method-registration-uses-set-before-naming-with-actual-setter-gc\",\"status\":\"pass\"},{\"name\":\"whole-original-bootstrap-passes-options-and-preserves-next-failure\",\"status\":\"pass\"},{\"name\":\"actual-cpp-profile-parser-applies-env-before-cli-without-marking-bootstrap-complete\",\"status\":\"pass\"},{\"name\":\"native-profile-is-once-only-and-cannot-replace-the-live-owner\",\"status\":\"pass\"}],\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'string_decoder' is not implemented\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\",\"internal/bootstrap/node\",\"internal/timers\",\"internal/async_hooks\",\"internal/validators\",\"internal/util\",\"internal/options\"]},\"limits\":[\"Original native options translation unit and original internal/options, not successful Node startup\",\"Guarded queries remain unavailable until complete genuine bootstrap\",\"Full CLI/env/config/engine option adoption and post-bootstrap metadata remain unfinished\"]}\n",
+        "stderr": "",
+        "hostDiagnostics": [],
+        "detail": {
+          "kind": "native-options-controls",
+          "cases": 14,
+          "failures": 0,
+          "observations": [
+            {
+              "name": "native-method-names-lengths-and-export-descriptors",
+              "status": "pass"
+            },
+            {
+              "name": "native-setting-and-type-enums-have-original-readonly-descriptors",
+              "status": "pass"
+            },
+            {
+              "name": "whole-original-env-parser-retains-quote-escape-and-empty-token-semantics",
+              "status": "pass"
+            },
+            {
+              "name": "whole-original-env-parser-preserves-errors",
+              "status": "pass"
+            },
+            {
+              "name": "native-env-string-coercion-calls-user-code-once-and-ignores-extra-arguments",
+              "status": "pass"
+            },
+            {
+              "name": "native-env-coercion-preserves-exception-identity-and-survives-reentrancy-gc",
+              "status": "pass"
+            },
+            {
+              "name": "all-six-guarded-methods-reject-before-genuine-bootstrap-completion",
+              "status": "pass"
+            },
+            {
+              "name": "complete-original-internal-options-body-executes-and-retains-its-lazy-guards",
+              "status": "pass"
+            },
+            {
+              "name": "cached-native-binding-functions-and-owner-survive-moving-gc",
+              "status": "pass"
+            },
+            {
+              "name": "foreign-realms-own-distinct-binding-functions",
+              "status": "pass"
+            },
+            {
+              "name": "original-method-registration-uses-set-before-naming-with-actual-setter-gc",
+              "status": "pass"
+            },
+            {
+              "name": "whole-original-bootstrap-passes-options-and-preserves-next-failure",
+              "status": "pass"
+            },
+            {
+              "name": "actual-cpp-profile-parser-applies-env-before-cli-without-marking-bootstrap-complete",
+              "status": "pass"
+            },
+            {
+              "name": "native-profile-is-once-only-and-cannot-replace-the-live-owner",
+              "status": "pass"
+            }
+          ],
+          "bootstrapFailure": {
+            "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+            "message": "Native Node binding 'string_decoder' is not implemented",
+            "compiledBuiltinIds": [
+              "internal/bootstrap/realm",
+              "internal/errors",
+              "internal/assert",
+              "internal/bootstrap/node",
+              "internal/timers",
+              "internal/async_hooks",
+              "internal/validators",
+              "internal/util",
+              "internal/options"
+            ]
+          },
+          "limits": [
+            "Original native options translation unit and original internal/options, not successful Node startup",
+            "Guarded queries remain unavailable until complete genuine bootstrap",
+            "Full CLI/env/config/engine option adoption and post-bootstrap metadata remain unfinished"
+          ]
+        }
+      },
+      {
+        "name": "original-method-setter-failure-retains-fatal-check",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: JS_SetProperty(f.cx,binding,name,value) (Original native options method property invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/options.cpp:276\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c4e7f3e:wasm-function[601]:0x9dbc3\n    at wasm://wasm/0c4e7f3e:wasm-function[506]:0x9343e\n    at wasm://wasm/0c4e7f3e:wasm-function[22317]:0x13bfeeb\n    at wasm://wasm/0c4e7f3e:wasm-function[666]:0xb3e62\n    at wasm://wasm/0c4e7f3e:wasm-function[7846]:0x578680\n    at wasm://wasm/0c4e7f3e:wasm-function[7845]:0x566051\n    at wasm://wasm/0c4e7f3e:wasm-function[7854]:0x57a60e\n    at wasm://wasm/0c4e7f3e:wasm-function[7855]:0x57a87b\n    at wasm://wasm/0c4e7f3e:wasm-function[8709]:0x64902b\n    at wasm://wasm/0c4e7f3e:wasm-function[87]:0x57e18",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "unimplemented-late-name-inspection-is-an-explicit-fatal-boundary",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: !function->hasResolvedName() (Native option method late naming after inspection is not implemented), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/options.cpp:281\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c4e7f3e:wasm-function[601]:0x9dbf2\n    at wasm://wasm/0c4e7f3e:wasm-function[506]:0x9343e\n    at wasm://wasm/0c4e7f3e:wasm-function[22317]:0x13bfeeb\n    at wasm://wasm/0c4e7f3e:wasm-function[666]:0xb3e62\n    at wasm://wasm/0c4e7f3e:wasm-function[7846]:0x578680\n    at wasm://wasm/0c4e7f3e:wasm-function[7845]:0x566051\n    at wasm://wasm/0c4e7f3e:wasm-function[7854]:0x57a60e\n    at wasm://wasm/0c4e7f3e:wasm-function[7855]:0x57a87b\n    at wasm://wasm/0c4e7f3e:wasm-function[8709]:0x64902b\n    at wasm://wasm/0c4e7f3e:wasm-function[87]:0x57e18",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "primitive-profile-arguments-reject-with-a-real-exception",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "PROFILE_ARGUMENT_REJECTED\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "original-cpp-option-error-preserves-terminal-profile-failure",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "ORIGINAL_CPP_ERROR_RETAINED\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "unsupported-memory-accounting-cannot-publish-a-zero-value",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "MEMORY_BOUNDARY_RETAINED\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "unimplemented-engine-option-adoption-is-an-error",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "ENGINE_OPTION_REJECTED\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "unimplemented-env-file-adoption-is-an-error",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "ENV_FILE_OPTION_REJECTED\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      }
+    ],
+    "failures": 0,
+    "limits": [
+      "No Chromium/Firefox/WebKit execution",
+      "No upstream startup or module compatibility evidence",
+      "No complete native-V8 differential proof",
+      "No security-wrapper/OOM or complete symbol-owner teardown/finalization proof"
+    ]
+  }
+}

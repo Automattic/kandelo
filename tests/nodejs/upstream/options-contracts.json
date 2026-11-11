@@ -1,0 +1,591 @@
+{
+  "schema": 1,
+  "scope": "Partial native options/embedding inventory; literal references are not complete lazy/conditional/worker/platform/exception graph coverage",
+  "sourceVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "upstreamJavaScriptChanged": false,
+  "completeOriginalNativeTranslationUnitCompiled": true,
+  "upstreamStartup": false,
+  "publicModuleCompatibility": false,
+  "literalConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/options.js",
+      "line": 20,
+      "text": "} = internalBinding('options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/per_thread.js",
+      "line": 389,
+      "text": "  } = internalBinding('options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/debugger/inspect_helpers.js",
+      "line": 45,
+      "text": "} = internalBinding('options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/print_help.js",
+      "line": 19,
+      "text": "const { types } = internalBinding('options');"
+    }
+  ],
+  "internalModuleReferences": [
+    {
+      "path": "third_party/nodejs/upstream/lib/buffer.js",
+      "line": 229,
+      "text": "      (!require('internal/options').getOptionValue('--pending-deprecation') &&"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/http.js",
+      "line": 294,
+      "text": "      const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/tls.js",
+      "line": 67,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/crypto.js",
+      "line": 43,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/v8.js",
+      "line": 77,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/_http_common.js",
+      "line": 32,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/_http_agent.js",
+      "line": 68,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/util.js",
+      "line": 86,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/repl.js",
+      "line": 133,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/net.js",
+      "line": 152,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/bench_runner/cli.js",
+      "line": 71,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/bench_runner/harness.js",
+      "line": 53,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/cjs/loader.js",
+      "line": 185,
+      "text": "const { getOptionValue, getEmbedderOptions } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/errors.js",
+      "line": 1721,
+      "text": "  const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/dtls/stats.js",
+      "line": 14,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/execution.js",
+      "line": 42,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/dtls/symbols.js",
+      "line": 13,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/package_map.js",
+      "line": 17,
+      "text": "  require('internal/options').getOptionValue('--experimental-package-map'),"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/permission.js",
+      "line": 48,
+      "text": "      const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/permission.js",
+      "line": 55,
+      "text": "      const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/permission.js",
+      "line": 70,
+      "text": "      const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/helpers.js",
+      "line": 35,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/dtls/state.js",
+      "line": 17,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/debugger/inspect_helpers.js",
+      "line": 47,
+      "text": "const { getCLIOptionsInfo } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/webstorage.js",
+      "line": 6,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/tls/wrap.js",
+      "line": 85,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/pre_execution.js",
+      "line": 24,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/repl.js",
+      "line": 17,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/run_main_module.js",
+      "line": 11,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/run_main.js",
+      "line": 8,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/dtls/dtls.js",
+      "line": 22,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/promises.js",
+      "line": 349,
+      "text": "  const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/eval_stdin.js",
+      "line": 10,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/fs/promises.js",
+      "line": 113,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/warning.js",
+      "line": 14,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/check_syntax.js",
+      "line": 6,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/loader.js",
+      "line": 33,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util/parse_args/parse_args.js",
+      "line": 56,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/mksnapshot.js",
+      "line": 36,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/get_format.js",
+      "line": 11,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/per_thread.js",
+      "line": 390,
+      "text": "  const { getCLIOptionsInfo } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/worker_thread.js",
+      "line": 60,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/dns/utils.js",
+      "line": 22,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/eval_string.js",
+      "line": 24,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/resolve.js",
+      "line": 26,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/utils.js",
+      "line": 40,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/assert.js",
+      "line": 12,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/readable.js",
+      "line": 61,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/watch_mode.js",
+      "line": 24,
+      "text": "const { getOptionValue, parseNodeOptionsEnvVar } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/worker.js",
+      "line": 24,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/module_job.js",
+      "line": 62,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/main/print_help.js",
+      "line": 27,
+      "text": "const { getCLIOptionsInfo, getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/async_context_frame.js",
+      "line": 56,
+      "text": "  const enabled = require('internal/options')"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/async_hooks.js",
+      "line": 172,
+      "text": "  const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/quic/stats.js",
+      "line": 16,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/bootstrap/node.js",
+      "line": 335,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/https.js",
+      "line": 78,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/quic/quic.js",
+      "line": 34,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/test_runner/utils.js",
+      "line": 41,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/quic/symbols.js",
+      "line": 13,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/quic/state.js",
+      "line": 35,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/util.js",
+      "line": 67,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/test_runner/runner.js",
+      "line": 42,
+      "text": "const { getOptionValue, getOptionsAsFlagsFromBinding } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/webworker.js",
+      "line": 40,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/test_runner/mock/mock.js",
+      "line": 35,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util.js",
+      "line": 74,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vm.js",
+      "line": 27,
+      "text": "} = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/setup.js",
+      "line": 42,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/inspector/network_resources.js",
+      "line": 3,
+      "text": "const { getOptionValue } = require('internal/options');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/inspector/webstorage.js",
+      "line": 6,
+      "text": "const { getOptionValue } = require('internal/options');"
+    }
+  ],
+  "nativeSources": [
+    {
+      "path": "third_party/nodejs/upstream/src/node_options.cc",
+      "bytes": 99186,
+      "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_options.h",
+      "bytes": 30788,
+      "sha256": "4241ccbfddad1f227888204f998427fa79e8c8332e9ea3f19b93b7a433ea3046"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_options-inl.h",
+      "bytes": 19877,
+      "sha256": "1d3b7cd2dc488d09ad583f3df71cdbe40f71bcaa104191e7abe3b9a4fdbfb516"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_mutex.h",
+      "bytes": 8585,
+      "sha256": "13208fe79bf345733d992eb7e1c598817fdab79ab859a2b81cec92b0e1763572"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_constants.h",
+      "bytes": 3729,
+      "sha256": "2d6ad6acdba0376bf8286eb3ebd03fd3706bd7fd78f799527fa4ecaca216cec8"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/quic/guard.h",
+      "bytes": 83,
+      "sha256": "678ed1d8a58647c6ba17aedaf6a9ff51cffb4d949981f40f699661c712962693"
+    },
+    {
+      "path": "third_party/nodejs/upstream/deps/ncrypto/ncrypto.h",
+      "bytes": 75446,
+      "sha256": "bdbb7c65f6a6d8bcb7e8574a5ca6ae9b5fbc849625f0111e7bce4a627d98b0a8"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node.h",
+      "bytes": 76346,
+      "sha256": "83185475268b1b2d9f5ffdbec1bb2062ebe70674869dde96fe6cd526dc9b2a79"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_realm.cc",
+      "bytes": 14435,
+      "sha256": "f3c7636f85409e09cc2c1a34781f51e7144aec04d1dd71e2512f01b2b1f48fda"
+    }
+  ],
+  "exports": [
+    {
+      "name": "getCLIOptionsValues",
+      "signature": "() -> actual configured metadata after complete bootstrap; errors before completion",
+      "functionName": "getCLIOptionsValues",
+      "length": 0,
+      "descriptors": "writable/enumerable/configurable",
+      "bootstrapGuard": true,
+      "sourceImplementation": "complete original native translation unit",
+      "currentValidation": "authentic pre-bootstrap rejection; post-bootstrap metadata not yet accepted"
+    },
+    {
+      "name": "getCLIOptionsInfo",
+      "signature": "() -> actual configured metadata after complete bootstrap; errors before completion",
+      "functionName": "getCLIOptionsInfo",
+      "length": 0,
+      "descriptors": "writable/enumerable/configurable",
+      "bootstrapGuard": true,
+      "sourceImplementation": "complete original native translation unit",
+      "currentValidation": "authentic pre-bootstrap rejection; post-bootstrap metadata not yet accepted"
+    },
+    {
+      "name": "getOptionsAsFlags",
+      "signature": "() -> actual configured metadata after complete bootstrap; errors before completion",
+      "functionName": "getOptionsAsFlags",
+      "length": 0,
+      "descriptors": "writable/enumerable/configurable",
+      "bootstrapGuard": true,
+      "sourceImplementation": "complete original native translation unit",
+      "currentValidation": "authentic pre-bootstrap rejection; post-bootstrap metadata not yet accepted"
+    },
+    {
+      "name": "getEmbedderOptions",
+      "signature": "() -> actual configured metadata after complete bootstrap; errors before completion",
+      "functionName": "getEmbedderOptions",
+      "length": 0,
+      "descriptors": "writable/enumerable/configurable",
+      "bootstrapGuard": true,
+      "sourceImplementation": "complete original native translation unit",
+      "currentValidation": "authentic pre-bootstrap rejection; post-bootstrap metadata not yet accepted"
+    },
+    {
+      "name": "getEnvOptionsInputType",
+      "signature": "() -> actual configured metadata after complete bootstrap; errors before completion",
+      "functionName": "getEnvOptionsInputType",
+      "length": 0,
+      "descriptors": "writable/enumerable/configurable",
+      "bootstrapGuard": true,
+      "sourceImplementation": "complete original native translation unit",
+      "currentValidation": "authentic pre-bootstrap rejection; post-bootstrap metadata not yet accepted"
+    },
+    {
+      "name": "getNamespaceOptionsInputType",
+      "signature": "() -> actual configured metadata after complete bootstrap; errors before completion",
+      "functionName": "getNamespaceOptionsInputType",
+      "length": 0,
+      "descriptors": "writable/enumerable/configurable",
+      "bootstrapGuard": true,
+      "sourceImplementation": "complete original native translation unit",
+      "currentValidation": "authentic pre-bootstrap rejection; post-bootstrap metadata not yet accepted"
+    },
+    {
+      "name": "parseNodeOptionsEnvVar",
+      "signature": "(value: unknown, ...ignored) -> string[] or Error; receiver ignored",
+      "functionName": "parseNodeOptionsEnvVar",
+      "length": 0,
+      "descriptors": "writable/enumerable/configurable",
+      "bootstrapGuard": false,
+      "sourceImplementation": "complete original native translation unit",
+      "currentValidation": "shared coercion/tokenization/error/GC controls"
+    }
+  ],
+  "enumTables": {
+    "envSettings": {
+      "kAllowedInEnvvar": 0,
+      "kDisallowedInEnvvar": 1
+    },
+    "types": {
+      "kNoOp": 0,
+      "kV8Option": 1,
+      "kBoolean": 2,
+      "kInteger": 3,
+      "kUInteger": 4,
+      "kString": 5,
+      "kHostPort": 6,
+      "kStringList": 7
+    },
+    "entryDescriptors": "readonly/nonconfigurable/enumerable; original target tables remain ordinary objects"
+  },
+  "implementation": {
+    "parser": "Complete node_options.cc/.h/-inl.h unchanged, including declarations, aliases, implications, storage, validation and serializers; no extracted functions or algorithm rewrites",
+    "marshalApi": "Private namespace translates original API names to actual rooted SpiderMonkey values/maps/arrays/property operations/native functions, actual realm state and errors. No V8 heap or simulated Node resource handles",
+    "mutex": "Complete original node_mutex.h over actual libuv mutex calls",
+    "build": "Two C++20 translation units; full pinned ncrypto header supplies actual target OpenSSL version declarations, not a Node crypto implementation",
+    "enumMetadata": "Only complete original OptionEnvvarSettings enum staged from verified node.h; no runtime values copied from native reference",
+    "embeddingProfile": "Capture real guest argv before shell parsing. Native Node invocation profile parsed before original realm.js using actual secure_getenv and original parser. JS-shell controls select explicit parser inputs; they do not mark bootstrap complete",
+    "bootstrap": "Original node/web/thread/environment sequence and DoneBootstrapping invariants remain required. Node-body completion does not open metadata queries",
+    "originalModule": "Whole internal/options.js executes with its original lazy caches and errors; no substitute module"
+  },
+  "buildFacts": {
+    "OpenSSL": "Actual declared/linked3.3.2 dependency; source conditionals use its actual headers",
+    "Intl": "Actual Intl-enabled engine",
+    "Amaro": "Complete builtin JS component included; nested Wasm execution/TypeScript acceptance remain incomplete",
+    "InspectorV8PlatformSQLiteFFI": "Those native components not built; no fabricated support flags",
+    "SingleExecutable": "Not built"
+  },
+  "ownershipGcLifecycle": {
+    "binding": "Per-realm cached JS binding; functions trace/check exact owning realm",
+    "nativeStorage": "One traced per-runtime carrier owns real C++ option shared pointers/state. Process parser/storage are original native globals; original scope selects actual environment/isolate under libuv mutex",
+    "marshalRoots": "Per-call actual persistent JS roots in stable heap cells until return publication; arena cleared on return; reentrant frames restore previous TLS owner",
+    "primordials": "Capture genuine original SafeMap prototype in protected realm slot before mutable public access; source assertions remain fatal",
+    "failure": "Failed realm rejects functions; failed parser/adoption marks actual profile terminal and never serializes failed values",
+    "resources": "No new libuv loop handle/request or ref state. Mutex allocation/locking is real; option values are policy/storage, not implemented services",
+    "remaining": "Full OOM/security/teardown/multi-runtime/worker/ShadowRealm and post-bootstrap metadata validation remain open"
+  },
+  "schedulingAsyncContext": "Synchronous native entry. String coercion may invoke original user JS/reenter/GC/throw; actual exception identity preserved. No asynchronous request or callback scope implementation claimed",
+  "owningLayers": {
+    "engine": "Rooted values, strings, actual Map/Array, properties, callbacks, exceptions and realm wrappers",
+    "embedding": "Native profile lifecycle, real argv/environment selection, protected context/phase/SafeMap ownership and missing backend admission",
+    "libcKernel": "Actual guest environ/secure_getenv/threads through existing libc/kernel; no host Node builtins or desktop environment used",
+    "libuv": "Original mutex support; memory information APIs remain absent"
+  },
+  "unsupported": {
+    "memory": "Percentage memory selection calls explicit private failure adapter for missing libuv memory APIs. Pending JS exception preserves ERR_KANDELO_NOT_IMPLEMENTED; zero is failure transport only and cannot be published. Do not consume existing kernel sysinfo placeholders",
+    "engineFlags": "Original parser forwards engine args. Unsupported engine flag adoption rejects instead of pretending V8 validation/application",
+    "outerConfigSecurity": "Complete Node process-global/config/dotenv/security/engine pipeline is not implemented; dependent source-file/config/security requests fail explicitly. Inner parser alone is not full CLI acceptance",
+    "lateMethodNaming": "Inherited setters run before internal naming, as original util.cc. If user code resolves/redefines function.name during Set, missing engine name-tracking fails explicitly; no incorrect name metadata is published. Original setter failure remains fatal.",
+    "postBootstrap": "All six queries remain correctly closed until genuine complete bootstrap; no test-only phase-completion override"
+  },
+  "validation": {
+    "guestBindingCasesPerHost": 14,
+    "additionalNodeProfileDrivers": 7,
+    "nativeSharedCases": 6,
+    "coreCppCasesPerHost": 23,
+    "nativeCoreValueComparisons": 114,
+    "nativeCoreErrorsCompared": 10,
+    "sharedEnvMetadataEntries": 152,
+    "nativeOnlyEnvMetadataEntries": 15,
+    "namespaceScope": "Core probe raw namespace names include entries the original schema serializer filters (e.g. no-op experimental-test-snapshots); FFI build difference also retained. No complete namespace facade equivalence claim",
+    "scope": "Node/Chromium/Firefox/WebKit same identified engine/kernel; separate core probe and native reference, no startup proof"
+  },
+  "archivedReuse": "19-family and PR audits remain salvage indexes. No old public JS shims or per-module substitutes reused",
+  "validationObligations": [
+    "Actual complete four-host startup, separate CJS/ESM entrypaths, output/error/job/exit acceptance",
+    "After genuine bootstrap, validate every source serializer, protected SafeMap prototypes, aliases, all names/types/descriptions and full profile semantics",
+    "Complete CLI/env/config/dotenv/security/engine adoption with real owning backends; unsupported remains explicit",
+    "OOM/wrapper/security/lifecycle/reentrancy/worker and multi-runtime ownership",
+    "Reconcile full lazy/conditional/worker/platform/exception graph and source/native/backend coverage separately"
+  ],
+  "nextWork": [
+    "Implement genuine string_decoder required by original buffer/util startup closure",
+    "Continue actual principal/web/thread/environment bootstrap and remaining process/util/buffer/native contracts",
+    "Complete four-host empty/simple and separate CJS/ESM acceptance, then full backend catalog/ordered roadmap",
+    "Nested guest Wasm last unless startup requires it; stop for user review before broader roadmap"
+  ],
+  "limits": [
+    "No successful upstream Node startup/public module compatibility",
+    "No full graph/catalog or full Node CLI conformance",
+    "No product images, full products, successor-ABI builds or overall suites"
+  ]
+}

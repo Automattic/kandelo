@@ -10,11 +10,12 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 510,
+    "importedFiles": 516,
     "taskQueuePartialCatalog": "task-queue-contracts.json",
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
     "constantsPartialCatalog": "constants-contracts.json",
-    "typesPartialCatalog": "types-contracts.json"
+    "typesPartialCatalog": "types-contracts.json",
+    "optionsPartialCatalog": "options-contracts.json"
   },
   "implementation": [
     {
@@ -50,8 +51,8 @@
     {
       "area": "shared Node realm and native binding loader",
       "sourceStatus": "partial native owner implemented; complete original realm library loader executes through privileged Node-host controls",
-      "remaining": "principal node body now passes types and stops on options through internal/options; remaining native closure/web/thread/env stages, lifecycle/security/OOM and four-host startup",
-      "evidence": "types-engine-check.json"
+      "remaining": "principal node body passes options and stops on string_decoder through buffer/util; remaining native/web/thread/environment closure and full startup incomplete",
+      "evidence": "options-engine-check.json"
     },
     {
       "area": "structured Error stack/CallSite/limit contracts",
@@ -74,9 +75,9 @@
     },
     {
       "area": "eager Buffer/process/fs/options/task queues/timers/async binding closure",
-      "sourceStatus": "Genuine initial process/config, timers, task queues, partial async state, constants and types implemented; wider Buffer/fs/options/process closure remains incomplete",
+      "sourceStatus": "Genuine initial process/config, timers/task queues/partial async, constants/types and original native options implemented in bounded scope; wider buffer/fs/process/native closure incomplete",
       "remaining": "contract inventory and dependency-ordered owning backends; no placeholder export objects",
-      "evidence": "types-engine-check.json"
+      "evidence": "options-engine-check.json"
     },
     {
       "area": "generated runtime configuration",
@@ -96,8 +97,8 @@
     },
     {
       "area": "native initial process prototype/constructor, shared exit-info and config",
-      "sourceStatus": "partial genuine native state; original principal body invoked through protected slots and stops on options",
-      "evidence": "types-engine-check.json",
+      "sourceStatus": "partial genuine native state; original principal body invoked through protected slots and stops on string_decoder",
+      "evidence": "options-engine-check.json",
       "remaining": "actual exit dispatch, full process/version/environment/options/config JSON/FIPS and wider startup binding closure; full native lifecycle/security/OOM/browser differential"
     },
     {
@@ -136,6 +137,12 @@
       "sourceStatus": "all26exports inspect actual engine classes/flags; real borrowed pointer External carrier; complete original internal/util/types executes",
       "evidence": "types-engine-check.json",
       "remaining": "Full denied-wrapper/OOM/teardown/ShadowRealm equivalence, general native resource lifecycle and complete startup remain unproven"
+    },
+    {
+      "area": "complete original native options translation unit and JS marshalling",
+      "sourceStatus": "Original parser/declarations/storage/validation/serializers compile unchanged; actual rooted engine values and six authentic bootstrap guards; original internal/options executes",
+      "evidence": "options-engine-check.json",
+      "remaining": "Full outer CLI/config/security/engine adoption, post-bootstrap metadata, lifecycle/security/OOM and complete startup remain open"
     }
   ],
   "runtimeConformance": {
@@ -207,17 +214,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 31,
+    "packageRevision": 32,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "types-engine-check.json",
+    "evidence": "options-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "21type cases per host plus218priorNodecases;86shared-value classifications match pinned native; original bootstrap reaches options",
+    "packageRuntimeScope": "14options cases per host plus239priorNodecases; separate23-case complete-source C++ component probe per host; original bootstrap reaches string_decoder",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "Existing Mozilla Linux triplet/defines remain; linked libuv uses the true Kandelo build and explicit public-layout selector before legacy macros"
   },
@@ -312,7 +319,7 @@
     },
     "realmLibrary": {
       "inventory": "realm-library-contracts.md",
-      "implementationEvidence": "types-engine-check.json",
+      "implementationEvidence": "options-engine-check.json",
       "originalBodyExecuted": true,
       "originalLoaderClosuresRetained": true,
       "oneOriginalBuiltinCache": true,
@@ -325,14 +332,14 @@
         "canonical errors callbacks",
         "canonical util.privateSymbols"
       ],
-      "principalBootstrapGap": "Original principal body passes types and stops on options at internal/options:20 from internal/util:74 through validators:35/timers:120",
+      "principalBootstrapGap": "Original principal body passes options and stops on string_decoder through original buffer/util closure",
       "principalBootstrapCompleted": false,
       "cjsEntry": false,
       "esmEntry": false
     },
     "processConfig": {
       "inventory": "process-config-contracts.md",
-      "evidence": "types-engine-check.json",
+      "evidence": "options-engine-check.json",
       "distinctMutableProcessPrototype": true,
       "nativeEmptyInstanceConstructor": true,
       "effectiveReceiverSemantics": true,
@@ -347,7 +354,7 @@
     },
     "timers": {
       "inventory": "timers-contracts.md",
-      "evidence": "types-engine-check.json",
+      "evidence": "options-engine-check.json",
       "actualGuestClock": true,
       "runtimeSharedInfoArrays": true,
       "realDeadlineAndReferences": true,
@@ -368,7 +375,7 @@
     "taskQueue": {
       "inventory": "task-queue-contracts.json",
       "explanation": "task-queue-contracts.md",
-      "evidence": "types-engine-check.json",
+      "evidence": "options-engine-check.json",
       "bindingImplemented": true,
       "actualEnginePrimitivesObserved": true,
       "nativeNodeExceptionRouting": false,
@@ -387,7 +394,7 @@
     },
     "asyncWrap": {
       "inventory": "async-wrap-contracts.json",
-      "evidence": "types-engine-check.json",
+      "evidence": "options-engine-check.json",
       "bindingImplemented": true,
       "bindingComplete": false,
       "originalInternalModuleExecuted": true,
@@ -423,9 +430,9 @@
       "libzstdDecoderBytesUnchanged": true,
       "mozillaZlibHeaderPrecedenceFixedForThisBinding": true,
       "upstreamStartup": false,
-      "currentStartupEvidence": "types-engine-check.json",
+      "currentStartupEvidence": "options-engine-check.json",
       "historicalBootstrapNextBinding": "types",
-      "currentBootstrapNextBinding": "options"
+      "currentBootstrapNextBinding": "string_decoder"
     },
     "types": {
       "inventory": "types-contracts.json",
@@ -439,6 +446,27 @@
       "originalJavaScriptChanged": false,
       "completeOriginalInternalTypesModuleExecuted": true,
       "bootstrapNextBinding": "options",
+      "upstreamStartup": false,
+      "currentStartupEvidence": "options-engine-check.json",
+      "currentBootstrapNextBinding": "string_decoder"
+    },
+    "options": {
+      "inventory": "options-contracts.json",
+      "evidence": "options-engine-check.json",
+      "completeOriginalNativeTranslationUnitCompiled": true,
+      "originalJavaScriptChanged": false,
+      "methods": 7,
+      "enumDefinitions": 10,
+      "originalModuleExecuted": true,
+      "realParserAndStorage": true,
+      "forceBootstrapCompleteForTests": false,
+      "guardedQueriesAfterCompleteBootstrapValidated": false,
+      "actualNodeInvocationCaptureAndEarlyParsing": {
+        "implemented": true,
+        "ordinaryNodeModeStartupAccepted": false
+      },
+      "cppCoreProbeCasesPerHost": 23,
+      "nextBinding": "string_decoder",
       "upstreamStartup": false
     }
   },
@@ -546,6 +574,17 @@
       "sharedValueClassifications": 86,
       "sharedValueClassificationDifferences": 0,
       "fullEngineEquivalence": false
+    },
+    "options": {
+      "reference": "Node26.13.0Darwinarm64",
+      "sharedCases": 6,
+      "failures": 0,
+      "evidence": "options-native-reference.json",
+      "coreCases": 23,
+      "coreValueComparisons": 114,
+      "coreErrorsMatched": 10,
+      "envMetadataEntriesMatched": 152,
+      "fullNodeCliOrPostBootstrapEquivalence": false
     }
   },
   "focusedGuestEngineControls": {
@@ -571,8 +610,8 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "types-engine-check.json",
-      "regressionScope": "Same revision31 engine passes21type cases plus218priorNodecases;67Nodeprocess drivers including19expected fatal controls",
+      "currentArtifactEvidence": "options-engine-check.json",
+      "regressionScope": "Same revision32 engine passes14options cases plus239priorNodecases and7additionalprofiledrivers; separate23-case C++ component artifact",
       "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
@@ -641,51 +680,45 @@
       "targetEffects": 4,
       "typesCases": 21,
       "typesEvidence": "types-engine-check.json",
-      "typesDriverRuns": 3
+      "typesDriverRuns": 3,
+      "optionsCases": 14,
+      "optionsEvidence": "options-engine-check.json",
+      "optionsDriverRuns": 10
     },
     "Chromium": {
-      "evidence": "types-engine-check.json",
-      "typesCases": 21,
-      "typesFailures": 0,
-      "sharedValueClassifications": 86,
-      "sharedValueClassificationDifferences": 0,
-      "driverRuns": 4,
+      "evidence": "options-engine-check.json",
+      "optionsCases": 14,
+      "optionsFailures": 0,
+      "cppCoreComponentCases": 23,
+      "driverRuns": 27,
       "driverFailures": 0,
-      "historicalConstantsEvidence": "constants-engine-check.json",
-      "historicalAsyncEvidence": "async-wrap-engine-check.json",
-      "historicalTaskQueueEvidence": "task-queue-engine-check.json",
-      "scope": "revision31 native type/whole original internal types module controls; exact options gap; no complete startup/operational API claim"
+      "historicalTypesEvidence": "types-engine-check.json",
+      "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
     },
     "Firefox": {
-      "evidence": "types-engine-check.json",
-      "typesCases": 21,
-      "typesFailures": 0,
-      "sharedValueClassifications": 86,
-      "sharedValueClassificationDifferences": 0,
-      "driverRuns": 4,
+      "evidence": "options-engine-check.json",
+      "optionsCases": 14,
+      "optionsFailures": 0,
+      "cppCoreComponentCases": 23,
+      "driverRuns": 27,
       "driverFailures": 0,
-      "historicalConstantsEvidence": "constants-engine-check.json",
-      "historicalAsyncEvidence": "async-wrap-engine-check.json",
-      "historicalTaskQueueEvidence": "task-queue-engine-check.json",
-      "scope": "revision31 native type/whole original internal types module controls; exact options gap; no complete startup/operational API claim"
+      "historicalTypesEvidence": "types-engine-check.json",
+      "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
     },
     "WebKit": {
-      "evidence": "types-engine-check.json",
-      "typesCases": 21,
-      "typesFailures": 0,
-      "sharedValueClassifications": 86,
-      "sharedValueClassificationDifferences": 0,
-      "driverRuns": 4,
+      "evidence": "options-engine-check.json",
+      "optionsCases": 14,
+      "optionsFailures": 0,
+      "cppCoreComponentCases": 23,
+      "driverRuns": 27,
       "driverFailures": 0,
-      "historicalConstantsEvidence": "constants-engine-check.json",
-      "historicalAsyncEvidence": "async-wrap-engine-check.json",
-      "historicalTaskQueueEvidence": "task-queue-engine-check.json",
-      "scope": "revision31 native type/whole original internal types module controls; exact options gap; no complete startup/operational API claim"
+      "historicalTypesEvidence": "types-engine-check.json",
+      "scope": "revision32 original native/JS options module and guarded phase/profile controls, separate core component, no complete startup/CLI acceptance"
     }
   },
   "nextWork": [
-    "Implement real options binding and source-defined startup option metadata/policy; unchanged internal/options:20 now stops there",
-    "Complete startup-required util/process/native closure and engine Promise lifecycle/frame/common callback contracts",
+    "Implement genuine string_decoder required by original buffer/util startup closure",
+    "Continue startup-required buffer/util/process/native closure and native callback/Promise lifecycle/frame contracts",
     "Genuine empty/simple output/errors/jobs/exit and separate CJS/ESM entrypaths on all four hosts",
     "Complete full graph catalog and dependency-ordered roadmap, nested guest Wasm last unless startup requires it; stop for user review before broader implementation"
   ]

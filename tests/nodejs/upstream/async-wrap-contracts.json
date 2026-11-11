@@ -414,6 +414,7 @@
     "Stop for user review before broader backend roadmap implementation"
   ],
   "currentConstantsIntegrationEvidence": "constants-engine-check.json",
-  "currentBootstrapGap": "options in internal/options:20 from internal/util:74 after genuine native types; prior gap observations remain historical",
-  "currentTypesIntegrationEvidence": "types-engine-check.json"
+  "currentBootstrapGap": "string_decoder through original buffer/util after complete original native options integration; prior gaps remain historical",
+  "currentTypesIntegrationEvidence": "types-engine-check.json",
+  "currentOptionsIntegrationEvidence": "options-engine-check.json"
 }

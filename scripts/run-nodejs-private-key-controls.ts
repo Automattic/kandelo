@@ -7,8 +7,8 @@ import { runCentralizedProgram } from "../host/test/centralized-test-helper";
 
 const [programArgument, reportArgument, modeArgument = "private-keys"] = process.argv.slice(2);
 if (!programArgument || !reportArgument || process.argv.length > 5 ||
-    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config", "timers", "task-queue", "async-wrap", "constants", "types"].includes(modeArgument)) {
-  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config|timers|task-queue|async-wrap|constants|types]");
+    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config", "timers", "task-queue", "async-wrap", "constants", "types", "options"].includes(modeArgument)) {
+  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config|timers|task-queue|async-wrap|constants|types|options]");
 }
 const perContext = modeArgument === "per-context";
 const synthetic = modeArgument === "synthetic-modules";
@@ -18,19 +18,20 @@ const errorStack = modeArgument === "error-stack";
 const nativeTimers = modeArgument === "timers";
 const nativeConstants = modeArgument === "constants";
 const nativeTypes = modeArgument === "types";
+const nativeOptions = modeArgument === "options";
 const nativeAsync = modeArgument === "async-wrap";
 const nativeTasks = modeArgument === "task-queue";
 const processConfig = modeArgument === "process-config";
 const realmLibrary = modeArgument === "realm-library";
-const expectedKind = nativeTypes ? "native-types-controls" : nativeConstants ? "native-constants-controls" : nativeAsync ? "native-async-wrap-controls" : nativeTasks ? "native-task-queue-controls" : nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
-const expectedCases = nativeTypes ? 21 : nativeConstants ? 10 : nativeAsync ? 20 : nativeTasks ? 26 : nativeTimers ? 27 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
+const expectedKind = nativeOptions ? "native-options-controls" : nativeTypes ? "native-types-controls" : nativeConstants ? "native-constants-controls" : nativeAsync ? "native-async-wrap-controls" : nativeTasks ? "native-task-queue-controls" : nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
+const expectedCases = nativeOptions ? 14 : nativeTypes ? 21 : nativeConstants ? 10 : nativeAsync ? 20 : nativeTasks ? 26 : nativeTimers ? 27 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
 const program = resolve(programArgument);
 const reportPath = resolve(reportArgument);
 const kernel = resolveBinary("kernel.wasm");
-const fixturePath = resolve(nativeTypes ? "tests/nodejs/upstream/types-engine-controls.js" : nativeConstants ? "tests/nodejs/upstream/constants-engine-controls.js" : nativeAsync ? "tests/nodejs/upstream/async-wrap-engine-controls.js" : nativeTasks ? "tests/nodejs/upstream/task-queue-engine-controls.js" : nativeTimers ? "tests/nodejs/upstream/timers-engine-controls.js" : processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
+const fixturePath = resolve(nativeOptions ? "tests/nodejs/upstream/options-engine-controls.js" : nativeTypes ? "tests/nodejs/upstream/types-engine-controls.js" : nativeConstants ? "tests/nodejs/upstream/constants-engine-controls.js" : nativeAsync ? "tests/nodejs/upstream/async-wrap-engine-controls.js" : nativeTasks ? "tests/nodejs/upstream/task-queue-engine-controls.js" : nativeTimers ? "tests/nodejs/upstream/timers-engine-controls.js" : processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
   : "tests/nodejs/upstream/private-key-engine-controls.js");
 const fixture = readFileSync(fixturePath, "utf8").replace("// @shared-controls",
-  nativeAsync ? readFileSync("tests/nodejs/upstream/async-wrap-shared-controls.js", "utf8") : "// no shared controls").replace("// @shared-constants-controls", nativeConstants ? readFileSync("tests/nodejs/upstream/constants-shared-controls.js", "utf8") : "// no shared constants").replace("// @shared-types-controls", nativeTypes ? readFileSync("tests/nodejs/upstream/types-shared-controls.js", "utf8") : "// no shared types");
+  nativeAsync ? readFileSync("tests/nodejs/upstream/async-wrap-shared-controls.js", "utf8") : "// no shared controls").replace("// @shared-constants-controls", nativeConstants ? readFileSync("tests/nodejs/upstream/constants-shared-controls.js", "utf8") : "// no shared constants").replace("// @shared-types-controls", nativeTypes ? readFileSync("tests/nodejs/upstream/types-shared-controls.js", "utf8") : "// no shared types").replace("// @shared-options-controls", nativeOptions ? readFileSync("tests/nodejs/upstream/options-shared-controls.js", "utf8") : "// no shared options");
 function identity(path: string) {
   const bytes = readFileSync(path);
   return { path, bytes: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") };
@@ -81,7 +82,7 @@ await run("node-mode-refuses-native-test-controls", ["node", "--kandelo-test-ups
 await run(modeArgument + "-controls", ["js", "--kandelo-test-upstream",
   ...(synthetic ? ["--enable-import-attributes"] : []), "-e", fixture], (result) => {
   expect(result.exitCode === 0, JSON.stringify(result));
-  if (nativeTypes || nativeAsync || nativeConstants) expect(result.stderr === "" && result.hostDiagnostics.length === 0, JSON.stringify(result));
+  if (nativeOptions || nativeTypes || nativeAsync || nativeConstants) expect(result.stderr === "" && result.hostDiagnostics.length === 0, JSON.stringify(result));
   const rows = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   expect(rows.length === 1, "expected one complete engine result");
   const row = rows[0];
@@ -119,6 +120,25 @@ if (realmLibrary) {
       expect(result.stderr.includes("Node internal loaders registration invariant"), JSON.stringify(result));
       expect(!result.stdout.includes("UNEXPECTED_"), JSON.stringify(result));
     });
+}
+if (nativeOptions) {
+  const setup="const api=__kandeloUpstreamTest;api.initializeContext();const realm=api.initializeRealm(),binding=realm.internalBinding('options');";
+  for (const [name,setter,assertion] of [
+    ["original-method-setter-failure-retains-fatal-check", "throw new Error('REGISTRATION_SETTER')", "Original native options method property invariant"],
+    ["unimplemented-late-name-inspection-is-an-explicit-fatal-boundary", "void value.name", "Native option method late naming after inspection is not implemented"],
+  ]) await run(name,["js","--kandelo-test-upstream","-e", "const api=__kandeloUpstreamTest;api.initializeContext();const realm=api.initializeRealm();Object.defineProperty(Object.prototype,'getCLIOptionsValues',{set(value){"+setter+"},configurable:true});realm.internalBinding('options');print('UNEXPECTED_RETURN')"],result=>{
+    expect(result.exitCode===132 && result.stderr.includes(assertion) && result.hostDiagnostics.length===1 && !result.stdout.includes('UNEXPECTED_RETURN'),JSON.stringify(result));
+  });
+  const controls = [
+    ["primitive-profile-arguments-reject-with-a-real-exception", "try{api.configureOptions(1);throw new Error('unexpected success')}catch(error){if(!error.message.includes('requires an argument array'))throw error}if(api.inspectOptions().configured)throw new Error('unexpected mutation');print('PROFILE_ARGUMENT_REJECTED')", "PROFILE_ARGUMENT_REJECTED"],
+    ["original-cpp-option-error-preserves-terminal-profile-failure", "try{api.configureOptions(['node','--input-type=incorrect']);throw new Error('unexpected success')}catch(error){if(!error.message.includes('--input-type must be'))throw error}if(!api.inspectOptions().failed)throw new Error('profile not failed');try{binding.parseNodeOptionsEnvVar('--x');throw new Error('unexpected reuse')}catch(error){if(!error.message.includes('Previous native options configuration failed'))throw error}print('ORIGINAL_CPP_ERROR_RETAINED')", "ORIGINAL_CPP_ERROR_RETAINED"],
+    ["unsupported-memory-accounting-cannot-publish-a-zero-value", "try{api.configureOptions(['node','--max-old-space-size-percentage=25']);throw new Error('unexpected success')}catch(error){if(error.code!=='ERR_KANDELO_NOT_IMPLEMENTED'||!error.message.includes('real libuv memory accounting'))throw error}if(!api.inspectOptions().failed||api.inspectOptions().serialized)throw new Error('false memory success');print('MEMORY_BOUNDARY_RETAINED')", "MEMORY_BOUNDARY_RETAINED"],
+    ["unimplemented-engine-option-adoption-is-an-error", "try{api.configureOptions(['node','--definitely-not-a-native-option']);throw new Error('unexpected success')}catch(error){if(error.code!=='ERR_KANDELO_NOT_IMPLEMENTED')throw error}if(!api.inspectOptions().failed)throw new Error('false engine success');print('ENGINE_OPTION_REJECTED')", "ENGINE_OPTION_REJECTED"],
+    ["unimplemented-env-file-adoption-is-an-error", "try{api.configureOptions(['node','--env-file=/tmp/missing-node-options.env']);throw new Error('unexpected success')}catch(error){if(error.code!=='ERR_KANDELO_NOT_IMPLEMENTED')throw error}if(!api.inspectOptions().failed)throw new Error('false env-file success');print('ENV_FILE_OPTION_REJECTED')", "ENV_FILE_OPTION_REJECTED"],
+  ];
+  for (const [name,source,output] of controls) await run(name,["js","--kandelo-test-upstream","-e",setup+source],result=>{
+    expect(result.exitCode===0 && result.stdout.trim()===output && result.stderr==="" && result.hostDiagnostics.length===0,JSON.stringify(result));
+  });
 }
 if (nativeAsync) {
   const setup="__kandeloUpstreamTest.initializeContext();const realm=__kandeloUpstreamTest.initializeRealm();const binding=realm.internalBinding('async_wrap');";
@@ -200,6 +220,7 @@ const report = {
   host: { version: process.version, platform: process.platform, arch: process.arch },
   program: identity(program), kernel: identity(kernel), fixture: identity(fixturePath),
   runner: identity(resolve("scripts/run-nodejs-private-key-controls.ts")),
+  ...(nativeOptions ? { sharedFixture: identity(resolve("tests/nodejs/upstream/options-shared-controls.js")), executedFixtureSha256: createHash("sha256").update(fixture).digest("hex") } : {}),
   ...(nativeTypes ? { sharedFixture: identity(resolve("tests/nodejs/upstream/types-shared-controls.js")), executedFixtureSha256: createHash("sha256").update(fixture).digest("hex") } : {}),
   ...(nativeConstants ? { sharedFixture: identity(resolve("tests/nodejs/upstream/constants-shared-controls.js")), executedFixtureSha256: createHash("sha256").update(fixture).digest("hex") } : {}),
   ...(nativeAsync ? { sharedFixture: identity(resolve("tests/nodejs/upstream/async-wrap-shared-controls.js")), executedFixtureSha256: createHash("sha256").update(fixture).digest("hex") } : {}),

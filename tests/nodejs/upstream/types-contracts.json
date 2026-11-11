@@ -791,5 +791,7 @@
     "Native type predicates do not implement the APIs of classified objects",
     "No complete Node startup or module compatibility claim",
     "No full product/partial/canonical images, successor-ABI campaigns or overall conformance suites"
-  ]
+  ],
+  "currentOptionsIntegrationEvidence": "options-engine-check.json",
+  "currentBootstrapGap": "string_decoder through original buffer/util after complete original native options integration; prior gaps remain historical"
 }

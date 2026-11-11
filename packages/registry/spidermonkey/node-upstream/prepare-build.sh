@@ -40,6 +40,10 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/constants-builder.h" \
     "$node_consumer/types.cpp" \
     "$node_consumer/types.h" \
+    "$node_consumer/options.cpp" \
+    "$node_consumer/options.h" \
+    "$node_consumer/options-native-api.h" \
+    "$node_consumer/options-upstream.cpp" \
     "$node_consumer/per-context.h" "$shell_sources/"
 # Keep the portable registry's include names independent of Mozilla shell paths.
 # Mozilla's checker treats js/src as the root of internal header include names.
@@ -62,6 +66,9 @@ python3 "$repo_root/scripts/generate-nodejs-async-metadata.py" \
 python3 "$repo_root/scripts/generate-nodejs-types.py" \
     --manifest "$node_import/sources.json" \
     --output "$mozilla_source/js/src/node-types.generated.h"
+python3 "$repo_root/scripts/prepare-nodejs-options.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$shell_sources/options-upstream"
 python3 "$repo_root/scripts/prepare-nodejs-constants.py" \
     --manifest "$node_import/sources.json" \
     --output "$shell_sources/constants-upstream" \

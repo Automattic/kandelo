@@ -1,0 +1,35 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -37,2 +37,4 @@
+     "node-upstream/module-wrap.cpp",
++    "node-upstream/options-upstream.cpp",
++    "node-upstream/options.cpp",
+     "node-upstream/per-context.cpp",
+@@ -88 +90,5 @@
+ LOCAL_INCLUDES += ["/js/src/shell/node-upstream/constants-upstream/include"]
++
++# The complete original native options parser uses C++20 ranges/bit fields.
++SOURCES["node-upstream/options-upstream.cpp"].flags += ["-std=c++20"]
++SOURCES["node-upstream/options.cpp"].flags += ["-std=c++20"]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -45,2 +45,3 @@
+ ignored_js_src_dirs = [
++    "js/src/shell/node-upstream/options-upstream/",  # complete verified Node native sources
+     "js/src/shell/node-upstream/constants-upstream/",  # verified imported Node declarations
+@@ -59,2 +60,4 @@
+     [
++        "shell/node-upstream/options-upstream/node_options.cc",
++        "shell/node-upstream/options-upstream/node_options.h",
+         "shell/node-upstream/constants-upstream/trace_event_legacy.h",
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -188,2 +188,3 @@
+ #include "shell/kandelo-node-bootstrap.h"
++#include "shell/node-upstream/options.h"
+ #include "shell/node-upstream/per-context.h"
+@@ -14781,2 +14782,4 @@
++  kandelo::node::CaptureOptionsInvocation(
++      argc, argv, IsKandeloNodeProgramName(argc > 0 ? argv[0] : nullptr));
+   if (IsKandeloNodeProgramName(argc > 0 ? argv[0] : nullptr) && argc == 2 &&
+       (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {

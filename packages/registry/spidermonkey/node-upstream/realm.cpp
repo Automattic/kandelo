@@ -30,11 +30,13 @@
 #include "js/Stack.h"
 #include "js/String.h"
 #include "js/ValueArray.h"
+#include "js/Wrapper.h"
 #include "shell/jsshell.h"
 #include "shell/node-upstream/async-wrap.h"
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/constants.h"
 #include "shell/node-upstream/error-stack.h"
+#include "shell/node-upstream/options.h"
 #include "shell/node-upstream/per-context.h"
 #include "shell/node-upstream/task-queue.h"
 #include "shell/node-upstream/timers.h"
@@ -44,8 +46,8 @@ namespace kandelo::node {
 namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
-enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3 };
-enum Slot { Status, Global, Process, Primordials, Builtins, Util, Config, Constants, Types, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
+enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3, NodeComplete = 4 };
+enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -242,6 +244,15 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
       JS::SetReservedSlot(state, Types, JS::ObjectValue(*binding));
     }
   }
+  else if (name == "options") {
+    JS::Value cached = JS::GetReservedSlot(state, Options);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = CreateOptionsBinding(cx, state);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, Options, JS::ObjectValue(*binding));
+    }
+  }
   else if (name == "timers") {
     JS::Value cached = JS::GetReservedSlot(state, Timers);
     if (cached.isObject()) binding = &cached.toObject();
@@ -372,11 +383,35 @@ bool CheckRealmLibraryActive(JSContext* cx, JS::HandleObject state) {
     return Report(cx, "Previous Node realm initialization failed");
   return true;
 }
+JSObject* GetRealmRuntime(JSContext* cx, JS::HandleObject state) {
+  if (!CheckRealmLibraryActive(cx, state)) return nullptr;
+  return Runtime(cx);
+}
+JSObject* GetRealmSafeMapPrototype(JSContext* cx, JS::HandleObject state) {
+  if (!CheckRealmLibraryActive(cx, state)) return nullptr;
+  JS::RootedObject object(cx, &JS::GetReservedSlot(state, SafeMapPrototype).toObject());
+  if (!JS_WrapObject(cx, &object)) return nullptr;
+  return object;
+}
+bool HasCompletedNodeBootstrap(JSContext* cx, JS::HandleObject wrapped) {
+  JS::RootedObject state(cx, js::CheckedUnwrapDynamic(wrapped, cx, false));
+  if (!state) return false;
+  MOZ_RELEASE_ASSERT(JS::GetClass(state) == &kRealm);
+  // NodeBodyDone alone is insufficient: original web/thread/environment
+  // bootstrap stages and DoneBootstrapping invariants remain required.
+  return JS::GetReservedSlot(state, NodeStatus) == JS::Int32Value(NodeComplete);
+}
 bool RunRealmLibrary(JSContext* cx, JS::HandleObject state,
                      JS::HandleObject primordials) {
   MOZ_RELEASE_ASSERT(JS::GetClass(state) == &kRealm);
   auto run = [&]() -> bool {
     JS::SetReservedSlot(state, Primordials, JS::ObjectValue(*primordials));
+    JS::RootedValue safeMap(cx), safeMapPrototype(cx);
+    MOZ_RELEASE_ASSERT(JS_GetProperty(cx, primordials, "SafeMap", &safeMap) && safeMap.isObject(), "Original Node SafeMap constructor invariant");
+    JS::RootedObject safeMapConstructor(cx, &safeMap.toObject());
+    MOZ_RELEASE_ASSERT(JS_GetProperty(cx, safeMapConstructor, "prototype", &safeMapPrototype) && safeMapPrototype.isObject(), "Original Node SafeMap prototype invariant");
+    JS::SetReservedSlot(state, SafeMapPrototype, safeMapPrototype);
+    if (!InitializeOptionsForRealm(cx, state)) return false;
     JS::RootedObject records(cx, JS::NewArrayObject(cx, 0));
     JS::RootedObject runtime(cx, Runtime(cx));
     JS::RootedObject process(cx, ProcessObject(cx, runtime));

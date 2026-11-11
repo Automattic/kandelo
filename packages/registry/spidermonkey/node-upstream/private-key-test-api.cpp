@@ -27,6 +27,25 @@ namespace kandelo::node {
 namespace {
 
 static int externalReferenceToken = 42;
+bool ConfigureNativeOptions(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  bool array = false;
+  if (!args.get(0).isObject()) { JS_ReportErrorASCII(cx, "Native options control requires an argument array"); return false; }
+  if (!JS::IsArrayObject(cx, args.get(0), &array)) return false;
+  if (!array) { JS_ReportErrorASCII(cx, "Native options control requires an argument array"); return false; }
+  JS::RootedObject arguments(cx, &args[0].toObject());
+  JS::RootedString environment(cx, args.get(1).isUndefined() ? JS_NewStringCopyZ(cx, "") : JS::ToString(cx, args[1]));
+  if (!environment) return false;
+  JS::RootedObject runtime(cx, js::shell::GetShellContext(cx)->upstreamNodeRuntime);
+  if (!ConfigureCurrentOptions(cx, runtime, arguments, environment)) return false;
+  args.rval().setUndefined(); return true;
+}
+bool InspectNativeOptions(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject runtime(cx, js::shell::GetShellContext(cx)->upstreamNodeRuntime);
+  JS::RootedObject snapshot(cx, InspectCurrentOptions(cx, runtime)); if (!snapshot) return false;
+  args.rval().setObject(*snapshot); return true;
+}
 bool NewExternal(JSContext* cx, unsigned argc, JS::Value* vp) {
   auto args = JS::CallArgsFromVp(argc, vp);
   JS::RootedObject object(cx, CreateExternalPointer(cx, &externalReferenceToken));
@@ -278,6 +297,8 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
   static const JSFunctionSpec functions[] = {
       JS_FN("newPrivateKey", NewPrivateKey, 0, 0),
       JS_FN("newExternal", NewExternal, 0, 0),
+      JS_FN("configureOptions", ConfigureNativeOptions, 2, 0),
+      JS_FN("inspectOptions", InspectNativeOptions, 0, 0),
       JS_FN("readExternal", ReadExternal, 1, 0),
       JS_FN("initializePrivateKey", InitializePrivateKey, 3, 0),
       JS_FN("initializeContext", InitializeContext, 0, 0),
