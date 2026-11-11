@@ -1538,31 +1538,19 @@ function safeBootLinkShell(recorded: BootJsonValue | undefined): string {
     : DEFAULT_BOOT_LINK_SHELL;
 }
 
-async function runLinkScript(
-  host: LiveKernelHost,
-  path: string,
-  recordedShell: BootJsonValue | undefined,
-  tick: (msg: string) => void,
-): Promise<void> {
-  // The script was already written (mode 0755, writable and executable) by
-  // materializeBootInputs during image staging, at `path`.
-  //
-  // The interpreter comes from the link itself (boot.parameters.runScriptShell,
-  // set by ShareDialog to the authoring machine's default shell), so the script
-  // runs directly as `<shell> script` with no visible `command -v bash` probe
-  // and no round-trip to the kernel worker to look for one. The shell token is
-  // validated to a bare command word first.
+function bootLinkPromptCommand(path: string, recordedShell: BootJsonValue | undefined): string {
   const shell = safeBootLinkShell(recordedShell);
-  tick("showing boot-link script in the terminal...");
-  // Show the actual script contents in the terminal before running them —
-  // the visitor sees exactly what the link asked their machine to execute.
-  // `path` is derived from the URL-carried input id, so it is double-quoted
-  // here even though the descriptor validator already restricts input ids
-  // and filenames to a safe character set — defense in depth against a
-  // future relaxation of that validation.
-  await host.runShellCommand(`cat "${path}"`);
-  tick(`running boot-link script with ${shell}...`);
-  await host.runShellCommand(`${shell} "${path}"`);
+  // Input paths are validated, but quote independently of that validation.
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+  const command = `${shell} ${quote(path)}`;
+  // Bash runs this before displaying its first prompt, without echoing a typed
+  // command. Unset before execution so child shells cannot replay the setup.
+  // Every new terminal uses the initial policy; only the first PTY runs it.
+  // ANSI bright blue follows the terminal's existing theme palette, including
+  // later theme changes. Trim trailing source newlines for one blank separator,
+  // then reset attributes before the script can produce output.
+  const source = `printf '\\nRunning script:\\n\\033[94m%s\\033[0m\\n\\n' "$(cat ${quote(path)})"`;
+  return `unset PROMPT_COMMAND; if [ "$(tty)" = /dev/pts/0 ]; then ${source}; history -s ${quote(command)}; ${command}; fi`;
 }
 
 function persistenceIdentity(
@@ -2081,6 +2069,13 @@ async function bootProfile(
       await kernel.initFromImage(kernelInitOptions);
     }
     assertCurrent();
+    // /run is a fresh kernel-owned tmpfs, so session inputs must be written
+    // after mounting, before init or the interactive shell can read them.
+    for (const file of composed.bootInputFiles ?? []) {
+      await kernel.writeFileToVfs(file.path, file.bytes, file.mode);
+      assertCurrent();
+    }
+    composed.bootInputFiles = undefined;
     await markFilesystemInitialized?.();
     assertCurrent();
     host.attachKernel(kernel);
@@ -2136,9 +2131,26 @@ async function bootProfile(
         disposeLocalWebBridge();
       } });
     setWebMcpSession(host, agentIdentity());
-    host.setTerminalSessionPolicy(
-      experimentalTerminalSessionPolicy(terminalSession),
-    );
+    const terminalPolicy = experimentalTerminalSessionPolicy(terminalSession);
+    const runScriptId = requestedDescriptor.boot.parameters?.runScript;
+    const scriptInput = typeof runScriptId === "string"
+      ? bootInputManifest?.inputs.find((entry) => entry.id === runScriptId)
+      : undefined;
+    if (!profile.framebufferTest && scriptInput !== undefined) {
+      // A per-program environment replaces the kernel default, so keep the
+      // normal login environment alongside the one-shot Bash startup hook.
+      terminalPolicy.initial.env = [
+        ...pid1BaselineEnv(terminalSession.initial.uid),
+        "LANG=en_US.UTF-8",
+        ...(terminalPolicy.initial.env ?? []),
+        `PROMPT_COMMAND=${bootLinkPromptCommand(scriptInput.path, requestedDescriptor.boot.parameters?.runScriptShell)}`,
+      ];
+    }
+    // Keep link startup after init and input attachment, as with other auto
+    // commands. Publishing the policy can immediately attach a visible PTY.
+    if (profile.framebufferTest || scriptInput === undefined) {
+      host.setTerminalSessionPolicy(terminalPolicy);
+    }
 
     if (web !== null) {
       tick("initializing HTTP bridge...");
@@ -2336,10 +2348,6 @@ async function bootProfile(
         assertCurrent,
       );
     } else if (requestedDescriptor.boot.parameters?.runScript !== undefined) {
-      const runScriptId = requestedDescriptor.boot.parameters.runScript;
-      const scriptInput = typeof runScriptId === "string"
-        ? bootInputManifest?.inputs.find((entry) => entry.id === runScriptId)
-        : undefined;
       if (scriptInput === undefined) {
         // boot.parameters.runScript named an input id that materialization
         // did not produce (typo, or boot.inputs omitted it entirely). The
@@ -2365,17 +2373,12 @@ async function bootProfile(
               + machineShellCommand,
           );
         }
-        // Experimental persistence refuses boot-link scripts before boot.
-        // Do not allow one into this branch for a restored machine without
-        // first adding a show-the-script Run/Skip consent step here. See
-        // docs/superpowers/specs/2026-09-21-script-bearing-links-design.md.
-        const runScriptShell = requestedDescriptor.boot.parameters.runScriptShell;
-        void runLinkScript(host, scriptInput.path, runScriptShell, tick).catch((err) => {
-          tick(
-            `boot-link script failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
+        tick("showing and running boot-link script in the initial shell...");
+        host.setTerminalSessionPolicy(terminalPolicy);
+        // Start even when the terminal pane is hidden. Closing this handle
+        // leaves the persistent shell and its foreground program running.
+        void host.attachPty().then(pty => pty.close()).catch((err) => {
+          tick(`boot-link script failed: ${err instanceof Error ? err.message : String(err)}`);
         });
       }
     } else if (machineShellCommand !== null) {

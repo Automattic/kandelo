@@ -193,6 +193,8 @@ export interface ComposeImageResult {
    */
   requiredServices: string[];
   bootInputManifest?: BootInputManifest;
+  /** Verified session files to install after the kernel mounts its fresh /run. */
+  bootInputFiles?: { path: string; bytes: Uint8Array; mode: number }[];
 }
 
 /** The whole machine, read from the image it lives in, for one profile. */
@@ -389,16 +391,20 @@ export async function composeKandeloImage(
   // Boot inputs (e.g. a #k1= link's script) are untrusted, URL-carried
   // payloads. Materialize the whole declared set now, at the same
   // image-staging point as the asset patches above: every input must verify
-  // its byte length and sha256 before anything is written, and a
+  // its byte length and sha256 before anything is staged, and a
   // materialization failure must fail the boot loudly rather than silently
   // continue without the input the link promised.
   let bootInputManifest: BootInputManifest | undefined;
+  const bootInputFiles: NonNullable<ComposeImageResult["bootInputFiles"]> = [];
   if (job.descriptor.boot.inputs?.length && job.frozenImageBytes === undefined) {
     tick("materializing boot inputs...");
     bootInputManifest = await materializeBootInputs(job.descriptor, {
       resolvers: {},
       mkdir: (p) => ensureDirRecursive(buildFs, p),
-      writeFile: (p, b, m) => writeVfsBinary(buildFs, p, b, m),
+      // The kernel seeds /run's directory layout from the image, but mounts
+      // an empty tmpfs over its files. Return verified bytes separately so
+      // live-setup installs them into that mount before launching processes.
+      writeFile: (path, bytes, mode) => { bootInputFiles.push({ path, bytes, mode }); },
     });
   }
 
@@ -429,6 +435,7 @@ export async function composeKandeloImage(
     terminalSession,
     requiredServices,
     bootInputManifest,
+    bootInputFiles,
   };
   } catch (error) {
     sourceFailure = { error };
