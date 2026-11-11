@@ -28,7 +28,8 @@
  *     "env":      ["PATH=/usr/bin:/bin"],
  *     "uid": 1000, "gid": 1000,
  *     "commands": [{ "name": "x", "path": "/usr/bin/x", "argv0": "x",
- *                    "stream": "stdout", "help": ["--help"] }]
+ *                    "stream": "stdout", "help": ["--help"],
+ *                    "env": ["PATH=/usr/bin:/bin"] }]
  *   }
  *
  * For each command, `<name>.help` and `<name>.version` receive what
@@ -38,7 +39,8 @@
  * fails on the missing page, and a missing page is an honest gap, never
  * a fabricated one.
  *
- * Commands run as root unless the spec names a uid and gid; a program that
+ * A command's own "env" replaces the spec's for that command. Commands run
+ * as root unless the spec names a uid and gid; a program that
  * refuses to run as root (composer) runs as the shell's ordinary user.
  */
 import {
@@ -67,6 +69,7 @@ interface Spec {
     argv0?: string;
     stream?: "stdout" | "stderr";
     help?: string[];
+    env?: string[];
   }>;
 }
 
@@ -166,11 +169,11 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
 
   const skipped: string[] = [];
-  for (const { name, path, argv0, stream, help: helpArgs } of spec.commands) {
+  for (const { name, path, argv0, stream, help: helpArgs, env: commandEnv } of spec.commands) {
     const argv0Name = argv0 ?? name;
     const which = stream ?? "stdout";
-    const help = await capture(kernel, image, path, [argv0Name, ...(helpArgs ?? ["--help"])], env, which, user);
-    const version = await capture(kernel, image, path, [argv0Name, "--version"], env, "stdout", user);
+    const help = await capture(kernel, image, path, [argv0Name, ...(helpArgs ?? ["--help"])], commandEnv ?? env, which, user);
+    const version = await capture(kernel, image, path, [argv0Name, "--version"], commandEnv ?? env, "stdout", user);
     if (!help.trim()) {
       console.error(`capture-help-output: skip ${name}: empty --help from Kandelo`);
       skipped.push(name);

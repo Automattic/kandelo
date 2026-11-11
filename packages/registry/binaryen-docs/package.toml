@@ -1,0 +1,25 @@
+kind = "program"
+name = "binaryen-docs"
+version = "126"
+kernel_abi = 56
+depends_on = ["binaryen@126", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual pages for wasm-opt, which Binaryen ships without a manual page, generated from what each prints for --help and
+# --version while running inside Kandelo. The recipe is this repository's,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/WebAssembly/binaryen/blob/version_126/LICENSE"
+
+[build]
+script_path = "packages/registry/binaryen-docs/build-binaryen-docs.sh"
+
+[[outputs]]
+name = "binaryen-docs"
+wasm = "binaryen-docs.zip"
+fork_instrumentation = "disabled"

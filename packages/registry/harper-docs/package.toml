@@ -1,0 +1,25 @@
+kind = "program"
+name = "harper-docs"
+version = "3.0.0"
+kernel_abi = 56
+depends_on = ["harper@3.0.0", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual pages for harper-cli and harper-ls, which Harper ships without manual pages, generated from what each prints for --help and
+# --version while running inside Kandelo. The recipe is this repository's,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/Automattic/harper/blob/v3.0.0/LICENSE"
+
+[build]
+script_path = "packages/registry/harper-docs/build-harper-docs.sh"
+
+[[outputs]]
+name = "harper-docs"
+wasm = "harper-docs.zip"
+fork_instrumentation = "disabled"

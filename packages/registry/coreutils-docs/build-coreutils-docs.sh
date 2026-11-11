@@ -34,14 +34,14 @@ COREUTILS_WASM="$COREUTILS_DIR/coreutils.wasm"
 # --enable-no-install-program=stdbuf,pinky,who,users,uptime (see
 # packages/registry/coreutils/build-coreutils.sh).
 TOOLS=(
-    b2sum base32 base64 basename basenc cat chcon chgrp chmod chown chroot
+    arch b2sum base32 base64 basename basenc cat chcon chgrp chmod chown chroot
     cksum comm cp csplit cut date dd df dir dircolors dirname du echo env
     expand expr factor false fmt fold groups head hostid id install join
     kill link ln logname ls md5sum mkdir mkfifo mknod mktemp mv nice nl
     nohup nproc numfmt od paste pathchk pr printenv printf ptx pwd readlink
     realpath rm rmdir runcon seq sha1sum sha224sum sha256sum sha384sum
     sha512sum shred shuf sleep sort split stat stty sum sync tac tail tee
-    test timeout touch tr true truncate tsort tty uname unexpand uniq
+    timeout touch tr true truncate tsort tty uname unexpand uniq
     unlink vdir wc whoami yes
 )
 
@@ -58,6 +58,10 @@ SPEC="$WORK/help-capture.json"
         printf '%s  {"name": "%s", "path": "%s"}' "$sep" "$tool" "$BIN"
         sep=$',\n'
     done
+    # The multi-call binary itself, and test, which answers --help only as
+    # `[` (POSIX requires `test --help` to treat --help as an operand).
+    printf ',\n  {"name": "coreutils", "path": "%s"}' "$BIN"
+    printf ',\n  {"name": "test", "path": "%s", "argv0": "["}' "$BIN"
     printf '\n]}\n'
 } > "$SPEC"
 CAP="$WORK/help-capture"
@@ -66,11 +70,18 @@ kandelo_man_pages_capture_help "$SPEC" "$CAP"
 STAGE="$WORK/stage"; rm -rf "$STAGE"; mkdir -p "$STAGE/share/man/man1"
 for helpfile in "$CAP"/*.help; do
     tool="$(basename "$helpfile" .help)"
+    version=()
+    # `[ --version` names the program `[`; the page is test's.
+    [ "$tool" != test ] ||
+        version=(--version-string="test (GNU coreutils) $(awk '{print $NF; exit}' "$CAP/test.version")")
     kandelo_man_pages_help2man "$CAP" "$tool" "$STAGE/share/man/man1/$tool.1" \
-        --source="GNU coreutils 9.6 (Kandelo)" --name="$tool" \
+        --source="GNU coreutils 9.6 (Kandelo)" --name="$tool" ${version[@]+"${version[@]}"} \
         || echo "help2man failed for $tool" >&2
 done
 [ -f "$STAGE/share/man/man1/ls.1" ] || { echo "ls.1 not generated" >&2; exit 2; }
+# `[` is test under its other name, with the same --help.
+[ -f "$STAGE/share/man/man1/test.1" ] || { echo "test.1 not generated" >&2; exit 2; }
+ln -s test.1 "$STAGE/share/man/man1/[.1"
 
 ARCHIVE="$WORK/coreutils-docs.zip"; rm -f "$ARCHIVE"
 bash "$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh" "$STAGE" "$ARCHIVE"

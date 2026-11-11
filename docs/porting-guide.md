@@ -352,6 +352,17 @@ launcher). `redis-docs` is a typical example. `lsof-docs` is a special
 case: lsof is Kandelo's own implementation, and its page is written for
 it.
 
+Kandelo's own commands get their pages the same way, from `--help` that
+Kandelo writes for them. Each answers `--help` on standard output with a
+`Usage:` line, a blank line, a one-line summary (the page's NAME line), a
+blank line, then the description and GNU-style options; and `--version`
+with exactly `NAME (Kandelo PACKAGE) VERSION`, the package that installs
+it and that package's version. Both are checked before the command does
+anything else, so a daemon or display client can answer them without a
+display. `kandelo_man_pages_own_commands` captures a list of such
+commands, checks those formats, and dates their pages with Kandelo's
+reference time; `fbdoom-docs` is a typical example.
+
 - Stage pages as `share/man/man<section>/<name>.<section>` inside the
   archive, and mount it at `/usr/`, yielding
   `/usr/share/man/man<section>/<name>.<section>`. Preserve page aliases and
@@ -396,8 +407,14 @@ These commands are in the shell image but have no page yet. `man` reports
 
 | Commands | Why there is no page yet |
 |---|---|
-| `swaybar`, `git-remote-http` (also installed as `git-remote-https`, `git-remote-ftp`, `git-remote-ftps`) | Upstream has no page for them: `sway-bar(5)` and `swaybar-protocol(7)` document swaybar, and `gitremote-helpers(7)` documents remote helpers |
-| `posix-utils-lite` commands, `kandelo-exchange`, `kandelo-publish`, `login`, `sudo-lite`, `dos-play` and other Kandelo wrappers | Kandelo is upstream and has not written pages for them |
+| `git-remote-http` (also installed as `git-remote-https`, `git-remote-ftp`, `git-remote-ftps`) | Upstream has no page for it, and it is a helper git runs, with no `--help`; `gitremote-helpers(7)` documents remote helpers |
+| `egrep`, `fgrep` | Upstream ships no page: they are scripts that run `grep -E` and `grep -F`, and `grep(1)` does not describe them |
+| `dmesg`, `logger` | Toybox has no pages, and help2man cannot lay out its help: options start at column 0 with tab-separated descriptions, so they run together |
+| `espeak-ng` | Upstream builds its page with ronn (Ruby), which the docs build does not have |
+| `llvm-cov`, `llvm-profdata`, and the LLVM binary tools (`llvm-ar`, `llvm-nm`, `llvm-objdump`, `llvm-strip` and the rest, also installed as `ar`, `nm`, `objdump`, `strip` and so on) | LLVM builds its pages with Sphinx, which the docs build does not have |
+| `wasm-tools` | Upstream ships no page; its `--help` has not been laid out as one yet |
+| `cc`, `c89`, `c99`, `c++`, `kandelo-cc` and the `wasm32posix-*` tools | They are one program, `kandelo-cc`, which has no `--help` of its own yet; its source is a build input of every package, so adding one rebuilds them all |
+| `posix-utils-lite` commands (`cal`, `ed`, `pax`, `ps` and the rest) | Most are placeholders being replaced by upstream implementations, whose pages come with them |
 
 ### The man-page index
 

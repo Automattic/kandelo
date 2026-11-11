@@ -1,0 +1,25 @@
+kind = "program"
+name = "wasm-fork-instrument-docs"
+version = "0.1.0"
+kernel_abi = 56
+depends_on = ["wasm-fork-instrument@0.1.0", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual pages for wasm-fork-instrument, Kandelo's fork instrumentation tool, generated from what each prints for --help and
+# --version while running inside Kandelo. The recipe is this repository's,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/wasm-fork-instrument-docs/build-wasm-fork-instrument-docs.sh"
+
+[[outputs]]
+name = "wasm-fork-instrument-docs"
+wasm = "wasm-fork-instrument-docs.zip"
+fork_instrumentation = "disabled"
