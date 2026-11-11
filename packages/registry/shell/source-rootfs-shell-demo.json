@@ -196,7 +196,7 @@
     "cage": {
       "requires": ["cage", "wayland-demo", "bibata-cursor-theme"],
       "identity": {
-        "title": "cage kiosk",
+        "title": "Cage kiosk",
         "summary": "Upstream cage, a wlroots kiosk compositor, on /dev/dri/card0: wlroots' GLES2 renderer draws through the host's WebGL2 bridge into gbm scanout buffers, and cage shows one application full screen — wlterm, a VT100 terminal running a shell. Exiting the shell ends the session.",
         "accent": "#5b8c3a",
         "glyph": "C",
@@ -268,7 +268,7 @@
     "sway": {
       "requires": ["sway", "swaybg", "foot", "wayland-demo", "bibata-cursor-theme"],
       "identity": {
-        "title": "sway tiling desktop",
+        "title": "Sway tiling desktop",
         "summary": "Upstream Sway with its native workspace bar and readable Foot terminals. Alt (Option on Mac) + 1–0 switches workspaces; Shift moves a window. Alt+Return opens a terminal; Alt+M, release Alt, then Q asks to exit. The Desktop command mode also controls layout, fullscreen and resize.",
         "accent": "#4a6fa5",
         "glyph": "S",

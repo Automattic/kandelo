@@ -3629,8 +3629,10 @@ Apply it before launching the graphical client.
 
 Cage's normal shell profile instead declares `displayScale: 1`: one guest
 pixel per CSS pixel, with no fixed 1280×720 cap and no HiDPI supersampling.
-This keeps the initial pane's text grid sharp without allocating a Retina-sized
-monitor. The connector still enforces its 640×480 through 3840×2160 bounds.
+This avoids allocating a Retina-sized monitor, but on a HiDPI screen the
+browser enlarges the guest pixels, so text can look softer than Sway's
+native device-pixel output. The connector still enforces its 640×480 through
+3840×2160 bounds.
 An application can choose a higher supported mode explicitly; the profile
 does not expose a live density control.
 
