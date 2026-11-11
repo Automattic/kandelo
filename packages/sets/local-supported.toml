@@ -127,6 +127,10 @@ name = "patch-docs"
 class = "browser-product"
 
 [[packages]]
+name = "wasm-tools"
+class = "user-software"
+
+[[packages]]
 name = "binaryen"
 class = "platform"
 

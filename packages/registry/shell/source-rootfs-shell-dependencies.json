@@ -622,6 +622,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "wasm-tools",
+      "version": "1.263.0",
+      "role": "lazy-file"
+    },
+    {
       "name": "cargo",
       "version": "1.97.0-nightly-2026-04-27",
       "role": "lazy-file"
