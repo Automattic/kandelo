@@ -1611,3 +1611,52 @@ source stage passes 300/300, Node teardown 3/3 and Bun teardown 7/7. Its
 18 browser cases and the new complete 120-case desktop inventory remain
 in progress; no retries or skips are added. All nine Node/Chromium macro
 benchmark pairs and the 12 matched cursor observations remain unfinished.
+
+
+## Completed reviewed memory and desktop runs — 2026-11-10
+
+The unchanged reviewed runtime `8ddcdcedc7` now completes the full canonical
+memory gate: **18/18 browser cases pass**, with four mixed application
+switching cycles in each of Chromium, Firefox and WebKit in the same page.
+No cases are skipped or retried. The source stage passes 300/300, Node
+teardown 3/3 and Bun teardown 7/7. The browser phase takes 25.4 minutes.
+The original earlier 15/18 run and all of its failure media remain retained;
+this is a subsequent run after the recorded ownership and allocation fixes,
+not a reclassification of those failures.
+
+The complete desktop inventory finishes **117/120**, with zero skips,
+retries or flaky results. Every Cage case (15/15) and Sway case (12/12)
+passes. The three failures remain red: Chromium and WebKit unrecognized
+archive import report SDL video initialization failure; Firefox's inherited
+render-node 2D fixture times out during pixel observation. The archive
+failure was separately reproduced on pinned main. The exact Firefox
+inherited-rendering selection also fails on pinned main `8161769ed9d2`,
+using that checkout's own normally built SDK, kernel and source server.
+Its main failure is recorded in `tests/baselines/`; a baseline record does
+not make a failed candidate result green.
+
+The candidate inherited-rendering trace records a correct green cursor
+sample and a correct red center sample, followed by a scene screenshot
+that takes about 20 seconds against the unchanged 10-second poll deadline.
+The late decoded marker pixel is black. Guest stdout has reached ready;
+stderr, host diagnostics and page errors are empty at capture. The fixture
+has no 20-second guest alarm. These observations do not identify the
+screenshot delay's owner or establish a browser defect.
+
+The actual `scummvm-play steel-sky` six-case run passes **5/6**: Cage passes
+on all three engines; Sway passes on Chromium and WebKit. Firefox Sway
+fails its menu assertion, with the last captured game frame showing the
+Virgin intro logo. The engine process is real and correctly selected.
+A colored intro frame is insufficient evidence that gameplay is ready;
+a separate normal Escape-to-skip-intro observation is in progress. The
+original 5/6 result and media remain retained.
+
+Retained evidence under `.context/cage-coherence-20261109/` includes
+`retirement-memory-results.json`, `retirement-memory-retained-wait.log`,
+`retirement-desktop-results.json`, `retirement-desktop-case-outcomes.json`,
+`retirement-desktop-failures/`,
+`retirement-inherited-main-control-failures/`,
+`retirement-steel-sky-results.json` and `retirement-steel-sky-failures/`.
+The 12 paired pointer observations and all nine Node/Chromium benchmark
+comparisons remain unfinished. No complete R1, native-display latency or
+native Safari acceptance claim follows from these functional results.
