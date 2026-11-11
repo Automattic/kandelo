@@ -64,7 +64,7 @@ Unverified old drafts must be reconciled against current main before use.
 
 | ID | Deliverable | Status at this checkpoint | Principal dependency / acceptance |
 | --- | --- | --- | --- |
-| R1 | Cage crashes, startup and performance diagnosis | Focused repairs verified; draft #1678, memory 18/18 and desktop 117/120; comparisons pending | Normal candidate, all-engine regressions, retained failures; other crashes and native-feel work remain open |
+| R1 | Cage crashes, startup and performance diagnosis | Frozen repairs verified; draft #1678 integrated develop; new normal products building | Normal candidate, all-engine regressions, retained failures; other crashes and native-feel work remain open |
 | M1 | Trustworthy input-to-visible measurement | Open; tooling exists, qualification unfinished | Selected-display qualification, original input identity, overhead and uncertainty |
 | M2 | Frozen desktop and game baselines | Open; historical probes retained | M1 for visible latency; pinned workloads, main and native controls |
 | Q1 | Stage A production policy and native-operation audit closure | Production increment shipped; closure open | Exact audit inventory, graphics gate, shader harness and full per-case comparisons |
@@ -724,3 +724,39 @@ The 12 paired pointer observations and all nine Node/Chromium benchmark
 comparisons remain unfinished. PR #1678 remains draft; no full R1 or native
 feel acceptance is claimed. The maintainer's blur follow-up remains the only
 explicitly approved visual deferral. B2–B6/C1–C3 remain paused.
+
+
+### R1 integration-base update — 2026-11-11
+
+Frozen runtime `8ddcdcedc7` now has complete nine-suite Node/Chromium
+before/after runs (three rounds each), targeted four-parent I/O/process
+controls and a final 9/12 pointer inventory. All original timing flags and
+measurement failures remain retained; there is no broad neutrality or native
+latency claim. Current frozen functional results remain memory 18/18,
+desktop 117/120 including Cage 15/15 and Sway 12/12, and actual Steel Sky
+under Cage 3/3 across all engines on each of two input paths. WebKit/Sway's
+archive-read allocation failure remains unclassified.
+
+The maintainer retargeted PR #1678 to `develop`. The feature branch now
+integrates pinned develop `200d7bbfac` in `b718daade0`, preserving both
+histories. The sole content conflict was the shell product revision; 94
+combines the Cage policy with the new documentation inputs and requires a
+fresh normal product. This introduces the base's Node 24.22 toolchain and
+other changes, so the earlier Node 24.15 measurements remain frozen evidence.
+There is no combined validation claim yet.
+
+Before changing Sydney source, the old runtime/products were copied into an
+independent checkout with 1,105 verified files. The original public port
+56522 now forwards to frozen backend 56524. Direct and public-handoff
+boot/shifted-input/repaint/exit checks each pass 1/1; actual shell/kernel
+HTTP bytes remain identical. The stopped old root server's expected 143
+handoff record is retained. Earlier previews remain unchanged.
+
+One full normal integrated build is active, using a fresh release xtask,
+the complete package/product graph and auto-GC disabled. A new pinned
+`develop` control checkout is being provisioned; it has only the same eight
+known prepared-product evidence classifications, with no runtime changes.
+The old main control remains separate. PR #1678 stays draft pending fresh
+normal preview and combined regression, memory, parity, compatibility, ABI
+and appropriate comparison evidence. B2–B6/C1–C3 remain paused; no PR merge
+or promotion is authorized by this checkpoint.
