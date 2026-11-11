@@ -1,0 +1,13 @@
+script_path = "packages/registry/dbus-docs/build-dbus-docs.sh"
+inputs = [
+  "packages/registry/dbus-docs/build-dbus-docs.sh",
+  "packages/registry/dbus/build-dbus.sh",
+  "packages/registry/dbus-docs/release-date.xsl",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/install-package-man-pages.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/xmlto-man.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

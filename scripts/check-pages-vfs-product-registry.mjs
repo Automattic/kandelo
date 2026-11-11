@@ -765,11 +765,12 @@ function requireExactBrowserSourceKinds(sources) {
     "vite.config.ts",
     "live-setup.ts",
     "optional-demo-vfs.ts",
+    "canonical-shell-image.ts",
   ]) {
     sourceNamed(sources, name);
   }
-  if (sources.length !== 4) {
-    throw new Error("Pages projection must inspect exactly four browser source files");
+  if (sources.length !== 5) {
+    throw new Error("Pages projection must inspect exactly five browser source files");
   }
 }
 
@@ -830,6 +831,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       resolve(repoRoot, "apps/browser-demos/vite.config.ts"),
       resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts"),
       resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/optional-demo-vfs.ts"),
+      resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/canonical-shell-image.ts"),
     ],
   });
 }

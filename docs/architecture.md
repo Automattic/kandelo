@@ -134,6 +134,9 @@ kernel_transfer_scratch_capacity(reservation_token) → reservation_capacity | 0
 kernel_transfer_scratch_cancel(reservation_token) → 0 | -errno
 kernel_transfer_io_execute(pid, tid, reservation_token, len, syscall, fd, offset, retry_token) → bytes | -errno
 kernel_transfer_channel_execute(pid, tid, reservation_token, retry_token) → 0 | -errno
+kernel_handle_guest_io(scratch_ptr, capacity, pid, retry_token) → result (private guest-pointer transport)
+kernel_entropy_read_step(pid, tid, token, interrupted) → bytes | -errno | ENTROPY_READ_PENDING
+kernel_entropy_read_cancel(pid, tid, token) → 0
 kernel_get_cwd(pid, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_fd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_dirfd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
@@ -200,6 +203,47 @@ component relative to a directory handle the host issued, and the kernel uses
 them only for host directories mounted beneath its own `/`
 (`crates/runtime-core/src/hostdir.rs`). The listing above is abridged;
 `crates/shared/src/lib.rs` and `abi/snapshot.json` hold the full import set.
+
+The shared Node/browser `host_getrandom` adapter allocates an independent
+buffer of at most 65,536 bytes, the
+[Web Crypto per-call quota](https://www.w3.org/TR/webcrypto/#Crypto-method-getRandomValues).
+It publishes one initialized window to the Rust-lent destination and returns
+its byte count. The backing buffer, as well as its view, is bounded.
+
+Large `/dev/urandom`, `/dev/random`, and `getrandom()` requests bypass the
+request-sized transfer reservation. During normal dispatch Rust selects the
+producer, copies any
+`readv()` table once (bounded by `IOV_MAX`), and validates each destination
+through the nonallocating `host_proc_validate_range` import. It generates and
+copies one window at a time into the guest, reusing bounded kernel scratch.
+The first batch runs in that same dispatch; after sixteen windows it can
+yield to the worker with an opaque task-bound token in the private result
+header (`errno = ENTROPY_READ_PENDING as u32`, `return = token`); only admitted
+destination metadata and progress survive between turns.
+Each continuation checks the original process registration and image generation.
+A later error or interruption returns the delivered prefix; before progress it
+returns errno. Cancellation, thread exit, exec, and process teardown retire
+pending state. The quota is not a device read limit, and 1 MiB has no special
+read semantics. The existing seeded image-build source still supplies build
+kernels; aligned windows preserve its block consumption.
+
+Other transfers retain their existing single-operation pipe, datagram, and
+OFD semantics. Large scalar requests use `kernel_handle_guest_io` with the original guest
+address and length in the fixed header. Rust gathers write bytes once into an
+admitted `IoBuffer` and retains it with the pinned open file description across
+EAGAIN, using the same retry state as `writev`. The host retains only scalar
+arguments and a retry token, with no payload-sized JavaScript snapshot or
+separate admission/release calls. This transport has a dedicated host handler;
+ordinary mailbox plans and scratch dispatch use their fixed channel export.
+The kernel specializes the guest-address transport at compile time. Ordinary
+`readv` selects entropy inside its existing kernel dispatch and returns its
+continuation token directly with that read's result, with no preliminary host
+probe or global pending-token lookup. Host continuation lookups run only for
+an already-active request or retry. Existing widened-channel reservations for
+other syscalls are unchanged. Large scalar payload admission refusal is
+`ENOMEM`; no memory
+ceiling is raised. Freeing scratch permits heap reuse but cannot shrink Wasm
+linear memory.
 
 `host_proc_read_bytes` / `host_proc_write_bytes` take a 64-bit guest address,
 so a wasm64 process's pointer above 4 GiB reaches the kernel intact. They are
@@ -485,22 +529,23 @@ publishing a channel. This identity check keeps later process-memory ranges,
 framebuffers, mappings, and worker transport outside the kernel-allocation
 model even if an internal caller accidentally passes the wrong memory object.
 
-Scalar and vectored reads or writes at most `CH_DATA_SIZE` use the main
-channel region. The host validates the complete caller range or native iovec
-table, flattens a vector directly into the data area, and dispatches one scalar
-kernel operation. A vector is never split merely to fit scratch; preserving
-one logical operation is required for pipe atomicity, datagram boundaries,
-short reads, EOF, and operation-wide file-size limits.
+Scalar reads and writes at most `CH_DATA_SIZE` use the main channel region.
+Vector syscalls pass caller-native metadata to Rust, which copies and validates
+the table once and performs one operation. Entropy reads use the bounded
+cursor described above. Other vectors gather or stage under the I/O budget;
+a vector is never split merely to fit scratch. This preserves pipe atomicity,
+datagram boundaries, short reads, EOF, and operation-wide file-size limits.
 
-Larger operations reserve
-`crates/kernel/src/transfer.rs::TransferScratch`. Begin creates a fresh,
-initialized Rust-owned allocation and returns a positive token. The host reads
-the token's pointer and explicit capacity together, proves the current-memory
-range, and copies under one synchronous lease. For widened syscall and channel
-execution, execute changes the reservation from `Reserved` to `Executing`
-before releasing the mutex and entering exactly one kernel operation. A
-normal return, including an errno, changes it to `Ready`; cancellation then
-drops the allocation. No pointer-only execute path exists.
+Large scalar I/O uses the guest-address transport described above. Other
+widened channel and path operations reserve
+`crates/runtime-core/src/transfer.rs::TransferScratch`. Begin creates a fresh,
+initialized Rust-owned allocation and returns a positive token. The
+host reads the token's pointer and explicit capacity together, proves the
+current-memory range, and copies under one synchronous lease. Execute changes
+the reservation from `Reserved` to `Executing` before releasing the mutex and
+entering exactly one kernel operation. A normal return, including an errno,
+changes it to `Ready`; cancellation then drops the allocation. No pointer-only
+execute path exists.
 
 Canonical CWD and open-file-description path snapshots use the same allocation
 owner with a deliberately different `Reserved`-state lifetime. The host first

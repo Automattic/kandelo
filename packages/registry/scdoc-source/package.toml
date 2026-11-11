@@ -1,0 +1,16 @@
+# scdoc, the man page generator of the sway, foot, swaybg, cage and labwc
+# projects. A build-time input only: the docs packages build it for the
+# build machine and run it over upstream's .scd sources; nothing from
+# this tree is installed. See scripts/install-package-man-pages.sh.
+kind = "source"
+name = "scdoc-source"
+version = "1.11.3"
+
+[source]
+url = "https://git.sr.ht/~sircmpwn/scdoc/archive/1.11.3.tar.gz"
+sha256 = "4c5c6136540384e5455b250f768e7ca11b03fdba1a8efc2341ee0f1111e57612"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://git.sr.ht/~sircmpwn/scdoc/tree/1.11.3/item/COPYING"

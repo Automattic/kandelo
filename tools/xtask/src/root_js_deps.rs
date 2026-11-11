@@ -16,6 +16,12 @@
 //! non-optional package in `package-lock.json` must be present there at the
 //! locked version. A tree that already satisfies the lock (a CI `npm ci`, a
 //! previous run) is left untouched, so this is a no-op on the common path.
+//!
+//! Builds that boot a kernel (nethack, coreutils-docs, ...) run `host/src`
+//! TypeScript through the root `tsx`. Node resolves those imports from the
+//! root `node_modules/`, never `host/node_modules/`, which nothing in the
+//! engine installs. So the root `package.json` must also declare every
+//! `host/package.json` runtime dependency; a unit test below enforces that.
 
 use std::path::Path;
 use std::process::Command;
@@ -151,6 +157,42 @@ mod tests {
         let hidden = r#"{ "packages": { "node_modules/fflate": { "version": "0.8.3" } } }"#;
         let reason = installed_tree_mismatch(LOCK.as_bytes(), hidden.as_bytes()).unwrap();
         assert_eq!(reason.as_deref(), Some("node_modules/tsx is not installed"));
+    }
+
+    /// Sealed package builds resolve `host/src` imports from the root
+    /// `node_modules/`, so a host runtime dependency missing from the root
+    /// manifest fails only inside those builds (`ERR_MODULE_NOT_FOUND`).
+    #[test]
+    fn root_manifest_declares_every_host_runtime_dependency() {
+        let read = |rel: &str| -> serde_json::Value {
+            let path = crate::repo_root().join(rel);
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            serde_json::from_slice(&bytes)
+                .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()))
+        };
+        let root = read("package.json");
+        let host = read("host/package.json");
+        let host_deps = host["dependencies"]
+            .as_object()
+            .expect("host/package.json has dependencies");
+        let mut problems = Vec::new();
+        for (name, spec) in host_deps {
+            match root["dependencies"].get(name) {
+                None => problems.push(format!("{name} is missing")),
+                Some(root_spec) if root_spec != spec => problems.push(format!(
+                    "{name} is {root_spec} at the root but {spec} in host/package.json"
+                )),
+                Some(_) => {}
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "root package.json dependencies must match host/package.json runtime \
+             dependencies (sealed package builds run host/src from the root \
+             node_modules): {}",
+            problems.join("; ")
+        );
     }
 
     #[test]

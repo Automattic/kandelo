@@ -682,6 +682,13 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
+    /// Nonallocating bounds check against the current dispatching process's
+    /// registered memory. Does not dereference or copy the requested range.
+    #[allow(unused_variables)]
+    fn proc_validate_range(&mut self, pid: i32, addr: u64, len: usize) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
     #[allow(unused_variables)]
     fn kms_mode_info(&mut self, connector_id: u32) -> wasm_posix_shared::dri::WpkDrmModeModeinfo {
         wasm_posix_shared::dri::WpkDrmModeModeinfo::default()
@@ -1190,6 +1197,7 @@ pub struct Process {
     /// Prepared exec targets bind to its current value and cannot survive a
     /// competing commit for the same persistent PID.
     pub exec_generation: u64,
+    pub entropy_reads: crate::entropy_read::EntropyReadLedger,
     /// Kernel-owned exact executable-object leases awaiting commit/cancel.
     pub prepared_exec_targets: PreparedExecLedger,
     /// The open file description of the executable this image is running,
@@ -1658,6 +1666,7 @@ impl Process {
             pointer_width: 4,
             main_channel_addr: 0,
             exec_generation: 0,
+            entropy_reads: crate::entropy_read::EntropyReadLedger::default(),
             prepared_exec_targets: PreparedExecLedger::new(),
             exe: None,
             spawn_publication_pending: false,
@@ -2052,6 +2061,7 @@ impl Process {
     /// Remove a thread by TID.
     pub fn remove_thread(&mut self, tid: u32) -> Option<ThreadState> {
         crate::epoll::finish_wait(self, tid);
+        self.entropy_reads.cancel_task(tid);
         if let Some(idx) = self.identity.threads.iter().position(|t| t.tid == tid) {
             crate::owned_resource::cancel_thread_polls(self,tid);
             // The thread may have been the target of a pending
@@ -3152,6 +3162,11 @@ pub mod test_host {
     pub struct GuestMemoryHost {
         pub base: u64,
         pub memory: alloc::vec::Vec<u8>,
+        pub entropy_calls: usize,
+        pub entropy_failure_at: Option<usize>,
+        pub entropy_max_window: usize,
+        pub entropy_fill_calls: bool,
+        pub entropy_seeded: Option<crate::image_build_determinism::Determinism>,
     }
 
     impl GuestMemoryHost {
@@ -3159,6 +3174,11 @@ pub mod test_host {
             Self {
                 base,
                 memory: alloc::vec![0u8; len],
+                entropy_calls: 0,
+                entropy_failure_at: None,
+                entropy_max_window: 0,
+                entropy_fill_calls: false,
+                entropy_seeded: None,
             }
         }
 
@@ -3186,6 +3206,9 @@ pub mod test_host {
     }
 
     impl HostIO for GuestMemoryHost {
+        fn proc_validate_range(&mut self, _pid: i32, addr: u64, len: usize) -> i32 {
+            if self.range(addr, len).is_some() { 0 } else { -(Errno::EFAULT as i32) }
+        }
         fn proc_read_bytes(&mut self, _pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
             match self.range(addr, dst.len()) {
                 Some(range) => {
@@ -3246,7 +3269,15 @@ pub mod test_host {
             NoopHost.host_set_posix_timer(t, s, v, i)
         }
         fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
-            NoopHost.host_getrandom(b)
+            self.entropy_calls += 1;
+            self.entropy_max_window = self.entropy_max_window.max(b.len());
+            if self.entropy_failure_at == Some(self.entropy_calls) { return Err(Errno::EIO); }
+            if let Some(seeded) = self.entropy_seeded.as_mut() {
+                seeded.fill_random(100, 100, b);
+                return Ok(b.len());
+            }
+            b.fill(if self.entropy_fill_calls { self.entropy_calls as u8 } else { 0 });
+            Ok(b.len())
         }
         fn host_net_connect(&mut self, h: i32, a: &[u8], p: u16) -> Result<(), Errno> {
             NoopHost.host_net_connect(h, a, p)

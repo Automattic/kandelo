@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,7 +29,7 @@ source "${helper}"
 ${fn} "$@"
 `;
   try {
-    execFileSync("bash", ["-c", script, "_", ...args], {
+    const stdout = execFileSync("bash", ["-c", script, "_", ...args], {
       env: {
         ...process.env,
         WASM_POSIX_DEP_WORK_DIR: work,
@@ -36,8 +37,9 @@ ${fn} "$@"
         WASM_POSIX_DEP_TARGET_ARCH: "wasm32",
       },
       stdio: "pipe",
+      encoding: "utf8",
     });
-    return { status: 0, stderr: "", out, root };
+    return { status: 0, stdout, stderr: "", out, root };
   } catch (error) {
     return { status: error.status ?? 1, stderr: String(error.stderr), out, root };
   }
@@ -125,6 +127,33 @@ describe("install_package_man_pages", () => {
     expect(entries).toMatch(/share\/man\/man5\/magic\.5/);
   });
 
+  it("installs a page with a subsection suffix in its section's directory", () => {
+    const tree = fixtureTree({ "man/tic.1m": ".TH tic 1M\n" });
+    const result = install(["demo-docs", tree, "man/tic.1m"]);
+    expect(result.status).toBe(0);
+    expect(listing(result.out)).toMatch(/share\/man\/man1\/tic\.1m/);
+  });
+
+  it("mirrors staged pages into another man tree as relative symlinks", () => {
+    const tree = fixtureTree({ "npm.1": PAGE, "npmrc.5": PAGE });
+    const result = install(["demo-docs", tree, "npm.1", "npmrc.5", "+local/lib/npm/man"]);
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    const unpacked = join(result.root, "unpacked");
+    execFileSync("unzip", ["-q", join(result.out, "demo-docs.zip"), "-d", unpacked]);
+    expect(readlinkSync(join(unpacked, "local/lib/npm/man/man1/npm.1"))).toBe(
+      "../../../../../share/man/man1/npm.1",
+    );
+    expect(readFileSync(join(unpacked, "local/lib/npm/man/man5/npmrc.5"), "utf8")).toBe(PAGE);
+  });
+
+  it("refuses a mirror path that climbs out of the archive", () => {
+    const tree = fixtureTree({ "npm.1": PAGE });
+    const result = install(["demo-docs", tree, "npm.1", "+local/../../etc"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/invalid mirror/);
+  });
+
   it("links an alias name to a page staged in the same section", () => {
     const tree = fixtureTree({ "src/xz.1": PAGE });
     const result = install(["demo-docs", tree, "src/xz.1", "unxz.1=xz.1"]);
@@ -200,5 +229,27 @@ describe("kandelo_man_pages_substitute", () => {
     ]);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/has no '@VERSION@'/);
+  });
+});
+
+describe("kandelo_man_pages_release_date", () => {
+  const dates = ["1.11=2025-01-02", "1.12=2026-05-25"];
+
+  it("prints the date recorded for the version", () => {
+    const result = run("kandelo_man_pages_release_date", ["1.12", ...dates]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("2026-05-25\n");
+  });
+
+  it("fails when the version has no recorded date", () => {
+    const result = run("kandelo_man_pages_release_date", ["1.13", ...dates]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/no release date recorded for version 1\.13/);
+  });
+
+  it("rejects a date that is not YYYY-MM-DD", () => {
+    const result = run("kandelo_man_pages_release_date", ["1.12", "1.12=May 25"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/is not YYYY-MM-DD/);
   });
 });

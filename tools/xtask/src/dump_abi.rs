@@ -3349,6 +3349,10 @@ fn render_ts_module() -> String {
         shared::abi::HOST_ADAPTER_VERSION
     ));
     out.push_str(&format!(
+        "export const ENTROPY_READ_PENDING = {} as const;\n",
+        shared::abi::ENTROPY_READ_PENDING
+    ));
+    out.push_str(&format!(
         "export const HOST_ADAPTER_MANIFEST_MAGIC = {} as const;\n",
         shared::abi::HOST_ADAPTER_MANIFEST_MAGIC
     ));
@@ -4408,6 +4412,11 @@ fn declared_snapshot_sections() -> Sections {
     s.add(KernelHost, "process_snapshot_wire", process_snapshot_wire());
     s.add(KernelHost, "wakeup_event_wire", wakeup_event_wire());
     s.add(KernelHost, "wait_completion_wire", wait_completion_wire());
+    s.add(KernelHost, "entropy_read_wire", json!({
+        "pending_step_result": shared::abi::ENTROPY_READ_PENDING,
+        "pending_channel_errno": shared::abi::ENTROPY_READ_PENDING as u32,
+        "pending_channel_return": "positive process/task-bound token",
+    }));
     s.add(KernelHost, "kms_cursor_transport", kms_cursor_transport());
     s.add(KernelHost, "dri_cleanup_status", dri_cleanup_status());
     s.add(Program, "io_multiplexing", io_multiplexing());

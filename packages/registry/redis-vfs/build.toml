@@ -46,6 +46,8 @@ inputs = [
   "cargo:runtime-core",
   "crates/kandelo-image-module/build-wasm.sh",
   "images/vfs/lib/positioned-image-targets.ts",
+  "host/src/generated/program-extensions.ts",
+  "host/src/program-extensions.ts",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"

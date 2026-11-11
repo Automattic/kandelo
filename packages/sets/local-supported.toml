@@ -17,6 +17,10 @@ dependency_only = [
   "sqlite-amalgamation-source",
   "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
+  "asciidoc-source",
+  "docbook-xml-source",
+  "docbook-xsl-source",
+  "scdoc-source",
 ]
 registry_non_roots = []
 
@@ -159,6 +163,10 @@ name = "composer"
 class = "user-software"
 
 [[packages]]
+name = "composer-docs"
+class = "browser-product"
+
+[[packages]]
 name = "coreutils-docs"
 class = "browser-product"
 
@@ -183,12 +191,20 @@ name = "curl"
 class = "user-software"
 
 [[packages]]
+name = "curl-docs"
+class = "browser-product"
+
+[[packages]]
 name = "dash"
 class = "user-software"
 
 [[packages]]
 name = "dbus"
 class = "user-software"
+
+[[packages]]
+name = "dbus-docs"
+class = "browser-product"
 
 [[packages]]
 name = "diffutils"
@@ -235,6 +251,10 @@ name = "ffmpeg"
 class = "user-software"
 
 [[packages]]
+name = "ffmpeg-docs"
+class = "browser-product"
+
+[[packages]]
 name = "file"
 class = "user-software"
 
@@ -263,6 +283,10 @@ name = "foot"
 class = "user-software"
 
 [[packages]]
+name = "foot-docs"
+class = "browser-product"
+
+[[packages]]
 name = "freetype"
 class = "platform"
 
@@ -289,6 +313,10 @@ class = "platform"
 [[packages]]
 name = "git"
 class = "user-software"
+
+[[packages]]
+name = "git-docs"
+class = "browser-product"
 
 [[packages]]
 name = "glib"
@@ -619,6 +647,10 @@ name = "ncurses"
 class = "platform"
 
 [[packages]]
+name = "ncurses-docs"
+class = "browser-product"
+
+[[packages]]
 name = "readline"
 class = "platform"
 
@@ -663,7 +695,15 @@ name = "node"
 class = "user-software"
 
 [[packages]]
+name = "node-docs"
+class = "browser-product"
+
+[[packages]]
 name = "node-browser-bundle"
+class = "browser-product"
+
+[[packages]]
+name = "npm-docs"
 class = "browser-product"
 
 [[packages]]
@@ -685,6 +725,10 @@ class = "platform"
 [[packages]]
 name = "perl"
 class = "user-software"
+
+[[packages]]
+name = "perl-docs"
+class = "browser-product"
 
 [[packages]]
 name = "perl-browser-bundle"
@@ -735,6 +779,10 @@ name = "redis"
 class = "user-software"
 
 [[packages]]
+name = "redis-docs"
+class = "browser-product"
+
+[[packages]]
 name = "retro-emulators"
 class = "user-software"
 
@@ -763,6 +811,10 @@ name = "ruby-browser-bundle"
 class = "browser-product"
 
 [[packages]]
+name = "rubygems-docs"
+class = "browser-product"
+
+[[packages]]
 name = "scummvm"
 class = "user-software"
 
@@ -773,6 +825,10 @@ class = "browser-product"
 [[packages]]
 name = "freeciv"
 class = "user-software"
+
+[[packages]]
+name = "freeciv-docs"
+class = "browser-product"
 
 [[packages]]
 name = "freeciv-browser-bundle"
@@ -819,6 +875,10 @@ name = "cage"
 class = "user-software"
 
 [[packages]]
+name = "cage-docs"
+class = "browser-product"
+
+[[packages]]
 name = "json-c"
 class = "platform"
 
@@ -827,8 +887,16 @@ name = "sway"
 class = "user-software"
 
 [[packages]]
+name = "sway-docs"
+class = "browser-product"
+
+[[packages]]
 name = "labwc"
 class = "user-software"
+
+[[packages]]
+name = "labwc-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sfwbar"
@@ -841,6 +909,10 @@ class = "browser-product"
 [[packages]]
 name = "swaybg"
 class = "user-software"
+
+[[packages]]
+name = "swaybg-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sdl2-mixer-playwave"
@@ -883,8 +955,16 @@ name = "sqlite-cli"
 class = "user-software"
 
 [[packages]]
+name = "sqlite-cli-docs"
+class = "browser-product"
+
+[[packages]]
 name = "sudo"
 class = "platform"
+
+[[packages]]
+name = "sudo-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sudo-lite"
@@ -917,6 +997,10 @@ class = "platform"
 [[packages]]
 name = "termchat"
 class = "user-software"
+
+[[packages]]
+name = "termchat-docs"
+class = "browser-product"
 
 [[packages]]
 name = "tcl"
@@ -961,6 +1045,10 @@ class = "user-software"
 [[packages]]
 name = "wget"
 class = "user-software"
+
+[[packages]]
+name = "wget-docs"
+class = "browser-product"
 
 [[packages]]
 name = "wordpress"

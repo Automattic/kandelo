@@ -75,10 +75,12 @@ inputs = [
   "host/src/vfs/overlay-seal-codec.ts",
   "host/src/vfs/storage-memory-budget.ts",
   "images/vfs/lib/positioned-image-targets.ts",
+  "host/src/generated/program-extensions.ts",
+  "host/src/program-extensions.ts",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 90
+revision = 94
 # WHY: source-package composition changes the product bytes. Keep ordinary
 # resolution closed until this exact revision is rebuilt and admitted.
 publication_state = "pending"

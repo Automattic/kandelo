@@ -1,0 +1,26 @@
+kind = "program"
+name = "cage-docs"
+version = "0.3.1"
+kernel_abi = 56
+depends_on = ["scdoc-source@1.11.3"]
+
+# Upstream manual page for the `cage` package.
+# The source, SHA-256 and version are the `cage` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/cage-kiosk/cage/releases/download/v0.3.1/cage-0.3.1.tar.gz"
+sha256 = "edafc173b6f56a3e1564933e272a54aaa9fe158d330e6a415d57b44ab880fe2b"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/cage-kiosk/cage/blob/v0.3.1/LICENSE"
+
+[build]
+script_path = "packages/registry/cage-docs/build-cage-docs.sh"
+
+[[outputs]]
+name = "cage-docs"
+wasm = "cage-docs.zip"
+fork_instrumentation = "disabled"

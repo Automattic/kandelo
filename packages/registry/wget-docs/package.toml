@@ -1,0 +1,26 @@
+kind = "program"
+name = "wget-docs"
+version = "1.25.0"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `wget` package (wget), generated
+# with upstream's own documentation tooling from the same pinned source.
+# tests/package-system/package-docs-source-parity.test.ts keeps the source,
+# SHA-256 and version equal to the `wget` package's.
+[source]
+url = "https://ftpmirror.gnu.org/wget/wget-1.25.0.tar.gz"
+sha256 = "766e48423e79359ea31e41db9e5c289675947a7fcf2efdcedb726ac9d0da3784"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/wget.git/tree/COPYING"
+
+[build]
+script_path = "packages/registry/wget-docs/build-wget-docs.sh"
+
+[[outputs]]
+name = "wget-docs"
+wasm = "wget-docs.zip"
+fork_instrumentation = "disabled"

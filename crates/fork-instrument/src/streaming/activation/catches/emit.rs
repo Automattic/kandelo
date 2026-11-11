@@ -82,15 +82,15 @@ impl NativeCatchPlan {
     ) -> Result<()> {
         let region = self.regions.get(&region).context("unknown catch region")?;
         let selector = self.selector.context("catch plan has no selector")?;
-        output.instruction(&Instruction::GlobalGet(runtime.state_global));
-        output.instruction(&Instruction::I32Const(crate::runtime::STATE_REWINDING));
-        output.instruction(&Instruction::I32GeU);
         layout.emit_get(selector, output, limit)?;
         output.instruction(&Instruction::I32Const(region.selectors.start as i32));
         output.instruction(&Instruction::I32Sub);
         output.instruction(&Instruction::I32Const(region.selectors.len() as i32));
         output.instruction(&Instruction::I32LtU);
-        output.instruction(&Instruction::I32And);
+        output.instruction(&Instruction::If(BlockType::Empty));
+        output.instruction(&Instruction::GlobalGet(runtime.state_global));
+        output.instruction(&Instruction::I32Const(crate::runtime::STATE_REWINDING));
+        output.instruction(&Instruction::I32GeU);
         output.instruction(&Instruction::If(BlockType::Empty));
         for arm in &region.arms {
             layout.emit_get(selector, output, limit)?;
@@ -118,6 +118,17 @@ impl NativeCatchPlan {
             check(output, limit)?;
         }
         output.instruction(&Instruction::Unreachable);
+        output.instruction(&Instruction::Else);
+        // A fresh lexical entry supersedes this try's previous catch. Keeping
+        // it across a loop backedge makes fork replay throw the old exception
+        // on every iteration instead of reaching its saved call. Preserve an
+        // enclosing/different try's selector and recipe until it is replaced.
+        output.instruction(&Instruction::I32Const(0));
+        layout.emit_set(selector, output, limit)?;
+        if let Some(exception) = self.retained_exception {
+            clear_reference(layout, exception, RefType::EXNREF, output, limit)?;
+        }
+        output.instruction(&Instruction::End);
         output.instruction(&Instruction::End);
         check(output, limit)
     }
