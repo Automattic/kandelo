@@ -35,7 +35,7 @@ test("base shell fetches PHP CLI only on first use", async ({ page }) => {
   expect(release.exitCode).toBe(0);
   expect(downloads).toHaveLength(1);
   const alias = await runTerminalCommand(
-    page, "/bin/php -r 'echo PHP_SAPI, PHP_EOL;'", "cli", 120_000,
+    page, "/usr/bin/php -r 'echo PHP_SAPI, PHP_EOL;'", "cli", 120_000,
   );
   expect(alias.exitCode).toBe(0);
   expect(downloads).toHaveLength(1);
