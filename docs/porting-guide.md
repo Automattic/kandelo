@@ -301,6 +301,13 @@ script is a page list on top of `scripts/install-package-man-pages.sh`
   package depends on. A generator that stamps a date gets the release's
   date from `kandelo_man_pages_release_date`, because the dev shell pins
   the build clock to 1980.
+- When configure decides what a page says (paths, defaults, enabled
+  components), the docs package runs upstream's configure with the
+  program package's own flags, kept in one file both recipes source
+  (`packages/registry/ffmpeg/configure-flags.sh`,
+  `packages/registry/sudo/configure.sh`). Where only a few values matter,
+  the docs recipe checks that the program recipe still passes them
+  (`foot-docs`, `dbus-docs`, `ncurses-docs`).
 
 Ship a page only for a command the image installs: `aliases` in
 `images/rootfs/PACKAGES.toml` and `vfsPath`/`symlinks` in
@@ -363,10 +370,7 @@ These commands are in the shell image but have no page yet. `man` reports
 
 | Commands | Why there is no page yet |
 |---|---|
-| `ffmpeg`, `ffprobe`, `ffplay` | Upstream builds the pages with texi2pod and pod2man from configure-generated documentation, which the package build does not run yet |
-| `freeciv`, `freeciv-server` | Pages are filled in by meson's `configure_file`, not a plain substitution |
-| `sudo` | Pages are produced by configure-generated sed scripts |
-| `clear`, `reset`, `tput`, `tset`, `tabs`, `tic`, `infocmp`, `toe`, `captoinfo`, `infotocap` | ncurses rewrites its pages with `edit_man.sh` at install time |
+| `freeciv`, `freeciv-server` | Freeciv's meson build, which the package uses, fills the page templates with C-quoted strings (`.UR ""https://www.freeciv.org/""`), so mandoc drops the links and shows the quotes; this is an upstream defect, and the autotools rules that fill them correctly would be a second configuration |
 | `swaybar`, `git-remote-http` (also installed as `git-remote-https`, `git-remote-ftp`, `git-remote-ftps`) | Upstream has no page for them: `sway-bar(5)` and `swaybar-protocol(7)` document swaybar, and `gitremote-helpers(7)` documents remote helpers |
 | `redis-cli`, `sqlite3`, `termchat`, `composer`, `node`, `gem` | No upstream page in the pinned source; Kandelo's `node` is its own SpiderMonkey-based runtime, so upstream Node's page would describe a different program |
 | `posix-utils-lite` commands, `kandelo-exchange`, `kandelo-publish`, `login`, `sudo-lite`, `dos-play` and other Kandelo wrappers | Kandelo is upstream and has not written pages for them |

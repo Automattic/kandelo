@@ -48,6 +48,7 @@
 #         doc/bash.1          -> share/man/man1/bash.1
 #         less.nro:less.1     -> share/man/man1/less.1  (less keeps troff in .nro)
 #         unxz.1=xz.1         -> share/man/man1/unxz.1 -> xz.1
+#         tic.1m              -> share/man/man1/tic.1m
 #
 #       A missing page is a hard failure: upstream moving or renaming a
 #       page must surface as a build error, not as `man foo` finding
@@ -237,9 +238,11 @@ install_package_man_pages() {
                 return 2
                 ;;
         esac
+        # A letter suffix names a subsection installed in the section's
+        # directory, as upstream installs it (ncurses' man1/tic.1m).
         section="${dest##*.}"
         case "$section" in
-            [1-9]) ;;
+            [1-9]|[1-9][a-z]|[1-9][a-z][a-z]) section="${section%"${section#?}"}" ;;
             *)
                 echo "install_package_man_pages: $pkg: cannot infer a man section" \
                     "from '$dest'" >&2

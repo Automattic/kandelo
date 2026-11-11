@@ -126,6 +126,13 @@ describe("install_package_man_pages", () => {
     expect(entries).toMatch(/share\/man\/man5\/magic\.5/);
   });
 
+  it("installs a page with a subsection suffix in its section's directory", () => {
+    const tree = fixtureTree({ "man/tic.1m": ".TH tic 1M\n" });
+    const result = install(["demo-docs", tree, "man/tic.1m"]);
+    expect(result.status).toBe(0);
+    expect(listing(result.out)).toMatch(/share\/man\/man1\/tic\.1m/);
+  });
+
   it("links an alias name to a page staged in the same section", () => {
     const tree = fixtureTree({ "src/xz.1": PAGE });
     const result = install(["demo-docs", tree, "src/xz.1", "unxz.1=xz.1"]);
