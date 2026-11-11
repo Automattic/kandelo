@@ -289,8 +289,18 @@ script is a page list on top of `scripts/install-package-man-pages.sh`
   page template the way upstream's own build does (`grep.in.1`,
   `php.1.in`). Take each value from the program package's configure flags
   and say which flag in a comment. A page upstream generates with a
-  separate documentation toolchain (pod2man, texi2pod, asciidoc, meson
-  `configure_file`) is not a substitution; see the gap list below.
+  separate documentation toolchain is not a substitution; see the next
+  item.
+- A page upstream generates during its own build comes from upstream's
+  generator, run over the pinned source. `kandelo_man_pages_build_scdoc`
+  and `kandelo_man_pages_scdoc` render scdoc pages (`sway-docs`);
+  `scripts/xmlto-man.sh` stands in for `xmlto man` over DocBook
+  (`dbus-docs`, and `git-docs` through git's own `Documentation/Makefile`).
+  Generators that are not part of the dev shell (scdoc, AsciiDoc, DocBook
+  XSL, the DocBook DTD) are pinned `kind = "source"` packages the docs
+  package depends on. A generator that stamps a date gets the release's
+  date from `kandelo_man_pages_release_date`, because the dev shell pins
+  the build clock to 1980.
 
 Ship a page only for a command the image installs: `aliases` in
 `images/rootfs/PACKAGES.toml` and `vfsPath`/`symlinks` in
@@ -353,10 +363,11 @@ These commands are in the shell image but have no page yet. `man` reports
 
 | Commands | Why there is no page yet |
 |---|---|
-| `curl`, `wget`, `git`, `ffmpeg`, `ffprobe`, `ffplay`, `perl`, `foot`, `sway`, `swaymsg`, `swaybar`, `swaynag`, `swaybg`, `cage`, `labwc`, the `dbus-*` tools | Upstream builds the page with a separate documentation toolchain (curl's `managen`, texi2pod and pod2man, asciidoc, scdoc, xmlto) that the package build does not run yet |
+| `ffmpeg`, `ffprobe`, `ffplay` | Upstream builds the pages with texi2pod and pod2man from configure-generated documentation, which the package build does not run yet |
 | `freeciv`, `freeciv-server` | Pages are filled in by meson's `configure_file`, not a plain substitution |
 | `sudo` | Pages are produced by configure-generated sed scripts |
 | `clear`, `reset`, `tput`, `tset`, `tabs`, `tic`, `infocmp`, `toe`, `captoinfo`, `infotocap` | ncurses rewrites its pages with `edit_man.sh` at install time |
+| `swaybar`, `git-remote-http` (also installed as `git-remote-https`, `git-remote-ftp`, `git-remote-ftps`) | Upstream has no page for them: `sway-bar(5)` and `swaybar-protocol(7)` document swaybar, and `gitremote-helpers(7)` documents remote helpers |
 | `redis-cli`, `sqlite3`, `termchat`, `composer`, `node`, `gem` | No upstream page in the pinned source; Kandelo's `node` is its own SpiderMonkey-based runtime, so upstream Node's page would describe a different program |
 | `posix-utils-lite` commands, `kandelo-exchange`, `kandelo-publish`, `login`, `sudo-lite`, `dos-play` and other Kandelo wrappers | Kandelo is upstream and has not written pages for them |
 

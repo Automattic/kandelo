@@ -312,6 +312,56 @@
       "role": "lazy-archive"
     },
     {
+      "name": "curl-docs",
+      "version": "8.11.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "wget-docs",
+      "version": "1.25.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "perl-docs",
+      "version": "5.40.3",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "cage-docs",
+      "version": "0.3.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "dbus-docs",
+      "version": "1.14.10",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "foot-docs",
+      "version": "1.17.2",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "git-docs",
+      "version": "2.47.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "labwc-docs",
+      "version": "0.20.2",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "sway-docs",
+      "version": "1.12",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "swaybg-docs",
+      "version": "1.2.1",
+      "role": "lazy-archive"
+    },
+    {
       "name": "man-index",
       "version": "1.14.6",
       "role": "lazy-file"

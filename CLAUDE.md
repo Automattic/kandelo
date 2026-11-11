@@ -266,6 +266,11 @@ count tables, syscall classification sets, cached channel `DataView` or
 
 ## Build, Documentation, And PR Contract
 
+Target change PRs at `develop`. Follow
+[development and daily promotion](docs/development-workflow.md) for branch
+policy and the current CI transition limits; `main` is the stable/default
+branch and receives tested daily batches.
+
 Read [build, documentation and PR guidance](docs/agent-guidance/build-docs-and-prs.md)
 before changing these workflows or reporting completion. Build/verification
 claims must run through `scripts/dev-shell.sh`, not undeclared host tools;

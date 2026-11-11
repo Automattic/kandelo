@@ -1,0 +1,26 @@
+kind = "program"
+name = "dbus-docs"
+version = "1.14.10"
+kernel_abi = 56
+depends_on = ["docbook-xml-source@4.4", "docbook-xsl-source@1.79.2"]
+
+# Upstream manual page for the `dbus` package's dbus-daemon.
+# The source, SHA-256 and version are the `dbus` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://dbus.freedesktop.org/releases/dbus/dbus-1.14.10.tar.xz"
+sha256 = "ba1f21d2bd9d339da2d4aa8780c09df32fea87998b73da24f49ab9df1e36a50f"
+provider = "archive"
+
+[license]
+spdx = "AFL-2.1 OR GPL-2.0-or-later"
+url = "https://gitlab.freedesktop.org/dbus/dbus/-/blob/dbus-1.14.10/COPYING"
+
+[build]
+script_path = "packages/registry/dbus-docs/build-dbus-docs.sh"
+
+[[outputs]]
+name = "dbus-docs"
+wasm = "dbus-docs.zip"
+fork_instrumentation = "disabled"

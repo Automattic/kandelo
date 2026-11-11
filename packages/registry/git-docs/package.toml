@@ -1,0 +1,26 @@
+kind = "program"
+name = "git-docs"
+version = "2.47.1"
+kernel_abi = 56
+depends_on = ["asciidoc-source@10.2.1", "docbook-xsl-source@1.79.2"]
+
+# Upstream manual pages for the `git` package (git, its built-in commands and its guides).
+# The source, SHA-256 and version are the `git` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/git/git/archive/refs/tags/v2.47.1.tar.gz"
+sha256 = "30654cc6c0142fa68050cc7b0ee6a2a65944288b907821781112efaf24293b23"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-only"
+url = "https://github.com/git/git/blob/v2.47.1/COPYING"
+
+[build]
+script_path = "packages/registry/git-docs/build-git-docs.sh"
+
+[[outputs]]
+name = "git-docs"
+wasm = "git-docs.zip"
+fork_instrumentation = "disabled"

@@ -1,0 +1,26 @@
+kind = "program"
+name = "sway-docs"
+version = "1.12"
+kernel_abi = 56
+depends_on = ["scdoc-source@1.11.3"]
+
+# Upstream manual pages for the `sway` package (sway, swaymsg, swaynag and their configuration and IPC).
+# The source, SHA-256 and version are the `sway` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/swaywm/sway/releases/download/1.12/sway-1.12.tar.gz"
+sha256 = "a7b1becc217433c11c6284d36bcea0687b87b77b0ed26a384565292ec321f2b1"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/swaywm/sway/blob/1.12/LICENSE"
+
+[build]
+script_path = "packages/registry/sway-docs/build-sway-docs.sh"
+
+[[outputs]]
+name = "sway-docs"
+wasm = "sway-docs.zip"
+fork_instrumentation = "disabled"
