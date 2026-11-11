@@ -376,11 +376,17 @@ for (const peer of ["node", "browser"] as const) {
       : new (await import("../src/browser-kernel-host")).BrowserKernel({ ...options, kernelOwnedFs: true });
     const file = new URL(`../src/${peer}-kernel-host.ts`, import.meta.url);
     const ast = ts.createSourceFile(file.pathname, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+    // Node drops stale process-generation events by comparing against
+    // `observationWorker`. The browser listener drops every message from a
+    // stale or unstarted Worker by comparing against the captured `worker`.
+    // Either guard must reject the stale events exercised below.
+    const ownWorker = peer === "node" ? "observationWorker" : "worker";
+    const currentWorker = peer === "node" ? "this.worker" : "this.kernelWorkerHandle";
     const callbacks: ts.Expression[] = [];
     const visit = (node: ts.Node) => {
       if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node))
-          && node.getText(ast).includes("!== observationWorker")
-          && node.getText(ast).includes("this.handleWorkerMessage(msg, observationRealm)")) callbacks.push(node);
+          && new RegExp(`${currentWorker.replace(".", "\\.")} !== ${ownWorker}\\b`).test(node.getText(ast))
+          && /this\.handleWorkerMessage\([^;]*, observationRealm\)/.test(node.getText(ast))) callbacks.push(node);
       ts.forEachChild(node, visit);
     };
     visit(ast);
@@ -388,7 +394,7 @@ for (const peer of ["node", "browser"] as const) {
     const code = ts.transpileModule(`const listener = (${callbacks[0].getText(ast)});`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
     }).outputText;
-    const bind = new Function("observationWorker", "observationRealm", `${code}\nreturn listener;`);
+    const bind = new Function(ownWorker, "observationRealm", `${code}\nreturn listener;`);
     const first = {}, second = {};
     const setCurrent = (worker: object, started = true) => Object.assign(host, {
       [peer === "node" ? "worker" : "kernelWorkerHandle"]: worker, workerStarted: started,
