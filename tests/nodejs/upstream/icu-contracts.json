@@ -72,8 +72,8 @@
     {
       "name": "transcode",
       "signature": "(ArrayBufferView input, fromEncoding, toEncoding)",
-      "result": "original Buffer or integer ICU status; successful Buffer allocation currently explicitly unsupported",
-      "errors": "unknown encodings return U_ILLEGAL_ARGUMENT_ERROR; actual conversion errors preserved; Buffer allocation throws ERR_KANDELO_NOT_IMPLEMENTED",
+      "result": "original native Buffer or integer ICU status; successful native allocation/prototype now exercised by selected Buffer integration controls",
+      "errors": "unknown encodings return U_ILLEGAL_ARGUMENT_ERROR; actual conversion errors preserved; original Buffer allocation/errors now used",
       "scheduling": "synchronous; no queued JS work, native callback or ref-counted event-loop handle",
       "state": "retained per-call view, original ParseEncoding, guest ICU/simdutf, caller-owned MaybeStackBuffer",
       "consumers": [
@@ -185,7 +185,7 @@
     "SpiderMonkey GC/root/string/typed-array/private native class APIs",
     "guest ICU77.1 Unicode16/CLDR47 data, simdutf7.7 and nbytes0.1.4",
     "whole original StringBytes implementation, native error factories and whole ParseEncoding",
-    "complete Buffer allocation/prototype backend for successful transcode; still missing"
+    "whole original Buffer allocation/prototype backend now integrated; see buffer-engine-check.json"
   ],
   "implementationGaps": [
     {
@@ -204,7 +204,7 @@
     },
     {
       "area": "Buffer allocation",
-      "classification": "missing owning native Buffer backend; explicit error, no fake Uint8Array"
+      "classification": "whole original owning native Buffer backend now integrated; full exceptional/resource/security/OOM coverage remains incomplete"
     },
     {
       "area": "snapshot external references",

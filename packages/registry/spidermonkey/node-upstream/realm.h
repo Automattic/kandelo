@@ -6,6 +6,8 @@
 namespace kandelo::node {
 // Allocation does not run JS. Publish in the canonical context before Run.
 JSObject* AllocateRealmLibraryState(JSContext* cx);
+bool SetRealmBufferPrototype(JSContext*,JS::HandleObject,JS::HandleObject);
+JSObject* GetRealmBufferPrototype(JSContext*,JS::HandleObject);
 bool RunRealmLibrary(JSContext* cx, JS::HandleObject state,
                      JS::HandleObject primordials);
 bool RejectRepeatedRealmLibraryInitialization(JSContext* cx, JS::HandleObject state);

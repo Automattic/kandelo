@@ -10,7 +10,7 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 554,
+    "importedFiles": 555,
     "taskQueuePartialCatalog": "task-queue-contracts.json",
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
     "constantsPartialCatalog": "constants-contracts.json",
@@ -33,7 +33,8 @@
     "bufferPartialCatalog": "buffer-contracts.json",
     "bufferMemoryEvidence": "buffer-memory-engine-check.json",
     "environmentPartialCatalog": "environment-contracts.json",
-    "environmentEvidence": "environment-engine-check.json"
+    "environmentEvidence": "environment-engine-check.json",
+    "bufferEngineEvidence": "buffer-engine-check.json"
   },
   "implementation": [
     {
@@ -69,7 +70,7 @@
     {
       "area": "shared Node realm and native binding loader",
       "sourceStatus": "partial native owner implemented; complete original realm library loader executes through privileged Node-host controls",
-      "remaining": "principal body now executes original internal/timers/events/abort-listener sources and reaches native buffer during setupBuffer; full native/web/thread/environment closure incomplete",
+      "remaining": "principal body now executes original internal/timers/events/abort-listener sources and now reaches missing mksnapshot through original buffer startup; full native/web/thread/environment closure incomplete",
       "evidence": "continuation-engine-check.json"
     },
     {
@@ -115,7 +116,7 @@
     },
     {
       "area": "native initial process prototype/constructor, shared exit-info and config",
-      "sourceStatus": "partial genuine native state, real versions/tracing/continuation bindings; principal body reaches buffer and stack-limit policy reaches mksnapshot",
+      "sourceStatus": "partial genuine native state, real versions/tracing/continuation bindings; principal body and stack-limit policy reach mksnapshot",
       "evidence": "continuation-engine-check.json",
       "remaining": "full process/release/environment/configuration/exit-dispatch and trace/snapshot/Buffer closure; lifecycle/security/OOM and complete startup"
     },
@@ -172,13 +173,13 @@
       "area": "native initial process version metadata",
       "sourceStatus": "whole original source version header and actual resolved library/engine/data identities;12controls per host,4native reference controls; native V8 metadata factory remains unported",
       "evidence": "process-versions-engine-check.json",
-      "remaining": "full process/optional metadata and graph reconciliation; principal startup now blocked on buffer/mksnapshot"
+      "remaining": "full process/optional metadata and graph reconciliation; principal startup now blocked on mksnapshot"
     },
     {
       "area": "complete original native ICU and encoding source",
       "sourceStatus": "two whole native units compiled against real rooted engine API; actual Converter template/native UConverter/owner-realm admission and GC retirement;23controls per host",
       "evidence": "icu-engine-check.json",
-      "remaining": "legacy conversion build gap, original Buffer allocation/prototype backend, unvalidated helper paths/reentrant buffers/full security/OOM/teardown, complete startup"
+      "remaining": "legacy conversion build gap, full Buffer exceptional/lifecycle coverage, unvalidated helper paths/reentrant buffers/full security/OOM/teardown, complete startup"
     },
     {
       "area": "standalone original tracing library prerequisite",
@@ -203,18 +204,24 @@
       "area": "native ArrayBuffer detach-key prerequisite for original Buffer",
       "sourceStatus": "actual engine-traced key, SameValue-authorized detach and transfer/serialization/JSAPI enforcement; 23 controls per host plus 12 shared native reference cases",
       "evidence": "buffer-memory-engine-check.json",
-      "remaining": "complete original node_buffer.cc not imported/compiled; stable Environment/cleanup/weak handles/foreground dispatch now have verified foundation, while original CallbackInfo/adoption/general allocation/copy/alignment/prototype and full original binding/startup remain incomplete"
+      "remaining": "whole original Buffer source/CallbackInfo now integrated with selected controls; exhaustive ownership/exceptional paths and startup remain incomplete"
     },
     {
       "area": "stable native Environment, weak ArrayBuffer handles and foreground cleanup work",
       "sourceStatus": "stable Isolate-bound owner, native intrusive cleanup, actual weak-zone handles, move-only queue on canonical libuv async handle, real metadata GC credits and context shutdown hook;14controls and3exit drivers pass per host",
       "evidence": "environment-engine-check.json",
-      "remaining": "complete original Buffer CallbackInfo/adoption not compiled; full native callback/resource/fatal policy, independently owned delayed producers, general Global API, worker/fork/cancel/OOM and exceptional shutdown remain unproven"
+      "remaining": "whole original Buffer CallbackInfo/adoption now exercised by selected controls; full native callback/resource/fatal policy, independently owned delayed producers, general Global API, worker/fork/cancel/OOM and exceptional shutdown remain unproven"
+    },
+    {
+      "area": "whole original native Buffer binding and retained engine storage",
+      "sourceStatus": "complete unchanged node_buffer.cc over real engine allocation/adoption/views/strings/errors/prototypes; original CallbackInfo and real zero-fill option;44controls+5drivers per host,30exact native groups and1retained native discrepancy",
+      "evidence": "buffer-engine-check.json",
+      "remaining": "mksnapshot/genuine startup, complete graph reconciliation, full callback/fatal/OOM/security/worker/fork/cancel/snapshot/immutable/Wasm and transient native allocation pressure audit"
     }
   ],
   "runtimeConformance": {
     "Node": {
-      "upstreamStartup": "principal body attempted; fails at buffer; startup not achieved",
+      "upstreamStartup": "principal body attempted; passes native buffer lookup and fails at mksnapshot; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
@@ -222,7 +229,7 @@
       "completeCoreCompatibility": "not established"
     },
     "Chromium": {
-      "upstreamStartup": "principal body attempted; fails at buffer; startup not achieved",
+      "upstreamStartup": "principal body attempted; passes native buffer lookup and fails at mksnapshot; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
@@ -230,7 +237,7 @@
       "completeCoreCompatibility": "not established"
     },
     "Firefox": {
-      "upstreamStartup": "principal body attempted; fails at buffer; startup not achieved",
+      "upstreamStartup": "principal body attempted; passes native buffer lookup and fails at mksnapshot; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
@@ -238,7 +245,7 @@
       "completeCoreCompatibility": "not established"
     },
     "WebKit": {
-      "upstreamStartup": "principal body attempted; fails at buffer; startup not achieved",
+      "upstreamStartup": "principal body attempted; passes native buffer lookup and fails at mksnapshot; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
@@ -1152,7 +1159,7 @@
     }
   },
   "nextWork": [
-    "Implement the complete original native buffer binding required by setupBuffer; inventory actual allocation/view/prototype/encoding/ownership/error contracts and reuse original native codec foundations",
+    "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Implement real mksnapshot source-mode/callback ownership; preserve explicit V8 serialization boundary",
     "Continue startup-required original Buffer/process/native closure and callback/Promise lifecycle/frame contracts",
     "Genuine empty/simple output/errors/jobs/exit and separate CJS/ESM entrypaths on all four hosts",

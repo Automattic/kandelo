@@ -5,6 +5,7 @@
 #include "js/ArrayBuffer.h"
 #include "js/CallArgs.h"
 #include "js/Equality.h"
+#include "js/experimental/TypedData.h"
 #include "js/friend/ErrorMessages.h"
 #include "js/PropertyAndElement.h"
 #include "js/PropertySpec.h"
@@ -12,6 +13,7 @@
 #include "js/RootingAPI.h"
 #include "js/Wrapper.h"
 #include "vm/ArrayBufferObject.h"
+#include "vm/TypedArrayObject.h"
 
 #include "vm/NativeObject-inl.h"
 
@@ -45,6 +47,29 @@ bool SetKeyControl(JSContext* cx, unsigned argc, JS::Value* vp) {
 bool DetachControl(JSContext* cx, unsigned argc, JS::Value* vp) {
   return KeyControl(cx, argc, vp, true);
 }
+}
+
+JSObject* NewNativeBufferView(JSContext* cx,JS::HandleObject input,
+                              size_t offset,size_t length) {
+  JS::RootedObject buffer(cx,js::CheckedUnwrapDynamic(input,cx,false));if(!buffer)return nullptr;
+  if(!buffer->is<js::ArrayBufferObject>() || !buffer->as<js::ArrayBufferObject>().isDetached())
+    return JS_NewUint8ArrayWithBuffer(cx,input,offset,length);
+  MOZ_RELEASE_ASSERT(offset==0 && length==0);
+  JS::RootedObject prototype(cx);if(!JS_GetClassPrototype(cx,JSProto_Uint8Array,&prototype))return nullptr;
+  JS::RootedObject object(cx);
+  {
+    JSAutoRealm home(cx,buffer);
+    object=JS_NewUint8Array(cx,0);if(!object)return nullptr;
+    // A native zero-length view over a detached backing has the same actual
+    // slots as an ordinary view after detachment. JavaScript construction
+    // still rejects detached buffers through its unchanged constructor path.
+    auto& view=object->as<js::TypedArrayObject>();
+    MOZ_RELEASE_ASSERT(!view.hasBuffer());
+    view.setFixedSlot(js::ArrayBufferViewObject::BUFFER_SLOT,JS::ObjectValue(*buffer));
+    view.notifyBufferDetached();
+  }
+  if(!JS_WrapObject(cx,&object)||!JS_SetPrototype(cx,object,prototype))return nullptr;
+  return object;
 }
 
 bool SetBufferDetachKey(JSContext* cx, JS::HandleObject input,

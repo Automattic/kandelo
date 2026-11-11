@@ -44,6 +44,8 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/constants-builder.h" \
     "$node_consumer/types.cpp" \
     "$node_consumer/types.h" \
+    "$node_consumer/buffer-upstream.cpp" \
+    "$node_consumer/buffer-codecs-inl.h" \
     "$node_consumer/codecs.cpp" \
     "$node_consumer/codecs.h" \
     "$node_consumer/codec-native-api.h" \

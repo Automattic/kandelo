@@ -16,7 +16,7 @@ check('native-population-ignores-poisoned-object-prototype-properties',()=>{
 });
 check('whole-original-bootstrap-passes-constants-and-preserves-next-failure',()=>{
   const target=newGlobal({newCompartment:true});api.initializeContext(target);api.initializeRealm(target);const error=thrown(()=>api.runNodeBootstrap(target));
-  assertEq(error.name,'Error');assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message,"Native Node binding 'buffer' is not implemented");bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
+  assertEq(error.name,'Error');assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message,"Native Node binding 'mksnapshot' is not implemented");bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
 });
 function snapshot(object){return Object.fromEntries(Object.entries(object).map(([name,value])=>[name,value&&typeof value==='object'?snapshot(value):typeof value==='number'&&!Number.isFinite(value)?{nonfinite:String(value)}:value]))}
 print(JSON.stringify({kind:'native-constants-controls',cases:observations.length,failures,observations,bootstrapFailure,constants:snapshot(constants),limits:['Native constant metadata, not implementation of the corresponding filesystem/network/crypto/compression operations','Complete original Node startup and full backend graph remain incomplete']}));if(failures)quit(1);

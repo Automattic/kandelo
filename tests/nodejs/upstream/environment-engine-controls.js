@@ -68,4 +68,4 @@ check('invalid-native-controls-remain-visible-errors',()=>{
  for(const count of [0,-1,1025,undefined,NaN])thrown(()=>env('post',count));
  thrown(()=>env('weak',{}));thrown(()=>env('weak',new SharedArrayBuffer(8)));thrown(()=>env('read',-1));thrown(()=>env('release',0x7fffffff));return true;
 });
-print(JSON.stringify({kind:'native-environment-prerequisite-controls',cases:observations.length,failures,observations,state:env('inspect'),originalBufferBindingImplemented:false,upstreamStartup:false}));if(failures)quit(1);
+print(JSON.stringify({kind:'native-environment-prerequisite-controls',cases:observations.length,failures,observations,state:env('inspect'),originalBufferExercisedByThesePrerequisiteControls:false,upstreamStartup:false}));if(failures)quit(1);

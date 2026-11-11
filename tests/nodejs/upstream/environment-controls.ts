@@ -13,6 +13,6 @@ export function verifyEnvironmentResult(control:typeof environmentCases[number],
  if('stdout' in control){if(result.stdout.trim()!==control.stdout)throw Error(result.stdout);return {status:'pass'}}
  const detail=JSON.parse(result.stdout);
  if(detail.cases!==14||detail.observations.length!==14||detail.failures!==0||detail.observations.some((row:any)=>row.status!=='pass'))throw Error(JSON.stringify(detail));
- if(detail.originalBufferBindingImplemented!==false||detail.upstreamStartup!==false)throw Error('environment prerequisite must not claim original Buffer/startup completion');
+ if(detail.originalBufferExercisedByThesePrerequisiteControls!==false||detail.upstreamStartup!==false)throw Error('environment prerequisite must not claim original Buffer/startup completion');
  return detail;
 }

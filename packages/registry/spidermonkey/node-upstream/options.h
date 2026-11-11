@@ -11,6 +11,7 @@ struct NativeTracingConfiguration {
 bool ReadNativeTracingConfiguration(JSContext* cx, JS::HandleObject realm,
                                     NativeTracingConfiguration* result);
 bool NativeAsyncContextFrameEnabled();
+bool NativeZeroFillBuffersEnabled();
 JSObject* CreateOptionsState(JSContext* cx);
 bool InitializeOptionsForRealm(JSContext* cx, JS::HandleObject realm);
 JSObject* CreateOptionsBinding(JSContext* cx, JS::HandleObject realm);

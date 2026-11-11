@@ -16,12 +16,14 @@
 #include "jsapi.h"
 #include "jsfriendapi.h"
 
+#include "jit/AtomicOperations.h"
 #include "js/Array.h"
 #include "js/ArrayBuffer.h"
 #include "js/CallAndConstruct.h"
 #include "js/CallArgs.h"
 #include "js/CharacterEncoding.h"
 #include "js/Conversions.h"
+#include "js/Equality.h"
 #include "js/ErrorReport.h"
 #include "js/Exception.h"
 #include "js/experimental/TypedData.h"
@@ -33,9 +35,11 @@
 #include "js/SharedArrayBuffer.h"
 #include "js/Stack.h"
 #include "js/String.h"
+#include "js/Symbol.h"
 #include "js/TracingAPI.h"
 #include "js/Wrapper.h"
 #include "shell/jsshell.h"
+#include "shell/node-upstream/buffer-memory.h"
 #include "shell/node-upstream/codec-agent-includes.h"
 #include "shell/node-upstream/codec-native-api.h"
 #include "shell/node-upstream/codecs-upstream/errors.generated.h"
@@ -69,11 +73,12 @@ struct State {
   native::Environment environment{&isolate};
   std::vector<std::shared_ptr<GlobalRoot>> weakGlobals;
   std::atomic<size_t> externalBytes{0}, created{0}, released{0}, spans{0}, collections{0};
+  std::atomic<size_t> bufferCreated{0},bufferFreed{0},bufferBytes{0};
   bool stressGc=false;
   std::atomic<size_t> traceCreated{0},traceReleased{0};
   std::atomic<size_t> icuCreated{0},icuReleased{0};
 };
-enum class Domain { Decoder, Icu, Trace, Continuation, Environment };
+enum class Domain { Decoder, Icu, Trace, Continuation, Environment, Buffer };
 const JSClass traceBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(3)};
 const JSClass continuationBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct Cell {
@@ -91,6 +96,7 @@ struct Frame {
   Domain domain;
   std::vector<std::unique_ptr<Value>> roots;
   std::vector<std::unique_ptr<native::SpanOwner>> spans;
+  std::vector<std::shared_ptr<void>> storage;
   Frame* previous;
   inline static thread_local Frame* current = nullptr;
   Frame(JSContext* cx, JS::HandleObject realm, std::shared_ptr<State> state,
@@ -178,20 +184,19 @@ Local<Value> Frame::OwnValue(JS::HandleValue value) {
   // Source Local::As must refer to the actual C++ wrapper type as well as the
   // actual engine value. A string-tagged base object is not a String object.
   if (value.isString()) return Own<String>(value);
-  if (UnwrapView(cx, value)) return Own<ArrayBufferView>(value);
+  if (auto* view=UnwrapView(cx,value)) {
+    if(JS_IsUint8Array(view))return Own<Uint8Array>(value);
+    return Own<ArrayBufferView>(value);
+  }
   if (value.isObject()) {
     auto* object=UnwrapObject(cx,value);
+    if (object && JS::IsSharedArrayBufferObject(object)) return Own<SharedArrayBuffer>(value);
     if (object && JS::IsArrayBufferObject(object)) return Own<ArrayBuffer>(value);
     if (object && object->is<js::ArrayObject>()) return Own<Array>(value);
     if (JS::IsCallable(&value.toObject())) return Own<Function>(value);
     return Own<Object>(value);
   }
-  if (value.isNumber()) {
-    double n=value.toNumber();
-    if (std::isfinite(n) && !(n==0 && std::signbit(n)) && n>=INT32_MIN && n<=UINT32_MAX && std::trunc(n)==n)
-      return Own<Integer>(value);
-    return Own<Number>(value);
-  }
+  if (value.isNumber()) return Own<Integer>(value);
   return Own<Value>(value);
 }
 Local<Value> Argument(Isolate* isolate, int index) {
@@ -254,10 +259,11 @@ Maybe<bool> Array::Set(Local<Context> context, int32_t index, Local<Value> input
   JS::RootedValue value(f.cx, Input(input));
   if (!JS_SetElement(f.cx, object, index, value)) return {}; return Just(true);
 }
+static int64_t IntegerNumber(double);
 Local<Integer> Integer::New(Isolate* isolate, int input) {
   auto& f = Current(isolate); JS::RootedValue value(f.cx, JS::Int32Value(input)); return f.Own<Integer>(value);
 }
-int64_t Integer::Value() const { CHECK(IsInt32() || IsUint32());return int64_t(cell().value.toNumber()); }
+int64_t Integer::Value() const { CHECK(IsNumber());return IntegerNumber(cell().value.toNumber()); }
 const size_t String::kMaxLength = JS::MaxStringLength;
 const size_t Uint8Array::kMaxLength = js::ArrayBufferObject::ByteLengthLimit;
 Local<String> String::Empty(Isolate* isolate) {
@@ -389,6 +395,7 @@ using namespace api;
 struct SpanOwner {
   JS::PersistentRootedObject object;
   std::shared_ptr<State> state;
+  std::shared_ptr<void> storage;
   bool pinned=false; size_t size=0; uint8_t* bytes=nullptr; uint8_t empty=0;
   SpanOwner(Frame& frame, JS::HandleObject input) : object(frame.cx, input), state(frame.state) {
     bool view=JS_IsArrayBufferViewObject(input);
@@ -402,7 +409,9 @@ struct SpanOwner {
       if (!shared && buffer->as<js::ArrayBufferObject>().isInlineData() &&
           !JS::EnsureNonInlineArrayBufferOrView(frame.cx,input))
         Crash("Native codec backing allocation stabilization failed");
-      pinned=JS::PinArrayBufferOrViewLength(input, true);
+      if(frame.domain==Domain::Buffer && !shared && !buffer->as<js::ArrayBufferObject>().isDetached()) {
+        storage=js::ArrayBufferObject::retainKandeloContents(frame.cx,buffer.as<js::ArrayBufferObject>());CHECK(storage);
+      } else if(frame.domain!=Domain::Buffer) pinned=JS::PinArrayBufferOrViewLength(input, true);
     }
     size=view?JS_GetArrayBufferViewByteLength(object):shared?JS::GetSharedArrayBufferByteLength(object):JS::GetArrayBufferByteLength(object);
     JS::AutoCheckCannotGC nogc;
@@ -428,6 +437,7 @@ template<class T,size_t N> ArrayBufferViewContents<T,N>::~ArrayBufferViewContent
 template<class T,size_t N> T* ArrayBufferViewContents<T,N>::data() const { return reinterpret_cast<T*>(owner_->bytes); }
 template<class T,size_t N> size_t ArrayBufferViewContents<T,N>::length() const { return owner_->size; }
 template class ArrayBufferViewContents<char,64>;
+template class ArrayBufferViewContents<uint8_t,64>;
 template<class T,size_t N> MaybeStackBuffer<T,N>::MaybeStackBuffer() { stack_[0]=T{}; }
 template<class T,size_t N> MaybeStackBuffer<T,N>::MaybeStackBuffer(size_t length) : MaybeStackBuffer() { AllocateSufficientStorage(length); }
 template<class T,size_t N> MaybeStackBuffer<T,N>::~MaybeStackBuffer() { if (data_!=stack_) std::free(data_); }
@@ -448,6 +458,7 @@ template<class T,size_t N> void MaybeStackBuffer<T,N>::AllocateSufficientStorage
 }
 template<class T,size_t N> bool MaybeStackBuffer<T,N>::IsAllocated() const { return data_!=stack_; }
 template<class T,size_t N> void MaybeStackBuffer<T,N>::Release() { CHECK(data_!=stack_); data_=stack_; length_=0; capacity_=N; }
+template class MaybeStackBuffer<uint8_t,1024>;
 template class MaybeStackBuffer<char,512>;
 template class MaybeStackBuffer<char,1024>;
 template class MaybeStackBuffer<char,4096>;
@@ -560,19 +571,6 @@ Local<Value> ERR_MEMORY_ALLOCATION_FAILED(Isolate* isolate) {
   const auto& metadata=kandelo_codec_metadata::AllocationFailed;
   return Error(isolate,metadata.range?JSEXN_RANGEERR:JSEXN_ERR,metadata.code,metadata.text);
 }
-namespace Buffer {
-MaybeLocal<Object> MissingAllocation(Environment* env) {
-  auto error=api::Error(env->isolate(),JSEXN_ERR,"ERR_KANDELO_NOT_IMPLEMENTED","Original Buffer allocation/prototype backend is not implemented");
-  if (!error.IsEmpty()) env->isolate()->ThrowException(error);return {};
-}
-bool HasInstance(Local<Value> input) { return input->IsArrayBufferView(); }
-bool HasInstance(Local<Object> input) { return HasInstance(Local<Value>(input)); }
-char* Data(Local<Value> input) { CHECK(input->IsArrayBufferView()); return reinterpret_cast<char*>(Frame::current->Borrow(input).bytes); }
-char* Data(Local<Object> input) { return Data(Local<Value>(input)); }
-size_t Length(Local<Value> input) { CHECK(input->IsArrayBufferView()); return Frame::current->Borrow(input).size; }
-size_t Length(Local<Object> input) { return Length(Local<Value>(input)); }
-MaybeLocal<Object> Copy(Isolate*, const char*, size_t) { Crash("Original Buffer allocation/prototype backend is not implemented"); }
-}
 }  // namespace kandelo_node_codec_impl
 
 namespace kandelo_node_codec_api {
@@ -627,7 +625,7 @@ MaybeLocal<Object> ObjectTemplate::NewInstance(Local<Context> context) {
 }
 namespace {
 using Callback=void(*)(const FunctionCallbackInfo<Value>&);
-struct CallbackOwner { Callback callback;Domain domain;bool constructor=false,categoryReceiver=false;int fieldCount=0; };
+struct CallbackOwner { Callback callback;Domain domain;bool constructor=false,categoryReceiver=false;int fieldCount=0;std::shared_ptr<const CFunction::Signature> fast; };
 JSFunction* TraceFunction(Frame&,const char*,Callback,unsigned,bool,bool);
 void FinalizeCallback(JS::GCContext*,JSObject* object) {
   auto value=JS::GetReservedSlot(object,0); if (!value.isUndefined()) delete static_cast<CallbackOwner*>(value.toPrivate());
@@ -707,7 +705,7 @@ void SetMethod(Local<Context> context,Local<Object> target,const char* name,void
     CHECK(JS_SetProperty(f.cx,targetObject,name,value));
     JS::Rooted<JSAtom*> atom(f.cx,js::Atomize(f.cx,name,std::strlen(name)));CHECK(atom);function->setAtom(atom);return;
   }
-  bool ownProperties=f.domain==Domain::Icu;
+  bool ownProperties=f.domain==Domain::Icu || f.domain==Domain::Buffer;
   JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,api::Invoke,0,0,ownProperties?name:"")); CHECK_NOT_NULL(function);
   JS::RootedObject object(f.cx,JS_GetFunctionObject(function)),binding(f.cx,&target->cell().value.toObject());
   // Each actual function owns its typed callback metadata. No process-global
@@ -777,6 +775,7 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 }
 }
 
+#include "shell/node-upstream/buffer-codecs-inl.h"
 #include "shell/node-upstream/continuation-codecs-inl.h"
 #include "shell/node-upstream/environment-codecs-inl.h"
 #include "shell/node-upstream/trace-codecs-inl.h"

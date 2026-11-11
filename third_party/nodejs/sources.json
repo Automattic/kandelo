@@ -3593,6 +3593,13 @@
       "builtinId": null
     },
     {
+      "path": "src/node_buffer.cc",
+      "role": "provenance",
+      "bytes": 76513,
+      "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2",
+      "builtinId": null
+    },
+    {
       "path": "src/node_buffer.h",
       "role": "provenance",
       "bytes": 3843,

@@ -73,7 +73,8 @@
     "path": "src/node_buffer.cc",
     "bytes": 76513,
     "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2",
-    "importedIntoRuntime": false
+    "importedIntoRuntime": true,
+    "integrationEvidence": "buffer-engine-check.json"
   },
   "implementation": {
     "owner": "stable State member bound to actual Isolate; one actual JSContext owner retains runtime until foreground ShellContext shutdown",
@@ -96,12 +97,12 @@
       "Firefox",
       "WebKit"
     ],
-    "nativeReference": "not a native Node differential: private embedding primitives; original CallbackInfo not compiled yet",
+    "nativeReference": "These primitive controls are not a native Node differential; whole original CallbackInfo now has separate Buffer integration evidence.",
     "evidence": "environment-engine-check.json"
   },
   "remaining": [
-    "whole original node_buffer.cc/CallbackInfo not imported or compiled",
-    "general allocation/adoption/copy/alignment/prototype/string/number/escapable-root/fast-metadata APIs",
+    "whole original Buffer/CallbackInfo now integrated; exhaustive exceptional/concurrent paths still open",
+    "full native API extremes/OOM/security/worker/snapshot/immutable/Wasm and transient allocation-pressure coverage",
     "additional Global API/nursery-object weak semantics not established",
     "generic async callback/resource IDs/Promise lifecycle/fatal policy incomplete",
     "worker hook installed but worker/fork/cancellation lifecycle unvalidated",

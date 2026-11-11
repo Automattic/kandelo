@@ -60,4 +60,4 @@ check('buffer-memory-controls-reject-nonbuffer-values-and-shared-backing',()=>{
   thrown(()=>setDetachKey(value,'pool'));thrown(()=>api.detachBufferWithKey(value,'pool'));
  }return 4;
 });
-print(JSON.stringify({kind:'buffer-memory-prerequisite-controls',cases:observations.length,sharedCases,failures,observations,originalBufferBindingImplemented:false,upstreamStartup:false}));if(failures)quit(1);
+print(JSON.stringify({kind:'buffer-memory-prerequisite-controls',cases:observations.length,sharedCases,failures,observations,originalBufferExercisedByThesePrerequisiteControls:false,upstreamStartup:false}));if(failures)quit(1);

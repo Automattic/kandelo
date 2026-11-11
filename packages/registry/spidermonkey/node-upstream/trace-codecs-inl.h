@@ -29,23 +29,30 @@ size_t String::WriteUtf8(Isolate* isolate,Local<String> input,char* target,size_
   CHECK(kandelo::node::EncodeTraceString(f.cx,string,&encoded));CHECK(encoded.size()<=capacity);std::memcpy(target,encoded.data(),encoded.size());return encoded.size();
 }
 BackingStore::BackingStore(void* data,size_t size,void(*deleter)(void*,size_t,void*),void* userData,std::shared_ptr<kandelo::node::TraceProcess> process):data(data),size(size),deleter(deleter),userData(userData),process(std::move(process)) {}
-BackingStore::~BackingStore() { deleter(data,size,userData); }
+BackingStore::~BackingStore() { if(data)deleter(data,size,userData); }
 std::unique_ptr<BackingStore> ArrayBuffer::NewBackingStore(void* data,size_t size,void(*deleter)(void*,size_t,void*),void* userData) {
-  auto& f=*Frame::current;CHECK(f.domain==Domain::Trace && f.tracing);
+  auto& f=*Frame::current;CHECK(deleter);
   return std::make_unique<BackingStore>(data,size,deleter,userData,f.tracing);
 }
 Local<ArrayBuffer> ArrayBuffer::New(Isolate* isolate,std::unique_ptr<BackingStore> store) {
   auto& f=Current(isolate);if(JS_IsExceptionPending(f.cx))return {};
-  size_t size=store->size;void* data=store->data;auto* owner=store.release();
-  // Releasing this owner may run on a GC thread; it never destroys the agent.
-  // The explicit main-thread process hook owns shutdown, and bytes are static.
+  size_t size=store->size;void* data=store->data;
+  if(!data){
+    CHECK(size==0);JS::RootedObject object(f.cx,JS::NewArrayBuffer(f.cx,0));if(!object)return {};
+    JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<ArrayBuffer>(value);
+  }
+  auto* owner=store.release();
+  // The actual caller-owned deleter can run on a GC thread. Tracing process
+  // shutdown still belongs to its explicit foreground owner; Buffer callbacks
+  // use their original CallbackInfo mutex and foreground-post protocol.
   mozilla::UniquePtr<void,JS::BufferContentsDeleter> contents(data,JS::BufferContentsDeleter([](void*,void* context){delete static_cast<BackingStore*>(context);},owner));
   JS::RootedObject object(f.cx,JS::NewExternalArrayBuffer(f.cx,size,std::move(contents)));if(!object)return {};
+  object->as<js::ArrayBufferObject>().accountKandeloExternalBytes();
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<ArrayBuffer>(value);
 }
 Local<Uint8Array> Uint8Array::New(Local<ArrayBuffer> buffer,size_t offset,size_t length) {
   auto& f=*Frame::current;if(JS_IsExceptionPending(f.cx))return {};
-  JS::RootedObject raw(f.cx,&buffer->cell().value.toObject());JS::RootedObject object(f.cx,JS_NewUint8ArrayWithBuffer(f.cx,raw,offset,length));if(!object)return {};
+  JS::RootedObject raw(f.cx,&buffer->cell().value.toObject());JS::RootedObject object(f.cx,kandelo::node::NewNativeBufferView(f.cx,raw,offset,length));if(!object)return {};
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Uint8Array>(value);
 }
 namespace {

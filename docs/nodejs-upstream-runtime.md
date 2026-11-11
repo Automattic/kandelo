@@ -13,7 +13,7 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry calls complete `internal/bootstrap/node` with
 protected state. It now executes the original internal tracing helper and
-reaches the missing `buffer` binding in original `buffer.js`. The original native tracing agent, binding,
+reaches the missing `mksnapshot` binding through original `buffer.js`. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -21,8 +21,12 @@ async-context native source are also integrated; active JavaScript consumers
 remain guarded until genuine bootstrap completes. Full observer exception/fatal
 routing remains incomplete.
 Engine ArrayBuffers now retain native detach keys and enforce them during
-transfer and serialization. This verified Buffer prerequisite is separate from
-the still-unimplemented original native Buffer binding.
+transfer and serialization. The complete original native Buffer binding is now compiled over real engine
+allocation, retained storage, views, encodings and principal prototypes.
+Its original CallbackInfo cleanup runs on all four hosts. Thirty shared
+native control groups match exactly; a standalone native Node reentry
+discrepancy is retained separately. Full lifecycle/exceptional coverage remains
+incomplete. Earlier revision sections below describe their evidence at the time.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -1461,3 +1465,72 @@ entrypaths and the complete backend catalog remain unfinished.
 See [environment-contracts.json](../tests/nodejs/upstream/environment-contracts.json)
 and [environment-engine-check.json](../tests/nodejs/upstream/environment-engine-check.json)
 for the exact artifacts, controls, source contracts and retained limitations.
+
+
+## Complete original native Buffer integration
+
+Revision 41 imports and compiles all of `src/node_buffer.cc` unchanged. Its
+37 functions and two constants are initialized by the original source.
+Actual engine strings, numeric conversion, errors and escaped roots support
+the original algorithms; encoding, search, fill, mask, swap and copy bodies
+are not extracted or rewritten. Native function/signature metadata is retained,
+while ordinary SpiderMonkey calls execute the original slow callbacks.
+The original unnamed fast-method names are preserved. V8 fast JIT and native
+snapshot serialization remain unavailable.
+
+An engine-owned allocation reference keeps native byte spans alive while JS
+coercion detaches or resizes their original buffer. It materializes inline
+storage before exposing its actual address. Ownership follows same-size
+transfers; reallocating transfers and raw clone/steal transports copy when
+shared native ownership cannot be carried. Buffer methods use actual offsets,
+lengths and aliases; both-shared copies use the engine's racy atomic memmove.
+External ArrayBuffer bytes receive real engine cell credits. Transient native
+leases and queued free callbacks still need a complete GC-pressure audit.
+
+Original New/Copy/string/adoption overloads now install the actual principal
+Realm prototype. The original principal-only setter assertion remains fatal.
+Zero-fill reads the real parsed CLI option. This embedding builds live contexts
+and has no snapshot builder; ordinary execution does not pretend to be building
+one. Native empty views over detached backing support the original null-data
+constructor, while the JavaScript typed-array constructor keeps its normal
+rejection policy. Immutable ArrayBuffers are not an available engine kind.
+
+The whole original CallbackInfo now owns the real weak backing, cleanup queue,
+metadata credits and foreground post. Controls cover unreachable-backing GC,
+asynchronous null-data free callbacks, detaching live buffers during cleanup,
+and natural, quit and uncaught-error exits. A native addon built against the
+authenticated exact-version headers confirms the corresponding native Node
+null-data, GC and process cleanup behavior. Original internal/buffer.js and
+its numeric/string prototype methods execute against this binding; original
+ICU transcode also returns real native Buffers.
+
+There are 44 controls plus five option/assertion/exit drivers per host, using
+identical engine and kernel artifacts on Node, Chromium, Firefox and WebKit.
+Thirty native observation groups compare exactly. The initializer-only setter
+is compared separately because original node.js deletes it during bootstrap.
+One further native observation is retained as a discrepancy: a standalone
+Buffer.utf8Slice reproduction returned bytes different from its original input
+after index coercion detached the backing and forced GC in all eight native
+attempts. Kandelo's native allocation owner retains the original bytes.
+This is a finding in the ported Node package, excluded from the host-runtime
+workaround registry; no upstream source patch or external report was made.
+See [the standalone reproduction](../tests/nodejs/upstream/buffer-native-reentry-repro.cjs)
+and [its recorded result](../tests/nodejs/upstream/buffer-native-reentry-result.json).
+The discrepancy is not counted as exact native agreement.
+
+All prior selected controls also pass on the new artifact. The first browser
+harness run failed only because it rejected the deliberate assertion console
+message; final checks recognize that exact trap and retain every diagnostic.
+Separate Firefox Downloads cleanup EACCES warnings remain in retained logs.
+All 554 prior source records and 443 JS sources/10,993,403 bytes are unchanged;
+adding the complete native Buffer file brings the authenticated inventory to
+555 records. Normal package resolution reuses the tested revision-41 artifact.
+
+Startup now passes the native Buffer lookup and stops at the actual missing
+mksnapshot binding. Empty/simple upstream startup, CJS/ESM entrypaths and the
+complete backend catalog remain unfinished. Full callback/fatal policy,
+worker/fork/cancel/security/OOM, immutable/snapshot and nested guest Wasm paths
+are not established. No full product/image, successor-ABI or overall suite ran.
+See [buffer-contracts.json](../tests/nodejs/upstream/buffer-contracts.json) and
+[buffer-engine-check.json](../tests/nodejs/upstream/buffer-engine-check.json)
+for coverage, exact identities, retained failures and remaining obligations.

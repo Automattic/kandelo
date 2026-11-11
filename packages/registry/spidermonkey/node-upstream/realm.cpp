@@ -49,7 +49,7 @@ namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3, NodeComplete = 4 };
-enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Continuation, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Continuation, Timers, TaskQueue, AsyncWrap, Symbols, Buffer, BufferPrototype, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -271,6 +271,11 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
       binding=CreateIcuBinding(cx,state);if (!binding) return false;
       JS::SetReservedSlot(state,Icu,JS::ObjectValue(*binding));
     }
+  }
+  else if (name == "buffer") {
+    JS::Value cached=JS::GetReservedSlot(state,Buffer);
+    if(cached.isObject())binding=&cached.toObject();
+    else {binding=CreateBufferBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,Buffer,JS::ObjectValue(*binding));}
   }
   else if (name == "string_decoder") {
     JS::Value cached = JS::GetReservedSlot(state, StringDecoder);
@@ -545,3 +550,16 @@ JSObject* RealmLibrarySnapshot(JSContext* cx, JS::HandleObject state, bool inspe
 }
 
 }  // namespace kandelo::node
+
+namespace kandelo::node {
+bool SetRealmBufferPrototype(JSContext* cx,JS::HandleObject realm,JS::HandleObject prototype) {
+  JS::RootedObject owner(cx,js::CheckedUnwrapDynamic(realm,cx,false));if(!owner)return false;
+  JSAutoRealm home(cx,owner);JS::RootedObject wrapped(cx,prototype);if(!JS_WrapObject(cx,&wrapped))return false;
+  JS::SetReservedSlot(owner,BufferPrototype,JS::ObjectValue(*wrapped));return true;
+}
+JSObject* GetRealmBufferPrototype(JSContext* cx,JS::HandleObject realm) {
+  JS::RootedObject owner(cx,js::CheckedUnwrapDynamic(realm,cx,false));if(!owner)return nullptr;
+  auto value=JS::GetReservedSlot(owner,BufferPrototype);if(!value.isObject())return nullptr;
+  JS::RootedObject result(cx,&value.toObject());return JS_WrapObject(cx,&result)?result.get():nullptr;
+}
+}

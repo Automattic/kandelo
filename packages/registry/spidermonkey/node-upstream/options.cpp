@@ -366,6 +366,10 @@ bool ReadNativeTracingConfiguration(JSContext* cx,JS::HandleObject realm,
   result->permissionsEnabled=options->per_isolate->per_env->permission;
   return true;
 }
+bool NativeZeroFillBuffersEnabled() {
+  n::Mutex::ScopedLock lock(n::per_process::cli_options_mutex);
+  return n::per_process::cli_options->zero_fill_all_buffers;
+}
 bool NativeAsyncContextFrameEnabled() {
   n::Mutex::ScopedLock lock(n::per_process::cli_options_mutex);
   return n::per_process::cli_options->per_isolate->per_env->async_context_frame;

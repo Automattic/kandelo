@@ -1,0 +1,218 @@
+--- a/js/src/vm/ArrayBufferObject.h
++++ b/js/src/vm/ArrayBufferObject.h
+@@ -8,6 +8,8 @@
+ #define vm_ArrayBufferObject_h
+ 
+ #include "mozilla/Maybe.h"
++
++#include <memory>
+ 
+ #include <tuple>  // std::tuple
+ 
+@@ -195,7 +197,8 @@
+   static const uint8_t FLAGS_SLOT = 3;
+ 
+   static const uint8_t DETACH_KEY_SLOT = 4;
+-  static const uint8_t RESERVED_SLOTS = 5;
++  static const uint8_t KANDELO_CONTENTS_SLOT = 5;
++  static const uint8_t RESERVED_SLOTS = 6;
+ 
+   // Alignment for ArrayBuffer objects. Must match the largest possible
+   // TypedArray scalar to ensure TypedArray and Atomics accesses are always
+@@ -275,6 +278,7 @@
+     // The length is temporarily pinned, so it should not be detached. In the
+     // future, this will also prevent GrowableArrayBuffer/ResizeableArrayBuffer
+     // from modifying the length while this is set.
++    KANDELO_EXTERNAL_CREDIT = 0b1000'0000,
+     PINNED_LENGTH = 0b100'0000
+   };
+ 
+@@ -298,6 +302,7 @@
+ 
+  public:
+   class BufferContents {
++    std::shared_ptr<void> kandeloOwner_;
+     uint8_t* data_;
+     BufferKind kind_;
+     JS::BufferContentsFreeFunc free_;
+@@ -308,8 +313,9 @@
+ 
+     BufferContents(uint8_t* data, BufferKind kind,
+                    JS::BufferContentsFreeFunc freeFunc = nullptr,
+-                   void* freeUserData = nullptr)
+-        : data_(data),
++                   void* freeUserData = nullptr,
++                   std::shared_ptr<void> owner = {})
++        : kandeloOwner_(std::move(owner)), data_(data),
+           kind_(kind),
+           free_(freeFunc),
+           freeUserData_(freeUserData) {
+@@ -545,11 +551,18 @@
+   BufferContents contents() const {
+     if (isExternal()) {
+       return BufferContents(dataPointer(), EXTERNAL, freeInfo()->freeFunc,
+-                            freeInfo()->freeUserData);
+-    }
+-    return BufferContents(dataPointer(), bufferKind());
+-  }
+-
++                            freeInfo()->freeUserData, kandeloContentsOwner());
++    }
++    return BufferContents(dataPointer(), bufferKind(), nullptr, nullptr,
++                          kandeloContentsOwner());
++  }
++
++  // Native byte spans own allocations independently of the JS buffer/view.
++  // Detach and resize keep their normal JS semantics while a span is alive.
++  void accountKandeloExternalBytes();
++  std::shared_ptr<void> kandeloContentsOwner() const;
++  static std::shared_ptr<void> retainKandeloContents(
++      JSContext* cx, JS::Handle<ArrayBufferObject*> buffer);
+   void releaseData(JS::GCContext* gcx);
+ 
+   BufferKind bufferKind() const {
+--- a/js/src/vm/ArrayBufferObject.cpp
++++ b/js/src/vm/ArrayBufferObject.cpp
+@@ -1654,7 +1654,63 @@
+   return reinterpret_cast<FreeInfo*>(data);
+ }
+ 
++void ArrayBufferObject::accountKandeloExternalBytes() {
++  MOZ_RELEASE_ASSERT(isExternal() && !(flags() & KANDELO_EXTERNAL_CREDIT));
++  if (!byteLength()) return;
++  AddCellMemory(this, byteLength(), MemoryUse::Embedding2);
++  setFlags(flags() | KANDELO_EXTERNAL_CREDIT);
++}
++
++std::shared_ptr<void> ArrayBufferObject::kandeloContentsOwner() const {
++  const auto& slot = getFixedSlot(KANDELO_CONTENTS_SLOT);
++  if (slot.isUndefined()) return {};
++  return *static_cast<std::shared_ptr<void>*>(slot.toPrivate());
++}
++
++/* static */ std::shared_ptr<void> ArrayBufferObject::retainKandeloContents(
++    JSContext* cx, Handle<ArrayBufferObject*> buffer) {
++  if (auto owner = buffer->kandeloContentsOwner()) return owner;
++  if (buffer->isDetached()) return {};
++  if (buffer->isInlineData() && !ensureNonInline(cx, buffer)) return {};
++  BufferContents contents = buffer->contents();
++  const size_t length = buffer->byteLength();
++  // The native owner has no JS edges and may retire on a GC thread. Cell
++  // memory credits still belong to each real buffer and move with transfers.
++  std::shared_ptr<void> owner(new BufferContents(contents), [contents, length](void* metadata) {
++    switch (contents.kind()) {
++      case MALLOCED_ARRAYBUFFER_CONTENTS_ARENA:
++      case MALLOCED_UNKNOWN_ARENA: js_free(contents.data()); break;
++      case MAPPED: gc::DeallocateMappedContent(contents.data(), length); break;
++      case EXTERNAL: contents.freeFunc()(contents.data(), contents.freeUserData()); break;
++      case WASM: WasmArrayRawBuffer::Release(contents.data()); break;
++      case USER_OWNED:
++      case NO_DATA: break;
++      case INLINE_DATA: MOZ_CRASH("Native owner cannot retain moving inline bytes");
++    }
++    delete static_cast<BufferContents*>(metadata);
++  });
++  buffer->setFixedSlot(KANDELO_CONTENTS_SLOT,
++                       PrivateValue(new std::shared_ptr<void>(owner)));
++  return owner;
++}
++
+ void ArrayBufferObject::releaseData(JS::GCContext* gcx) {
++  if (flags() & KANDELO_EXTERNAL_CREDIT) {
++    gcx->removeCellMemory(this, byteLength(), MemoryUse::Embedding2);
++    setFlags(flags() & ~KANDELO_EXTERNAL_CREDIT);
++  }
++  if (kandeloContentsOwner()) {
++    if (isMalloced() || isMapped()) {
++      gcx->removeCellMemory(this, associatedBytes(), MemoryUse::ArrayBufferContents);
++    } else if (isWasm()) {
++      gcx->removeCellMemory(this, byteLength(), MemoryUse::ArrayBufferContents);
++    }
++    auto* owner = static_cast<std::shared_ptr<void>*>(
++        getFixedSlot(KANDELO_CONTENTS_SLOT).toPrivate());
++    setFixedSlot(KANDELO_CONTENTS_SLOT, UndefinedValue());
++    delete owner;
++    return;
++  }
+   switch (bufferKind()) {
+     case INLINE_DATA:
+       // Inline data doesn't require releasing.
+@@ -1695,6 +1751,13 @@
+ }
+ 
+ void ArrayBufferObject::setDataPointer(BufferContents contents) {
++  const auto& slot = getFixedSlot(KANDELO_CONTENTS_SLOT);
++  auto* previous = slot.isUndefined() ? nullptr :
++      static_cast<std::shared_ptr<void>*>(slot.toPrivate());
++  setFixedSlot(KANDELO_CONTENTS_SLOT, contents.kandeloOwner_
++      ? PrivateValue(new std::shared_ptr<void>(contents.kandeloOwner_))
++      : UndefinedValue());
++  delete previous;
+   setFixedSlot(DATA_SLOT, PrivateValue(contents.data()));
+   setFlags((flags() & ~KIND_MASK) | contents.kind());
+ 
+@@ -2294,7 +2357,7 @@
+     if (newByteLength == source->associatedBytes()) {
+       return copyAndDetachSteal(cx, source);
+     }
+-    if (source->bufferKind() ==
++    if (!source->kandeloContentsOwner() && source->bufferKind() ==
+         ArrayBufferObject::MALLOCED_ARRAYBUFFER_CONTENTS_ARENA) {
+       return copyAndDetachRealloc(cx, newByteLength, source);
+     }
+@@ -2598,6 +2661,14 @@
+     JSContext* cx, Handle<ArrayBufferObject*> buffer) {
+   CheckStealPreconditions(buffer, cx);
+ 
++  // A raw malloc result cannot share ownership with a live native span.
++  if (buffer->kandeloContentsOwner()) {
++    auto copied = NewCopiedBufferContents(cx, buffer);
++    if (!copied) return nullptr;
++    ArrayBufferObject::detach(cx, buffer);
++    return copied.release();
++  }
++
+   switch (buffer->bufferKind()) {
+     case MALLOCED_ARRAYBUFFER_CONTENTS_ARENA:
+     case MALLOCED_UNKNOWN_ARENA: {
+@@ -2692,6 +2763,14 @@
+   MOZ_ASSERT(!buffer->isResizable(),
+              "extracting the contents of resizable buffers not supported");
+ 
++  // Structured clone serializes a raw allocation rather than this native
++  // owner. Give that transport an independent allocation before detaching.
++  if (buffer->kandeloContentsOwner()) {
++    auto copied = NewCopiedBufferContents(cx, buffer);
++    if (!copied) return BufferContents::createFailed();
++    ArrayBufferObject::detach(cx, buffer);
++    return BufferContents::createMallocedArrayBufferContentsArena(copied.release());
++  }
+   BufferContents contents = buffer->contents();
+ 
+   switch (contents.kind()) {
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -30,6 +30,7 @@
+ SOURCES += [
+     "node-upstream/async-wrap.cpp",
+     "node-upstream/buffer-memory.cpp",
++    "node-upstream/buffer-upstream.cpp",
+     "node-upstream/builtin-compiler.cpp",
+     "node-upstream/builtin-source-registry.cpp",
+     "node-upstream/codecs.cpp",
+@@ -192,3 +193,5 @@
+ SOURCES["node-upstream/continuation-upstream.cpp"].flags += [
+     "-std=c++20",
+ ]
++
++SOURCES["node-upstream/buffer-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -87,6 +87,7 @@
+         "shell/node-upstream/tracing-upstream/tracing/trace_event_legacy_inl.h",
+         "shell/node-upstream/tracing-upstream/tracing/traced_value.cc",
+         "shell/node-upstream/tracing-upstream/tracing/traced_value.h",
++        "shell/node-upstream/codecs-upstream/node_buffer.cc",
+         "shell/node-upstream/codecs-upstream/encoding.cc",
+         "shell/node-upstream/codecs-upstream/node_i18n.cc",
+         "shell/node-upstream/codecs-upstream/node_i18n.h",

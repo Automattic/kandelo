@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "binding": "buffer",
-  "status": "complete binding export surface reviewed; implementation and full transitive consumer/lifecycle audit incomplete",
+  "status": "complete original binding imported/compiled; selected four-host behavior verified; full transitive consumer/lifecycle audit incomplete",
   "sourceVersion": "26.13.0",
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
   "sourceFiles": [
@@ -10,8 +10,9 @@
       "retainedPath": ".context/node-buffer/source/src/node_buffer.cc",
       "bytes": 76513,
       "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2",
-      "imported": false,
-      "compiled": false
+      "imported": true,
+      "compiled": true,
+      "importedPath": "third_party/nodejs/upstream/src/node_buffer.cc"
     },
     {
       "path": "lib/buffer.js",
@@ -2017,51 +2018,59 @@
       "contract": "principal Realm buffer prototype",
       "source": "SetBufferPrototype and Buffer::New(env, backing, offset, length)",
       "requirement": "One actual principal Realm owns a rooted prototype; original Kind check must reflect real identity; native construction installs that actual prototype",
-      "status": "not implemented"
+      "status": "actual traced principal Realm slot, original setter and real prototype installation; source shadow-Realm assertion remains fatal and is verified on four hosts",
+      "integrationEvidence": "buffer-engine-check.json"
     },
     {
       "contract": "allocation and external backing",
       "source": "Buffer::New/Copy overloads; AdoptIntoBackingStore; AllocateUnsafeArrayBuffer",
       "requirement": "real allocation, bounded lengths, initialized vs uninitialized behavior from actual zero_fill_all_buffers option and actual snapshot mode, exactly-once original deleter; no escaped temporary spans",
-      "status": "general Buffer allocation not implemented; existing tracing external backing is domain-specific"
+      "status": "actual malloc/calloc/adoption, original New/Copy/string/CallbackInfo overloads, detached empty native view and real parsed zero-fill option; external ArrayBuffer cell credits; complete OOM/accounting/concurrent paths unproven",
+      "integrationEvidence": "buffer-engine-check.json"
     },
     {
       "contract": "view aliases and retained spans",
       "source": "CopyImpl, StringSlice, ArrayBufferViewContents",
       "requirement": "retain actual backing, ByteOffset and ByteLength; preserve fixed/resizable/shared aliases; shared/shared copy uses atomics, mixed copy follows original memmove path; detached/immutable handling in genuine engine copy API",
-      "status": "existing codec SpanOwner is a reviewed reusable primitive; full Buffer contracts unimplemented"
+      "status": "engine-owned allocation lifetime retained across source coercion; actual views, shared atomic copy, regular/mixed memmove, resize, same-size transfer, reallocating transfer and raw clone transport controls; immutable/snapshot/Wasm execution coverage remains incomplete",
+      "integrationEvidence": "buffer-engine-check.json"
     },
     {
       "contract": "stable native pointer/alignment",
       "source": "ArrayBufferAlignedOffset and ab->Data",
       "requirement": "stabilize actual inline backing before returning an address; returned alignment remains valid through moving GC; never invent an offset or enter fake snapshot mode",
-      "status": "existing codec stabilization reusable; Buffer API not connected"
+      "status": "actual inline backing materialized before address exposure; source alignment invariants and moving-GC controls verified",
+      "integrationEvidence": "buffer-engine-check.json"
     },
     {
       "contract": "detach key",
       "source": "SetDetachKey; lib/internal/buffer.js markAsUntransferable",
       "requirement": "engine-traced arbitrary Value, SameValue authorized detach, IsDetachable independent of the key value, transfer/steal/serialization enforcement, hidden from JS property operations, realm wrapping and moving-GC safety",
-      "status": "engine prerequisite verified on all four hosts with 23 controls per host, 12 shared native controls; original Buffer binding remains unimplemented",
-      "evidence": "buffer-memory-engine-check.json"
+      "status": "original SetDetachKey export now uses the verified engine key mechanism; original internal/buffer.js and native key controls run on four hosts",
+      "evidence": "buffer-memory-engine-check.json",
+      "integrationEvidence": "buffer-engine-check.json"
     },
     {
       "contract": "custom FreeCallback lifetime",
       "source": "whole original CallbackInfo class and New(env,data,len,callback,hint)",
       "requirement": "stable process Environment, cleanup queue, genuine weak Global<ArrayBuffer>, mutex-protected callback retirement, external-memory accounting and move-only foreground SetImmediateThreadsafe; clean/drain before JSContext destruction; never store current frame-local Environment",
-      "status": "stable Environment/cleanup/weak ArrayBuffer handle/foreground queue foundation verified on four hosts; complete original CallbackInfo still not compiled or exercised with backing-store adoption",
-      "evidence": "environment-engine-check.json"
+      "status": "whole original CallbackInfo compiled and exercised through original custom-free New: weak backing GC, null-data asynchronous once-only callback, live-buffer cleanup and natural/quit/error exits on four hosts; worker/fork/cancel/OOM/full exceptional shutdown unproven",
+      "evidence": "environment-engine-check.json",
+      "integrationEvidence": "buffer-engine-check.json"
     },
     {
       "contract": "fast method metadata",
       "source": "CFunction definitions and SetFastMethod registrations",
       "requirement": "retain actual function/signature metadata; choose original slow callback for ordinary SpiderMonkey ABI; do not advertise V8 fast JIT support or fabricate snapshot external references",
-      "status": "not implemented"
+      "status": "real C++ function/signature descriptors retained; original slow callbacks execute through SpiderMonkey; original unnamed fast-method metadata preserved; no V8 fast JIT or snapshot external-reference implementation",
+      "integrationEvidence": "buffer-engine-check.json"
     },
     {
       "contract": "strings/encodings and roots",
       "source": "StringBytes and original simdutf/nbytes algorithms",
       "requirement": "true UTF-16/one-byte/UTF-8 lengths and writes, external one-byte resource access, actual numeric conversions and return widths, EscapableHandleScope promotion of real roots",
-      "status": "StringBytes/decoder foundations compiled; additional Buffer primitives and numeric/root APIs missing"
+      "status": "whole original encoding/search/fill/mask/swap methods execute over actual engine strings/numbers/bytes; escapable roots promoted into enclosing scope; selected native comparison and constructor controls pass; exhaustive extremes/security/OOM unproven",
+      "integrationEvidence": "buffer-engine-check.json"
     }
   ],
   "schedulingLifecycleCancellation": {
@@ -2095,28 +2104,33 @@
   "dependencyOrder": [
     {
       "step": 1,
-      "work": "Engine allocation/view/detach/stable-backing primitives; preserve existing codec and array-buffer behavior"
+      "work": "Engine allocation/view/detach/stable-backing primitives; preserve existing codec and array-buffer behavior",
+      "status": "selected integration verified; full exceptional/concurrent audit incomplete"
     },
     {
       "step": 2,
-      "work": "Stable Environment ownership, cleanup queue, weak handle and foreground dispatch for complete native CallbackInfo"
+      "work": "Stable Environment ownership, cleanup queue, weak handle and foreground dispatch for complete native CallbackInfo",
+      "status": "selected integration verified; full exceptional/concurrent audit incomplete"
     },
     {
       "step": 3,
-      "work": "Complete original node_buffer.cc import/compile and truthful API adaptation, original errors/metadata, real principal prototype; no algorithm excerpts"
+      "work": "Complete original node_buffer.cc import/compile and truthful API adaptation, original errors/metadata, real principal prototype; no algorithm excerpts",
+      "status": "selected integration verified; full exceptional/concurrent audit incomplete"
     },
     {
       "step": 4,
-      "work": "Shared native and four-host binding/original-source controls; retain all failures and missing contracts"
+      "work": "Shared native and four-host binding/original-source controls; retain all failures and missing contracts",
+      "status": "selected integration verified; full exceptional/concurrent audit incomplete"
     },
     {
       "step": 5,
-      "work": "Resolve genuine startup mksnapshot and later blockers; verify startup, then reconcile broader graph and stop for roadmap review"
+      "work": "Resolve genuine startup mksnapshot and later blockers; verify startup, then reconcile broader graph and stop for roadmap review",
+      "status": "startup and full catalog still incomplete"
     }
   ],
   "startup": {
-    "status": "still fails on missing native buffer in original buffer.js",
-    "mksnapshot": "separate stack-limit policy and startup snapshot dependency still missing",
+    "status": "original bootstrap now passes native buffer lookup and stops at Native Node binding 'mksnapshot' is not implemented",
+    "mksnapshot": "current genuine startup binding dependency; ordinary runtime uses live contexts and has no snapshot builder",
     "cjsEntry": "unproven",
     "esmEntry": "unproven"
   },
@@ -2133,15 +2147,28 @@
       "WebKit"
     ],
     "evidence": "buffer-memory-engine-check.json",
-    "originalBindingImplemented": false,
-    "nativeCallbackLifetimeImplemented": false,
-    "scope": "privileged engine controls, not original Buffer binding or startup acceptance"
+    "originalBindingImplemented": true,
+    "nativeCallbackLifetimeImplemented": true,
+    "scope": "earlier memory controls are prerequisite evidence; current whole-source binding has separate selected integration evidence, not exhaustive compatibility",
+    "integrationEvidence": "buffer-engine-check.json"
   },
   "environmentPrerequisite": {
     "implemented": true,
     "namedControlsPerHost": 14,
     "exitDriversPerHost": 3,
-    "originalCallbackInfoCompiled": false,
-    "evidence": "environment-engine-check.json"
+    "originalCallbackInfoCompiled": true,
+    "evidence": "environment-engine-check.json",
+    "integrationEvidence": "buffer-engine-check.json"
+  },
+  "integration": {
+    "evidence": "buffer-engine-check.json",
+    "controlsPerHost": 44,
+    "otherDriversPerHost": 5,
+    "nativeExactGroups": 30,
+    "nativeReferenceDiscrepancies": 1,
+    "nativeReferenceDiscrepancy": "buffer-native-reentry-result.json",
+    "sourceModified": false,
+    "functionBodiesExtracted": false,
+    "wholeModuleCompatibilityEstablished": false
   }
 }

@@ -1,0 +1,9 @@
+{
+  "nativeSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+  "sourceSha256": "41d0d6f7ff3205b507df960b7b75b877c34008d6bfce0e1b7c080d67dd698281",
+  "code": 0,
+  "stdout": "{\"reproduced\":true,\"rows\":[{\"result\":\"\ufffdK\\b\ufffd\",\"reads\":1,\"detached\":true,\"safe\":false},{\"result\":\"\ufffdK\\b\ufffd\",\"reads\":1,\"detached\":true,\"safe\":false},{\"result\":\"\ufffdK\\b\ufffd\",\"reads\":1,\"detached\":true,\"safe\":false},{\"result\":\"\ufffdK\\b\ufffd\",\"reads\":1,\"detached\":true,\"safe\":false},{\"result\":\"\ufffdK\\b\ufffd\",\"reads\":1,\"detached\":true,\"safe\":false},{\"result\":\"\ufffdK\\b\ufffd\",\"reads\":1,\"detached\":true,\"safe\":false},{\"result\":\"\ufffdK\\b\ufffd\",\"reads\":1,\"detached\":true,\"safe\":false},{\"result\":\"\ufffdK\\b\ufffd\",\"reads\":1,\"detached\":true,\"safe\":false}]}\n",
+  "stderr": "",
+  "reproduction": "tests/nodejs/upstream/buffer-native-reentry-repro.cjs",
+  "scope": "Ported native Node package reference discrepancy; no Kandelo code and no host-engine blame. All eight standalone attempts returned bytes different from original input after detach/GC."
+}
