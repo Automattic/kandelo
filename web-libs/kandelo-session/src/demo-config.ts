@@ -14,6 +14,7 @@ export interface DemoPresentationConfig {
   touchControls?: boolean;
   hostPointer?: boolean;
   displayScale?: number;
+  displayMaxSize?: DemoPresentation["displayMaxSize"];
 }
 
 /**
@@ -1204,6 +1205,17 @@ function normalizePresentationConfig(config: unknown): DemoPresentation {
     throw new Error("presentation.displayScale must be a number between 0.5 and 4");
   }
 
+  let displayMaxSize: DemoPresentation["displayMaxSize"];
+  if (config.displayMaxSize !== undefined) {
+    const size = config.displayMaxSize;
+    if (!isRecord(size) || Object.keys(size).some(key => key !== "width" && key !== "height") ||
+        typeof size.width !== "number" || !Number.isInteger(size.width) || size.width < 640 || size.width > 3840 ||
+        typeof size.height !== "number" || !Number.isInteger(size.height) || size.height < 480 || size.height > 2160) {
+      throw new Error("presentation.displayMaxSize must contain whole-pixel width 640-3840 and height 480-2160");
+    }
+    displayMaxSize = { width: size.width, height: size.height };
+  }
+
   return {
     bootPrimary,
     runningPrimary,
@@ -1212,6 +1224,7 @@ function normalizePresentationConfig(config: unknown): DemoPresentation {
     ...(typeof config.touchControls === "boolean" ? { touchControls: config.touchControls } : {}),
     ...(typeof config.hostPointer === "boolean" ? { hostPointer: config.hostPointer } : {}),
     ...(config.displayScale !== undefined ? { displayScale: config.displayScale as number } : {}),
+    ...(displayMaxSize === undefined ? {} : { displayMaxSize }),
   };
 }
 

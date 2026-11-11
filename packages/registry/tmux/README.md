@@ -69,7 +69,7 @@ same package-owned terminfo data as the browser shell. The separate
 Tmux's upstream Linux OS-dependency module deliberately disables epoll
 when creating its libevent base. The port preserves that behavior and
 uses the available portable backend. The unchanged upstream libevent
-edge/close tests, documented in [the libevent port](libevent.md), are the
+edge/close tests, documented in [the libevent port](../libevent/README.md), are the
 direct evidence for the epoll improvements.
 
 This port targets wasm32. The complete upstream tmux regression suite
@@ -140,5 +140,5 @@ browser checks passed again. A fresh normal `./run.sh browser` server also
 passed all 21 public-entry tmux/theme cases. The memory gate passed all
 nine browser cases and 72 application launches again. The final results
 and exact-main failure comparisons are recorded in
-[merge validation](plans/2026-10-23-epoll-merge-validation.md); the earlier
+[merge validation](../../../docs/plans/2026-10-23-epoll-merge-validation.md); the earlier
 results above remain evidence for their original tree.

@@ -822,6 +822,11 @@ export interface DemoPresentation {
    * A value of 1.5 gives all guest content the same 150% presentation scale,
    * independently of browser density; the virtual display reports 96 DPI. */
   displayScale?: number;
+  /** Use a CSS-reference guest grid bounded by these pixel dimensions,
+   * preserving aspect within the connector's minimum mode. The browser fits
+   * the resulting scanout; this changes actual guest allocation, independently of HiDPI.
+   * A bounded virtual display reports reference 96 DPI. */
+  displayMaxSize?: { width: number; height: number };
 }
 
 // ── Process lifecycle events ──────────────────────────────────────────────
@@ -1715,7 +1720,16 @@ export class LiveKernelHost implements KernelHost {
 
   /** Update the presentation intent and fan out to subscribers. */
   setPresentation(presentation: DemoPresentation): void {
-    this.presentation = { ...presentation, runningPrimary: presentation.runningPrimary.slice() };
+    const previous = this.presentation;
+    this.presentation = { ...presentation, runningPrimary: presentation.runningPrimary.slice(),
+      ...(presentation.displayMaxSize ? { displayMaxSize: { ...presentation.displayMaxSize } } : {}) };
+    // A preserved pane must report the new preferred grid before another
+    // graphical client starts; an old native-density report is not readiness.
+    if (previous.displayScale !== presentation.displayScale ||
+        previous.displayMaxSize?.width !== presentation.displayMaxSize?.width ||
+        previous.displayMaxSize?.height !== presentation.displayMaxSize?.height) {
+      this.requestKmsDisplaySizeMeasurement();
+    }
     this.presentationListeners.emit(this.getPresentation());
   }
 
@@ -3220,6 +3234,10 @@ export class LiveKernelHost implements KernelHost {
     if (scale !== null && (!Number.isFinite(scale) || scale < 0.5 || scale > 4)) throw new Error("KMS display scale must be between 0.5 and 4");
     if (this.kmsDisplayScale === scale) return;
     this.kmsDisplayScale = scale;
+    this.requestKmsDisplaySizeMeasurement();
+  }
+
+  private requestKmsDisplaySizeMeasurement(): void {
     // A preserved pane may already have a native-density size. Invalidate
     // that report and request a fresh measurement before another client starts.
     this.kmsDisplaySizes.clear();
@@ -3398,10 +3416,15 @@ export class LiveKernelHost implements KernelHost {
         // Only the current layout owner's report may change this connector.
         if (!entry || entry.target !== this.kmsResizeTargets.get(canvas)) return;
         const dp = entry.devicePixelContentBoxSize?.[0];
-        const scale = this.kmsDisplayScale ?? this.getPresentation().displayScale;
+        const presentation = this.getPresentation();
+        const maximum = presentation.displayMaxSize;
+        // A bounded demo uses the reference CSS grid, without HiDPI
+        // supersampling, before fitting it to its advertised pixel budget.
+        const scale = this.kmsDisplayScale ?? presentation.displayScale
+          ?? (maximum === undefined ? undefined : 1);
         // WHY: bitmap clients must see one readable pixel grid, including
         // hit testing and device state. Enlarging only fonts breaks their
-        // theme geometry. Compositors keep native output when unset.
+        // theme geometry. Output stays native when neither scale nor a size limit is declared.
         const requestedWidth = scale !== undefined
           ? entry.contentRect.width / scale
           : dp?.inlineSize ?? entry.contentRect.width * (globalThis.devicePixelRatio || 1);
@@ -3413,12 +3436,17 @@ export class LiveKernelHost implements KernelHost {
         // Use the connector's actual bounded grid for virtual physical size
         // too, so rounding and minimum modes cannot introduce another DPI
         // multiplier. Native output retains CSS-derived reference size.
-        const { width, height } = scale === undefined
-          ? { width: requestedWidth, height: requestedHeight }
-          : connectorModeSize({ width: requestedWidth, height: requestedHeight });
+        // Image-owned resolution limits bound real BOs, rather than only
+        // enlarging CSS while the guest continues rendering native pixels.
+        const reduction = maximum === undefined ? 1
+          : Math.min(1, maximum.width / requestedWidth, maximum.height / requestedHeight);
+        const virtual = scale !== undefined || maximum !== undefined;
+        const { width, height } = virtual
+          ? connectorModeSize({ width: requestedWidth * reduction, height: requestedHeight * reduction })
+          : { width: requestedWidth, height: requestedHeight };
         const physicalMm = {
-          width: ((scale === undefined ? entry.contentRect.width : width) * 25.4) / 96,
-          height: ((scale === undefined ? entry.contentRect.height : height) * 25.4) / 96,
+          width: ((virtual ? width : entry.contentRect.width) * 25.4) / 96,
+          height: ((virtual ? height : entry.contentRect.height) * 25.4) / 96,
         };
         this.kmsDisplaySizes.set(crtcId, { width, height });
         kernel.kmsSetDisplaySize?.(crtcId, width, height, physicalMm);
@@ -3520,7 +3548,8 @@ export class LiveKernelHost implements KernelHost {
   }
 
   getPresentation(): DemoPresentation {
-    return { ...this.presentation, runningPrimary: this.presentation.runningPrimary.slice() };
+    return { ...this.presentation, runningPrimary: this.presentation.runningPrimary.slice(),
+      ...(this.presentation.displayMaxSize ? { displayMaxSize: { ...this.presentation.displayMaxSize } } : {}) };
   }
 
   subscribePresentation(cb: (state: DemoPresentation) => void): () => void {

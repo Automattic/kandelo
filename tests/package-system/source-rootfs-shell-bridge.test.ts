@@ -1514,6 +1514,29 @@ describe("canonical source-rootfs shell", () => {
     expect(existsSync(join(root, "eager-program.vfs.zst"))).toBe(false);
   });
 
+  it("rejects an invalid lazy archive layout before writing an output", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    const npmDocs = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.id === "npm-docs")!;
+    // WHY: deferred symlinks must obey the layout even before their bytes
+    // are fetched. A valid primary member cannot hide a forbidden alias.
+    writeFileSync(paths.resolveArtifact(npmDocs.resolverPath, npmDocs.dependency), zipSync({
+      [npmDocs.requiredMember]: new TextEncoder().encode("npm manual fixture"),
+      "local/lib/npm/man/man1/npm.1": [
+        new TextEncoder().encode("../../../../../share/man/man1/npm.1"),
+        { os: 3, attrs: 0o120777 << 16 },
+      ],
+    }));
+    const outFile = join(root, "invalid-layout.vfs.zst");
+    await expect(buildSourceRootfsShellImage({
+      ...paths, outFile, sourceDateEpoch: "0",
+    })).rejects.toThrow(
+      "/usr/local/lib/npm/man/man1/npm.1: /usr/local is reserved for the administrator",
+    );
+    expect(existsSync(outFile)).toBe(false);
+  });
+
   it("rejects eager content over its checked-in budget before writing an output", async () => {
     const root = tempRoot();
     const paths = fixturePaths(root);

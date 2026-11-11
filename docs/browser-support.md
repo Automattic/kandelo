@@ -672,7 +672,7 @@ pipe pair.
 
 ### Terminal
 - PTY support with full line discipline
-- The wasm32 browser shell includes [tmux 3.8](tmux.md) as a lazy program.
+- The wasm32 browser shell includes [tmux 3.8](../packages/registry/tmux/README.md) as a lazy program.
   It uses the ordinary guest PTYs, process model, Unix sockets, libevent,
   and package-owned terminfo database; panes are rendered within xterm.
 - Interactive stdin via `appendStdinData` for incremental input
@@ -682,10 +682,15 @@ pipe pair.
   `PtyTerminal` for pages that drive a `BrowserKernel` directly.
 - Each visited terminal tab retains its xterm renderer and keeps parsing PTY
   output while hidden, including when the primary view shows syslog or another
-  demo surface. Revealing a tab fits and refreshes the retained screen;
-  it does not reconstruct a full-screen application from the bounded session
-  byte-history tail. Only the active tab receives focus or updates its PTY
-  dimensions. Removing a tab disposes its renderer and listeners.
+  demo surface. Revealing a tab refreshes its retained screen without
+  reconstructing a full-screen application from the bounded session byte-history
+  tail. It fits after visibility is observed and the following animation frame
+  lets xterm's suspended renderer resume. Fitting while hidden can leave its
+  scroll range sized for the old row count and conceal new output after a resize.
+  Only the active tab receives focus or updates its PTY
+  dimensions. User-selected scrollback remains selected. Removing a tab
+  disposes its renderer/listeners and cancels its visibility observer and
+  scheduled fit without touching another terminal's PTY.
 - Guest-created PTYs notify the shared Node/browser runtime when input,
   output, a terminal mode transition, or final endpoint closure changes
   readiness. Poll/select/epoll and blocked reads are rescheduled through the
@@ -956,7 +961,7 @@ kernel, image writer, images, and package artifacts through `run.sh`.
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package as a lazy file in the image, fetched when the profile first runs it; its shader presets are baked into the image. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
 | modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
-| freeciv | Freeciv 3.2.6 SDL2 client + server | dinit | Lazy game/data archive, GLES2 presentation, and direct TCP multiplayer through network sessions. The Freeciv game session activity hosts on port 5556, and players join the session host. Audio and multicast discovery are disabled; see [Freeciv](freeciv.md). |
+| freeciv | Freeciv 3.2.6 SDL2 client + server | dinit | Lazy game/data archive, GLES2 presentation, and direct TCP multiplayer through network sessions. The Freeciv game session activity hosts on port 5556, and players join the session host. Audio and multicast discovery are disabled; see [Freeciv](../packages/registry/freeciv/README.md). |
 | love | Native LÖVE 11.5 games | dinit | SDL2 KMSDRM/EGL/GLES port with Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX selectable through the Games dock menu. Starts Pong; switching restarts the process with the selected game directory. The executable and game tree download lazily. SDL2/OSS audio output is verified in Chromium. Steam integration is disabled. See `packages/registry/love/README.md` for the port's compatibility boundaries. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The desktop data archive also fetches on first read; the terminal-only boot does not download it. |
@@ -984,6 +989,14 @@ The Wayland desktop machine (launched from the gallery, or directly with
   hands/ticks drawn with wpkdraw's anti-aliased primitives).
 - **wlpaint** — a pointer-driven painting canvas.
 - **wlterm** — a libkwl VT100 terminal running a forkpty'd `sh` (bash, as in every Kandelo image).
+
+wlterm's key translator keeps XKB function/modifier keysyms separate from
+text. Shift, Control, Alt and lock-key presses write no PTY bytes; supported
+navigation/control keys retain their explicit terminal sequences. This keeps
+physical Shift transitions from inserting invisible characters into shell
+commands. The VT100 core's native regression covers that distinction, and
+the Cage browser check requires a command containing uppercase letters and
+shifted punctuation to parse and exit successfully.
 
 The Modeset pane bridges card0 to an OffscreenCanvas.
 
@@ -3597,10 +3610,37 @@ can change their selected resolution through those options. A live UI
 scaling control needs application-supported relayout or a working display
 resize notification path before it can offer a reliable size change.
 
-Omitting `displayScale` preserves native device-pixel output and CSS-derived
-physical size, so Wayland compositors and DPI-aware applications retain
-ownership of their scaling. This setting belongs to image presentation
-metadata, not application font, theme, or coordinate patches.
+An image can declare `presentation.displayMaxSize`, for example
+`{ "width": 1280, "height": 720 }`, to prefer a modest virtual monitor.
+This uses the CSS-reference grid without HiDPI supersampling, then fits
+that grid within the declared maximum while preserving aspect ratio within
+the connector's bounds. Width must be a whole number from 640 through
+3840 and height from 480 through 2160. A smaller pane keeps its reference
+size unless the 640×480 connector minimum applies. If `displayScale` is
+also declared, that scale is applied before the maximum. The bounded
+monitor reports 96 reference DPI, and the chosen scanout, cursor and input
+coordinates all use the actual guest grid.
+
+The maximum constrains the preferred monitor size, rather than removing
+higher standard modes from the virtual connector. A guest can explicitly
+choose another supported mode. The browser fits that actual scanout; this
+setting does not force a live compositor to switch modes after a resize.
+Apply it before launching the graphical client.
+
+Cage's normal shell profile instead declares `displayScale: 1`: one guest
+pixel per CSS pixel, with no fixed 1280×720 cap and no HiDPI supersampling.
+This avoids allocating a Retina-sized monitor, but on a HiDPI screen the
+browser enlarges the guest pixels, so text can look softer than Sway's
+native device-pixel output. The connector still enforces its 640×480 through
+3840×2160 bounds.
+An application can choose a higher supported mode explicitly; the profile
+does not expose a live density control.
+
+Omitting both `displayScale` and `displayMaxSize` preserves native
+device-pixel output and CSS-derived physical size, so compositors and
+DPI-aware applications can retain ownership of their scaling. These
+settings belong to image presentation metadata, not application font,
+theme, or coordinate patches.
 
 Pointer input waits for the first published scanout size; the canvas's
 initial allocation is not an input coordinate space. Absolute positions
@@ -4249,7 +4289,7 @@ its resources. KMS activities mount and measure a real scanout before launch;
 they become visible when the guest acquires the display device.
 
 Network sessions carry IPv4 multicast as well as unicast and broadcast, so
-[termchat](termchat.md) can discover other running instances and exchange
+[termchat](../packages/registry/termchat/README.md) can discover other running instances and exchange
 messages/files through ordinary guest sockets. Membership and filtering stay
 in the kernel. This does not expose raw physical LAN sockets to browser code.
 

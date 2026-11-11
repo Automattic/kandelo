@@ -397,7 +397,41 @@ static void scroll_region_bounds_and_resize(void) {
     vt100_destroy(t);
 }
 
+static void input_modifier_keys_are_not_text(void) {
+    /* XKB function/modifier keysyms, not Unicode characters. In particular,
+     * typing Shift+$ must not send U+FFE1 before the dollar sign. */
+    const uint32_t silent[] = {
+        0xffe1, 0xffe2, 0xffe3, 0xffe4, /* Shift and Control */
+        0xffe5, 0xffe9, 0xffea, 0xffeb, 0xffec, /* Lock, Alt, Super */
+        0xfe03, 0xffbe, 0xfd01, /* ISO level 3, F1, 3270 Duplicate */
+    };
+    char out[8];
+    for (size_t i = 0; i < sizeof(silent) / sizeof(silent[0]); i++) {
+        memset(out, 0x55, sizeof out);
+        size_t n = vt100_input_key(silent[i], VT100_MOD_SHIFT, out, sizeof out);
+        if (n != 0 || out[0] != 0x55) {
+            printf("FAIL modifier/function keysym 0x%X wrote %zu bytes\n", silent[i], n);
+            failures++;
+        }
+    }
+    const uint32_t printable[] = { 'A', '$', '(', ')', '+', '"' };
+    for (size_t i = 0; i < sizeof(printable) / sizeof(printable[0]); i++) {
+        size_t n = vt100_input_key(printable[i], VT100_MOD_SHIFT, out, sizeof out);
+        if (n != 1 || out[0] != (char)printable[i]) {
+            printf("FAIL shifted printable 0x%X\n", printable[i]);
+            failures++;
+        }
+    }
+    if (vt100_input_key('a', VT100_MOD_CTRL, out, sizeof out) != 1 || out[0] != 1 ||
+        vt100_input_key(0xff0d, 0, out, sizeof out) != 1 || out[0] != '\r' ||
+        vt100_input_key(0xff51, 0, out, sizeof out) != 3 || memcmp(out, "\x1b[D", 3)) {
+        printf("FAIL control/navigation input\n");
+        failures++;
+    }
+}
+
 int main(void) {
+    input_modifier_keys_are_not_text();
     scroll_region_preserves_status();
     editor_incremental_scroll();
     scroll_region_wrap_and_indices();

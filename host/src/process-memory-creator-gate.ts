@@ -42,6 +42,12 @@ export class ProcessMemoryCreatorGate {
     }
   }
 
+  /** Only a closed admission can authorize canceling an admitted creator. */
+  closedAdmissionCancellation(operation: string): Error {
+    if (this.open) throw new Error("Process creator admission is still open");
+    return new ProcessMemoryCreatorAdmissionClosedError(operation);
+  }
+
   /**
    * Admit ownership that must transfer out of an async setup callback.
    *

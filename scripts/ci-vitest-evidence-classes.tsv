@@ -112,6 +112,7 @@ host/test/egl-fork-reinitialize.test.ts	prepared-product
 host/test/egl-image-ownership.test.ts	prepared-product
 host/test/egl-native-display.test.ts	prepared-product
 host/test/egress-link.test.ts	source-only
+host/test/enosys-report.test.ts	prepared-product
 host/test/environment-lifecycle.test.ts	prepared-product
 host/test/epoll-pwait-sigmask.test.ts	prepared-product
 host/test/epoll-semantics.test.ts	prepared-product
@@ -184,12 +185,15 @@ host/test/fstatat-empty-path.test.ts	prepared-product
 host/test/futex-deadlines.test.ts	prepared-product
 host/test/futex-kernel-wait.test.ts	prepared-product
 host/test/gallery-descriptor.test.ts	source-only
+host/test/gbm-coherence-cache.test.ts	source-only
 host/test/gbm-cpu-map.test.ts	prepared-product
 host/test/gbm-device-retirement.test.ts	prepared-product
+host/test/gbm-fallback.test.ts	source-only
 host/test/gbm-file-aliases.test.ts	prepared-product
 host/test/gbm-fork-ownership.test.ts	prepared-product
 host/test/gbm-import-lifetime.test.ts	prepared-product
 host/test/gbm-modifiers.test.ts	prepared-product
+host/test/gbm-native-snapshot.test.ts	source-only
 host/test/gbm-rendered-ring.test.ts	prepared-product
 host/test/gbm-surface-ring.test.ts	prepared-product
 host/test/gc-reference-state-fresh-worker.test.ts	prepared-product
@@ -217,6 +221,7 @@ host/test/guest-spawn-overlay-program.test.ts	prepared-product
 host/test/guest-yacc-lex.test.ts	prepared-product
 host/test/harper-smoke.test.ts	prepared-product
 host/test/heap-safepoint.test.ts	prepared-product
+host/test/honest-stub-returns.test.ts	prepared-product
 host/test/host-adapter-manifest.test.ts	source-only
 host/test/host-diagnostic-routing.test.ts	source-only
 host/test/host-directory-readdir-inode.test.ts	source-only
@@ -284,6 +289,8 @@ host/test/kernel-wasm-input-snapshot.test.ts	source-only
 host/test/kernel-worker-copyback.test.ts	source-only
 host/test/kernel-worker-entry-root-contract.test.ts	source-only
 host/test/kernel.test.ts	prepared-product
+host/test/klogctl.test.ts	prepared-product
+host/test/kmsg-poll.test.ts	prepared-product
 host/test/labwc-smoke.test.ts	prepared-product
 host/test/lazy-fetch-bytes.test.ts	source-only
 host/test/lazy-url.test.ts	source-only
@@ -521,6 +528,8 @@ host/test/suite-health-reporter.test.ts	source-only
 host/test/supported-program-baseline.test.ts	prepared-product
 host/test/sway-smoke.test.ts	prepared-product
 host/test/syscall-cp-offset.test.ts	prepared-product
+host/test/syslog-client.test.ts	prepared-product
+host/test/syslog-end-to-end.test.ts	prepared-product
 host/test/sysv-ipc.test.ts	prepared-product
 host/test/sysv-shm-departed-peer.test.ts	prepared-product
 host/test/tar.test.ts	source-only
@@ -539,8 +548,10 @@ host/test/timerfd-wake-latency.test.ts	prepared-product
 host/test/tls-network-backend-real-client.test.ts	prepared-product
 host/test/transfer-kernel-wait.test.ts	prepared-product
 host/test/trap-signals.test.ts	source-only
+host/test/unix-dgram-cross-process.test.ts	prepared-product
 host/test/unix-listener-exec.test.ts	prepared-product
 host/test/utf8proc-smoke.test.ts	prepared-product
+host/test/var-log-image-contract.test.ts	prepared-product
 host/test/vfork-lifecycle-guest.test.ts	prepared-product
 host/test/vfork-lifetime.test.ts	source-only
 host/test/vfork-mechanism-trace.test.ts	source-only

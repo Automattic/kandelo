@@ -167,14 +167,14 @@ record, data offset eight, full 64-bit payload, eventfd edges, one-shot rearm
 and stream RDHUP. Its inherited raw `SYS_epoll_pwait2` constant returned
 ENOSYS. Those probes established the syscall and Rust ABI behavior;
 dependency platform selection was still a separate porting task. The
-subsequent [termchat port](termchat.md) enables Kandelo in mio 0.7.6's
+subsequent [termchat port](../packages/registry/termchat/README.md) enables Kandelo in mio 0.7.6's
 existing epoll/eventfd, pipe, and socket branches with narrow target
 configuration patches. It retains mio's event backend. The real termchat
 TUI exercises discovery, messages, file transfer, resize and clean shutdown
 in Chromium, Firefox and WebKit; this is consumer evidence for the paths
 it uses, not a claim of complete Linux epoll compatibility.
 
-The [libevent port](libevent.md) supplies a reusable C event library and
+The [libevent port](../packages/registry/libevent/README.md) supplies a reusable C event library and
 unchanged upstream edge-triggering and peer-close regression tests. Its
 Node and browser fixtures exercise both pointer widths and both libevent
 epoll modes, with an explicit backend check and zero skipped cases required.

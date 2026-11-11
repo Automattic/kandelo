@@ -336,7 +336,7 @@ Check the raw device coordinates separately from a toolkit's hotspot
 conversion, because two incorrect offsets can cancel in an application
 screenshot. Keep genuine upstream input defects at their owning layer:
 changing a platform API's documented queue semantics to suit one client
-would make the next client wrong. See [Freeciv](freeciv.md) for this split.
+would make the next client wrong. See [Freeciv](../packages/registry/freeciv/README.md) for this split.
 
 ## Keep source audits effective when compiler tooling changes
 

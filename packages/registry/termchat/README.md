@@ -8,7 +8,7 @@ sent files; this version does not provide separate private conversations.
 ## Use it
 
 The network panel also offers **Terminal chat** through the package's
-[session declaration](package-sessions.md). Choose a host name and use
+[session declaration](../../../docs/package-sessions.md). Choose a host name and use
 **Start and invite**, or select **Already running** to share a default-config
 instance without restarting it. Guests follow the link, enter a different
 name, and choose **Join and open chat**. New instances open in a fresh
@@ -59,7 +59,7 @@ parking_lot_core 0.8.0, chrono 0.4.19, whoami 1.1.0, and instant 0.1.9. They
 select Unix implementations for a Unix Wasm target, initialize musl time64
 padding, and enable existing mio implementations for Kandelo's APIs. They do
 not claim Linux target identity or replace an event loop with host JavaScript.
-See [Rust dependency portability](../sdk/rust/README.md#porting-rust-dependencies)
+See [Rust dependency portability](../../../sdk/rust/README.md#porting-rust-dependencies)
 for the shared build helper, source verification, cfg diagnosis, and validation
 workflow.
 
@@ -69,8 +69,8 @@ Virtual links transport a group packet once per receiving kernel domain,
 even when multiple sockets reuse its port; the receiving kernel distributes
 it to matching sockets. The session wrapper routes multicast through the
 active session, and Node does not create physical TCP listeners for virtual
-bindings. See [networking](architecture.md#networking) and the existing
-[epoll contract](epoll.md).
+bindings. See [networking](../../../docs/architecture.md#networking) and the existing
+[epoll contract](../../../docs/epoll.md).
 
 ## Validation
 
@@ -82,5 +82,5 @@ renders the actual output with xterm. Test sources are
 `packages/registry/termchat/test/termchat.test.ts` and
 `apps/browser-demos/test/termchat.spec.ts`; transport and kernel regressions
 cover multicast fanout and filtering separately. See the
-[validation record](plans/2026-10-23-termchat-validation.md) for executed
+[validation record](../../../docs/plans/2026-10-23-termchat-validation.md) for executed
 results, build preparation failures and outstanding checks.

@@ -73,3 +73,78 @@ test("full-screen terminal state survives tab changes and hidden output", async 
     (window as any).__terminalRepaint.listeners("/dev/pts/0"),
   )).toBe(0);
 });
+
+test("hidden resize keeps new output visible and preserves deliberate scrollback", async ({ page }) => {
+  await page.goto("/test/fixtures/terminal-repaint.html");
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).__terminalRepaint.listeners("/dev/pts/0"),
+  )).toBe(1);
+  const rows = page.locator(".xterm-rows:visible");
+  const surface = page.locator(".kshell-surface");
+  const toggle = page.getByRole("button", { name: "Toggle terminal view" });
+  await page.evaluate(() => {
+    const fixture = (window as any).__terminalRepaint;
+    fixture.setOutputOnResize(true);
+    fixture.emit("/dev/pts/0", Array.from({ length: 100 }, (_, i) =>
+      `ROW ${i} ${"word ".repeat(20)}\r\n`).join(""));
+  });
+  await expect(rows).toContainText("ROW 99");
+  for (let cycle = 0; cycle < 6; cycle++) {
+    await toggle.click();
+    await expect(rows).toHaveCount(0);
+    await surface.evaluate((node, cycle) => {
+      const style = (node as HTMLElement).style;
+      style.width = cycle % 2 ? "800px" : "650px";
+      style.height = cycle % 2 ? "500px" : "350px";
+    }, cycle);
+    await page.evaluate(async cycle => {
+      (window as any).__terminalRepaint.emit("/dev/pts/0", `HIDDEN ${cycle}\r\n`);
+      // Why: observe actual hidden layout so this exercises a suspended
+      // renderer rather than a hide/reveal completed within one paint.
+      await new Promise<void>(resolve => {
+        const observer = new IntersectionObserver(entries => {
+          if (entries.some(entry => !entry.isIntersecting)) {
+            observer.disconnect();
+            resolve();
+          }
+        });
+        observer.observe(document.querySelector(".kshell-terminal-slot[hidden] .xterm-screen")!);
+      });
+    }, cycle);
+    await toggle.click();
+    await page.evaluate(cycle => (window as any).__terminalRepaint.emit("/dev/pts/0",
+      `EXIT_MARKER_${cycle}\r\nPROMPT_${cycle}\r\n`), cycle);
+    await expect(rows).toContainText(`EXIT_MARKER_${cycle}`);
+    await expect(rows).toContainText(`PROMPT_${cycle}`);
+  }
+
+  await page.locator(".xterm:visible").click();
+  await page.keyboard.press("Shift+PageUp");
+  await expect(rows).not.toContainText("PROMPT_5");
+  const history = await rows.innerText();
+  await toggle.click();
+  await page.evaluate(() => (window as any).__terminalRepaint.emit("/dev/pts/0", "WHILE_SCROLLED\r\n"));
+  await toggle.click();
+  await page.locator(".xterm-screen:visible").screenshot({ timeout: 2_000 });
+  await expect.poll(() => rows.innerText()).toBe(history);
+  expect(await page.evaluate(() => (window as any).__terminalRepaint.inputs)).toEqual([]);
+
+  // Why: retiring a hidden terminal must cancel its layout work; a newly
+  // visible terminal owns its own PTY and must not resize the retired one.
+  await toggle.click();
+  await page.getByRole("button", { name: "Remove TTY1" }).click();
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).__terminalRepaint.listeners("/dev/pts/0"),
+  )).toBe(0);
+  const retiredResizes = await page.evaluate(() =>
+    (window as any).__terminalRepaint.resizes.filter((resize: { path: string }) => resize.path === "/dev/pts/0").length);
+  await toggle.click();
+  await surface.evaluate(node => { (node as HTMLElement).style.height = "400px"; });
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).__terminalRepaint.listeners("/dev/pts/1"),
+  )).toBe(1);
+  await expect(rows).toContainText("RESIZE");
+  expect(await page.evaluate(() =>
+    (window as any).__terminalRepaint.resizes.filter((resize: { path: string }) => resize.path === "/dev/pts/0").length))
+    .toBe(retiredResizes);
+});

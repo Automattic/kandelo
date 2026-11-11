@@ -17,7 +17,7 @@ Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes ar
 | `apps/signalling/` | Portable PHP piplet, Spacefast database-backed signalling, and server tests | Guest socket semantics, RTC data transport |
 | `apps/spacefast-cors-proxy/` | Optional Spacefast proxy, quota-session service, and combined-site packager | Default browser hosting, guest networking semantics |
 | `web-libs/` | Browser-independent reusable UI/session contracts | App-specific page code |
-| `packages/registry/<name>/` | One ported package: manifest, build script, patches, package-owned demos, package-owned tests | Kernel/host behavior tests |
+| `packages/registry/<name>/` | One ported package: manifest, build script, patches, port documentation, package-owned demos, package-owned tests | Kernel/host behavior tests |
 | `packages/sets/` | Named product or CI package sets | Package implementation details |
 | `tests/` | External conformance suites, package-system tooling tests, and shared host/kernel test artifact manifests | Package-owned integration tests |
 | `images/` | Rootfs sources and VFS/archive build scripts | Package source builds |
@@ -57,12 +57,19 @@ Each package is self-contained under `packages/registry/<name>/`:
 
 ```
 packages/registry/<name>/
+  README.md          Port usage, build notes, patches, workarounds, and limits
   package.toml       Package metadata consumed by release/build automation
   build*.sh          Package build scripts
   patches/           Package-specific source patches
   demo/              Package-owned launchers, service configs, sample assets
   test/              Package-owned tests, fixtures, and browser specs
 ```
+
+Keep port-specific documentation beside its package definition in `README.md`.
+Use `docs/` for shared platform contracts and guides, linking to a package's
+README when an example needs package-specific detail. Keep investigation logs
+and agent handoffs in `.context/` rather than adding a general docs page for
+each port.
 
 Package behavior tests live with the package so future CI can map changes to relevant package tests. For example, a Doom package change can trigger `packages/registry/fbdoom/test/` and browser-interface checks without running unrelated host/kernel tests.
 

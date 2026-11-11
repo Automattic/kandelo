@@ -1,0 +1,18 @@
+{
+  "context": {
+    "command": "scripts/dev-shell.sh bash -c \"export CI=1 KANDELO_CACHE_GC_AUTO=0; cd apps/browser-demos; npx playwright test --config ../../.context/scummvm-import-control.config.ts --grep 'unrecognized archive' --workers=1 --retries=0 --reporter=list,json\"",
+    "commit": "8161769ed9d2394e7793bfd82be08cbf890e7145",
+    "date": "2026-11-10T20:31:17.129Z",
+    "exit_code": 1,
+    "host": "chromium",
+    "note": "Pinned main with eight build-only prepared-product evidence classifications and the pre-existing Sortix submodule case adjustment; no runtime, package or selected test modifications. Private config selects the original Chromium case against this checkout's normally prepared source-only server at port 56513. Concurrent candidate desktop/memory validation was running; CPU/RSS samples from the exact failure were not retained. macOS 27.2.1 build 26B131; no browser/root-cause attribution follows from the SDL error.",
+    "repo_root": "/Users/brandon/conductor/workspaces/kandelo/sydney/.scratch/cage-coherence-20261109/main-control",
+    "selection": "scummvm-unrecognized-archive",
+    "suite": "playwright"
+  },
+  "source_sha256": "d35dcf9e43378f88e1f68dd080d116d091d43e9d2b2531f03bab35e771574ff5",
+  "cases": {
+    "[chromium] kandelo-scummvm.spec.ts > kandelo-scummvm.spec.ts > Load game data preserves an unrecognized archive as a download": {"observed":["failed"],"outcome":"fail","reason":"Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m Expected: \u001b[32m\"saved to ~/Downloads/foo.zip\"\u001b[39m Received: \u001b[31m\"failed: game import: ScummVM detection failed: error: XDG_RUNTIME_DIR is invalid or not set in the environment. Could not initialize SDL: No available video device! (saved original)\"\u001b[39m Call Log: - Timeout 180000ms exceeded while waiting on the predicate"},
+    "[runner exit]": {"outcome":"error","reason":"runner exited 1; inspect the console log for errors omitted by the reporter"}
+  }
+}

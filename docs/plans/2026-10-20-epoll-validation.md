@@ -678,7 +678,7 @@ After the preceding epoll validation, the user authorized a libevent port
 to demonstrate a real consumer of the completed semantics. New registry
 packages provide the libevent 2.1.12 static libraries and its unchanged
 upstream regression executable for wasm32 and wasm64. See
-[the libevent reference](../libevent.md) for build commands and supported
+[the libevent reference](../../packages/registry/libevent/README.md) for build commands and supported
 outputs. No upstream source patch or Linux identity define was needed.
 
 The wasm64 build exposed an existing shared-instrumenter defect: the

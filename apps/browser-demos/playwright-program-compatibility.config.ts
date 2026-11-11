@@ -3,6 +3,8 @@ import base from "./playwright.config";
 import { playwrightPort } from "../../tests/playwright-run";
 
 const port = await playwrightPort(process.env.KANDELO_PROGRAM_COMPATIBILITY_PORT);
+// Workers reload this config and must use the port of the already owned server.
+process.env.KANDELO_PROGRAM_COMPATIBILITY_PORT = String(port);
 
 export default defineConfig({
   ...base,

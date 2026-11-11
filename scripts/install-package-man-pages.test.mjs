@@ -136,15 +136,15 @@ describe("install_package_man_pages", () => {
 
   it("mirrors staged pages into another man tree as relative symlinks", () => {
     const tree = fixtureTree({ "npm.1": PAGE, "npmrc.5": PAGE });
-    const result = install(["demo-docs", tree, "npm.1", "npmrc.5", "+local/lib/npm/man"]);
+    const result = install(["demo-docs", tree, "npm.1", "npmrc.5", "+lib/npm/man"]);
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
     const unpacked = join(result.root, "unpacked");
     execFileSync("unzip", ["-q", join(result.out, "demo-docs.zip"), "-d", unpacked]);
-    expect(readlinkSync(join(unpacked, "local/lib/npm/man/man1/npm.1"))).toBe(
-      "../../../../../share/man/man1/npm.1",
+    expect(readlinkSync(join(unpacked, "lib/npm/man/man1/npm.1"))).toBe(
+      "../../../../share/man/man1/npm.1",
     );
-    expect(readFileSync(join(unpacked, "local/lib/npm/man/man5/npmrc.5"), "utf8")).toBe(PAGE);
+    expect(readFileSync(join(unpacked, "lib/npm/man/man5/npmrc.5"), "utf8")).toBe(PAGE);
   });
 
   it("refuses a mirror path that climbs out of the archive", () => {

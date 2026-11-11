@@ -9,9 +9,12 @@ and validation. This document remains the reference for implemented behavior.
 The B1 graphics shipment follows the maintainer's D-63 incremental
 release scope: selected graphical demos generally work, while known
 defects and full validation remain explicit follow-ups. The combined
-normal-built checkpoint passes 23 of 24 graphical cases; WebKit Cage
-startup fails before the rendering checks and its isolated control
-reproduces the failure. The implemented ownership and publication
+normal-built shipment checkpoint passed 23 of 24 graphical cases; WebKit
+Cage startup failed before rendering and its isolated control reproduced
+the failure. The [Cage follow-up](https://github.com/Automattic/kandelo/pull/1678)
+attributes that startup failure to the test's ephemeral storage context and
+records a separate terminal visibility/resize ordering repair. The original
+failures remain release evidence. The implemented ownership and publication
 contracts below still apply. This release makes no native-feel or
 full-conformance claim.
 
@@ -21,7 +24,7 @@ intermediate branch versions of host 4 had different interfaces and are
 not separate release contracts. Both original frozen fixture cohorts
 remain unchanged. See the [combined landing
 decision](graphics/compatibility-v1.md#combined-landing-decision-d-64-2026-11-08)
-for exact evidence, the unresolved startup defect and contributor
+for exact shipment evidence, the original startup failure and contributor
 credit.
 
 ## Overview
@@ -2809,6 +2812,12 @@ graceful detach attempt fails or times out. That realm boundary is the final
 release fallback; a false graceful result never asks the main thread to keep a
 partially detached kernel Worker alive.
 
+Browser destroy carries the closed creator gate's terminal cancellation into
+pending disposable memory allocations. Fork rollback still removes the exact
+uncommitted child and inherited host handles before accepting that disposition.
+Constructor errors, copied cancellation text and failed allocation-worker
+termination retain their failure identity and remain diagnostic.
+
 Every main generation prepares its own exact-handle absence proof before
 publication or deferred start. Cold exit, exec and destroy paths may accept that
 sealed never-attempted proof instead of waiting for a message from a realm that
@@ -2896,6 +2905,18 @@ snapshot and pending child backing, including concurrent pending allocations,
 and rechecks guest growth before publishing a constructed memory. Native
 constructor exhaustion maps to `ENOMEM` without changing unrelated errors.
 Machine shutdown closes creator admission before draining admitted work.
+If Rust exits a fork child while replay readiness is pending, the exact
+process-exit owner cancels that replay with its already-published teardown.
+Both hosts join that teardown instead of rolling back the exited child.
+A prior worker or protocol failure still wins; a synthetic Worker exit or
+matching error text cannot supply this ownership. The same cancellation is
+rechecked after readiness and after asynchronous launch-state queries.
+When that owner cancels pending replay, it marks only the exact child as
+intentionally retiring before yielding. Cancellation can wake guest glue
+before a queued Rust retirement marker is written. Fence listeners remain
+active; an expected cancellation must not become a second crash report.
+This handoff is enabled only for ordinary fork. A vfork borrower's existing
+lifetime completion and address-space containment protocol remains its owner.
 This preserves the syscall-time snapshot even if a sibling thread execs while
 the child Worker is prepared. The child copies the current length, not the
 configured maximum, because `memory.size()` and the accessible address-space
@@ -6015,11 +6036,32 @@ runs, using the exact bytes that reached canonical storage, and marks
 readers pending. It never rereads the live producer to advance that
 baseline: stores made during the scan must remain detectable at the next
 publication, including stores to an earlier byte the scan already passed.
-Readiness refresh remains unconditional for the
-selected BO's mapped readers: mutable canonical pixel views do not provide
-an authoritative version that would permit skipping those refreshes.
-This remains boundary synchronization,
-not live aliasing between Wasm memories. A snapshot is bounded by the
+Each reader records the canonical revision it has imported. A current
+reader needs no copy; a stale reader imports only changed byte runs and
+advances its baseline from canonical bytes, so a concurrent guest store
+remains detectable. Unrestricted mutable `pixelView` access permanently
+disables that revision shortcut for the BO. Internal read-only consumers
+borrow `readPixelView`; device writes use `publishDevicePixels`.
+
+A mapping comparison can be reused only when the existing process mutation
+epoch proves every thread is parked and no vfork alias can write. The proof
+is checked against the original mapped memory, before and after the scan;
+unknown or running address spaces always scan. Host imports invalidate the
+same epoch. A prefix comparison proves only that prefix.
+
+Large mappings with authenticated constructor metadata use the existing
+read-only Wasm comparator on 64 KiB blocks. Each mapping owns an independent,
+nonshared baseline memory whose initial and maximum sizes both equal the
+rounded allocation. Instances and exports exist only during a synchronous
+borrow of the original process memory. Dirty blocks still use exact
+changed-byte publication; small mappings, unavailable native capabilities,
+and JavaScriptCore hosts (WebKit and Bun) use the JavaScript comparison with
+owned-array baselines. Fixed Wasm baselines spend additional reservation
+capacity on JavaScriptCore; optional comparison bookkeeping must not reduce
+the capacity available to guest processes. Splits allocate independent baselines, and
+retirement releases them with their mappings. No guest memory is sent to a
+persistent browser realm, and no ABI or memory-budget ceiling changes.
+This remains boundary synchronization, not live aliasing between Wasm memories. A snapshot is bounded by the
 mapping length and BO size and retired with its mapping; backing is retired
 only by the kernel's final-reference destroy notification. Partial DRI
 `munmap` trims or splits that ownership instead of revoking the whole
@@ -6871,11 +6913,19 @@ journal that would retry a refused deletion before later GL work, which
 nothing guarantees will ever come.
 
 The browser's optional image-owned `presentation.displayScale` advertises
-a readable virtual monitor for bitmap interfaces. The guest mode, 96-DPI
-reference dimensions, scanout, input range, and cursor use one grid. Without
-that setting, the existing native-device-pixel and physical-size path is
-preserved for compositors. See [display presentation](browser-support.md)
-for its bounds and resampling limitations.
+a readable virtual monitor for bitmap interfaces. `displayMaxSize` selects
+a CSS-reference grid without HiDPI supersampling and bounds its preferred
+pixel dimensions, preserving aspect within connector bounds. An explicit
+scale applies before this maximum. The guest mode, 96-DPI reference size,
+scanout, input range and cursor use one grid; this bounds real guest
+framebuffers rather than only enlarging their CSS presentation. Cage's
+profile opts into a 1280×720 maximum for demo responsiveness. Removing or
+changing the preference invalidates a preserved pane's size report before
+another client starts. Other images retain the native-device-pixel and
+physical-size path when neither setting is declared. Higher standard guest
+modes remain available, and this does not add live mode-switch notifications.
+See [display presentation](browser-support.md) for bounds and resampling
+limitations.
 
 KMS display stats distinguish scene presentations from page flips. Cursor-plane updates do not increment scene presentation counters. Slot 0 counts
 canvas presentations from the CPU/scanout presenters and successful direct
@@ -7118,7 +7168,18 @@ and a button), and foot, GTK3, libkwl and wlterm as session clients
 (`host/test/{foot,gtk3,libkwl,wlterm}-smoke.test.ts`), all on the pixman
 renderer. The tests share the session root in `host/test/wlroots-session.ts`.
 `apps/browser-demos/test/kandelo-cage.spec.ts` gates the GLES2 renderer in
-the browser.
+the browser. It uses the shared persistent-page fixture to exercise the
+storage-backed computer bootstrap. A failure to open the browser's OPFS
+root reports the native operation, error name/message and retained cause
+before any guest worker starts; it is not evidence of a compositor crash
+or of memory exhaustion. Repeated Cage checks cover keyboard repaint,
+host viewport resizing, clean client/display release and live machine
+restarts. The retained terminal fits after observed visibility and the
+following animation frame, allowing xterm's hidden renderer to resume
+before it measures the new scroll range. Each terminal cancels its own
+visibility observer and scheduled fit when disposed. See the
+[Cage follow-up PR](https://github.com/Automattic/kandelo/pull/1678) for scope and
+current validation.
 
 ## Wayland tiling compositor (`sway`)
 
