@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-out="$(mktemp -d "$root/.context/graphics-owned-peer.XXXXXX")"
+mkdir -p "$root/.scratch"
+out="$(mktemp -d "$root/.scratch/graphics-owned-peer.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 common_source="${KANDELO_OWNED_PEER_SOURCE:-$root/libc/glue/drm_owned.c}"
 clang -std=c11 -D_GNU_SOURCE -g -O1 -pthread -Wall -Wextra -Werror -Wno-unused-command-line-argument \

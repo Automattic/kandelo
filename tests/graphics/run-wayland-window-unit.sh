@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
-output_dir="$(mktemp -d "$repo_root/.context/graphics-wayland-window.XXXXXX")"
+mkdir -p "$repo_root/.scratch"
+output_dir="$(mktemp -d "$repo_root/.scratch/graphics-wayland-window.XXXXXX")"
 trap 'rm -rf "$output_dir"' EXIT
 mkdir -p "$output_dir/include/drm"
 if [ -n "${2:-}" ]; then

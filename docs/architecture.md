@@ -2410,6 +2410,9 @@ Processes may export `__wasm_posix_thread_slots` to declare their maximum concur
 
 `mmap` remains coherent because the kernel has one per-process address-space model for brk, mmap, and host-reserved dynamic control ranges. Automatic `mmap` starts at the process's `mmap_base`, not at the legacy fixed 64MB floor. A usable non-fixed address hint is preferred after rounding it down to the 64KB Wasm page boundary; an occupied or invalid hint falls back to the ordinary first-fit search. `brk` growth succeeds only when the adjacent range is free; if an mmap region or host-reserved pthread slot occupies the next pages, `brk` fails by returning the old break. `MAP_FIXED`, `munmap`, and `mremap` growth are rejected when they would overlap the reserved prefix, legacy host-control range, or a host-reserved pthread slot. `munmap` rounds its length up to a Wasm page before updating both kernel mappings and host-owned bindings. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls and after dynamic pthread-slot reservations so returned guest addresses are backed before user code touches them.
 
+For the earlier allocator tradeoffs and deferred linker/compaction proposals,
+see the [May 2026 design record](history/2026-05-30-process-memory-allocation.md).
+
 ### Shared mapping coherence
 
 `/proc/kandelo/shared_mapping_failures` retains the first eight failed
@@ -2895,7 +2898,7 @@ it:
 
 | Prefix | Authority | Module |
 |--------|-----------|--------|
-| `/` (everything not listed below) | in-kernel root filesystem built from the VFS image | `crates/runtime-core/src/rootfs.rs` |
+| `/` (everything not listed below, `/var/log` included: capped at `VAR_LOG_BYTE_LIMIT`) | in-kernel root filesystem built from the VFS image | `crates/runtime-core/src/rootfs.rs` |
 | `/tmp`, `/run`, `/dev/shm` | in-kernel tmpfs | `crates/runtime-core/src/tmpfs.rs` |
 | `/dev` (except `/dev/shm`) | kernel devfs and virtual devices | `crates/runtime-core/src/devfs.rs` |
 | `/proc` | kernel procfs | `crates/runtime-core/src/procfs.rs` |
@@ -2917,6 +2920,15 @@ directory limits removal and rename to the entry's or directory's owner. On
 the ephemeral in-kernel filesystems `fsync` succeeds without host work: they
 have no separate durable backing. An opt-in persistent root instead flushes
 its Rust-owned journal through the host storage adapter and reports failures.
+
+Rootfs directory entries retain a creation cookie until their name is
+removed. A second budgeted AVL index resumes `getdents64` by that cookie,
+so deleting or renaming returned entries cannot shift unread entries out
+of a stream. Both indexes are allocated before a namespace transaction
+commits. Synthetic root mount points reserve fixed prefix positions;
+callers must treat all returned directory cookies as opaque. Cookies are
+runtime state, rebuilt with the directory tree at boot; directory file
+descriptions do not survive a machine reboot.
 
 Persistent-root `statfs` computes the canonical composed-checkpoint footprint
 from live inodes, retaining allocations held by open descriptions or
@@ -3630,6 +3642,25 @@ the active-tail limit, like dirty-block flushing, rather than stranding a
 pending sync behind admission intended for new mutations. Allocation or I/O
 can still fail and must be reported; this reserves admission, not physical RAM.
 
+The 63 MiB active journal tail bounds admission of new persistent mutations;
+it is not filesystem capacity. At that bound Rust returns an internal `EAGAIN`
+and records a compaction request. The shared kernel worker consumes the request
+through `kernel_rootfs_take_compaction_request`, retains the syscall's copied
+arguments and existing descriptor retry authority, and asks the live compactor
+to run immediately. Both Node and browser wait for that handoff rather than
+the two-second background poll. Concurrent waiters share one compaction.
+The compactor's ordinary failure backoff does not delay a demand request.
+
+After successful activation, the worker retries the original operation. This
+also covers namespace mutations such as create and rename; their path bytes
+are retained while waiting. Regular-file `O_NONBLOCK` does not bypass storage
+maintenance. An actual compaction failure completes current waiters with its
+storage errno (`ENOSPC` for quota, `ENOMEM` for admission, otherwise `EIO`),
+without caching that failure for future calls. Existing logical capacity
+checks still reject writes that do not fit. Dirty data and timestamp flushing
+continue to bypass tail admission, so compaction can drain accepted state.
+No journal, checkpoint or activation-control disk format changes.
+
 Rust reports pressure at half the ordinary state allowance or whenever the
 writeback reserve is used. Node and browser boot/live compaction consult that
 decision even below the serialized-byte threshold. Production resizable
@@ -4028,6 +4059,18 @@ and extracted members in kernel memory, without eviction. Persistent roots use
 the bounded positioned path below. Archives may be sealed into atomic
 activation cohorts (`seal.rs`); the kernel verifies the cohort digests when it
 loads the image.
+
+`df` reports guest filesystem allocation, not download traffic or host free
+storage. On a persistent root, resolving a digest-declared lazy file or archive
+member leaves its deferred description in place, so reading or executing it
+alone does not charge its downloaded length to guest disk usage. The transport
+spools downloaded bytes into a temporary host file: an unlinked file in the
+Node session directory, or an OPFS scratch file in the browser. That cache can
+consume host storage (and browser origin quota) without reducing guest `df`
+availability. Copying the content into a guest-owned file or modifying a
+lazy file charges the resulting guest allocation normally. Ephemeral rootfs
+and unlimited scratch mounts currently report nominal, constant capacity and
+free space; they do not measure live allocation or available host memory.
 
 Persistent digest-declared reads do not turn deferred descriptors into embedded
 checkpoint content. The Rust verified-read cache authenticates the complete
@@ -4619,6 +4662,18 @@ come from `SCRATCH_MOUNTS` in `crates/runtime-core/src/tmpfs.rs`, not from the
 spec; the spec keeps them for the host side
 (`KERNEL_TMPFS_OWNED_PREFIXES` identifies the host-visible scratch entries).
 
+Unlike the rest of the root filesystem, `/var/log` is bounded: the rootfs
+refuses a write or growing `ftruncate` that would take the regular files under
+`/var/log` past `VAR_LOG_BYTE_LIMIT` (64 MiB of apparent size) with `ENOSPC`.
+The check is a walk of the live `/var/log` subtree at the two points where a
+file grows (`rootfs::write` and `truncate_handle`), and only for a file that
+has had a name under `/var/log` (an inode hint set by `open`, `link` and
+`rename` through that path), so growing writes elsewhere never walk it. It
+records nothing in the journal, and it is the kernel's rule on both hosts. The
+directory itself comes from the image: the kernel does not create `/var/log`
+at boot, so an image without one has none. See "Filesystem" in
+`docs/browser-support.md` for what that means for the service logs.
+
 Homes (`/home/maker` and `/root`), `/srv`, `/var/log` and `/var/tmp` belong to the root filesystem,
 not to scratch mounts. Their initial directories, owners and permissions come
 from the image (`MANIFEST` for the canonical rootfs). Their contents use the
@@ -4654,7 +4709,16 @@ real files inside `host/wasm/rootfs.vfs.zst`, served through `/`. Any program
 that calls `getpwnam`, `gethostbyname`, `getservbyname`, or OpenSSL's default
 configuration/trust lookup reads the same image bytes that `cat` would. The
 kernel synthesizes `/etc/mtab` because it reports live mount state; it does
-not synthesize static `/etc` policy or trust data.
+not synthesize static `/etc` policy or trust data. `/etc/mtab`, `/proc/mounts`
+and `/proc/self/mounts` share one generated list of kernel-owned mounts:
+rootfs, procfs, devfs, sysfs and every scratch mount from the tmpfs routing
+registry. `/proc/self/mountinfo` describes the same mounts with device numbers
+matching `stat().st_dev` and `statx` device fields, the parent mount IDs for
+nested scratch mounts, and
+the root's configured `nosuid` option. Coreutils `df` enumerates these mounts
+and obtains their space statistics through the ordinary `statvfs` path. Host
+directory mounts on Node are still absent from these lists; an explicit
+`df /path/to/host/mount` obtains that filesystem's statistics.
 
 The rootfs data defines the canonical interactive image account as
 `maker` at uid/gid 1000 with home `/home/maker`. Its password hash, wheel

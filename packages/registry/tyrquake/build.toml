@@ -1,5 +1,7 @@
 script_path = "packages/registry/tyrquake/build-tyrquake.sh"
 inputs = [
+  "packages/registry/tyrquake/quake-launch",
+  "packages/registry/tyrquake/quake-load-pak",
   "scripts/wasm-artifact-guards.sh",
   "scripts/install-local-binary.sh",
   "packages/registry/tyrquake/sessions.json",
@@ -11,4 +13,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 9
+revision = 10

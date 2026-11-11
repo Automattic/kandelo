@@ -1,0 +1,37 @@
+# Upstream assumption boundary: ask which platform uses /var/run/log
+#
+# sysklogd's src/syslog.h picks the listening socket path with
+# `#ifndef __linux__`, defaulting to /var/run/log and using /dev/log only on
+# Linux. Its own comment explains the real rule: "Default on *BSD is
+# /var/run/log", and /dev/log is what the GLIBC syslog API uses. So the test
+# is inverted -- it asks "is this not Linux" when it means "is this a BSD".
+#
+# Kandelo is not a Linux target and must never define __linux__ (see
+# sdk/config.site and the package contract in CLAUDE.md), so it took the BSD
+# branch and bound /var/run/log. Kandelo's syslog(3) is musl's, which connects
+# to /dev/log (sysroot/include/syslog.h defines _PATH_LOG as /dev/log, and
+# libc/musl/src/misc/syslog.c connects there). The daemon and its clients
+# therefore used different paths and nothing was ever delivered -- a silent
+# mismatch, with both halves reporting success.
+#
+# Naming the BSDs directly matches the comment's own intent and keeps every
+# other platform on the path its libc uses, so this is not specific to
+# Kandelo: any musl or glibc system that is not detected as Linux now agrees
+# with its own syslog(3).
+#
+# Upstream: sysklogd 2.8.0
+# (https://github.com/troglobit/sysklogd/releases/tag/v2.8.0).
+diff --git a/src/syslog.h b/src/syslog.h
+index 4f35ad0..0fa05ca 100644
+--- a/src/syslog.h
++++ b/src/syslog.h
+@@ -43,7 +43,8 @@
+  * use this replacement API, we use the default/traditional Linux path
+  * /dev/log in the sysklogd project.
+  */
+-#ifndef __linux__
++#if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || \
++    defined(__DragonFly__) || defined(__APPLE__)
+ #define	_PATH_LOG	"/var/run/log"
+ #else
+ #define	_PATH_LOG	"/dev/log"

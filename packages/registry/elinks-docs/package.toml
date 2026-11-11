@@ -18,6 +18,7 @@ spdx = "GPL-2.0-only"
 url = "https://github.com/rkd77/elinks/blob/v0.20.0/COPYING"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/elinks-docs/build-elinks-docs.sh"
 
 [[outputs]]

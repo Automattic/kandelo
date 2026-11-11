@@ -386,6 +386,7 @@ pub struct OverlayJournal<S: OverlayStorage> {
     dirty_sizes: DirtyFileSizes,
     metadata_cache: IoBuffer<CachedMetadata>,
     tail_limit_bytes: Option<u64>,
+    compaction_requested: core::cell::Cell<bool>,
     track_committed_state: bool,
     retain_compacted_metadata: bool,
     metadata_prefix_resident: bool,
@@ -760,6 +761,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             dirty_sizes,
             metadata_cache,
             tail_limit_bytes: None,
+            compaction_requested: core::cell::Cell::new(false),
             track_committed_state: true,
             retain_compacted_metadata: true,
             metadata_prefix_resident: false,
@@ -1724,10 +1726,17 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             .as_ref()
             .map_or(HEADER_BYTES as u64, BlockCheckpoint::journal_end);
         if self.end.saturating_sub(prefix_end) >= limit {
-            Err(Errno::ENOSPC)
+            // The bounded tail is maintenance backpressure, not storage quota.
+            // No mutation has been accepted: the host can compact and retry.
+            self.compaction_requested.set(true);
+            Err(Errno::EAGAIN)
         } else {
             Ok(())
         }
+    }
+
+    pub fn take_compaction_request(&self) -> bool {
+        self.compaction_requested.replace(false)
     }
 
     pub fn write_file_at<F>(
@@ -4364,7 +4373,7 @@ mod tests {
             key: OverlayKey::Inode(inode), value: vec![1; 52],
         }).collect::<Vec<_>>();
         journal.tail_limit_bytes = Some(0);
-        assert_eq!(journal.commit(&timestamps), Err(Errno::ENOSPC));
+        assert_eq!(journal.commit(&timestamps), Err(Errno::EAGAIN));
         journal.commit_writeback_metadata(&timestamps).unwrap();
         journal.commit_writeback_metadata(&timestamps).unwrap();
         assert!(crate::prepared_map::JOURNAL_WRITEBACK_MEMORY.usage().0 <= crate::prepared_map::JOURNAL_WRITEBACK_HEADROOM);
@@ -7475,7 +7484,7 @@ mod tests {
     }
 
     #[test]
-    fn active_tail_limit_rejects_new_writes_until_checkpoint_handoff() {
+    fn active_tail_limit_waits_for_checkpoint_handoff() {
         let size = (2 * FILE_BLOCK_BYTES) as u64;
         let mut journal = OverlayJournal::open(MemoryStorage::default(), [37; 32]).unwrap();
         journal.tail_limit_bytes = Some(100);
@@ -7496,8 +7505,10 @@ mod tests {
                     Ok(dst.len())
                 }
             ),
-            Err(Errno::ENOSPC)
+            Err(Errno::EAGAIN)
         );
+        assert!(journal.take_compaction_request());
+        assert!(!journal.take_compaction_request());
         let mut visible = [0];
         journal
             .read_file_at(7, size, 0, &mut visible, |_, _| {
@@ -7520,6 +7531,7 @@ mod tests {
             .unwrap();
         assert_eq!(visible, [b'a']);
         compacted.tail_limit_bytes = Some(100);
+        assert!(!compacted.take_compaction_request());
         assert_eq!(
             compacted.write_fixed_file_at_buffered(
                 7,
@@ -7536,7 +7548,7 @@ mod tests {
     }
 
     #[test]
-    fn active_tail_limit_rejects_metadata_without_blocking_dirty_flush() {
+    fn active_tail_limit_waits_for_metadata_without_blocking_dirty_flush() {
         let mut metadata_only = OverlayJournal::open(MemoryStorage::default(), [48; 32]).unwrap();
         metadata_only.tail_limit_bytes = Some(1);
         metadata_only
@@ -7551,9 +7563,17 @@ mod tests {
                 key: OverlayKey::Inode(8),
                 value: b"more metadata".to_vec(),
             }]),
-            Err(Errno::ENOSPC)
+            Err(Errno::EAGAIN)
         );
         assert_eq!(metadata_only.storage.bytes.len(), metadata_end);
+        assert!(metadata_only.take_compaction_request());
+        let mut compacted = metadata_only.compact_metadata_into(MemoryStorage::default()).unwrap();
+        compacted.install_metadata_block_checkpoint(Box::new(MemoryStorage::default())).unwrap();
+        compacted.tail_limit_bytes = Some(1);
+        compacted.commit(&[Mutation::Put {
+            key: OverlayKey::Inode(8), value: b"more metadata".to_vec(),
+        }]).unwrap();
+        assert_eq!(&*compacted.metadata_value(&OverlayKey::Inode(8)).unwrap().unwrap().unwrap(), b"more metadata");
 
         let mut journal = OverlayJournal::open(MemoryStorage::default(), [47; 32]).unwrap();
         journal.tail_limit_bytes = Some(100);
@@ -7577,7 +7597,7 @@ mod tests {
                 key: inode_key(),
                 value: b"metadata".to_vec(),
             }]),
-            Err(Errno::ENOSPC)
+            Err(Errno::EAGAIN)
         );
         assert_eq!(journal.storage.bytes.len(), end);
         journal.commit(&[]).unwrap();
@@ -7590,6 +7610,48 @@ mod tests {
             })
             .unwrap();
         assert_eq!(&visible, b"data");
+    }
+
+    #[test]
+    fn active_tail_limit_preserves_partial_progress_before_waiting() {
+        let source = (0..3 * CACHE_BLOCKS * FILE_BLOCK_BYTES)
+            .map(|offset| (offset / FILE_BLOCK_BYTES % 251) as u8).collect::<Vec<_>>();
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), [118; 32]).unwrap();
+        journal.tail_limit_bytes = Some(1);
+        let written = journal.write_file_at_buffered(7, 0, 0, &source, |_, _| Ok(0)).unwrap();
+        assert!(written > 0 && written < source.len());
+        assert_eq!(journal.visible_file_size(7, 0), Ok(written as u64));
+        // The dispatcher consumes this old marker before the next attempt:
+        // progress must not turn another operation's EAGAIN into tail pressure.
+        assert!(journal.take_compaction_request());
+        assert!(!journal.take_compaction_request());
+        assert_eq!(journal.write_file_at_buffered(7, 0, written as u64, &source[written..], |_, _| Ok(0)), Err(Errno::EAGAIN));
+        assert!(journal.take_compaction_request());
+        let mut compacted = journal.compact_metadata_into(MemoryStorage::default()).unwrap();
+        compacted.install_metadata_block_checkpoint(Box::new(MemoryStorage::default())).unwrap();
+        compacted.tail_limit_bytes = Some(1);
+        assert_eq!(compacted.write_file_at_buffered(7, 0, written as u64, &source[written..], |_, _| Ok(0)), Ok(source.len() - written));
+        compacted.sync().unwrap();
+        let mut visible = vec![0; source.len()];
+        assert_eq!(compacted.read_file_at(7, 0, 0, &mut visible, |_, _| panic!("all bytes are persistent")), Ok(source.len()));
+        assert_eq!(visible, source);
+    }
+
+    #[test]
+    fn tail_wait_does_not_poison_accepted_writeback() {
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), [119; 32]).unwrap();
+        journal.write_file_at_buffered(7, 0, 0, b"accepted", |_, _| Ok(0)).unwrap();
+        journal.tail_limit_bytes = Some(0);
+        let end = journal.end;
+        assert_eq!(journal.write_file_at_buffered(7, 0, 8, b"waiting", |_, _| panic!("must wait before reading")), Err(Errno::EAGAIN));
+        assert!(journal.take_compaction_request());
+        assert_eq!(journal.end, end);
+        assert_eq!(journal.failure, None);
+        journal.sync().unwrap();
+        let mut recovered = OverlayJournal::open(journal.into_storage(), [119; 32]).unwrap();
+        let mut visible = [0; 8];
+        recovered.read_file_at(7, 0, 0, &mut visible, |_, _| panic!("committed data")).unwrap();
+        assert_eq!(&visible, b"accepted");
     }
 
     #[test]

@@ -1,0 +1,13 @@
+script_path = "packages/registry/rust-profiler-runtime/build.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = [
+  "packages/registry/rust-profiler-runtime/build.sh",
+  "scripts/package-build-roots.sh",
+  "sdk/activate.sh",
+  "sdk/rust/wasm32-unknown-kandelo-std.json",
+  "flake.nix",
+  "flake.lock",
+  "rust-toolchain.toml",
+]

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-out="$(mktemp -d "$root/.context/facade-retirement.XXXXXX")"
+mkdir -p "$root/.scratch"
+out="$(mktemp -d "$root/.scratch/facade-retirement.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 if [ -n "${KANDELO_GBM_LIBDRM_PREFIX:-}" ];then
  libdrm_prefix="$KANDELO_GBM_LIBDRM_PREFIX"

@@ -18,6 +18,7 @@ spdx = "GPL-3.0-or-later"
 url = "https://www.greenwoodsoftware.com/less/LICENSE"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/less-docs/build-less-docs.sh"
 
 [[outputs]]

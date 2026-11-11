@@ -13,6 +13,7 @@ pub mod process_layout;
 // The program ABI is owned separately so host-only edits do not rebuild
 // fork-instrumented programs. Keep the Rust API stable for existing callers.
 pub use wasm_posix_program_abi::ABI_VERSION;
+pub use wasm_posix_program_abi::program_extensions;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -56,6 +57,31 @@ pub const KANDELO_REFERENCE_EPOCH_MILLIS: u64 = KANDELO_REFERENCE_EPOCH_SECONDS 
 /// Keep these outside any one syscall protocol: libc headers, Rust syscall
 /// implementations, and TypeScript host validation all consume the generated
 /// values. Parser-specific defensive limits belong with their parser instead.
+/// Kernel requests that serve a program extension rather than a base syscall.
+///
+/// WHY a separate namespace: the base program surface (syscall numbers, their
+/// argument descriptors and channel scalar contracts) is frozen at the
+/// supported baseline digest, so a new interface cannot add a syscall to it.
+/// A program instead declares the versioned Wasm import its extension names
+/// (`kandelo.klog.v1`, see `program_abi::program_extensions`), admission
+/// refuses it on a host without that import, and the process worker serves
+/// the import by issuing one of these requests on the program's own channel.
+/// The numbers and their descriptors are therefore a kernel-host contract,
+/// versioned by `abi::HOST_ADAPTER_VERSION`, not part of the program digest.
+pub mod extension_requests {
+    /// `kandelo.klog.v1`: read or clear the kernel message ring, with
+    /// `klogctl(action, buf, len)` arguments. Numbered clear of every Linux
+    /// syscall number, of the kernel's dispatch table, and of the
+    /// host-intercepted `SYS_SPAWN` (500).
+    pub const KLOG_V1: u32 = 600;
+
+    /// Size of the kernel message ring, and so the largest count a klog
+    /// request can return. The ring lives in `runtime_core::kmsg`; the bound is
+    /// here because the host's copy-back check needs it: the size actions
+    /// return a count rather than a transfer length.
+    pub const KMSG_CAPACITY_BYTES: usize = 128 * 1024;
+}
+
 pub mod platform_limits {
     pub const ARG_MAX_BYTES: usize = 4 * 1024 * 1024;
     pub const PATH_MAX_BYTES: usize = 4096;
@@ -2246,7 +2272,13 @@ pub mod abi {
     ///    and exact DRM file/grant identities across kernel-host imports.
     /// 4: main's initial-process launch and persistent-storage interfaces,
     ///    combined with the unpublished graphics contracts above.
-    pub const HOST_ADAPTER_VERSION: u32 = 4;
+    /// 5: persistent-journal writers wait for compaction instead of failing
+    ///    with ENOSPC at the journal tail bound.
+    /// 6: the kernel message ring raised the kernel Wasm's own `env.memory`
+    ///    minimum from 19 pages to 21, and the kernel serves the `kandelo.klog.v1`
+    ///    program extension through `extension_requests::KLOG_V1` and its
+    ///    descriptor in `host_abi::EXTENSION_REQUEST_DESCRIPTORS`.
+    pub const HOST_ADAPTER_VERSION: u32 = 6;
     pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
 
     pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;
@@ -2451,6 +2483,7 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_reserve_host_region"),
         HostAdapterKernelExport::optional("kernel_reserve_host_region_at"),
         HostAdapterKernelExport::required("kernel_reset_tcp_connection"),
+        HostAdapterKernelExport::required("kernel_rootfs_take_compaction_request"),
         HostAdapterKernelExport::required("kernel_set_current_tid"),
         HostAdapterKernelExport::required("kernel_set_cwd"),
         HostAdapterKernelExport::required("kernel_set_main_channel_addr"),

@@ -18,6 +18,7 @@ spdx = "ISC"
 url = "https://mandoc.bsd.lv/"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/mandoc-docs/build-mandoc-docs.sh"
 
 [[outputs]]

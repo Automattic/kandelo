@@ -18,6 +18,7 @@ spdx = "Zlib"
 url = "https://github.com/love2d/love/blob/11.5/license.txt"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/love-docs/build-love-docs.sh"
 
 [[outputs]]

@@ -45,33 +45,11 @@ if [ ! -f "$SDK_ROOT/config.site" ] || [ -L "$SDK_ROOT/config.site" ]; then
     exit 2
 fi
 
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/configure.sh"
 (
     cd "$BUILD_DIR"
-    export ac_cv_func_devname=no ac_cv_func_freezero=no
-    export ac_cv_func_getutsid=no ac_cv_func_getutxid=yes
-    export ac_cv_func__innetgr=no ac_cv_func_innetgr=no
-    export ac_cv_func_mkdtempat=no ac_cv_func_mkostempsat=no
-    export ac_cv_func_pw_dup=no ac_cv_func_setgroupent=no
-    export ac_cv_func_setpassent=no ac_cv_func_sysctl=no
-    export CONFIG_SITE="$SDK_ROOT/config.site"
-    PREFIX_MAPS="-ffile-prefix-map=$KANDELO_PACKAGE_WORK_DIR=/usr/src/sudo-$WASM_POSIX_DEP_VERSION"
-    PREFIX_MAPS+=" -fdebug-prefix-map=$KANDELO_PACKAGE_WORK_DIR=/usr/src/sudo-$WASM_POSIX_DEP_VERSION"
-    PREFIX_MAPS+=" -fmacro-prefix-map=$KANDELO_PACKAGE_WORK_DIR=/usr/src/sudo-$WASM_POSIX_DEP_VERSION"
-    PREFIX_MAPS+=" -fdebug-compilation-dir=/usr/src/sudo-$WASM_POSIX_DEP_VERSION"
-    export CFLAGS="-O2 -D_GNU_SOURCE $PREFIX_MAPS"
-
-    "$SOURCE_DIR/configure" \
-        --host=wasm32-unknown-none --prefix=/usr --sysconfdir=/etc \
-        --localstatedir=/var --runstatedir=/var/run --disable-nls \
-        --without-pam --without-sendmail --without-interfaces \
-        --disable-log-server --disable-log-client --disable-shared-libutil \
-        --enable-static-sudoers --disable-shared --enable-static \
-        --disable-hardening --disable-pie --with-logging=file \
-        --with-rundir=/var/run/sudo --with-vardir=/var/run/sudo \
-        --with-iologdir=/var/log/sudo-io \
-        --with-secure-path-value=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-        CC=wasm32posix-cc CXX=wasm32posix-c++ AR=wasm32posix-ar \
-        RANLIB=wasm32posix-ranlib NM=wasm32posix-nm STRIP=wasm32posix-strip
+    sudo_configure "$SOURCE_DIR" "$KANDELO_PACKAGE_WORK_DIR" "$SDK_ROOT"
     make -j2
 )
 

@@ -1,0 +1,26 @@
+kind = "program"
+name = "redis-docs"
+version = "7.2.5"
+kernel_abi = 56
+depends_on = ["redis@7.2.5", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual page for redis-cli, generated from what the program
+# prints for --help and --version while running inside Kandelo: the
+# program has no upstream manual page. The recipe is this repository's,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://github.com/redis/redis/blob/7.2/COPYING"
+
+[build]
+script_path = "packages/registry/redis-docs/build-redis-docs.sh"
+
+[[outputs]]
+name = "redis-docs"
+wasm = "redis-docs.zip"
+fork_instrumentation = "disabled"

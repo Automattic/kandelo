@@ -6,11 +6,11 @@
   "measurement": "maxEagerBytes and maxEagerFiles cover regular files whose bytes are stored in the image (not deferred to a lazy file or lazy archive), counted once per inode. maxCompressedBytes is the size of the zstd-19 shell.vfs.zst. images/vfs/scripts/image-eager-budget.ts measures them in the composer; `xtask vfs-image describe` on the built image agrees (entries with kind file and a content_sha256). measured records the image when these limits were last set; each limit may sit at most 5% above it, except that the file count may always have 4 files of slack.",
   "raising": "First ask whether the new content can be lazy: programs belong in SHELL_LAZY_BINARY_SPECS and optional data in SHELL_LAZY_DATA_ARCHIVE_SPECS (images/vfs/scripts/shell-lazy-archives.ts). If it must be present at boot, raise the limits in a commit whose message names the content, its size, and why it must be eager, and update measured to the new image. When content shrinks, lower the limits in the same change. See docs/package-management.md, Image eager-content budgets.",
   "maxEagerBytes": 2436000,
-  "maxEagerFiles": 150,
+  "maxEagerFiles": 147,
   "maxCompressedBytes": 1087000,
   "measured": {
-    "eagerBytes": 2377086,
-    "eagerFiles": 146,
-    "compressedBytes": 1060147
+    "eagerBytes": 2381701,
+    "eagerFiles": 143,
+    "compressedBytes": 1068169
   }
 }

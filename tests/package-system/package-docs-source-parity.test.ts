@@ -29,6 +29,14 @@ function archiveIdentity(pkg: string): [string, string, string] | null {
   return fields.length === 3 ? (fields as [string, string, string]) : null;
 }
 
+// A docs package whose source rides in a package of another name. npm is
+// node-browser-bundle's [source]; that package's version is the bundle's
+// own, so only the source archive (URL and SHA-256) is compared, and the
+// docs package's version must be the one in that URL.
+const SOURCE_OWNERS: Record<string, string> = {
+  "npm-docs": "node-browser-bundle",
+};
+
 const upstreamDocsPackages = readdirSync(registry)
   .filter((name) => name.endsWith("-docs"))
   .filter((name) =>
@@ -46,11 +54,31 @@ describe("upstream man-page packages", () => {
   it.each(upstreamDocsPackages)(
     "%s pins the same version, source URL and SHA-256 as its program",
     (docs) => {
+      const sourceOwner = SOURCE_OWNERS[docs];
+      if (sourceOwner !== undefined) {
+        const [version, url, sha256] = archiveIdentity(docs) ?? [];
+        expect(archiveIdentity(sourceOwner)?.slice(1)).toEqual([url, sha256]);
+        expect(url).toContain(`-${version}.`);
+        return;
+      }
       const owner = docs.slice(0, -"-docs".length);
       expect(existsSync(join(registry, owner, "package.toml"))).toBe(true);
       expect(archiveIdentity(docs)).toEqual(archiveIdentity(owner));
     },
   );
+
+  it("man-index indexes exactly the shell's docs archives", () => {
+    // The index must list every page the shell's docs packages ship and
+    // nothing else, or apropos/whatis would miss pages or offer missing ones.
+    const manifest = readFileSync(join(registry, "man-index", "package.toml"), "utf8");
+    const dependsOn = /^depends_on = \[([^\]]*)\]/m.exec(manifest)?.[1] ?? "";
+    const indexed = [...dependsOn.matchAll(/"([a-z0-9.-]+)@[^"]+"/g)].map((m) => m[1]).sort();
+    const shellDocs = SHELL_LAZY_ARCHIVE_SPECS
+      .filter((spec) => spec.id.endsWith("-docs"))
+      .map((spec) => spec.dependency)
+      .sort();
+    expect(indexed).toEqual(shellDocs);
+  });
 
   it.each(upstreamDocsPackages)("%s is a shell lazy archive", (docs) => {
     const spec = SHELL_LAZY_ARCHIVE_SPECS.find((s) => s.id === docs);

@@ -176,6 +176,10 @@ function signatures(
       parameters: [pointer, i32, i32, pointer, i32],
       result: i32,
     },
+    kernel_rootfs_take_compaction_request: {
+      parameters: [],
+      result: i32,
+    },
     kernel_rootfs_lazy_resource_limits: {
       parameters: [i32, pointer, i32],
       result: i32,

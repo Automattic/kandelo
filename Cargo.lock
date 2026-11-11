@@ -359,9 +359,11 @@ dependencies = [
  "anyhow",
  "clap",
  "flate2",
+ "gimli",
  "libc",
  "memmap2",
  "rusqlite",
+ "serde_json",
  "sha2",
  "smallvec",
  "stacker",
@@ -647,6 +649,7 @@ version = "0.1.0"
 dependencies = [
  "fork-instrument",
  "sha2",
+ "wasm-artifact",
  "wat",
 ]
 
@@ -1780,6 +1783,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "ureq",
+ "wasm-artifact",
  "wasm-posix-shared",
  "wasmparser 0.247.0",
  "wat",

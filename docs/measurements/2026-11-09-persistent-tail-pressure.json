@@ -1,0 +1,3581 @@
+{
+  "date": "2026-11-09T19:32:41.139821+00:00",
+  "scope": "Persistent write correctness and throughput, plus all nine enabled benchmark suites on Node and Chromium; three rounds; default sparse fork copy.",
+  "machine": {
+    "cpu": "Apple M5 Max",
+    "logical_cpus": 18,
+    "memory_bytes": 51539607552
+  },
+  "baseline": {
+    "runtime_commit": "a3490ca0f48d7c249592925cb7b4ac1ab74b9c2a",
+    "prepared_commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+    "build_only_change": "Canonical shell eager file-count budget refreshed; no runtime change",
+    "target_observed": "92e3496082e85dfc751935eb4ceb9e81682756b5",
+    "target_delta": "Package SDK opt-out and disposable-output/tool-path changes only after the runtime baseline; no kernel, host runtime, ABI, libc or enabled benchmark implementation changes."
+  },
+  "candidate_commit": "d059ee2510f08650642931f407db1c8a7d96fdb0",
+  "persistent_write_summary": [
+    {
+      "host": "node",
+      "MiB": 16,
+      "before_MiBps": 8.528706412308823,
+      "after_MiBps": 9.077206681240986,
+      "percent_change": 6.431224647861655,
+      "before_failed_rounds": 0,
+      "after_failed_rounds": 0
+    },
+    {
+      "host": "node",
+      "MiB": 128,
+      "before_MiBps": 7.690693775261174,
+      "after_MiBps": 7.646969393487477,
+      "percent_change": -0.5685362472023892,
+      "before_failed_rounds": 0,
+      "after_failed_rounds": 0
+    },
+    {
+      "host": "browser",
+      "MiB": 16,
+      "before_MiBps": 24.083509568740574,
+      "after_MiBps": 24.099833561563027,
+      "percent_change": 0.06778078907421214,
+      "before_failed_rounds": 0,
+      "after_failed_rounds": 0
+    },
+    {
+      "host": "browser",
+      "MiB": 128,
+      "before_MiBps": null,
+      "after_MiBps": 15.699261030877258,
+      "percent_change": null,
+      "before_failed_rounds": 3,
+      "after_failed_rounds": 0
+    }
+  ],
+  "application_comparisons": {
+    "node": {
+      "mariadb-aria/bootstrap_ms": {
+        "before": 2172.17,
+        "after": 2187.39,
+        "percent_change": 0.7006818066725762
+      },
+      "mariadb-aria/query_create_ms": {
+        "before": 238.29,
+        "after": 251.26,
+        "percent_change": 5.442947668806908
+      },
+      "mariadb-aria/query_insert_ms": {
+        "before": 977.66,
+        "after": 969.29,
+        "percent_change": -0.8561258515230263
+      },
+      "mariadb-aria/query_join_ms": {
+        "before": 94.2,
+        "after": 96.36,
+        "percent_change": 2.292993630573248
+      },
+      "mariadb-aria/query_select_ms": {
+        "before": 105.05,
+        "after": 104.79,
+        "percent_change": -0.24750118990956027
+      },
+      "mariadb-aria-64/bootstrap_ms": {
+        "before": 2224.72,
+        "after": 2202.87,
+        "percent_change": -0.9821460678197669
+      },
+      "mariadb-aria-64/query_create_ms": {
+        "before": 249.26,
+        "after": 245.74,
+        "percent_change": -1.4121800529567463
+      },
+      "mariadb-aria-64/query_insert_ms": {
+        "before": 971.03,
+        "after": 1043.51,
+        "percent_change": 7.464239003944262
+      },
+      "mariadb-aria-64/query_join_ms": {
+        "before": 93.13,
+        "after": 98.03,
+        "percent_change": 5.261462471813605
+      },
+      "mariadb-aria-64/query_select_ms": {
+        "before": 104.31,
+        "after": 109.03,
+        "percent_change": 4.524973636276486
+      },
+      "mariadb-innodb/bootstrap_ms": {
+        "before": 2092.49,
+        "after": 2060.91,
+        "percent_change": -1.5092067345602533
+      },
+      "mariadb-innodb/query_create_ms": {
+        "before": 237.01,
+        "after": 235.79,
+        "percent_change": -0.5147462132399472
+      },
+      "mariadb-innodb/query_insert_ms": {
+        "before": 274.48,
+        "after": 274.95,
+        "percent_change": 0.1712328767123239
+      },
+      "mariadb-innodb/query_join_ms": {
+        "before": 90.51,
+        "after": 89.32,
+        "percent_change": -1.3147718484145532
+      },
+      "mariadb-innodb/query_select_ms": {
+        "before": 100.94,
+        "after": 96.85,
+        "percent_change": -4.051912026946702
+      },
+      "mariadb-innodb-64/bootstrap_ms": {
+        "before": 2081.83,
+        "after": 2102.11,
+        "percent_change": 0.9741429415466296
+      },
+      "mariadb-innodb-64/query_create_ms": {
+        "before": 236.38,
+        "after": 242.19,
+        "percent_change": 2.4579067603012206
+      },
+      "mariadb-innodb-64/query_insert_ms": {
+        "before": 273.78,
+        "after": 279.31,
+        "percent_change": 2.0198699685879173
+      },
+      "mariadb-innodb-64/query_join_ms": {
+        "before": 90.12,
+        "after": 91.79,
+        "percent_change": 1.8530847758544189
+      },
+      "mariadb-innodb-64/query_select_ms": {
+        "before": 98.51,
+        "after": 98.9,
+        "percent_change": 0.39589889351334673
+      },
+      "process-lifecycle/clone_ms": {
+        "before": 69.75,
+        "after": 70.07,
+        "percent_change": 0.4587813620071657
+      },
+      "process-lifecycle/exec_ms": {
+        "before": 3492,
+        "after": 3521.99,
+        "percent_change": 0.8588201603665357
+      },
+      "process-lifecycle/fork_ms": {
+        "before": 87.71,
+        "after": 87.12,
+        "percent_change": -0.6726713031581233
+      },
+      "process-lifecycle/hello_start_ms": {
+        "before": 3462.82,
+        "after": 3452.84,
+        "percent_change": -0.288204411433457
+      },
+      "spawn-scratch/spawn_large_first_ms": {
+        "before": 70.06,
+        "after": 69.69,
+        "percent_change": -0.5281187553525579
+      },
+      "spawn-scratch/spawn_large_repeat_ms": {
+        "before": 68.71,
+        "after": 68.39,
+        "percent_change": -0.4657255130257498
+      },
+      "spawn-scratch/spawn_large_wire_bytes": {
+        "before": 84386,
+        "after": 84386,
+        "percent_change": 0.0
+      },
+      "spawn-scratch/spawn_ms": {
+        "before": 77.61,
+        "after": 78.61,
+        "percent_change": 1.2884937508053085
+      },
+      "spawn-scratch/spawn_scratch_kernel_bytes": {
+        "before": 10420224,
+        "after": 10420224,
+        "percent_change": 0.0
+      },
+      "stdin-throughput/stdin_mbps": {
+        "before": 781.86,
+        "after": 825.93,
+        "percent_change": 5.636558974752504
+      },
+      "syscall-io/epoll_ready_us_per_op": {
+        "before": 24.69,
+        "after": 24.35,
+        "percent_change": -1.3770757391656563
+      },
+      "syscall-io/file_read_mbps": {
+        "before": 120.37,
+        "after": 120.82,
+        "percent_change": 0.3738473041455359
+      },
+      "syscall-io/file_write_mbps": {
+        "before": 81.85,
+        "after": 82.36,
+        "percent_change": 0.623091020158828
+      },
+      "syscall-io/lock_dense_file_acquire_us_per_op": {
+        "before": 25.11,
+        "after": 24.11,
+        "percent_change": -3.982477100756676
+      },
+      "syscall-io/lock_dense_file_conflict_us_per_op": {
+        "before": 27.17,
+        "after": 27.77,
+        "percent_change": 2.2083179977916645
+      },
+      "syscall-io/lock_dense_file_replace_us_per_op": {
+        "before": 24.47,
+        "after": 24.73,
+        "percent_change": 1.0625255414793644
+      },
+      "syscall-io/lock_dense_file_unlock_us_per_op": {
+        "before": 22.88,
+        "after": 22.75,
+        "percent_change": -0.5681818181818121
+      },
+      "syscall-io/lock_many_files_acquire_us_per_op": {
+        "before": 30.45,
+        "after": 29.89,
+        "percent_change": -1.839080459770115
+      },
+      "syscall-io/lock_many_files_conflict_us_per_op": {
+        "before": 23.8,
+        "after": 23.48,
+        "percent_change": -1.3445378151260567
+      },
+      "syscall-io/lock_many_files_replace_us_per_op": {
+        "before": 28.46,
+        "after": 29.22,
+        "percent_change": 2.6704146170063225
+      },
+      "syscall-io/lock_many_files_unlock_us_per_op": {
+        "before": 22.97,
+        "after": 23.04,
+        "percent_change": 0.30474531998259113
+      },
+      "syscall-io/pipe_mbps": {
+        "before": 58.2,
+        "after": 57.34,
+        "percent_change": -1.4776632302405446
+      },
+      "syscall-io/poll_ready_us_per_op": {
+        "before": 25.89,
+        "after": 26.08,
+        "percent_change": 0.7338740826573931
+      },
+      "syscall-io/poll_timeout_us_per_op": {
+        "before": 1251.47,
+        "after": 1247.2,
+        "percent_change": -0.34119875026967783
+      },
+      "syscall-io/select_timeout_us_per_op": {
+        "before": 1362.32,
+        "after": 1363.41,
+        "percent_change": 0.08001057020377011
+      },
+      "syscall-io/syscall_latency_us": {
+        "before": 26.15,
+        "after": 25.48,
+        "percent_change": -2.5621414913957863
+      },
+      "wordpress/cli_require_ms": {
+        "before": 512.79,
+        "after": 508.52,
+        "percent_change": -0.8326995456229613
+      },
+      "wordpress/http_first_response_ms": {
+        "before": 2870.31,
+        "after": 2683.69,
+        "percent_change": -6.501736746205111
+      }
+    },
+    "browser": {
+      "mariadb-aria/bootstrap_ms": {
+        "before": 1080.58,
+        "after": 1086.37,
+        "percent_change": 0.5358233541246316
+      },
+      "mariadb-aria/query_create_ms": {
+        "before": 14.37,
+        "after": 14.4,
+        "percent_change": 0.20876826722338038
+      },
+      "mariadb-aria/query_insert_ms": {
+        "before": 94.37,
+        "after": 90.64,
+        "percent_change": -3.952527286213847
+      },
+      "mariadb-aria/query_join_ms": {
+        "before": 1.75,
+        "after": 1.75,
+        "percent_change": 0.0
+      },
+      "mariadb-aria/query_select_ms": {
+        "before": 7.38,
+        "after": 6.99,
+        "percent_change": -5.284552845528456
+      },
+      "mariadb-aria-64/bootstrap_ms": {
+        "before": 1100.47,
+        "after": 1076.98,
+        "percent_change": -2.134542513653259
+      },
+      "mariadb-aria-64/query_create_ms": {
+        "before": 14.99,
+        "after": 15.08,
+        "percent_change": 0.6004002668445585
+      },
+      "mariadb-aria-64/query_insert_ms": {
+        "before": 88.36,
+        "after": 87.11,
+        "percent_change": -1.4146672702580299
+      },
+      "mariadb-aria-64/query_join_ms": {
+        "before": 1.88,
+        "after": 1.88,
+        "percent_change": 0.0
+      },
+      "mariadb-aria-64/query_select_ms": {
+        "before": 7.02,
+        "after": 7.24,
+        "percent_change": 3.1339031339031376
+      },
+      "mariadb-innodb/bootstrap_ms": {
+        "before": 1017.34,
+        "after": 1009.65,
+        "percent_change": -0.7558928185267488
+      },
+      "mariadb-innodb/query_create_ms": {
+        "before": 25.38,
+        "after": 21.65,
+        "percent_change": -14.696611505122148
+      },
+      "mariadb-innodb/query_insert_ms": {
+        "before": 156.72,
+        "after": 159.82,
+        "percent_change": 1.9780500255232258
+      },
+      "mariadb-innodb/query_join_ms": {
+        "before": 1.78,
+        "after": 1.87,
+        "percent_change": 5.0561797752809
+      },
+      "mariadb-innodb/query_select_ms": {
+        "before": 7.02,
+        "after": 6.93,
+        "percent_change": -1.2820512820512775
+      },
+      "mariadb-innodb-64/bootstrap_ms": {
+        "before": 1031.8,
+        "after": 1009.53,
+        "percent_change": -2.158364024035664
+      },
+      "mariadb-innodb-64/query_create_ms": {
+        "before": 28.19,
+        "after": 20.19,
+        "percent_change": -28.378857750975516
+      },
+      "mariadb-innodb-64/query_insert_ms": {
+        "before": 158.25,
+        "after": 148.18,
+        "percent_change": -6.363349131121643
+      },
+      "mariadb-innodb-64/query_join_ms": {
+        "before": 2.52,
+        "after": 2.31,
+        "percent_change": -8.333333333333337
+      },
+      "mariadb-innodb-64/query_select_ms": {
+        "before": 7.56,
+        "after": 7.91,
+        "percent_change": 4.629629629629628
+      },
+      "process-lifecycle/clone_ms": {
+        "before": 32.42,
+        "after": 33.18,
+        "percent_change": 2.344231955582976
+      },
+      "process-lifecycle/fork_ms": {
+        "before": 47.26,
+        "after": 46.25,
+        "percent_change": -2.137113838341087
+      },
+      "process-lifecycle/hello_start_ms": {
+        "before": 212.35,
+        "after": 244.87,
+        "percent_change": 15.314339533788557
+      },
+      "spawn-scratch/spawn_large_first_ms": {
+        "before": 29.78,
+        "after": 30,
+        "percent_change": 0.738750839489577
+      },
+      "spawn-scratch/spawn_large_repeat_ms": {
+        "before": 29.33,
+        "after": 30.25,
+        "percent_change": 3.136720081827482
+      },
+      "spawn-scratch/spawn_large_wire_bytes": {
+        "before": 84386,
+        "after": 84386,
+        "percent_change": 0.0
+      },
+      "spawn-scratch/spawn_ms": {
+        "before": 42.24,
+        "after": 40.42,
+        "percent_change": -4.308712121212121
+      },
+      "spawn-scratch/spawn_scratch_kernel_bytes": {
+        "before": 10485760,
+        "after": 10485760,
+        "percent_change": 0.0
+      },
+      "stdin-throughput/stdin_mbps": {
+        "before": 810.13,
+        "after": 821.19,
+        "percent_change": 1.3652129905077137
+      },
+      "syscall-io/file_read_mbps": {
+        "before": 105.54,
+        "after": 107.35,
+        "percent_change": 1.7149895774114077
+      },
+      "syscall-io/file_write_mbps": {
+        "before": 77.75,
+        "after": 78.47,
+        "percent_change": 0.9260450160771594
+      },
+      "syscall-io/lock_dense_file_acquire_us_per_op": {
+        "before": 25.94,
+        "after": 25.92,
+        "percent_change": -0.07710100231302919
+      },
+      "syscall-io/lock_dense_file_conflict_us_per_op": {
+        "before": 25.66,
+        "after": 25.66,
+        "percent_change": 0.0
+      },
+      "syscall-io/lock_dense_file_replace_us_per_op": {
+        "before": 26.39,
+        "after": 26.25,
+        "percent_change": -0.5305039787798393
+      },
+      "syscall-io/lock_dense_file_unlock_us_per_op": {
+        "before": 23.09,
+        "after": 22.62,
+        "percent_change": -2.035513209181461
+      },
+      "syscall-io/lock_many_files_acquire_us_per_op": {
+        "before": 33.39,
+        "after": 32.24,
+        "percent_change": -3.4441449535789093
+      },
+      "syscall-io/lock_many_files_conflict_us_per_op": {
+        "before": 25.43,
+        "after": 24.33,
+        "percent_change": -4.325599685410941
+      },
+      "syscall-io/lock_many_files_replace_us_per_op": {
+        "before": 32.24,
+        "after": 30.13,
+        "percent_change": -6.544665012406958
+      },
+      "syscall-io/lock_many_files_unlock_us_per_op": {
+        "before": 27.01,
+        "after": 27.05,
+        "percent_change": 0.14809329877822908
+      },
+      "syscall-io/pipe_mbps": {
+        "before": 55.17,
+        "after": 55.78,
+        "percent_change": 1.105673373210081
+      },
+      "syscall-io/syscall_latency_us": {
+        "before": 28.34,
+        "after": 27.6,
+        "percent_change": -2.6111503175723305
+      },
+      "wordpress/boot_ms": {
+        "before": 8482.3,
+        "after": 8457.5,
+        "percent_change": -0.29237353076405626
+      },
+      "wordpress/http_first_response_ms": {
+        "before": 205.23,
+        "after": 207.04,
+        "percent_change": 0.8819373385957174
+      }
+    }
+  },
+  "limitations": [
+    "Fresh machines share one parent Node/browser process; boot excluded, guest command startup and sync included.",
+    "All application suites report three-round medians through the unchanged normal runner; Erlang is already excluded from its enabled inventory.",
+    "Browser baseline 128 MiB fails at the tail bound; its truncated byte count is not reported as throughput. Node 128 MiB can be maintained by the periodic compactor; the canonical burst controls separately exercise the fast-copy failure.",
+    "These medians come from comparisons on a shared development machine. Keep the original sweep and targeted rechecks as separate observations; small differences carry measurement variation."
+  ],
+  "order": [
+    "baseline-write-node",
+    "candidate-write-node",
+    "candidate-write-browser",
+    "baseline-write-browser",
+    "baseline-all-node",
+    "candidate-all-node",
+    "candidate-all-browser",
+    "baseline-all-browser"
+  ],
+  "phases": [
+    {
+      "phase": "baseline-write-node",
+      "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree",
+      "command": [
+        "npx",
+        "tsx",
+        ".context/write-throughput.ts",
+        "--allow-pressure-enospc"
+      ],
+      "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+      "start": 1794251673.9256902,
+      "start_monotonic": 846049.661821541,
+      "load": [
+        4.908203125,
+        7.9013671875,
+        8.00439453125
+      ],
+      "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+      "kernel_sha256": "0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc",
+      "disk_free_bytes": 335694073856,
+      "exit_code": 0,
+      "custom_result_file": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/.context/write-throughput-node.json",
+      "custom_result_sha256": "b5c9438da657e5f11b687efad07ba86258505e6e1260dcdd912022b6ea2b5d22",
+      "finish": 1794251734.355297,
+      "finish_monotonic": 846110.09104475,
+      "suspend_gap_seconds": 0.0003837055992335081,
+      "measurement_suspended": false,
+      "result_files": [],
+      "console_log_sha256": "b430a9e830060bc1e0765216f82e03021e26064541693ed697f1d6cc66629de3",
+      "results": {
+        "timerResolutionMs": 4.099999932805076e-05,
+        "imageSha256": "47826100c9b127368c5e17477943d08aac8a37d94658ec588df7038f004a088e",
+        "node": "v24.15.0",
+        "kernel": "0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc",
+        "rows": [
+          {
+            "round": 1,
+            "MiB": 16,
+            "ms": 1901.1965830000001,
+            "exitCode": 0,
+            "MiBps": 8.415752554505827
+          },
+          {
+            "round": 2,
+            "MiB": 16,
+            "ms": 1726.7284579999996,
+            "exitCode": 0,
+            "MiBps": 9.26607766604609
+          },
+          {
+            "round": 3,
+            "MiB": 16,
+            "ms": 1876.0172089999996,
+            "exitCode": 0,
+            "MiBps": 8.528706412308823
+          },
+          {
+            "round": 1,
+            "MiB": 128,
+            "ms": 16603.656375,
+            "exitCode": 0,
+            "MiBps": 7.709145329743673
+          },
+          {
+            "round": 2,
+            "MiB": 128,
+            "ms": 16866.172208,
+            "exitCode": 0,
+            "MiBps": 7.58915528796076
+          },
+          {
+            "round": 3,
+            "MiB": 128,
+            "ms": 16643.491958,
+            "exitCode": 0,
+            "MiBps": 7.690693775261174
+          }
+        ],
+        "scope": "Three fresh machines for each of 16 and 128 MiB in one Node parent; sequential persistent write plus sync; guest shell/process startup included, boot excluded."
+      },
+      "medians_MiBps": {
+        "16": 8.528706412308823,
+        "128": 7.690693775261174
+      },
+      "failed_rounds": {
+        "16": 0,
+        "128": 0
+      },
+      "benchmark_outputs": []
+    },
+    {
+      "phase": "candidate-write-node",
+      "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix",
+      "command": [
+        "npx",
+        "tsx",
+        ".context/write-throughput.ts"
+      ],
+      "commit": "d059ee2510f08650642931f407db1c8a7d96fdb0",
+      "start": 1794251734.36674,
+      "start_monotonic": 846110.102487416,
+      "load": [
+        4.36572265625,
+        7.21484375,
+        7.73876953125
+      ],
+      "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+      "kernel_sha256": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63",
+      "disk_free_bytes": 335686942720,
+      "exit_code": 0,
+      "custom_result_file": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/.context/write-throughput-node.json",
+      "custom_result_sha256": "3d549797562881ce7346ae9d6b3d6ebaaf524e863e65d9eeb232a2de2729f07c",
+      "finish": 1794251794.5142741,
+      "finish_monotonic": 846170.249641041,
+      "suspend_gap_seconds": 0.00038050697185099125,
+      "measurement_suspended": false,
+      "result_files": [],
+      "console_log_sha256": "2eabb03e75d23dbed31fea9fe26922548dd5aacfadefc971ffceeaeed6671059",
+      "results": {
+        "timerResolutionMs": 4.099999932805076e-05,
+        "imageSha256": "47826100c9b127368c5e17477943d08aac8a37d94658ec588df7038f004a088e",
+        "node": "v24.15.0",
+        "kernel": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63",
+        "rows": [
+          {
+            "round": 1,
+            "MiB": 16,
+            "ms": 1778.744666,
+            "exitCode": 0,
+            "MiBps": 8.995107789124354
+          },
+          {
+            "round": 2,
+            "MiB": 16,
+            "ms": 1717.2244580000001,
+            "exitCode": 0,
+            "MiBps": 9.317360887483934
+          },
+          {
+            "round": 3,
+            "MiB": 16,
+            "ms": 1762.6567910000003,
+            "exitCode": 0,
+            "MiBps": 9.077206681240986
+          },
+          {
+            "round": 1,
+            "MiB": 128,
+            "ms": 16571.129792,
+            "exitCode": 0,
+            "MiBps": 7.7242771981542395
+          },
+          {
+            "round": 2,
+            "MiB": 128,
+            "ms": 16810.559833000003,
+            "exitCode": 0,
+            "MiBps": 7.614261587453462
+          },
+          {
+            "round": 3,
+            "MiB": 128,
+            "ms": 16738.657292000004,
+            "exitCode": 0,
+            "MiBps": 7.646969393487477
+          }
+        ],
+        "scope": "Three fresh machines for each of 16 and 128 MiB in one Node parent; sequential persistent write plus sync; guest shell/process startup included, boot excluded."
+      },
+      "medians_MiBps": {
+        "16": 9.077206681240986,
+        "128": 7.646969393487477
+      },
+      "failed_rounds": {
+        "16": 0,
+        "128": 0
+      },
+      "benchmark_outputs": []
+    },
+    {
+      "phase": "candidate-write-browser",
+      "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix",
+      "command": [
+        "npx",
+        "playwright",
+        "test",
+        "test/persistent-write-benchmark.spec.ts",
+        "--project=chromium",
+        "--workers=1"
+      ],
+      "commit": "d059ee2510f08650642931f407db1c8a7d96fdb0",
+      "start": 1794251794.525548,
+      "start_monotonic": 846170.260915166,
+      "load": [
+        3.85498046875,
+        6.51416015625,
+        7.4375
+      ],
+      "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+      "kernel_sha256": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63",
+      "disk_free_bytes": 335684665344,
+      "exit_code": 0,
+      "custom_result_file": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/.context/write-throughput-browser.json",
+      "custom_result_sha256": "de79fbd865067f117ac36c5d2a80795751b4ab4e499c3ae8a6427ca0f402d0f6",
+      "finish": 1794251829.290613,
+      "finish_monotonic": 846205.025760625,
+      "suspend_gap_seconds": 0.00021949573419988155,
+      "measurement_suspended": false,
+      "result_files": [],
+      "console_log_sha256": "1f709af1e417ff7f2f02351a547acec40b619d97f57051b893da5ff34f85ec4e",
+      "results": {
+        "browserName": "chromium",
+        "timerResolutionMs": 0.004999995231628418,
+        "rows": [
+          {
+            "round": 1,
+            "MiB": 16,
+            "ms": 670.9650000333786,
+            "exitCode": 0,
+            "MiBps": 23.846251293590644
+          },
+          {
+            "round": 2,
+            "MiB": 16,
+            "ms": 659.5600000619888,
+            "exitCode": 0,
+            "MiBps": 24.258596637904418
+          },
+          {
+            "round": 3,
+            "MiB": 16,
+            "ms": 663.9049999713898,
+            "exitCode": 0,
+            "MiBps": 24.099833561563027
+          },
+          {
+            "round": 1,
+            "MiB": 128,
+            "ms": 8116.754999995232,
+            "exitCode": 0,
+            "MiBps": 15.76984891130448
+          },
+          {
+            "round": 2,
+            "MiB": 128,
+            "ms": 8153.25,
+            "exitCode": 0,
+            "MiBps": 15.699261030877258
+          },
+          {
+            "round": 3,
+            "MiB": 128,
+            "ms": 8174.865000009537,
+            "exitCode": 0,
+            "MiBps": 15.657750923085663
+          }
+        ],
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "scope": "Three fresh machines for each of 16 and 128 MiB in one browser parent; persistent write plus sync; guest shell/process startup included, boot excluded."
+      },
+      "medians_MiBps": {
+        "16": 24.099833561563027,
+        "128": 15.699261030877258
+      },
+      "failed_rounds": {
+        "16": 0,
+        "128": 0
+      },
+      "benchmark_outputs": []
+    },
+    {
+      "phase": "baseline-write-browser",
+      "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree",
+      "command": [
+        "npx",
+        "playwright",
+        "test",
+        "test/persistent-write-benchmark.spec.ts",
+        "--project=chromium",
+        "--workers=1"
+      ],
+      "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+      "start": 1794251829.302037,
+      "start_monotonic": 846205.037184291,
+      "load": [
+        4.09912109375,
+        6.26953125,
+        7.30859375
+      ],
+      "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+      "kernel_sha256": "0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc",
+      "disk_free_bytes": 335670702080,
+      "exit_code": 0,
+      "custom_result_file": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/.context/write-throughput-browser.json",
+      "custom_result_sha256": "a1a94b71101bb8970075ff7e5a7a93797fc77000ac3a6f92c9273e4594f77b3c",
+      "finish": 1794251842.7863371,
+      "finish_monotonic": 846218.521398375,
+      "suspend_gap_seconds": 8.605257607996464e-05,
+      "measurement_suspended": false,
+      "result_files": [],
+      "console_log_sha256": "ff812291792c68f948163d88bc268298345325d837686c7843d13c72d656a136",
+      "results": {
+        "browserName": "chromium",
+        "timerResolutionMs": 0.004999995231628418,
+        "rows": [
+          {
+            "round": 1,
+            "MiB": 16,
+            "ms": 697.0999999046326,
+            "exitCode": 0,
+            "MiBps": 22.952230673058235
+          },
+          {
+            "round": 2,
+            "MiB": 16,
+            "ms": 660.1200000047684,
+            "exitCode": 0,
+            "MiBps": 24.23801733000731
+          },
+          {
+            "round": 3,
+            "MiB": 16,
+            "ms": 664.3550000190735,
+            "exitCode": 0,
+            "MiBps": 24.083509568740574
+          },
+          {
+            "round": 1,
+            "MiB": 128,
+            "ms": 1168.8249999284744,
+            "exitCode": 1,
+            "MiBps": null,
+            "error": "dd: error writing '/home/maker/write': No space left on device\n1006+0 records in\n1005+0 records out\n65863680 bytes (66 MB, 63 MiB) copied, 0.96862 s, 68.0 MB/s\n"
+          },
+          {
+            "round": 2,
+            "MiB": 128,
+            "ms": 1164.3249999284744,
+            "exitCode": 1,
+            "MiBps": null,
+            "error": "dd: error writing '/home/maker/write': No space left on device\n1006+0 records in\n1005+0 records out\n65863680 bytes (66 MB, 63 MiB) copied, 0.971525 s, 67.8 MB/s\n"
+          },
+          {
+            "round": 3,
+            "MiB": 128,
+            "ms": 1170.9099999666214,
+            "exitCode": 1,
+            "MiBps": null,
+            "error": "dd: error writing '/home/maker/write': No space left on device\n1006+0 records in\n1005+0 records out\n65863680 bytes (66 MB, 63 MiB) copied, 0.98281 s, 67.0 MB/s\n"
+          }
+        ],
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "scope": "Three fresh machines for each of 16 and 128 MiB in one browser parent; persistent write plus sync; guest shell/process startup included, boot excluded."
+      },
+      "medians_MiBps": {
+        "16": 24.083509568740574
+      },
+      "failed_rounds": {
+        "16": 0,
+        "128": 3
+      },
+      "benchmark_outputs": []
+    },
+    {
+      "phase": "baseline-all-node",
+      "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree",
+      "command": [
+        "npx",
+        "tsx",
+        "benchmarks/run.ts",
+        "--rounds=3"
+      ],
+      "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+      "start": 1794251842.797715,
+      "start_monotonic": 846218.532777166,
+      "load": [
+        3.76953125,
+        6.1279296875,
+        7.24609375
+      ],
+      "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+      "kernel_sha256": "0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc",
+      "disk_free_bytes": 335660220416,
+      "exit_code": 0,
+      "finish": 1794252192.553149,
+      "finish_monotonic": 846568.285998416,
+      "suspend_gap_seconds": 0.0022127862321212888,
+      "measurement_suspended": false,
+      "result_files": [
+        "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/results/benchmark-node-1794252192463.json"
+      ],
+      "console_log_sha256": "eb97540ec68d450fe6176340ebd1470fbd2a14f0285ee33722670da58141d9b0",
+      "benchmark_outputs": [
+        {
+          "timestamp": "2026-11-09T19:23:12.462Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "nodeVersion": "v24.15.0",
+          "host": "node",
+          "rounds": 3,
+          "artifacts": {
+            "gitHead": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+            "gitRef": "undefined",
+            "files": {
+              "benchmarks/wasm/pipe-throughput.wasm": {
+                "path": "benchmarks/wasm/pipe-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/pipe-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 44741,
+                "sha256": "baeab97a62e0e20f5618b547fba171f2a095842cca15ec60f61975cec23eeb14"
+              },
+              "benchmarks/wasm/file-throughput.wasm": {
+                "path": "benchmarks/wasm/file-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/file-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 42695,
+                "sha256": "946a965c716a50f7d4a85c0b8fbfe0035564cda0df68ebe38c33dfb0ba7e89d3"
+              },
+              "benchmarks/wasm/syscall-latency.wasm": {
+                "path": "benchmarks/wasm/syscall-latency.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/syscall-latency.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 37151,
+                "sha256": "392eb76225de1e5909954ba9c80045371a37b48cbfade85c1354166fb5e19a5c"
+              },
+              "benchmarks/wasm/stdin-throughput.wasm": {
+                "path": "benchmarks/wasm/stdin-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/stdin-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 38612,
+                "sha256": "2a05b6de2ba30f895218a5e2e4ba830e6c7e9001709293e3b4ee6c8aa416c482"
+              },
+              "benchmarks/wasm/hello.wasm": {
+                "path": "benchmarks/wasm/hello.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/hello.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 18925,
+                "sha256": "3ad4c8507a275798fdba63f7e191f92233f53c6e85d14873223cfd54013e6cab"
+              },
+              "benchmarks/wasm/fork-bench.wasm": {
+                "path": "benchmarks/wasm/fork-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/fork-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 44431,
+                "sha256": "68d27490ef0f9cd47129b4eaa590586497ba4adc5159dc55fb23cecccba04b81"
+              },
+              "benchmarks/wasm/exec-bench.wasm": {
+                "path": "benchmarks/wasm/exec-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/exec-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 21579,
+                "sha256": "7baccf7b5d18b3e2decd61d21e87d5a85b4a5d5e38cdc1b35f739abf17208820"
+              },
+              "benchmarks/wasm/clone-bench.wasm": {
+                "path": "benchmarks/wasm/clone-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/clone-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 41156,
+                "sha256": "e9f5fac68e100d588e83cf8f2b05ca5e5d253c61222ff0a7e35388258ceac2ba"
+              },
+              "benchmarks/wasm/spawn-bench.wasm": {
+                "path": "benchmarks/wasm/spawn-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/spawn-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 48689,
+                "sha256": "97e81b5c5fdeff41e28dd8d2ab0920367a2af6c2b78ebdca0d11ecf4c936a6f1"
+              },
+              "runtime.nodeWorkerBundle": {
+                "path": "host/dist/node-kernel-worker-entry.js",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/host/dist/node-kernel-worker-entry.js",
+                "required": true,
+                "used": true,
+                "sizeBytes": 3205569,
+                "sha256": "1621c4cf19698529ebdd4a83e8aed87924ddfb1c6c815c4d88bf5726d8f9e8d8"
+              },
+              "runtime.kernel": {
+                "path": "kernel.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/kernel.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "kernel.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/kernel.wasm",
+                "sizeBytes": 2919292,
+                "sha256": "0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc"
+              },
+              "runtime.rootfs": {
+                "path": "rootfs.vfs.zst",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm32/rootfs.vfs.zst",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/rootfs.vfs.zst",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm32/rootfs.vfs.zst",
+                "sizeBytes": 172783,
+                "sha256": "35c5b0910b0c9bd3630d2ed5035e0832e5568a1f86f3d9dda67c4b8815885a11"
+              },
+              "node.wordpress.php": {
+                "path": "programs/php/php.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm32/php/php.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/php/php.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm32/php/php.wasm",
+                "sizeBytes": 36844441,
+                "sha256": "1a860921851ae48ec55955c5046f80aabd7bd87c90b6cc596dd8299209d7d7ab"
+              },
+              "node.wordpress.config": {
+                "path": "packages/registry/wordpress/wordpress/wp-config.php",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/packages/registry/wordpress/wordpress/wp-config.php",
+                "required": true,
+                "used": true,
+                "sizeBytes": 1257,
+                "sha256": "bb5a455216bb368b53508e5b21a71756ca8685fa5a2507070c5ac07bfdffba7e"
+              },
+              "node.wordpress.router": {
+                "path": "packages/registry/wordpress/demo/router.php",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/packages/registry/wordpress/demo/router.php",
+                "required": true,
+                "used": true,
+                "sizeBytes": 536,
+                "sha256": "d11a898dbd3af98b1642a8c24c120f3ef75deb2c10458847eab4ccdf3a00c3b8"
+              },
+              "node.mariadb.wasm32.server": {
+                "path": "programs/mariadb/mariadbd.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm32/mariadb/mariadbd.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/mariadb/mariadbd.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm32/mariadb/mariadbd.wasm",
+                "sizeBytes": 13070820,
+                "sha256": "cc33d415a1ebe89a8b9c2fad82b75b5eaa176fbbf0944b2cc3d1e7e20fefad80"
+              },
+              "node.mariadb.wasm32.client": {
+                "path": "programs/mariadb/mysqltest.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm32/mariadb/mysqltest.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/mariadb/mysqltest.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm32/mariadb/mysqltest.wasm",
+                "sizeBytes": 4019920,
+                "sha256": "9617c021b502bc9b4d0c093c470b9f32b5d6c5179c72f1fb5adf020c11aada96"
+              },
+              "node.mariadb.wasm32.bootstrap.systemTables": {
+                "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                "required": true,
+                "used": true,
+                "sizeBytes": 30145,
+                "sha256": "b9f5f114020b2a11fb09028fb5d79448fe2bee2b2dcbd24dec21c769dee08948"
+              },
+              "node.mariadb.wasm32.bootstrap.systemData": {
+                "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                "required": true,
+                "used": true,
+                "sizeBytes": 3328,
+                "sha256": "3c6ae21bd9ace0c2621f5de9a81962a9e59bacb7582b8e78f9b2e31ddafa2d79"
+              },
+              "node.mariadb.wasm64.server": {
+                "path": "programs/wasm64/mariadb/mariadbd.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm64/mariadb/mariadbd.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/wasm64/mariadb/mariadbd.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm64/mariadb/mariadbd.wasm",
+                "sizeBytes": 14657727,
+                "sha256": "85f21a2f10b4a7e07b3247346e9b56dee63ee2bcf6356990d7b3cb6952e39da9"
+              },
+              "node.mariadb.wasm64.client": {
+                "path": "programs/wasm64/mariadb/mysqltest.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm64/mariadb/mysqltest.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/wasm64/mariadb/mysqltest.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm64/mariadb/mysqltest.wasm",
+                "sizeBytes": 4211485,
+                "sha256": "8bc340ff9897b5bc602ba007388d0de414021edbc6fc61596665233977aa11a2"
+              },
+              "node.mariadb.wasm64.bootstrap.systemTables": {
+                "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                "required": true,
+                "used": true,
+                "sizeBytes": 30145,
+                "sha256": "b9f5f114020b2a11fb09028fb5d79448fe2bee2b2dcbd24dec21c769dee08948"
+              },
+              "node.mariadb.wasm64.bootstrap.systemData": {
+                "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                "required": true,
+                "used": true,
+                "sizeBytes": 3328,
+                "sha256": "3c6ae21bd9ace0c2621f5de9a81962a9e59bacb7582b8e78f9b2e31ddafa2d79"
+              }
+            },
+            "directories": {
+              "runtime.hostSources": {
+                "path": "host/src",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/host/src",
+                "fileCount": 362,
+                "sizeBytes": 6641069,
+                "sha256": "f4f9efd9c244702da56c58010547913b09bb4090fdff32affd7e4cff889ec3e5",
+                "required": true,
+                "excludedPaths": []
+              },
+              "node.wordpress.sourceTree": {
+                "path": "packages/registry/wordpress/wordpress",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/packages/registry/wordpress/wordpress",
+                "fileCount": 3972,
+                "sizeBytes": 86397207,
+                "sha256": "ba981f10172b7df6e0844b2744bcaf222c5193c53e6b900cc0e92b446d833c55",
+                "required": true,
+                "excludedPaths": [
+                  "wp-content/database",
+                  "wp-content/debug.log"
+                ]
+              }
+            },
+            "forkBench": {
+              "hasWpkForkSymbols": true,
+              "hasLegacyForkSymbols": false,
+              "matchedSymbols": [
+                "$wpk_fork_module_state_finish_restore",
+                "1$kandelo.wpk_fork.static_root_catalogKFSR",
+                "__wpk_fork_boundary",
+                "__wpk_fork_exception_materialize",
+                "__wpk_fork_frame_commit",
+                "__wpk_fork_frame_next",
+                "__wpk_fork_frame_reserve",
+                "__wpk_fork_function_catalog",
+                "__wpk_fork_global_1",
+                "__wpk_fork_global_2",
+                "__wpk_fork_global_3",
+                "__wpk_fork_global_4",
+                "__wpk_fork_global_5",
+                "__wpk_fork_global_6",
+                "__wpk_fork_module_activation",
+                "__wpk_fork_module_state_record_commit",
+                "__wpk_fork_module_state_record_find",
+                "__wpk_fork_module_state_record_reserve",
+                "__wpk_fork_module_state_table_reconcile",
+                "__wpk_fork_ref_decode_exnref",
+                "__wpk_fork_ref_encode_exnref",
+                "__wpk_fork_ref_exn_abort",
+                "__wpk_fork_ref_exn_broker_encode",
+                "__wpk_fork_ref_exn_broker_throw_recipe",
+                "__wpk_fork_ref_exn_cache_index",
+                "__wpk_fork_ref_exn_clear",
+                "__wpk_fork_ref_exn_encode_ingress",
+                "__wpk_fork_ref_exn_ingress_throw",
+                "__wpk_fork_ref_exn_lookup",
+                "__wpk_fork_ref_exn_route",
+                "__wpk_fork_ref_exn_throw_recipe",
+                "__wpk_fork_ref_exn_throw_slot",
+                "__wpk_fork_ref_gc_allocate",
+                "__wpk_fork_ref_gc_broker_encode",
+                "__wpk_fork_ref_gc_encode_slot",
+                "__wpk_fork_ref_gc_fill",
+                "__wpk_fork_ref_gc_i31",
+                "__wpk_fork_ref_gc_load",
+                "__wpk_fork_ref_gc_lookup",
+                "__wpk_fork_ref_gc_payload_len",
+                "__wpk_fork_ref_gc_probe",
+                "__wpk_fork_ref_gc_publish_externref",
+                "__wpk_fork_ref_gc_route",
+                "__wpk_fork_ref_gc_transit",
+                "__wpk_fork_ref_scratch_release",
+                "__wpk_fork_ref_scratch_reserve",
+                "__wpk_fork_resume_catalog",
+                "__wpk_fork_resume_peek",
+                "__wpk_fork_resume_table",
+                "__wpk_fork_static_root_catalog",
+                "__wpk_fork_static_root_harvest",
+                "__wpk_fork_table_1",
+                "__wpk_fork_unwind",
+                "env-__wpk_fork_module_state_table_generation_addr",
+                "kandelo.wpk_fork.boundariesKFSB",
+                "kandelo.wpk_fork.capabilities",
+                "kandelo.wpk_fork.exception_codec",
+                "kandelo.wpk_fork.gc_codecKFGC",
+                "kandelo.wpk_fork.imported_globalsKFIG",
+                "kandelo.wpk_fork.imported_tablesKFIT",
+                "kandelo.wpk_fork.linked_framesKLCF",
+                "kandelo.wpk_fork.module_stateKFMD",
+                "kandelo.wpk_fork.resume_catalogKFRC",
+                "kandelo.wpk_fork.unwind_transport",
+                "wpk_fork_abort_begin",
+                "wpk_fork_abort_end",
+                "wpk_fork_module_bootstrap",
+                "wpk_fork_module_state_restore",
+                "wpk_fork_module_state_save",
+                "wpk_fork_module_table_state_restore",
+                "wpk_fork_module_table_state_save",
+                "wpk_fork_module_thread_bootstrap",
+                "wpk_fork_resume_sink",
+                "wpk_fork_resume_start",
+                "wpk_fork_resume_thread",
+                "wpk_fork_rewind_begin",
+                "wpk_fork_rewind_end",
+                "wpk_fork_state",
+                "wpk_fork_unwind_begin",
+                "wpk_fork_unwind_end"
+              ],
+              "expected": "wpk_fork_without_legacy",
+              "passed": true
+            }
+          },
+          "suites": {
+            "syscall-io": {
+              "pipe_mbps": 58.2,
+              "file_write_mbps": 81.85,
+              "file_read_mbps": 120.37,
+              "lock_many_files_acquire_us_per_op": 30.45,
+              "lock_many_files_conflict_us_per_op": 23.8,
+              "lock_many_files_replace_us_per_op": 28.46,
+              "lock_many_files_unlock_us_per_op": 22.97,
+              "lock_dense_file_acquire_us_per_op": 25.11,
+              "lock_dense_file_conflict_us_per_op": 27.17,
+              "lock_dense_file_replace_us_per_op": 24.47,
+              "lock_dense_file_unlock_us_per_op": 22.88,
+              "syscall_latency_us": 26.15,
+              "poll_ready_us_per_op": 25.89,
+              "poll_timeout_us_per_op": 1251.47,
+              "select_timeout_us_per_op": 1362.32,
+              "epoll_ready_us_per_op": 24.69
+            },
+            "stdin-throughput": {
+              "stdin_mbps": 781.86
+            },
+            "process-lifecycle": {
+              "hello_start_ms": 3462.82,
+              "fork_ms": 87.71,
+              "exec_ms": 3492,
+              "clone_ms": 69.75
+            },
+            "spawn-scratch": {
+              "spawn_ms": 77.61,
+              "spawn_large_wire_bytes": 84386,
+              "spawn_large_first_ms": 70.06,
+              "spawn_large_repeat_ms": 68.71,
+              "spawn_scratch_kernel_bytes": 10420224
+            },
+            "wordpress": {
+              "cli_require_ms": 512.79,
+              "http_first_response_ms": 2870.31
+            },
+            "mariadb-aria": {
+              "bootstrap_ms": 2172.17,
+              "query_create_ms": 238.29,
+              "query_insert_ms": 977.66,
+              "query_select_ms": 105.05,
+              "query_join_ms": 94.2
+            },
+            "mariadb-aria-64": {
+              "bootstrap_ms": 2224.72,
+              "query_create_ms": 249.26,
+              "query_insert_ms": 971.03,
+              "query_select_ms": 104.31,
+              "query_join_ms": 93.13
+            },
+            "mariadb-innodb": {
+              "bootstrap_ms": 2092.49,
+              "query_create_ms": 237.01,
+              "query_insert_ms": 274.48,
+              "query_select_ms": 100.94,
+              "query_join_ms": 90.51
+            },
+            "mariadb-innodb-64": {
+              "bootstrap_ms": 2081.83,
+              "query_create_ms": 236.38,
+              "query_insert_ms": 273.78,
+              "query_select_ms": 98.51,
+              "query_join_ms": 90.12
+            }
+          }
+        }
+      ]
+    },
+    {
+      "phase": "candidate-all-node",
+      "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix",
+      "command": [
+        "npx",
+        "tsx",
+        "benchmarks/run.ts",
+        "--rounds=3"
+      ],
+      "commit": "d059ee2510f08650642931f407db1c8a7d96fdb0",
+      "start": 1794252192.5645928,
+      "start_monotonic": 846568.297443208,
+      "load": [
+        3.64794921875,
+        4.33740234375,
+        5.98046875
+      ],
+      "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+      "kernel_sha256": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63",
+      "disk_free_bytes": 335646474240,
+      "exit_code": 0,
+      "finish": 1794252542.0445461,
+      "finish_monotonic": 846917.775908208,
+      "suspend_gap_seconds": 0.0014882890973240137,
+      "measurement_suspended": false,
+      "result_files": [
+        "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/results/benchmark-node-1794252541955.json"
+      ],
+      "console_log_sha256": "7407d319b5595630bf7e0bcf1c941440f6c6f3c7c0fa00a216938b53466dcced",
+      "benchmark_outputs": [
+        {
+          "timestamp": "2026-11-09T19:29:01.955Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "nodeVersion": "v24.15.0",
+          "host": "node",
+          "rounds": 3,
+          "artifacts": {
+            "gitHead": "d059ee2510f08650642931f407db1c8a7d96fdb0",
+            "gitRef": "undefined",
+            "files": {
+              "benchmarks/wasm/pipe-throughput.wasm": {
+                "path": "benchmarks/wasm/pipe-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/pipe-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 44741,
+                "sha256": "baeab97a62e0e20f5618b547fba171f2a095842cca15ec60f61975cec23eeb14"
+              },
+              "benchmarks/wasm/file-throughput.wasm": {
+                "path": "benchmarks/wasm/file-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/file-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 42695,
+                "sha256": "946a965c716a50f7d4a85c0b8fbfe0035564cda0df68ebe38c33dfb0ba7e89d3"
+              },
+              "benchmarks/wasm/syscall-latency.wasm": {
+                "path": "benchmarks/wasm/syscall-latency.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/syscall-latency.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 37151,
+                "sha256": "392eb76225de1e5909954ba9c80045371a37b48cbfade85c1354166fb5e19a5c"
+              },
+              "benchmarks/wasm/stdin-throughput.wasm": {
+                "path": "benchmarks/wasm/stdin-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/stdin-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 38612,
+                "sha256": "2a05b6de2ba30f895218a5e2e4ba830e6c7e9001709293e3b4ee6c8aa416c482"
+              },
+              "benchmarks/wasm/hello.wasm": {
+                "path": "benchmarks/wasm/hello.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/hello.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 18925,
+                "sha256": "3ad4c8507a275798fdba63f7e191f92233f53c6e85d14873223cfd54013e6cab"
+              },
+              "benchmarks/wasm/fork-bench.wasm": {
+                "path": "benchmarks/wasm/fork-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/fork-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 44431,
+                "sha256": "68d27490ef0f9cd47129b4eaa590586497ba4adc5159dc55fb23cecccba04b81"
+              },
+              "benchmarks/wasm/exec-bench.wasm": {
+                "path": "benchmarks/wasm/exec-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/exec-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 21579,
+                "sha256": "7baccf7b5d18b3e2decd61d21e87d5a85b4a5d5e38cdc1b35f739abf17208820"
+              },
+              "benchmarks/wasm/clone-bench.wasm": {
+                "path": "benchmarks/wasm/clone-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/clone-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 41156,
+                "sha256": "e9f5fac68e100d588e83cf8f2b05ca5e5d253c61222ff0a7e35388258ceac2ba"
+              },
+              "benchmarks/wasm/spawn-bench.wasm": {
+                "path": "benchmarks/wasm/spawn-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/spawn-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 48689,
+                "sha256": "97e81b5c5fdeff41e28dd8d2ab0920367a2af6c2b78ebdca0d11ecf4c936a6f1"
+              },
+              "runtime.nodeWorkerBundle": {
+                "path": "host/dist/node-kernel-worker-entry.js",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/host/dist/node-kernel-worker-entry.js",
+                "required": true,
+                "used": true,
+                "sizeBytes": 3209809,
+                "sha256": "3026e069d0438bc8360949e5d7d01718f7e27eeb23c599e917209192ee6f4c7e"
+              },
+              "runtime.kernel": {
+                "path": "kernel.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/kernel.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "kernel.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/kernel.wasm",
+                "sizeBytes": 2919672,
+                "sha256": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63"
+              },
+              "runtime.rootfs": {
+                "path": "rootfs.vfs.zst",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm32/rootfs.vfs.zst",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/rootfs.vfs.zst",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm32/rootfs.vfs.zst",
+                "sizeBytes": 172783,
+                "sha256": "35c5b0910b0c9bd3630d2ed5035e0832e5568a1f86f3d9dda67c4b8815885a11"
+              },
+              "node.wordpress.php": {
+                "path": "programs/php/php.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm32/php/php.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/php/php.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm32/php/php.wasm",
+                "sizeBytes": 36844441,
+                "sha256": "1a860921851ae48ec55955c5046f80aabd7bd87c90b6cc596dd8299209d7d7ab"
+              },
+              "node.wordpress.config": {
+                "path": "packages/registry/wordpress/wordpress/wp-config.php",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/packages/registry/wordpress/wordpress/wp-config.php",
+                "required": true,
+                "used": true,
+                "sizeBytes": 1257,
+                "sha256": "bb5a455216bb368b53508e5b21a71756ca8685fa5a2507070c5ac07bfdffba7e"
+              },
+              "node.wordpress.router": {
+                "path": "packages/registry/wordpress/demo/router.php",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/packages/registry/wordpress/demo/router.php",
+                "required": true,
+                "used": true,
+                "sizeBytes": 536,
+                "sha256": "d11a898dbd3af98b1642a8c24c120f3ef75deb2c10458847eab4ccdf3a00c3b8"
+              },
+              "node.mariadb.wasm32.server": {
+                "path": "programs/mariadb/mariadbd.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm32/mariadb/mariadbd.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/mariadb/mariadbd.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm32/mariadb/mariadbd.wasm",
+                "sizeBytes": 13070820,
+                "sha256": "cc33d415a1ebe89a8b9c2fad82b75b5eaa176fbbf0944b2cc3d1e7e20fefad80"
+              },
+              "node.mariadb.wasm32.client": {
+                "path": "programs/mariadb/mysqltest.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm32/mariadb/mysqltest.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/mariadb/mysqltest.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm32/mariadb/mysqltest.wasm",
+                "sizeBytes": 4019920,
+                "sha256": "9617c021b502bc9b4d0c093c470b9f32b5d6c5179c72f1fb5adf020c11aada96"
+              },
+              "node.mariadb.wasm32.bootstrap.systemTables": {
+                "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                "required": true,
+                "used": true,
+                "sizeBytes": 30145,
+                "sha256": "b9f5f114020b2a11fb09028fb5d79448fe2bee2b2dcbd24dec21c769dee08948"
+              },
+              "node.mariadb.wasm32.bootstrap.systemData": {
+                "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                "required": true,
+                "used": true,
+                "sizeBytes": 3328,
+                "sha256": "3c6ae21bd9ace0c2621f5de9a81962a9e59bacb7582b8e78f9b2e31ddafa2d79"
+              },
+              "node.mariadb.wasm64.server": {
+                "path": "programs/wasm64/mariadb/mariadbd.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm64/mariadb/mariadbd.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/wasm64/mariadb/mariadbd.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm64/mariadb/mariadbd.wasm",
+                "sizeBytes": 14657727,
+                "sha256": "85f21a2f10b4a7e07b3247346e9b56dee63ee2bcf6356990d7b3cb6952e39da9"
+              },
+              "node.mariadb.wasm64.client": {
+                "path": "programs/wasm64/mariadb/mysqltest.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm64/mariadb/mysqltest.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/wasm64/mariadb/mysqltest.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm64/mariadb/mysqltest.wasm",
+                "sizeBytes": 4211485,
+                "sha256": "8bc340ff9897b5bc602ba007388d0de414021edbc6fc61596665233977aa11a2"
+              },
+              "node.mariadb.wasm64.bootstrap.systemTables": {
+                "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                "required": true,
+                "used": true,
+                "sizeBytes": 30145,
+                "sha256": "b9f5f114020b2a11fb09028fb5d79448fe2bee2b2dcbd24dec21c769dee08948"
+              },
+              "node.mariadb.wasm64.bootstrap.systemData": {
+                "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                "required": true,
+                "used": true,
+                "sizeBytes": 3328,
+                "sha256": "3c6ae21bd9ace0c2621f5de9a81962a9e59bacb7582b8e78f9b2e31ddafa2d79"
+              }
+            },
+            "directories": {
+              "runtime.hostSources": {
+                "path": "host/src",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/host/src",
+                "fileCount": 362,
+                "sizeBytes": 6646493,
+                "sha256": "2a836a0498d7fa8ac64d42db2fe380166da926adeec5f20d19d4a668df7944dd",
+                "required": true,
+                "excludedPaths": []
+              },
+              "node.wordpress.sourceTree": {
+                "path": "packages/registry/wordpress/wordpress",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/packages/registry/wordpress/wordpress",
+                "fileCount": 3972,
+                "sizeBytes": 86397207,
+                "sha256": "ba981f10172b7df6e0844b2744bcaf222c5193c53e6b900cc0e92b446d833c55",
+                "required": true,
+                "excludedPaths": [
+                  "wp-content/database",
+                  "wp-content/debug.log"
+                ]
+              }
+            },
+            "forkBench": {
+              "hasWpkForkSymbols": true,
+              "hasLegacyForkSymbols": false,
+              "matchedSymbols": [
+                "$wpk_fork_module_state_finish_restore",
+                "1$kandelo.wpk_fork.static_root_catalogKFSR",
+                "__wpk_fork_boundary",
+                "__wpk_fork_exception_materialize",
+                "__wpk_fork_frame_commit",
+                "__wpk_fork_frame_next",
+                "__wpk_fork_frame_reserve",
+                "__wpk_fork_function_catalog",
+                "__wpk_fork_global_1",
+                "__wpk_fork_global_2",
+                "__wpk_fork_global_3",
+                "__wpk_fork_global_4",
+                "__wpk_fork_global_5",
+                "__wpk_fork_global_6",
+                "__wpk_fork_module_activation",
+                "__wpk_fork_module_state_record_commit",
+                "__wpk_fork_module_state_record_find",
+                "__wpk_fork_module_state_record_reserve",
+                "__wpk_fork_module_state_table_reconcile",
+                "__wpk_fork_ref_decode_exnref",
+                "__wpk_fork_ref_encode_exnref",
+                "__wpk_fork_ref_exn_abort",
+                "__wpk_fork_ref_exn_broker_encode",
+                "__wpk_fork_ref_exn_broker_throw_recipe",
+                "__wpk_fork_ref_exn_cache_index",
+                "__wpk_fork_ref_exn_clear",
+                "__wpk_fork_ref_exn_encode_ingress",
+                "__wpk_fork_ref_exn_ingress_throw",
+                "__wpk_fork_ref_exn_lookup",
+                "__wpk_fork_ref_exn_route",
+                "__wpk_fork_ref_exn_throw_recipe",
+                "__wpk_fork_ref_exn_throw_slot",
+                "__wpk_fork_ref_gc_allocate",
+                "__wpk_fork_ref_gc_broker_encode",
+                "__wpk_fork_ref_gc_encode_slot",
+                "__wpk_fork_ref_gc_fill",
+                "__wpk_fork_ref_gc_i31",
+                "__wpk_fork_ref_gc_load",
+                "__wpk_fork_ref_gc_lookup",
+                "__wpk_fork_ref_gc_payload_len",
+                "__wpk_fork_ref_gc_probe",
+                "__wpk_fork_ref_gc_publish_externref",
+                "__wpk_fork_ref_gc_route",
+                "__wpk_fork_ref_gc_transit",
+                "__wpk_fork_ref_scratch_release",
+                "__wpk_fork_ref_scratch_reserve",
+                "__wpk_fork_resume_catalog",
+                "__wpk_fork_resume_peek",
+                "__wpk_fork_resume_table",
+                "__wpk_fork_static_root_catalog",
+                "__wpk_fork_static_root_harvest",
+                "__wpk_fork_table_1",
+                "__wpk_fork_unwind",
+                "env-__wpk_fork_module_state_table_generation_addr",
+                "kandelo.wpk_fork.boundariesKFSB",
+                "kandelo.wpk_fork.capabilities",
+                "kandelo.wpk_fork.exception_codec",
+                "kandelo.wpk_fork.gc_codecKFGC",
+                "kandelo.wpk_fork.imported_globalsKFIG",
+                "kandelo.wpk_fork.imported_tablesKFIT",
+                "kandelo.wpk_fork.linked_framesKLCF",
+                "kandelo.wpk_fork.module_stateKFMD",
+                "kandelo.wpk_fork.resume_catalogKFRC",
+                "kandelo.wpk_fork.unwind_transport",
+                "wpk_fork_abort_begin",
+                "wpk_fork_abort_end",
+                "wpk_fork_module_bootstrap",
+                "wpk_fork_module_state_restore",
+                "wpk_fork_module_state_save",
+                "wpk_fork_module_table_state_restore",
+                "wpk_fork_module_table_state_save",
+                "wpk_fork_module_thread_bootstrap",
+                "wpk_fork_resume_sink",
+                "wpk_fork_resume_start",
+                "wpk_fork_resume_thread",
+                "wpk_fork_rewind_begin",
+                "wpk_fork_rewind_end",
+                "wpk_fork_state",
+                "wpk_fork_unwind_begin",
+                "wpk_fork_unwind_end"
+              ],
+              "expected": "wpk_fork_without_legacy",
+              "passed": true
+            }
+          },
+          "suites": {
+            "syscall-io": {
+              "pipe_mbps": 57.34,
+              "file_write_mbps": 82.36,
+              "file_read_mbps": 120.82,
+              "lock_many_files_acquire_us_per_op": 29.89,
+              "lock_many_files_conflict_us_per_op": 23.48,
+              "lock_many_files_replace_us_per_op": 29.22,
+              "lock_many_files_unlock_us_per_op": 23.04,
+              "lock_dense_file_acquire_us_per_op": 24.11,
+              "lock_dense_file_conflict_us_per_op": 27.77,
+              "lock_dense_file_replace_us_per_op": 24.73,
+              "lock_dense_file_unlock_us_per_op": 22.75,
+              "syscall_latency_us": 25.48,
+              "poll_ready_us_per_op": 26.08,
+              "poll_timeout_us_per_op": 1247.2,
+              "select_timeout_us_per_op": 1363.41,
+              "epoll_ready_us_per_op": 24.35
+            },
+            "stdin-throughput": {
+              "stdin_mbps": 825.93
+            },
+            "process-lifecycle": {
+              "hello_start_ms": 3452.84,
+              "fork_ms": 87.12,
+              "exec_ms": 3521.99,
+              "clone_ms": 70.07
+            },
+            "spawn-scratch": {
+              "spawn_ms": 78.61,
+              "spawn_large_wire_bytes": 84386,
+              "spawn_large_first_ms": 69.69,
+              "spawn_large_repeat_ms": 68.39,
+              "spawn_scratch_kernel_bytes": 10420224
+            },
+            "wordpress": {
+              "cli_require_ms": 508.52,
+              "http_first_response_ms": 2683.69
+            },
+            "mariadb-aria": {
+              "bootstrap_ms": 2187.39,
+              "query_create_ms": 251.26,
+              "query_insert_ms": 969.29,
+              "query_select_ms": 104.79,
+              "query_join_ms": 96.36
+            },
+            "mariadb-aria-64": {
+              "bootstrap_ms": 2202.87,
+              "query_create_ms": 245.74,
+              "query_insert_ms": 1043.51,
+              "query_select_ms": 109.03,
+              "query_join_ms": 98.03
+            },
+            "mariadb-innodb": {
+              "bootstrap_ms": 2060.91,
+              "query_create_ms": 235.79,
+              "query_insert_ms": 274.95,
+              "query_select_ms": 96.85,
+              "query_join_ms": 89.32
+            },
+            "mariadb-innodb-64": {
+              "bootstrap_ms": 2102.11,
+              "query_create_ms": 242.19,
+              "query_insert_ms": 279.31,
+              "query_select_ms": 98.9,
+              "query_join_ms": 91.79
+            }
+          }
+        }
+      ]
+    },
+    {
+      "phase": "candidate-all-browser",
+      "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix",
+      "command": [
+        "npx",
+        "tsx",
+        "benchmarks/run.ts",
+        "--host=browser",
+        "--rounds=3"
+      ],
+      "commit": "d059ee2510f08650642931f407db1c8a7d96fdb0",
+      "start": 1794252542.056226,
+      "start_monotonic": 846917.78758725,
+      "load": [
+        4.1064453125,
+        4.00732421875,
+        5.25146484375
+      ],
+      "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+      "kernel_sha256": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63",
+      "disk_free_bytes": 335386972160,
+      "exit_code": 0,
+      "finish": 1794252644.366067,
+      "finish_monotonic": 847020.096800333,
+      "suspend_gap_seconds": 0.0006278345827013254,
+      "measurement_suspended": false,
+      "result_files": [
+        "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/results/benchmark-browser-1794252644291.json"
+      ],
+      "console_log_sha256": "ce074b3deebbb08051266ae18ff0e8f20adb531b610c7f341882bc60f33070f9",
+      "benchmark_outputs": [
+        {
+          "timestamp": "2026-11-09T19:30:44.291Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "nodeVersion": "v24.15.0",
+          "host": "browser",
+          "rounds": 3,
+          "artifacts": {
+            "gitHead": "d059ee2510f08650642931f407db1c8a7d96fdb0",
+            "gitRef": "undefined",
+            "files": {
+              "benchmarks/wasm/pipe-throughput.wasm": {
+                "path": "benchmarks/wasm/pipe-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/pipe-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 44741,
+                "sha256": "baeab97a62e0e20f5618b547fba171f2a095842cca15ec60f61975cec23eeb14"
+              },
+              "benchmarks/wasm/file-throughput.wasm": {
+                "path": "benchmarks/wasm/file-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/file-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 42695,
+                "sha256": "946a965c716a50f7d4a85c0b8fbfe0035564cda0df68ebe38c33dfb0ba7e89d3"
+              },
+              "benchmarks/wasm/syscall-latency.wasm": {
+                "path": "benchmarks/wasm/syscall-latency.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/syscall-latency.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 37151,
+                "sha256": "392eb76225de1e5909954ba9c80045371a37b48cbfade85c1354166fb5e19a5c"
+              },
+              "benchmarks/wasm/stdin-throughput.wasm": {
+                "path": "benchmarks/wasm/stdin-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/stdin-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 38612,
+                "sha256": "2a05b6de2ba30f895218a5e2e4ba830e6c7e9001709293e3b4ee6c8aa416c482"
+              },
+              "benchmarks/wasm/hello.wasm": {
+                "path": "benchmarks/wasm/hello.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/hello.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 18925,
+                "sha256": "3ad4c8507a275798fdba63f7e191f92233f53c6e85d14873223cfd54013e6cab"
+              },
+              "benchmarks/wasm/fork-bench.wasm": {
+                "path": "benchmarks/wasm/fork-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/fork-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 44431,
+                "sha256": "68d27490ef0f9cd47129b4eaa590586497ba4adc5159dc55fb23cecccba04b81"
+              },
+              "benchmarks/wasm/exec-bench.wasm": {
+                "path": "benchmarks/wasm/exec-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/exec-bench.wasm",
+                "required": false,
+                "used": false,
+                "sizeBytes": 21579,
+                "sha256": "7baccf7b5d18b3e2decd61d21e87d5a85b4a5d5e38cdc1b35f739abf17208820"
+              },
+              "benchmarks/wasm/clone-bench.wasm": {
+                "path": "benchmarks/wasm/clone-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/clone-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 41156,
+                "sha256": "e9f5fac68e100d588e83cf8f2b05ca5e5d253c61222ff0a7e35388258ceac2ba"
+              },
+              "benchmarks/wasm/spawn-bench.wasm": {
+                "path": "benchmarks/wasm/spawn-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/spawn-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 48689,
+                "sha256": "97e81b5c5fdeff41e28dd8d2ab0920367a2af6c2b78ebdca0d11ecf4c936a6f1"
+              },
+              "runtime.kernel": {
+                "path": "@kernel-wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/kernel.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "kernel.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/kernel.wasm",
+                "sizeBytes": 2919672,
+                "sha256": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63"
+              },
+              "browser.wordpress.vfs": {
+                "path": "apps/browser-demos/public/wordpress.vfs.zst",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/apps/browser-demos/public/wordpress.vfs.zst",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/wordpress.vfs.zst",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm32/wordpress.vfs.zst",
+                "sizeBytes": 40691516,
+                "sha256": "e9151059b5c3f7134d983d609102dcad8d4b451ae6f0f06a1c9062ccdc4c6d1a"
+              },
+              "browser.mariadb.wasm32.vfs": {
+                "path": "apps/browser-demos/public/mariadb.vfs.zst",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/apps/browser-demos/public/mariadb.vfs.zst",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/mariadb-vfs.vfs.zst",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/.kandelo-local-generations/wasm32/mariadb-vfs/fe650aabb040db9b555b50079fa865fdb837d506210e5260caaef8611e1a451f/shell-68294-20191-29199/mariadb-vfs.vfs.zst",
+                "sizeBytes": 4493556,
+                "sha256": "42d9ba4206215d8b2f0f3b7e0ab0cf5e9a292b46a475db543f6e0716cc406ac9"
+              },
+              "browser.mariadb.wasm64.vfs": {
+                "path": "apps/browser-demos/public/mariadb-64.vfs.zst",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/apps/browser-demos/public/mariadb-64.vfs.zst",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/wasm64/mariadb-vfs.vfs.zst",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/.kandelo-local-generations/wasm64/mariadb-vfs/0754ce813c8ea0450a5d2ed4e4e492182a30f5e4de72aeddc5a5ea220e7cd8be/shell-70537-13880-8299/mariadb-vfs.vfs.zst",
+                "sizeBytes": 4704373,
+                "sha256": "5eb8cf3ede99d9e7d507efae945490807260544fb0ead56ddf2b6223ec491478"
+              }
+            },
+            "directories": {
+              "runtime.hostSources": {
+                "path": "host/src",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/host/src",
+                "fileCount": 362,
+                "sizeBytes": 6646493,
+                "sha256": "2a836a0498d7fa8ac64d42db2fe380166da926adeec5f20d19d4a668df7944dd",
+                "required": true,
+                "excludedPaths": []
+              }
+            },
+            "forkBench": {
+              "hasWpkForkSymbols": true,
+              "hasLegacyForkSymbols": false,
+              "matchedSymbols": [
+                "$wpk_fork_module_state_finish_restore",
+                "1$kandelo.wpk_fork.static_root_catalogKFSR",
+                "__wpk_fork_boundary",
+                "__wpk_fork_exception_materialize",
+                "__wpk_fork_frame_commit",
+                "__wpk_fork_frame_next",
+                "__wpk_fork_frame_reserve",
+                "__wpk_fork_function_catalog",
+                "__wpk_fork_global_1",
+                "__wpk_fork_global_2",
+                "__wpk_fork_global_3",
+                "__wpk_fork_global_4",
+                "__wpk_fork_global_5",
+                "__wpk_fork_global_6",
+                "__wpk_fork_module_activation",
+                "__wpk_fork_module_state_record_commit",
+                "__wpk_fork_module_state_record_find",
+                "__wpk_fork_module_state_record_reserve",
+                "__wpk_fork_module_state_table_reconcile",
+                "__wpk_fork_ref_decode_exnref",
+                "__wpk_fork_ref_encode_exnref",
+                "__wpk_fork_ref_exn_abort",
+                "__wpk_fork_ref_exn_broker_encode",
+                "__wpk_fork_ref_exn_broker_throw_recipe",
+                "__wpk_fork_ref_exn_cache_index",
+                "__wpk_fork_ref_exn_clear",
+                "__wpk_fork_ref_exn_encode_ingress",
+                "__wpk_fork_ref_exn_ingress_throw",
+                "__wpk_fork_ref_exn_lookup",
+                "__wpk_fork_ref_exn_route",
+                "__wpk_fork_ref_exn_throw_recipe",
+                "__wpk_fork_ref_exn_throw_slot",
+                "__wpk_fork_ref_gc_allocate",
+                "__wpk_fork_ref_gc_broker_encode",
+                "__wpk_fork_ref_gc_encode_slot",
+                "__wpk_fork_ref_gc_fill",
+                "__wpk_fork_ref_gc_i31",
+                "__wpk_fork_ref_gc_load",
+                "__wpk_fork_ref_gc_lookup",
+                "__wpk_fork_ref_gc_payload_len",
+                "__wpk_fork_ref_gc_probe",
+                "__wpk_fork_ref_gc_publish_externref",
+                "__wpk_fork_ref_gc_route",
+                "__wpk_fork_ref_gc_transit",
+                "__wpk_fork_ref_scratch_release",
+                "__wpk_fork_ref_scratch_reserve",
+                "__wpk_fork_resume_catalog",
+                "__wpk_fork_resume_peek",
+                "__wpk_fork_resume_table",
+                "__wpk_fork_static_root_catalog",
+                "__wpk_fork_static_root_harvest",
+                "__wpk_fork_table_1",
+                "__wpk_fork_unwind",
+                "env-__wpk_fork_module_state_table_generation_addr",
+                "kandelo.wpk_fork.boundariesKFSB",
+                "kandelo.wpk_fork.capabilities",
+                "kandelo.wpk_fork.exception_codec",
+                "kandelo.wpk_fork.gc_codecKFGC",
+                "kandelo.wpk_fork.imported_globalsKFIG",
+                "kandelo.wpk_fork.imported_tablesKFIT",
+                "kandelo.wpk_fork.linked_framesKLCF",
+                "kandelo.wpk_fork.module_stateKFMD",
+                "kandelo.wpk_fork.resume_catalogKFRC",
+                "kandelo.wpk_fork.unwind_transport",
+                "wpk_fork_abort_begin",
+                "wpk_fork_abort_end",
+                "wpk_fork_module_bootstrap",
+                "wpk_fork_module_state_restore",
+                "wpk_fork_module_state_save",
+                "wpk_fork_module_table_state_restore",
+                "wpk_fork_module_table_state_save",
+                "wpk_fork_module_thread_bootstrap",
+                "wpk_fork_resume_sink",
+                "wpk_fork_resume_start",
+                "wpk_fork_resume_thread",
+                "wpk_fork_rewind_begin",
+                "wpk_fork_rewind_end",
+                "wpk_fork_state",
+                "wpk_fork_unwind_begin",
+                "wpk_fork_unwind_end"
+              ],
+              "expected": "wpk_fork_without_legacy",
+              "passed": true
+            }
+          },
+          "suites": {
+            "syscall-io": {
+              "pipe_mbps": 55.78,
+              "file_write_mbps": 78.47,
+              "file_read_mbps": 107.35,
+              "lock_many_files_acquire_us_per_op": 32.24,
+              "lock_many_files_conflict_us_per_op": 24.33,
+              "lock_many_files_replace_us_per_op": 30.13,
+              "lock_many_files_unlock_us_per_op": 27.05,
+              "lock_dense_file_acquire_us_per_op": 25.92,
+              "lock_dense_file_conflict_us_per_op": 25.66,
+              "lock_dense_file_replace_us_per_op": 26.25,
+              "lock_dense_file_unlock_us_per_op": 22.62,
+              "syscall_latency_us": 27.6
+            },
+            "stdin-throughput": {
+              "stdin_mbps": 821.19
+            },
+            "process-lifecycle": {
+              "hello_start_ms": 244.87,
+              "fork_ms": 46.25,
+              "clone_ms": 33.18
+            },
+            "spawn-scratch": {
+              "spawn_ms": 40.42,
+              "spawn_large_wire_bytes": 84386,
+              "spawn_large_first_ms": 30,
+              "spawn_large_repeat_ms": 30.25,
+              "spawn_scratch_kernel_bytes": 10485760
+            },
+            "wordpress": {
+              "boot_ms": 8457.5,
+              "http_first_response_ms": 207.04
+            },
+            "mariadb-aria": {
+              "bootstrap_ms": 1086.37,
+              "query_create_ms": 14.4,
+              "query_insert_ms": 90.64,
+              "query_select_ms": 6.99,
+              "query_join_ms": 1.75
+            },
+            "mariadb-aria-64": {
+              "bootstrap_ms": 1076.98,
+              "query_create_ms": 15.08,
+              "query_insert_ms": 87.11,
+              "query_select_ms": 7.24,
+              "query_join_ms": 1.88
+            },
+            "mariadb-innodb": {
+              "bootstrap_ms": 1009.65,
+              "query_create_ms": 21.65,
+              "query_insert_ms": 159.82,
+              "query_select_ms": 6.93,
+              "query_join_ms": 1.87
+            },
+            "mariadb-innodb-64": {
+              "bootstrap_ms": 1009.53,
+              "query_create_ms": 20.19,
+              "query_insert_ms": 148.18,
+              "query_select_ms": 7.91,
+              "query_join_ms": 2.31
+            }
+          }
+        }
+      ]
+    },
+    {
+      "phase": "baseline-all-browser",
+      "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree",
+      "command": [
+        "npx",
+        "tsx",
+        "benchmarks/run.ts",
+        "--host=browser",
+        "--rounds=3"
+      ],
+      "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+      "start": 1794252644.3781388,
+      "start_monotonic": 847020.1088725,
+      "load": [
+        3.61328125,
+        3.9521484375,
+        5.0869140625
+      ],
+      "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+      "kernel_sha256": "0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc",
+      "disk_free_bytes": 335390019584,
+      "exit_code": 0,
+      "finish": 1794252746.955981,
+      "finish_monotonic": 847122.686084375,
+      "suspend_gap_seconds": 0.0006303605623543262,
+      "measurement_suspended": false,
+      "result_files": [
+        "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/results/benchmark-browser-1794252746880.json"
+      ],
+      "console_log_sha256": "4802d6d8a76714c431af89e5456647bb6b470599e549b70df4d590df03f12f01",
+      "benchmark_outputs": [
+        {
+          "timestamp": "2026-11-09T19:32:26.880Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "nodeVersion": "v24.15.0",
+          "host": "browser",
+          "rounds": 3,
+          "artifacts": {
+            "gitHead": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+            "gitRef": "undefined",
+            "files": {
+              "benchmarks/wasm/pipe-throughput.wasm": {
+                "path": "benchmarks/wasm/pipe-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/pipe-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 44741,
+                "sha256": "baeab97a62e0e20f5618b547fba171f2a095842cca15ec60f61975cec23eeb14"
+              },
+              "benchmarks/wasm/file-throughput.wasm": {
+                "path": "benchmarks/wasm/file-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/file-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 42695,
+                "sha256": "946a965c716a50f7d4a85c0b8fbfe0035564cda0df68ebe38c33dfb0ba7e89d3"
+              },
+              "benchmarks/wasm/syscall-latency.wasm": {
+                "path": "benchmarks/wasm/syscall-latency.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/syscall-latency.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 37151,
+                "sha256": "392eb76225de1e5909954ba9c80045371a37b48cbfade85c1354166fb5e19a5c"
+              },
+              "benchmarks/wasm/stdin-throughput.wasm": {
+                "path": "benchmarks/wasm/stdin-throughput.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/stdin-throughput.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 38612,
+                "sha256": "2a05b6de2ba30f895218a5e2e4ba830e6c7e9001709293e3b4ee6c8aa416c482"
+              },
+              "benchmarks/wasm/hello.wasm": {
+                "path": "benchmarks/wasm/hello.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/hello.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 18925,
+                "sha256": "3ad4c8507a275798fdba63f7e191f92233f53c6e85d14873223cfd54013e6cab"
+              },
+              "benchmarks/wasm/fork-bench.wasm": {
+                "path": "benchmarks/wasm/fork-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/fork-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 44431,
+                "sha256": "68d27490ef0f9cd47129b4eaa590586497ba4adc5159dc55fb23cecccba04b81"
+              },
+              "benchmarks/wasm/exec-bench.wasm": {
+                "path": "benchmarks/wasm/exec-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/exec-bench.wasm",
+                "required": false,
+                "used": false,
+                "sizeBytes": 21579,
+                "sha256": "7baccf7b5d18b3e2decd61d21e87d5a85b4a5d5e38cdc1b35f739abf17208820"
+              },
+              "benchmarks/wasm/clone-bench.wasm": {
+                "path": "benchmarks/wasm/clone-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/clone-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 41156,
+                "sha256": "e9f5fac68e100d588e83cf8f2b05ca5e5d253c61222ff0a7e35388258ceac2ba"
+              },
+              "benchmarks/wasm/spawn-bench.wasm": {
+                "path": "benchmarks/wasm/spawn-bench.wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/spawn-bench.wasm",
+                "required": true,
+                "used": true,
+                "sizeBytes": 48689,
+                "sha256": "97e81b5c5fdeff41e28dd8d2ab0920367a2af6c2b78ebdca0d11ecf4c936a6f1"
+              },
+              "runtime.kernel": {
+                "path": "@kernel-wasm",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/kernel.wasm",
+                "required": true,
+                "used": true,
+                "resolverRequest": "kernel.wasm",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/kernel.wasm",
+                "sizeBytes": 2919292,
+                "sha256": "0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc"
+              },
+              "browser.wordpress.vfs": {
+                "path": "apps/browser-demos/public/wordpress.vfs.zst",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/apps/browser-demos/public/wordpress.vfs.zst",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/wordpress.vfs.zst",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm32/wordpress.vfs.zst",
+                "sizeBytes": 40692110,
+                "sha256": "e95f9fb5f439e0ca1af384deda9424abf1117cb4124c1ce9f99c3631f98b48c4"
+              },
+              "browser.mariadb.wasm32.vfs": {
+                "path": "apps/browser-demos/public/mariadb.vfs.zst",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/apps/browser-demos/public/mariadb.vfs.zst",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/mariadb-vfs.vfs.zst",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/.kandelo-local-generations/wasm32/mariadb-vfs/a8247f13f05e4176c1ca54542bf31ec98fa48fabcbd433abdc0d7df4b19ee50f/shell-47726-1971-3361/mariadb-vfs.vfs.zst",
+                "sizeBytes": 4493556,
+                "sha256": "42d9ba4206215d8b2f0f3b7e0ab0cf5e9a292b46a475db543f6e0716cc406ac9"
+              },
+              "browser.mariadb.wasm64.vfs": {
+                "path": "apps/browser-demos/public/mariadb-64.vfs.zst",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/apps/browser-demos/public/mariadb-64.vfs.zst",
+                "required": true,
+                "used": true,
+                "resolverRequest": "programs/wasm64/mariadb-vfs.vfs.zst",
+                "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/.kandelo-local-generations/wasm64/mariadb-vfs/096380688d0683451610e415984cc0d7d1094381c0274511fea0bd30c2867a7b/shell-52369-21158-7825/mariadb-vfs.vfs.zst",
+                "sizeBytes": 4704373,
+                "sha256": "5eb8cf3ede99d9e7d507efae945490807260544fb0ead56ddf2b6223ec491478"
+              }
+            },
+            "directories": {
+              "runtime.hostSources": {
+                "path": "host/src",
+                "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/host/src",
+                "fileCount": 362,
+                "sizeBytes": 6641069,
+                "sha256": "f4f9efd9c244702da56c58010547913b09bb4090fdff32affd7e4cff889ec3e5",
+                "required": true,
+                "excludedPaths": []
+              }
+            },
+            "forkBench": {
+              "hasWpkForkSymbols": true,
+              "hasLegacyForkSymbols": false,
+              "matchedSymbols": [
+                "$wpk_fork_module_state_finish_restore",
+                "1$kandelo.wpk_fork.static_root_catalogKFSR",
+                "__wpk_fork_boundary",
+                "__wpk_fork_exception_materialize",
+                "__wpk_fork_frame_commit",
+                "__wpk_fork_frame_next",
+                "__wpk_fork_frame_reserve",
+                "__wpk_fork_function_catalog",
+                "__wpk_fork_global_1",
+                "__wpk_fork_global_2",
+                "__wpk_fork_global_3",
+                "__wpk_fork_global_4",
+                "__wpk_fork_global_5",
+                "__wpk_fork_global_6",
+                "__wpk_fork_module_activation",
+                "__wpk_fork_module_state_record_commit",
+                "__wpk_fork_module_state_record_find",
+                "__wpk_fork_module_state_record_reserve",
+                "__wpk_fork_module_state_table_reconcile",
+                "__wpk_fork_ref_decode_exnref",
+                "__wpk_fork_ref_encode_exnref",
+                "__wpk_fork_ref_exn_abort",
+                "__wpk_fork_ref_exn_broker_encode",
+                "__wpk_fork_ref_exn_broker_throw_recipe",
+                "__wpk_fork_ref_exn_cache_index",
+                "__wpk_fork_ref_exn_clear",
+                "__wpk_fork_ref_exn_encode_ingress",
+                "__wpk_fork_ref_exn_ingress_throw",
+                "__wpk_fork_ref_exn_lookup",
+                "__wpk_fork_ref_exn_route",
+                "__wpk_fork_ref_exn_throw_recipe",
+                "__wpk_fork_ref_exn_throw_slot",
+                "__wpk_fork_ref_gc_allocate",
+                "__wpk_fork_ref_gc_broker_encode",
+                "__wpk_fork_ref_gc_encode_slot",
+                "__wpk_fork_ref_gc_fill",
+                "__wpk_fork_ref_gc_i31",
+                "__wpk_fork_ref_gc_load",
+                "__wpk_fork_ref_gc_lookup",
+                "__wpk_fork_ref_gc_payload_len",
+                "__wpk_fork_ref_gc_probe",
+                "__wpk_fork_ref_gc_publish_externref",
+                "__wpk_fork_ref_gc_route",
+                "__wpk_fork_ref_gc_transit",
+                "__wpk_fork_ref_scratch_release",
+                "__wpk_fork_ref_scratch_reserve",
+                "__wpk_fork_resume_catalog",
+                "__wpk_fork_resume_peek",
+                "__wpk_fork_resume_table",
+                "__wpk_fork_static_root_catalog",
+                "__wpk_fork_static_root_harvest",
+                "__wpk_fork_table_1",
+                "__wpk_fork_unwind",
+                "env-__wpk_fork_module_state_table_generation_addr",
+                "kandelo.wpk_fork.boundariesKFSB",
+                "kandelo.wpk_fork.capabilities",
+                "kandelo.wpk_fork.exception_codec",
+                "kandelo.wpk_fork.gc_codecKFGC",
+                "kandelo.wpk_fork.imported_globalsKFIG",
+                "kandelo.wpk_fork.imported_tablesKFIT",
+                "kandelo.wpk_fork.linked_framesKLCF",
+                "kandelo.wpk_fork.module_stateKFMD",
+                "kandelo.wpk_fork.resume_catalogKFRC",
+                "kandelo.wpk_fork.unwind_transport",
+                "wpk_fork_abort_begin",
+                "wpk_fork_abort_end",
+                "wpk_fork_module_bootstrap",
+                "wpk_fork_module_state_restore",
+                "wpk_fork_module_state_save",
+                "wpk_fork_module_table_state_restore",
+                "wpk_fork_module_table_state_save",
+                "wpk_fork_module_thread_bootstrap",
+                "wpk_fork_resume_sink",
+                "wpk_fork_resume_start",
+                "wpk_fork_resume_thread",
+                "wpk_fork_rewind_begin",
+                "wpk_fork_rewind_end",
+                "wpk_fork_state",
+                "wpk_fork_unwind_begin",
+                "wpk_fork_unwind_end"
+              ],
+              "expected": "wpk_fork_without_legacy",
+              "passed": true
+            }
+          },
+          "suites": {
+            "syscall-io": {
+              "pipe_mbps": 55.17,
+              "file_write_mbps": 77.75,
+              "file_read_mbps": 105.54,
+              "lock_many_files_acquire_us_per_op": 33.39,
+              "lock_many_files_conflict_us_per_op": 25.43,
+              "lock_many_files_replace_us_per_op": 32.24,
+              "lock_many_files_unlock_us_per_op": 27.01,
+              "lock_dense_file_acquire_us_per_op": 25.94,
+              "lock_dense_file_conflict_us_per_op": 25.66,
+              "lock_dense_file_replace_us_per_op": 26.39,
+              "lock_dense_file_unlock_us_per_op": 23.09,
+              "syscall_latency_us": 28.34
+            },
+            "stdin-throughput": {
+              "stdin_mbps": 810.13
+            },
+            "process-lifecycle": {
+              "hello_start_ms": 212.35,
+              "fork_ms": 47.26,
+              "clone_ms": 32.42
+            },
+            "spawn-scratch": {
+              "spawn_ms": 42.24,
+              "spawn_large_wire_bytes": 84386,
+              "spawn_large_first_ms": 29.78,
+              "spawn_large_repeat_ms": 29.33,
+              "spawn_scratch_kernel_bytes": 10485760
+            },
+            "wordpress": {
+              "boot_ms": 8482.3,
+              "http_first_response_ms": 205.23
+            },
+            "mariadb-aria": {
+              "bootstrap_ms": 1080.58,
+              "query_create_ms": 14.37,
+              "query_insert_ms": 94.37,
+              "query_select_ms": 7.38,
+              "query_join_ms": 1.75
+            },
+            "mariadb-aria-64": {
+              "bootstrap_ms": 1100.47,
+              "query_create_ms": 14.99,
+              "query_insert_ms": 88.36,
+              "query_select_ms": 7.02,
+              "query_join_ms": 1.88
+            },
+            "mariadb-innodb": {
+              "bootstrap_ms": 1017.34,
+              "query_create_ms": 25.38,
+              "query_insert_ms": 156.72,
+              "query_select_ms": 7.02,
+              "query_join_ms": 1.78
+            },
+            "mariadb-innodb-64": {
+              "bootstrap_ms": 1031.8,
+              "query_create_ms": 28.19,
+              "query_insert_ms": 158.25,
+              "query_select_ms": 7.56,
+              "query_join_ms": 2.52
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "protocol_sources": {
+    ".context/write-throughput.ts": {
+      "sha256": "789a8a8b6602827067dc18c8a6510a4a0a22f311186033b62eb06a45d17902e1",
+      "source": "import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';\nimport { tmpdir } from 'node:os';\nimport { join } from 'node:path';\nimport { createHash } from 'node:crypto';\nimport { NodeKernelHost } from '../host/src/node-kernel-host.ts';\nimport { KandeloImageFs } from '../images/vfs/lib/kandelo-image-fs.ts';\nconst base = new URL('../local-binaries/source-only-v1/', import.meta.url);\nconst fs = KandeloImageFs.create();\nfs.setImageCapacity(256 * 1024 * 1024);\nfs.mkdir('/bin', 0o755); fs.mkdir('/home', 0o755); fs.mkdir('/home/maker', 0o755, 1000, 1000);\nfor (const name of ['bash', 'coreutils']) fs.writeFile('/bin/' + name, readFileSync(new URL('programs/wasm32/' + name + '.wasm', base)), 0o755);\nfor (const name of ['dd','sync','stat']) fs.symlink('/bin/coreutils', '/bin/' + name);\nconst image = await fs.saveImage();\nwriteFileSync(new URL('./write-throughput.vfs', import.meta.url), image);\nconst wasm = new Uint8Array(readFileSync(new URL('kernel.wasm', base)));\nconst rows = [];\nconst allowPressureEnospc = process.argv.includes('--allow-pressure-enospc');\nfor (const MiB of [16, 128]) for (let round = 0; round < 3; round++) {\n const dir = mkdtempSync(join(tmpdir(), 'persistent-write-bench-'));\n let output=''; let closed=false; const diagnostics: string[]=[];\n const host = new NodeKernelHost({onHostDiagnostic: diagnostic=>{diagnostics.push(diagnostic.message)},rootfsImage:image, experimentalResizablePersistencePath: join(dir,'journal'), onStdout:(_pid,bytes)=>{output+=new TextDecoder().decode(bytes)},onStderr:(_pid,bytes)=>{output+=new TextDecoder().decode(bytes)}});\n try {\n  await host.init(wasm.slice().buffer);\n  const start=performance.now();\n  const {exit}=await host.spawnFromVfs('/bin/bash',['bash','-ec',`dd if=/dev/zero of=/home/maker/write bs=65536 count=${MiB * 16}; sync; test \"$(stat -c %s /home/maker/write)\" = ${MiB * 1024 * 1024}`],{uid:1000,gid:1000,env:['PATH=/bin','HOME=/home/maker']});\n  const code=await exit; const ms=performance.now()-start;\n  if(code!==0 && !(allowPressureEnospc && MiB===128 && output.includes('No space left on device'))) throw new Error(output);\n  rows.push({round:round+1,MiB,ms,exitCode:code,MiBps:code===0 ? MiB*1000/ms : null,...(code!==0 ? {error:output} : {})});\n } finally {await host.destroy();if(host.getPersistenceShutdownFailure()!==null || diagnostics.some(message=>message.includes('realm termination failed')))throw new Error('Benchmark shutdown unconfirmed; retained '+dir+' '+diagnostics.join('; '));closed=true;if(closed)rmSync(dir,{recursive:true,force:true});}\n}\nlet timerResolutionMs=Infinity; for(let i=0,previous=performance.now();i<10000;i++){const now=performance.now();if(now>previous)timerResolutionMs=Math.min(timerResolutionMs,now-previous);previous=now;}\nconst evidence={timerResolutionMs,imageSha256:createHash('sha256').update(image).digest('hex'),node:process.version,kernel: createHash('sha256').update(wasm).digest('hex'),rows,scope:'Three fresh machines for each of 16 and 128 MiB in one Node parent; sequential persistent write plus sync; guest shell/process startup included, boot excluded.'};\nwriteFileSync(new URL('./write-throughput-node.json',import.meta.url),JSON.stringify(evidence,null,2));\nconsole.log(JSON.stringify(evidence));\n"
+    },
+    "apps/browser-demos/test/persistent-write-benchmark.spec.ts": {
+      "sha256": "f3e13e4d9fa804b74242556e89bcb052c49ebb28c4b9e7d889fceaebb808b10c",
+      "source": "import { readFileSync, writeFileSync } from 'node:fs';\nimport { resolve } from 'node:path';\nimport { expect } from '../playwright-test';\nimport { opfsTest as test } from './support/opfs-page';\nconst root = resolve(import.meta.dirname, '../../..');\ntest('measure sixteen and 128 MiB persistent writes plus sync', async ({ page, baseURL, browserName }, info) => {\n test.setTimeout(180_000);\n const kernelUrl = new URL('/write-throughput-kernel.wasm', baseURL).href;\n const imageUrl = new URL('/write-throughput.vfs', baseURL).href;\n await page.route(kernelUrl, route => route.fulfill({body: readFileSync(resolve(root,'local-binaries/source-only-v1/kernel.wasm'))}));\n await page.route(imageUrl, route => route.fulfill({body: readFileSync(resolve(root,'.context/write-throughput.vfs'))}));\n await page.goto(new URL('/trap-signal-test.html',baseURL).href);\n const result = await page.evaluate(async ({moduleUrl,kernelUrl,imageUrl,allowPressureEnospc}) => {\n  const {BrowserKernel} = await import(moduleUrl);\n  const kernelWasm=await (await fetch(kernelUrl)).arrayBuffer();\n  const image=new Uint8Array(await (await fetch(imageUrl)).arrayBuffer());\n  let timerResolutionMs=Infinity; for(let i=0,previous=performance.now();i<10000;i++){const now=performance.now();if(now>previous)timerResolutionMs=Math.min(timerResolutionMs,now-previous);previous=now;}\n  const rows=[];\n  for(const MiB of [16,128]) for(let round=0;round<3;round++) {\n   const name='write-throughput-'+crypto.randomUUID();\n   let output='';\n   const kernel=new BrowserKernel({kernelOwnedFs:true,onStdout:(bytes:Uint8Array)=>{output+=new TextDecoder().decode(bytes)},onStderr:(bytes:Uint8Array)=>{output+=new TextDecoder().decode(bytes)}});\n   let closed=false;\n   try {\n    await kernel.initFromImage({kernelWasm:kernelWasm.slice(0),vfsImage:image,experimentalResizablePersistenceName:name,persistentComputerName:name});\n    const start=performance.now();\n    const {exit}=await kernel.spawnFromVfs('/bin/bash',['bash','-ec',`dd if=/dev/zero of=/home/maker/write bs=65536 count=${MiB*16}; sync; test \"$(stat -c %s /home/maker/write)\" = ${MiB*1024*1024}`],{uid:1000,gid:1000,env:['PATH=/bin','HOME=/home/maker']});\n    const code=await exit;const ms=performance.now()-start;\n    if(code!==0 && !(allowPressureEnospc && MiB===128 && output.includes('No space left on device')))throw new Error(output);\n    rows.push({round:round+1,MiB,ms,exitCode:code,MiBps:code===0?MiB*1000/ms:null,...(code!==0?{error:output}:{})});\n   } finally {\n    await kernel.destroy();closed=!kernel.hasUnconfirmedKernelQuiescence();\n    if(!closed)throw new Error('Benchmark kernel quiescence unconfirmed; retained '+name);\n    if(closed) {\n     const storage=await navigator.storage.getDirectory();\n     const overlays=await storage.getDirectoryHandle('kandelo-persistent-overlay');\n     for await(const key of overlays.keys())if(key.startsWith(name+'.'))await overlays.removeEntry(key,{recursive:true});\n    }\n   }\n  }\n  return {timerResolutionMs,rows,userAgent:navigator.userAgent,scope:'Three fresh machines for each of 16 and 128 MiB in one browser parent; persistent write plus sync; guest shell/process startup included, boot excluded.'};\n },{moduleUrl:new URL('/@fs/'+resolve(root,'host/src/browser-kernel-host.ts'),baseURL).href,kernelUrl,imageUrl,allowPressureEnospc:process.env.KANDELO_WRITE_BENCH_ALLOW_ENOSPC==='1'});\n expect(result.rows).toHaveLength(6);\n writeFileSync(resolve(root,'.context/write-throughput-browser.json'),JSON.stringify({browserName,...result},null,2));\n await info.attach('persistent-write-throughput',{contentType:'application/json',body:JSON.stringify(result)});\n console.log('PERSISTENT_WRITE_BENCHMARK '+JSON.stringify(result));\n});\n"
+    },
+    ".context/measure-before-after.py": {
+      "sha256": "64e351cf1558567705ff5468781a552e20d28eefc5773e94ca5fc583ae5cb3a0",
+      "source": "import os, subprocess, json, shlex, hashlib, time, platform, shutil\nfrom pathlib import Path\ncandidate=Path.cwd(); baseline=candidate.parent/'enospc-worktree'; scratch=Path(os.environ['KANDELO_AGENT_SCRATCH_DIR']); results=[]\nphases=[('baseline-write-node',baseline,['npx','tsx','.context/write-throughput.ts','--allow-pressure-enospc'],baseline),('candidate-write-node',candidate,['npx','tsx','.context/write-throughput.ts'],candidate),('candidate-write-browser',candidate,['npx','playwright','test','test/persistent-write-benchmark.spec.ts','--project=chromium','--workers=1'],candidate/'apps/browser-demos'),('baseline-write-browser',baseline,['npx','playwright','test','test/persistent-write-benchmark.spec.ts','--project=chromium','--workers=1'],baseline/'apps/browser-demos'),('baseline-all-node',baseline,['npx','tsx','benchmarks/run.ts','--rounds=3'],baseline),('candidate-all-node',candidate,['npx','tsx','benchmarks/run.ts','--rounds=3'],candidate),('candidate-all-browser',candidate,['npx','tsx','benchmarks/run.ts','--host=browser','--rounds=3'],candidate),('baseline-all-browser',baseline,['npx','tsx','benchmarks/run.ts','--host=browser','--rounds=3'],baseline)]\nfor name,root,cmd,cwd in phases:\n print('START '+name,flush=True)\n record=dict(phase=name,root=str(root),command=cmd,commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),start=time.time(),start_monotonic=time.monotonic(),load=os.getloadavg(),platform=platform.platform(),kernel_sha256=hashlib.sha256((root/'local-binaries/source-only-v1/kernel.wasm').read_bytes()).hexdigest())\n record['disk_free_bytes']=shutil.disk_usage('/System/Volumes/Data').free\n if record['disk_free_bytes'] < 1024**3:raise RuntimeError('Measurement needs at least 1 GiB of actual host storage headroom')\n custom=root/('.context/write-throughput-node.json' if name.endswith('write-node') else '.context/write-throughput-browser.json') if '-write-' in name else None\n if custom is not None and custom.exists():\n  shutil.copy2(custom,scratch/(name+'-previous-output.json'));custom.unlink()\n before=set((root/'benchmarks/results').glob('*.json'))\n command='export WASM_POSIX_XTASK_BIN='+shlex.quote(str(root/'.context/tools/xtask'))+'; cd '+shlex.quote(str(cwd))+'; exec '+shlex.join(cmd)\n if name=='baseline-write-browser':command='export KANDELO_WRITE_BENCH_ALLOW_ENOSPC=1; '+command\n with (scratch/(name+'.log')).open('w') as log:record['exit_code']=subprocess.run([str(root/'scripts/dev-shell.sh'),'bash','-c',command],cwd=root,stdout=log,stderr=subprocess.STDOUT).returncode\n if custom is not None and custom.exists():\n  record['custom_result_file']=str(custom);record['custom_result_sha256']=hashlib.sha256(custom.read_bytes()).hexdigest()\n record['finish']=time.time();record['finish_monotonic']=time.monotonic();record['suspend_gap_seconds']=(record['finish']-record['start'])-(record['finish_monotonic']-record['start_monotonic']);record['measurement_suspended']=record['suspend_gap_seconds']>5;record['result_files']=[str(p) for p in set((root/'benchmarks/results').glob('*.json'))-before]\n results.append(record);(scratch/'results.json').write_text(json.dumps(results,indent=2)+'\\n')\n print('DONE '+name+' exit='+str(record['exit_code']),flush=True)\nraise SystemExit(1 if any(r['exit_code'] or r['measurement_suspended'] for r in results) else 0)\n"
+    }
+  },
+  "follow_up": {
+    "reason": "Check the larger startup and database differences without replacing the original three-round sweep.",
+    "rounds": 5,
+    "order": [
+      "baseline-browser-process-lifecycle",
+      "candidate-browser-process-lifecycle",
+      "candidate-node-mariadb-aria-64",
+      "baseline-node-mariadb-aria-64"
+    ],
+    "comparisons": {
+      "browser/process-lifecycle": {
+        "hello_start_ms": {
+          "before": 222.65,
+          "after": 233.67,
+          "percent_change": 4.949472265888155
+        },
+        "fork_ms": {
+          "before": 47.38,
+          "after": 48.62,
+          "percent_change": 2.6171380329252703
+        },
+        "clone_ms": {
+          "before": 33.6,
+          "after": 33.73,
+          "percent_change": 0.38690476190474943
+        }
+      },
+      "node/mariadb-aria-64": {
+        "bootstrap_ms": {
+          "before": 2244.45,
+          "after": 2228.94,
+          "percent_change": -0.6910378934705474
+        },
+        "query_create_ms": {
+          "before": 247.8,
+          "after": 256.11,
+          "percent_change": 3.3535108958837823
+        },
+        "query_insert_ms": {
+          "before": 1012.69,
+          "after": 1018.08,
+          "percent_change": 0.5322458007879893
+        },
+        "query_select_ms": {
+          "before": 103.71,
+          "after": 102.02,
+          "percent_change": -1.6295439205476825
+        },
+        "query_join_ms": {
+          "before": 95.38,
+          "after": 93.57,
+          "percent_change": -1.8976724680226487
+        }
+      }
+    },
+    "phases": [
+      {
+        "phase": "baseline-browser-process-lifecycle",
+        "host": "browser",
+        "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree",
+        "command": [
+          "npx",
+          "tsx",
+          "benchmarks/run.ts",
+          "--host=browser",
+          "--suite=process-lifecycle",
+          "--rounds=5"
+        ],
+        "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+        "start": 1794252822.4095,
+        "start_monotonic": 847198.139142375,
+        "load": [
+          2.70361328125,
+          3.52880859375,
+          4.70556640625
+        ],
+        "disk_free_bytes": 335396540416,
+        "kernel_sha256": "0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc",
+        "exit_code": 0,
+        "finish": 1794252833.908587,
+        "finish_monotonic": 847209.638156791,
+        "suspend_gap_seconds": 7.267924956977367e-05,
+        "measurement_suspended": false,
+        "result_files": [
+          "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/results/benchmark-browser-1794252833832.json"
+        ],
+        "benchmark_outputs": [
+          {
+            "timestamp": "2026-11-09T19:33:53.832Z",
+            "platform": "darwin",
+            "arch": "arm64",
+            "nodeVersion": "v24.15.0",
+            "host": "browser",
+            "rounds": 5,
+            "artifacts": {
+              "gitHead": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+              "gitRef": "undefined",
+              "files": {
+                "benchmarks/wasm/pipe-throughput.wasm": {
+                  "path": "benchmarks/wasm/pipe-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/pipe-throughput.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 44741,
+                  "sha256": "baeab97a62e0e20f5618b547fba171f2a095842cca15ec60f61975cec23eeb14"
+                },
+                "benchmarks/wasm/file-throughput.wasm": {
+                  "path": "benchmarks/wasm/file-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/file-throughput.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 42695,
+                  "sha256": "946a965c716a50f7d4a85c0b8fbfe0035564cda0df68ebe38c33dfb0ba7e89d3"
+                },
+                "benchmarks/wasm/syscall-latency.wasm": {
+                  "path": "benchmarks/wasm/syscall-latency.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/syscall-latency.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 37151,
+                  "sha256": "392eb76225de1e5909954ba9c80045371a37b48cbfade85c1354166fb5e19a5c"
+                },
+                "benchmarks/wasm/stdin-throughput.wasm": {
+                  "path": "benchmarks/wasm/stdin-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/stdin-throughput.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 38612,
+                  "sha256": "2a05b6de2ba30f895218a5e2e4ba830e6c7e9001709293e3b4ee6c8aa416c482"
+                },
+                "benchmarks/wasm/hello.wasm": {
+                  "path": "benchmarks/wasm/hello.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/hello.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 18925,
+                  "sha256": "3ad4c8507a275798fdba63f7e191f92233f53c6e85d14873223cfd54013e6cab"
+                },
+                "benchmarks/wasm/fork-bench.wasm": {
+                  "path": "benchmarks/wasm/fork-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/fork-bench.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 44431,
+                  "sha256": "68d27490ef0f9cd47129b4eaa590586497ba4adc5159dc55fb23cecccba04b81"
+                },
+                "benchmarks/wasm/exec-bench.wasm": {
+                  "path": "benchmarks/wasm/exec-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/exec-bench.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 21579,
+                  "sha256": "7baccf7b5d18b3e2decd61d21e87d5a85b4a5d5e38cdc1b35f739abf17208820"
+                },
+                "benchmarks/wasm/clone-bench.wasm": {
+                  "path": "benchmarks/wasm/clone-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/clone-bench.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 41156,
+                  "sha256": "e9f5fac68e100d588e83cf8f2b05ca5e5d253c61222ff0a7e35388258ceac2ba"
+                },
+                "benchmarks/wasm/spawn-bench.wasm": {
+                  "path": "benchmarks/wasm/spawn-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/spawn-bench.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 48689,
+                  "sha256": "97e81b5c5fdeff41e28dd8d2ab0920367a2af6c2b78ebdca0d11ecf4c936a6f1"
+                },
+                "runtime.kernel": {
+                  "path": "@kernel-wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/kernel.wasm",
+                  "required": true,
+                  "used": true,
+                  "resolverRequest": "kernel.wasm",
+                  "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/kernel.wasm",
+                  "sizeBytes": 2919292,
+                  "sha256": "0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc"
+                }
+              },
+              "directories": {
+                "runtime.hostSources": {
+                  "path": "host/src",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/host/src",
+                  "fileCount": 362,
+                  "sizeBytes": 6641069,
+                  "sha256": "f4f9efd9c244702da56c58010547913b09bb4090fdff32affd7e4cff889ec3e5",
+                  "required": true,
+                  "excludedPaths": []
+                }
+              },
+              "forkBench": {
+                "hasWpkForkSymbols": true,
+                "hasLegacyForkSymbols": false,
+                "matchedSymbols": [
+                  "$wpk_fork_module_state_finish_restore",
+                  "1$kandelo.wpk_fork.static_root_catalogKFSR",
+                  "__wpk_fork_boundary",
+                  "__wpk_fork_exception_materialize",
+                  "__wpk_fork_frame_commit",
+                  "__wpk_fork_frame_next",
+                  "__wpk_fork_frame_reserve",
+                  "__wpk_fork_function_catalog",
+                  "__wpk_fork_global_1",
+                  "__wpk_fork_global_2",
+                  "__wpk_fork_global_3",
+                  "__wpk_fork_global_4",
+                  "__wpk_fork_global_5",
+                  "__wpk_fork_global_6",
+                  "__wpk_fork_module_activation",
+                  "__wpk_fork_module_state_record_commit",
+                  "__wpk_fork_module_state_record_find",
+                  "__wpk_fork_module_state_record_reserve",
+                  "__wpk_fork_module_state_table_reconcile",
+                  "__wpk_fork_ref_decode_exnref",
+                  "__wpk_fork_ref_encode_exnref",
+                  "__wpk_fork_ref_exn_abort",
+                  "__wpk_fork_ref_exn_broker_encode",
+                  "__wpk_fork_ref_exn_broker_throw_recipe",
+                  "__wpk_fork_ref_exn_cache_index",
+                  "__wpk_fork_ref_exn_clear",
+                  "__wpk_fork_ref_exn_encode_ingress",
+                  "__wpk_fork_ref_exn_ingress_throw",
+                  "__wpk_fork_ref_exn_lookup",
+                  "__wpk_fork_ref_exn_route",
+                  "__wpk_fork_ref_exn_throw_recipe",
+                  "__wpk_fork_ref_exn_throw_slot",
+                  "__wpk_fork_ref_gc_allocate",
+                  "__wpk_fork_ref_gc_broker_encode",
+                  "__wpk_fork_ref_gc_encode_slot",
+                  "__wpk_fork_ref_gc_fill",
+                  "__wpk_fork_ref_gc_i31",
+                  "__wpk_fork_ref_gc_load",
+                  "__wpk_fork_ref_gc_lookup",
+                  "__wpk_fork_ref_gc_payload_len",
+                  "__wpk_fork_ref_gc_probe",
+                  "__wpk_fork_ref_gc_publish_externref",
+                  "__wpk_fork_ref_gc_route",
+                  "__wpk_fork_ref_gc_transit",
+                  "__wpk_fork_ref_scratch_release",
+                  "__wpk_fork_ref_scratch_reserve",
+                  "__wpk_fork_resume_catalog",
+                  "__wpk_fork_resume_peek",
+                  "__wpk_fork_resume_table",
+                  "__wpk_fork_static_root_catalog",
+                  "__wpk_fork_static_root_harvest",
+                  "__wpk_fork_table_1",
+                  "__wpk_fork_unwind",
+                  "env-__wpk_fork_module_state_table_generation_addr",
+                  "kandelo.wpk_fork.boundariesKFSB",
+                  "kandelo.wpk_fork.capabilities",
+                  "kandelo.wpk_fork.exception_codec",
+                  "kandelo.wpk_fork.gc_codecKFGC",
+                  "kandelo.wpk_fork.imported_globalsKFIG",
+                  "kandelo.wpk_fork.imported_tablesKFIT",
+                  "kandelo.wpk_fork.linked_framesKLCF",
+                  "kandelo.wpk_fork.module_stateKFMD",
+                  "kandelo.wpk_fork.resume_catalogKFRC",
+                  "kandelo.wpk_fork.unwind_transport",
+                  "wpk_fork_abort_begin",
+                  "wpk_fork_abort_end",
+                  "wpk_fork_module_bootstrap",
+                  "wpk_fork_module_state_restore",
+                  "wpk_fork_module_state_save",
+                  "wpk_fork_module_table_state_restore",
+                  "wpk_fork_module_table_state_save",
+                  "wpk_fork_module_thread_bootstrap",
+                  "wpk_fork_resume_sink",
+                  "wpk_fork_resume_start",
+                  "wpk_fork_resume_thread",
+                  "wpk_fork_rewind_begin",
+                  "wpk_fork_rewind_end",
+                  "wpk_fork_state",
+                  "wpk_fork_unwind_begin",
+                  "wpk_fork_unwind_end"
+                ],
+                "expected": "wpk_fork_without_legacy",
+                "passed": true
+              }
+            },
+            "suites": {
+              "process-lifecycle": {
+                "hello_start_ms": 222.65,
+                "fork_ms": 47.38,
+                "clone_ms": 33.6
+              }
+            }
+          }
+        ],
+        "console_log_sha256": "84050c61f1ba82b131949df7979bd6d3dc822d111867a91382fff51563bf545b"
+      },
+      {
+        "phase": "candidate-browser-process-lifecycle",
+        "host": "browser",
+        "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix",
+        "command": [
+          "npx",
+          "tsx",
+          "benchmarks/run.ts",
+          "--host=browser",
+          "--suite=process-lifecycle",
+          "--rounds=5"
+        ],
+        "commit": "d059ee2510f08650642931f407db1c8a7d96fdb0",
+        "start": 1794252833.920533,
+        "start_monotonic": 847209.650101583,
+        "load": [
+          3.13623046875,
+          3.59375,
+          4.71435546875
+        ],
+        "disk_free_bytes": 335392333824,
+        "kernel_sha256": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63",
+        "exit_code": 0,
+        "finish": 1794252845.4968278,
+        "finish_monotonic": 847221.226326125,
+        "suspend_gap_seconds": 7.035699672996998e-05,
+        "measurement_suspended": false,
+        "result_files": [
+          "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/results/benchmark-browser-1794252845424.json"
+        ],
+        "benchmark_outputs": [
+          {
+            "timestamp": "2026-11-09T19:34:05.424Z",
+            "platform": "darwin",
+            "arch": "arm64",
+            "nodeVersion": "v24.15.0",
+            "host": "browser",
+            "rounds": 5,
+            "artifacts": {
+              "gitHead": "d059ee2510f08650642931f407db1c8a7d96fdb0",
+              "gitRef": "undefined",
+              "files": {
+                "benchmarks/wasm/pipe-throughput.wasm": {
+                  "path": "benchmarks/wasm/pipe-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/pipe-throughput.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 44741,
+                  "sha256": "baeab97a62e0e20f5618b547fba171f2a095842cca15ec60f61975cec23eeb14"
+                },
+                "benchmarks/wasm/file-throughput.wasm": {
+                  "path": "benchmarks/wasm/file-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/file-throughput.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 42695,
+                  "sha256": "946a965c716a50f7d4a85c0b8fbfe0035564cda0df68ebe38c33dfb0ba7e89d3"
+                },
+                "benchmarks/wasm/syscall-latency.wasm": {
+                  "path": "benchmarks/wasm/syscall-latency.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/syscall-latency.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 37151,
+                  "sha256": "392eb76225de1e5909954ba9c80045371a37b48cbfade85c1354166fb5e19a5c"
+                },
+                "benchmarks/wasm/stdin-throughput.wasm": {
+                  "path": "benchmarks/wasm/stdin-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/stdin-throughput.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 38612,
+                  "sha256": "2a05b6de2ba30f895218a5e2e4ba830e6c7e9001709293e3b4ee6c8aa416c482"
+                },
+                "benchmarks/wasm/hello.wasm": {
+                  "path": "benchmarks/wasm/hello.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/hello.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 18925,
+                  "sha256": "3ad4c8507a275798fdba63f7e191f92233f53c6e85d14873223cfd54013e6cab"
+                },
+                "benchmarks/wasm/fork-bench.wasm": {
+                  "path": "benchmarks/wasm/fork-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/fork-bench.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 44431,
+                  "sha256": "68d27490ef0f9cd47129b4eaa590586497ba4adc5159dc55fb23cecccba04b81"
+                },
+                "benchmarks/wasm/exec-bench.wasm": {
+                  "path": "benchmarks/wasm/exec-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/exec-bench.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 21579,
+                  "sha256": "7baccf7b5d18b3e2decd61d21e87d5a85b4a5d5e38cdc1b35f739abf17208820"
+                },
+                "benchmarks/wasm/clone-bench.wasm": {
+                  "path": "benchmarks/wasm/clone-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/clone-bench.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 41156,
+                  "sha256": "e9f5fac68e100d588e83cf8f2b05ca5e5d253c61222ff0a7e35388258ceac2ba"
+                },
+                "benchmarks/wasm/spawn-bench.wasm": {
+                  "path": "benchmarks/wasm/spawn-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/spawn-bench.wasm",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 48689,
+                  "sha256": "97e81b5c5fdeff41e28dd8d2ab0920367a2af6c2b78ebdca0d11ecf4c936a6f1"
+                },
+                "runtime.kernel": {
+                  "path": "@kernel-wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/kernel.wasm",
+                  "required": true,
+                  "used": true,
+                  "resolverRequest": "kernel.wasm",
+                  "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/kernel.wasm",
+                  "sizeBytes": 2919672,
+                  "sha256": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63"
+                }
+              },
+              "directories": {
+                "runtime.hostSources": {
+                  "path": "host/src",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/host/src",
+                  "fileCount": 362,
+                  "sizeBytes": 6646493,
+                  "sha256": "2a836a0498d7fa8ac64d42db2fe380166da926adeec5f20d19d4a668df7944dd",
+                  "required": true,
+                  "excludedPaths": []
+                }
+              },
+              "forkBench": {
+                "hasWpkForkSymbols": true,
+                "hasLegacyForkSymbols": false,
+                "matchedSymbols": [
+                  "$wpk_fork_module_state_finish_restore",
+                  "1$kandelo.wpk_fork.static_root_catalogKFSR",
+                  "__wpk_fork_boundary",
+                  "__wpk_fork_exception_materialize",
+                  "__wpk_fork_frame_commit",
+                  "__wpk_fork_frame_next",
+                  "__wpk_fork_frame_reserve",
+                  "__wpk_fork_function_catalog",
+                  "__wpk_fork_global_1",
+                  "__wpk_fork_global_2",
+                  "__wpk_fork_global_3",
+                  "__wpk_fork_global_4",
+                  "__wpk_fork_global_5",
+                  "__wpk_fork_global_6",
+                  "__wpk_fork_module_activation",
+                  "__wpk_fork_module_state_record_commit",
+                  "__wpk_fork_module_state_record_find",
+                  "__wpk_fork_module_state_record_reserve",
+                  "__wpk_fork_module_state_table_reconcile",
+                  "__wpk_fork_ref_decode_exnref",
+                  "__wpk_fork_ref_encode_exnref",
+                  "__wpk_fork_ref_exn_abort",
+                  "__wpk_fork_ref_exn_broker_encode",
+                  "__wpk_fork_ref_exn_broker_throw_recipe",
+                  "__wpk_fork_ref_exn_cache_index",
+                  "__wpk_fork_ref_exn_clear",
+                  "__wpk_fork_ref_exn_encode_ingress",
+                  "__wpk_fork_ref_exn_ingress_throw",
+                  "__wpk_fork_ref_exn_lookup",
+                  "__wpk_fork_ref_exn_route",
+                  "__wpk_fork_ref_exn_throw_recipe",
+                  "__wpk_fork_ref_exn_throw_slot",
+                  "__wpk_fork_ref_gc_allocate",
+                  "__wpk_fork_ref_gc_broker_encode",
+                  "__wpk_fork_ref_gc_encode_slot",
+                  "__wpk_fork_ref_gc_fill",
+                  "__wpk_fork_ref_gc_i31",
+                  "__wpk_fork_ref_gc_load",
+                  "__wpk_fork_ref_gc_lookup",
+                  "__wpk_fork_ref_gc_payload_len",
+                  "__wpk_fork_ref_gc_probe",
+                  "__wpk_fork_ref_gc_publish_externref",
+                  "__wpk_fork_ref_gc_route",
+                  "__wpk_fork_ref_gc_transit",
+                  "__wpk_fork_ref_scratch_release",
+                  "__wpk_fork_ref_scratch_reserve",
+                  "__wpk_fork_resume_catalog",
+                  "__wpk_fork_resume_peek",
+                  "__wpk_fork_resume_table",
+                  "__wpk_fork_static_root_catalog",
+                  "__wpk_fork_static_root_harvest",
+                  "__wpk_fork_table_1",
+                  "__wpk_fork_unwind",
+                  "env-__wpk_fork_module_state_table_generation_addr",
+                  "kandelo.wpk_fork.boundariesKFSB",
+                  "kandelo.wpk_fork.capabilities",
+                  "kandelo.wpk_fork.exception_codec",
+                  "kandelo.wpk_fork.gc_codecKFGC",
+                  "kandelo.wpk_fork.imported_globalsKFIG",
+                  "kandelo.wpk_fork.imported_tablesKFIT",
+                  "kandelo.wpk_fork.linked_framesKLCF",
+                  "kandelo.wpk_fork.module_stateKFMD",
+                  "kandelo.wpk_fork.resume_catalogKFRC",
+                  "kandelo.wpk_fork.unwind_transport",
+                  "wpk_fork_abort_begin",
+                  "wpk_fork_abort_end",
+                  "wpk_fork_module_bootstrap",
+                  "wpk_fork_module_state_restore",
+                  "wpk_fork_module_state_save",
+                  "wpk_fork_module_table_state_restore",
+                  "wpk_fork_module_table_state_save",
+                  "wpk_fork_module_thread_bootstrap",
+                  "wpk_fork_resume_sink",
+                  "wpk_fork_resume_start",
+                  "wpk_fork_resume_thread",
+                  "wpk_fork_rewind_begin",
+                  "wpk_fork_rewind_end",
+                  "wpk_fork_state",
+                  "wpk_fork_unwind_begin",
+                  "wpk_fork_unwind_end"
+                ],
+                "expected": "wpk_fork_without_legacy",
+                "passed": true
+              }
+            },
+            "suites": {
+              "process-lifecycle": {
+                "hello_start_ms": 233.67,
+                "fork_ms": 48.62,
+                "clone_ms": 33.73
+              }
+            }
+          }
+        ],
+        "console_log_sha256": "f0760c2ab08cda647eb57f267f776426aa938dc7e28bb363ccf3116e98552143"
+      },
+      {
+        "phase": "candidate-node-mariadb-aria-64",
+        "host": "node",
+        "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix",
+        "command": [
+          "npx",
+          "tsx",
+          "benchmarks/run.ts",
+          "--host=node",
+          "--suite=mariadb-aria-64",
+          "--rounds=5"
+        ],
+        "commit": "d059ee2510f08650642931f407db1c8a7d96fdb0",
+        "start": 1794252845.5085409,
+        "start_monotonic": 847221.238039375,
+        "load": [
+          3.3818359375,
+          3.62841796875,
+          4.70703125
+        ],
+        "disk_free_bytes": 335386140672,
+        "kernel_sha256": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63",
+        "exit_code": 0,
+        "finish": 1794252947.621621,
+        "finish_monotonic": 847323.350492333,
+        "suspend_gap_seconds": 0.0006270668236538768,
+        "measurement_suspended": false,
+        "result_files": [
+          "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/results/benchmark-node-1794252947532.json"
+        ],
+        "benchmark_outputs": [
+          {
+            "timestamp": "2026-11-09T19:35:47.531Z",
+            "platform": "darwin",
+            "arch": "arm64",
+            "nodeVersion": "v24.15.0",
+            "host": "node",
+            "rounds": 5,
+            "artifacts": {
+              "gitHead": "d059ee2510f08650642931f407db1c8a7d96fdb0",
+              "gitRef": "undefined",
+              "files": {
+                "benchmarks/wasm/pipe-throughput.wasm": {
+                  "path": "benchmarks/wasm/pipe-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/pipe-throughput.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 44741,
+                  "sha256": "baeab97a62e0e20f5618b547fba171f2a095842cca15ec60f61975cec23eeb14"
+                },
+                "benchmarks/wasm/file-throughput.wasm": {
+                  "path": "benchmarks/wasm/file-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/file-throughput.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 42695,
+                  "sha256": "946a965c716a50f7d4a85c0b8fbfe0035564cda0df68ebe38c33dfb0ba7e89d3"
+                },
+                "benchmarks/wasm/syscall-latency.wasm": {
+                  "path": "benchmarks/wasm/syscall-latency.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/syscall-latency.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 37151,
+                  "sha256": "392eb76225de1e5909954ba9c80045371a37b48cbfade85c1354166fb5e19a5c"
+                },
+                "benchmarks/wasm/stdin-throughput.wasm": {
+                  "path": "benchmarks/wasm/stdin-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/stdin-throughput.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 38612,
+                  "sha256": "2a05b6de2ba30f895218a5e2e4ba830e6c7e9001709293e3b4ee6c8aa416c482"
+                },
+                "benchmarks/wasm/hello.wasm": {
+                  "path": "benchmarks/wasm/hello.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/hello.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 18925,
+                  "sha256": "3ad4c8507a275798fdba63f7e191f92233f53c6e85d14873223cfd54013e6cab"
+                },
+                "benchmarks/wasm/fork-bench.wasm": {
+                  "path": "benchmarks/wasm/fork-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/fork-bench.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 44431,
+                  "sha256": "68d27490ef0f9cd47129b4eaa590586497ba4adc5159dc55fb23cecccba04b81"
+                },
+                "benchmarks/wasm/exec-bench.wasm": {
+                  "path": "benchmarks/wasm/exec-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/exec-bench.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 21579,
+                  "sha256": "7baccf7b5d18b3e2decd61d21e87d5a85b4a5d5e38cdc1b35f739abf17208820"
+                },
+                "benchmarks/wasm/clone-bench.wasm": {
+                  "path": "benchmarks/wasm/clone-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/clone-bench.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 41156,
+                  "sha256": "e9f5fac68e100d588e83cf8f2b05ca5e5d253c61222ff0a7e35388258ceac2ba"
+                },
+                "benchmarks/wasm/spawn-bench.wasm": {
+                  "path": "benchmarks/wasm/spawn-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/benchmarks/wasm/spawn-bench.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 48689,
+                  "sha256": "97e81b5c5fdeff41e28dd8d2ab0920367a2af6c2b78ebdca0d11ecf4c936a6f1"
+                },
+                "runtime.nodeWorkerBundle": {
+                  "path": "host/dist/node-kernel-worker-entry.js",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/host/dist/node-kernel-worker-entry.js",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 3209809,
+                  "sha256": "3026e069d0438bc8360949e5d7d01718f7e27eeb23c599e917209192ee6f4c7e"
+                },
+                "runtime.kernel": {
+                  "path": "kernel.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/kernel.wasm",
+                  "required": true,
+                  "used": true,
+                  "resolverRequest": "kernel.wasm",
+                  "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/kernel.wasm",
+                  "sizeBytes": 2919672,
+                  "sha256": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63"
+                },
+                "node.mariadb.wasm64.server": {
+                  "path": "programs/wasm64/mariadb/mariadbd.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm64/mariadb/mariadbd.wasm",
+                  "required": true,
+                  "used": true,
+                  "resolverRequest": "programs/wasm64/mariadb/mariadbd.wasm",
+                  "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm64/mariadb/mariadbd.wasm",
+                  "sizeBytes": 14657727,
+                  "sha256": "85f21a2f10b4a7e07b3247346e9b56dee63ee2bcf6356990d7b3cb6952e39da9"
+                },
+                "node.mariadb.wasm64.client": {
+                  "path": "programs/wasm64/mariadb/mysqltest.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm64/mariadb/mysqltest.wasm",
+                  "required": true,
+                  "used": true,
+                  "resolverRequest": "programs/wasm64/mariadb/mysqltest.wasm",
+                  "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/local-binaries/source-only-v1/programs/wasm64/mariadb/mysqltest.wasm",
+                  "sizeBytes": 4211485,
+                  "sha256": "8bc340ff9897b5bc602ba007388d0de414021edbc6fc61596665233977aa11a2"
+                },
+                "node.mariadb.wasm64.bootstrap.systemTables": {
+                  "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                  "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 30145,
+                  "sha256": "b9f5f114020b2a11fb09028fb5d79448fe2bee2b2dcbd24dec21c769dee08948"
+                },
+                "node.mariadb.wasm64.bootstrap.systemData": {
+                  "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                  "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 3328,
+                  "sha256": "3c6ae21bd9ace0c2621f5de9a81962a9e59bacb7582b8e78f9b2e31ddafa2d79"
+                }
+              },
+              "directories": {
+                "runtime.hostSources": {
+                  "path": "host/src",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-fix/host/src",
+                  "fileCount": 362,
+                  "sizeBytes": 6646493,
+                  "sha256": "2a836a0498d7fa8ac64d42db2fe380166da926adeec5f20d19d4a668df7944dd",
+                  "required": true,
+                  "excludedPaths": []
+                }
+              },
+              "forkBench": {
+                "hasWpkForkSymbols": true,
+                "hasLegacyForkSymbols": false,
+                "matchedSymbols": [
+                  "$wpk_fork_module_state_finish_restore",
+                  "1$kandelo.wpk_fork.static_root_catalogKFSR",
+                  "__wpk_fork_boundary",
+                  "__wpk_fork_exception_materialize",
+                  "__wpk_fork_frame_commit",
+                  "__wpk_fork_frame_next",
+                  "__wpk_fork_frame_reserve",
+                  "__wpk_fork_function_catalog",
+                  "__wpk_fork_global_1",
+                  "__wpk_fork_global_2",
+                  "__wpk_fork_global_3",
+                  "__wpk_fork_global_4",
+                  "__wpk_fork_global_5",
+                  "__wpk_fork_global_6",
+                  "__wpk_fork_module_activation",
+                  "__wpk_fork_module_state_record_commit",
+                  "__wpk_fork_module_state_record_find",
+                  "__wpk_fork_module_state_record_reserve",
+                  "__wpk_fork_module_state_table_reconcile",
+                  "__wpk_fork_ref_decode_exnref",
+                  "__wpk_fork_ref_encode_exnref",
+                  "__wpk_fork_ref_exn_abort",
+                  "__wpk_fork_ref_exn_broker_encode",
+                  "__wpk_fork_ref_exn_broker_throw_recipe",
+                  "__wpk_fork_ref_exn_cache_index",
+                  "__wpk_fork_ref_exn_clear",
+                  "__wpk_fork_ref_exn_encode_ingress",
+                  "__wpk_fork_ref_exn_ingress_throw",
+                  "__wpk_fork_ref_exn_lookup",
+                  "__wpk_fork_ref_exn_route",
+                  "__wpk_fork_ref_exn_throw_recipe",
+                  "__wpk_fork_ref_exn_throw_slot",
+                  "__wpk_fork_ref_gc_allocate",
+                  "__wpk_fork_ref_gc_broker_encode",
+                  "__wpk_fork_ref_gc_encode_slot",
+                  "__wpk_fork_ref_gc_fill",
+                  "__wpk_fork_ref_gc_i31",
+                  "__wpk_fork_ref_gc_load",
+                  "__wpk_fork_ref_gc_lookup",
+                  "__wpk_fork_ref_gc_payload_len",
+                  "__wpk_fork_ref_gc_probe",
+                  "__wpk_fork_ref_gc_publish_externref",
+                  "__wpk_fork_ref_gc_route",
+                  "__wpk_fork_ref_gc_transit",
+                  "__wpk_fork_ref_scratch_release",
+                  "__wpk_fork_ref_scratch_reserve",
+                  "__wpk_fork_resume_catalog",
+                  "__wpk_fork_resume_peek",
+                  "__wpk_fork_resume_table",
+                  "__wpk_fork_static_root_catalog",
+                  "__wpk_fork_static_root_harvest",
+                  "__wpk_fork_table_1",
+                  "__wpk_fork_unwind",
+                  "env-__wpk_fork_module_state_table_generation_addr",
+                  "kandelo.wpk_fork.boundariesKFSB",
+                  "kandelo.wpk_fork.capabilities",
+                  "kandelo.wpk_fork.exception_codec",
+                  "kandelo.wpk_fork.gc_codecKFGC",
+                  "kandelo.wpk_fork.imported_globalsKFIG",
+                  "kandelo.wpk_fork.imported_tablesKFIT",
+                  "kandelo.wpk_fork.linked_framesKLCF",
+                  "kandelo.wpk_fork.module_stateKFMD",
+                  "kandelo.wpk_fork.resume_catalogKFRC",
+                  "kandelo.wpk_fork.unwind_transport",
+                  "wpk_fork_abort_begin",
+                  "wpk_fork_abort_end",
+                  "wpk_fork_module_bootstrap",
+                  "wpk_fork_module_state_restore",
+                  "wpk_fork_module_state_save",
+                  "wpk_fork_module_table_state_restore",
+                  "wpk_fork_module_table_state_save",
+                  "wpk_fork_module_thread_bootstrap",
+                  "wpk_fork_resume_sink",
+                  "wpk_fork_resume_start",
+                  "wpk_fork_resume_thread",
+                  "wpk_fork_rewind_begin",
+                  "wpk_fork_rewind_end",
+                  "wpk_fork_state",
+                  "wpk_fork_unwind_begin",
+                  "wpk_fork_unwind_end"
+                ],
+                "expected": "wpk_fork_without_legacy",
+                "passed": true
+              }
+            },
+            "suites": {
+              "mariadb-aria-64": {
+                "bootstrap_ms": 2228.94,
+                "query_create_ms": 256.11,
+                "query_insert_ms": 1018.08,
+                "query_select_ms": 102.02,
+                "query_join_ms": 93.57
+              }
+            }
+          }
+        ],
+        "console_log_sha256": "c378e141ffc67687dd25783818e17fb359ca6ad4789690adca5f92e011fb6b56"
+      },
+      {
+        "phase": "baseline-node-mariadb-aria-64",
+        "host": "node",
+        "root": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree",
+        "command": [
+          "npx",
+          "tsx",
+          "benchmarks/run.ts",
+          "--host=node",
+          "--suite=mariadb-aria-64",
+          "--rounds=5"
+        ],
+        "commit": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+        "start": 1794252947.633124,
+        "start_monotonic": 847323.361994166,
+        "load": [
+          3.14697265625,
+          3.56201171875,
+          4.56494140625
+        ],
+        "disk_free_bytes": 335379386368,
+        "kernel_sha256": "0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc",
+        "exit_code": 0,
+        "finish": 1794253049.963205,
+        "finish_monotonic": 847425.691447708,
+        "suspend_gap_seconds": 0.000627444009296596,
+        "measurement_suspended": false,
+        "result_files": [
+          "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/results/benchmark-node-1794253049867.json"
+        ],
+        "benchmark_outputs": [
+          {
+            "timestamp": "2026-11-09T19:37:29.867Z",
+            "platform": "darwin",
+            "arch": "arm64",
+            "nodeVersion": "v24.15.0",
+            "host": "node",
+            "rounds": 5,
+            "artifacts": {
+              "gitHead": "29d06dc22af878b5863e99feccc6ff8c1bd637a4",
+              "gitRef": "undefined",
+              "files": {
+                "benchmarks/wasm/pipe-throughput.wasm": {
+                  "path": "benchmarks/wasm/pipe-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/pipe-throughput.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 44741,
+                  "sha256": "baeab97a62e0e20f5618b547fba171f2a095842cca15ec60f61975cec23eeb14"
+                },
+                "benchmarks/wasm/file-throughput.wasm": {
+                  "path": "benchmarks/wasm/file-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/file-throughput.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 42695,
+                  "sha256": "946a965c716a50f7d4a85c0b8fbfe0035564cda0df68ebe38c33dfb0ba7e89d3"
+                },
+                "benchmarks/wasm/syscall-latency.wasm": {
+                  "path": "benchmarks/wasm/syscall-latency.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/syscall-latency.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 37151,
+                  "sha256": "392eb76225de1e5909954ba9c80045371a37b48cbfade85c1354166fb5e19a5c"
+                },
+                "benchmarks/wasm/stdin-throughput.wasm": {
+                  "path": "benchmarks/wasm/stdin-throughput.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/stdin-throughput.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 38612,
+                  "sha256": "2a05b6de2ba30f895218a5e2e4ba830e6c7e9001709293e3b4ee6c8aa416c482"
+                },
+                "benchmarks/wasm/hello.wasm": {
+                  "path": "benchmarks/wasm/hello.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/hello.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 18925,
+                  "sha256": "3ad4c8507a275798fdba63f7e191f92233f53c6e85d14873223cfd54013e6cab"
+                },
+                "benchmarks/wasm/fork-bench.wasm": {
+                  "path": "benchmarks/wasm/fork-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/fork-bench.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 44431,
+                  "sha256": "68d27490ef0f9cd47129b4eaa590586497ba4adc5159dc55fb23cecccba04b81"
+                },
+                "benchmarks/wasm/exec-bench.wasm": {
+                  "path": "benchmarks/wasm/exec-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/exec-bench.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 21579,
+                  "sha256": "7baccf7b5d18b3e2decd61d21e87d5a85b4a5d5e38cdc1b35f739abf17208820"
+                },
+                "benchmarks/wasm/clone-bench.wasm": {
+                  "path": "benchmarks/wasm/clone-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/clone-bench.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 41156,
+                  "sha256": "e9f5fac68e100d588e83cf8f2b05ca5e5d253c61222ff0a7e35388258ceac2ba"
+                },
+                "benchmarks/wasm/spawn-bench.wasm": {
+                  "path": "benchmarks/wasm/spawn-bench.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/benchmarks/wasm/spawn-bench.wasm",
+                  "required": false,
+                  "used": false,
+                  "sizeBytes": 48689,
+                  "sha256": "97e81b5c5fdeff41e28dd8d2ab0920367a2af6c2b78ebdca0d11ecf4c936a6f1"
+                },
+                "runtime.nodeWorkerBundle": {
+                  "path": "host/dist/node-kernel-worker-entry.js",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/host/dist/node-kernel-worker-entry.js",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 3205569,
+                  "sha256": "1621c4cf19698529ebdd4a83e8aed87924ddfb1c6c815c4d88bf5726d8f9e8d8"
+                },
+                "runtime.kernel": {
+                  "path": "kernel.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/kernel.wasm",
+                  "required": true,
+                  "used": true,
+                  "resolverRequest": "kernel.wasm",
+                  "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/kernel.wasm",
+                  "sizeBytes": 2919292,
+                  "sha256": "0ac8a09beb8938dc69af49a53d29ea46c5d2f3a129176d4b0b8994097fb64fdc"
+                },
+                "node.mariadb.wasm64.server": {
+                  "path": "programs/wasm64/mariadb/mariadbd.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm64/mariadb/mariadbd.wasm",
+                  "required": true,
+                  "used": true,
+                  "resolverRequest": "programs/wasm64/mariadb/mariadbd.wasm",
+                  "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm64/mariadb/mariadbd.wasm",
+                  "sizeBytes": 14657727,
+                  "sha256": "85f21a2f10b4a7e07b3247346e9b56dee63ee2bcf6356990d7b3cb6952e39da9"
+                },
+                "node.mariadb.wasm64.client": {
+                  "path": "programs/wasm64/mariadb/mysqltest.wasm",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm64/mariadb/mysqltest.wasm",
+                  "required": true,
+                  "used": true,
+                  "resolverRequest": "programs/wasm64/mariadb/mysqltest.wasm",
+                  "resolverSelectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/local-binaries/source-only-v1/programs/wasm64/mariadb/mysqltest.wasm",
+                  "sizeBytes": 4211485,
+                  "sha256": "8bc340ff9897b5bc602ba007388d0de414021edbc6fc61596665233977aa11a2"
+                },
+                "node.mariadb.wasm64.bootstrap.systemTables": {
+                  "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                  "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables.sql",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 30145,
+                  "sha256": "b9f5f114020b2a11fb09028fb5d79448fe2bee2b2dcbd24dec21c769dee08948"
+                },
+                "node.mariadb.wasm64.bootstrap.systemData": {
+                  "path": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                  "selectedPath": "/Users/brandon/.cache/kandelo/vfs-build-sources/mariadb-0b507020/scripts/mysql_system_tables_data.sql",
+                  "required": true,
+                  "used": true,
+                  "sizeBytes": 3328,
+                  "sha256": "3c6ae21bd9ace0c2621f5de9a81962a9e59bacb7582b8e78f9b2e31ddafa2d79"
+                }
+              },
+              "directories": {
+                "runtime.hostSources": {
+                  "path": "host/src",
+                  "selectedPath": "/Users/brandon/conductor/workspaces/kandelo/guangzhou-v1/.context/enospc-worktree/host/src",
+                  "fileCount": 362,
+                  "sizeBytes": 6641069,
+                  "sha256": "f4f9efd9c244702da56c58010547913b09bb4090fdff32affd7e4cff889ec3e5",
+                  "required": true,
+                  "excludedPaths": []
+                }
+              },
+              "forkBench": {
+                "hasWpkForkSymbols": true,
+                "hasLegacyForkSymbols": false,
+                "matchedSymbols": [
+                  "$wpk_fork_module_state_finish_restore",
+                  "1$kandelo.wpk_fork.static_root_catalogKFSR",
+                  "__wpk_fork_boundary",
+                  "__wpk_fork_exception_materialize",
+                  "__wpk_fork_frame_commit",
+                  "__wpk_fork_frame_next",
+                  "__wpk_fork_frame_reserve",
+                  "__wpk_fork_function_catalog",
+                  "__wpk_fork_global_1",
+                  "__wpk_fork_global_2",
+                  "__wpk_fork_global_3",
+                  "__wpk_fork_global_4",
+                  "__wpk_fork_global_5",
+                  "__wpk_fork_global_6",
+                  "__wpk_fork_module_activation",
+                  "__wpk_fork_module_state_record_commit",
+                  "__wpk_fork_module_state_record_find",
+                  "__wpk_fork_module_state_record_reserve",
+                  "__wpk_fork_module_state_table_reconcile",
+                  "__wpk_fork_ref_decode_exnref",
+                  "__wpk_fork_ref_encode_exnref",
+                  "__wpk_fork_ref_exn_abort",
+                  "__wpk_fork_ref_exn_broker_encode",
+                  "__wpk_fork_ref_exn_broker_throw_recipe",
+                  "__wpk_fork_ref_exn_cache_index",
+                  "__wpk_fork_ref_exn_clear",
+                  "__wpk_fork_ref_exn_encode_ingress",
+                  "__wpk_fork_ref_exn_ingress_throw",
+                  "__wpk_fork_ref_exn_lookup",
+                  "__wpk_fork_ref_exn_route",
+                  "__wpk_fork_ref_exn_throw_recipe",
+                  "__wpk_fork_ref_exn_throw_slot",
+                  "__wpk_fork_ref_gc_allocate",
+                  "__wpk_fork_ref_gc_broker_encode",
+                  "__wpk_fork_ref_gc_encode_slot",
+                  "__wpk_fork_ref_gc_fill",
+                  "__wpk_fork_ref_gc_i31",
+                  "__wpk_fork_ref_gc_load",
+                  "__wpk_fork_ref_gc_lookup",
+                  "__wpk_fork_ref_gc_payload_len",
+                  "__wpk_fork_ref_gc_probe",
+                  "__wpk_fork_ref_gc_publish_externref",
+                  "__wpk_fork_ref_gc_route",
+                  "__wpk_fork_ref_gc_transit",
+                  "__wpk_fork_ref_scratch_release",
+                  "__wpk_fork_ref_scratch_reserve",
+                  "__wpk_fork_resume_catalog",
+                  "__wpk_fork_resume_peek",
+                  "__wpk_fork_resume_table",
+                  "__wpk_fork_static_root_catalog",
+                  "__wpk_fork_static_root_harvest",
+                  "__wpk_fork_table_1",
+                  "__wpk_fork_unwind",
+                  "env-__wpk_fork_module_state_table_generation_addr",
+                  "kandelo.wpk_fork.boundariesKFSB",
+                  "kandelo.wpk_fork.capabilities",
+                  "kandelo.wpk_fork.exception_codec",
+                  "kandelo.wpk_fork.gc_codecKFGC",
+                  "kandelo.wpk_fork.imported_globalsKFIG",
+                  "kandelo.wpk_fork.imported_tablesKFIT",
+                  "kandelo.wpk_fork.linked_framesKLCF",
+                  "kandelo.wpk_fork.module_stateKFMD",
+                  "kandelo.wpk_fork.resume_catalogKFRC",
+                  "kandelo.wpk_fork.unwind_transport",
+                  "wpk_fork_abort_begin",
+                  "wpk_fork_abort_end",
+                  "wpk_fork_module_bootstrap",
+                  "wpk_fork_module_state_restore",
+                  "wpk_fork_module_state_save",
+                  "wpk_fork_module_table_state_restore",
+                  "wpk_fork_module_table_state_save",
+                  "wpk_fork_module_thread_bootstrap",
+                  "wpk_fork_resume_sink",
+                  "wpk_fork_resume_start",
+                  "wpk_fork_resume_thread",
+                  "wpk_fork_rewind_begin",
+                  "wpk_fork_rewind_end",
+                  "wpk_fork_state",
+                  "wpk_fork_unwind_begin",
+                  "wpk_fork_unwind_end"
+                ],
+                "expected": "wpk_fork_without_legacy",
+                "passed": true
+              }
+            },
+            "suites": {
+              "mariadb-aria-64": {
+                "bootstrap_ms": 2244.45,
+                "query_create_ms": 247.8,
+                "query_insert_ms": 1012.69,
+                "query_select_ms": 103.71,
+                "query_join_ms": 95.38
+              }
+            }
+          }
+        ],
+        "console_log_sha256": "c6be1e3a5f4b95b6c4505800d257e38bfd7facbaadeb7df8ae3cfa87b49efd4b"
+      }
+    ],
+    "protocol_source": {
+      "sha256": "96ce4834c17aa91f072c21ebff8225345a96d764791deacd458934bcb6593502",
+      "source": "from pathlib import Path\nimport os,subprocess,json,hashlib,time,shlex,shutil\ncandidate=Path.cwd();baseline=candidate.parent/'enospc-worktree';scratch=Path(os.environ['KANDELO_AGENT_SCRATCH_DIR']);rows=[]\nphases=[('baseline',baseline,'browser','process-lifecycle'),('candidate',candidate,'browser','process-lifecycle'),('candidate',candidate,'node','mariadb-aria-64'),('baseline',baseline,'node','mariadb-aria-64')]\nfor label,root,host,suite in phases:\n name=label+'-'+host+'-'+suite;cmd=['npx','tsx','benchmarks/run.ts','--host='+host,'--suite='+suite,'--rounds=5'];before=set((root/'benchmarks/results').glob('*.json'));record=dict(phase=name,host=host,root=str(root),command=cmd,commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),start=time.time(),start_monotonic=time.monotonic(),load=os.getloadavg(),disk_free_bytes=shutil.disk_usage('/System/Volumes/Data').free,kernel_sha256=hashlib.sha256((root/'local-binaries/source-only-v1/kernel.wasm').read_bytes()).hexdigest());assert record['disk_free_bytes']>1024**3\n print('START '+name,flush=True)\n command='export WASM_POSIX_XTASK_BIN='+shlex.quote(str(root/'.context/tools/xtask'))+'; exec '+shlex.join(cmd)\n with (scratch/(name+'.log')).open('w') as log:record['exit_code']=subprocess.run([str(root/'scripts/dev-shell.sh'),'bash','-c',command],cwd=root,stdout=log,stderr=subprocess.STDOUT).returncode\n record['finish']=time.time();record['finish_monotonic']=time.monotonic();record['suspend_gap_seconds']=(record['finish']-record['start'])-(record['finish_monotonic']-record['start_monotonic']);record['measurement_suspended']=record['suspend_gap_seconds']>5;record['result_files']=[str(p) for p in set((root/'benchmarks/results').glob('*.json'))-before];rows.append(record);(scratch/'results.json').write_text(json.dumps(rows,indent=2)+'\\n');print('DONE '+name+' exit='+str(record['exit_code']),flush=True)\n if record['exit_code'] or record['measurement_suspended']:raise SystemExit(1)\n"
+    }
+  },
+  "validation": {
+    "program_abi": 56,
+    "host_adapter_version": 5,
+    "kernel_sha256": "92fcc987b5b66ecdfc42ea615e13a2b758568fe75dc253c80e14a469d30c8c63",
+    "same_kernel_as_full_rust_and_file_io_conformance": true,
+    "final_source_checks": {
+      "canonical_all_package_build": "pass",
+      "abi_snapshot_and_frozen_program_baseline": "pass",
+      "host_persistence_and_retry_tests": 445,
+      "ownership_lifecycle_tests": 253,
+      "host_types": "pass",
+      "parallel_chromium": {
+        "passed": 51,
+        "repeat_each": 3,
+        "workers": 6,
+        "specs": [
+          "kandelo-doom-exchange",
+          "retro-rom-drop",
+          "game-content-drop",
+          "kandelo-quake",
+          "dos-games-activity",
+          "persistent-activities"
+        ]
+      },
+      "browser_native_quota_tests": 2,
+      "node_persistent_fsync": "pass",
+      "browser_fsync": "pass",
+      "strict_source_only_closures": {
+        "ok": 164,
+        "incomplete": 0,
+        "failed": 0,
+        "not_built": 8
+      },
+      "default_resolver_closures": {
+        "ok": 165,
+        "incomplete": 0,
+        "failed": 1,
+        "not_built": 6,
+        "failure": "less/wasm32 selected immutable package generation mismatch; same diagnostic recorded on main",
+        "console_sha256": "f0abe658f0ccd2a98a07e0f7a911767aa1f779074948fc04698576a0cb21dd86"
+      }
+    },
+    "file_io_conformance": {
+      "source_commit": "478edfd14392b4498c0dfa3193470db1c7258f65",
+      "kernel_binary_unchanged": true,
+      "node": [
+        "libc functional",
+        "libc regression",
+        "persistent OpenPOSIX fsync",
+        "persistent-reboot Sortix io/stdio",
+        "persistent-reboot Sortix rename/renameat"
+      ],
+      "browser": [
+        "libc functional",
+        "libc regression",
+        "OpenPOSIX fsync",
+        "Sortix io/stdio"
+      ],
+      "note": "Full selections passed before the host scheduling follow-up; final fsync and pressure/recovery cases reran on the finished host."
+    },
+    "known_main_findings": [
+      "Two kernel lifecycle test-helper compile errors stop the broader Rust workspace run.",
+      "The broader Sortix basic tcgetwinsize SIGWINCH assertion also fails on main. Three initial browser dlfcn failures pass after building their normal SDK shared fixtures.",
+      "The default resolver artifact-closure preflight has the same less generation mismatch on main; the final strict SourceOnly check passes all164builtclosures."
+    ],
+    "manual_browser": {
+      "command": "./run.sh browser --host 127.0.0.1 --port 5391 --strictPort",
+      "guest_uid": 1000,
+      "write_exit": 0,
+      "reload_checksum_exit": 0,
+      "file_sizes": [
+        34603008,
+        34603008,
+        34603008
+      ],
+      "screenshot_sha256": "c66f77249374c61661d8a0dffd8343a52c4aee89802fd35ae9589cc70a59461f"
+    },
+    "interrupted_browser_observation": {
+      "outcomes": "39 passed,11 failed,1 skipped",
+      "reason": "Clamshell sleep from13:41:14to13:57:42local overlaps this run; DNS/download and timeout diagnostics retained separately. The awake exact rerun passes51/51.",
+      "raw_report": "final-host-scope-validation-1109-132402-7ebb/scratch/reports/playwright.wZ43c1"
+    }
+  },
+  "power_events_during_final_measurements": []
+}

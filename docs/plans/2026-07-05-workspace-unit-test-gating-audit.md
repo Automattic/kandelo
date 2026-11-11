@@ -1,7 +1,7 @@
 # Workspace unit-test gating audit — broaden the cargo gate to `--workspace`
 
 - **Bead:** kd-7yjx (initiative `validation-gates`, umbrella convoy kd-u7f)
-- **Discovered from:** kd-872c (which gated `cargo test -p xtask`) → open question from kd-xc19
+- **Discovered from:** [xtask stale-fixture repair and validation](../history/xtask-stale-fixture-repair.md) (kd-872c, which gated `cargo test -p xtask`) → open question from kd-xc19
 - **Author:** designer-adhoc-f8a9bbfb5b, 2026-07-05
 - **Status:** design + audit complete; implementation deferred to a follow-up bead
 - **Audited base:** `origin/main` @ `24668156b` (ABI 16), under `scripts/dev-shell.sh`

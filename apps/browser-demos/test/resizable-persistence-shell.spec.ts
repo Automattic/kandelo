@@ -1,9 +1,10 @@
 import { clickDockTool } from "./support/dock";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, type Page } from "../playwright-test";
-import { tryResolveBinary } from "../../../host/src/binary-resolver";
+import { resolveBinary, tryResolveBinary } from "../../../host/src/binary-resolver";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { machineUrl } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 import { installPcmRetirementTrace } from "./support/pcm-retirement-trace";
@@ -19,7 +20,10 @@ const shellImageReady = [
   }
 });
 
-test.skip(!shellImageReady && process.env.KANDELO_TEST_MACHINE_URLS === undefined, "ABI-matched browser shell product is required");
+test.beforeAll(() => {
+  expect(shellImageReady || process.env.KANDELO_TEST_MACHINE_URLS !== undefined,
+    "Build the canonical shell before running persistence and df coverage").toBe(true);
+});
 
 async function waitForShell(page: Page): Promise<void> {
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
@@ -32,6 +36,50 @@ async function waitForShell(page: Page): Promise<void> {
     return page.locator(".xterm-rows").first().textContent();
   }, { timeout: 120_000 }).toMatch(/maker@[^:\s]+:[^\r\n]*\$ ?/);
 }
+
+test("guest df enumerates filesystems without persistence", async ({ page, baseURL }) => {
+  test.setTimeout(180_000);
+  const filesystem = KandeloImageFs.create();
+  for (const directory of ["/bin", "/etc", "/home", "/home/maker"]) filesystem.mkdir(directory, 0o755);
+  for (const program of ["bash", "coreutils"]) {
+    filesystem.writeFile("/bin/" + program,
+      readFileSync(resolveBinary(`programs/wasm32/${program}.wasm`)), 0o755);
+  }
+  for (const command of ["df", "stat", "cat"]) filesystem.symlink("/bin/coreutils", "/bin/" + command);
+  const image = await filesystem.saveImage();
+  const imageUrl = new URL("/__df_image.vfs", baseURL).href;
+  const kernelUrl = new URL("/__df_kernel.wasm", baseURL).href;
+  await page.route(imageUrl, route => route.fulfill({ body: Buffer.from(image) }));
+  await page.route(kernelUrl, route => route.fulfill({ body: readFileSync(resolveBinary("kernel.wasm")) }));
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+  const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, script }) => {
+    const { BrowserKernel } = await import(moduleUrl);
+    let output = "";
+    const decoder = new TextDecoder();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true,
+      onStdout: (bytes: Uint8Array) => { output += decoder.decode(bytes); },
+      onStderr: (bytes: Uint8Array) => { output += decoder.decode(bytes); },
+    });
+    try {
+      // No persistence options: explicitly exercise the memory-backed root,
+      // independently of the app's managed-computer storage selection.
+      await kernel.initFromImage({
+        kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+        vfsImage: new Uint8Array(await (await fetch(imageUrl)).arrayBuffer()),
+      });
+      const { exit } = await kernel.spawnFromVfs("/bin/bash", ["bash", "-c", script], {
+        uid: 1000, gid: 1000, env: ["PATH=/usr/bin:/bin", "HOME=/home/maker"],
+      });
+      return { code: await exit, output };
+    } finally { await kernel.destroy(); }
+  }, {
+    moduleUrl: new URL("/@fs/" + join(import.meta.dirname, "../../../host/src/browser-kernel-host.ts"), baseURL).href,
+    kernelUrl, imageUrl,
+    script: readFileSync(join(import.meta.dirname, "../../../host/test/fixtures/df-filesystems.sh"), "utf8"),
+  });
+  expect(result.code, result.output).toBe(0);
+  expect(result.output).toContain("DF_FILESYSTEMS_OK");
+});
 
 test("Kandelo shell-created files survive repeated OPFS reloads", async ({ playwright, browserName }, testInfo) => {
   test.setTimeout(360_000);
@@ -64,6 +112,8 @@ test("Kandelo shell-created files survive repeated OPFS reloads", async ({ playw
       });
       await page.goto(target, { waitUntil: "domcontentloaded" });
       await waitForShell(page);
+      await runTerminalCommand(page, readFileSync(join(import.meta.dirname,
+        "../../../host/test/fixtures/df-filesystems.sh"), "utf8"), "DF_FILESYSTEMS_OK");
       await runTerminalCommand(page,
         `set -eu
 read -r filesystem total used_before free_before percent mount < <(df -P -k / | tail -n 1)
@@ -83,6 +133,8 @@ printf 'PERSIST_CREATED\\n'`,
       await page.route(imageUrl, (route) => route.abort("failed"));
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForShell(page);
+      await runTerminalCommand(page, readFileSync(join(import.meta.dirname,
+        "../../../host/test/fixtures/df-filesystems.sh"), "utf8"), "DF_FILESYSTEMS_OK");
       await runTerminalCommand(page,
         "set -eu; IFS= read -r value < /home/projects/persist-check/note; test \"$value\" = one; printf 'PERSIST_RELOADED\\n'",
         "PERSIST_RELOADED");

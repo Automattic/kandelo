@@ -18,6 +18,7 @@ spdx = "GPL-3.0-or-later"
 url = "https://git.savannah.gnu.org/cgit/sed.git/tree/COPYING?h=v4.9"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/sed-docs/build-sed-docs.sh"
 
 [[outputs]]

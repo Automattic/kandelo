@@ -5,6 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use wasm_posix_shared::abi;
+use wasm_posix_shared::program_extensions::{
+    is_extension_import_name, RESERVED_MODULE_PREFIX,
+};
 use wasmparser::{FuncType, Parser, Payload, TypeRef};
 
 type KernelContract =
@@ -19,6 +22,7 @@ struct Imports {
     side_module: bool,
     relocatable: bool,
     memory64: bool,
+    extension_failures: Vec<String>,
 }
 
 fn imports(bytes: &[u8]) -> Result<Imports, String> {
@@ -58,6 +62,21 @@ fn imports(bytes: &[u8]) -> Result<Imports, String> {
             Payload::CodeSectionEntry(_) => {}
             _ => {}
         }
+    }
+    if !facts.relocatable
+        && facts.entries.iter().any(|(module, name, _)| {
+            module.starts_with(RESERVED_MODULE_PREFIX) || is_extension_import_name(name)
+        })
+    {
+        // Publication and runtime loading must use the same typed extension
+        // policy. Accepting a namespace here alone would bypass its version,
+        // pointer width, import kind and complete function signature checks.
+        let artifact =
+            wasm_artifact::read_artifact_facts(bytes).map_err(|error| error.to_string())?;
+        facts.extension_failures = wasm_artifact::program_extensions::describe_failures(
+            &artifact,
+            wasm_artifact::program_extensions::IMPLEMENTED,
+        );
     }
     Ok(facts)
 }
@@ -167,9 +186,13 @@ fn audit(facts: &Imports, contract: &KernelContract) -> Vec<String> {
         return vec![];
     }
     let env = crate::program_env_imports::allowed_env_imports();
-    let mut failures = Vec::new();
+    let mut failures = facts.extension_failures.clone();
     for (module, name, kind) in &facts.entries {
-        if module == "env" {
+        if module.starts_with(RESERVED_MODULE_PREFIX) {
+            // All reserved namespaces were checked by the shared authority;
+            // unknown versions/names and invalid types are already failures.
+            continue;
+        } else if module == "env" {
             // Side modules may resolve ordinary library symbols against the
             // main program. They must not impersonate a reserved host import.
             if !env.contains(name.as_str()) && !facts.side_module {
@@ -294,6 +317,88 @@ fn startup_failures(facts: &Imports) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_posix_shared::program_extensions::stack_v1;
+
+    #[test]
+    fn published_programs_use_the_same_versioned_extension_policy_as_runtime_loading() {
+        for (memory, pointer) in [("", "i32"), ("i64", "i64")] {
+            let bytes = wat::parse_str(format!(
+                r#"(module
+                (import "env" "memory" (memory {memory} 1))
+                (import "{}" "{}" (func (param {pointer} i32 i32) (result i32))))"#,
+                stack_v1::MODULE,
+                stack_v1::IMPORT
+            ))
+            .unwrap();
+            assert!(
+                failures(&bytes, Path::new("unused-sysroot"))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        for (module, name, kind, memory) in [
+            (
+                "kandelo.stack.v2",
+                stack_v1::IMPORT,
+                "func (param i32 i32 i32) (result i32)",
+                "(memory 1)",
+            ),
+            (stack_v1::MODULE, "unknown", "func", "(memory 1)"),
+            (
+                stack_v1::MODULE,
+                stack_v1::IMPORT,
+                "global i32",
+                "(memory 1)",
+            ),
+            (
+                stack_v1::MODULE,
+                stack_v1::IMPORT,
+                "func (param i64 i32 i32) (result i32)",
+                "(memory 1)",
+            ),
+            (
+                stack_v1::MODULE,
+                stack_v1::IMPORT,
+                "func (param i32 i32) (result i32)",
+                "(memory 1)",
+            ),
+            (
+                stack_v1::MODULE,
+                stack_v1::IMPORT,
+                "func (param i32 i32 i32) (result i64)",
+                "(memory 1)",
+            ),
+            (
+                stack_v1::MODULE,
+                stack_v1::IMPORT,
+                "func (param i32 i32 i32) (result i32)",
+                "",
+            ),
+            (
+                stack_v1::MODULE,
+                stack_v1::IMPORT,
+                "func (param i32 i32 i32) (result i32)",
+                "(memory 1) (memory 1)",
+            ),
+            (
+                "env",
+                stack_v1::IMPORT,
+                "func (param i32 i32 i32) (result i32)",
+                "(memory 1)",
+            ),
+        ] {
+            let bytes = wat::parse_str(format!(
+                r#"(module (import "{module}" "{name}" ({kind})) {memory})"#
+            ))
+            .unwrap();
+            assert!(
+                !failures(&bytes, Path::new("unused-sysroot"))
+                    .unwrap()
+                    .is_empty(),
+                "{module}.{name} {kind} {memory}"
+            );
+        }
+    }
 
     #[test]
     fn object_linking_metadata_after_code_is_not_missed() {

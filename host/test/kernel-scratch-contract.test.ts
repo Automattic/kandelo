@@ -594,6 +594,12 @@ const reviewedScalarKernelExportCall = (
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#takeRootfsCompactionRequest::kernel-export-direct-use::take?.()",
+    disposition: "kernel-control",
+    count: 1,
+    why: "This exact export takes no arguments and consumes only a boolean maintenance request within the current entry. Its i32 result contains no pointer, borrowed range or allocator authority.",
+  },
+  {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#finishOwnedResourceMapping::kernel-export-direct-use::finish( channel.pid, this.guestTidForChannel(channel), token, transaction, errno, )",
     disposition: "kernel-control",
     count: 1,
@@ -1402,7 +1408,8 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/dylink.ts::instantiateSharedLibrarySteps::wasm-instance-authority::new WebAssembly.Instance(module, instanceImports)",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
-    why: "This instance is a user process's dynamically linked shared library and receives only that activation's wrapped process imports.",
+    count: 2,
+    why: "Both branches instantiate a user process's dynamically linked shared library with that activation's wrapped process imports. The optional synchronous wrapper binds stack capture to the owning module; neither branch receives kernel memory.",
   },
   {
     key: "host/src/fork-anyref-transit.ts::ForkAnyrefTransitTable.constructor::wasm-instance-authority::new WebAssembly.Instance(compileProviderModule())",

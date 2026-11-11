@@ -78,7 +78,7 @@ test("the browser shell runs tmux panes and preserves a detached session", async
   }, { timeout: 20_000 }).toBe(true);
   await command("printf 'TMUX_%s\\n' 'REATTACHED'");
   await expect.poll(screen, { timeout: 20_000 }).toContain("TMUX_REATTACHED");
-  await page.screenshot({ path: resolve(root, `.context/tmux-${browserName}.png`), fullPage: true });
+  await page.screenshot({ path: resolve(root, `.scratch/tmux-${browserName}.png`), fullPage: true });
 
   await command("tmux kill-server");
   await expect.poll(screen, { timeout: 10_000 }).toContain("[server exited]");

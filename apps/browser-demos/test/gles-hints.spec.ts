@@ -66,7 +66,7 @@ test("normal GLES guests validate error families, hint state and real framebuffe
     ]);
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);
-    const evidence = fileURLToPath(new URL("../../../.context/gles-hints-guests/", import.meta.url));
+    const evidence = fileURLToPath(new URL("../../../.scratch/gles-hints-guests/", import.meta.url));
     mkdirSync(evidence, { recursive: true });
     const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
     writeFileSync(`${evidence}/${Date.now()}-${test.info().project.name}-${arch}.json`, JSON.stringify({

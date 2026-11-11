@@ -98,6 +98,10 @@ remove them.
 
 ## Make a change
 
+Open change PRs against `develop`; `main` receives only daily-tested batches.
+See [Development and daily promotion](docs/development-workflow.md) for PR
+commands, promotion requirements, and the CI transition status.
+
 - Read the reference guide for the area you are changing.
 - Fix platform problems in the layer that owns them. A missing system call
   is a kernel gap to fix, rather than a reason to hide the failure in a demo.
@@ -206,8 +210,13 @@ These scripts work in ordinary Git checkouts and worktrees on macOS and
 Linux; no IDE, agent application, or workspace hook is required. Playwright
 allocates one `test-results/<run-uuid>` directory per run. Long-running jobs
 started with `scripts/agent-job` store logs and scratch under
-`.context/agent-jobs/<job-id>`. Use the job's
+`.scratch/agent-jobs/<job-id>`. Use the job's
 `$KANDELO_AGENT_SCRATCH_DIR` for additional logs instead of fixed `/tmp` paths.
+Playwright profiles and temporary storage use `.scratch/validation-scratch/`;
+its screenshots, traces, and reports use the suite's `test-results/`.
+Keep temporary checkouts and large experiments under `.scratch/` too.
+Conductor retains `.context/` on archive, so reserve it for notes,
+checkpoints, attachments, and selected evidence that should survive archival.
 
 Evidence stays available until you release it or remove its worktree:
 

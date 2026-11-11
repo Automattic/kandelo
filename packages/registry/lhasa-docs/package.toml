@@ -18,6 +18,7 @@ spdx = "ISC"
 url = "https://github.com/fragglet/lhasa/blob/master/COPYING"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/lhasa-docs/build-lhasa-docs.sh"
 
 [[outputs]]

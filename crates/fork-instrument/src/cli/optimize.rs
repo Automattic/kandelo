@@ -10,12 +10,34 @@ pub(super) fn run(
     level: &str,
     keep_names: bool,
     limit: u64,
-) -> Result<MappedArtifact> {
+    source_map: Option<&MappedArtifact>,
+) -> Result<(MappedArtifact, Option<MappedArtifact>)> {
     let mut source = tempfile::NamedTempFile::new().context("creating private optimizer input")?;
     source.write_all(input.bytes())?;
     let output = tempfile::NamedTempFile::new().context("creating private optimizer output")?;
     let executable = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
     let mut command = Command::new(&executable);
+    let mut map_input = None;
+    let mut map_output = None;
+    if let Some(map) = source_map {
+        // Generated helper bodies intentionally have no user source rows.
+        // Keep the mapped call sites: inlining a helper would replace that
+        // call with its unmapped body inside the user's function.
+        // The mark covers both full and partial inlining, before -O runs.
+        command.arg("--no-inline=*");
+        let mut source =
+            tempfile::NamedTempFile::new().context("creating private optimizer map input")?;
+        source.write_all(map.bytes())?;
+        let output =
+            tempfile::NamedTempFile::new().context("creating private optimizer map output")?;
+        command
+            .arg("--input-source-map")
+            .arg(source.path())
+            .arg("--output-source-map")
+            .arg(output.path());
+        map_input = Some(source);
+        map_output = Some(output);
+    }
     command.arg(source.path()).arg(format!("-{level}"));
     if keep_names {
         command.arg("-g");
@@ -29,5 +51,15 @@ pub(super) fn run(
         "{} -{level} failed on private instrumented output ({status})",
         Path::new(&executable).display()
     );
-    Ok(MappedArtifact::read(output.path(), limit)?.0)
+    drop(map_input);
+    let map = map_output
+        .map(|map| {
+            MappedArtifact::read(
+                map.path(),
+                fork_instrument::debug_info::Limits::default().section_bytes as u64,
+            )
+            .map(|(bytes, _)| bytes)
+        })
+        .transpose()?;
+    Ok((MappedArtifact::read(output.path(), limit)?.0, map))
 }

@@ -18,6 +18,7 @@ spdx = "GPL-3.0-or-later"
 url = "https://github.com/scummvm/scummvm/blob/master/COPYING"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/scummvm-docs/build-scummvm-docs.sh"
 
 [[outputs]]

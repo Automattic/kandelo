@@ -8,7 +8,7 @@ import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./support/browser-memory-boundary";
 
 const fixtures = new Map<string, ReturnType<typeof compileSdkFixture>>();
-const evidence = mkdtempSync(fileURLToPath(new URL("../../../.context/metadata-mutex-guests-", import.meta.url)));
+const evidence = mkdtempSync(fileURLToPath(new URL("../../../.scratch/metadata-mutex-guests-", import.meta.url)));
 test.use({ serviceWorkers: "block" });
 test.beforeAll(() => {
   for (const arch of ["wasm32", "wasm64"] as const) {

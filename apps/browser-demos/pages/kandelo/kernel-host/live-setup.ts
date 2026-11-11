@@ -145,7 +145,6 @@ import partialImageModule from "virtual:kandelo-partial-image";
 import {
   CANONICAL_SHELL_IMAGE_URL as shellVfsUrl,
   CANONICAL_SHELL_REL_PATHS,
-  CANONICAL_SHELL_URL_LOADERS,
 } from "./canonical-shell-image";
 // @ts-expect-error Vite owns this virtual module in both canonical and normal mode.
 import canonicalPagesVfsProducts from "virtual:kandelo-pages-vfs-products";
@@ -254,8 +253,7 @@ async function optionalBinaryUrl(
   label: string,
 ): Promise<string> {
   for (const relPath of relPaths) {
-    const loader = (OPTIONAL_BINARY_URLS as Record<string, () => Promise<string>>)[relPath]
-      ?? CANONICAL_SHELL_URL_LOADERS[relPath];
+    const loader = (OPTIONAL_BINARY_URLS as Record<string, () => Promise<string>>)[relPath];
     if (loader) return loader();
   }
   throw new Error(

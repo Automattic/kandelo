@@ -23,9 +23,25 @@ Many registry scripts predate the resolver contract (e.g. `bzip2` writes into it
 | cmake program | `packages/registry/espeak-ng/` |
 | multi-output program | `packages/registry/diffutils/` |
 | runtime files as a lazy archive | vim, per `docs/porting-guide.md` "Reference implementation" |
-| man pages as a separate lazy docs archive | `packages/registry/coreutils-docs/`, `packages/registry/lsof-docs/`; content sourcing differs, see "Shipping man pages" in `docs/porting-guide.md` |
+| upstream man-page archive, no SDK | `scripts/install-package-man-pages.sh` (source staging and archive installation) |
+| template man-page archive, no SDK | `packages/registry/lsof-docs/` |
+| man pages generated from real guest programs | `packages/registry/redis-docs/` (one program), `packages/registry/coreutils-docs/` (one binary, many commands); retain their guest-program dependencies and default SDK setting |
 
-The current shape: `source scripts/package-build-roots.sh`, `kandelo_package_prepare_build_roots`, `kandelo_package_stage_verified_source`, `source sdk/activate.sh`, configure/make under the work dir, then `install_local_binary` (usage in the header of `scripts/install-local-binary.sh`; it applies the manifest's fork policy).
+Choose `[build].toolchain` before adapting a recipe. Use `"none"` when the
+script and its sourced helpers never use the Kandelo SDK or sysroot,
+such as copying files, substituting literal templates, and creating an
+archive. Keep `"sdk"` (the default) for SDK builds. Review actual inputs;
+a documentation label alone does not establish that the build qualifies.
+See `docs/package-management.md` "Schema" and "Cache-key hashing" for
+retained inputs and the limits of the PATH check.
+
+The current shape: `source scripts/package-build-roots.sh`,
+`kandelo_package_prepare_build_roots`, stage verified source when needed,
+then build under the work dir and call `install_local_binary` (usage in
+`scripts/install-local-binary.sh`; it applies the manifest's fork policy).
+SDK recipes source `sdk/activate.sh` before configure/make. Recipes with
+`toolchain = "none"` must not reactivate the SDK or bypass the PATH check
+with absolute compiler paths or direct sysroot reads.
 
 ## Where the contract lives
 
@@ -52,8 +68,8 @@ lines), not whole files.
 Check upstream's source and install rules for man pages, including its
 normally generated pages. Where possible, include lazy references for
 upstream man pages, using the existing `<program>-docs` ZIP pattern or an
-existing lazy runtime bundle. Software without man pages needs none
-invented for now. Read
+existing lazy runtime bundle. A program with no upstream manual gets a
+page help2man makes from its own `--help` output inside Kandelo. Read
 `docs/porting-guide.md` "Shipping man pages" for source selection, archive
 paths, image registration and validation. Select a separate docs package
 explicitly in partial-image builds alongside the program and man viewer.
@@ -67,7 +83,7 @@ bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh <pkg> [
 It uses the declared dev-shell tool PATH without a login shell. It prints
 one status line and, on failure, the first error lines and the end of the
 log. Every invocation prints its own full-log path under a fresh directory
-in `$KANDELO_AGENT_SCRATCH_DIR` (when running as a job), or `.context/`.
+in `$KANDELO_AGENT_SCRATCH_DIR` (when running as a job), or `.scratch/`.
 Keep that exact path when reading evidence from parallel builds.
 
 For a long build, use:

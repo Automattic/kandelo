@@ -17,6 +17,7 @@ pub mod channel_record_decode;
 pub mod channel_result;
 pub mod channel_scratch;
 pub mod clipboard;
+pub mod console_device;
 pub mod credentials;
 pub mod descriptor_backing;
 pub mod exchange;
@@ -51,6 +52,9 @@ pub mod ipc_wire;
 pub mod kandelo_image_fs;
 pub mod kernel_file_mapping;
 pub mod kandelo_image_write;
+pub mod klogctl;
+pub mod kmsg;
+pub mod kmsg_device;
 pub mod lock;
 pub mod memory;
 pub mod mouse;
@@ -76,6 +80,7 @@ pub mod process;
 pub mod process_snapshot_wire;
 pub mod process_table;
 pub mod process_wire;
+pub mod device_id;
 pub mod program_preparation;
 pub mod procfs;
 pub mod pshared;
@@ -115,24 +120,6 @@ mod zip_stream;
 // avoid churning 645+ call sites in this phase.
 pub use process::HostIO;
 pub use process::HostIO as HostCapabilities;
-
-// ---------------------------------------------------------------------------
-// Debug logging (temporary)
-// ---------------------------------------------------------------------------
-
-#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-pub fn debug_log(msg: &str) {
-    #[link(wasm_import_module = "env")]
-    unsafe extern "C" {
-        fn host_debug_log(ptr: *const u8, len: u32);
-    }
-    unsafe {
-        host_debug_log(msg.as_ptr(), msg.len() as u32);
-    }
-}
-
-#[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-pub fn debug_log(_msg: &str) {}
 
 // ---------------------------------------------------------------------------
 // Current time helper

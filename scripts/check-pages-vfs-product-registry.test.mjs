@@ -41,6 +41,7 @@ const browserSources = [
   join(repoRoot, "apps/browser-demos/vite.config.ts"),
   join(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts"),
   join(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/optional-demo-vfs.ts"),
+  join(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/canonical-shell-image.ts"),
 ];
 const paths = {
   catalogPath,
@@ -227,10 +228,13 @@ test("rejects product-owned Pages intent and a missing product output", () => {
 test("enforces eager static imports and lazy glob-only imports", () => {
   withTempDir((directory) => {
     const eagerOnlyGlob = copyBrowserSources(directory, (source, contents) => {
-      if (!source.endsWith("live-setup.ts")) return contents;
+      if (!source.endsWith("canonical-shell-image.ts")) return contents;
+      const staticImport =
+        'import canonicalShellUrl from "@binaries/programs/wasm32/shell.vfs.zst?url&optional";';
+      assert.ok(contents.includes(staticImport));
       return contents.replace(
-        'import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";',
-        'const shellVfsUrl = import.meta.glob("../../../../../binaries/programs/wasm32/shell.vfs.zst");',
+        staticImport,
+        'const canonicalShellUrl = import.meta.glob("../../../../../binaries/programs/wasm32/shell.vfs.zst");',
       );
     });
     assert.throws(
@@ -378,12 +382,18 @@ test("keeps canonical resolution ahead of legacy fallback for every Pages produc
     }
     const reordered = copyBrowserSources(directory, (source, contents) => {
       if (!source.endsWith("vite.config.ts")) return contents;
-      return contents.replace(
-        "      vfsProductsPlugin(base),\n      react(),",
-        "      react(),\n      resolveKernelArtifactsAlias(binaryDevAccess),\n      vfsProductsPlugin(base),",
-      ).replace(
-        "      resolveKernelArtifactsAlias(binaryDevAccess),\n      resolveBinariesAlias",
-        "      resolveBinariesAlias",
+      // Move the app's first canonical resolver after its ordinary resolvers.
+      // Assert each edit applied: a no-op mutation would leave this test
+      // passing only because nothing changed.
+      const canonical = "    plugins: [\n      vfsProductsPlugin(base),\n";
+      const ordinary =
+        "      resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),\n";
+      assert.ok(contents.includes(canonical), "vite.config.ts canonical plugin anchor moved");
+      const withoutCanonical = contents.replace(canonical, "    plugins: [\n");
+      assert.ok(withoutCanonical.includes(ordinary), "vite.config.ts resolver anchor moved");
+      return withoutCanonical.replace(
+        ordinary,
+        `${ordinary}      vfsProductsPlugin(base),\n`,
       );
     });
     assert.throws(

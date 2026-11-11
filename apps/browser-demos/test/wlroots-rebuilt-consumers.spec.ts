@@ -102,7 +102,7 @@ for (const compositor of ["cage", "sway"] as const) {
         await expect.poll(async () => (await state()).output, {timeout:30_000}).toContain('WLTERM_GRID "GOT[a]"');
         await expect.poll(async () => (await screen.screenshot()).equals(before), {timeout:15_000}).toBe(false);
         const rendered = await screen.screenshot();
-        writeFileSync(new URL(`../../../.context/${compositor}-${browserName}-${cycle}.png`, import.meta.url), rendered);
+        writeFileSync(new URL(`../../../.scratch/${compositor}-${browserName}-${cycle}.png`, import.meta.url), rendered);
         const colors = await page.evaluate(async encoded => {
           const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(encoded), c=>c.charCodeAt(0))],{type:"image/png"}));
           const context = new OffscreenCanvas(bitmap.width,bitmap.height).getContext("2d")!;context.drawImage(bitmap,0,0);
@@ -126,10 +126,10 @@ for (const compositor of ["cage", "sway"] as const) {
         const scope = globalThis as any;
         return {...scope.__wlrootsState, procs: await scope.__wlrootsKernel?.enumProcs()};
       });
-      writeFileSync(new URL(`../../../.context/${compositor}-${browserName}-final-state.json`, import.meta.url), JSON.stringify(finalState,null,2)+"\n");
+      writeFileSync(new URL(`../../../.scratch/${compositor}-${browserName}-final-state.json`, import.meta.url), JSON.stringify(finalState,null,2)+"\n");
       await page.evaluate(() => (globalThis as any).__wlrootsKernel?.destroy());
     }
-    writeFileSync(new URL(`../../../.context/${compositor}-${browserName}-guest.json`, import.meta.url), JSON.stringify({
+    writeFileSync(new URL(`../../../.scratch/${compositor}-${browserName}-guest.json`, import.meta.url), JSON.stringify({
       compositor,engine:browserName,version:browser.version(),programSha256:createHash("sha256").update(program(`programs/${compositor}/${compositor}.wasm`)).digest("hex"),clientSha256:createHash("sha256").update(program("programs/wayland-demo/wlterm.wasm")).digest("hex"),kernelSha256:createHash("sha256").update(kernelBytes).digest("hex"),evidence,
     },null,2)+"\n");
     expect(pageErrors).toEqual([]);expect(await memoryBoundaryFailures(page)).toEqual([]);

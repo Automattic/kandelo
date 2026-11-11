@@ -1,0 +1,26 @@
+kind = "program"
+name = "foot-docs"
+version = "1.17.2"
+kernel_abi = 56
+depends_on = ["scdoc-source@1.11.3"]
+
+# Upstream manual pages for the `foot` package (foot, foot.ini and its control sequences).
+# The source, SHA-256 and version are the `foot` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://codeberg.org/dnkl/foot/releases/download/1.17.2/foot-1.17.2.tar.gz"
+sha256 = "de901e5fba00aded452df989a968906309f14221ed606c78c1caff3026c7f541"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://codeberg.org/dnkl/foot/src/tag/1.17.2/LICENSE"
+
+[build]
+script_path = "packages/registry/foot-docs/build-foot-docs.sh"
+
+[[outputs]]
+name = "foot-docs"
+wasm = "foot-docs.zip"
+fork_instrumentation = "disabled"

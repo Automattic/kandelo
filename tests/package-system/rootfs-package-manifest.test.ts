@@ -301,12 +301,20 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
       readFileSync(configPath, "utf8"),
     );
 
+    // The machine boots its own init, which starts the system log daemon and
+    // then execs the login shell. Naming the init here rather than /bin/login
+    // is what makes logging start with the machine: the browser reads this
+    // file out of the image to decide what to boot, so a boot program changed
+    // anywhere else has no effect at all.
     expect(config.initial).toEqual({
-      path: "/bin/login",
-      argv: ["login", "-p", "-f", "maker"],
+      path: "/bin/sh",
+      argv: ["sh", "/sbin/kandelo-shell-init"],
       uid: 0,
       gid: 0,
     });
+    // Leaving the shell re-enters a login session without re-running the
+    // init: the daemon is already up, and starting a second one would steal
+    // /dev/log from the first.
     expect(config.afterExit).toEqual({
       path: "/bin/login",
       argv: ["login", "-p"],

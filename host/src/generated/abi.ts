@@ -808,7 +808,7 @@ export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
 export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
-export const HOST_ADAPTER_VERSION = 4 as const;
+export const HOST_ADAPTER_VERSION = 6 as const;
 export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
 export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;
 export const HOST_ADAPTER_MANIFEST_SIZE = 40 as const;
@@ -910,6 +910,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_reap_exited_child",
   "kernel_remove_process",
   "kernel_reset_tcp_connection",
+  "kernel_rootfs_take_compaction_request",
   "kernel_set_current_tid",
   "kernel_set_cwd",
   "kernel_set_main_channel_addr",
@@ -2254,6 +2255,10 @@ export const IOCTL_REQUEST_FAMILIES: IoctlRequestFamily[] = [
   { dir: 2, magic: 69, nrFirst: 27, nrLast: 27, direction: "out", fixedSize: null, maxCallerSize: 256 },
 ];
 
+/* Kernel request serving the kandelo.klog.v1 program extension
+* (kernel-host surface; see shared::extension_requests). */
+export const EXTENSION_REQUEST_KLOG_V1 = 600 as const;
+
 export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   1: [
     { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
@@ -2749,5 +2754,8 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   384: [
     { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 }, nullable: true },
     { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 }, nullable: true },
+  ],
+  600: [
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, nullable: true, copyOutLength: { type: "return-value", multiplier: 1, maxValue: 131072 } },
   ],
 };

@@ -80,6 +80,18 @@ Demos are consumers of Kandelo, not alternate implementations of Kandelo. Demo
 code must not bypass, simulate, or paper over runtime, VFS, package, libc,
 syscall, kernel, or host defects.
 
+## Worktree Storage
+
+Keep retained notes, checkpoints, and attachments in `.context/`. Conductor
+preserves that directory when archiving a workspace. Put disposable bulk
+data in gitignored `.scratch/`: temporary worktrees/checkouts, profiles,
+traces, source/build experiments, and logs. Use a unique directory per run;
+jobs provide `$KANDELO_AGENT_SCRATCH_DIR`. Playwright reports already live
+outside `.context/` in `test-results/`. Copy any evidence needed after
+archival into retained storage before removing the workspace. See
+[`docs/repository-organization.md`](docs/repository-organization.md#worktree-local-storage)
+for storage ownership and cleanup.
+
 ## Agent Work Loop
 
 For nontrivial work:
@@ -131,33 +143,19 @@ installation from fetched `origin/main`, preserves opt-in and never
 downgrades; do it without asking the user to run the installer. Do not run
 plain `--user` from a feature branch as an automatic update. If fetching
 or updating fails, report it and continue independent work. Subagents
-leave user hook maintenance to the parent. See the hook workflow in
-`docs/agent-guidance/validation.md`.
+leave user hook maintenance to the parent.
 
-Keep automated browser tests silent through the shared
-`apps/browser-demos/playwright-test.ts` fixture, including private diagnostic
-specs. Leave guest PCM and analysers running for audio checks. Do not mute the
-computer's system output, which can disrupt calls. Audible playback requires
-the user's explicit intent and the documented test opt-in. See
-`docs/agent-guidance/validation.md` "Keep browser tests quiet".
+Read [the validation guide](docs/agent-guidance/validation.md) before choosing
+checks. Match evidence to the exact claim: unit tests do not prove POSIX
+conformance, Node results do not prove browser behavior, and browser demos do
+not prove ABI compatibility. Consider the relevant conformance suites for
+runtime/kernel changes. Manually verify user-visible browser fixes with
+`./run.sh browser` as well as browser tests.
 
-Validation is evidence for a specific claim. Do not say "tests pass", "the
-branch is complete", "the browser works", "ABI is fine", or "performance
-improved" unless the evidence for that exact claim has been run and reported.
-
-Do not use a narrow check to support a broad claim. A passing unit test does
-not prove POSIX behavior. A passing Node/Vitest path does not prove browser
-behavior. A passing browser demo does not prove ABI compatibility. A
-micro-benchmark does not prove application performance.
-
-Runtime/kernel changes are not fully validated until the relevant conformance
-suites have been considered. If a change touches syscall behavior, process
-lifecycle, memory layout, fd semantics, VFS semantics, signals, libc glue, or
-ABI-adjacent code, do not stop at unit tests and Vitest.
-
-Browser-facing fixes are not complete from code reasoning alone. Use browser
-tests where possible and manually verify user-visible browser demo fixes with
-`./run.sh browser`.
+Keep automated browser tests silent through the shared Playwright fixture,
+including private diagnostics. Leave guest PCM and analysers running; never
+mute system output. Audible playback needs explicit user intent and the
+[documented opt-in](docs/agent-guidance/validation.md#keep-browser-tests-quiet).
 
 Runs under 10 minutes: one foreground Bash call with output to a log file.
 Longer runs: use `scripts/agent-job start`. Interactive main sessions: run
@@ -166,313 +164,139 @@ Longer runs: use `scripts/agent-job start`. Interactive main sessions: run
 Headless main sessions repeat foreground `scripts/agent-job wait <id>`
 (up to 9 minutes per call). Subagents use `wait <id> --timeout 240` for
 targeted work, one wait per Bash call; return known long jobs to the parent.
-Repeat only when the wait-window notice says the job is still running.
-`FAILED (exit 124)` is final, not a retry.
-To wait on another workspace's build, find it with
-`scripts/agent-job list --all` and wait on its id (or `wait --peer <text>`),
-not on its PID. After a selector wait times out, retry by its resolved id,
-never by `--peer` again. Do not poll with Monitor/status-file loops,
-`sleep` or `pgrep -f`; never end a headless session's or subagent's turn to
-wait, and do not make subagents wait on whole-tree builds. Why: each poll
-turn re-reads the whole conversation; `pgrep -f` matches the waiting shell
-and never returns; a headless session or subagent stops when its turn ends,
-losing the result; and a subagent's 5-minute cache makes long waits rewrite
-its context. See "Waiting on long builds and suites" in
-`docs/agent-guidance/validation.md`.
-
-See `docs/agent-guidance/validation.md` for suite selection and exact command
-guidance.
+Repeat only on the still-running wait-window notice; `FAILED (exit 124)` is
+final. Find peer builds with `list --all` and wait on their id (or
+`wait --peer <text>`); after a selector timeout retry by resolved id.
+Do not poll with Monitor/status-file loops, `sleep` or `pgrep -f`, end a
+headless/subagent turn to wait, or make subagents wait on whole-tree builds.
+See [waiting on long builds](docs/agent-guidance/validation.md#waiting-on-long-builds-and-suites).
 
 ## Debugging And POSIX Contract
 
-Fix the platform failure, not the presentation of the failure. A bug is not
-understood until the failing path has been traced to its real layer: user
-program, package artifact, VFS image, SDK/libc glue, syscall semantics, kernel
-state, host runtime, Node/browser adapter, service worker, or UI.
+Read [debugging and POSIX guidance](docs/agent-guidance/debugging-and-posix.md)
+before changing syscalls, process lifecycle, VFS, memory or devices. Start
+from POSIX semantics; when designs are otherwise equivalent, prefer
+Linux-observable behavior. Keep process state, descriptors, OFDs, locks,
+sockets, PTYs, memory, signals and zombie/reaping state coherent.
 
-Start from POSIX semantics. POSIX conformance is the north star. Linux
-compatibility is valuable, but secondary: when multiple designs are equivalent
-for POSIX correctness, internal integrity, maintainability, and performance,
-prefer the design that best matches Linux-observable behavior.
-
-A POSIX gap should stay visible as a platform gap until it is implemented. Do
-not convert an unsupported or partially supported API into silent success just
-because that lets a package continue. Stubs must be honest: return the correct
-failure mode for unsupported behavior unless the API's correct compatibility
-behavior is a no-op.
-
-Process state is authoritative. `fork`, `exec`, `posix_spawn`, `clone`, `exit`,
-`waitpid`, fd tables, OFDs, locks, sockets, PTYs, memory layout, and
-zombie/reaping state must remain coherent across transitions.
-
-A workaround for a defect in an outside runtime or toolchain (a browser
-engine, Node.js, Bun, LLVM, wasm-ld, wasm-opt, Rust) needs a registry entry
-in `tests/runtime-workarounds/` and a `[RUNTIME-WORKAROUND: <ID>]` tag at
-every code site. Blaming a runtime needs a standalone reproduction that
-contains no Kandelo code and judges its own result; until one exists the
-defect is "suspected", and docs, comments and PRs must say so. Agents
-never file, comment on, or vote on upstream trackers unless the entry has
-`reports = "agents-allowed"` with a named channel. See
-`tests/runtime-workarounds/README.md`.
-
-See `docs/agent-guidance/debugging-and-posix.md` before changing syscall,
-process, VFS, memory, device, or root-cause debugging behavior.
+A workaround for an outside runtime or toolchain defect needs an entry in
+`tests/runtime-workarounds/` and a `[RUNTIME-WORKAROUND: <ID>]` tag at every
+code site. Without a standalone, self-judging reproduction containing no
+Kandelo code, call the defect "suspected". Never file, comment on or vote on
+upstream trackers unless the entry has `reports = "agents-allowed"` with a
+named channel. See [the registry](tests/runtime-workarounds/README.md).
 
 ## ABI Contract
 
-Every incompatible ABI change requires a version bump and a regenerated
-`abi/snapshot.json` in the same change: `ABI_VERSION` in
-`crates/program-abi/src/lib.rs` for a change programs can observe, or the
-kernel-host version (`HOST_ADAPTER_VERSION`) for a change only the kernel and
-host can see. Do not ship incompatible ABI changes under an existing version.
+Read [ABI guidance](docs/agent-guidance/abi.md) and
+[versioning](docs/abi-versioning.md) before ABI-adjacent edits. Every
+incompatible change needs a version bump and regenerated `abi/snapshot.json`:
+`ABI_VERSION` in `crates/program-abi/src/lib.rs` for program-visible changes,
+`HOST_ADAPTER_VERSION` for kernel-host-only changes.
 
-The ABI includes syscall numbers and marshalling, channel layout, process
-memory layout, host-reserved control regions, `repr(C)` structs, kernel Wasm
-exports, ABI custom sections, process-expected globals, `wpk_fork_*` exports,
-generated TypeScript ABI constants, and VFS image metadata that binds Wasm
-programs to a kernel ABI.
-
-The snapshot check is necessary but not sufficient. Semantic changes to an
-existing syscall, errno, blocking behavior, fd inheritance, memory ownership,
-or pointer interpretation can require an ABI bump even if the structural
-snapshot is unchanged.
-
-Do not add compatibility shims for stale ABI artifacts unless the compatibility
-boundary is explicit, documented, and intentionally supported. Legacy Asyncify
-exports, stale fork instrumentation exports, wrong ABI custom sections, old
-package archives, and ABI-mismatched VFS images should fail loudly and be
-rebuilt through the normal package/release path.
-
-See `docs/agent-guidance/abi.md` and `docs/abi-versioning.md` before changing
-ABI-adjacent code or artifacts.
+Syscall semantics, marshalling, process/channel memory layout, exported or
+imported interfaces, fork instrumentation, generated constants and VFS
+program bindings are ABI surface. The snapshot check alone does not prove
+semantic compatibility. Stale or mismatched artifacts must fail loudly and
+be rebuilt through the normal path; do not add implicit compatibility shims.
 
 ## Host Runtime Contract
 
-The host runtime is part of the platform, not demo scaffolding. It owns worker
-lifecycle, Wasm instantiation, process memory, syscall channel dispatch,
-blocking retry, VFS/network/device adapters, process-worker launch, and the
-Node/browser bridge to platform APIs.
+Read [host runtime guidance](docs/agent-guidance/host-runtime.md) before
+changing host runtime, worker protocols or adapters. Node.js and browser
+hosts are peers; shared runtime changes need both, unless a real platform
+boundary explains the difference. The kernel always runs in a dedicated
+worker. Never instantiate `CentralizedKernelWorker` on the main thread.
 
-The kernel must run in a dedicated worker on every host. `CentralizedKernelWorker`
-must not be instantiated on the main thread. The main thread is a proxy for
-setup, UI, and I/O routing; it is not the syscall engine.
-
-Node.js and browser hosts are peers. A host-runtime behavior change is
-incomplete until both hosts have the same platform-observable behavior or the
-difference is explicitly justified by a real platform boundary. Do not land
-Node-first or browser-later host changes.
-
-A declared memory ceiling is a spent resource. WebKit/JavaScriptCore charges a
-shared `WebAssembly.Memory`'s `maximum` and a growable `SharedArrayBuffer`'s
-`maxByteLength` against one process-wide reservation pool at construction,
-whether or not the space is used; V8 and SpiderMonkey do not. Do not add or
-raise a ceiling without accounting for that cost, and never reserve past a
-capacity the resource cannot actually reach. Host budgets live in
-`host/src/runtime-memory-profile.ts`.
-
-The main thread must never own a VFS `SharedArrayBuffer`. Only
-`Worker.terminate()` reclaims shared memory deterministically on WebKit, so
-main-thread VFS buffers accumulate across machine boots until Safari throws
-`Out of memory`. Compose images in a worker and hand the main thread plain,
-transferable bytes.
-
-Persistent browser/audio realms must never receive guest `WebAssembly.Memory`
-or views into its backing storage. Use bounded independent device buffers,
-explicitly retire asynchronous owners, and run `./run.sh test browser-memory`
-for memory/device/lifecycle changes. See the host-runtime and validation
-guides for the ownership contract and native Safari follow-up.
-
-Shared files are cross-host changes by default. Changes to
-`host/src/kernel-worker.ts`, `host/src/worker-main.ts`, VFS behavior,
-networking, framebuffer, generated ABI constants, or worker protocol types need
-Node and browser consideration even when only one host-specific file changed.
-
-See `docs/agent-guidance/host-runtime.md` before changing host runtime,
-worker protocol, or Node/browser adapter behavior.
+Memory ceilings consume reservation budget on WebKit/JavaScriptCore at
+construction. Account for that cost before adding or raising one; budgets
+live in `host/src/runtime-memory-profile.ts`. The main thread must never own
+a VFS `SharedArrayBuffer`: compose in a worker and transfer plain bytes.
+Persistent browser/audio realms must never receive guest
+`WebAssembly.Memory` or its views. Use bounded independent device buffers
+and explicit asynchronous retirement. Memory/device/lifecycle changes need
+`./run.sh test browser-memory` per the validation guide.
 
 ## Package And Build Contract
 
-Packages are consumers of the platform and distribution units for reproducible
-artifacts. A package build should exercise the SDK, libc, resolver, sysroot,
-VFS image tooling, fork instrumentation, and kernel assumptions through the
-normal path. Do not make a package succeed by bypassing the SDK, libc,
-resolver, VFS image, syscall, host, or kernel behavior that user software
-normally relies on.
+Read [package and build guidance](docs/agent-guidance/packages-and-builds.md)
+before changing recipes, patches, build scripts, resolver/cache behavior,
+indexes or package artifacts. `package.toml` owns the portable recipe;
+`build.toml` owns project build/publish state. Declare every dependency,
+install only into `WASM_POSIX_DEP_OUT_DIR`, honor the resolver contract and
+produce declared outputs. SDK/sysroot-free recipes may declare
+`[build].toolchain = "none"` only after reviewing the script and helpers.
+Fork-using packages must use `scripts/run-wasm-fork-instrument.sh`.
 
-Package failures are platform feedback. Do not use package patches to
-compensate for ordinary Kandelo POSIX gaps. If Kandelo has a documented
-limitation because today's WebAssembly runtimes make the POSIX behavior
-infeasible to implement faithfully, a package patch may adapt at that boundary
-only when the limitation is documented and the patch stays scoped to it.
+Port against `./run.sh partial <image> <pkg>...` by default. Before building,
+announce the image and packages and that the user can ask for a full build;
+name the partial image in the final report. Use full builds for shared
+platform code, whole-browser/suite/canonical-image claims or explicit user
+requests, and build canonical products before a PR.
 
-`package.toml` owns the portable recipe contract: package identity, upstream
-source, license, direct deps, target arches, ABI expectation, declared outputs,
-and default source-build hook. `build.toml` owns Kandelo project build/publish
-state: selected script path, source provenance, publish revision, cache
-invalidation, and binary index location.
-
-Port and iterate on packages against a partial image by default:
-`./run.sh partial <image> <pkg>...` builds the rootfs base plus only the named
-packages. Announce it to the user in one sentence before you build (image,
-packages, and that they can ask for the full build), and name it in the final
-report. Use the full build when the user asks for it or the claim is about
-canonical images, the browser as a whole, the suites, or shared platform
-code. A partial image is evidence only for its named packages; build the
-canonical products before a PR. See `docs/agent-guidance/packages-and-builds.md`
-"Partial images are development builds".
-
-Build scripts must honor the resolver contract, use the worktree-local SDK,
-declare every dependency they use, install only into `WASM_POSIX_DEP_OUT_DIR`,
-and produce the outputs declared in package metadata. Fork-using packages must
-be instrumented with `scripts/run-wasm-fork-instrument.sh`; legacy Asyncify
-artifacts are stale and must be rebuilt, not supported.
-
-Kandelo is not Linux. Never define `__linux__` in the SDK, its flags, its
-`config.site`, or the sysroot. When an upstream gates a path on `__linux__`,
-first ask whether there is another way (a feature macro or cache variable, a
-feature-keyed upstream fix, a package-local patch). A per-package
-`-D__linux__` is a commented last resort that requires a conversation with the
-maintainer first.
-
-See `docs/agent-guidance/packages-and-builds.md` before changing package
-metadata, build scripts, package patches, binary resolution, indexes, or VFS
-image package artifacts.
+Kandelo is not Linux. Never define `__linux__` in SDK flags, `config.site` or
+the sysroot. Prefer feature macros or cache variables for upstream probes;
+a per-package `-D__linux__` is a commented last resort requiring a maintainer
+conversation. Package patches must not hide ordinary Kandelo POSIX gaps.
 
 ## Browser And User Contract
 
-The browser UI is a consumer and presentation layer for the platform. It should
-expose the real state of a Kandelo machine, not synthesize success or implement
-alternate runtime behavior.
+Read [browser and user guidance](docs/agent-guidance/browser-and-user.md)
+before changing browser demos, `KernelHost`, boot descriptors, sharing,
+persistence, service-worker bridges or image metadata. Reusable session
+contracts belong in `web-libs/kandelo-session`; React wiring and page
+fixtures belong in `apps/browser-demos`.
 
-`web-libs/kandelo-session` owns reusable browser-facing contracts: `KernelHost`,
-boot descriptors, snapshots, demo configuration parsing, gallery metadata, and
-sharing behavior. App-specific React wiring and page fixtures belong under
-`apps/browser-demos`.
-
-Boot descriptors and shared URLs are untrusted input. They need explicit
-versioning, size caps, mount limits, path validation, allowed source kinds, and
-loud failures for malformed or oversized payloads.
-
-Browser persistence and sharing are part of the platform contract, not
-presentation details. Do not present ephemeral, user-local, remote-fetched, or
-URL-encoded state as if it were a durable, private, verified platform image.
-
-VFS images are product artifacts and system state. Demo presentation metadata
-belongs in `/etc/kandelo/demo.json` via the VFS image builder, not in
-package-specific app-loader fallbacks.
-
-See `docs/agent-guidance/browser-and-user.md` before changing browser demo
-behavior, `KernelHost`, boot descriptors, sharing, persistence, service-worker
-bridges, VFS image metadata, or user-visible browser failures.
+Treat boot descriptors and shared URLs as untrusted input: version them,
+bound their size/mounts and validate paths/source kinds. Describe persistence,
+privacy and verification accurately. Image-owned demo metadata belongs in
+`/etc/kandelo/demo.json` through the image builder, not app-loader fallbacks.
 
 ## Performance Contract
 
-Performance is subordinate to correctness, POSIX behavior, internal integrity,
-and host parity. A faster path that weakens syscall semantics, hides wakeups,
-drops diagnostics, changes observable process behavior, or diverges Node and
-browser is not an acceptable optimization.
+Read [performance guidance](docs/agent-guidance/performance.md) before
+performance claims or syscall hot-path changes. Correctness and host parity
+come first. Explicit performance work, broad claims and syscall hot-path
+changes require all benchmark suites on Node and browser with before/after
+comparison. Bound narrower evidence explicitly; if unmeasured, say so.
 
-Do not make performance claims without benchmark evidence. "Faster," "no
-regression," "neutral," and "harmless" are claims when presented as facts. If
-you did not measure, say that performance was not measured.
-
-Explicit performance work, broad performance claims, and syscall hot-path
-changes require all benchmark suites on both Node and browser, with before/after
-comparison. Narrower benchmark scopes are acceptable only for non-performance
-changes with plausible performance risk, or for claims that are explicitly
-bounded to one app, host, or subsystem.
-
-Do not repeat known-bad syscall hot-path "optimizations" in
-`host/src/kernel-worker.ts`: syscall argument count tables, syscall
-classification sets, cached channel `DataView`/`Int32Array` objects, or
-conditional debug-ring logging for "trivial" syscalls.
-
-See `docs/agent-guidance/performance.md` before making or evaluating
-performance claims.
+Do not repeat known-bad `host/src/kernel-worker.ts` changes: syscall argument
+count tables, syscall classification sets, cached channel `DataView` or
+`Int32Array` objects, or conditional debug-ring logging for trivial syscalls.
 
 ## Build, Documentation, And PR Contract
 
-The build environment is part of the platform contract. Build and verification
-commands should run from repo-declared tools, not undeclared host state. Use
-`scripts/dev-shell.sh` for build and verification claims; direnv is acceptable
-as a local interactive convenience, but it is not the verification contract.
+Target change PRs at `develop`. Follow
+[development and daily promotion](docs/development-workflow.md) for branch
+policy and the current CI transition limits; `main` is the stable/default
+branch and receives tested daily batches.
 
-Building artifacts is expected work, not scope creep. This project builds
-everything locally: no CI status check pre-materializes the sysroots, kernel
-wasm, program and test-fixture binaries (`local-binaries/`), rootfs image, or
-package artifacts, and a fresh checkout or `git worktree` inherits none of
-them. When a goal — running a suite, reproducing a failure, validating before
-a merge — needs an artifact that is missing, build it and continue. A missing
-artifact is a `./run.sh setup --all` / `build-musl.sh` / `build-programs.sh` step
-away (under `scripts/dev-shell.sh`), not a "cannot proceed" boundary and not a
-reason to hand the task back. Distinguish this
-from a genuine platform defect: a missing artifact you can produce is
-provisioning; an artifact that fails to build, or an ABI-mismatched one that
-must be rebuilt through the normal path, is the truthful failure the
-platform-values contract tells you to surface. Report what you built to reach
-a claim, then make the claim. See `docs/agent-guidance/validation.md` for the
-fresh-worktree provisioning steps.
+Read [build, documentation and PR guidance](docs/agent-guidance/build-docs-and-prs.md)
+before changing these workflows or reporting completion. Build/verification
+claims must run through `scripts/dev-shell.sh`, not undeclared host tools;
+direnv is only an interactive convenience.
 
-CI runs only reviewed code. Every third-party action in `.github/` is pinned to
-a full 40-character commit SHA with the version in a trailing comment
-(`uses: actions/checkout@9c091bb… # v7.0.0`). Never introduce or restore a tag
-or branch ref (`@v4`, `@v7.0.0`, `@master`): those re-resolve on every run, so
-whoever can move the ref can change what executes in a job holding
-`GITHUB_TOKEN` and repository secrets. Same-repo `./.github/...` references are
-the sole exception; they resolve to the running commit. Dependabot keeps the
-pins current.
+Build missing artifacts and continue: fresh worktrees inherit no sysroots,
+kernel, programs, package binaries or images. Missing producible artifacts
+are provisioning work; actual build failures are boundaries to report.
+`./run.sh setup` checks both musl cores for freshness. After libc edits, run
+`setup --all` to refresh linked packages and `scripts/build-programs.sh` for
+example/test fixtures; rebuilding libc alone leaves stale linked programs.
 
-`./run.sh setup` checks both musl sysroots against source/toolchain inputs
-and installed core-output receipts, rebuilding missing, stale, or altered
-cores. After editing libc inputs, run `setup --all` to refresh linked package
-programs, and `scripts/build-programs.sh` for example/test fixtures before
-Vitest or conformance tests. A rebuilt libc alone does not refresh already
-linked programs. Use the dev shell for these commands.
+Pin every third-party `.github/` action to a full 40-character SHA with its
+version in a trailing comment. Same-repo `./.github/...` references are the
+only exception. Never restore mutable tag or branch refs.
 
-PR titles and commit subjects must begin with a concise purpose prefix in the
-form `Area: Purpose`, such as `Packages:`, `Kernel:`, `POSIX:`, `CI:`,
-`Browser:`, or `Docs:`. Choose the area that best identifies the contract or
-capability a reader should notice.
+Use short `Area: Purpose` commit/PR titles. PR descriptions have `## Why`,
+`## What changed` and `## Validation`; state what ran and what did not. Keep
+prose plain and descriptions short. Do not hard-wrap PR prose; wrap commit
+bodies at 72 columns except tables, code, generated text and URLs. Preserve
+human contributor authorship when rewriting history and verify it before
+force-pushing. Never credit AI tools in commits or PR descriptions.
 
-Keep PR titles and descriptions short, simple, and written in plain language a
-junior developer can follow. The title names what changes in ordinary words
-(`Docs: Add credits`), short enough to serve as the merge subject. The
-description has three sections: `## Why` (one to three sentences: the problem
-and who it affects), `## What changed` (a few one-line bullets describing the
-resulting behavior), and `## Validation` (what was run and what was not). Most
-PRs need 10 to 20 lines. Define necessary terms, and leave out jargon,
-internal task names, and the story of how the work went. Implementation detail
-goes in commit message bodies, not the PR description.
-
-Commit messages follow the same rules. The subject is a short `Area: Purpose`
-line. The body says what changed and why in a few short, plain paragraphs or
-bullets: keep the details a future reader needs (the reason for a non-obvious
-choice, an important limit, evidence for a claim) and leave out the
-investigation story, repetition, and filler. Most bodies need 3 to 10 lines.
-
-Do not hard-wrap PR description prose; GitHub's squash merge re-wraps it.
-Wrap commit-message bodies at 72 columns, except tables, code blocks,
-generated text, and indivisible URLs or identifiers.
-
-Preserve contributor attribution when rewriting PR history. Inspect original
-authorship before restacking, rebasing, amending, cherry-picking, or squashing;
-keep contributors as authors of derived commits and the restacker as committer.
-Use co-author trailers for materially combined work, and verify attribution
-with `git range-diff` and `git log --format=fuller` before force-pushing.
-
-Credit people, not tools. Commits and PR descriptions never credit an AI
-model, agent, or coding tool: no `Co-authored-by:` trailer for Claude,
-ChatGPT, Codex, or any other assistant, and no "Generated with" line. The
-checked-in `.claude/settings.json` turns off Claude Code's default
-attribution; agents on other clients must leave it out themselves.
-
-Documentation is part of the platform contract. Do not describe aspirational
-behavior as supported behavior, and do not use documentation to create a
-platform promise before the implementation, tests, package artifacts, and
-browser/Node behavior support it.
-
-See `docs/agent-guidance/build-docs-and-prs.md` before changing build/dev-shell
-behavior, documentation, PR descriptions, or final-report framing.
+Update authoritative reference docs for changed behavior. Do not promise
+support without implementation and evidence, or duplicate long policies
+across files. Historical plans are records, not current guidance.
 
 ## Key Directories
 

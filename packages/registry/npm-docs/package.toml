@@ -1,0 +1,28 @@
+kind = "program"
+name = "npm-docs"
+version = "10.9.2"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for npm and npx, which node-browser-bundle installs.
+# npm's published tarball ships them prebuilt. The source and SHA-256 are
+# node-browser-bundle's own (it carries npm as its source), so the pages
+# describe the npm the shell runs;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://registry.npmjs.org/npm/-/npm-10.9.2.tgz"
+sha256 = "5cd1e5ab971ea6333f910bc2d50700167c5ef4e66da279b2a3efc874c6b116e4"
+provider = "archive"
+
+[license]
+spdx = "Artistic-2.0"
+url = "https://github.com/npm/cli/blob/v10.9.2/LICENSE"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/npm-docs/build-npm-docs.sh"
+
+[[outputs]]
+name = "npm-docs"
+wasm = "npm-docs.zip"
+fork_instrumentation = "disabled"

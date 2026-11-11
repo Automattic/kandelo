@@ -13,7 +13,7 @@ External and generated conformance test trees live here.
 - `sortix/` contains the Sortix os-test submodule and build outputs.
 - `test-artifacts/` contains explicit ownership manifests for shared
   host/kernel test artifacts that are not packages.
-- `results/` stores local test-run metadata.
+- `baselines/` keeps selected failure evidence and provenance, not test allowances.
 
 Package-owned tests and fixtures live beside their packages under
 `packages/registry/<name>/test/`. Test runner scripts stay in `scripts/` so CI

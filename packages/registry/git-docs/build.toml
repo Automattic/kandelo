@@ -1,0 +1,11 @@
+script_path = "packages/registry/git-docs/build-git-docs.sh"
+inputs = [
+  "packages/registry/git-docs/build-git-docs.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/install-package-man-pages.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/xmlto-man.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

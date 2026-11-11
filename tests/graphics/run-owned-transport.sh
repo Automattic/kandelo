@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-out="$(mktemp -d "$root/.context/drm-owned-transport.XXXXXX")"
+mkdir -p "$root/.scratch"
+out="$(mktemp -d "$root/.scratch/drm-owned-transport.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 clang -std=c11 -g -O1 -Wall -Wextra -Werror -Wno-unused-command-line-argument -pthread \
   -fsanitize=undefined -fno-sanitize-recover=all \

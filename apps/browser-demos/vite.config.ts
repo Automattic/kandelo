@@ -568,6 +568,29 @@ function sourceOnlyFallbackArtifactGlob(
   ].some((fallbackRoot) => pathIsWithin(fallbackRoot, candidate));
 }
 
+/**
+ * `@binaries/<path>?url&optional` imports a product the dev server may not
+ * have built yet (the canonical shell, in a worktree that built only a
+ * partial image). The import stays static, so the canonical Pages build
+ * still sees an eager product, and a production build of a missing binary
+ * still fails. Only the dev server resolves an absent one to `null`, which
+ * the app reports as "not built".
+ */
+const ABSENT_OPTIONAL_BINARY = "\0kandelo-absent-optional-binary";
+
+function splitOptionalBinaryQuery(query: string): {
+  optional: boolean;
+  query: string;
+} {
+  if (query === "") return { optional: false, query };
+  const params = query.slice(1).split("&");
+  const kept = params.filter((param) => param !== "optional");
+  return {
+    optional: kept.length !== params.length,
+    query: kept.length === 0 ? "" : `?${kept.join("&")}`,
+  };
+}
+
 function resolveBinariesAlias(
   access: BinaryDevAccess,
   resolution: BrowserBinaryResolution,
@@ -609,12 +632,20 @@ function resolveBinariesAlias(
         return { id: source, external: true };
       }
 
+      const { optional, query } = splitOptionalBinaryQuery(request.query);
+      const absentAllowed = optional && serving;
+
       if (sourceOnlyViteAssets !== null) {
+        if (absentAllowed) {
+          return sourceOnlyViteAssets.tryResolve(request.relPath)
+            ?? ABSENT_OPTIONAL_BINARY;
+        }
         return sourceOnlyViteAssets.resolve(request.relPath);
       }
 
       const resolved = resolution.resolve(request.relPath);
-      if (resolved) return resolved + request.query;
+      if (resolved) return resolved + query;
+      if (absentAllowed) return ABSENT_OPTIONAL_BINARY;
       if (configuredSourceOnlyRoot !== null) {
         this.error(
           `Browser binary ${request.relPath} is not owned by the SourceOnly ` +
@@ -630,6 +661,9 @@ function resolveBinariesAlias(
           `packages/sets/local-supported.toml; local test fixtures come from ` +
           `scripts/build-programs.sh.`,
       );
+    },
+    load(id) {
+      return id === ABSENT_OPTIONAL_BINARY ? "export default null;\n" : null;
     },
     transform(code, id) {
       if (sourceOnlyViteAssets !== null) return null;

@@ -11,7 +11,8 @@ export function playwrightRun(configDirectory: string): { outputDir: string; glo
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error("Invalid Playwright run id");
   const root = join(configDirectory, "test-results", id);
   const worktree = execFileSync("git", ["-C", configDirectory, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-  const scratch = join(worktree, ".context", "validation-scratch", id);
+  // Conductor retains .context on archive; browser storage is disposable.
+  const scratch = join(worktree, ".scratch", "validation-scratch", id);
   const manager = fileURLToPath(new URL("../scripts/validation_artifacts.py", import.meta.url));
   const record = JSON.parse(execFileSync("python3", [manager, "register",
     "--worktree", worktree, "--run-id", id, "--pid", String(process.pid),

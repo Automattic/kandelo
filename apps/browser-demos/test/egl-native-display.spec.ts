@@ -55,7 +55,7 @@ test(`normal ${arch} EGL guest keeps native displays separate and retains their 
     expect(result.stdout.trim()).toBe("OK native EGL display identity and retained DRM files");
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);
-    const evidence = fileURLToPath(new URL("../../../.context/native-egl-display-guests/", import.meta.url));
+    const evidence = fileURLToPath(new URL("../../../.scratch/native-egl-display-guests/", import.meta.url));
     mkdirSync(evidence, { recursive: true });
     const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
     writeFileSync(`${evidence}/${Date.now()}-${test.info().project.name}-${arch}.json`, JSON.stringify({

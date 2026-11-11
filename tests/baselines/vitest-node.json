@@ -1,0 +1,18 @@
+{
+  "suite": "vitest",
+  "host": "node",
+  "commit": "e4bca8639e4b6853080ca7f3a09b0e95488c9d50",
+  "date": "2026-10-30",
+  "command": [
+    "scripts/dev-shell.sh",
+    "bash",
+    "scripts/ci-run-test-suite.sh",
+    "vitest"
+  ],
+  "exit_code": 1,
+  "source_log": "/Users/brandon/conductor/archived-contexts/kandelo/batched-follow-ups-for-main-correctness/main-validation-v1/vitest.log",
+  "source_log_sha256": "8ab08cab4a88bdac314658b8316692ebf29a0c3428d8dc60a2e82d71b6a7da27",
+  "source_lines": [19620, 19621, 19632, 19633, 19645, 19646, 19664, 19665, 19677, 19678, 19690, 19691, 19702, 19703, 19714, 19715, 19726, 19727, 19738, 19739, 19751, 19752, 19764, 19765, 19788, 19789, 19812, 19813, 19825, 19826, 19838, 19839, 19861, 19862, 19885, 19886, 19909, 19910, 19933, 19934, 19957, 19958, 19981, 19982, 20378, 20379, 20399, 20400, 20431, 20432, 20496, 20497, 20546, 20547, 20565, 20566, 20596, 20597, 20609, 20610],
+  "excerpt": "vitest-node.log",
+  "note": "30 failures; 21 skipped cases are not all named by the reporter. Load averages: 7.5 at start, 6.3 at end (18 CPUs)."
+}

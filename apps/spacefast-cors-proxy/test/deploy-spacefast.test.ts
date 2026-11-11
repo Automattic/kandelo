@@ -42,7 +42,7 @@ import {join} from 'node:path';
 const args=process.argv.slice(2);
 appendFileSync('trace.jsonl',JSON.stringify({tool:'package',args})+'\\n');
 if(process.env.FAIL_PACKAGE)process.exit(19);
-const out=mkdtempSync(join(process.cwd(),'.context/spacefast-kandelo-build-'));
+const out=mkdtempSync(join(process.cwd(),'.scratch/spacefast-kandelo-build-'));
 writeFileSync(join(out,'sf.jsonc'),JSON.stringify({runtime:{kind:'functions'}}));
 console.log('build shell startup notice');console.log(out);
 `);
@@ -86,7 +86,7 @@ test("deployment help and invalid targets never build or contact the CLI", async
     });
   }
   assert.deepEqual(await f.trace(), []);
-  assert.ok(!(await readdir(f.root)).includes(".context"));
+  assert.ok(!(await readdir(f.root)).includes(".scratch"));
 });
 
 test("an unavailable CLI fails before building and never attempts installation or sign-in", async t => {
@@ -96,7 +96,7 @@ test("an unavailable CLI fails before building and never attempts installation o
     PATH: join(f.root, "bin"),
   }), /Required command is unavailable: sf/);
   assert.deepEqual(await f.trace(), []);
-  assert.ok(!(await readdir(f.root)).includes(".context"));
+  assert.ok(!(await readdir(f.root)).includes(".scratch"));
 });
 
 test("preparation uses a unique normal build, approves its target, and never invokes sf", async t => {
@@ -108,7 +108,7 @@ test("preparation uses a unique normal build, approves its target, and never inv
   const site = build.args[build.args.indexOf("--out") + 1];
   assert.deepEqual(build.args, ["build-browser", "--base", "/", "--out", site,
     "--cors-proxy", "/cors-proxy?url=", "--signalling-url", "/signalling"]);
-  assert.ok(site.startsWith(join(f.root, ".context", "spacefast-deploy-")));
+  assert.ok(site.startsWith(join(f.root, ".scratch", "spacefast-deploy-")));
   assert.deepEqual(packaged, { tool: "package", args: [site,
     "--allow-referer", "https://app.example", "--allow-referer", "https://alias.example",
     "--allow-referer", "http://localhost:5401"] });
@@ -127,7 +127,7 @@ for (const mode of ["--dry-run", "--publish"]) {
     assert.deepEqual(trace.map(step => step.tool), ["sf", "build", "package", "sf"]);
     assert.deepEqual(trace[0].args, ["--version"]);
     const args = trace[3].args;
-    assert.ok(args[1].startsWith(join(f.root, ".context/spacefast-kandelo-build-")));
+    assert.ok(args[1].startsWith(join(f.root, ".scratch/spacefast-kandelo-build-")));
     assert.deepEqual(args, ["publish", args[1], "--prebuilt", "--space", "https://app.example", "--wait",
       ...(mode === "--dry-run" ? ["--dry-run"] : [])]);
   });

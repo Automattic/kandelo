@@ -1,0 +1,50 @@
+kind = "library"
+name = "rust-profiler-runtime"
+version = "1.97.0-nightly-2026-04-27"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = []
+
+# The exact LLVM submodule of the pinned Rust compiler. The Rust wrapper
+# crate comes from that same compiler's immutable rust-src component.
+[source]
+url = "https://github.com/rust-lang/llvm-project/archive/1cb4e3833c1919c2e6fb579a23ac0e2b22587b7e.tar.gz"
+sha256 = "de8712069787f4f2b306a5ff667cd18dcbdad75d9ccfab0ee9e23fde241c89f2"
+provider = "archive"
+
+[license]
+spdx = "MIT AND Apache-2.0 WITH LLVM-exception"
+url = "https://github.com/rust-lang/llvm-project/blob/1cb4e3833c1919c2e6fb579a23ac0e2b22587b7e/LICENSE.TXT"
+
+[build]
+script_path = "packages/registry/rust-profiler-runtime/build.sh"
+
+[outputs]
+libs = ["lib/libclang_rt.profile.a"]
+headers = []
+files = ["lib/rustlib/wasm32-unknown-kandelo-std/lib/libprofiler_builtins.rlib"]
+
+[[host_tools]]
+name = "rustc"
+version_constraint = ">=1.96"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "clang"
+version_constraint = ">=21.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "llvm-ar"
+version_constraint = ">=21.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "llvm-readobj"
+version_constraint = ">=21.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }

@@ -26,6 +26,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("kandelo
 
 [dependencies]
 sha2 = "0.10"
+wasm-artifact = { path = "../wasm-artifact" }
 
 [dev-dependencies]
 # The fork instrumenter is the reader of the code-hash section this driver

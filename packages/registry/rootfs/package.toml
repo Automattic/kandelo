@@ -3,6 +3,7 @@ name = "rootfs"
 version = "0.1.0"
 kernel_abi = 7
 depends_on = [
+  "toybox@0.8.15",
   "login@0.1.0",
   "sudo-lite@0.1.0",
   "sudo@1.9.17p2",

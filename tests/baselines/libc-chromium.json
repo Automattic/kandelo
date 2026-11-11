@@ -1,0 +1,17 @@
+{
+  "suite": "libc",
+  "host": "chromium",
+  "commit": "e4bca8639e4b6853080ca7f3a09b0e95488c9d50",
+  "date": "2026-10-30",
+  "command": [
+    "scripts/dev-shell.sh",
+    "bash",
+    "-c",
+    "KANDELO_BROWSER_TEST_RUNNER_PORT=5612 bash scripts/run-browser-libc-tests.sh"
+  ],
+  "exit_code": 0,
+  "source_log": "/Users/brandon/conductor/archived-contexts/kandelo/batched-follow-ups-for-main-correctness/main-validation-v1/browser-libc.log",
+  "source_log_sha256": "bb468c991f3350f3ba168bb2b816c6781cfb092ca9e7d00fe283a1e5b13956d7",
+  "source_lines": [397, 456, 496, 497, 503, 509, 540, 590, 594, 595, 599, 601, 602, 675, 688, 694, 695, 699, 704],
+  "excerpt": "libc-chromium.log"
+}

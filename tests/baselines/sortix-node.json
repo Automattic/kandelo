@@ -1,0 +1,18 @@
+{
+  "suite": "sortix",
+  "host": "node",
+  "commit": "e4bca8639e4b6853080ca7f3a09b0e95488c9d50",
+  "date": "2026-10-30",
+  "command": [
+    "scripts/dev-shell.sh",
+    "bash",
+    "scripts/run-sortix-tests.sh",
+    "--all"
+  ],
+  "exit_code": 1,
+  "source_log": "/Users/brandon/conductor/archived-contexts/kandelo/batched-follow-ups-for-main-correctness/main-validation-v1/node-sortix.log",
+  "source_log_sha256": "8e6f310ebf14d652b0d291b1d4ad37e73a41db23a485540e69e3741cd1828880",
+  "source_lines": [298, 299, 850, 851, 3103, 3104, 3107, 3108],
+  "excerpt": "sortix-node.log",
+  "note": "One runner incident: 1,357 timeouts and 19 XFAIL-MISMATCH results; stale per-test xtask checker rebuilds diagnosed in PR #1600. Examples only; not 1,376 established guest defects."
+}

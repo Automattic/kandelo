@@ -1,0 +1,26 @@
+kind = "program"
+name = "labwc-docs"
+version = "0.20.2"
+kernel_abi = 56
+depends_on = ["scdoc-source@1.11.3"]
+
+# Upstream manual pages for the `labwc` package (labwc, labnag and their configuration).
+# The source, SHA-256 and version are the `labwc` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/labwc/labwc/archive/refs/tags/0.20.2.tar.gz"
+sha256 = "fae023b6fe022f7057556707a17cdb2d98e0138c5dffaedaa1dade975699f9e8"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-only"
+url = "https://github.com/labwc/labwc/blob/0.20.2/LICENSE"
+
+[build]
+script_path = "packages/registry/labwc-docs/build-labwc-docs.sh"
+
+[[outputs]]
+name = "labwc-docs"
+wasm = "labwc-docs.zip"
+fork_instrumentation = "disabled"

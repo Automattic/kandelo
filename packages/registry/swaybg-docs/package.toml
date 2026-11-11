@@ -1,0 +1,26 @@
+kind = "program"
+name = "swaybg-docs"
+version = "1.2.1"
+kernel_abi = 56
+depends_on = ["scdoc-source@1.11.3"]
+
+# Upstream manual page for the `swaybg` package.
+# The source, SHA-256 and version are the `swaybg` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/swaywm/swaybg/releases/download/v1.2.1/swaybg-1.2.1.tar.gz"
+sha256 = "6af1fdf0e57b1cc5345febed786b761fea0e170943a82639f94cfaed7df84f8f"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/swaywm/swaybg/blob/v1.2.1/LICENSE"
+
+[build]
+script_path = "packages/registry/swaybg-docs/build-swaybg-docs.sh"
+
+[[outputs]]
+name = "swaybg-docs"
+wasm = "swaybg-docs.zip"
+fork_instrumentation = "disabled"

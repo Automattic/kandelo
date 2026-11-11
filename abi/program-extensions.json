@@ -1,0 +1,71 @@
+{
+  "extensions": [
+    {
+      "errors": {
+        "BUFFER_TOO_SMALL": -105,
+        "INVALID_ADDRESS": -14,
+        "INVALID_ARGUMENT": -22
+      },
+      "kind": "function",
+      "module": "kandelo.stack.v1",
+      "name": "__kandelo_stack_capture_v1",
+      "params": [
+        "pointer",
+        "i32",
+        "i32"
+      ],
+      "results": [
+        "i32"
+      ],
+      "wire": {
+        "COUNT_OFFSET": 8,
+        "FLAGS_OFFSET": 6,
+        "FLAG_MODULE_UNRESOLVED": 2,
+        "FLAG_TRUNCATED": 1,
+        "FRAME_COLUMN_OFFSET": 20,
+        "FRAME_FILE_LENGTH_OFFSET": 28,
+        "FRAME_FLAGS_OFFSET": 4,
+        "FRAME_HAS_NAME": 2,
+        "FRAME_HAS_PC": 1,
+        "FRAME_HAS_SOURCE": 4,
+        "FRAME_HEADER_BYTES": 32,
+        "FRAME_LINE_OFFSET": 16,
+        "FRAME_MODULE_KNOWN": 8,
+        "FRAME_NAME_LENGTH_OFFSET": 24,
+        "FRAME_PC_OFFSET": 8,
+        "HEADER_BYTES": 48,
+        "LENGTH_OFFSET": 12,
+        "MAGIC": 1263817547,
+        "MAX_FILE_BYTES": 16384,
+        "MAX_FRAMES": 128,
+        "MAX_NAME_BYTES": 4096,
+        "MAX_PACKET_BYTES": 65536,
+        "MODULE_HASH_OFFSET": 16,
+        "UNKNOWN_FUNCTION": 4294967295,
+        "VERSION": 1,
+        "VERSION_OFFSET": 4
+      }
+    },
+    {
+      "errors": {
+        "INVALID_ADDRESS": -14,
+        "INVALID_ARGUMENT": -22,
+        "PERMISSION_DENIED": -1
+      },
+      "kind": "function",
+      "module": "kandelo.klog.v1",
+      "name": "__kandelo_klogctl_v1",
+      "params": [
+        "pointer",
+        "i32",
+        "i32"
+      ],
+      "results": [
+        "i32"
+      ]
+    }
+  ],
+  "format": 1,
+  "requirements": "versioned Wasm import namespace and exact signature",
+  "reserved_module_prefix": "kandelo."
+}

@@ -18,6 +18,7 @@ spdx = "NGPL"
 url = "https://nethack.org/common/license.html"
 
 [build]
+toolchain = "none"
 script_path = "packages/registry/nethack-docs/build-nethack-docs.sh"
 
 [[outputs]]

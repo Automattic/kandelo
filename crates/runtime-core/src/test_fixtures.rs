@@ -101,3 +101,58 @@ fn build_tiny_vfs(declare_deferred: bool) -> Vec<u8> {
         .expect("wrap VFSI container")
     }
 }
+
+/// A [`HostIO`](crate::process::HostIO) that can tell the time and nothing
+/// else: the host a kernel-log test needs, because every kernel-log record is
+/// stamped from `host_clock_gettime(CLOCK_MONOTONIC)`.
+///
+/// `monotonic` is what `CLOCK_MONOTONIC` reads (seconds, nanoseconds), or the
+/// errno the clock fails with. `host_close` succeeds, because a dying process
+/// closes its descriptors; every other host operation is `unimplemented!`,
+/// so a test that reaches the host for anything but the clock fails loudly
+/// instead of seeing an invented answer.
+pub(crate) struct ClockHost {
+    pub monotonic: Result<(i64, i64), wasm_posix_shared::Errno>,
+    /// How many times the clock was read, so a test can tell that a site
+    /// consulted the host rather than skipping the timestamp.
+    pub clock_reads: usize,
+}
+
+impl ClockHost {
+    pub(crate) fn at(sec: i64, nsec: i64) -> Self {
+        ClockHost { monotonic: Ok((sec, nsec)), clock_reads: 0 }
+    }
+}
+
+impl crate::process::HostIO for ClockHost {
+    fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), wasm_posix_shared::Errno> {
+        assert_eq!(clock_id, wasm_posix_shared::clock::CLOCK_MONOTONIC, "the kernel log reads the monotonic clock");
+        self.clock_reads += 1;
+        self.monotonic
+    }
+    // A process that dies closes its standard descriptors; closing is the one
+    // other operation a log test has no reason to forbid.
+    fn host_close(&mut self, _: i64) -> Result<(), wasm_posix_shared::Errno> { Ok(()) }
+    fn host_read(&mut self, _: i64, _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_write(&mut self, _: i64, _: &[u8]) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_seek(&mut self, _: i64, _: i64, _: u32) -> Result<i64, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_fstat(&mut self, _: i64) -> Result<wasm_posix_shared::WasmStat, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_readdir(&mut self, _: i64, _: &mut [u8]) -> Result<Option<(u64, u32, usize)>, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_ftruncate(&mut self, _: i64, _: i64) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_fsync(&mut self, _: i64) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_fchmod(&mut self, _: i64, _: u32) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_fchown(&mut self, _: i64, _: u32, _: u32) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_set_alarm(&mut self, _: u32) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_set_posix_timer(&mut self, _: i32, _: i32, _: i64, _: i64) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn bind_framebuffer(&mut self, _: i32, _: usize, _: usize, _: u32, _: u32, _: u32, _: u32) { unimplemented!() }
+    fn unbind_framebuffer(&mut self, _: i32) { unimplemented!() }
+    fn fb_write(&mut self, _: i32, _: usize, _: &[u8]) { unimplemented!() }
+    fn host_getrandom(&mut self, _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_connect(&mut self, _: i32, _: &[u8], _: u16) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_connect_status(&mut self, _: i32) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_send(&mut self, _: i32, _: &[u8], _: u32) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_recv(&mut self, _: i32, _: u32, _: u32, _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_close(&mut self, _: i32) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_net_listen(&mut self, _: i32, _: u16, _: &[u8; 4]) -> Result<(), wasm_posix_shared::Errno> { unimplemented!() }
+    fn host_getaddrinfo(&mut self, _: &[u8], _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> { unimplemented!() }
+}

@@ -70,9 +70,14 @@ export async function buildWebStackImage(output: string): Promise<void> {
   fs.unlink("/etc/dinit.d/nginx");
   fs.unlink("/usr/share/kandelo/sessions/nginx-php-vfs.json");
   installImageSessions(fs, "web-stack-vfs");
-  installServiceActivities(fs, serviceDeclarations("web-stack-vfs"), new Uint8Array(readFileSync(resolveVfsArtifact("programs/service-activity-control.wasm", "service-activity-tools"))));
+  installServiceActivities(fs, serviceDeclarations("web-stack-vfs"), new Uint8Array(readFileSync(resolveVfsArtifact("programs/service-activity-control.wasm", "service-activity-tools"))), "", syslogdBytes());
   writeTrackedDemoConfig(fs, "packages/registry/web-stack-vfs/demo.json");
   await saveShellDerivedVfsImage(fs, output);
+}
+
+/** The syslog daemon these images supervise; staged exactly, never ambient. */
+function syslogdBytes(): Uint8Array {
+  return new Uint8Array(readFileSync(resolveVfsArtifact("programs/syslogd.wasm", "sysklogd")));
 }
 
 export async function buildWordPressFamilyImage(output: string): Promise<void> {
@@ -163,7 +168,7 @@ if (strpos($uri, '/wp-content/') === 0) {
   fs.unlink("/etc/dinit.d/nginx");
   fs.unlink("/usr/share/kandelo/sessions/lamp.json");
   installImageSessions(fs, "wordpress-family-vfs");
-  installServiceActivities(fs, serviceDeclarations("wordpress-family-vfs"), new Uint8Array(readFileSync(resolveVfsArtifact("programs/service-activity-control.wasm", "service-activity-tools"))), 'backend=${target#wordpress-}; /usr/bin/kandelo-wordpress-select "$backend"');
+  installServiceActivities(fs, serviceDeclarations("wordpress-family-vfs"), new Uint8Array(readFileSync(resolveVfsArtifact("programs/service-activity-control.wasm", "service-activity-tools"))), 'backend=${target#wordpress-}; /usr/bin/kandelo-wordpress-select "$backend"', syslogdBytes());
   writeTrackedDemoConfig(fs, "packages/registry/wordpress-family-vfs/demo.json");
   await saveShellDerivedVfsImage(fs, output);
 }

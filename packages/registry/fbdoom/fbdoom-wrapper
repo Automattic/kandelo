@@ -1,0 +1,20 @@
+#!/bin/sh
+# fbDOOM's launch wrapper, installed as /usr/bin/fbdoom; the
+# engine is the lazy /usr/libexec/fbdoom. Doom keeps its settings in the user's
+# config file ($HOME/.fdoom.tar/default.cfg, read at startup and saved again
+# when Doom quits; fbdoom's 0009 patch restores both) and has no system-wide
+# one. As a distribution's skeleton files would, the wrapper writes
+# this machine's defaults into a missing config on first launch:
+#
+# - screenblocks 10: the full-width view with the status bar. Doom's own
+#   default, 9, insets the view inside a tiled border; 11 hides the status
+#   bar. Doom's menu (Options, Screen Size) still changes it, and the choice
+#   is saved like any other setting.
+#
+# Keys missing from the file keep Doom's defaults, and an existing config is
+# never touched. exec keeps the process the display's owner, so the machine's
+# dock and "Load WAD" signal Doom itself.
+if [ -n "${HOME:-}" ] && [ ! -e "$HOME/.fdoom.tar/default.cfg" ]; then
+    mkdir -p "$HOME/.fdoom.tar" && printf 'screenblocks 10\n' > "$HOME/.fdoom.tar/default.cfg"
+fi
+exec /usr/libexec/fbdoom "$@"

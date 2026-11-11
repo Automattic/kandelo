@@ -1,0 +1,152 @@
+# Upstream assumption boundary: detect headers, not an operating system
+#
+# toybox's lib/portability.c and lib/portability.h decide what a platform can
+# do by asking which operating system it is. Four blocks are gated on
+# `defined(__linux__)` even though what each one actually needs is a header
+# that Kandelo's sysroot provides: <mntent.h> for xgetmountlist(),
+# <sys/inotify.h> for the xnotify_* family, <sys/xattr.h> for the xattr_*
+# family, and <sys/statfs.h> for fs_type_name()'s struct statfs. Three more --
+# dev_minor(), dev_major() and dev_makedev() -- open-code the Linux dev_t bit
+# layout rather than calling the major()/minor()/makedev() macros the libc
+# ships in <sys/sysmacros.h>. In every case the `#else` branch is a bare
+# `#error`, so the file does not compile at all on a platform the author did
+# not enumerate, and lib/*.c is compiled into every applet whether or not the
+# applet calls any of these functions.
+#
+# Kandelo is not a Linux target and must never define __linux__ (see
+# sdk/config.site and the package contract in CLAUDE.md), so this patch
+# changes the questions rather than the answers: each block is gated on
+# `__has_include` of the header it needs. toybox already uses that idiom in
+# this same file (for <sys/random.h>), so this is the project's own
+# convention, and the change is not specific to Kandelo -- any libc that
+# ships these headers now compiles, and the dev_t helpers become correct by
+# construction instead of by a copied bit layout.
+#
+# Kandelo reaches the same code paths Linux does because it genuinely provides
+# the same interfaces: /proc/mounts (crates/runtime-core/src/procfs.rs) behind
+# musl's getmntent(), and sysinfo() (sys_sysinfo in
+# crates/runtime-core/src/syscalls.rs). Where Kandelo's support is incomplete,
+# the call still fails at runtime through its own honest errno; nothing here
+# converts a missing feature into a false success.
+#
+# Upstream: toybox 0.8.15 (https://landley.net/toybox/downloads/).
+diff --git a/lib/portability.c b/lib/portability.c
+index b048dca..40c04eb 100644
+--- a/lib/portability.c
++++ b/lib/portability.c
+@@ -6,6 +6,10 @@
+ 
+ #include "toys.h"
+ 
++#if __has_include(<sys/sysmacros.h>)
++#include <sys/sysmacros.h>
++#endif
++
+ // We can't fork() on nommu systems, and vfork() requires an exec() or exit()
+ // before resuming the parent (because they share a heap until then). And no,
+ // we can't implement our own clone() call that does the equivalent of fork()
+@@ -93,7 +97,7 @@ struct mtab_list *xgetmountlist(char *path)
+   return mtlist;
+ }
+ 
+-#elif defined(__linux__)
++#elif __has_include(<mntent.h>)
+ 
+ #include <mntent.h>
+ 
+@@ -217,7 +221,7 @@ int xnotify_wait(struct xnotify *not, char **path)
+   }
+ }
+ 
+-#elif defined(__linux__)
++#elif __has_include(<sys/inotify.h>)
+ 
+ #include <sys/inotify.h>
+ 
+@@ -315,7 +319,7 @@ ssize_t xattr_fset(int fd, const char* name,
+   return fsetxattr(fd, name, value, size, 0, flags);
+ }
+ 
+-#elif defined(__linux__)
++#elif __has_include(<sys/xattr.h>)
+ 
+ ssize_t xattr_get(const char *path, const char *name, void *value, size_t size)
+ {
+@@ -517,7 +521,9 @@ char *num_to_sig(int sig)
+ 
+ int dev_minor(int dev)
+ {
+-#if defined(__linux__)
++#if __has_include(<sys/sysmacros.h>)
++  return minor(dev);
++#elif defined(__linux__)
+   return ((dev&0xfff00000)>>12)|(dev&0xff);
+ #elif defined(__APPLE__)
+   return dev&0xffffff;
+@@ -531,7 +537,9 @@ int dev_minor(int dev)
+ 
+ int dev_major(int dev)
+ {
+-#if defined(__linux__)
++#if __has_include(<sys/sysmacros.h>)
++  return major(dev);
++#elif defined(__linux__)
+   return (dev&0xfff00)>>8;
+ #elif defined(__APPLE__)
+   return (dev>>24)&0xff;
+@@ -545,7 +553,9 @@ int dev_major(int dev)
+ 
+ int dev_makedev(int major, int minor)
+ {
+-#if defined(__linux__)
++#if __has_include(<sys/sysmacros.h>)
++  return makedev(major, minor);
++#elif defined(__linux__)
+   return (minor&0xff)|((major&0xfff)<<8)|((minor&0xfff00)<<12);
+ #elif defined(__APPLE__)
+   return (minor&0xffffff)|((major&0xff)<<24);
+@@ -563,7 +573,7 @@ char *fs_type_name(struct statfs *statfs)
+   // macOS has an `f_type` field, but assigns values dynamically as filesystems
+   // are registered. They do give you the name directly though, so use that.
+   return statfs->f_fstypename;
+-#elif defined(__linux__)
++#elif __has_include(<sys/statfs.h>)
+   char *s = NULL;
+   struct {unsigned num; char *name;} nn[] = {
+     {0xADF5, "adfs"}, {0xADFF, "affs"}, {0x5346414F, "afs"}, {0x187, "autofs"},
+diff --git a/lib/portability.h b/lib/portability.h
+index fa497c1..097bf10 100644
+--- a/lib/portability.h
++++ b/lib/portability.h
+@@ -172,9 +172,13 @@ void *memmem(const void *haystack, size_t haystack_length,
+ 
+ // Linux headers not listed by POSIX or LSB
+ #include <sys/mount.h>
+-#ifdef __linux__
++#if __has_include(<sys/statfs.h>)
+ #include <sys/statfs.h>
++#endif
++#if __has_include(<sys/swap.h>)
+ #include <sys/swap.h>
++#endif
++#if __has_include(<sys/sysinfo.h>)
+ #include <sys/sysinfo.h>
+ #endif
+ 
+@@ -189,14 +193,14 @@ void *memmem(const void *haystack, size_t haystack_length,
+ #endif
+ #endif
+ 
+-#ifdef __linux__
++#if __has_include(<sys/personality.h>)
+ #include <sys/personality.h>
+ #else
+ #define PER_LINUX32 0
+ int personality(int);
+ #endif
+ 
+-#if defined(__APPLE__) || defined(__linux__)
++#if defined(__APPLE__) || __has_include(<sys/xattr.h>)
+ // Linux and macOS has both have getxattr and friends in <sys/xattr.h>, but
+ // they aren't compatible.
+ #include <sys/xattr.h>

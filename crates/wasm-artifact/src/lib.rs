@@ -42,6 +42,7 @@ pub mod facts;
 pub mod original_program;
 pub mod policy;
 pub mod policy_surface;
+pub mod program_extensions;
 
 pub use facts::{
     detect_pointer_width, is_wasm_module, read_artifact_facts, read_custom_section, read_heap_base,

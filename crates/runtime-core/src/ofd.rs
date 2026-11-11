@@ -405,7 +405,7 @@ pub struct PrimeBoState {
 
 /// `host_handle` sentinel for prime-bo fds. Disjoint from every other
 /// negative sentinel space by construction, not by call-site convention:
-/// the `VirtualDevice` range (-1..=-12, so the fd is never routed to a
+/// the `VirtualDevice` range (-1..=-14, so the fd is never routed to a
 /// render or card ioctl path), `PROCFS_DIR_HANDLE` (-150),
 /// `DEVFS_DIR_HANDLE` (-160), `TMPFS_DIR_SENTINEL` (-170),
 /// `ROOTFS_DIR_SENTINEL` (-180), `SYSFS_DIR_HANDLE` (-190), and procfs
@@ -1047,7 +1047,8 @@ pub struct OpenFileDesc {
     pub dir_host_handle: i64,
     /// Synthetic "." / ".." state for getdents64: 0 = emit ".", 1 = emit "..", 2 = host entries
     pub dir_synth_state: u8,
-    /// Cumulative entry count across getdents64 calls — used as d_off cookie for seekdir.
+    /// Opaque next-record cookie for getdents64/seekdir. Kernel-backed trees
+    /// retain sparse creation cookies when earlier directory entries disappear.
     pub dir_entry_offset: i64,
     /// Shared-position generation represented by this process-local iterator.
     pub dir_position_generation: u64,

@@ -47,7 +47,7 @@ The script builds at `/` with `/cors-proxy?url=` and `/signalling`, packages
 only the generated static directory, and automatically approves the selected
 origin. Repeat `--allow-referer` for additional approved app origins. The
 policy uses exact origins, not all Spacefast subdomains. The generated bundle
-and temporary static output live under unique gitignored `.context` paths.
+and temporary static output live under unique gitignored `.scratch` paths.
 Never publish the repository, tests, keys, `.env` files or `.spacefast` state.
 
 For a standalone proxy, use the service README's

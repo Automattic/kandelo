@@ -1,0 +1,38 @@
+#!/bin/sh
+# fbDOOM's machine command, /usr/bin/doom-launch: DOOM with the user's
+# WAD when one has been sent to the machine, else the shareware one, under
+# the supervisor below. The doom WAD handler writes the user's WAD and sends
+# SIGHUP, so the next DOOM plays it.
+#
+# The supervise function below is a copy of the shell's shared supervisor
+# (SUPERVISE_FUNCTION in images/vfs/scripts/build-source-rootfs-shell-image.ts,
+# which documents it); a test keeps the copies identical.
+USER_WAD=/var/games/doom/user.wad
+supervise() {
+    pidfile="$1"
+    shift
+    exec 3<&0
+    echo $$ > "$pidfile"
+    restart=0
+    trap 'restart=1; kill -TERM "$engine" 2>/dev/null' HUP
+    trap 'kill -TERM "$engine" 2>/dev/null; wait "$engine"; rm -f "$pidfile"; exit 130' INT TERM
+    while :; do
+        restart=0
+        start_engine "$@"
+        status=0
+        wait "$engine" || status=$?
+        # A trapped signal ends the wait early; wait for the engine itself.
+        while kill -0 "$engine" 2>/dev/null; do wait "$engine" || status=$?; done
+        [ "$restart" = 1 ] || break
+    done
+    rm -f "$pidfile"
+    exit "$status"
+}
+
+start_engine() {
+    wad=/usr/share/doom/doom1.wad
+    [ -f "$USER_WAD" ] && wad="$USER_WAD"
+    /usr/bin/fbdoom -iwad "$wad" "$@" <&3 3<&- &
+    engine=$!
+}
+supervise /run/user/1000/doom-launch.pid "$@"
