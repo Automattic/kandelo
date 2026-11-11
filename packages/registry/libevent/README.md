@@ -7,7 +7,7 @@ integration and upstream sample programs are disabled. DNS, HTTP, RPC,
 buffers, and event-loop sources are compiled; this does not establish that
 every upstream subsystem passes its tests on Kandelo.
 
-[Tmux 3.8](tmux.md) is a wasm32 consumer of this package. It preserves
+[Tmux 3.8](../tmux/README.md) is a wasm32 consumer of this package. It preserves
 upstream's portable polling selection rather than forcing epoll.
 
 Libevent discovers epoll through the SDK's headers and link probes. The
@@ -67,8 +67,8 @@ existing export signature. Memory pointer width does not determine table
 index width. The regression test validates all four width combinations;
 this is a general build-tool fix, without a libevent-specific adaptation.
 
-See [fork instrumentation](fork-instrumentation.md) and the
-[epoll contract](epoll.md) for the platform behavior and remaining limits.
+See [fork instrumentation](../../../docs/fork-instrumentation.md) and the
+[epoll contract](../../../docs/epoll.md) for the platform behavior and remaining limits.
 
 ## Validation — 2026-10-22
 
@@ -105,7 +105,7 @@ including the new width regression. The final workspace Rust run passed
 2,937 tests; package tooling passed 717 unit and six integration tests;
 the ABI check passed. Exact jobs,
 artifact hashes, setup failures, and the additional workspace check are in
-the [epoll validation record](plans/2026-10-20-epoll-validation.md#libevent-integration--2026-10-22).
+the [epoll validation record](../../../docs/plans/2026-10-20-epoll-validation.md#libevent-integration--2026-10-22).
 
 The complete libevent suite, downstream applications, and native Safari
 were not run. Optional TLS integration is not built. These results prove

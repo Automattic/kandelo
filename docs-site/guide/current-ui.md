@@ -136,7 +136,7 @@ Doom, Quake and Freeciv offer game activities in the network panel. Doom's
 waiting room shows joined players; the host can press Space to start early
 or Esc to quit. Quake's own multiplayer menus can also discover session
 peers. Freeciv's launcher uses a direct TCP connection to the session host
-rather than depending on discovery. See [Freeciv multiplayer](https://github.com/Automattic/kandelo/blob/main/docs/freeciv.md#multiplayer).
+rather than depending on discovery. See [Freeciv multiplayer](https://github.com/Automattic/kandelo/blob/main/packages/registry/freeciv/README.md#multiplayer).
 These are LAN links, not arbitrary internet UDP access. The default connection setup
 uses STUN without a TURN relay, so some network layouts cannot connect.
 Current guest-session validation covers Chromium; Firefox/WebKit guest

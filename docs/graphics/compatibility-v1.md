@@ -28387,7 +28387,7 @@ unqualified. Broad performance neutrality, complete R1, native Safari and
 full graphics/POSIX conformance are not claimed.
 
 Follow-up work includes Cage text sharpness relative to Sway, the portable
-[Freeciv window-size correction](../freeciv.md#known-wayland-window-size-limitation),
+[Freeciv window-size correction](../../packages/registry/freeciv/README.md#known-wayland-window-size-limitation),
 and separate live Sway resize coverage. The current Cage profile uses one
 guest pixel per CSS pixel; its HiDPI tradeoff is documented in
 [browser support](../browser-support.md). The separate graphics campaign plan

@@ -2,7 +2,7 @@
 
 This records the final integration with main after the earlier
 [epoll validation history](2026-10-20-epoll-validation.md),
-[libevent comparison](../libevent.md), and [tmux acceptance](../tmux.md).
+[libevent comparison](../../packages/registry/libevent/README.md), and [tmux acceptance](../../packages/registry/tmux/README.md).
 Dates in the logs are UTC; work began on October 22 in the local timezone.
 
 ## Source and build provenance

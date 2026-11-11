@@ -101,7 +101,7 @@ starts the host server/client in one action. Guests open the activity link,
 choose their own player name, and join. This also works from the bare shell;
 the declared KMS display is prepared before launch. Use **Already running**
 only when a multiplayer server is already listening on this hosting machine.
-Configure the game in Freeciv’s native lobby. See [package sessions](package-sessions.md).
+Configure the game in Freeciv’s native lobby. See [package sessions](../../../docs/package-sessions.md).
 
 The launcher can also be run by hand in a plain network session:
 
@@ -137,7 +137,7 @@ Browser clients connect to servers on Kandelo peer machines; public native
 Freeciv servers require outbound raw TCP, which the browser host does not
 provide.
 The existing network-session STUN/TURN and browser limitations still
-apply; see [browser networking](browser-support.md#purpose-checked-browser-peer-connections).
+apply; see [browser networking](../../../docs/browser-support.md#purpose-checked-browser-peer-connections).
 
 ## Playing with the SDL2 controls
 
@@ -339,7 +339,7 @@ standalone native Linux KMSDRM reproduction with an absolute evdev device;
 that native reproduction has not been run. Include endpoint and
 out-of-range sample regressions, and distinguish this path from relative
 mice and desktop Wayland/X11 input. The local shared correction is
-[`0007-scale-inclusive-absolute-axes.patch`](../packages/registry/sdl2/patches/0007-scale-inclusive-absolute-axes.patch),
+[`0007-scale-inclusive-absolute-axes.patch`](../sdl2/patches/0007-scale-inclusive-absolute-axes.patch),
 with coverage in the SDL package runtime test and browser cursor-edge
 tests. Retire the local patch once a verified upstream release supplies
 the fix; preserve the same bounds in local overflow recovery.
@@ -399,7 +399,7 @@ Shared host graphics code also restores framebuffer bindings after an EGL
 surface is recreated. Shared dock code waits for a new command's complete
 first line before treating shell output as a return. The kernel's recursive
 `mkdir` behavior checks an occupied final name before parent write permission,
-while preserving ancestor search checks. See [POSIX status](posix-status.md).
+while preserving ancestor search checks. See [POSIX status](../../../docs/posix-status.md).
 
 ## Validation boundaries
 
