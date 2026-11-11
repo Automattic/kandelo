@@ -154,6 +154,14 @@ async function paintedBandHeight(out: Output, edge: "top" | "bottom", color: Rgb
     const boundary = rows.findIndex((background, row) => row > first && background < 0.5);
     expect(boundary, `${edge} band has a measured nonempty boundary`).toBeGreaterThan(first);
     measured = boundary * height / rows.length;
+    // A one-pixel client border can match before the lazy Swaybar paints.
+    // Observe the same readable geometry required below before returning;
+    // a matching color alone does not establish the panel/title's repaint.
+    const box = (await out.canvas.boundingBox())!;
+    const cssHeight = measured * box.height / out.height;
+    expect(cssHeight, `${edge} band reaches its readable CSS height`)
+      .toBeGreaterThanOrEqual(edge === "bottom" ? 30 : 18);
+    expect(cssHeight).toBeLessThan(edge === "bottom" ? 50 : 32);
   }).toPass({ timeout: 120_000, intervals: [100, 500, 1_000] });
   return measured;
 }

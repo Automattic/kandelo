@@ -1,5 +1,23 @@
 # Cage reliability follow-up — 2026-11-09
 
+Status (2026-11-11): PR #1678 integrates pinned `develop` commit
+`200d7bbfacdb`; the current candidate is `db4a24c5ea`. Its normal canonical
+build completes all 278 nodes. The integrated runtime passes the full
+18-case browser memory gate, prepared-product host checks 257/257, and
+actual Steel Sky gameplay under Cage and Sway on all three engines (6/6).
+The desktop run is 118/120, including Cage 15/15 and Sway 12/12; its two
+archive-import failures also reproduce on pinned develop. The official ABI
+check passes. Matched performance comparisons are still in progress. The PR remains draft; no merge is authorized.
+
+[Current normal Cage preview](http://127.0.0.1:56525/?vfs=%2F__kandelo_source_only_assets__%2Fbc5ec7b4185daa82fee26cdd5534cb4f3111ec738899f6286f734575c9a56780%2Fshell.vfs.zst&profile=cage).
+The [integration record](#integration-with-develop--2026-11-11) below separates
+current results from retained earlier failures. The remaining text-sharpness
+gap relative to Sway is the maintainer-approved visual follow-up. Full R1,
+native-feel and native Safari acceptance are not claimed; B2–B6/C1–C3 remain
+paused.
+
+## Frozen validation before integration
+
 Status (2026-11-10 late evening): focused repairs verified on frozen runtime
 `8ddcdcedc7`; integration with the current PR base remains pending. Startup and terminal
 handoff repairs, shared graphics-buffer comparison/copy corrections, and
@@ -1839,3 +1857,169 @@ The existing reviewed preview and its identities will be preserved before
 any source transition. Integration results must be recorded separately;
 none of the completed or failed frozen-runtime runs is reclassified.
 No PR merge or promotion to main/develop is authorized by this checkpoint.
+
+
+## Integration with develop — 2026-11-11
+
+The maintainer retargeted PR #1678 to `develop`. Feature commit
+`b718daade0ca90c893c4a48d30098dba5486795d` integrates pinned destination
+`200d7bbfacdbab91abcadca270689e813060f2c2` and retains both histories.
+The only merge conflict was the shell build revision. Normal products were prepared at
+`db4a24c5ea245fc1edbf67063f376656c523680c` (shell revision 97,
+plus test-only verified-image fixture preparation);
+runtime sources remain unchanged from the integration commit. The destination includes the updated declared
+Node 24.22.1 environment and SDK inputs. Earlier runtime `8ddcdcedc7`
+results remain frozen evidence and are not combined-tree acceptance.
+
+Fresh source checks run through `scripts/dev-shell.sh` on the integrated
+head, without the guest-fixture global setup:
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Graphics source selection, `vitest.graphics.config.ts --maxWorkers=1` | 2,357/2,357 across 93 files; no skips | `develop-graphics-source.log` |
+| Storage/allocation/fork ownership and session/demo source cases | 365/365 across five files; no skips | `develop-extra-source.log` |
+| Fork replay gate/parity and native byte snapshot source cases | 38/38 | `develop-focused-source-only.log` |
+| Native wlterm VT100 cases under UBSan | 1/1 | `develop-wlterm-unit.log` |
+| Actual Bun 1.3.3 byte baseline | Arrays; exact changed bytes through real growth | `develop-budget-bun.log` |
+| Vitest evidence registry | 825 files agree | `develop-evidence-classes.log` |
+| Preserved executable cohorts | All 18 hashes unchanged | `develop-preserved-cohorts.json` |
+| Existing preview HTTP artifacts | All 10 hashes match across five previews | `develop-preserved-preview-identities.json` |
+
+The source-validation job `cage-develop-source-validation-1111-011337-d57b`
+and the native terminal test both finish with exit 0. Nix source provisioning
+precedes their execution; the download delay is not a failed guest test.
+The original default-config source launch and its intentional exit 143
+remain separately retained. No tests ran in that mistaken provisioning
+launch; the corrected source checks use the declared source-only setup.
+
+New normal and browser results on this integrated runtime:
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Full canonical graph and host TypeScript build | 278/278; final job 63d9 exit 0 | `develop-final-budget-normal-outcome.json`, raw gzip |
+| Normal `./run.sh browser` entry | 1/1; visible GLES 1920×972, shifted input/repaint, terminal exit 0; screenshot viewed | `develop-normal-entry-results.json`, `develop-normal-entry-cage.png` |
+| Actual HTTP artifacts | Shell 1,107,317 B, SHA bc5ec7b4185daa82fee26cdd5534cb4f3111ec738899f6286f734575c9a56780; kernel 2,972,799 B SHA 26a87c7a3e23e0f3626ae5a0ebfcdbd1d7e1be6e768cd5ed37267ce626728324 | `develop-normal-preview-identities.json` |
+| Budgeted byte publication | 3/3; 7,464,963 B, 32 changed runs, exact publication through real growth; native capability control also positive on WebKit | `develop-independent-browser-results.json` (three helper passes) |
+| Actual npm manual aliases | 3/3 engines, corrected explicit server config | `develop-man-path-corrected-results.json` |
+| Prepared-product host selection | 257/257 across 26 files, no skips/errors; original 255/257 retained | `develop-prepared-host-fixture-results.json` |
+| Native fork | 16/16 across wasm32/64 | `develop-process-conformance-inputs/` |
+| POSIX kill | Node 5/5 and Chromium 5/5; no skips/errors/timeouts | `develop-process-conformance-inputs/` |
+| Full memory gate preliminaries | Source 300/300, Node teardown 3/3, Bun 7/7; browser 18/18, four mixed cycles EACH engine, zero skips/retries | `develop-memory-results.json`, `develop-full-memory-inputs/` |
+| Final preservation recheck | 18 cohort hashes and 12 HTTP artifacts across six previews match | `develop-final-preserved-preview-identities.json` |
+| Actual Steel Sky via scummvm-play | 6/6 Cage/Sway × three engines, actual game process, visible city + menu; two menu PNGs viewed | `develop-steel-sky-intro-skip-results.json` |
+| Frozen program compatibility | 6/6 across all engines, memory and OPFS | `develop-program-compatibility-results.json` |
+| Package installer/composer regressions | 45/45, including rejection of a forbidden deferred symlink before writing output | `develop-layout-owner-tests.log` |
+
+Original failures remain retained. The first normal graph failed its compressed
+budget at 1,113,062 B (raw eager 2,384,338 B and 146 files were within caps).
+The next graph passed shell admission but five downstream image builders
+rejected npm manual aliases under `/usr/local/lib/npm/man`. The fix installs
+those lazy relative aliases alongside npm at `/usr/lib/npm/man`, adds the
+same early filesystem-layout assertion to the direct shell serializer, and
+updates consumers/tests/revisions. All 278 nodes then pass. The measured
+shell shrank to 1,107,317 B, so its cap was lowered to 1,110,000 B; the final
+278-node run also passes. No raw-eager or file cap was raised.
+
+A separate test-configuration mistake sent three manual cases to an unserved
+default port 62127; all stopped before boot. Their original report, media,
+logs and inputs are retained. The corrected config explicitly targets 56525
+and passes 3/3 without retries. It is not an unchanged retry or a guest fix.
+
+The first integrated full desktop run finishes **119/120**, with no skips
+or retries and Cage 15/15. Its sole failure is Firefox Sway 1x: the
+first-paint helper accepts a matching one-pixel window border before lazy
+Swaybar paints, then the caller checks the minimum 30 CSS-pixel height too
+early. The retained trace shows the real painted bar and workspace button
+2.94 seconds later in the same run. This helper exactly matches pinned
+develop. The test now observes its existing bar/title height bounds inside
+the existing 120-second paint loop. Colors, edge/boundary checks, bounds
+and deadlines stay unchanged; there is no product runtime change.
+
+The complete run after that test-only correction finishes **118/120**:
+Cage **15/15**, Sway **12/12**, no skips, retries or flaky results. The two
+remaining failures are Chromium and WebKit archive import, reporting
+`XDG_RUNTIME_DIR` invalid/unset and SDL video initialization failure while
+ScummVM detects an uploaded archive. The exact three-engine archive control
+on the current pinned-develop runtime finishes **1/3**, with the same two
+errors and a Firefox pass. The candidate's first run passed these archive
+cases, so the current evidence is intermittent, not a resolved defect or
+a green desktop inventory. Original and corrected-run logs, inputs, JSON,
+all failure media and actual baseline-control results remain retained.
+
+The test correction was exercised as db4a plus the retained modified Sway
+spec, SHA-256 `47a62e62b2dec5d28a74679ecebc3fdb7217c7de981d399272418456f0bdaf14`.
+The receipt keeps that original run HEAD and dirty input rather than
+retrospectively assigning a later commit. Evidence: `develop-desktop-results.json`,
+`develop-desktop-painted-band-results.json`, `develop-archive-control-results.json`,
+`develop-full-desktop-inputs/`, `develop-painted-band-desktop-inputs/`,
+`develop-current-archive-control-inputs/` and their failure directories.
+
+The official `scripts/check-abi-version.sh` passes with explicit base
+`200d7bbfac`: native layout guards, newly built kernel export snapshot,
+supported-program baseline and version consistency. Program ABI 56 and
+host adapter 6 remain unchanged. Source/ABI snapshot checks, compatibility
+execution and preserved-cohort hashes provide distinct evidence; the
+snapshot alone is not semantic conformance.
+
+Both normal benchmark-input preparations complete: candidate 716a and
+control 840a, with each checkout's own SDK, kernel, programs, database VFS
+outputs, WordPress setup and host distribution. The control's literal
+`./run.sh browser` server runs on 56526. Actual served shell is 1,107,329 B,
+SHA `01693a58138d6ab30342cc111a8f964366dab3ecc6855bdb8733b24f79f1ec01`;
+its kernel has the same SHA `26a87c7a3e23e0f3626ae5a0ebfcdbd1d7e1be6e768cd5ed37267ce626728324`
+as the candidate. These HTTP identities match its own normal outputs.
+An initial pre-navigation identity probe failed byte equality on HTTP 200;
+its body/headers were not retained. After real page imports resolved, a
+separate diagnostic and the post-navigation identity check match both
+objects. Vite registers these public paths when virtual modules load;
+early registration is a suspected explanation, not a retained observation
+of the first response. Both probe outcomes remain recorded separately.
+
+Matched timing comparisons and cursor observations remain pending. The PR
+stays draft while these measurements are collected. No complete R1,
+native-display latency or native Safari acceptance is claimed.
+
+The destination comparison checkout is detached at
+`6e9d97ea2ba26856ece3e978e49bc799cbe74dee`: pinned `200d7bbfac` plus eight
+build-only evidence-classification rows and the same measured budget/manual
+layout preparation and the same test-only fixture preparation. Its runtime, libc/SDK and benchmark sources still
+exactly match the pinned target. It has its own
+initialized submodules and completed its own normal SDK/kernel and
+program/image build paths. Its case-insensitive Sortix checkout collisions are
+recorded; Sortix is outside the selected benchmark inventory. No runtime
+patch is applied to the baseline.
+
+Benchmark preflight: the harness lists ten suite modules and already disables
+`erlang-ring` as unstable. The nine enabled suites are selected unchanged;
+this follow-up introduces no new skip. Private clock-only diagnostics are
+prepared as separate Node and isolated Chromium processes/contexts before
+interpreting small timing differences. They are not benchmark rounds.
+
+The benchmark source is unchanged from pinned develop (git diff checked).
+The benchmark constructors do not set forkCopy; both hosts inherit the
+confirmed shared allocator default, sparse.
+
+Preflight also verifies no source differences against pinned develop in libc,
+SDK, Cargo/toolchain/Nix definitions, program ABI or the ABI snapshot. The
+control will still run its own normal SDK/product build; this source check
+does not substitute for artifact identities or compatibility execution.
+
+The original prepared host selection finished 255/257: two existing default
+five-second Vitest deadlines fired for GBM surface and MAP_PRIVATE cases.
+Fresh standalone diagnostics completed both programs correctly, with guest
+execution about 0.1 seconds and host initialization about 4/15 seconds.
+The latter diagnostic lacked the normal explicit xtask path, so first-use
+checker preparation also contributes; these numbers are not qualification.
+A separate trace measured default rootfs artifact lookup at 3.73 seconds.
+The Default resolver deliberately regenerates/checks source package provenance
+at each public named-program boundary. These checks stay intact.
+
+The two test files now load the normal verified rootfs image as an input
+fixture before starting their runtime checks. Kernel boot, guest execution,
+assertions and teardown stay within the unchanged five-second limits. The
+full 26-file selection passes 257/257, with the two cases at 132/139 ms.
+The original failures and all stage diagnostics remain retained. The run was
+3b87 plus these two exact modified blobs, now committed/pushed as db4a; the
+receipt does not relabel the run's original HEAD. No product runtime, ABI,
+recipe, predicate or deadline changed. The comparison checkout has the
+same test-only preparation, with no R1 runtime patch.
