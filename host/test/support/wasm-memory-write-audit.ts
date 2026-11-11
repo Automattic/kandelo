@@ -747,6 +747,46 @@ function projectState(
   return result;
 }
 
+/**
+ * True when `literal` (possibly nested inside enclosing object literals and
+ * type-only wrappers) is the source of a destructuring declaration,
+ * parameter default, binding default or assignment.
+ */
+function objectLiteralIsDestructured(literal: ts.ObjectLiteralExpression): boolean {
+  let node: ts.Node = literal;
+  for (let parent = node.parent; parent; node = parent, parent = parent.parent) {
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isTypeAssertionExpression(parent) ||
+      ts.isNonNullExpression(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      (ts.isObjectLiteralExpression(parent) && node !== literal) ||
+      (ts.isPropertyAssignment(parent) && parent.initializer === node)
+    ) {
+      continue;
+    }
+    if (
+      (ts.isVariableDeclaration(parent) ||
+        ts.isParameter(parent) ||
+        ts.isBindingElement(parent)) &&
+      parent.initializer === node
+    ) {
+      return !ts.isIdentifier(parent.name);
+    }
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      parent.right === node
+    ) {
+      const target = unwrapExpression(parent.left);
+      return ts.isObjectLiteralExpression(target) || ts.isArrayLiteralExpression(target);
+    }
+    return false;
+  }
+  return false;
+}
+
 function unwrapExpression(expression: ts.Expression): ts.Expression {
   let current = expression;
   while (
@@ -4645,7 +4685,13 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
         return symbolForDeclaration(checker, current) ?? null;
       }
       if (ts.isPropertyAssignment(current) && current.initializer === child) {
-        return symbolForDeclaration(checker, current) ?? null;
+        // The property symbol is the binding only while its object literal
+        // stays whole. A destructuring copies selected properties into new
+        // locals and drops the rest, so the property symbol would own an
+        // authority that no reachable name carries.
+        return objectLiteralIsDestructured(current.parent)
+          ? null
+          : symbolForDeclaration(checker, current) ?? null;
       }
       if (
         ts.isBinaryExpression(current) &&
