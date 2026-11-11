@@ -114,6 +114,48 @@
       "builtinId": "internal/deps/amaro/dist/index"
     },
     {
+      "path": "deps/brotli/LICENSE",
+      "role": "provenance",
+      "bytes": 1084,
+      "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94",
+      "builtinId": null
+    },
+    {
+      "path": "deps/brotli/c/include/brotli/decode.h",
+      "role": "provenance",
+      "bytes": 16759,
+      "sha256": "e2f5fdc3ae41e6b7e8986538e421ae79c095541bacf32f2bbfccf8e056405444",
+      "builtinId": null
+    },
+    {
+      "path": "deps/brotli/c/include/brotli/encode.h",
+      "role": "provenance",
+      "bytes": 20068,
+      "sha256": "f1842e38da557efac517a35f1b27d288d464a723ef50316d3d20fe03f6046c06",
+      "builtinId": null
+    },
+    {
+      "path": "deps/brotli/c/include/brotli/port.h",
+      "role": "provenance",
+      "bytes": 11439,
+      "sha256": "72b484d7a2561f3a9ad35ebd0d4f97f7a2d9863b619782ada5b083a4b6f40df5",
+      "builtinId": null
+    },
+    {
+      "path": "deps/brotli/c/include/brotli/shared_dictionary.h",
+      "role": "provenance",
+      "bytes": 3535,
+      "sha256": "86230f0aaf533044d85d92f84b5aec8b7e4e231d4b64b098604083e7866e8097",
+      "builtinId": null
+    },
+    {
+      "path": "deps/brotli/c/include/brotli/types.h",
+      "role": "provenance",
+      "bytes": 2651,
+      "sha256": "ebbd136dc411cc8167636d6f54b66ad0c234dc18989265c37a28c242eaae2efd",
+      "builtinId": null
+    },
+    {
       "path": "deps/minimatch/LICENSE.md",
       "role": "license",
       "bytes": 1550,
@@ -3481,6 +3523,13 @@
       "builtinId": null
     },
     {
+      "path": "src/node.h",
+      "role": "provenance",
+      "bytes": 76346,
+      "sha256": "83185475268b1b2d9f5ffdbec1bb2062ebe70674869dde96fe6cd526dc9b2a79",
+      "builtinId": null
+    },
+    {
       "path": "src/node_builtins.cc",
       "role": "provenance",
       "bytes": 37013,
@@ -3492,6 +3541,20 @@
       "role": "provenance",
       "bytes": 9798,
       "sha256": "7e283d85d6c10f44e9165e44b6db08db4abed119fa321892cf5e0d2679d4f4f5",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_constants.cc",
+      "role": "provenance",
+      "bytes": 32398,
+      "sha256": "9e22dc6f106498895367e01bc02e00b3cedb8beef004b8b11f62f4a961a6891c",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_constants.h",
+      "role": "provenance",
+      "bytes": 3729,
+      "sha256": "2d6ad6acdba0376bf8286eb3ebd03fd3706bd7fd78f799527fa4ecaca216cec8",
       "builtinId": null
     },
     {
@@ -3513,6 +3576,27 @@
       "role": "provenance",
       "bytes": 7461,
       "sha256": "6f69832d201a93647cae0889091556c14015d50a23a8a7022d56746c78daa319",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_zlib.cc",
+      "role": "provenance",
+      "bytes": 79780,
+      "sha256": "aa23343f3d6740eade97d6ddae8988b030bfd0ef82e6597da172c7234c5dc96e",
+      "builtinId": null
+    },
+    {
+      "path": "src/tracing/trace_event_legacy.h",
+      "role": "provenance",
+      "bytes": 67693,
+      "sha256": "aa836d5ae233057253903fed0bc69044df3220ffdccbabb2d2af671f8532b48a",
+      "builtinId": null
+    },
+    {
+      "path": "src/util.h",
+      "role": "provenance",
+      "bytes": 43448,
+      "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
       "builtinId": null
     },
     {

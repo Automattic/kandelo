@@ -8,6 +8,7 @@ inputs = [
   "third_party/nodejs",
   "scripts/generate-nodejs-source-registry.py",
   "scripts/generate-nodejs-async-metadata.py",
+  "scripts/prepare-nodejs-constants.py",
   "scripts/nodejs-builtin-metadata.cpp",
   "packages/registry/node-compat/bootstrap.js",
   "scripts/package-build-roots.sh",
@@ -17,4 +18,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 29
+revision    = 30

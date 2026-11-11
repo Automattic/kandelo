@@ -13,8 +13,8 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry now calls complete `internal/bootstrap/node`
 with protected state, passes native configuration and stops on missing
-`constants` through original internal/util and validators, after executing the
-original internal/async_hooks module through real shared async state and symbols.
+`types` through original internal/util and validators, after executing the
+original async-hooks module and native constants initializer through real backends.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -830,3 +830,35 @@ empty/simple/CJS/ESM startup and the full catalog remain unproven. No product im
 full product/successor-ABI campaigns or overall suites ran. Exact artifacts and
 limits are in [async-wrap-engine-check.json](../tests/nodejs/upstream/async-wrap-engine-check.json);
 contracts and next work are in [async-wrap-contracts.md](../tests/nodejs/upstream/async-wrap-contracts.md).
+
+## Original native constants initializer
+
+Revision 30 compiles complete original node_constants.cc/node_constants.h through
+an actual SpiderMonkey property builder. It registers the original native
+initializer and creates per-realm cached null-prototype tables with original
+attributes. All 425 definitions come from original native declarations and actual
+target headers. Compression metadata derives 171 export operands and original
+enum/limit declarations; no upstream JavaScript or compression algorithms change.
+The imported set is 509 files; every prior 497 record and all 443 JS bodies remain
+unchanged. Pinned Brotli headers supply declarations only, not a Node backend.
+
+An independent C guest probe exposed missing zstd_errors.h in libzstd's outputs
+and unintended Mozilla bundled-zlib header precedence. The library now installs
+its matching public header; decoder archive bytes remain unchanged. The Node
+constants source explicitly uses the declared compression dependency headers.
+Actual codec symbol/version and operational integration remain future work.
+
+Ten constants controls, 43 target-header comparisons and four filesystem flag/errno
+effects pass on each host using identical artifacts. The engine also passes 208
+prior Node cases; 80 selected process drivers retain 19 expected fatal controls.
+Six shared native references pass; 348 values match the native snapshot and 90
+OS/dependency/configuration differences remain explicit. No Darwin values are
+substituted for target values. Original bootstrap now reaches missing types at
+internal/util:73; no complete upstream startup or full graph catalog follows.
+
+Exact source/artifact identities, failed builds, incorrect header selection,
+reference/probe fixture failures and limits are in
+[constants-engine-check.json](../tests/nodejs/upstream/constants-engine-check.json).
+Contracts and next work are in
+[constants-contracts.md](../tests/nodejs/upstream/constants-contracts.md).
+No product images, full products, successor-ABI campaigns or overall suites ran.

@@ -50,7 +50,16 @@ def select_sources(members, prefix):
                        'src/node_realm.cc', 'src/node_realm.h',
                        'src/builtin_info.cc', 'src/builtin_info.h',
                        'src/env_properties.h', 'src/node_exit_code.h',
-                       'src/env.h', 'src/async_wrap.h', 'src/async_wrap.cc']})
+                       'src/env.h', 'src/async_wrap.h', 'src/async_wrap.cc',
+                       'src/node_constants.cc', 'src/node_constants.h',
+                       'src/node_zlib.cc', 'src/node.h', 'src/util.h',
+                       'src/tracing/trace_event_legacy.h',
+                       'deps/brotli/LICENSE',
+                       'deps/brotli/c/include/brotli/decode.h',
+                       'deps/brotli/c/include/brotli/encode.h',
+                       'deps/brotli/c/include/brotli/port.h',
+                       'deps/brotli/c/include/brotli/shared_dictionary.h',
+                       'deps/brotli/c/include/brotli/types.h']})
     dependency_roots = {str(PurePosixPath(name).parents[len(PurePosixPath(name).parts)-3])
                         for name in dependencies}
     # Include dependency licensing at original paths. Node's top-level LICENSE

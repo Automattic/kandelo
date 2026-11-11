@@ -7,8 +7,8 @@ import { runCentralizedProgram } from "../host/test/centralized-test-helper";
 
 const [programArgument, reportArgument, modeArgument = "private-keys"] = process.argv.slice(2);
 if (!programArgument || !reportArgument || process.argv.length > 5 ||
-    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config", "timers", "task-queue", "async-wrap"].includes(modeArgument)) {
-  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config|timers|task-queue|async-wrap]");
+    !["private-keys", "per-context", "synthetic-modules", "module-wrap", "dynamic-import", "error-stack", "realm-library", "process-config", "timers", "task-queue", "async-wrap", "constants"].includes(modeArgument)) {
+  throw new Error("usage: tsx scripts/run-nodejs-private-key-controls.ts <js.wasm> <report.json> [private-keys|per-context|synthetic-modules|module-wrap|dynamic-import|error-stack|realm-library|process-config|timers|task-queue|async-wrap|constants]");
 }
 const perContext = modeArgument === "per-context";
 const synthetic = modeArgument === "synthetic-modules";
@@ -16,19 +16,20 @@ const moduleWrap = modeArgument === "module-wrap";
 const dynamicImport = modeArgument === "dynamic-import";
 const errorStack = modeArgument === "error-stack";
 const nativeTimers = modeArgument === "timers";
+const nativeConstants = modeArgument === "constants";
 const nativeAsync = modeArgument === "async-wrap";
 const nativeTasks = modeArgument === "task-queue";
 const processConfig = modeArgument === "process-config";
 const realmLibrary = modeArgument === "realm-library";
-const expectedKind = nativeAsync ? "native-async-wrap-controls" : nativeTasks ? "native-task-queue-controls" : nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
-const expectedCases = nativeAsync ? 20 : nativeTasks ? 26 : nativeTimers ? 27 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
+const expectedKind = nativeConstants ? "native-constants-controls" : nativeAsync ? "native-async-wrap-controls" : nativeTasks ? "native-task-queue-controls" : nativeTimers ? "native-timers-controls" : processConfig ? "native-process-config-controls" : realmLibrary ? "upstream-realm-library-controls" : errorStack ? "native-error-stack-controls" : dynamicImport ? "native-dynamic-import-controls" : moduleWrap ? "native-module-wrap-controls" : synthetic ? "engine-synthetic-module-controls" : perContext ? "upstream-per-context-controls" : "engine-private-key-controls-only";
+const expectedCases = nativeConstants ? 10 : nativeAsync ? 20 : nativeTasks ? 26 : nativeTimers ? 27 : processConfig ? 13 : realmLibrary ? 16 : errorStack ? 21 : dynamicImport ? 14 : moduleWrap ? 19 : synthetic ? 15 : perContext ? 14 : 23;
 const program = resolve(programArgument);
 const reportPath = resolve(reportArgument);
 const kernel = resolveBinary("kernel.wasm");
-const fixturePath = resolve(nativeAsync ? "tests/nodejs/upstream/async-wrap-engine-controls.js" : nativeTasks ? "tests/nodejs/upstream/task-queue-engine-controls.js" : nativeTimers ? "tests/nodejs/upstream/timers-engine-controls.js" : processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
+const fixturePath = resolve(nativeConstants ? "tests/nodejs/upstream/constants-engine-controls.js" : nativeAsync ? "tests/nodejs/upstream/async-wrap-engine-controls.js" : nativeTasks ? "tests/nodejs/upstream/task-queue-engine-controls.js" : nativeTimers ? "tests/nodejs/upstream/timers-engine-controls.js" : processConfig ? "tests/nodejs/upstream/process-config-engine-controls.js" : realmLibrary ? "tests/nodejs/upstream/realm-library-engine-controls.js" : errorStack ? "tests/nodejs/upstream/error-stack-engine-controls.js" : dynamicImport ? "tests/nodejs/upstream/dynamic-import-engine-controls.js" : moduleWrap ? "tests/nodejs/upstream/module-wrap-engine-controls.js" : synthetic ? "tests/nodejs/upstream/synthetic-module-engine-controls.js" : perContext ? "tests/nodejs/upstream/per-context-engine-controls.js"
   : "tests/nodejs/upstream/private-key-engine-controls.js");
 const fixture = readFileSync(fixturePath, "utf8").replace("// @shared-controls",
-  nativeAsync ? readFileSync("tests/nodejs/upstream/async-wrap-shared-controls.js", "utf8") : "// no shared controls");
+  nativeAsync ? readFileSync("tests/nodejs/upstream/async-wrap-shared-controls.js", "utf8") : "// no shared controls").replace("// @shared-constants-controls", nativeConstants ? readFileSync("tests/nodejs/upstream/constants-shared-controls.js", "utf8") : "// no shared constants");
 function identity(path: string) {
   const bytes = readFileSync(path);
   return { path, bytes: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") };
@@ -79,7 +80,7 @@ await run("node-mode-refuses-native-test-controls", ["node", "--kandelo-test-ups
 await run(modeArgument + "-controls", ["js", "--kandelo-test-upstream",
   ...(synthetic ? ["--enable-import-attributes"] : []), "-e", fixture], (result) => {
   expect(result.exitCode === 0, JSON.stringify(result));
-  if (nativeAsync) expect(result.stderr === "" && result.hostDiagnostics.length === 0, JSON.stringify(result));
+  if (nativeAsync || nativeConstants) expect(result.stderr === "" && result.hostDiagnostics.length === 0, JSON.stringify(result));
   const rows = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   expect(rows.length === 1, "expected one complete engine result");
   const row = rows[0];
@@ -198,6 +199,7 @@ const report = {
   host: { version: process.version, platform: process.platform, arch: process.arch },
   program: identity(program), kernel: identity(kernel), fixture: identity(fixturePath),
   runner: identity(resolve("scripts/run-nodejs-private-key-controls.ts")),
+  ...(nativeConstants ? { sharedFixture: identity(resolve("tests/nodejs/upstream/constants-shared-controls.js")), executedFixtureSha256: createHash("sha256").update(fixture).digest("hex") } : {}),
   ...(nativeAsync ? { sharedFixture: identity(resolve("tests/nodejs/upstream/async-wrap-shared-controls.js")), executedFixtureSha256: createHash("sha256").update(fixture).digest("hex") } : {}),
   runs, failures,
   limits: ["No Chromium/Firefox/WebKit execution", "No upstream startup or module compatibility evidence", "No complete native-V8 differential proof", "No security-wrapper/OOM or complete symbol-owner teardown/finalization proof"],

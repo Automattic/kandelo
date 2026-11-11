@@ -33,6 +33,7 @@
 #include "shell/jsshell.h"
 #include "shell/node-upstream/async-wrap.h"
 #include "shell/node-upstream/builtin-compiler.h"
+#include "shell/node-upstream/constants.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
 #include "shell/node-upstream/task-queue.h"
@@ -43,7 +44,7 @@ namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3 };
-enum Slot { Status, Global, Process, Primordials, Builtins, Util, Config, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, Builtins, Util, Config, Constants, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -222,6 +223,15 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
   JS::RootedObject binding(cx);
   if (name == "builtins") binding = BuiltinsBinding(cx, state);
   else if (name == "config") binding = ConfigBinding(cx, state);
+  else if (name == "constants") {
+    JS::Value cached = JS::GetReservedSlot(state, Constants);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = CreateConstantsBinding(cx);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, Constants, JS::ObjectValue(*binding));
+    }
+  }
   else if (name == "timers") {
     JS::Value cached = JS::GetReservedSlot(state, Timers);
     if (cached.isObject()) binding = &cached.toObject();

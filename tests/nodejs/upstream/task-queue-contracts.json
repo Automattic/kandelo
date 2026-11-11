@@ -346,7 +346,7 @@
     }
   ],
   "startupOrder": [
-    "Original principal body now passes internal/async_hooks and stops on constants; implement genuine startup-required native constants/closure, then remaining engine/frame/common callback scopes",
+    "Implement actual types binding required by unchanged internal/util:73; native constants now initialize through complete original source. Continue startup-required closure and engine/frame/common callback scopes.",
     "Complete original tick/rejection callbacks and native fatal/exit policy through common shell/libuv resource scopes",
     "Reexecute original principal body and record its next actual blocker without substitute modules or fabricated bindings",
     "Identified-artifact startup checks on all four hosts; separate CJS/ESM, full graph reconciliation and later user review gate"
@@ -428,5 +428,7 @@
     "nativeValuesAndAttributesCompared": true,
     "processExitBackendComplete": false
   },
-  "currentAsyncIntegrationEvidence": "async-wrap-engine-check.json"
+  "currentAsyncIntegrationEvidence": "async-wrap-engine-check.json",
+  "currentConstantsIntegrationEvidence": "constants-engine-check.json",
+  "currentBootstrapGap": "types in internal/util:73 after genuine constants initialization; prior gap observations remain historical"
 }

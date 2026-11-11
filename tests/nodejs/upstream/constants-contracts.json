@@ -1,0 +1,294 @@
+{
+  "schema": 1,
+  "scope": "Native constants declaration/builder catalog; literal references are not complete lazy/conditional/worker/platform/exception graph coverage",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "upstreamJavaScriptChanged": false,
+  "bindingImplemented": true,
+  "upstreamStartup": false,
+  "publicModuleCompatibility": false,
+  "literalConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/lib/os.js",
+      "line": 34,
+      "text": "const constants = internalBinding('constants').os;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/constants.js",
+      "line": 33,
+      "text": "const constants = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/dgram.js",
+      "line": 78,
+      "text": "const { UV_UDP_REUSEADDR } = internalBinding('constants').os;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/crypto.js",
+      "line": 42,
+      "text": "const constants = internalBinding('constants').crypto;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/zlib.js",
+      "line": 93,
+      "text": "const constants = internalBinding('constants').zlib;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/validators.js",
+      "line": 41,
+      "text": "const { signals } = internalBinding('constants').os;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/signal.js",
+      "line": 12,
+      "text": "const { signals } = internalBinding('constants').os;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util.js",
+      "line": 62,
+      "text": "const { signals } = internalBinding('constants').os;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/per_thread.js",
+      "line": 60,
+      "text": "const constants = internalBinding('constants').os.signals;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/cipher.js",
+      "line": 23,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/keys.js",
+      "line": 47,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/stats.js",
+      "line": 18,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/diffiehellman.js",
+      "line": 80,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/file_handle.js",
+      "line": 36,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/kem_hybrids.js",
+      "line": 48,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/setup.js",
+      "line": 901,
+      "text": "  const { internal: internalConstants } = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/util.js",
+      "line": 73,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/ec.js",
+      "line": 28,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/root.js",
+      "line": 27,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/sig.js",
+      "line": 52,
+      "text": "const constants = internalBinding('constants').crypto;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/provider.js",
+      "line": 20,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/providers/composable.js",
+      "line": 33,
+      "text": "const { fs: { COPYFILE_EXCL } } = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/webstreams/adapters.js",
+      "line": 108,
+      "text": "const { zlib } = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/providers/memory.js",
+      "line": 53,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/providers/sea.js",
+      "line": 45,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/providers/ziparchive.js",
+      "line": 45,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/fs/promises.js",
+      "line": 28,
+      "text": "const { fs: constants } = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/get_format.js",
+      "line": 13,
+      "text": "const { internal: internalConstants } = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/fs/streams.js",
+      "line": 48,
+      "text": "const { O_RDONLY, O_WRONLY } = internalBinding('constants').fs;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/fs/utils.js",
+      "line": 123,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/fs/cp/cp.js",
+      "line": 38,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/tls/common.js",
+      "line": 45,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/tls/secure-context.js",
+      "line": 45,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/iter/transform.js",
+      "line": 51,
+      "text": "const constants = internalBinding('constants').zlib;"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/fs/cp/cp-sync.js",
+      "line": 20,
+      "text": "} = internalBinding('constants');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/fs.js",
+      "line": 49,
+      "text": "const { fs: constants } = internalBinding('constants');"
+    }
+  ],
+  "nativeSources": [
+    {
+      "path": "third_party/nodejs/upstream/src/node_constants.cc",
+      "bytes": 32398,
+      "sha256": "9e22dc6f106498895367e01bc02e00b3cedb8beef004b8b11f62f4a961a6891c"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_constants.h",
+      "bytes": 3729,
+      "sha256": "2d6ad6acdba0376bf8286eb3ebd03fd3706bd7fd78f799527fa4ecaca216cec8"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_zlib.cc",
+      "bytes": 79780,
+      "sha256": "aa23343f3d6740eade97d6ddae8988b030bfd0ef82e6597da172c7234c5dc96e"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node.h",
+      "bytes": 76346,
+      "sha256": "83185475268b1b2d9f5ffdbec1bb2062ebe70674869dde96fe6cd526dc9b2a79"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/util.h",
+      "bytes": 43448,
+      "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/tracing/trace_event_legacy.h",
+      "bytes": 67693,
+      "sha256": "aa836d5ae233057253903fed0bc69044df3220ffdccbabb2d2af671f8532b48a"
+    }
+  ],
+  "exports": {
+    "signature": "internalBinding('constants') -> per-realm cached object",
+    "methods": [],
+    "tables": [
+      "os",
+      "os.dlopen",
+      "os.errno",
+      "os.signals",
+      "os.priority",
+      "fs",
+      "crypto",
+      "zlib",
+      "trace",
+      "internal"
+    ],
+    "prototypes": "null at binding root and all tables, set by actual original initializer",
+    "primitiveDescriptors": "numeric/string values readonly/nonconfigurable/enumerable as native macros; table container properties writable/configurable/enumerable",
+    "primitiveCount": "425 in tested Kandelo build; platform/build-conditional, not a support counter"
+  },
+  "implementation": {
+    "nativeTranslationUnit": "Complete pinned original node_constants.cc and node_constants.h compile unchanged",
+    "privateBridge": "Only constant declaration operations: actual JSContext and rooted JS objects, actual property writes and initializer registration; no V8 execution or Node resource-handle simulation",
+    "compressionMetadata": "171 export operands, original 12-mode enum and 12 limit declarations from entire verified native node_zlib.cc; reject executable policy/unknown grammar; no function excerpts or compression algorithms generated",
+    "targetEvaluation": "Guest compiler evaluates actual target libc/libuv/OpenSSL/zlib/zstd headers; no host execution or copied reference values",
+    "brotli": "Pinned original public headers provide declarations only; Node Brotli backend remains absent",
+    "trace": "Complete original legacy trace macro header supplies phase codes; no tracing backend claim"
+  },
+  "targetDependencies": {
+    "libc": "Actual Kandelo SDK/sysroot",
+    "libuv": "Resolved Node-bundled1.52.1 package, true Kandelo public layout selector",
+    "openssl": "Resolved3.3.2 headers/libraries; no-engine build conditions respected",
+    "zlib": "Resolved1.3.1 zlib.h/zconf.h explicitly staged beside native unit/metadata; avoid Mozilla bundled header precedence",
+    "zstd": "Resolved1.5.6 decoder library; revision2 adds matching zstd_errors.h, archive bytes unchanged",
+    "brotli": "Entire pinned Node public headers, no compression implementation"
+  },
+  "ownershipGcLifecycle": {
+    "creation": "Real module owner calls original registered native initializer once per realm, caches result in traced realm slot",
+    "temporaryRoots": "Private builder owns actual persistent roots until entire native table graph is published; stable wrappers during vector growth and moving GC",
+    "sharedMutableState": "No new process/global async state; per-realm data containers retain original mutability",
+    "livenessCancellation": "No handles/requests/callbacks/ref changes created by metadata",
+    "errors": "Original CHECK/property .Check assertions remain fatal; no partial fabricated metadata returned on errors",
+    "remaining": "Complete OOM/security/teardown/ShadowRealm equivalence not established"
+  },
+  "archivedReuse": "Existing19-family and PR audits remain source/salvage indexes; no former handwritten public JS adapters reused",
+  "validationObligations": [
+    "Four-host same engine/kernel identity and per-realm cache/prototypes/descriptors/moving GC",
+    "Separate pinned native reference semantic assertions and full snapshot comparison; target OS/dependency versions may differ",
+    "Independent real guest C target-header values plus filesystem flag/errno effects",
+    "Full pinned source and complete translation-unit byte identities",
+    "Keep provider/constant metadata distinct from operational backend capability",
+    "Original bootstrap next missing backend; no observer exit0 called startup success"
+  ],
+  "failureHistory": [
+    "Native module registration needed global namespace qualification",
+    "Own bridge failed Mozilla header/include style rules; fixed own code while classifying exact imported source directory under existing foreign-source policy",
+    "Independent probe exposed libzstd missing public error header; package now exports original header",
+    "Independent probe initially wrote read-only guest root, correctly failed EROFS; fixture uses actual writable/tmp",
+    "Independent browser comparison exposed Mozilla bundled zlib header4896 versus declared target4880; fixed private target header selection, preserved failed raw comparisons",
+    "Native reference fixture omitted ERROR in a Brotli constant name; corrected test spelling against original source"
+  ],
+  "nextWork": [
+    "Implement real types binding required by internal/util73, then startup-required util/options/process and remaining native closure",
+    "Complete engine Promise lifecycle/frame/common native callback contracts required by unchanged startup",
+    "Genuine empty/simple output/errors/jobs/exit, separate CJS/ESM entrypaths on Node Chromium Firefox WebKit",
+    "Complete/reconcile entire backend graph and dependency-ordered roadmap; nested guest Wasm last unless startup needs it; stop for user review before broader work"
+  ],
+  "limits": [
+    "Constants are API declarations, not implemented filesystem/network/signal/crypto/compression/trace operations",
+    "No complete startup/module compatibility or full catalog claim",
+    "No full products/partial/canonical images, successor-ABI campaigns or overall suites"
+  ]
+}

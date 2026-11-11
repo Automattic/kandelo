@@ -406,11 +406,13 @@
     "Future promise lifecycle, callbacks, frames, GC destroy scheduling, error unwind, liveness and exit with actual resources"
   ],
   "orderedNextSteps": [
-    "Run complete original principal bootstrap and identify actual next missing backend",
+    "Implement actual types binding required by unchanged internal/util:73; native constants now initialize through complete original source. Continue startup-required closure and engine/frame/common callback scopes.",
     "Implement only startup-required real constants/util/process/options and remaining native binding closure",
     "Connect engine promise lifecycle/context and common native callback scopes when required by unchanged startup",
     "Establish genuine empty/simple output/error/jobs/exit separately for CJS and ESM on four hosts",
     "Complete entire public/internal/lazy/conditional/worker/platform/exception graph catalog, nested guest Wasm last unless startup needs it",
     "Stop for user review before broader backend roadmap implementation"
-  ]
+  ],
+  "currentConstantsIntegrationEvidence": "constants-engine-check.json",
+  "currentBootstrapGap": "types in internal/util:73 after genuine constants initialization; prior gap observations remain historical"
 }

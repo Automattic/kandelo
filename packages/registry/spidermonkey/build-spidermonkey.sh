@@ -407,7 +407,7 @@ fi
 # Compile the new upstream builtin compiler in the real Mozilla shell build.
 # It remains inactive until the genuine per-realm/native binding owner exists.
 bash "$SCRIPT_DIR/node-upstream/prepare-build.sh" \
-    "$REPO_ROOT" "$SRC_DIR" "$OBJ_DIR" "$MACOS_SDK_DIR"
+    "$REPO_ROOT" "$SRC_DIR" "$OBJ_DIR" "$MACOS_SDK_DIR" "$ZLIB_PREFIX/include" "$ZSTD_PREFIX/include"
 
 export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -DUV_PLATFORM_KANDELO=1"
 export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -DUV_PLATFORM_KANDELO=1"
