@@ -20,6 +20,8 @@ const include = [
   "test/kernel-teardown-pipe-entry.test.ts",
   "test/exec-retirement-marker.test.ts",
   "test/fork-worker-import-exceptions.test.ts",
+  "test/fork-replay-gate.test.ts",
+  "test/fork-replay-host-parity.test.ts",
   "test/process-generation-detach.test.ts",
   "test/node-process-teardown-ordering.test.ts",
 ];
