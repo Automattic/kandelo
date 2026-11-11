@@ -1,7 +1,7 @@
 // The dock's More menu opens the credits list, rendered from the same shared
 // data as the docs site's Credits page.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../playwright-test";
 import { CREDITS, CREDITS_DEVELOPER } from "../../../web-libs/kandelo-session/src/credits";
 import { gotoApp } from "./support/kandelo-machine";
 
