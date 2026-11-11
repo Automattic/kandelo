@@ -17,6 +17,7 @@
 #include "js/Symbol.h"
 #include "js/Wrapper.h"
 #include "shell/jsshell.h"
+#include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
 #include "shell/ShellModuleObjectWrapper.h"
 
@@ -62,7 +63,7 @@ bool InitializePrivateKey(JSContext* cx, unsigned argc, JS::Value* vp) {
   return true;
 }
 
-enum class ContextOperation { Initialize, GetExports, Inspect, ModuleWrapBinding };
+enum class ContextOperation { Initialize, GetExports, Inspect, ModuleWrapBinding, ErrorBinding };
 
 bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
                           ContextOperation operation) {
@@ -98,6 +99,8 @@ bool ContextOperationCall(JSContext* cx, unsigned argc, JS::Value* vp,
           ? InspectCurrentContextForTesting(cx, runtime)
           : operation == ContextOperation::ModuleWrapBinding
           ? GetCurrentContextModuleWrapBinding(cx, runtime)
+          : operation == ContextOperation::ErrorBinding
+          ? GetErrorStackBinding(cx)
           : GetCurrentContextExports(cx, runtime));
       ok = bool(value);
       if (ok) result.setObject(*value);
@@ -128,6 +131,16 @@ bool InspectContext(JSContext* cx, unsigned argc, JS::Value* vp) {
 }
 bool GetModuleWrapBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
   return ContextOperationCall(cx, argc, vp, ContextOperation::ModuleWrapBinding);
+}
+bool GetErrorBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
+  return ContextOperationCall(cx, argc, vp, ContextOperation::ErrorBinding);
+}
+bool EnhanceFatalStack(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  if (argc != 2 || !args[1].isBoolean()) {
+    JS_ReportErrorASCII(cx, "fatal stack control requires error and phase boolean"); return false;
+  }
+  return EnhanceFatalExceptionStack(cx, args[0], args[1].toBoolean(), args.rval());
 }
 
 bool EvaluateSyntheticForTesting(JSContext* cx, JS::HandleObject module,
@@ -219,6 +232,8 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
       JS_FN("getContextExports", GetContextExports, 0, 0),
       JS_FN("inspectContext", InspectContext, 0, 0),
       JS_FN("getModuleWrapBinding", GetModuleWrapBinding, 0, 0),
+      JS_FN("getErrorBinding", GetErrorBinding, 0, 0),
+      JS_FN("enhanceFatalStack", EnhanceFatalStack, 2, 0),
       JS_FN("newSyntheticModule", NewSyntheticModule, 2, 0),
       JS_FN("setSyntheticExport", SetSyntheticExport, 3, 0),
       JS_FN("moduleNamespace", ModuleNamespaceForTesting, 1, 0),

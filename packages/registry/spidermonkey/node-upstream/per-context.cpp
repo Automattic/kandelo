@@ -22,6 +22,7 @@
 #include "js/ValueArray.h"
 #include "js/Wrapper.h"
 #include "shell/node-upstream/builtin-compiler.h"
+#include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/module-wrap.h"
 
 namespace kandelo::node {
@@ -45,7 +46,8 @@ static const JSClass kRuntimeClass = {
     "KandeloNodeRuntime", JSCLASS_HAS_RESERVED_SLOTS(FirstSymbol + std::size(kSymbols))};
 enum ContextSlot {
   ContextPhase, OwningGlobal, RuntimeOwner, Exports, Primordials,
-  PrivateSymbols, OrdinarySymbols, CompletedScripts, ModuleWrapBinding, ContextSlots
+  PrivateSymbols, OrdinarySymbols, CompletedScripts, ModuleWrapBinding,
+  ErrorStackState, ContextSlots
 };
 static const JSClass kContextClass = {
     "KandeloNodeContext", JSCLASS_HAS_RESERVED_SLOTS(ContextSlots)};
@@ -197,6 +199,9 @@ bool InitializeCurrentContext(JSContext* cx, JS::HandleObject runtime) {
   // After canonical publication every failure is terminal. Do not clear or
   // replace the pending parser/JS/OOM exception while recording Failed.
   auto initialize = [&]() -> bool {
+    JS::RootedObject stackState(cx, CreateErrorStackState(cx));
+    if (!stackState) return false;
+    JS::SetReservedSlot(state, ErrorStackState, JS::ObjectValue(*stackState));
     JS::RootedObject exports(cx, JS_NewPlainObject(cx));
     if (!exports) return false;
     JS::SetReservedSlot(state, Exports, JS::ObjectValue(*exports));
@@ -235,6 +240,15 @@ bool InitializeCurrentContext(JSContext* cx, JS::HandleObject runtime) {
 JSObject* GetCurrentContextExports(JSContext* cx, JS::HandleObject runtime) {
   JS::RootedObject state(cx, ReadyContext(cx, runtime));
   return state ? &JS::GetReservedSlot(state, Exports).toObject() : nullptr;
+}
+
+JSObject* GetCurrentContextErrorStackState(JSContext* cx, JS::HandleObject runtime) {
+  JS::RootedObject state(cx, LookupContext(cx, runtime));
+  if (!state) return nullptr;
+  // Error allocation may happen during the original context initializers or
+  // after their terminal failure. The canonical state is never re-created.
+  JS::Value value = JS::GetReservedSlot(state, ErrorStackState);
+  return value.isObject() ? &value.toObject() : nullptr;
 }
 
 JS::Symbol* GetRuntimeSymbol(JSContext* cx, JS::HandleObject runtime, const char* name) {

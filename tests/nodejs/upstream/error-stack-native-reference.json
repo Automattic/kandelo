@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T02:13:17.716805+00:00",
+  "scope": "Exact pinned native error stack reference only",
+  "executableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "controlPath": "tests/nodejs/upstream/error-stack-native-controls.cjs",
+  "controlSha256": "05356e4e6b54945daf3d871436a85fb162372efd0df4c0cb57eb1a0a8584e9d6",
+  "environmentKeys": [
+    "PATH",
+    "LANG",
+    "TZ"
+  ],
+  "exit": 0,
+  "stderr": "(node:17106) internal/test/binding: These APIs are for internal testing only. Do not use them.\n(Use `native-node --trace-warnings ...` to show where the warning was created)\n",
+  "nativeResult": {
+    "kind": "native-error-stack-reference-only",
+    "version": "v26.13.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "v8": "14.6.202.34-node.40",
+    "execArgv": [
+      "--expose-internals",
+      "--expose-gc"
+    ],
+    "cases": 18,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "capture-is-an-existing-native-intrinsic",
+        "status": "pass"
+      },
+      {
+        "name": "preparation-is-lazy-cached-with-own-accessors",
+        "status": "pass"
+      },
+      {
+        "name": "zero-negative-fractional-and-nan-limits",
+        "status": "pass"
+      },
+      {
+        "name": "non-numeric-and-accessor-limits-disable-without-getters",
+        "status": "pass"
+      },
+      {
+        "name": "capture-limit-is-fixed-at-creation",
+        "status": "pass"
+      },
+      {
+        "name": "constructor-opt-trims-real-frames",
+        "status": "pass"
+      },
+      {
+        "name": "throwing-preparation-retries-original-exception",
+        "status": "pass"
+      },
+      {
+        "name": "undefined-preparation-is-cached",
+        "status": "pass"
+      },
+      {
+        "name": "stack-assignment-replaces-pending-and-prepared-values",
+        "status": "pass"
+      },
+      {
+        "name": "frozen-error-retains-internal-cache",
+        "status": "pass"
+      },
+      {
+        "name": "recapture-replaces-capture-and-cache",
+        "status": "pass"
+      },
+      {
+        "name": "recursive-preparation-uses-default-frames",
+        "status": "pass"
+      },
+      {
+        "name": "borrowed-accessor-requires-a-real-target-capture",
+        "status": "pass"
+      },
+      {
+        "name": "proxy-capture-refuses-without-property-traps",
+        "status": "pass"
+      },
+      {
+        "name": "inherited-data-limit-is-read",
+        "status": "pass"
+      },
+      {
+        "name": "callsite-core-reads-actual-module-source",
+        "status": "pass"
+      },
+      {
+        "name": "retained-callsite-survives-collection",
+        "status": "pass"
+      },
+      {
+        "name": "native-bootstrap-callback-receives-global-error-and-trace",
+        "status": "pass"
+      }
+    ],
+    "limits": [
+      "Native reference only",
+      "No guest/browser/startup proof",
+      "Bounded core fields; no complete structured stack/security/OOM/lifecycle differential"
+    ]
+  }
+}

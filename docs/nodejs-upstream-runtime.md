@@ -16,6 +16,8 @@ records and actual source modules through privileged diagnostics. The upstream
 realm/binding loader remains disconnected. ModuleWrap-owned dynamic imports
 now invoke the registered native callback and adopt its result through real
 referrer-realm Promises; the unchanged upstream loader is not yet executing.
+Owned contexts also have lazy native Error stack preparation backed by real
+saved frames. Structured CallSite support remains partial.
 
 The target remains Node.js 26.13.0, Lithium LTS, source commit
 `18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. Verification on November 10,
@@ -525,3 +527,40 @@ cache/facade/interrupt backends and the complete backend catalog remain
 unfinished. The build reports the same 16 warnings and existing instrumentation
 fallback. No canonical image, full product, successor-ABI campaign rebuild,
 overall suite or fork-behavior validation ran.
+
+## Native Error stack core
+
+Revision 23 extends SpiderMonkey's existing native `Error.captureStackTrace`
+with an owned-realm policy before original primordials execute. It preserves
+actual saved frames, constructor trimming and capture-time limits, adds real
+own lazy accessors, caches any successful preparation result, retries thrown
+callbacks and guards recursive preparation across realms. Original shell
+realms retain their prior capture behavior. A canonical per-context WeakMap
+traces captures and prepared values without a finalizer-owned root cycle.
+
+The native errors binding stores and invokes the real bootstrap preparation
+callback with `(creationGlobalThis, error, trace)`. Both fatal enhancer
+callbacks have actual traced storage and a native phase dispatcher; the guest
+process's fatal-reporting path remains disconnected. CallSite objects expose
+actual saved-frame source/name/line/column and string formatting. Separate
+original-filename state is retained from active engine ScriptSources, so a
+`sourceURL` display name does not replace `getFileName()`. Unavailable historical
+filename metadata raises an implementation error. Additional
+receiver/function/eval/constructor/async/Wasm metadata remains explicit gaps;
+the implementation does not invent frame flags or placeholder receiver state.
+The native registration inventory and remaining methods are in
+`tests/nodejs/upstream/error-stack-contracts.md`.
+
+Twenty-one guest controls and eighteen separate pinned native reference
+controls cover the bounded core. The same artifact passes 85 existing engine
+regressions and their exposure/assertion drivers. The first compile failed a
+namespace assumption; the first runtime candidate failed two controls for
+pre-trim budgeting and the bootstrap global-this identity. Those source paths
+were corrected while retaining the assertions. Exact source/artifact inputs,
+logs and limitations are in `error-stack-engine-check.json` and its receipts.
+
+This is an engine/bootstrap prerequisite, not actual Node startup or complete
+stack compatibility. Realm/process/binding loader integration, CJS/ESM entry,
+browser hosts, full native/security/OOM/lifecycle differential and the complete
+backend catalog remain open. No canonical image, full product, successor-ABI
+campaign rebuild, overall suite or fork-behavior validation ran.

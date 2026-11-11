@@ -46,13 +46,14 @@
     {
       "area": "shared Node realm and native binding loader",
       "sourceStatus": "not implemented in new architecture",
-      "remaining": "real initial process, builtin/module_wrap/errors binding owners and unchanged internal/bootstrap/realm; preserve upstream loader identity/caches/cycles"
+      "remaining": "real initial process and one binding registry using the implemented module_wrap/errors context owners; unchanged internal/bootstrap/realm and upstream loader identity/caches/cycles"
     },
     {
       "area": "structured Error stack/CallSite/limit contracts",
-      "sourceStatus": "source contracts reviewed, new owning engine implementation missing",
-      "evidence": "primordial-prerequisites.json",
-      "remaining": "use actual engine capture/frame machinery; provide lazy structured formatting/prepareStackTrace and stackTraceLimit; no replacement globals"
+      "sourceStatus": "partial genuine saved-frame core and native callbacks implemented; 21 Node-host controls pass",
+      "evidence": "error-stack-engine-check.json",
+      "priorInventory": "primordial-prerequisites.json",
+      "remaining": "complete receiver/function/eval/constructor/async/Wasm and additional CallSite fields, full errors binding/fatal routing, security/OOM/lifecycle and browser differential"
     },
     {
       "area": "callback-backed synthetic module engine records and live export bindings",
@@ -142,17 +143,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 22,
+    "packageRevision": 23,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "dynamic-import-engine-check.json",
+    "evidence": "error-stack-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "privileged native ModuleWrap/dynamic-import and synthetic/context/private-key controls on Node host; no upstream Node startup",
+    "packageRuntimeScope": "privileged native Error stack/ModuleWrap/dynamic-import and synthetic/context/private-key controls on Node host; no upstream Node startup",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "existing Linux triplet and __linux__/__unix__ defines are unchanged; target metadata/conformance remain unestablished"
   },
@@ -221,6 +222,29 @@
         "evidence": "dynamic-import-engine-check.json",
         "nativeReference": "dynamic-import-native-reference.json"
       }
+    },
+    "errorStacks": {
+      "inventory": "error-stack-contracts.md",
+      "originalNativeCaptureAlreadyExisted": true,
+      "originalPrimordialsCapturePreserved": true,
+      "ownedLazyPreparationImplemented": true,
+      "captureTimeLimitsAndConstructorTrimming": true,
+      "canonicalReadyBindingAdmission": true,
+      "nativePrepareAndFatalCallbacksStored": true,
+      "fatalPhaseDispatcherImplemented": true,
+      "processFatalRoutingConnected": false,
+      "callSiteCoreFields": [
+        "file",
+        "scriptNameOrSourceURL",
+        "functionDisplayName",
+        "line",
+        "column",
+        "saved-frame toString"
+      ],
+      "structuredCallSiteComplete": false,
+      "originalFilenameMetadata": "Captured from active engine ScriptSources separately from display/sourceURL names; unavailable historical filename metadata remains an explicit gap",
+      "evidence": "error-stack-engine-check.json",
+      "remaining": "receiver/function/type/method/eval/native/constructor/async/Promise/Wasm metadata, enclosing/position/script-hash methods, exact formatting and full security/OOM/lifecycle differential"
     }
   },
   "nativeDifferentialControls": {
@@ -255,6 +279,14 @@
       "evidence": "dynamic-import-native-reference.json",
       "guestRun": false,
       "limits": "Separate exact native callback reference; no full differential, browser or startup proof"
+    },
+    "errorStacks": {
+      "reference": "Node26.13.0Darwinarm64",
+      "cases": 18,
+      "failures": 0,
+      "evidence": "error-stack-native-reference.json",
+      "guestRun": false,
+      "limits": "Separate exact native bounded stack reference; no full CallSite differential, browser or startup proof"
     }
   },
   "focusedGuestEngineControls": {
@@ -280,8 +312,8 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "dynamic-import-engine-check.json",
-      "regressionScope": "Same revision-22 artifact passes 19 ModuleWrap, 15 synthetic-engine, 14 context and 23 private-key cases and drivers; raw regressions retained under .context/node-dynamic-import",
+      "currentArtifactEvidence": "error-stack-engine-check.json",
+      "regressionScope": "Same revision-23 artifact passes 14 dynamic-import, 19 ModuleWrap, 15 synthetic, 14 context and 23 private-key cases and drivers; raw regressions retained under .context/node-error-stack",
       "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
@@ -295,14 +327,20 @@
       "dynamicImportFailures": 0,
       "dynamicImportDriverRuns": 3,
       "dynamicImportDriverFailures": 0,
-      "dynamicImportSuccessHostDiagnostics": 0
+      "dynamicImportSuccessHostDiagnostics": 0,
+      "errorStackEvidence": "error-stack-engine-result.json",
+      "errorStackCases": 21,
+      "errorStackFailures": 0,
+      "errorStackDriverRuns": 3,
+      "errorStackDriverFailures": 0,
+      "errorStackSuccessHostDiagnostics": 0
     },
     "Chromium": "not run",
     "Firefox": "not run",
     "WebKit": "not run"
   },
   "nextWork": [
-    "Complete default native metadata/resolver and connect one genuine realm/process/binding owner with builtins/errors/util; implement real structured stack contracts and execute internal/bootstrap/realm unchanged",
+    "Connect native realm/process/builtins/errors/util ownership and execute internal/bootstrap/realm unchanged, using actual guest metadata, canonical symbols/compiler and the implemented stack callbacks",
     "Preserve source/engine failures; do not substitute public modules or native-reference configuration",
     "Continue complete backend catalog while integrating startup; CJS/ESM and four-host startup remain unrun"
   ]
