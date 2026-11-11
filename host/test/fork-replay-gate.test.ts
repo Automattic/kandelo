@@ -93,7 +93,7 @@ describe("fork replay readiness coordinator", () => {
 });
 
 describe("fork replay Worker lifecycle observer", () => {
-  function observed(isCurrentGeneration = () => true) {
+  function observed(isCurrentGeneration = () => true, retireWithProcessExit = true) {
     const adapter = new MockWorkerAdapter();
     const worker = adapter.createWorker({ pid: 41 });
     const coordinator = new ForkReplayGateCoordinator("fork child pid=41");
@@ -102,6 +102,7 @@ describe("fork replay Worker lifecycle observer", () => {
       worker,
       41,
       isCurrentGeneration,
+      retireWithProcessExit,
     );
     return { coordinator, worker: adapter.lastWorker! };
   }
@@ -183,7 +184,7 @@ describe("fork replay Worker lifecycle observer", () => {
     }
     let finish!: () => void;
     const teardown = new Promise<void>(resolve => { finish = resolve; });
-    retireForkReplayWorker(worker, teardown);
+    expect(retireForkReplayWorker(worker, teardown)).toBe(true);
     worker.simulateExit(0);
     let reason: unknown;
     try {
@@ -207,7 +208,7 @@ describe("fork replay Worker lifecycle observer", () => {
   it("preserves a real Worker failure before exit takes ownership", async () => {
     const { coordinator, worker } = observed();
     worker.simulateError(new Error("real construction failure"));
-    retireForkReplayWorker(worker, Promise.resolve());
+    expect(retireForkReplayWorker(worker, Promise.resolve())).toBe(false);
     const reason = await coordinator.waitUntilReady().catch(error => error);
     expect(reason.message).toContain("real construction failure");
     expect(await waitForForkReplayRetirement(coordinator, reason)).toBe(false);
@@ -217,9 +218,19 @@ describe("fork replay Worker lifecycle observer", () => {
     const { coordinator, worker } = observed();
     const teardownFailure = new Error("exact detach failed");
     const teardown = Promise.reject(teardownFailure);
-    retireForkReplayWorker(worker, teardown);
+    expect(retireForkReplayWorker(worker, teardown)).toBe(true);
     const reason = await coordinator.waitUntilReady().catch(error => error);
     await expect(waitForForkReplayRetirement(coordinator, reason)).rejects.toBe(teardownFailure);
+  });
+
+  it("leaves borrowed-child retirement to its own lifetime protocol", async () => {
+    const { coordinator, worker } = observed(() => true, false);
+    expect(retireForkReplayWorker(worker, Promise.resolve())).toBe(false);
+    expect(coordinator.currentPhase).toBe("pending");
+    worker.simulateExit(0);
+    const reason = await coordinator.waitUntilReady().catch(error => error);
+    expect(await waitForForkReplayRetirement(coordinator, reason)).toBe(false);
+    expect(reason.message).toContain("Worker exited before replay readiness");
   });
 
   it("does not retire a replacement Worker or a committed replay", async () => {

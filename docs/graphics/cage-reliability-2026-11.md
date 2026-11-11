@@ -1515,3 +1515,28 @@ After correcting that test, all 10 host-parity assertions pass; the other
 152 checks had already passed. The 30 fork-allocation ownership checks,
 8 native-baseline checks and normal host distribution/type build also pass.
 These are source and distribution checks, not a passing browser memory gate.
+
+Review of cancellation ordering adds one exact-generation rule: when the
+exit owner cancels pending replay, both hosts mark that child as
+intentionally retiring before yielding. A replay wake can precede a queued
+Rust retirement marker; its resulting wrapper error must not become a
+second crash report. Main/thread memory-fence handlers remain active,
+and a prior replay failure prevents this expected-retirement classification.
+The unpublished port-56522 preparation was intentionally stopped with
+verified owned process group 1938 (status 143) before applying that source
+change. No preview was serving there; frozen public previews are unchanged.
+The gate/host parity checks pass 29/29 for this ordering.
+
+The Firefox inherited-cursor failure has additional retained fixture data:
+the guest reports readiness, empty stderr and no diagnostics. The cursor
+screenshot takes 20,098 ms against a 10-second polling deadline and never
+produces a sampled cursor color. It is an observation timeout; the original
+failure does not prove a wrong cursor pixel. Its fixture binary, intermediate
+captures and JSON are retained with the full trace.
+
+The final ordering check is 30/30, with a fresh normal host distribution/type
+build passing. Process-exit handoff is explicitly enabled only for ordinary
+fork; the borrowed vfork child's existing lifetime/containment protocol is
+unchanged and has a refusal regression. Both replay files are now part of
+the canonical browser-memory source gate. New normal preparation follows
+these stable source inputs; the cancelled preparation is not validation.

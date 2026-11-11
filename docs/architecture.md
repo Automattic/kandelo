@@ -2866,6 +2866,12 @@ Both hosts join that teardown instead of rolling back the exited child.
 A prior worker or protocol failure still wins; a synthetic Worker exit or
 matching error text cannot supply this ownership. The same cancellation is
 rechecked after readiness and after asynchronous launch-state queries.
+When that owner cancels pending replay, it marks only the exact child as
+intentionally retiring before yielding. Cancellation can wake guest glue
+before a queued Rust retirement marker is written. Fence listeners remain
+active; an expected cancellation must not become a second crash report.
+This handoff is enabled only for ordinary fork. A vfork borrower's existing
+lifetime completion and address-space containment protocol remains its owner.
 This preserves the syscall-time snapshot even if a sibling thread execs while
 the child Worker is prepared. The child copies the current length, not the
 configured maximum, because `memory.size()` and the accessible address-space

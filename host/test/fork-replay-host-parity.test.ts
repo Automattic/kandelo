@@ -78,6 +78,9 @@ describe.each([
     const retire = source.indexOf("retireForkReplayWorker(expectedWorker, teardown)");
     expect(publish).toBeGreaterThanOrEqual(0);
     expect(retire).toBeGreaterThan(publish);
+    const mark = source.indexOf("intentionallyTerminated.add(expectedWorker)", retire);
+    expect(mark).toBeGreaterThan(retire);
+    expect(source.slice(retire, mark)).not.toContain("await ");
     expect(source.slice(publish, retire)).not.toContain("await ");
     expect(handler.match(/forkReplay\.throwIfCancelled\(\)/g)).toHaveLength(3);
   });

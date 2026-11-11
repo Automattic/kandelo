@@ -2442,6 +2442,7 @@ async function handleOrdinaryFork(
       launchedWorker,
       childPid,
       () => processes.get(childPid)?.worker === launchedWorker,
+      true,
     );
     installProcessWorkerListeners(worker, childPid);
     const startDisposition = await retryKernelEntryResult(() =>
@@ -2506,7 +2507,6 @@ async function handleOrdinaryFork(
       if (signal < 0) {
         throw new Error(`Cannot confirm exited fork child ${childPid} before replay commit`);
       }
-      forkReplay.cancel(new Error(`Fork child ${childPid} exited before replay commit`));
       lifecycleTeardownStarted = true;
       await awaitFinalizedProcessTeardown(
         childPid,
@@ -3600,7 +3600,12 @@ async function finishProcessExit(
     ownedJobs.detached(pid);
   })();
   processTeardowns.set(expectedWorker, teardown);
-  retireForkReplayWorker(expectedWorker, teardown);
+  if (retireForkReplayWorker(expectedWorker, teardown)) {
+    // Replay cancellation can wake guest glue before the queued Rust
+    // retirement wake sets its marker. Exit already owns this exact child;
+    // keep its fence listeners active without diagnosing a second crash.
+    intentionallyTerminated.add(expectedWorker);
+  }
 
   // The process is already a kernel-side zombie at this point. Report the
   // exit before worker-thread teardown so a slow termination cannot make

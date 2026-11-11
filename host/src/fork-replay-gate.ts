@@ -95,13 +95,14 @@ const processRetirements = new WeakMap<Error, {
 
 /** Called by the exact process-exit owner after publishing its teardown.
  * A Worker exit event alone cannot authorize abandoning a fork transaction. */
-export function retireForkReplayWorker(worker: WorkerHandle, completion: Promise<void>): void {
+export function retireForkReplayWorker(worker: WorkerHandle, completion: Promise<void>): boolean {
   const coordinator = observedReplays.get(worker);
   if (!coordinator || (coordinator.currentPhase !== "pending"
-      && coordinator.currentPhase !== "ready")) return;
+      && coordinator.currentPhase !== "ready")) return false;
   const error = new Error(`${coordinator.context}: process exit owns replay retirement`);
   processRetirements.set(error, { coordinator, completion });
   coordinator.cancel(error);
+  return true;
 }
 
 /** Preserve the first failure and join the existing exit owner. Never roll
@@ -206,8 +207,11 @@ export function observeForkReplayWorker(
   worker: WorkerHandle,
   pid: number,
   isCurrentGeneration: () => boolean,
+  retireWithProcessExit = false,
 ): void {
-  observedReplays.set(worker, coordinator);
+  // Ordinary fork may join its independent child's exit owner. vfork keeps
+  // its borrower-specific completion and address-space containment protocol.
+  if (retireWithProcessExit) observedReplays.set(worker, coordinator);
   const protocolFailure = (detail: string): void => {
     coordinator.cancel(new Error(`${coordinator.context}: ${detail}`));
   };
