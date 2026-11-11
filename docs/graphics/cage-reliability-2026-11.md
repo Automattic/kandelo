@@ -1,52 +1,42 @@
 # Cage reliability follow-up — 2026-11-09
 
-Status (2026-11-10): draft follow-up. Startup and terminal-handoff repairs,
-shared graphics-buffer comparison/copy corrections, and a CSS-sized Cage
-display are implemented. Cage uses one guest pixel per CSS pixel instead
-of the earlier fixed 1280×720 cap. The original rendering/resize/restart
-matrix passes 15/15 on the frozen host-adapter-5 canonical build across
-Chromium, Firefox and WebKit. The later shifted-command check fails that
-old terminal. The repaired terminal passes the current normal-entry Chromium
-check and all five Node wlterm checks, including shifted input under Cage
-and Sway.
-On that frozen build, actual Steel Sky rendering and game-menu input pass
-under Cage in all three engines; the corrected Sway check passes Chromium
-and Firefox but fails WebKit with a visibly corrupted terminal before the
-game appears.
+Status (2026-11-10 late evening): focused repairs verified on frozen runtime
+`8ddcdcedc7`; integration with the current PR base remains pending. Startup and terminal
+handoff repairs, shared graphics-buffer comparison/copy corrections, and
+a CSS-sized Cage display are implemented. Cage uses one guest pixel per
+CSS pixel instead of the earlier fixed 1280×720 cap. Reviewed runtime
+`8ddcdcedc7` integrates pinned main `8161769ed9d2`, preserving program
+ABI 56 and host adapter 6. Its coherent normal preview is on port 56522.
 
-The current source integrates pinned main
-`8161769ed9d2394e7793bfd82be08cbf890e7145`, inheriting its published host
-adapter 6 and program ABI 56. Before the latest shutdown repair, source
-ownership/lifecycle passed 267/267, source graphics passed 2,353/2,353,
-prepared-product host checks passed 239/239, and offline frozen-program
-compatibility passed 6/6. The original combined desktop matrix completed
-104/120: all 15 Cage and 12 Sway cases passed. Its other failures include
-12 cursor-fixture cases, two WebKit storage-fixture cases and two ScummVM
-archive-import cases; the latter reproduces on pinned main.
+Current validation: the full memory gate passes **18/18** browser cases,
+including four mixed switching cycles per engine, plus 300 source checks,
+Node teardown 3/3 and Bun teardown 7/7. The complete desktop inventory is
+**117/120**, including Cage **15/15** and Sway **12/12**, with no skips or
+retries. The three red cases concern archive SDL initialization and Firefox
+inherited-rendering pixel capture; both selections also fail on pinned main.
+Baseline records do not turn the candidate failures green. Original failed
+runs and media remain retained in the historical sections below.
 
-The original integrated memory gate completed 17/18 browser cases. After
-its factory-cancellation repair, the fresh full gate at runtime `2eaec845f9`
-completed **15/18**: all three repeated-switch cases failed. Chromium and
-Firefox reported intentional child-Worker termination while fork replay
-readiness was pending; WebKit reached a ready WordPress kernel but no web
-iframe appeared. The fresh desktop matrix completed **114/120**, with no
-skips. A later exact-exit retirement correction and a graphics-baseline
-reservation policy are under validation; neither red result is cleared by
-isolated unit checks. Original Steel Sky checks passed Cage 3/3 and Chromium Sway;
-Firefox's menu assertion and intermittent WebKit allocation failures remain
-adverse observations. All nine enabled Node/browser before/after benchmark
-comparisons remain unfinished. No complete R1 or native-feel acceptance is
-claimed. Older host-adapter-5 observations, including the cap-only 18/18
-memory result and its other failed configurations, remain separate evidence.
+The normal-entry shifted-input/repaint/exit check passes 1/1; actual graphics
+comparison/publication through memory growth passes all three engines and
+Bun. Native fork passes 16/16 across wasm32/wasm64, POSIX kill passes 5/5
+on Node and Chromium, and frozen-program compatibility passes 6/6. The ABI
+snapshot and supported program baseline match pinned main; all 18 preserved
+cohort hashes remain unchanged. Earlier source graphics 2,353/2,353 and
+prepared-product host 239/239 results precede the latest retirement fix.
 
-The reviewed runtime at `8ddcdcedc7` now has a coherent normal preview on
-port 56522. Its boot, shifted-input, repaint and exit smoke check passes
-1/1; actual comparison/publication through memory growth passes all three
-browser engines. The new memory gate has passed 300 source checks and its
-Node (3) and Bun (7) stages; its 18 browser cases and the fresh 120-case
-desktop matrix are running. These partial results do not replace their
-previous red verdicts. Current frozen-program compatibility passes 6/6,
-and the ABI snapshot and supported program baseline match pinned main.
+The original actual Steel Sky run is **5/6**, with Cage passing all three
+engines and Firefox Sway failing its menu check during the intro. A separate
+normal Escape-to-skip-intro observation also finishes 5/6: Firefox Sway
+opens its menu over the game, while WebKit Sway fails before game launch
+with an out-of-memory exception during archive reading. Both failed runs
+remain retained. All nine Node/Chromium benchmark suites now complete on both revisions,
+with three rounds each. The final pointer inventory is 9/12, with eleven
+retained profiles: two large main controls observe only one cursor position,
+and one Firefox candidate context fails before the test starts. The original
+timing flags and targeted controls remain recorded below; no broad
+performance-neutrality, complete R1, native-display latency or native Safari
+acceptance is claimed.
 
 This delivery investigates work package R1 after #1594. It does not activate
 B2–B6/C1–C3 or claim full graphics/native-feel acceptance.
@@ -1660,3 +1650,192 @@ Retained evidence under `.context/cage-coherence-20261109/` includes
 The 12 paired pointer observations and all nine Node/Chromium benchmark
 comparisons remain unfinished. No complete R1, native-display latency or
 native Safari acceptance claim follows from these functional results.
+
+
+### Separate intro-skip result and measurement-fixture corrections
+
+The separate six-case run `cage-steel-sky-intro-skip-1110-221348-fa64`
+finishes 5/6 in 10.7 minutes. All three Cage cases pass again. Firefox Sway
+now opens the actual ScummVM menu over the city scene after a single normal
+Escape action; the screenshot has been visually inspected. The exact staged
+upstream 2026.3.0 Sky intro source maps Escape to its Skip action before the
+normal game loop. This observation does not erase the original Firefox
+menu failure.
+
+WebKit Sway fails earlier, before that Escape or menu action: the guest says
+`error: zipfile read error` and `scummvm-play: Unpacking failed`. Its trace
+records PID 162's `read(3, 8192)` throwing `RangeError: Out of memory` in the
+kernel host path. Thus the visible-game deadline is a consequence of failed
+unpacking; it is not evidence of an input or rendering failure. The same
+six-case run had already passed WebKit Cage. Earlier unchanged-main WebKit
+allocation failures are retained separately; the new observation does not
+establish their common cause, and the graphics-baseline guard is not claimed
+to resolve every allocation failure.
+
+The private run initially sets `PLAYWRIGHT_JSON_OUTPUT_NAME`, but the shared
+run helper supplies the higher-priority `PLAYWRIGHT_JSON_OUTPUT_FILE`.
+The complete original JSON is recovered from that run's unique report
+location, without rerunning any case, and retained as
+`retirement-steel-sky-intro-skip-results.json`. All failure media are copied
+to `retirement-steel-sky-intro-skip-failures/`. Subsequent measurements set
+the correct explicit file variable.
+
+The first 12-case pointer observation finishes 7/12. Four Firefox cases
+fail in fixture setup because the debugger-reported Worker URL is not a
+valid base for `new URL`; no Firefox timing result is claimed. The Chromium
+3840-wide baseline observes only one distinct cursor position, failing the
+existing observer-motion requirement. Its single observation is not a
+qualified latency distribution. A corrected private fixture reads the live
+worker realm's location, records both URL values, and waits for the final
+delivered pointer position to reach a cursor callback instead of assuming
+a fixed 1.5-second drain proves completion. Original source, raw profiles,
+failed assertions and all eight available profiles remain retained. These
+changes affect measurement fixtures only; the reviewed runtime is unchanged.
+
+
+## Completed benchmark scope and bounded cursor observations
+
+Runtime remains `8ddcdcedc7`; benchmark evidence head is docs-only
+`6505c6d331`. Baseline is frozen main `8161769ed9d2`, with its own normal
+SDK/products and the recorded eight build-only classifications/Sortix case
+adjustment. Later fetched main `f8612113e7` is not integrated into these
+measurements. No source or cache identities are forced.
+
+All nine suites complete, with three rounds per suite, on Node and Chromium
+for both revisions: syscall I/O, stdin throughput, process lifecycle, spawn
+scratch, WordPress, and MariaDB Aria/InnoDB on wasm32/wasm64. There are no
+skipped or missing workloads. Each revision has one Node parent and one
+Chromium parent; three repeated rounds are not three independent parent
+launches. Required input hashes and fork symbols are checked. Both sides'
+normal resolver selections and existing legacy contract-stamp warnings from
+the standalone browser database images remain in the logs. Node static
+artifacts and kernel match; only host sources/compiled worker differ.
+Browser static artifacts/kernel match; host sources and the normal
+WordPress VFS differ. The full comparison retains those exact selections.
+
+The initial comparison flags 19/48 Node metrics and 3/43 Chromium metrics
+at the repository's five-percent threshold. Node's largest flags concern
+I/O, followed by fork (+19.0%), total exec (+11.0%) and InnoDB insertion
+(+5.74%). Chromium flags spawn (+5.11%), Aria join (+5.62%) and wasm64
+InnoDB join (+8.12%). These are threshold observations, not significance
+tests. Background workspace and OS activity are recorded; their presence
+alone does not establish the cause of a difference.
+
+Two focused candidate → baseline → baseline → candidate controls each use
+four fresh Node parents with three rounds of the selected suite. The I/O
+slowdown does not recur at its original scale. Process timings vary by run
+order: the first candidate is slower than the controls, while the last is
+faster. Neither the original flags nor the adverse first candidate is
+removed. These controls support a variability finding, not a universal
+no-regression claim. Fork uses the unchanged default sparse-copy policy.
+
+| Fresh Node parent | getpid µs | Pipe MB/s | Fork ms | Exec total ms | Hello total ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| candidate-1 | 25.04 | 63.42 | 128.14 | 5372.37 | 5424.51 |
+| baseline-1 | 24.99 | 60.22 | 106.61 | 4609.45 | 4455.11 |
+| baseline-2 | 25.08 | 60.16 | 94.59 | 4059.83 | 4021.99 |
+| candidate-2 | 25.17 | 60.17 | 91.25 | 3819.08 | 3825.37 |
+
+The raw four full reports, both repository `benchmarks/compare.ts` tables,
+threshold flags, required artifact checks, parent contexts and both narrow
+control selections are retained under
+`.context/cage-coherence-20261109/normal-benchmarks/`.
+
+### Final pointer method and partial inventory
+
+Playwright's worker debugger URL/evaluation path fails in Firefox. The
+next private route-based observer never intercepts worker imports in
+Firefox/WebKit: its failure diagnostics show no intercepted module. These
+are measurement installation failures, not evidence of guest render
+failure. The original 7/12, 7/12 and 3/12 attempts and every failure trace,
+screenshot and inline attachment are retained separately.
+
+The final method uses two private loopback HTTP/WebSocket proxies to the
+unchanged normal servers. They append the same observer to the actual
+cursor module as it loads. A test-owned BroadcastChannel carries only
+copied numbers/booleans; it never carries guest memory or changes the
+production worker protocol. The original cursor method runs synchronously;
+the observer is restored and the channel closed after capture. Original and
+served module hashes, exact backend, per-test channel and lifecycle records
+are retained. Eleven tests each intercept exactly one module and produce
+one profile. Both private proxy listeners close automatically after the run;
+the published preview remains on port 56522.
+
+The full attempted inventory is **9/12**, with no retries/skips. Chromium
+and Firefox's 3840-wide main controls each observe only one position and
+fail the unchanged motion qualification. Their one sample is not a latency
+distribution. Firefox candidate 1920 fails the unchanged 120-second context
+setup deadline before the test body, before any Cage launch or probe setup.
+It is retained as missing data, with no unchanged rerun. The other nine
+cases pass; all eleven profiles observe the final delivered pointer
+position. Every copied frame has pixels/paint state, and clock matching
+has no negative latencies. The unchanged whole-inventory qualifier exits
+nonzero; the separate assessment explicitly reports partial coverage.
+
+| Engine | CSS width | Distinct cursor positions: main → candidate | Callback p50 ms: main → candidate |
+| --- | ---: | --- | --- |
+| chromium | 1920 | 17 → 60 | 56.735 → 17.58 |
+| chromium | 3840 | 1 → 40 | — → 35.425 |
+| firefox | 1920 | 18 → missing | 61.8 → — |
+| firefox | 3840 | 1 → 30 | — → 43.96 |
+| webkit | 1920 | 26 → 39 | 44.54 → 36.04 |
+| webkit | 3840 | 15 → 22 | 74.3 → 82.3 |
+
+Each observation requests 60 trusted moves at 60 Hz, plus the initial
+placement. Actual delivery is retained: about one second for Chromium and
+Firefox, 1.11 seconds for 1920-wide WebKit and 2.01–2.05 seconds for its
+3840-wide sweeps. Counts are positions observed in real cursor callbacks,
+not FPS. Callback times are instrumented worker observations, not native
+display presentation. One sweep per configuration does not establish
+steady-state distributions or native feel. In particular, the missing
+Firefox 1920 candidate has no quantitative comparison, and WebKit's larger
+mode does not improve every latency statistic. The user's independent
+Firefox responsiveness report remains subjective evidence.
+
+Reproduction commands (inside the declared dev shell for actual workloads):
+
+```sh
+# Each checkout, one parent per host and three rounds per suite:
+npx tsx benchmarks/run.ts --host=node --rounds=3
+npx tsx benchmarks/run.ts --host=browser --rounds=3
+# Focused controls, alternating candidate/main/main/candidate:
+npx tsx benchmarks/run.ts --host=node --suite=syscall-io --rounds=3
+npx tsx benchmarks/run.ts --host=node --suite=process-lifecycle --rounds=3
+# Full 12-case private proxy observation, no retries:
+node .scratch/cage-coherence-20261109/run-pointer-proxies.mjs
+```
+
+Private source, hashes and scripts survive under
+`retirement-comparison-source/`; the final inventory, raw profiles, CSV and
+explicit partial verdict are under `retirement-pointer-proxy-observations/`.
+All four pointer attempts' nonpassing attachments are copied into their
+separate `retirement-pointer*-failures/` directories. Final actual HTTP
+shell/kernel bytes still match the reviewed normal identities in
+`retirement-final-preview-http.json`.
+
+The focused Cage repairs are reviewable: current Cage 15/15, actual Steel
+Sky under Cage 3/3 on each of two distinct input paths, and the canonical
+memory gate 18/18 pass. The wider desktop result stays 117/120. The main
+archive/inherited-capture failures, WebKit/Sway archive-read allocation
+failure and partial performance observations remain explicit R1 evidence
+and follow-up work. Text sharpness is the maintainer-approved visual
+follow-up. Full R1/native-feel acceptance is not claimed; B2–B6/C1–C3 remain
+paused. Native Safari is unrun. This record does not waive a gate or
+attribute the remaining allocation/capture failures to a browser defect.
+
+
+## PR base update and integration boundary
+
+The final GitHub check reports PR #1678 targets `develop`, with merge
+conflicts. The maintainer changed its base at 2026-11-11 00:47:15 UTC.
+Fetched `develop` is `200d7bbfacdbab91abcadca270689e813060f2c2`,
+including the repository workflow change, additional package documentation,
+random-device read changes and the Node 24.22 toolchain update. The current
+measurements use the earlier Node 24.15 dev shell and pinned main 816;
+they are not combined validation of that new base.
+
+The PR remains draft while conflicts are resolved on the feature branch.
+The existing reviewed preview and its identities will be preserved before
+any source transition. Integration results must be recorded separately;
+none of the completed or failed frozen-runtime runs is reclassified.
+No PR merge or promotion to main/develop is authorized by this checkpoint.
