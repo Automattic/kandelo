@@ -90,7 +90,7 @@ test("lazy jq filters JSON with regexes and decimal precision in a browser", asy
         filter: await run(["-c", "[.items[] | select(.active) | .value] | add"],
           '{"items":[{"active":true,"value":2},{"active":false,"value":99},{"active":true,"value":3}]}'),
         regex: await run(["-nc", '"café-42" | capture("(?<word>\\\\p{L}+)-(?<number>[0-9]+)")']),
-        decimal: await run(["-nc", "123456789012345678901234567890"], "", "/bin/jq"),
+        decimal: await run(["-nc", "123456789012345678901234567890"]),
         falseStatus: await run(["-ne", "false"]),
         downloadsAtBoot,
         completedDownloads: downloads.filter(({ status }) => status === "complete").length,
