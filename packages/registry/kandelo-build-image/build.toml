@@ -5,6 +5,7 @@ inputs = [
 
   "packages/registry/kandelo-build-image/build-kandelo-build-image.sh",
   "images/vfs/scripts/build-kandelo-build-image.ts",
+  "images/vfs/lib/init/shell-binaries.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "host/src/vfs/image-helpers.ts",
   "host/src/vfs/vfs-image-filesystem.ts",

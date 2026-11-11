@@ -119,6 +119,14 @@ name = "flex-docs"
 class = "browser-product"
 
 [[packages]]
+name = "patch"
+class = "user-software"
+
+[[packages]]
+name = "patch-docs"
+class = "browser-product"
+
+[[packages]]
 name = "binaryen"
 class = "platform"
 

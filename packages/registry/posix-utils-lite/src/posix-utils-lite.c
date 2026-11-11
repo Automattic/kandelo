@@ -1963,50 +1963,6 @@ static int util_pax(int argc, char **argv) {
     return rc;
 }
 
-static int util_patch(int argc, char **argv) {
-    const char *patch_path = NULL;
-    for (int i = 1; i < argc; i++) {
-        if ((streq(argv[i], "-i") || streq(argv[i], "--input")) && i + 1 < argc) {
-            patch_path = argv[++i];
-        }
-    }
-    FILE *in = patch_path ? fopen(patch_path, "r") : stdin;
-    if (!in) {
-        perror(patch_path);
-        return 1;
-    }
-    char *line = NULL;
-    size_t cap = 0;
-    int changed = 0;
-    while (getline(&line, &cap, in) >= 0) {
-        if (strncmp(line, "+++ ", 4) == 0) {
-            char *path = line + 4;
-            while (*path == 'a' || *path == 'b' || *path == '/') {
-                if (*path == '/' && (path == line + 4 || path[-1] == 'a' || path[-1] == 'b')) {
-                    path++;
-                    break;
-                }
-                if (*path == '/') break;
-                path++;
-            }
-            char *tab = strpbrk(path, "\t\n ");
-            if (tab) *tab = '\0';
-            if (*path) {
-                printf("patching file %s\n", path);
-                changed = 1;
-            }
-        }
-    }
-    free(line);
-    if (in != stdin) {
-        fclose(in);
-    }
-    if (!changed) {
-        fprintf(stderr, "patch: only unified patch metadata scanning is available in this compact build\n");
-    }
-    return changed ? 0 : 1;
-}
-
 static int dispatch(const char *name, int argc, char **argv) {
     if (streq(name, "ar")) return util_ar(argc, argv);
     if (streq(name, "asa")) return util_asa(argc, argv);
@@ -2029,7 +1985,6 @@ static int dispatch(const char *name, int argc, char **argv) {
     if (streq(name, "msgfmt")) return util_msgfmt(argc, argv);
     if (streq(name, "ngettext")) return util_ngettext(argc, argv);
     if (streq(name, "nm")) return util_nm(argc, argv);
-    if (streq(name, "patch")) return util_patch(argc, argv);
     if (streq(name, "pax")) return util_pax(argc, argv);
     if (streq(name, "pgrep")) return util_pgrep(argc, argv);
     if (streq(name, "ps")) return util_ps(argc, argv);

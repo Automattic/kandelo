@@ -127,11 +127,6 @@ wasm = "nm.wasm"
 fork_instrumentation = "disabled"
 
 [[outputs]]
-name = "patch"
-wasm = "patch.wasm"
-fork_instrumentation = "disabled"
-
-[[outputs]]
 name = "pax"
 wasm = "pax.wasm"
 fork_instrumentation = "disabled"

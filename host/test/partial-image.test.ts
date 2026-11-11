@@ -55,6 +55,14 @@ const PROBES: Record<string, string> = {
   // hang: a `/dev/kmsg` reader ended early by `head`, followed by a process
   // opening an AF_UNIX datagram socket, never completed. It was measured as
   // fixed over five consecutive runs, so if it comes back it surfaces here.
+  patch: "patch --version | head -n 1",
+  // The LLVM binary tools under their binutils names; each name selects the
+  // tool's mode, so `ranlib`, `strip` and `addr2line` print their own usage.
+  // No plain `readelf` (see LLVM_BINARY_TOOL_SPECS).
+  clang: "for t in ar ranlib nm strip objcopy objdump llvm-readelf size strings c++filt addr2line; do " +
+    "\"$t\" --version | grep -q 'LLVM version' && echo \"llvm-tool-ok $t\"; done; " +
+    "readlink /usr/bin/strip; command -v readelf || echo no-readelf",
+  "patch-docs": "man -w patch",
   toybox: "dmesg -r | head -n 1; dmesg -S | head -n 1 | sed 's/^/klog: /'; logger -s -t probe hello 2>&1",
 };
 
@@ -129,6 +137,18 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
         // that toybox only prints when it parsed the kernel's rendering.
         expect(stdout).toMatch(/klog: \[\s*\d+\.\d{6}\] \S/);
         expect(stdout).toContain("probe: hello");
+      }
+      if (manifest!.packages.includes("patch")) expect(stdout).toContain("GNU patch 2.8");
+      if (manifest!.packages.includes("clang")) {
+        for (const tool of ["ar", "ranlib", "nm", "strip", "objcopy", "objdump", "llvm-readelf", "size", "strings", "c++filt", "addr2line"]) {
+          expect(stdout).toContain(`llvm-tool-ok ${tool}\n`);
+        }
+        // The posix-utils-lite placeholder was displaced, not left beside it.
+        expect(stdout).toContain("/usr/bin/llvm-objcopy\n");
+        expect(stdout).toContain("no-readelf\n");
+      }
+      if (manifest!.packages.includes("patch-docs")) {
+        expect(stdout).toContain("/usr/share/man/man1/patch.1");
       }
       if (manifest!.packages.includes("cargo")) expect(stdout).toContain("cargo 1.97.0-nightly");
       if (manifest!.packages.includes("rustc")) expect(stdout).toContain("rustc 1.97.0-nightly");

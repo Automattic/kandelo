@@ -1908,7 +1908,10 @@ The contract:
   `depends_on`. The machine boots exactly those artifacts. The build image is
   the canonical rootfs with every tool resident, plus `kandelo-sdk.zip`
   expanded under `/usr` (`cc`, `c++`, `wasm32posix-ar`, `wasm32posix-ranlib`
-  and the LLVM tools). It is never served to browsers.
+  and the LLVM tools) and the clang package's binary tools in `/usr/bin`
+  (`ar`, `ranlib`, `nm`, `strip`, `objdump`, `llvm-readobj`, ...; see
+  `LLVM_BINARY_TOOL_SPECS` in `images/vfs/lib/init/shell-binaries.ts`).
+  It is never served to browsers.
 - `build.toml` `inputs` lists `scripts/guest-build.sh`,
   `scripts/guest-build.ts`, `host/src/node-guest-build.ts` and the host runtime
   it imports, and `cargo:runtime-core`, as `coreutils-docs` does: the kernel and

@@ -547,6 +547,11 @@
       "role": "lazy-archive"
     },
     {
+      "name": "patch-docs",
+      "version": "2.8",
+      "role": "lazy-archive"
+    },
+    {
       "name": "php-docs",
       "version": "8.5.12",
       "role": "lazy-archive"
@@ -610,6 +615,11 @@
       "name": "kandelo-sdk-browser-bundle",
       "version": "21.1.7",
       "role": "lazy-archive"
+    },
+    {
+      "name": "clang",
+      "version": "21.1.7",
+      "role": "lazy-file"
     },
     {
       "name": "cargo",

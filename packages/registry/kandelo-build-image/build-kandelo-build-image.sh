@@ -4,6 +4,8 @@
 # 1. The canonical rootfs builder, with every package output installed
 #    eagerly (no lazy references to resolve at build time).
 # 2. The guest toolchain archive expanded under /usr.
+# 3. The LLVM binary tools (objdump, readelf, ...) from clang's outputs,
+#    replacing the rootfs's posix-utils-lite ar, nm, strip and strings.
 #
 # Resolver-only: the image is composed from exact declared dependency
 # outputs, so there is no standalone developer mode.
@@ -13,7 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 for var in WASM_POSIX_DEP_OUT_DIR WASM_POSIX_DEP_WORK_DIR \
-    WASM_POSIX_DEP_KANDELO_SDK_BROWSER_BUNDLE_DIR SOURCE_DATE_EPOCH; do
+    WASM_POSIX_DEP_KANDELO_SDK_BROWSER_BUNDLE_DIR WASM_POSIX_DEP_CLANG_DIR \
+    SOURCE_DATE_EPOCH; do
     if [ -z "${!var:-}" ]; then
         echo "ERROR: $var is required; build with ./run.sh build kandelo-build-image" >&2
         exit 2
@@ -50,7 +53,8 @@ TSX_TMP="$(mktemp -d /tmp/kandelo-build-image.XXXXXX)"
 trap 'rm -rf -- "$TSX_TMP"' EXIT
 TMPDIR="$TSX_TMP" node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
     "$REPO_ROOT/images/vfs/scripts/build-kandelo-build-image.ts" \
-    "$EAGER_ROOTFS" "$SDK_ZIP" "$OUT_DIR/kandelo-build-image.vfs.zst"
+    "$EAGER_ROOTFS" "$SDK_ZIP" "$WASM_POSIX_DEP_CLANG_DIR" \
+    "$OUT_DIR/kandelo-build-image.vfs.zst"
 
 [ -f "$OUT_DIR/kandelo-build-image.vfs.zst" ] || {
     echo "ERROR: kandelo-build-image.vfs.zst was not produced" >&2

@@ -1,3 +1,5 @@
+import type { VfsImageFilesystem } from "../../../../host/src/vfs/vfs-image-filesystem";
+
 /**
  * GNU coreutils multicall binary command names.
  *
@@ -45,6 +47,10 @@ export interface VfsBinarySpec {
   /** The package that provides the file, when it is not `id` — a package
    *  whose runtime data files each need their own spec. */
   dependency?: string;
+  /** Base-image placeholder paths this program replaces. The base rootfs
+   *  installs posix-utils-lite stand-ins there; a composer that installs
+   *  this program removes them first, so its own path or alias wins. */
+  displaces?: readonly string[];
 }
 
 /**
@@ -67,6 +73,27 @@ export function shellLazySpecDependency(spec: VfsBinarySpec): string {
   return spec.dependency ?? spec.id;
 }
 
+/** The base-image placeholder paths `spec`'s program replaces. */
+export function shellLazySpecDisplaces(spec: VfsBinarySpec): readonly string[] {
+  return spec.displaces ?? [];
+}
+
+/**
+ * Remove the base-image placeholders a program replaces, so its own path and
+ * aliases can claim them. Symlinking over an existing entry is a silent
+ * no-op, which would leave the placeholder in place.
+ */
+export function displaceBasePlaceholders(fs: VfsImageFilesystem, paths: readonly string[]): void {
+  for (const path of paths) {
+    try {
+      fs.lstat(path);
+    } catch {
+      continue;
+    }
+    fs.unlink(path);
+  }
+}
+
 /** The lazy file's permission bits. */
 export function shellLazySpecMode(spec: VfsBinarySpec): number {
   return spec.mode ?? 0o755;
@@ -75,6 +102,93 @@ export function shellLazySpecMode(spec: VfsBinarySpec): number {
 export function shellLazyPlaceholderUrl(spec: VfsBinarySpec): string {
   return `${SHELL_LAZY_URL_PREFIX}${spec.resolverPath}`;
 }
+
+/**
+ * The LLVM binary tools, from the clang package's outputs. They answer to
+ * their binutils names by argv[0] (llvm-ar as ranlib, llvm-objcopy as strip,
+ * llvm-symbolizer as addr2line), so each of those names is a symlink to the
+ * one program. There is deliberately no plain `readelf`: Kandelo programs
+ * are Wasm, and scripts that call `readelf` ask ELF questions (`readelf -d`
+ * for NEEDED and SONAME) that llvm-readobj answers on Wasm with empty output
+ * and exit 0. Without the name, such a script fails visibly instead of
+ * concluding there are no dependencies; llvm-readobj and llvm-readelf stay. They replace the base image's
+ * posix-utils-lite ar, nm, strip and strings: its nm guessed symbols from
+ * strings in the file, its ar dropped existing members, its strip removed
+ * every custom section, including the ABI section a program needs to load,
+ * and its strings ignored its options.
+ *
+ * The shell installs them as lazy files and the build image as resident
+ * files; both read this list.
+ */
+export const LLVM_BINARY_TOOL_SPECS = [
+  {
+    id: "llvm-ar",
+    dependency: "clang",
+    resolverPath: "programs/wasm32/clang/llvm-ar.wasm",
+    vfsPath: "/usr/bin/llvm-ar",
+    symlinks: ["/usr/bin/ar", "/usr/bin/llvm-ranlib", "/usr/bin/ranlib"],
+    displaces: ["/usr/bin/ar"],
+  },
+  {
+    id: "llvm-nm",
+    dependency: "clang",
+    resolverPath: "programs/wasm32/clang/llvm-nm.wasm",
+    vfsPath: "/usr/bin/llvm-nm",
+    symlinks: ["/usr/bin/nm"],
+    displaces: ["/usr/bin/nm"],
+  },
+  {
+    id: "llvm-objcopy",
+    dependency: "clang",
+    resolverPath: "programs/wasm32/clang/llvm-objcopy.wasm",
+    vfsPath: "/usr/bin/llvm-objcopy",
+    symlinks: ["/usr/bin/objcopy", "/usr/bin/llvm-strip", "/usr/bin/strip"],
+    displaces: ["/usr/bin/strip"],
+  },
+  {
+    id: "llvm-strings",
+    dependency: "clang",
+    resolverPath: "programs/wasm32/clang/llvm-strings.wasm",
+    vfsPath: "/usr/bin/llvm-strings",
+    symlinks: ["/usr/bin/strings"],
+    displaces: ["/usr/bin/strings"],
+  },
+  {
+    id: "llvm-objdump",
+    dependency: "clang",
+    resolverPath: "programs/wasm32/clang/llvm-objdump.wasm",
+    vfsPath: "/usr/bin/llvm-objdump",
+    symlinks: ["/usr/bin/objdump"],
+  },
+  {
+    id: "llvm-readobj",
+    dependency: "clang",
+    resolverPath: "programs/wasm32/clang/llvm-readobj.wasm",
+    vfsPath: "/usr/bin/llvm-readobj",
+    symlinks: ["/usr/bin/llvm-readelf"],
+  },
+  {
+    id: "llvm-size",
+    dependency: "clang",
+    resolverPath: "programs/wasm32/clang/llvm-size.wasm",
+    vfsPath: "/usr/bin/llvm-size",
+    symlinks: ["/usr/bin/size"],
+  },
+  {
+    id: "llvm-cxxfilt",
+    dependency: "clang",
+    resolverPath: "programs/wasm32/clang/llvm-cxxfilt.wasm",
+    vfsPath: "/usr/bin/llvm-cxxfilt",
+    symlinks: ["/usr/bin/c++filt"],
+  },
+  {
+    id: "llvm-symbolizer",
+    dependency: "clang",
+    resolverPath: "programs/wasm32/clang/llvm-symbolizer.wasm",
+    vfsPath: "/usr/bin/llvm-symbolizer",
+    symlinks: ["/usr/bin/llvm-addr2line", "/usr/bin/addr2line"],
+  },
+] as const satisfies readonly VfsBinarySpec[];
 
 /**
  * Every program the shell image adds, as a lazy file: the image records its
@@ -545,4 +659,5 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // downloads before the first prompt. The cost is a fetch on the boot path;
   // a machine that cannot fetch it boots without logging and says so.
   { id: "syslogd", dependency: "sysklogd", resolverPath: "programs/syslogd.wasm", vfsPath: "/usr/sbin/syslogd", symlinks: [] },
+  ...LLVM_BINARY_TOOL_SPECS,
 ] as const satisfies readonly VfsBinarySpec[];

@@ -1,12 +1,14 @@
 /**
  * Compose the image package builds boot when they build inside Kandelo.
  *
- *   build-kandelo-build-image.ts <eager-rootfs.vfs.zst> <kandelo-sdk.zip> <out.vfs.zst>
+ *   build-kandelo-build-image.ts <eager-rootfs.vfs.zst> <kandelo-sdk.zip> <clang-dir> <out.vfs.zst>
  *
  * The input rootfs must be the canonical rootfs built with every package
  * output installed eagerly (scripts/build-rootfs.sh --default-install eager).
  * The guest toolchain archive (kandelo-sdk.zip) is expanded under /usr, where
- * the shell would otherwise mount it lazily.
+ * the shell would otherwise mount it lazily. The LLVM binary tools come from
+ * the clang package's outputs (<clang-dir>), at the paths the shell gives
+ * them (LLVM_BINARY_TOOL_SPECS).
  *
  * WHY eager rather than lazy: a lazy archive member is cached in the kernel's
  * linear memory when first read, together with the whole archive, and the
@@ -18,13 +20,18 @@
  * to browsers.
  */
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import { ensureDir, writeVfsBinary } from "../../../host/src/vfs/image-helpers";
 import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
+import {
+  displaceBasePlaceholders,
+  LLVM_BINARY_TOOL_SPECS,
+  shellLazySpecDisplaces,
+} from "../lib/init/shell-binaries";
 import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { saveImage } from "./vfs-image-helpers";
 
@@ -94,13 +101,35 @@ export function installGuestToolchain(fs: KandeloImageFs, sdkZip: Uint8Array): v
   }
 }
 
+/**
+ * Write the LLVM binary tools resident, from the clang package's output
+ * directory, replacing the rootfs placeholders each one names.
+ */
+export function installLlvmBinaryTools(fs: KandeloImageFs, clangDir: string): void {
+  for (const spec of LLVM_BINARY_TOOL_SPECS) {
+    displaceBasePlaceholders(fs, shellLazySpecDisplaces(spec));
+    if (exists(fs, spec.vfsPath)) {
+      throw new Error(`${spec.vfsPath} is already in the image; refusing to replace it`);
+    }
+    const bytes = new Uint8Array(readFileSync(join(clangDir, basename(spec.resolverPath))));
+    writeVfsBinary(fs, spec.vfsPath, bytes, 0o755);
+    fs.chmod(spec.vfsPath, 0o755);
+    for (const alias of spec.symlinks) {
+      if (exists(fs, alias)) {
+        throw new Error(`${alias} is already in the image; refusing to replace it`);
+      }
+      fs.symlink(spec.vfsPath, alias);
+    }
+  }
+}
+
 async function main(argv: string[]): Promise<void> {
-  if (argv.length !== 3) {
+  if (argv.length !== 4) {
     throw new Error(
-      "usage: build-kandelo-build-image.ts <eager-rootfs.vfs.zst> <kandelo-sdk.zip> <out.vfs.zst>",
+      "usage: build-kandelo-build-image.ts <eager-rootfs.vfs.zst> <kandelo-sdk.zip> <clang-dir> <out.vfs.zst>",
     );
   }
-  const [rootfsPath, sdkZipPath, outPath] = argv;
+  const [rootfsPath, sdkZipPath, clangDir, outPath] = argv;
   const epoch = process.env.SOURCE_DATE_EPOCH;
   if (epoch === undefined || !/^[0-9]+$/.test(epoch)) {
     throw new Error("SOURCE_DATE_EPOCH must be set to a non-negative integer");
@@ -113,6 +142,7 @@ async function main(argv: string[]): Promise<void> {
     throw new Error(`rootfs was built for kernel ABI ${baseAbi}, this tree is ABI ${ABI_VERSION}`);
   }
   installGuestToolchain(fs, new Uint8Array(readFileSync(sdkZipPath)));
+  installLlvmBinaryTools(fs, clangDir);
   await saveImage(fs, outPath, {
     metadata: {
       version: 1,
