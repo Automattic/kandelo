@@ -240,6 +240,14 @@ describe.skipIf(!available)(
         // Upstream installs it as man1/tic.1m.
         ["1 tic", /compile terminal descriptions/],
         ["5 terminfo", /terminal capability database/],
+        // Pages help2man made from each program's --help inside Kandelo.
+        ["1 redis-cli", /Server\s+hostname\s+\(default:\s+127\.0\.0\.1\)/],
+        ["1 sqlite3", /FILENAME\s+is\s+the\s+name\s+of\s+an\s+SQLite\s+database/],
+        ["1 termchat", /Distributed\s+LAN\s+chat\s+application/],
+        ["1 composer", /The\s+list\s+command\s+lists\s+all\s+commands/],
+        ["1 node", /The\s+SpiderMonkey\s+shell\s+provides/],
+        ["1 npm", /javascript package manager/],
+        ["1 npm-install", /Install a package/],
       ];
       const present = probes.filter(([page]) => pages.has(page));
       expect(present.length).toBeGreaterThan(0);

@@ -29,6 +29,14 @@ function archiveIdentity(pkg: string): [string, string, string] | null {
   return fields.length === 3 ? (fields as [string, string, string]) : null;
 }
 
+// A docs package whose source rides in a package of another name. npm is
+// node-browser-bundle's [source]; that package's version is the bundle's
+// own, so only the source archive (URL and SHA-256) is compared, and the
+// docs package's version must be the one in that URL.
+const SOURCE_OWNERS: Record<string, string> = {
+  "npm-docs": "node-browser-bundle",
+};
+
 const upstreamDocsPackages = readdirSync(registry)
   .filter((name) => name.endsWith("-docs"))
   .filter((name) =>
@@ -46,6 +54,13 @@ describe("upstream man-page packages", () => {
   it.each(upstreamDocsPackages)(
     "%s pins the same version, source URL and SHA-256 as its program",
     (docs) => {
+      const sourceOwner = SOURCE_OWNERS[docs];
+      if (sourceOwner !== undefined) {
+        const [version, url, sha256] = archiveIdentity(docs) ?? [];
+        expect(archiveIdentity(sourceOwner)?.slice(1)).toEqual([url, sha256]);
+        expect(url).toContain(`-${version}.`);
+        return;
+      }
       const owner = docs.slice(0, -"-docs".length);
       expect(existsSync(join(registry, owner, "package.toml"))).toBe(true);
       expect(archiveIdentity(docs)).toEqual(archiveIdentity(owner));

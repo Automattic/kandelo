@@ -25,7 +25,7 @@ Many registry scripts predate the resolver contract (e.g. `bzip2` writes into it
 | runtime files as a lazy archive | vim, per `docs/porting-guide.md` "Reference implementation" |
 | upstream man-page archive, no SDK | `scripts/install-package-man-pages.sh` (source staging and archive installation) |
 | template man-page archive, no SDK | `packages/registry/lsof-docs/` |
-| man pages generated from real guest programs | `packages/registry/coreutils-docs/`; retain its guest-program dependencies and default SDK setting |
+| man pages generated from real guest programs | `packages/registry/redis-docs/` (one program), `packages/registry/coreutils-docs/` (one binary, many commands); retain their guest-program dependencies and default SDK setting |
 
 Choose `[build].toolchain` before adapting a recipe. Use `"none"` when the
 script and its sourced helpers never use the Kandelo SDK or sysroot,
@@ -68,8 +68,8 @@ lines), not whole files.
 Check upstream's source and install rules for man pages, including its
 normally generated pages. Where possible, include lazy references for
 upstream man pages, using the existing `<program>-docs` ZIP pattern or an
-existing lazy runtime bundle. Software without man pages needs none
-invented for now. Read
+existing lazy runtime bundle. A program with no upstream manual gets a
+page help2man makes from its own `--help` output inside Kandelo. Read
 `docs/porting-guide.md` "Shipping man pages" for source selection, archive
 paths, image registration and validation. Select a separate docs package
 explicitly in partial-image builds alongside the program and man viewer.
