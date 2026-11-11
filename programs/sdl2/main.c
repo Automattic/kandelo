@@ -492,7 +492,61 @@ static char sym_to_ascii(SDL_Keycode sym, Uint16 mod) {
     }
 }
 
-int main(void) {
+static const char help_text[] =
+    "Usage: sdl2\n"
+    "\n"
+    "Edit and run Shadertoy-style GLSL image and sound shaders live.\n"
+    "\n"
+    "sdl2 is a GLSL playground built on SDL2. It uses SDL's kmsdrm video\n"
+    "driver, which draws through /dev/dri/card0, its dsp audio driver, and\n"
+    "keyboard and mouse input from /dev/input/event0 and /dev/input/event1;\n"
+    "it sets SDL_VIDEODRIVER, SDL_AUDIODRIVER and SDL_EVDEV_DEVICES to select\n"
+    "these. The display is split into a text editor on the left two thirds\n"
+    "and the running image shader on the right.\n"
+    "\n"
+    "The image shader defines mainImage(out vec4, in vec2) and may use the\n"
+    "uniforms iResolution, iTime, iTimeDelta, iMouse, iFrame and iAudio, a\n"
+    "spectrum of the audio being played. It is recompiled 250 ms after the\n"
+    "last edit, and compile errors are shown over the picture. The sound\n"
+    "shader defines vec2 mainSound(float time); sdl2 renders a few minutes\n"
+    "of stereo audio from it and plays that in a loop from startup. When the\n"
+    "sound shader fails to compile or renders only silence, a built-in chip\n"
+    "tune plays instead.\n"
+    "\n"
+    "At startup the image shader is read from\n"
+    "/home/shaders/image/current.frag, else\n"
+    "/usr/share/shaders/image/tunnelwisp.frag, else a built-in plasma; the\n"
+    "sound shader from /home/shaders/sound/current.frag, else\n"
+    "/usr/share/shaders/sound/tunnelwisp.frag, else a built-in sine tone.\n"
+    "Presets are the .frag files in /usr/share/shaders/image and\n"
+    "/usr/share/shaders/sound.\n"
+    "\n"
+    "Keys: F1 or Ctrl+1 edits the image shader and F2 or Ctrl+2 the sound\n"
+    "shader. Ctrl+S saves the buffer to its current.frag and reloads it, and\n"
+    "F5 reloads /home/shaders/image/current.frag. Ctrl+L loads the next\n"
+    "preset and Ctrl+Shift+L opens a preset list. Ctrl+M mutes or unmutes.\n"
+    "Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+A, Ctrl+Z and Ctrl+Y copy, cut, paste,\n"
+    "select all, undo and redo. Escape quits.\n"
+    "\n"
+    "sdl2 writes progress lines starting with \"sdl2:\" on standard output.\n"
+    "It exits with status 0 when it quits and 1 when SDL, the window, the GL\n"
+    "context or the audio device cannot be set up. Other arguments are\n"
+    "ignored.\n"
+    "\n"
+    "Options:\n"
+    "      --help     display this help and exit\n"
+    "      --version  output version information and exit\n";
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("sdl2 (Kandelo sdl2-demo) 0.1.0\n", stdout);
+        return 0;
+    }
+
     /* The stdout breadcrumbs are the test contract (sdl2.test.ts waits
      * on them mid-run) and the harness feeds stdout through a pipe, so
      * musl full-buffers it. Line-buffer explicitly so every breadcrumb

@@ -39,6 +39,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <cstring>
 
 Q_IMPORT_PLUGIN(QWaylandIntegrationPlugin)
 Q_IMPORT_PLUGIN(QWaylandXdgShellIntegrationPlugin)
@@ -372,8 +373,38 @@ private:
     bool m_exposed = false;
 };
 
+static const char help_text[] =
+    "Usage: qtgallery [QT-OPTION]...\n"
+    "\n"
+    "Preview and switch the desktop themes in a Qt window.\n"
+    "\n"
+    "qtgallery opens a \"Theme Gallery\" window on the Wayland compositor with\n"
+    "one card for each installed theme: each directory under\n"
+    "/usr/share/kandelo/themes, or under WLC_THEME_DIR when that is set, that\n"
+    "holds a theme.conf. Each card draws a miniature desktop in the theme's\n"
+    "colours. Clicking a card, or choosing it with the Left and Right arrows\n"
+    "and pressing Enter or Space, asks the compositor to switch to that theme\n"
+    "by sending \"dispatch theme NAME\" to its control socket, /tmp/kwlctl-0\n"
+    "or the path in KWLCTL_SOCKET. Escape or Q closes the window.\n"
+    "\n"
+    "qtgallery writes GALLERY_PLATFORM, GALLERY_THEMES, GALLERY_EXPOSED and\n"
+    "GALLERY_APPLY lines on standard output. Arguments are passed to\n"
+    "QGuiApplication, which takes Qt's standard options.\n"
+    "\n"
+    "Options:\n"
+    "      --help     display this help and exit\n"
+    "      --version  output version information and exit\n";
+
 int main(int argc, char **argv)
 {
+    if (argc > 1 && std::strcmp(argv[1], "--help") == 0) {
+        std::fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--version") == 0) {
+        std::fputs("qtgallery (Kandelo qtgallery) 0.1.0\n", stdout);
+        return 0;
+    }
     QGuiApplication app(argc, argv);
     std::printf("GALLERY_PLATFORM=%s\n",
                 app.platformName().toUtf8().constData());

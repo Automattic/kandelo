@@ -18,6 +18,7 @@
  *   WLCLOCK_EXIT        — clean shutdown (close box)
  */
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 #include <kwl.h>
@@ -95,7 +96,35 @@ static void draw_clock(struct wpk_surface *s, struct wpk_font *font) {
     }
 }
 
-int main(void) {
+static const char help_text[] =
+    "Usage: wlclock\n"
+    "\n"
+    "Show an analog clock in a Wayland window.\n"
+    "\n"
+    "wlclock opens a 340x360 xdg-shell window on the Wayland compositor and\n"
+    "draws a clock face with hour, minute and second hands and the local\n"
+    "time as HH:MM:SS below it, redrawing about ten times a second. The face\n"
+    "scales to the size the compositor gives the window.\n"
+    "\n"
+    "wlclock writes WLCLOCK_READY when its first frame is shown,\n"
+    "WLCLOCK_RESIZE w=WIDTH h=HEIGHT when the compositor resizes it, and\n"
+    "WLCLOCK_EXIT when the window is closed, on standard output. It exits\n"
+    "with status 0 when the window is closed and 1 when the window cannot be\n"
+    "created. Other arguments are ignored.\n"
+    "\n"
+    "Options:\n"
+    "      --help     display this help and exit\n"
+    "      --version  output version information and exit\n";
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("wlclock (Kandelo wayland-demo) 0.1.0\n", stdout);
+        return 0;
+    }
     struct kwl_window *win = kwl_window_create("wlclock", WIN_W, WIN_H);
     if (!win) { fprintf(stderr, "kwl_window_create failed\n"); return 1; }
     struct wpk_font *font = wpk_font_load_default(20);

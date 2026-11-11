@@ -43,6 +43,53 @@ static int usage(void)
 	return 64;
 }
 
+static const char help_text[] =
+	"Usage: kandelo-publish [--mime TYPE] [--from ID]... [--name NAME] FILE\n"
+	"  or:  kandelo-publish --stream --name NAME [OPTION]... [--] COMMAND [ARG]...\n"
+	"  or:  kandelo-publish --complete PATH\n"
+	"  or:  kandelo-publish --abort PATH REASON\n"
+	"\n"
+	"Publish a file or a command's output to the host.\n"
+	"\n"
+	"kandelo-publish stages the output in the work session named by\n"
+	"KANDELO_WORK, or in a session of its own when that is unset (see\n"
+	"kandelo-exchange(1)), sets its metadata, and renames it to\n"
+	KX_OUTBOX "/NAME, which hands it to the host. It prints the\n"
+	"output's ID on standard output. Publishing fails when no host is\n"
+	"accepting outputs, or when NAME is already published.\n"
+	"\n"
+	"In the first form, FILE is published as NAME, by default its own file\n"
+	"name. A FILE already in the session under that name is moved; any other\n"
+	"FILE is copied into the session first. The published copy can no longer\n"
+	"be changed.\n"
+	"\n"
+	"With --stream, kandelo-publish publishes a FIFO named NAME, waits until\n"
+	"the host starts reading it, and runs COMMAND, found through PATH, with\n"
+	"its standard output on the FIFO. When COMMAND exits with status 0 the\n"
+	"stream is declared complete; otherwise it is declared aborted with\n"
+	"\"exit N\" or \"signal N\" as the reason, so the host never mistakes a\n"
+	"failed stream for a finished one.\n"
+	"\n"
+	"--complete and --abort declare how a stream PATH that a program\n"
+	"published itself has ended, before its writer closes it; REASON is one\n"
+	"line of at most 256 bytes. A stream's end can be declared only once.\n"
+	"\n"
+	"Exit status is 0 on success, 64 for invalid arguments, and 1 when\n"
+	"publishing fails or a streamed COMMAND does not exit with status 0.\n"
+	"\n"
+	"Options:\n"
+	"      --from ID     record that the output was derived from the exchange\n"
+	"                    input ID; may be repeated, up to 64 times\n"
+	"      --mime TYPE   set the output's MIME type\n"
+	"      --name NAME   publish under NAME\n"
+	"      --stream      publish COMMAND's standard output as a stream\n"
+	"      --complete PATH\n"
+	"                    declare the stream PATH complete\n"
+	"      --abort PATH REASON\n"
+	"                    declare the stream PATH aborted for REASON\n"
+	"      --help        display this help and exit\n"
+	"      --version     output version information and exit\n";
+
 static int die(const char *what, const char *path)
 {
 	fprintf(stderr, "kandelo-publish: %s %s: %s\n", what, path, strerror(errno));
@@ -101,6 +148,14 @@ int main(int argc, char **argv)
 	char *from[64];
 	int from_count = 0, stream = 0, i;
 
+	if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+		fputs(help_text, stdout);
+		return 0;
+	}
+	if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+		fputs("kandelo-publish (Kandelo kandelo-exchange) 0.1.0\n", stdout);
+		return 0;
+	}
 	if (argc == 3 && strcmp(argv[1], "--complete") == 0) {
 		if (kx_stream_end(argv[2], NULL) != 0) return die("declare complete", argv[2]);
 		return 0;

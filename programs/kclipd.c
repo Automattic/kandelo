@@ -381,7 +381,44 @@ static int handle_offer(int dev) {
     return 0;
 }
 
-int main(void) {
+static const char help_text[] =
+    "Usage: kclipd\n"
+    "\n"
+    "Share text between the host clipboard and the Wayland selection.\n"
+    "\n"
+    "kclipd is the guest clipboard agent of the Kandelo desktop. It opens\n"
+    KANDELO_CLIPBOARD_DEVICE_PATH ", connects to the Wayland compositor\n"
+    "(the WAYLAND_DISPLAY socket in XDG_RUNTIME_DIR, wayland-0 by default)\n"
+    "and uses its ext_data_control_manager_v1 and wl_seat, so it needs no\n"
+    "window or keyboard focus. It prints KCLIPD_READY on standard output once\n"
+    "both are set up.\n"
+    "\n"
+    "Each text the host offers on the device becomes the desktop's selection,\n"
+    "offered as text/plain;charset=utf-8, text/plain, UTF8_STRING and TEXT;\n"
+    "kclipd then writes an acknowledgement for the offer back to the device.\n"
+    "When another client sets the selection, kclipd reads it as text and\n"
+    "writes it to the device for the host to put on the host clipboard; a\n"
+    "selection with no text type, or larger than 1 MiB, is not reported.\n"
+    "Messages on standard error give sequence numbers and lengths, never the\n"
+    "clipboard text.\n"
+    "\n"
+    "kclipd runs until the compositor connection or the data-control device\n"
+    "is lost, or the clipboard device fails, and then exits with status 1.\n"
+    "Only one process can hold the clipboard device open at a time.\n"
+    "\n"
+    "Options:\n"
+    "      --help     display this help and exit\n"
+    "      --version  output version information and exit\n";
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("kclipd (Kandelo wayland-demo) 0.1.0\n", stdout);
+        return 0;
+    }
     /* A pasting client may close its end before reading everything (a
      * cancelled paste). That must fail the one write with EPIPE, not kill
      * the agent and every later paste with it. */

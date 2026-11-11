@@ -1,5 +1,47 @@
 #!/bin/sh
 # `game-play DIRECTORY|ZIP`: run the game importer (game-import.py) on a
 # path and start the matching player.
+case "${1:-}" in
+    --help)
+        cat <<'EOF'
+Usage: game-play DIRECTORY|FILE
+
+Find the games in a directory or ZIP, and start one with its player.
+
+game-play inspects a game's files without running them and finds what can
+play them: DOS programs, for dos-play(1); NES, SNES, Mega Drive, Master
+System and Game Gear ROMs, for retro-run(1); and games ScummVM detects, for
+scummvm(1). Only players installed on the machine are offered.
+
+A DIRECTORY is inspected in place. A FILE, such as a ZIP or a single game
+file, is copied into a new import directory under
+$XDG_DATA_HOME/kandelo/game-imports (by default
+~/.local/share/kandelo/game-imports), where each ZIP is also extracted
+beside it, into NAME.unpacked. The copy stays there afterwards, so the
+game can be played again from it. An import may hold at most 1,024 entries
+and 512 MiB, 16 directory levels deep; links, special files, encrypted
+ZIPs and ZIP64 archives are refused. For a DIRECTORY, a new directory
+under game-imports holds only the configuration ScummVM's detection writes.
+
+When exactly one game is found, it is started, unless it is a DOS program
+whose kind is uncertain: a .COM or .BAT file, or an LE/LX program without a
+known DOS extender. Otherwise game-play lists what it found and starts the
+one whose number is entered at the terminal; 0 cancels. Choosing needs a
+terminal on standard input. game-play asks the page showing the machine to
+open a terminal running the chosen game's command, with
+kandelo-page-terminal(1); when no page takes the request, it runs the game
+itself.
+
+The exit status is 1 when the input cannot be imported or inspected, or
+contains no game it can play; otherwise it is 0, or the game's own status
+when game-play runs the game itself.
+
+      --help     display this help and exit
+      --version  output version information and exit
+EOF
+        exit 0
+        ;;
+    --version) echo 'game-play (Kandelo game-import) 0.1.0'; exit 0 ;;
+esac
 export PYTHONHOME=/usr
 exec /usr/bin/python3 /usr/libexec/kandelo/game-import.py play "$@"

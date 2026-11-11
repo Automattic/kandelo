@@ -7,6 +7,26 @@
 # The supervise function below is a copy of the shell's shared supervisor
 # (SUPERVISE_FUNCTION in images/vfs/scripts/build-source-rootfs-shell-image.ts,
 # which documents it); a test keeps the copies identical.
+case "${1:-}" in
+    --help)
+        cat <<'EOF'
+Usage: doom-launch [DOOM-OPTION]...
+
+Run DOOM with the WAD sent to the machine, and restart it for a new one.
+
+Play /var/games/doom/user.wad when a WAD has been sent to the machine, and
+the shareware /usr/share/doom/doom1.wad otherwise. The game runs under a
+supervisor: SIGHUP to this process (sent when a new WAD is written) restarts
+DOOM with it, and SIGINT or SIGTERM stops it. Arguments are passed to
+fbdoom(1).
+
+      --help     display this help and exit
+      --version  output version information and exit
+EOF
+        exit 0
+        ;;
+    --version) echo 'doom-launch (Kandelo fbdoom) 0.1.0'; exit 0 ;;
+esac
 USER_WAD=/var/games/doom/user.wad
 supervise() {
     pidfile="$1"
