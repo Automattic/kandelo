@@ -21346,7 +21346,9 @@ export class CentralizedKernelWorker {
     } catch (rollbackError) {
       this.#rethrowKernelEntryFatal(rollbackError);
       this.#failForkProtocolWithinKernelEntry(channel, state,
-        `could not roll back fork child ${state.childPid}: ${String(rollbackError)}`, entry);
+        `could not roll back fork child ${state.childPid}: ${
+          rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+        }`, entry);
       return;
     }
     // Admission closure is an expected terminal refusal only after every
