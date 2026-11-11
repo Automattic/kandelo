@@ -83,6 +83,30 @@ static int count(const char *needle)
 	return found;
 }
 
+/* How many records at priority `pri` (such as "<4>") carry exactly `text`,
+ * including its newline. The log renders each record as one line,
+ * `<pri>[seconds.microseconds] text`, Linux's printk_time form (see
+ * crates/runtime-core/src/klogctl.rs). */
+static int count_record(const char *pri, const char *text)
+{
+	int found = 0;
+	size_t pri_len = strlen(pri), text_len = strlen(text);
+	const char *line = log;
+	if (read_log() < 0) return -1;
+	while (*line != '\0') {
+		const char *end = strchr(line, '\n');
+		size_t len = end != NULL ? (size_t)(end - line) + 1 : strlen(line);
+		const char *close = memchr(line, ']', len);
+		if (strncmp(line, pri, pri_len) == 0 && line[pri_len] == '[' &&
+		    close != NULL && close[1] == ' ' &&
+		    (size_t)(line + len - (close + 2)) == text_len &&
+		    strncmp(close + 2, text, text_len) == 0)
+			found++;
+		line += len;
+	}
+	return found;
+}
+
 int main(void)
 {
 	static const char any_report[] = "which is not implemented (ENOSYS)";
@@ -95,11 +119,11 @@ int main(void)
 	/* The record that must appear: this process, this syscall, its number and
 	 * name, at warning severity (<4>: facility kern, level warning). */
 	snprintf(ours, sizeof ours,
-	         "<4>pid %d called syscall 247 (inotify_init1), %s\n",
+	         "pid %d called syscall 247 (inotify_init1), %s\n",
 	         (int)getpid(), any_report);
 
 	before_all = count(any_report);
-	before_ours = count(ours);
+	before_ours = count_record("<4>", ours);
 	if (before_all < 0 || before_ours < 0) return 1;
 	if (before_ours != 0) fail("the record exists before the call was made");
 
@@ -143,7 +167,7 @@ int main(void)
 
 	/* ... and the log must say so, once, with the pid, number and name. */
 	after_all = count(any_report);
-	after_ours = count(ours);
+	after_ours = count_record("<4>", ours);
 	if (after_ours != 1) {
 		fprintf(stderr,
 		        "enosys-report failure: expected one record %s, found %d\n",
@@ -181,9 +205,9 @@ int main(void)
 		fail("inotify_add_watch should be ENOSYS");
 	}
 	snprintf(ours, sizeof ours,
-	         "<4>pid %d called syscall 248 (inotify_add_watch), %s\n",
+	         "pid %d called syscall 248 (inotify_add_watch), %s\n",
 	         (int)getpid(), any_report);
-	if (count(ours) != 1) fail("inotify_add_watch was not reported after the sweep");
+	if (count_record("<4>", ours) != 1) fail("inotify_add_watch was not reported after the sweep");
 
 	if (failures != 0) {
 		fprintf(stderr, "enosys-report-test: %d failure(s); log was:\n%s",
