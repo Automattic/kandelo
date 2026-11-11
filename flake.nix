@@ -240,6 +240,8 @@
             #            xtask's source extraction helpers.
             #   patch  — applying *.patch files (mariadb, ruby)
             #   gh     — only used by stage-pr-staging release lookup
+            #   xsltproc — rendering DocBook man pages through
+            #            scripts/xmlto-man.sh (git-docs, dbus-docs)
             pkgs.curl
             pkgs.perl
             pkgs.python3
@@ -253,6 +255,7 @@
             pkgs.bzip2
             pkgs.gnupatch
             pkgs.gh
+            pkgs.libxslt
             # GitHub workflow syntax and expression validation. ABI staging
             # plans invoke actionlint through scripts/dev-shell.sh so the
             # validation tool must be part of the pinned repository shell.
