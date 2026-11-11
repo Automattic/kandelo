@@ -37,28 +37,45 @@ unmeasured optimization into a performance claim.
 
 ## Write about what people can do
 
-Lead with the capability, the person it helps, or the frustration it removes.
-For a major addition, explain what makes it significant: Kandelo's compilers
-run inside the browser computer, and Cargo can build and test programs there.
-Give that achievement room instead of compressing it into a package list.
+Choose news for the experience it gives someone: a task they can finish,
+a problem they no longer hit, or a reason to try Kandelo. A history survey
+is a selection of meaningful experiences. The linked history and reference
+docs can carry the full inventory.
+
+Give each distinct experience its own entry. C/C++ compilation, Rust
+development, running WordPress, and sharing a live website each deserve a
+clear opening. A shared implementation or category does not make them the
+same story. Keep a major capability out of another item's closing sentence.
+
+Write for a junior developer who has not followed the project. Use a short
+bold opening that names the action, then usually two or three sentences:
+what someone can do, why it helps, and where to start. Name an unfamiliar
+tool's purpose before its internal machinery. Be direct about the achievement;
+concrete capabilities convey enthusiasm without superlatives.
 
 For example, a Rust-toolchain entry could start:
 
 ```markdown
-**Build Rust inside your browser computer.** The experimental guest toolchain
-brings Cargo builds and tests, rustfmt, Clippy, and documentation into Kandelo.
+**Build and test Rust projects inside Kandelo.** Use Cargo to compile your
+project and run its tests in the browser computer. Format code with rustfmt
+and check it with Clippy.
 ```
 
 Then link to the setup instructions and name material limits, such as the
 experimental image, offline workflow, and unsupported procedural-macro crates.
 Keep the useful claim and its scope together.
 
-- State the outcome before implementation details. "Use tmux inside Kandelo"
-  gives epoll work a recognizable purpose.
-- Use concrete examples: a Rust project that calls C++, a WordPress site,
-  or a multiplayer game. Explain which workflow is available now.
-- Add a short bold opening when it helps readers scan. A small fix can simply
-  say "Pasting several lines into the terminal preserves their line breaks."
+- Read only the bold openings as a review pass. They should communicate the
+  useful news on their own. "See which Rust code your tests run" explains
+  coverage; "Add matching profiler support" leaves the reader to infer it.
+- Keep one outcome per entry. Separate "Compile C and C++ in your browser"
+  from "Build and test Rust projects inside Kandelo" so each can be found
+  at a glance. Related steps in one task can stay together.
+- Explain fixes through the interrupted task: "Keep using Bash after pressing
+  Ctrl-C" makes the benefit clearer than describing fork continuation state.
+- Use concrete examples, such as a WordPress site or a cooperative DOOM game.
+  A small fix can simply say "Pasting several lines into the terminal preserves
+  their line breaks."
 - Give readers a next step: a command, a guide, or a reproducible example.
 - Keep evidence and technical detail in the linked references. Specific
   support limits and migration actions still belong beside the affected claim.
@@ -96,8 +113,11 @@ and nominations without detailed news.
 All distinct nominations appear in a stable filename order, with exact
 duplicates combined. Nothing is silently dropped or ranked by commit count.
 The draft includes every nomination even when there are more than five;
-review can select three to five, combine related outcomes, and choose the
-update title and opening. Small updates need no nominations.
+review normally selects three to five and chooses the update title and
+opening. Merge entries only when they describe the same reader task. Give
+separate experiences separate headlines. Small updates need no nominations.
+A broad historical survey can use more highlights, grouped under short
+headings such as building software, sharing apps, and playing games.
 
 Nominate changes that enable a new workflow, help a new audience, or resolve
 a recognizable problem. A port of a compiler or development tool can matter
@@ -122,9 +142,12 @@ Review checks nominations against the documented behavior and evidence.
 It can also promote an overlooked plain entry; author nominations are a
 starting point. Automation preserves authored claims without inventing new
 capabilities, performance results, or security guarantees.
-Keep breaking changes as the first detailed category after highlights, and
-keep source and compatibility metadata at the end. The detailed entries
-should expand on highlights rather than repeat the same paragraphs.
+Treat generated categories as an editing aid. Read the draft for flow and
+remove repeated announcements. A selected experience can be told completely
+in its highlight; add detail below only when it helps the reader take action.
+Historical surveys can use themed highlights without a second categorized
+retelling. Keep breaking changes as the first detailed category after
+highlights, and keep source and compatibility metadata at the end.
 
 Every PR needs a new fragment or a line in its body explaining an omission:
 

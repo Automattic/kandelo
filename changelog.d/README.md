@@ -5,9 +5,12 @@ change. Use `<PR-number>.<category>` if you know the PR number, or
 `+<unique-descriptive-slug>.<category>` otherwise. The leading `+` avoids
 creating a fictitious issue link. Do not add a leading bullet or heading.
 
-Start with what someone can now do, and say why a substantial change matters.
-For a major feature, a short bold opening and a link to try it help readers
-find the news. Keep material support limits beside the claim.
+Give each distinct user or developer experience its own entry. Start with
+what someone can do or which frustrating problem is fixed, using words a
+junior developer can follow. A short bold opening should make sense on its
+own; follow it with a few sentences and a link to try it. Keep material
+support limits beside the claim. Read the editorial guidance in
+[the changelog workflow](../docs/changelog.md#write-about-what-people-can-do).
 
 To nominate a major capability for automatic highlighting, start the fragment
 with optional TOML front matter:
