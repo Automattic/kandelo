@@ -640,3 +640,31 @@ Completion of the baseline campaign requires Q/D/L closure, accepted B/C
 stages, V1 and P1, coherent previews and updated documentation. Shipping
 individual improvements before that point remains useful and must be
 described as such.
+
+
+### R1 exact-exit and reservation follow-up — 2026-11-10 evening
+
+The latest completed normal desktop matrix is 114/120, and the repeated
+browser-memory gate is 15/18. All three mixed-switch checks fail; the older
+17/18 result belongs to an earlier runtime. Chromium/Firefox report a
+synthetic child Worker exit during fork readiness. WebKit reaches a ready
+WordPress kernel but never creates its web iframe within the original
+deadline. All original failures remain retained; none is waived.
+
+Sydney commit `bbe31a1fa2` joins the exact fork-exit teardown instead of
+competing with its owner through rollback, with matching Node/browser
+behavior and preserved first-error identity. A separate eight-case fixed
+WebKit reservation experiment establishes extra cost from Wasm graphics
+baselines relative to equal-size arrays. The existing array path is used
+on WebKit/Bun without reducing any guest ceiling. This does not identify
+the cause of the application's tiny-array OOM, which also occurs on main.
+Focused source checks total 162 passing after correcting two new test
+assertions; the initial failed test run remains recorded. Actual baseline
+publication/growth checks pass all three engines and Bun in isolation.
+
+The old normal preview is now independently frozen at public port 56519.
+A fresh normal build for `bbe31a1fa2` is preparing port 56522. New complete
+memory/browser validation and all nine Node/browser performance pairs are
+still required. PR #1678 stays draft; no R1 completion or merge is claimed.
+B2–B6/C1–C3 remain paused, and the maintainer's blur follow-up decision
+remains unchanged.
