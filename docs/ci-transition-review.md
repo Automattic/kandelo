@@ -92,7 +92,9 @@ is created as part of this phase.
 | `rust-development.yml` | Manual clean-cache compiler and Node/browser Rust acceptance | Retain as an explicit expensive acceptance lane; decide required cadence after measuring runner cost. |
 
 The small configuration adaptation in this PR routes both Dependabot
-version-update configurations to `develop`. Separate default-branch configurations retain security-update grouping and
+version-update configurations to `develop`. Both npm configurations use
+recursive manifest discovery so new projects are included without updating
+a directory list. Separate default-branch configurations retain security-update grouping and
 disable default-branch version PRs with a zero open-PR limit. GitHub security
 updates remain a default-branch concern; inspect and explicitly retarget eligible PRs after
 reviewing their diffs. Existing PR bases were not automatically changed. Dependabot reads its

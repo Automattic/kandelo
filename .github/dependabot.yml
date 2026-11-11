@@ -29,17 +29,9 @@ updates:
       default-days: 7
 
   - package-ecosystem: "npm"
+    # Discover npm manifests at the root and in new nested projects.
     directories:
-      - "/"
-      - "/apps/browser-demos"
-      - "/host"
-      - "/packages/registry/libxml2"
-      - "/packages/registry/openssl"
-      - "/packages/registry/sqlite"
-      - "/packages/registry/wordpress/demo"
-      - "/packages/registry/zlib"
-      - "/sdk"
-      - "/tools/mkrootfs"
+      - "**/*"
     target-branch: "develop"
     schedule:
       interval: "weekly"
@@ -78,17 +70,9 @@ updates:
 
   # Security updates always target main; preserve their existing grouping.
   - package-ecosystem: "npm"
+    # Discover npm manifests at the root and in new nested projects.
     directories:
-      - "/"
-      - "/apps/browser-demos"
-      - "/host"
-      - "/packages/registry/libxml2"
-      - "/packages/registry/openssl"
-      - "/packages/registry/sqlite"
-      - "/packages/registry/wordpress/demo"
-      - "/packages/registry/zlib"
-      - "/sdk"
-      - "/tools/mkrootfs"
+      - "**/*"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 0
