@@ -69,11 +69,13 @@ skips a local fixture, rerun it under the normal policy; the skip is not
 evidence for the fixture's runtime behavior.
 
 Also check the canonical image when switching back to the ordinary Node
-runner. `resolveRootfsArtifact()` tries `rootfs.vfs.zst` before the program
-package request, so an older `host/wasm/rootfs.vfs.zst` can take precedence
-over a fresh SourceOnly projection. Refresh it with
-`scripts/dev-shell.sh bash scripts/build-rootfs.sh` before the broad host
-run. For a lazy artifact size mismatch, check the selected image and
+runner. `resolveRootfsArtifact()` tries the `programs/rootfs.vfs.zst`
+package request first and falls back to `rootfs.vfs.zst`, so an older
+`host/wasm/rootfs.vfs.zst` is used only when no package rootfs resolves.
+Refresh it with `scripts/dev-shell.sh bash scripts/build-rootfs.sh` before
+the broad host run. Outside SourceOnly, that package request runs the
+program-index freshness check on every call, which takes seconds in a
+source checkout. For a lazy artifact size mismatch, check the selected image and
 executable identities and repair stale inputs. Do not relax size checks
 or substitute unrelated executable bytes.
 
