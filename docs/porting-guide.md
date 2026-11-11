@@ -310,12 +310,16 @@ script is a page list on top of `scripts/install-package-man-pages.sh`
   generator, run over the pinned source. `kandelo_man_pages_build_scdoc`
   and `kandelo_man_pages_scdoc` render scdoc pages (`sway-docs`);
   `scripts/xmlto-man.sh` stands in for `xmlto man` over DocBook
-  (`dbus-docs`, and `git-docs` through git's own `Documentation/Makefile`).
+  (`dbus-docs`, and `git-docs` through git's own `Documentation/Makefile`),
+  running the `xsltproc` that `flake.nix` declares.
   Generators that are not part of the dev shell (scdoc, AsciiDoc, DocBook
   XSL, the DocBook DTD) are pinned `kind = "source"` packages the docs
-  package depends on. A generator that stamps a date gets the release's
-  date from `kandelo_man_pages_release_date`, because the dev shell pins
-  the build clock to 1980.
+  package depends on. A host tool that only reaches the dev shell through
+  another package's dependencies is not declared: `./run.sh setup`,
+  `local-build` and `partial` leave it off a package build's `PATH`. A
+  generator that stamps a date gets the release's date from
+  `kandelo_man_pages_release_date`, because the dev shell pins the build
+  clock to 1980.
 - When configure decides what a page says (paths, defaults, enabled
   components), the docs package runs upstream's configure with the
   program package's own flags, kept in one file both recipes source
