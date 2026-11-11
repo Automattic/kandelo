@@ -1,0 +1,26 @@
+kind = "program"
+name = "wasm-tools"
+version = "1.263.0"
+kernel_abi = 56
+arches = ["wasm32"]
+# The Bytecode Alliance's WebAssembly toolkit: inspect, print, validate,
+# strip and transform Wasm modules and components. Kandelo programs are Wasm,
+# so this reads them natively, including their custom sections. Rust
+# dependencies are pinned by upstream's Cargo.lock and verified by Cargo.
+depends_on = []
+
+[source]
+url = "https://static.crates.io/crates/wasm-tools/wasm-tools-1.263.0.crate"
+sha256 = "14b8ed798ec13f0e0939dcc403836ba5fd7fb29ff9772e6438a9bcc227bfdc96"
+provider = "archive"
+
+[license]
+spdx = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+url = "https://github.com/bytecodealliance/wasm-tools/blob/v1.263.0/LICENSE-Apache-2.0_WITH_LLVM-exception"
+
+[build]
+script_path = "packages/registry/wasm-tools/build-wasm-tools.sh"
+
+[[outputs]]
+name = "wasm-tools"
+wasm = "wasm-tools.wasm"

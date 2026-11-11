@@ -130,6 +130,7 @@ depends_on = [
   "sfwbar-docs@1.0_beta17",
   "kandelo-sdk-browser-bundle@21.1.7",
   "clang@21.1.7",
+  "wasm-tools@1.263.0",
   "cargo@1.97.0-nightly-2026-04-27",
   "rustc@1.97.0-nightly-2026-04-27",
   "kandelo-rustc@0.1.0",

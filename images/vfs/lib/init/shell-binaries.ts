@@ -660,4 +660,8 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // a machine that cannot fetch it boots without logging and says so.
   { id: "syslogd", dependency: "sysklogd", resolverPath: "programs/syslogd.wasm", vfsPath: "/usr/sbin/syslogd", symlinks: [] },
   ...LLVM_BINARY_TOOL_SPECS,
+  // The Bytecode Alliance's Wasm toolkit (print, validate, objdump, dump,
+  // strip, ...). It reads Kandelo programs natively, including dylink.0 and
+  // the kandelo.* custom sections the LLVM tools only name.
+  { id: "wasm-tools", resolverPath: "programs/wasm32/wasm-tools.wasm", vfsPath: "/usr/bin/wasm-tools", symlinks: [] },
 ] as const satisfies readonly VfsBinarySpec[];

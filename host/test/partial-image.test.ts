@@ -63,6 +63,7 @@ const PROBES: Record<string, string> = {
     "\"$t\" --version | grep -q 'LLVM version' && echo \"llvm-tool-ok $t\"; done; " +
     "readlink /usr/bin/strip; command -v readelf || echo no-readelf",
   "patch-docs": "man -w patch",
+  "wasm-tools": "wasm-tools --version; wasm-tools validate /usr/bin/wasm-tools && echo wasm-tools-validate-ok",
   toybox: "dmesg -r | head -n 1; dmesg -S | head -n 1 | sed 's/^/klog: /'; logger -s -t probe hello 2>&1",
 };
 
@@ -146,6 +147,10 @@ describe.skipIf(manifest === null || kernelPath === null)("partial image", () =>
         // The posix-utils-lite placeholder was displaced, not left beside it.
         expect(stdout).toContain("/usr/bin/llvm-objcopy\n");
         expect(stdout).toContain("no-readelf\n");
+      }
+      if (manifest!.packages.includes("wasm-tools")) {
+        expect(stdout).toContain("wasm-tools 1.263.0");
+        expect(stdout).toContain("wasm-tools-validate-ok");
       }
       if (manifest!.packages.includes("patch-docs")) {
         expect(stdout).toContain("/usr/share/man/man1/patch.1");

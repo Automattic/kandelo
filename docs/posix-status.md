@@ -652,8 +652,12 @@ package) and add `ranlib`, `objdump`, `objcopy`, `llvm-readobj` (also
 `readelf`: Kandelo programs are Wasm, and llvm-readobj answers ELF
 questions such as `readelf -d` (NEEDED, SONAME) on Wasm with empty output
 and exit 0, so a script that runs `readelf` would conclude a program has
-no dependencies. The rows below for those four describe images that carry
-only the base rootfs.
+no dependencies. The shell also carries `wasm-tools`, which decodes Wasm
+directly, including `dylink.0` (`wasm-tools dump`) and the `kandelo.*`
+custom sections. Note that `wasm-tools strip` removes every custom section
+except `name` by default, including Kandelo's ABI stamp and fork metadata;
+`strip` keeps them. The rows below for those four describe images that
+carry only the base rootfs.
 
 | Utility | What it actually does |
 |---|---|
