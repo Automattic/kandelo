@@ -78,10 +78,10 @@ test("a #k1= boot link runs its script in the initial shell @slow", async ({ pag
   });
   await expect.poll(() => terminalText(page), { timeout: 120_000 })
     .toContain("empty-input:42");
-  // The multi-input manifest can scroll the invocation off screen. Read
-  // rendered history through xterm's scrolling UI after the script finishes.
+  // The multi-input manifest can scroll the source off screen. Read rendered
+  // history through xterm's scrolling UI after the script finishes.
   const text = await terminalHistoryMatching(page.locator(".xterm:visible").first(),
-    /cat "\/run\/kandelo\/inputs\/script\/kandelo-link.sh"/);
+    /Welcome to Kandelo/);
   expect(text).toContain("/run/kandelo/inputs/script/kandelo-link.sh");
   expect(text).toContain('echo "link-script:$((6 * 7))"');
   expect(text).toContain("link-script:42");
@@ -177,4 +177,30 @@ test("share dialog authors a script link that runs on open @slow", async ({ page
   await expect
     .poll(() => terminalText(opened), { timeout: 120_000 })
     .toContain("shared-script:42");
+  await expect.poll(() => terminalText(opened)).toMatch(/maker@localhost:.*\$ /);
+  const startup = await terminalHistoryMatching(opened.locator(".xterm:visible").first(),
+    /Welcome to Kandelo/);
+  expect(startup).toContain('echo "shared-script:$((40 + 2))"');
+  expect(startup).not.toContain("kandelo-link.sh");
+  expect(startup).not.toContain("PROMPT_COMMAND");
+
+  // Recall the real invocation through Bash itself, then execute it again.
+  const input = opened.locator(".xterm:visible .xterm-helper-textarea").first();
+  await input.press("ArrowUp");
+  await expect.poll(() => terminalText(opened))
+    .toContain("bash '/run/kandelo/inputs/script/kandelo-link.sh'");
+  await input.press("Enter");
+  await expect.poll(async () => (await terminalText(opened)).match(/shared-script:42/g)?.length)
+    .toBe(2);
+
+  // The startup hook was removed before running; nested shells inherit none.
+  await input.pressSequentially('test "${PROMPT_COMMAND+x}" != x && test "$TERM" = xterm-256color && test "$LANG" = en_US.UTF-8 && echo "hook-cleared:$((40 + 2))"');
+  await input.press("Enter");
+  await expect.poll(() => terminalText(opened)).toContain("hook-cleared:42");
+
+  await opened.getByRole("button", { name: "New terminal", exact: true }).click();
+  const other = opened.locator(".xterm:visible").first();
+  await expect.poll(() => other.locator(".xterm-rows").textContent())
+    .toMatch(/maker@localhost:.*\$ /);
+  expect(await other.locator(".xterm-rows").textContent()).not.toContain("shared-script");
 });

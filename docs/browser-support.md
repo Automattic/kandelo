@@ -3317,14 +3317,15 @@ materialized result: the manifest's own `version: 1`, the descriptor's
 `parameters`, and one entry per successfully materialized input (id,
 filename, guest `path`, byteLength, sha256) — not the raw descriptor
 `boot.inputs`/`boot.parameters` fields verbatim. When `boot.parameters.runScript`
-names the "script" input, that input is printed to the terminal with `cat`
-before execution, and then run from the initial interactive shell — `bash`
-when the image ships it, `sh` otherwise. The file is left writable so the
-visitor can experiment: edit it and re-run it after boot. The script's
-source, the invocation, and the script's output are all visible in the
-terminal, and the script takes the image's own `init.shellCommand`'s place
-in the launch sequence. Navigating to a different machine from the gallery drops
-the fragment.
+names the "script" input, Bash runs it before displaying the initial shell's
+first prompt, using the interpreter recorded in `runScriptShell` (default
+`bash`). The terminal shows the script's source and output without echoing
+the filename or launch commands. The execution command is added to Bash
+history, so Up Arrow recalls it for editing or rerunning. The startup hook clears itself before
+execution and runs only in the first terminal. The file remains available
+for editing after boot. The script takes the image's own `init.shellCommand`'s
+place in the launch sequence. Navigating to a different machine from the
+gallery drops the fragment.
 
 Links built before boot inputs were folded in could carry a top-level
 `script: { text }` field on the descriptor (superseded by `boot.inputs` +
