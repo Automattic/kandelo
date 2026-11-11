@@ -10,10 +10,11 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 509,
+    "importedFiles": 510,
     "taskQueuePartialCatalog": "task-queue-contracts.json",
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
-    "constantsPartialCatalog": "constants-contracts.json"
+    "constantsPartialCatalog": "constants-contracts.json",
+    "typesPartialCatalog": "types-contracts.json"
   },
   "implementation": [
     {
@@ -49,8 +50,8 @@
     {
       "area": "shared Node realm and native binding loader",
       "sourceStatus": "partial native owner implemented; complete original realm library loader executes through privileged Node-host controls",
-      "remaining": "principal node body now passes constants and stops on types through internal/util; remaining native closure/web/thread/env stages, lifecycle/security/OOM and four-host startup",
-      "evidence": "constants-engine-check.json"
+      "remaining": "principal node body now passes types and stops on options through internal/options; remaining native closure/web/thread/env stages, lifecycle/security/OOM and four-host startup",
+      "evidence": "types-engine-check.json"
     },
     {
       "area": "structured Error stack/CallSite/limit contracts",
@@ -73,9 +74,9 @@
     },
     {
       "area": "eager Buffer/process/fs/options/task queues/timers/async binding closure",
-      "sourceStatus": "initial process/config and genuine native timer scheduler implemented; wider Buffer/fs/options/task queues/async closure missing",
+      "sourceStatus": "Genuine initial process/config, timers, task queues, partial async state, constants and types implemented; wider Buffer/fs/options/process closure remains incomplete",
       "remaining": "contract inventory and dependency-ordered owning backends; no placeholder export objects",
-      "evidence": "timers-engine-check.json"
+      "evidence": "types-engine-check.json"
     },
     {
       "area": "generated runtime configuration",
@@ -95,8 +96,8 @@
     },
     {
       "area": "native initial process prototype/constructor, shared exit-info and config",
-      "sourceStatus": "partial genuine native state; original principal body invoked through protected slots and stops on types",
-      "evidence": "constants-engine-check.json",
+      "sourceStatus": "partial genuine native state; original principal body invoked through protected slots and stops on options",
+      "evidence": "types-engine-check.json",
       "remaining": "actual exit dispatch, full process/version/environment/options/config JSON/FIPS and wider startup binding closure; full native lifecycle/security/OOM/browser differential"
     },
     {
@@ -128,7 +129,13 @@
       "area": "native constants metadata and original initializer",
       "sourceStatus": "complete original constants translation unit/header through actual rooted property builder,425target primitive definitions;10binding controls plus43header comparisons/4effects per host",
       "evidence": "constants-engine-check.json",
-      "remaining": "Metadata is not operational backend support; complete startup/types/util/options closure and actual codec integration remain incomplete"
+      "remaining": "Metadata is not operational backend support; complete startup/util/options closure and actual codec integration remain incomplete"
+    },
+    {
+      "area": "native engine type predicates",
+      "sourceStatus": "all26exports inspect actual engine classes/flags; real borrowed pointer External carrier; complete original internal/util/types executes",
+      "evidence": "types-engine-check.json",
+      "remaining": "Full denied-wrapper/OOM/teardown/ShadowRealm equivalence, general native resource lifecycle and complete startup remain unproven"
     }
   ],
   "runtimeConformance": {
@@ -200,17 +207,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 30,
+    "packageRevision": 31,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "constants-engine-check.json",
+    "evidence": "types-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "10constant cases and4target effects per host plus208priorNodecases;43target header values agree per host, original bootstrap reaches types",
+    "packageRuntimeScope": "21type cases per host plus218priorNodecases;86shared-value classifications match pinned native; original bootstrap reaches options",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "Existing Mozilla Linux triplet/defines remain; linked libuv uses the true Kandelo build and explicit public-layout selector before legacy macros"
   },
@@ -305,7 +312,7 @@
     },
     "realmLibrary": {
       "inventory": "realm-library-contracts.md",
-      "implementationEvidence": "constants-engine-check.json",
+      "implementationEvidence": "types-engine-check.json",
       "originalBodyExecuted": true,
       "originalLoaderClosuresRetained": true,
       "oneOriginalBuiltinCache": true,
@@ -318,14 +325,14 @@
         "canonical errors callbacks",
         "canonical util.privateSymbols"
       ],
-      "principalBootstrapGap": "Original principal body passes constants and stops on types at internal/util:73 through validators:35/timers:120",
+      "principalBootstrapGap": "Original principal body passes types and stops on options at internal/options:20 from internal/util:74 through validators:35/timers:120",
       "principalBootstrapCompleted": false,
       "cjsEntry": false,
       "esmEntry": false
     },
     "processConfig": {
       "inventory": "process-config-contracts.md",
-      "evidence": "constants-engine-check.json",
+      "evidence": "types-engine-check.json",
       "distinctMutableProcessPrototype": true,
       "nativeEmptyInstanceConstructor": true,
       "effectiveReceiverSemantics": true,
@@ -340,7 +347,7 @@
     },
     "timers": {
       "inventory": "timers-contracts.md",
-      "evidence": "constants-engine-check.json",
+      "evidence": "types-engine-check.json",
       "actualGuestClock": true,
       "runtimeSharedInfoArrays": true,
       "realDeadlineAndReferences": true,
@@ -361,7 +368,7 @@
     "taskQueue": {
       "inventory": "task-queue-contracts.json",
       "explanation": "task-queue-contracts.md",
-      "evidence": "constants-engine-check.json",
+      "evidence": "types-engine-check.json",
       "bindingImplemented": true,
       "actualEnginePrimitivesObserved": true,
       "nativeNodeExceptionRouting": false,
@@ -380,7 +387,7 @@
     },
     "asyncWrap": {
       "inventory": "async-wrap-contracts.json",
-      "evidence": "constants-engine-check.json",
+      "evidence": "types-engine-check.json",
       "bindingImplemented": true,
       "bindingComplete": false,
       "originalInternalModuleExecuted": true,
@@ -415,7 +422,23 @@
       "libzstdErrorHeaderSupplied": true,
       "libzstdDecoderBytesUnchanged": true,
       "mozillaZlibHeaderPrecedenceFixedForThisBinding": true,
-      "bootstrapNextBinding": "types",
+      "upstreamStartup": false,
+      "currentStartupEvidence": "types-engine-check.json",
+      "historicalBootstrapNextBinding": "types",
+      "currentBootstrapNextBinding": "options"
+    },
+    "types": {
+      "inventory": "types-contracts.json",
+      "evidence": "types-engine-check.json",
+      "bindingImplemented": true,
+      "exports": 26,
+      "actualEngineClassesAndFlags": true,
+      "borrowedOpaqueNativePointerCarrier": true,
+      "crossRealmWrappersValidated": true,
+      "scriptedProxyTrapsInvoked": false,
+      "originalJavaScriptChanged": false,
+      "completeOriginalInternalTypesModuleExecuted": true,
+      "bootstrapNextBinding": "options",
       "upstreamStartup": false
     }
   },
@@ -514,6 +537,15 @@
       "samePrimitiveValues": 348,
       "targetOsDependencyConfigurationDifferences": 90,
       "fullOperationalContractEquivalence": false
+    },
+    "types": {
+      "reference": "Node26.13.0Darwinarm64",
+      "cases": 13,
+      "failures": 0,
+      "evidence": "types-native-reference.json",
+      "sharedValueClassifications": 86,
+      "sharedValueClassificationDifferences": 0,
+      "fullEngineEquivalence": false
     }
   },
   "focusedGuestEngineControls": {
@@ -539,8 +571,8 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "constants-engine-check.json",
-      "regressionScope": "Same revision30 engine passes10constant cases plus208priorNodecases, and independent target43values/4effects;65Nodeprocess drivers",
+      "currentArtifactEvidence": "types-engine-check.json",
+      "regressionScope": "Same revision31 engine passes21type cases plus218priorNodecases;67Nodeprocess drivers including19expected fatal controls",
       "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
@@ -606,48 +638,54 @@
       "constantsEvidence": "constants-engine-check.json",
       "constantsDriverRuns": 3,
       "targetHeaderValuesCompared": 43,
-      "targetEffects": 4
+      "targetEffects": 4,
+      "typesCases": 21,
+      "typesEvidence": "types-engine-check.json",
+      "typesDriverRuns": 3
     },
     "Chromium": {
-      "evidence": "constants-engine-check.json",
-      "constantsCases": 10,
-      "constantsFailures": 0,
-      "targetHeaderValuesCompared": 43,
-      "targetEffects": 4,
-      "driverRuns": 5,
+      "evidence": "types-engine-check.json",
+      "typesCases": 21,
+      "typesFailures": 0,
+      "sharedValueClassifications": 86,
+      "sharedValueClassificationDifferences": 0,
+      "driverRuns": 4,
       "driverFailures": 0,
+      "historicalConstantsEvidence": "constants-engine-check.json",
       "historicalAsyncEvidence": "async-wrap-engine-check.json",
       "historicalTaskQueueEvidence": "task-queue-engine-check.json",
-      "scope": "revision30 constants controls plus independent target values/effects; exact types gap, no complete startup/operational API claim"
+      "scope": "revision31 native type/whole original internal types module controls; exact options gap; no complete startup/operational API claim"
     },
     "Firefox": {
-      "evidence": "constants-engine-check.json",
-      "constantsCases": 10,
-      "constantsFailures": 0,
-      "targetHeaderValuesCompared": 43,
-      "targetEffects": 4,
-      "driverRuns": 5,
+      "evidence": "types-engine-check.json",
+      "typesCases": 21,
+      "typesFailures": 0,
+      "sharedValueClassifications": 86,
+      "sharedValueClassificationDifferences": 0,
+      "driverRuns": 4,
       "driverFailures": 0,
+      "historicalConstantsEvidence": "constants-engine-check.json",
       "historicalAsyncEvidence": "async-wrap-engine-check.json",
       "historicalTaskQueueEvidence": "task-queue-engine-check.json",
-      "scope": "revision30 constants controls plus independent target values/effects; exact types gap, no complete startup/operational API claim"
+      "scope": "revision31 native type/whole original internal types module controls; exact options gap; no complete startup/operational API claim"
     },
     "WebKit": {
-      "evidence": "constants-engine-check.json",
-      "constantsCases": 10,
-      "constantsFailures": 0,
-      "targetHeaderValuesCompared": 43,
-      "targetEffects": 4,
-      "driverRuns": 5,
+      "evidence": "types-engine-check.json",
+      "typesCases": 21,
+      "typesFailures": 0,
+      "sharedValueClassifications": 86,
+      "sharedValueClassificationDifferences": 0,
+      "driverRuns": 4,
       "driverFailures": 0,
+      "historicalConstantsEvidence": "constants-engine-check.json",
       "historicalAsyncEvidence": "async-wrap-engine-check.json",
       "historicalTaskQueueEvidence": "task-queue-engine-check.json",
-      "scope": "revision30 constants controls plus independent target values/effects; exact types gap, no complete startup/operational API claim"
+      "scope": "revision31 native type/whole original internal types module controls; exact options gap; no complete startup/operational API claim"
     }
   },
   "nextWork": [
-    "Implement real engine type predicates from pinned native types binding; unchanged internal/util:73 now stops there",
-    "Complete startup-required util/options/process/native closure and engine Promise lifecycle/frame/common callback contracts",
+    "Implement real options binding and source-defined startup option metadata/policy; unchanged internal/options:20 now stops there",
+    "Complete startup-required util/process/native closure and engine Promise lifecycle/frame/common callback contracts",
     "Genuine empty/simple output/errors/jobs/exit and separate CJS/ESM entrypaths on all four hosts",
     "Complete full graph catalog and dependency-ordered roadmap, nested guest Wasm last unless startup requires it; stop for user review before broader implementation"
   ]

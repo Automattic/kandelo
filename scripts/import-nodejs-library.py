@@ -51,6 +51,7 @@ def select_sources(members, prefix):
                        'src/builtin_info.cc', 'src/builtin_info.h',
                        'src/env_properties.h', 'src/node_exit_code.h',
                        'src/env.h', 'src/async_wrap.h', 'src/async_wrap.cc',
+                       'src/node_types.cc',
                        'src/node_constants.cc', 'src/node_constants.h',
                        'src/node_zlib.cc', 'src/node.h', 'src/util.h',
                        'src/tracing/trace_event_legacy.h',

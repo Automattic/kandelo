@@ -20,10 +20,29 @@
 #include "shell/node-upstream/async-wrap.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
+#include "shell/node-upstream/types.h"
 #include "shell/ShellModuleObjectWrapper.h"
 
 namespace kandelo::node {
 namespace {
+
+static int externalReferenceToken = 42;
+bool NewExternal(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject object(cx, CreateExternalPointer(cx, &externalReferenceToken));
+  if (!object) return false;
+  args.rval().setObject(*object); return true;
+}
+bool ReadExternal(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  if (!args.get(0).isObject()) {
+    JS_ReportErrorASCII(cx, "Expected a native External value"); return false;
+  }
+  JS::RootedObject object(cx, &args[0].toObject()); void* pointer;
+  if (!GetExternalPointer(cx, object, &pointer)) return false;
+  MOZ_RELEASE_ASSERT(pointer == &externalReferenceToken);
+  args.rval().setInt32(*static_cast<int*>(pointer)); return true;
+}
 
 bool NewPrivateKey(JSContext* cx, unsigned argc, JS::Value* vp) {
   JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
@@ -258,6 +277,8 @@ bool ModuleNamespaceForTesting(JSContext* cx, unsigned argc, JS::Value* vp) {
 bool DefinePrivateKeyTestAPI(JSContext* cx) {
   static const JSFunctionSpec functions[] = {
       JS_FN("newPrivateKey", NewPrivateKey, 0, 0),
+      JS_FN("newExternal", NewExternal, 0, 0),
+      JS_FN("readExternal", ReadExternal, 1, 0),
       JS_FN("initializePrivateKey", InitializePrivateKey, 3, 0),
       JS_FN("initializeContext", InitializeContext, 0, 0),
       JS_FN("getContextExports", GetContextExports, 0, 0),

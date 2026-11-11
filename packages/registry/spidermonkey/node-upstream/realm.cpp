@@ -38,13 +38,14 @@
 #include "shell/node-upstream/per-context.h"
 #include "shell/node-upstream/task-queue.h"
 #include "shell/node-upstream/timers.h"
+#include "shell/node-upstream/types.h"
 
 namespace kandelo::node {
 namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3 };
-enum Slot { Status, Global, Process, Primordials, Builtins, Util, Config, Constants, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, Builtins, Util, Config, Constants, Types, Timers, TaskQueue, AsyncWrap, Symbols, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -230,6 +231,15 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
       binding = CreateConstantsBinding(cx);
       if (!binding) return false;
       JS::SetReservedSlot(state, Constants, JS::ObjectValue(*binding));
+    }
+  }
+  else if (name == "types") {
+    JS::Value cached = JS::GetReservedSlot(state, Types);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = CreateTypesBinding(cx, state);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, Types, JS::ObjectValue(*binding));
     }
   }
   else if (name == "timers") {

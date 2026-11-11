@@ -3579,6 +3579,13 @@
       "builtinId": null
     },
     {
+      "path": "src/node_types.cc",
+      "role": "provenance",
+      "bytes": 5643,
+      "sha256": "ec187d3a5bf4a1bf3e5f9842fedce3cacdd485850cdf8a9905aa2a7ac34a1438",
+      "builtinId": null
+    },
+    {
       "path": "src/node_zlib.cc",
       "role": "provenance",
       "bytes": 79780,

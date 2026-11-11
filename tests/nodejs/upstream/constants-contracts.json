@@ -290,5 +290,7 @@
     "Constants are API declarations, not implemented filesystem/network/signal/crypto/compression/trace operations",
     "No complete startup/module compatibility or full catalog claim",
     "No full products/partial/canonical images, successor-ABI campaigns or overall suites"
-  ]
+  ],
+  "currentTypesIntegrationEvidence": "types-engine-check.json",
+  "currentBootstrapGap": "options in internal/options:20 from internal/util:74 after genuine native types; prior gap observations remain historical"
 }

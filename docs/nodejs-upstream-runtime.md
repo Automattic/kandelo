@@ -13,8 +13,9 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry now calls complete `internal/bootstrap/node`
 with protected state, passes native configuration and stops on missing
-`types` through original internal/util and validators, after executing the
-original async-hooks module and native constants initializer through real backends.
+`options` through original internal/util and validators, after executing the
+original async-hooks module, native constants initializer and engine type
+predicates through real backends.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -862,3 +863,36 @@ reference/probe fixture failures and limits are in
 Contracts and next work are in
 [constants-contracts.md](../tests/nodejs/upstream/constants-contracts.md).
 No product images, full products, successor-ABI campaigns or overall suites ran.
+
+## Native engine type predicates
+
+Revision 31 supplies all 26 native `types` exports using actual SpiderMonkey
+object classes and function flags. A strict generator derives export names from
+the complete byte-verified native source; original JavaScript remains unchanged.
+Predicates do not inspect public tags, constructors or prototypes. Checked engine
+wrappers preserve foreign native identity; scripted/revoked proxies do not unwrap
+or invoke handlers. Genuine module namespaces are distinguished from scripted
+proxies. The real borrowed-pointer External carrier has a private class, null
+prototype and no extensibility; it is not a Node resource handle or Node-API
+implementation. Traced functions retain their realm and reject after its failure.
+
+Twenty-one focused controls pass on Node, Chromium, Firefox and WebKit with
+identical engine/kernel bytes, including execution of the complete original
+`internal/util/types` module. All 86 shared-value classifications match the pinned
+native executable; thirteen shared native controls pass separately with a genuine
+External addon. The same engine passes 218 prior cases on Node, including nineteen
+expected fatal controls. The browser drivers preserve natural job exit, requested
+quit status and the original unhandled job error. Selected controls cover moving
+GC, cross-realm values, intrinsic typed-array getters and failed-realm isolation.
+Complete denied-wrapper/OOM/teardown/ShadowRealm equivalence remains unproven.
+
+The original principal body and stack-policy probe now reach missing `options`
+at `internal/options:20`, from `internal/util:74`; original typed NodeError
+construction still succeeds. Ordinary public startup remains the compatibility
+bootstrap. Empty/simple and separate CJS/ESM startup acceptance, the full backend
+catalog and broader implementation roadmap remain open. Initial include-style
+and native fixture failures are retained, along with the existing browser cleanup
+permission warning and Mozilla targeting/fork limitations. No product images,
+full product or successor-ABI builds, or overall suites ran. Exact evidence and
+partial contracts are in [types-engine-check.json](../tests/nodejs/upstream/types-engine-check.json)
+and [types-contracts.json](../tests/nodejs/upstream/types-contracts.json).

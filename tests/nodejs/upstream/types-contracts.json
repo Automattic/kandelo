@@ -1,0 +1,795 @@
+{
+  "schema": 1,
+  "scope": "Complete types binding export inventory and literal consumers; indirect module references are a syntax index, not complete graph/reachability coverage",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceVersion": "26.13.0",
+  "upstreamJavaScriptChanged": false,
+  "upstreamStartup": false,
+  "publicModuleCompatibility": false,
+  "literalConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util/types.js",
+      "line": 66,
+      "text": "  ...internalBinding('types'),"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/test_runner/reporter/tap.js",
+      "line": 180,
+      "text": "    if (internalBinding('types').isDate(value)) {"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util.js",
+      "line": 73,
+      "text": "const { isNativeError, isPromise } = internalBinding('types');"
+    }
+  ],
+  "indirectModuleReferences": [
+    {
+      "path": "third_party/nodejs/upstream/lib/fs.js",
+      "line": 62,
+      "text": "const { isArrayBufferView } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/buffer.js",
+      "line": 111,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/http.js",
+      "line": 43,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/tls.js",
+      "line": 64,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/zlib.js",
+      "line": 62,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/_http_outgoing.js",
+      "line": 79,
+      "text": "const { isUint8Array } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/ffi.js",
+      "line": 24,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/util.js",
+      "line": 79,
+      "text": "const types = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/stream.js",
+      "line": 53,
+      "text": "const { isArrayBufferView, isUint8Array } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/net.js",
+      "line": 132,
+      "text": "const { isUint8Array } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/assert.js",
+      "line": 60,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/dgram.js",
+      "line": 70,
+      "text": "const { isArrayBufferView } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/child_process.js",
+      "line": 56,
+      "text": "const { isArrayBufferView } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/console/constructor.js",
+      "line": 61,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/diagnostics_channel.js",
+      "line": 39,
+      "text": "const { isPromise } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/util/types.js",
+      "line": 3,
+      "text": "module.exports = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/validators.js",
+      "line": 40,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/tls/wrap.js",
+      "line": 59,
+      "text": "const { isArrayBufferView } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/histogram.js",
+      "line": 47,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/tls/secure-context.js",
+      "line": 26,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/permission.js",
+      "line": 11,
+      "text": "const { isUint8Array } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/webcrypto.js",
+      "line": 90,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/process/pre_execution.js",
+      "line": 613,
+      "text": "  const types = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/hash.js",
+      "line": 68,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util/inspect.js",
+      "line": 187,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/webstreams/adapters.js",
+      "line": 67,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/dtls/dtls.js",
+      "line": 60,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/cipher.js",
+      "line": 56,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/encoding.js",
+      "line": 50,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/setup.js",
+      "line": 15,
+      "text": "const { isArrayBufferView } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/stream_base_commons.js",
+      "line": 27,
+      "text": "const { isUint8Array } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/hkdf.js",
+      "line": 49,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/http2/core.js",
+      "line": 181,
+      "text": "const { isArrayBufferView } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vm/module.js",
+      "line": 28,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/webstreams/readablestream.js",
+      "line": 54,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/diffiehellman.js",
+      "line": 45,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/util/comparisons.js",
+      "line": 95,
+      "text": "const types = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/webidl.js",
+      "line": 38,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/webstreams/util.js",
+      "line": 51,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/random.js",
+      "line": 74,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/keygen.js",
+      "line": 56,
+      "text": "const { isArrayBufferView } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/webstreams/compression.js",
+      "line": 19,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/provider_mac.js",
+      "line": 50,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/zip/entry.js",
+      "line": 43,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/util.js",
+      "line": 114,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/fs/promises.js",
+      "line": 55,
+      "text": "const { isArrayBufferView } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/zip/archive.js",
+      "line": 31,
+      "text": "const { isUint8Array } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/fs/watchers.js",
+      "line": 69,
+      "text": "const { isRegExp } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/x509.js",
+      "line": 45,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/vfs/providers/real.js",
+      "line": 21,
+      "text": "const { isArrayBufferView } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/fs/utils.js",
+      "line": 49,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/sig.js",
+      "line": 50,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/fast-utf8-stream.js",
+      "line": 26,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/zip/binary.js",
+      "line": 22,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/crypto/keys.js",
+      "line": 81,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/repl/completion.js",
+      "line": 45,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/child_process.js",
+      "line": 63,
+      "text": "const { isArrayBufferView } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/iter/webidl.js",
+      "line": 12,
+      "text": "const { isUint8Array } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/iter/classic.js",
+      "line": 153,
+      "text": "const { isUint8Array } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/iter/consumers.js",
+      "line": 75,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/blob.js",
+      "line": 47,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/iter/pull.js",
+      "line": 35,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/iter/utils.js",
+      "line": 35,
+      "text": "const { isSharedArrayBuffer, isUint8Array } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/iter/from.js",
+      "line": 46,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/ffi/fast-api.js",
+      "line": 26,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/bench_runner/harness.js",
+      "line": 44,
+      "text": "const { isRegExp } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/streams/iter/transform.js",
+      "line": 41,
+      "text": "const { isArrayBufferView, isAnyArrayBuffer } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/test_runner/runner.js",
+      "line": 68,
+      "text": "const { isRegExp } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/bench_runner/benchmarks_stream.js",
+      "line": 35,
+      "text": "const { isMap, isSet } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/test_runner/test.js",
+      "line": 77,
+      "text": "const { isPromise, isRegExp } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/cjs/loader.js",
+      "line": 220,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/customization_hooks.js",
+      "line": 17,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/helpers.js",
+      "line": 542,
+      "text": "  return _TYPES = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/loader.js",
+      "line": 80,
+      "text": "const { isPromise } = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/hooks.js",
+      "line": 36,
+      "text": "} = require('internal/util/types');"
+    },
+    {
+      "path": "third_party/nodejs/upstream/lib/internal/modules/esm/module_job.js",
+      "line": 52,
+      "text": "const { isPromise } = require('internal/util/types');"
+    }
+  ],
+  "nativeSource": {
+    "path": "third_party/nodejs/upstream/src/node_types.cc",
+    "bytes": 5643,
+    "sha256": "ec187d3a5bf4a1bf3e5f9842fedce3cacdd485850cdf8a9905aa2a7ac34a1438"
+  },
+  "upstreamModule": {
+    "path": "third_party/nodejs/upstream/lib/internal/util/types.js",
+    "bytes": 2830,
+    "sha256": "beac0621a76eadd93f40ca285b0122fac8b3021257af0bdca17b561dffc91807"
+  },
+  "exports": [
+    {
+      "name": "isArgumentsObject",
+      "enginePredicate": "object->is<js::ArgumentsObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isArrayBuffer",
+      "enginePredicate": "object->is<js::ArrayBufferObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isAsyncFunction",
+      "enginePredicate": "object->is<JSFunction>() && object->as<JSFunction>().isAsync()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isBigIntObject",
+      "enginePredicate": "object->is<js::BigIntObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isBooleanObject",
+      "enginePredicate": "object->is<js::BooleanObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isDate",
+      "enginePredicate": "object->is<js::DateObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isExternal",
+      "enginePredicate": "JS::GetClass(object) == &kExternal",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isGeneratorFunction",
+      "enginePredicate": "object->is<JSFunction>() && object->as<JSFunction>().isGenerator()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isGeneratorObject",
+      "enginePredicate": "object->is<js::AbstractGeneratorObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isMap",
+      "enginePredicate": "object->is<js::MapObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isMapIterator",
+      "enginePredicate": "object->is<js::MapIteratorObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isModuleNamespaceObject",
+      "enginePredicate": "object->is<js::ModuleNamespaceObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isNativeError",
+      "enginePredicate": "object->is<js::ErrorObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isNumberObject",
+      "enginePredicate": "object->is<js::NumberObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isPromise",
+      "enginePredicate": "object->is<js::PromiseObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isProxy",
+      "enginePredicate": "js::IsScriptedProxy(object)",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isRegExp",
+      "enginePredicate": "object->is<js::RegExpObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isSet",
+      "enginePredicate": "object->is<js::SetObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isSetIterator",
+      "enginePredicate": "object->is<js::SetIteratorObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isSharedArrayBuffer",
+      "enginePredicate": "object->is<js::SharedArrayBufferObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isStringObject",
+      "enginePredicate": "object->is<js::StringObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isSymbolObject",
+      "enginePredicate": "object->is<js::SymbolObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isWeakMap",
+      "enginePredicate": "object->is<js::WeakMapObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isWeakSet",
+      "enginePredicate": "object->is<js::WeakSetObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isAnyArrayBuffer",
+      "enginePredicate": "object->is<js::ArrayBufferObject>() || object->is<js::SharedArrayBufferObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    },
+    {
+      "name": "isBoxedPrimitive",
+      "enginePredicate": "object->is<js::NumberObject>() || object->is<js::StringObject>() || object->is<js::BooleanObject>() || object->is<js::BigIntObject>() || object->is<js::SymbolObject>()",
+      "signature": "(value?: unknown, ...ignored) -> boolean; receiver ignored",
+      "functionName": "",
+      "functionLength": 0,
+      "propertyDescriptors": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      }
+    }
+  ],
+  "classes": [],
+  "symbols": [],
+  "sharedArrays": [],
+  "owningLayers": {
+    "engine": "SpiderMonkey native object classes, actual function flags, scripted-proxy identity and genuine module namespace",
+    "embedding": "Per-realm cached binding; each native function traces its owning realm and checks failure state before inspection",
+    "libcKernelHost": "No type decisions delegated to libc/kernel/outer host JavaScript; all four hosts execute the same guest engine",
+    "prerequisites": [
+      "Original context/primordials and realm loader",
+      "Complete pinned native declaration inventory",
+      "Actual JS engine class/flag APIs",
+      "Native opaque-pointer carrier for External values"
+    ]
+  },
+  "semantics": {
+    "arguments": "Missing/primitive inputs false; no coercion, user getters, constructor/prototype/toStringTag checks or proxy traps",
+    "wrappers": "Only checked engine/security wrappers are unwrapped; scripted/revoked proxies remain proxies; denied wrapper access fails honestly",
+    "namespace": "Actual ModuleNamespaceObject may use engine proxy machinery but is not a scripted JS Proxy",
+    "functions": "Read actual async/generator flags; async generators match both; bound functions do not inherit flags",
+    "compoundPredicates": "Exact native unions for ArrayBuffer/SharedArrayBuffer and five boxed primitive classes",
+    "nativeErrors": "Actual ErrorObject classes; original DOMException constructor creates a real Error; inherited Error.prototype is insufficient",
+    "classMetadata": "Native reference confirms Number/Boolean/String prototypes are boxed; remaining selected prototypes are ordinary"
+  },
+  "external": {
+    "representation": "Exact private JSClass, null prototype, non-extensible object, one opaque PrivateValue slot containing actual borrowed C++ pointer",
+    "ownership": "Embedding caller owns native payload lifetime; GC roots the JS carrier only, with no synthetic resource handle/finalizer",
+    "testReference": "Native C addon creates a real N-API External and reads the same native int42 pointer before/after GC; private guest fixture reads a real C++ int42 pointer",
+    "errors": "Readback rejects ordinary objects and scripted proxies without invoking traps",
+    "limits": "No Node-API API compatibility or native resource lifecycle claim"
+  },
+  "schedulingAsyncContext": {
+    "synchronous": true,
+    "callbacks": [],
+    "handlesRequests": [],
+    "livenessCancellationRefState": "No new timers/handles/requests, callback scopes, cancellation or ref state"
+  },
+  "ownershipGcLifecycle": {
+    "binding": "Rooted during creation then cached in traced realm slot",
+    "functions": "Native reserved slot traces actual owning realm; moving GC preserves owner and bound predicate ID",
+    "failure": "Functions reject after realm bootstrap failure, including calls without arguments; unrelated realms remain usable",
+    "errors": "Denied wrappers/allocation/property failures are explicit, no false success/fabricated metadata",
+    "remaining": "Security-denied wrapper cases, full OOM, teardown/ShadowRealm equivalence and arbitrary External producer lifetime remain unvalidated"
+  },
+  "archivedReuse": "19-family/PR audits remain native salvage indexes; no old handwritten public APIs or per-module substitutes imported",
+  "validationObligations": [
+    "Shared semantic matrix against pinned native executable, including actual native External readback",
+    "Same engine/kernel bytes on Node/Chromium/Firefox/WebKit, trap-free proxies, genuine namespace, moving GC",
+    "Cross-realm wrappers/owner isolation and failed-realm rejection",
+    "Complete original internal/util/types body and selected intrinsic typed-array helpers",
+    "Observe exact next failure in complete original principal bootstrap; keep CJS/ESM/startup incomplete until real acceptance",
+    "Preserve prior regression and expected fatal assertion evidence"
+  ],
+  "nextWork": [
+    "Implement exact next observed startup-required binding with real target metadata/behavior",
+    "Continue genuine unchanged empty/simple output/error/jobs/exit startup; separate CJS/ESM entrypaths",
+    "Complete/reconcile full public/internal/vendored lazy/conditional/worker/platform/exception backend graph and dependency roadmap",
+    "Nested guest Wasm last unless startup requires it; stop for user review before broader implementation"
+  ],
+  "limits": [
+    "Native type predicates do not implement the APIs of classified objects",
+    "No complete Node startup or module compatibility claim",
+    "No full product/partial/canonical images, successor-ABI campaigns or overall conformance suites"
+  ]
+}
