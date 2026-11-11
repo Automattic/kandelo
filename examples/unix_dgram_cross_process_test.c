@@ -36,6 +36,8 @@
 #define UNPRIVILEGED_UID 1000
 #define UNPRIVILEGED_GID 1000
 
+#define LARGE_WRITE_SIZE 65537
+static char large_payload[LARGE_WRITE_SIZE];
 static int failures;
 
 static void fail(const char *who, const char *message)
@@ -127,6 +129,14 @@ static int run_child(int notify_fd, int wait_fd, int drop_privileges)
 	/* ...then send, with no destination address of its own. */
 	if (send(log_fd, "msg1", 4, 0) != 4) {
 		fail("child", "send() across processes");
+		return 1;
+	}
+
+	/* Cross the channel-sized boundary through write(), retaining one
+	 * datagram even though the receiver belongs to another process. */
+	memset(large_payload, 'L', sizeof large_payload);
+	if (write(log_fd, large_payload, sizeof large_payload) != sizeof large_payload) {
+		fail("child", "large write() across processes");
 		return 1;
 	}
 
@@ -233,6 +243,19 @@ int main(int argc, char **argv)
 		        received, received > 0 ? (int)received : 0, payload,
 		        errno, strerror(errno));
 		failures++;
+	}
+
+	memset(large_payload, 0, sizeof large_payload);
+	received = recv(log_fd, large_payload, sizeof large_payload, 0);
+	if (received != sizeof large_payload) {
+		fail("parent", "large write() did not arrive as one datagram");
+	} else {
+		for (size_t i = 0; i < sizeof large_payload; i++) {
+			if (large_payload[i] != 'L') {
+				fail("parent", "large write() bytes changed");
+				break;
+			}
+		}
 	}
 
 	/* Retire the endpoint the child is still pointing at, then allocate

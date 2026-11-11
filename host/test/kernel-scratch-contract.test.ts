@@ -593,6 +593,12 @@ const reviewedScalarKernelExportCall = (
 });
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
+
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.retireChannelHostWaits::kernel-export-direct-use::cancel(channel.pid, entropy.tid, entropy.token)",
+    disposition: "kernel-control",
+    why: "Retires only the exact PID/TID and opaque entropy cursor token during channel teardown. It accesses no guest memory or kernel scratch and is safe after image retirement.",
+  },
   {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#takeRootfsCompactionRequest::kernel-export-direct-use::take?.()",
     disposition: "kernel-control",

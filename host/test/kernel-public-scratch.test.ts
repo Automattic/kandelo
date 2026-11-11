@@ -1210,6 +1210,68 @@ describe("Rust-owned host import ranges", () => {
     expect(imports.env.host_getrandom(0, 1)).toBe(-14);
   });
 
+  for (const pointerWidth of [4, 8] as const) {
+    it(`bounds random backing allocations and returns a prefix (wasm${pointerWidth * 8})`, () => {
+      const memory = new WebAssembly.Memory({ initial: 50, maximum: 50, shared: true });
+      recordComparisonMemoryShape(memory, 4, true, 50);
+      const { kernel } = fullKernelHarness({}, {}, pointerWidth, memory);
+      const imports = kernel.testAuthority.buildImportObject(memory) as {
+        env: Record<string, (...args: any[]) => any>;
+      };
+      const getRandomValues = vi.spyOn(globalThis.crypto, "getRandomValues")
+        .mockImplementation((view: any) => {
+          expect(view.buffer).toBeInstanceOf(ArrayBuffer);
+          expect(view.byteLength).toBeLessThanOrEqual(65_536);
+          expect(view.buffer.byteLength).toBeLessThanOrEqual(65_536);
+          view.fill((getRandomValues.mock.calls.length % 251) + 1);
+          return view;
+        });
+      try {
+        for (const size of [0, 1, 65_535, 65_536, 65_537, 1_048_576, 3 * 1_048_576 + 29]) {
+          getRandomValues.mockClear();
+          const bytes = new Uint8Array(memory.buffer, 4095, size + 2);
+          bytes.fill(0xa5);
+          const count = Math.min(size, 65_536);
+          expect(imports.env.host_getrandom(pointerWidth === 8 ? 4096n : 4096, size)).toBe(count);
+          expect(getRandomValues).toHaveBeenCalledTimes(size === 0 ? 0 : 1);
+          expect(bytes[0]).toBe(0xa5);
+          expect(bytes[size + 1]).toBe(0xa5);
+          for (let i = 0; i < size; i++) {
+            if (bytes[i + 1] !== (i < count ? 2 : 0xa5)) {
+              throw new Error(`incorrect random byte at ${i} for size ${size}`);
+            }
+          }
+        }
+      } finally {
+        getRandomValues.mockRestore();
+      }
+    });
+  }
+
+  it("preserves an earlier published window when the next entropy import fails", () => {
+    const memory = new WebAssembly.Memory({ initial: 3, maximum: 3, shared: true });
+    recordComparisonMemoryShape(memory, 4, true, 3);
+    const { kernel } = fullKernelHarness({}, {}, 4, memory);
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
+      env: Record<string, (...args: any[]) => any>;
+    };
+    const bytes = new Uint8Array(memory.buffer, 4095, 65_539);
+    bytes.fill(0xa5);
+    const getRandomValues = vi.spyOn(globalThis.crypto, "getRandomValues")
+      .mockImplementationOnce((view: any) => { view.fill(7); return view; })
+      .mockImplementationOnce(() => { throw new Error("entropy unavailable"); });
+    try {
+      expect(imports.env.host_getrandom(4096, 65_537)).toBe(65_536);
+      expect(imports.env.host_getrandom(4096 + 65_536, 1)).toBe(-5);
+      expect(getRandomValues).toHaveBeenCalledTimes(2);
+      expect(bytes[0]).toBe(0xa5);
+      expect(bytes.subarray(1, 65_537)).toEqual(new Uint8Array(65_536).fill(7));
+      expect(bytes.subarray(65_537)).toEqual(new Uint8Array(2).fill(0xa5));
+    } finally {
+      getRandomValues.mockRestore();
+    }
+  });
+
   it("rejects an unrepresentable wasm64 process-copy destination before a kernel write", () => {
     const processMemory = new WebAssembly.Memory({ initial: 1 });
     const { kernel, memory } = kernelHarness({}, 8);
@@ -1231,6 +1293,18 @@ describe("Rust-owned host import ranges", () => {
     )).toBe(-14);
     expect(new Uint8Array(memory.buffer, 4096, 4))
       .toEqual(new Uint8Array(4).fill(0xa5));
+  });
+
+  it("validates guest destinations without reading, allocating, or changing their bytes", () => {
+    const processMemory = new WebAssembly.Memory({ initial: 1 });
+    const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory: () => processMemory });
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+    new Uint8Array(processMemory.buffer).fill(0xa5);
+    expect(imports.env.host_proc_validate_range(7, 0n, 65536)).toBe(0);
+    for (const [address, length] of [[1n, 65536], [0xffffffffffffffffn, 1], [0n, 2147483647]] as const) {
+      expect(imports.env.host_proc_validate_range(7, address, length)).toBe(-14);
+    }
+    expect(new Uint8Array(processMemory.buffer)).toEqual(new Uint8Array(65536).fill(0xa5));
   });
 
   it("transfers at guest address zero but refuses a null kernel range", () => {

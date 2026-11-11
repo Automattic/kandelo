@@ -3057,19 +3057,24 @@ export class WasmPosixKernel {
               bufLen,
               "host_getrandom destination",
             );
-            const random = new IntrinsicUint8Array(destination.capacity);
+            // Bound the backing allocation, not just the view passed to
+            // Crypto. A short host result is legal; Rust owns read progress.
+            const random = new IntrinsicUint8Array(Math.min(destination.capacity, 65_536));
             if (typeof globalThis.crypto !== "undefined" && globalThis.crypto.getRandomValues) {
               // crypto.getRandomValues rejects SharedArrayBuffer-backed views
               // in browsers. The owned temporary also ensures no host callback
               // retains a live view of kernel memory.
-              globalThis.crypto.getRandomValues(random);
+              // Web Crypto caps each call at 65,536 bytes, independently of
+              // the guest read size. Each import publishes one bounded window.
+              // https://www.w3.org/TR/webcrypto/#Crypto-method-getRandomValues
+              if (random.length > 0) globalThis.crypto.getRandomValues(random);
             } else {
-              for (let i = 0; i < destination.capacity; i++) {
+              for (let i = 0; i < random.length; i++) {
                 random[i] = (Math.random() * 256) | 0;
               }
             }
             this.#writeKernelBytes(destination, random);
-            return destination.capacity;
+            return random.length;
           } catch (error) {
             return negErrno(error);
           }
@@ -4207,6 +4212,15 @@ export class WasmPosixKernel {
         // -1 (never provably quiescent) unless the embedder tracks epochs.
         host_proc_quiescent_epoch: (pid: number): bigint =>
           this.callbacks.getProcessQuiescentEpoch?.(pid) ?? -1n,
+        host_proc_validate_range: (pid: number, addr: bigint, len: number): number => {
+          const memory = this.callbacks.getProcessMemory?.(pid);
+          if (!memory) return -14;
+          try {
+            checkedWasmImportMemoryRange(memory, addr, len, 8,
+              "host_proc_validate_range process destination", true);
+            return 0;
+          } catch (caught) { rethrowNativeGlFault(caught); return -14; }
+        },
         host_proc_read_bytes: (
           pid: number,
           addr: bigint,

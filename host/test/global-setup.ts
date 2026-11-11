@@ -159,6 +159,7 @@ const TEST_PROGRAMS = [
   "int128_division_test.c",
   "environment_lifecycle_test.c",
   "chown_sentinel_test.c",
+  "random_read_test.c",
   "fstatat_empty_path_test.c",
   "pthread_channel_reuse_test.c",
   "wait_lifecycle_test.c",

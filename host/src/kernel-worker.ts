@@ -148,6 +148,7 @@ import {
   ABI_KERNEL_EXPORT,
   ABI_SYSCALL_NAMES,
   ABI_SYSCALLS,
+  ENTROPY_READ_PENDING,
   AT_FLAGS,
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_PENDING,
@@ -1380,18 +1381,6 @@ function vectorRequestForbidsEagainRetry(
  * Same as channel layout but used as the kernel-side buffer. */
 const SCRATCH_SIZE = CH_TOTAL_SIZE;
 
-/**
- * One caller-owned byte range a large transfer stages through kernel scratch.
- *
- * The vector syscalls no longer produce these: the kernel walks the caller's
- * `struct iovec` table itself. What remains is the single range a large
- * `write`/`read`/`pwrite`/`pread` presents.
- */
-interface CheckedProcessIovec {
-  base: number;
-  len: number;
-}
-
 interface PlannedChannelScratchArg {
   desc: SyscallArgDesc;
   processPointer: number;
@@ -2142,17 +2131,12 @@ interface ReservedTransferScratch {
   token: bigint;
 }
 
-interface FlattenedTransferRequest {
-  fd: number;
-  entries: readonly CheckedProcessIovec[];
-  totalData: number;
-  read: boolean;
-  offset: bigint | null;
-  /**
-   * Complete detached write payload. Required for retryable writes so later
-   * attempts never consult mutable process buffers again.
-   */
-  inputBytes?: Uint8Array;
+interface PendingEntropyRead {
+  token: bigint;
+  tid: number;
+  registration: ProcessRegistration;
+  request: object;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 interface BlockingRetryDisposition extends FrozenCancellationPointIdentity {
@@ -2174,6 +2158,21 @@ interface GenericBlockingRetrySnapshot extends BlockingRetryDisposition {
   readonly retryToken: bigint;
 }
 
+/** Original guest addresses; Rust owns any admitted payload and pinned OFD. */
+interface GuestIoRequest {
+  readonly syscallNr: number;
+  readonly origArgs: number[];
+  readonly adjustedArgs: readonly ChannelScalarValue[];
+}
+
+interface GuestIoBlockingRetrySnapshot extends BlockingRetryDisposition {
+  readonly kind: "guest-io";
+  readonly syscallNr: number;
+  readonly origArgs: number[];
+  readonly request: GuestIoRequest;
+  readonly retryToken: bigint;
+}
+
 interface SelectBlockingRetrySnapshot
   extends FrozenCancellationPointIdentity {
   readonly kind: "select";
@@ -2191,18 +2190,7 @@ interface SelectBlockingRetrySnapshot
   readonly retryToken: bigint;
 }
 
-interface FlattenedBlockingRetrySnapshot extends BlockingRetryDisposition {
-  readonly kind: "flattened-transfer";
-  readonly syscallNr: number;
-  readonly origArgs: number[];
-  readonly request: FlattenedTransferRequest;
-  readonly retryToken: bigint;
-}
-
-type BlockingRetrySnapshot =
-  | GenericBlockingRetrySnapshot
-  | SelectBlockingRetrySnapshot
-  | FlattenedBlockingRetrySnapshot;
+type BlockingRetrySnapshot = GenericBlockingRetrySnapshot | SelectBlockingRetrySnapshot | GuestIoBlockingRetrySnapshot;
 
 interface BlockingRetryWakeTargets {
   readonly readPipeIndex?: number;
@@ -3030,6 +3018,7 @@ export class CentralizedKernelWorker {
    */
   private kernelAbiContractDigest: Uint8Array | null = null;
   private processes = new Map<number, ProcessRegistration>();
+  private pendingEntropyReads = new Map<ChannelInfo, PendingEntropyRead>();
   private activeChannels: ChannelInfo[] = [];
   /**
    * Exact channel generations detached from dispatch but whose engine-owned
@@ -7335,7 +7324,8 @@ export class CentralizedKernelWorker {
     if (errVal !== 0) {
       // A kernel-owned park carries its generation in the return slot; the
       // post-dispatch path reads it from the raw value.
-      if (errVal === KERNEL_WAIT_PARKED_ERRNO) {
+      if (errVal === KERNEL_WAIT_PARKED_ERRNO
+        || (syscallNr === SYS_READV && errVal === (ENTROPY_READ_PENDING >>> 0))) {
         return { retVal: -1, publicationRetVal: -1, errVal };
       }
       if (rawRetVal !== -1n) {
@@ -11112,6 +11102,14 @@ export class CentralizedKernelWorker {
   }
 
   private retireChannelHostWaits(channel: ChannelInfo, entry?: KernelWorkerEntryContext): void {
+    const entropy = this.pendingEntropyReads?.get(channel);
+    if (entropy) {
+      if (entropy.timer !== null) this.#cancelRegisteredTimeout(entropy.timer);
+      const cancel = this.#kernelInstanceForEntry(entry).exports.kernel_entropy_read_cancel as
+        (pid: number, tid: number, token: bigint) => number;
+      cancel(channel.pid, entropy.tid, entropy.token);
+      this.pendingEntropyReads.delete(channel);
+    }
     this.discardStoppedChannelState(channel);
     this.resumePreparedSignals?.delete(channel);
     this.activeChannelRequests?.delete(channel);
@@ -11165,6 +11163,9 @@ export class CentralizedKernelWorker {
       if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.blockingRetrySnapshots?.keys() ?? []) {
+      if (channel.pid === pid) channels.add(channel);
+    }
+    for (const channel of this.pendingEntropyReads?.keys() ?? []) {
       if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.pendingSelectRetries?.keys() ?? []) {
@@ -12085,7 +12086,17 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
   ): FrozenChannelRequest | null {
     const active = this.activeChannelRequests.get(channel);
-    if (active) return active;
+    if (active) {
+      const entropy = this.pendingEntropyReads.get(channel);
+      if (entropy) {
+        if (this.#completeTerminalTeardownChannel(channel, entry)
+          || this.handleExitedProcessChannel(channel, entry)
+          || this.deferChannelWhileStopped(channel)) return null;
+        this.#advanceEntropyRead(channel, entropy, entry);
+        return null;
+      }
+      return active;
+    }
 
     const processView = new DataView(
       channel.memory.buffer,
@@ -13199,29 +13210,39 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    if (
+      ((syscallNr === SYS_READ || syscallNr === SYS_WRITE
+        || syscallNr === SYS_PREAD || syscallNr === SYS_PWRITE)
+        && (origArgs[2] ?? 0) > CH_DATA_SIZE)
+      || (syscallNr === ABI_SYSCALLS.Getrandom
+        && BigInt.asUintN(64, rawArgs[1] ?? 0n) > BigInt(CH_DATA_SIZE))
+    ) {
+      try {
+        const random = syscallNr === ABI_SYSCALLS.Getrandom;
+        const addressIndex = random ? 0 : 1;
+        const lengthIndex = random ? 1 : 2;
+        const pointerWidth = this.getPtrWidth(channel.pid);
+        adjustedArgs[addressIndex] = canonicalGuestUnsignedScalar(
+          rawArgs[addressIndex] ?? 0n, pointerWidth, "guest I/O address",
+        );
+        adjustedArgs[lengthIndex] = canonicalGuestUnsignedScalar(
+          rawArgs[lengthIndex] ?? 0n, pointerWidth, "guest I/O length",
+        );
+        origArgs[lengthIndex] = Number(adjustedArgs[lengthIndex]);
+      } catch (error) {
+        this.#rejectScratchTransfer(channel, error, entry);
+        return;
+      }
+      this.#handleGuestIo(channel, {
+        syscallNr, origArgs: origArgs.slice(), adjustedArgs: adjustedArgs.slice(),
+      }, entry);
+      return;
+    }
+
     // (writev/readv/preadv/pwritev/preadv2/pwritev2 now go through the normal
     // kernel path. Their `struct iovec` table is declared KernelDereferenced,
     // so the kernel walks the caller's table and its buffers itself, in the
     // caller's data model, and gathers or scatters in one operation.)
-
-    // --- Large write/pwrite/read/pread: one kernel-owned transfer region ---
-    // The ordinary channel has a fixed data capacity. Preserve one POSIX I/O
-    // operation above that boundary instead of splitting datagrams, pipe
-    // atomicity, signals, or open-file-description cursor updates into chunks.
-    if (
-      (syscallNr === SYS_WRITE || syscallNr === SYS_PWRITE)
-      && (origArgs[2] ?? 0) > CH_DATA_SIZE
-    ) {
-      this.#handleLargeWrite(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
-    if (
-      (syscallNr === SYS_READ || syscallNr === SYS_PREAD)
-      && (origArgs[2] ?? 0) > CH_DATA_SIZE
-    ) {
-      this.#handleLargeRead(channel, syscallNr, origArgs, rawArgs, entry);
-      return;
-    }
 
     // (sendmsg/recvmsg now go through the normal kernel path. `struct
     // msghdr` is declared KernelDereferenced, so the kernel walks the caller's
@@ -14466,6 +14487,10 @@ export class CentralizedKernelWorker {
       // Postprocessing below may run nested synthetic syscalls or wake another
       // channel, so it must never retain or reread the shared allocation.
       let { retVal, publicationRetVal, errVal } = kernelResult;
+      if (syscallNr === SYS_READV && errVal === (ENTROPY_READ_PENDING >>> 0)) {
+        this.#queueEntropyRead(channel, kernelResult.rawRetVal, entry);
+        return;
+      }
       if (errVal === KERNEL_WAIT_PARKED_ERRNO) {
         // The kernel parked this request and will decide its result. Record
         // only the park generation a completion must match. A pthread_cancel
@@ -14888,7 +14913,8 @@ export class CentralizedKernelWorker {
       const deliveredSignal = this.#dequeueSignalForDelivery(
         channel,
         entry,
-        (retryDisposition?.applicableSocketTimeoutMs ?? 0) > 0,
+        (retryDisposition?.applicableSocketTimeoutMs ?? 0) > 0
+          || (retVal > 0 && syscallNr === SYS_READV),
       );
       if (
         routedMqNotification
@@ -16202,6 +16228,13 @@ export class CentralizedKernelWorker {
     this.pendingPipeWriters.clear();
     this.pendingPollRetries.clear();
     this.pendingSelectRetries.clear();
+    for (const [channel, pending] of this.pendingEntropyReads) {
+      if (pending.timer !== null) this.#cancelRegisteredTimeout(pending.timer);
+      const cancel = entry.instance.exports.kernel_entropy_read_cancel as
+        (pid: number, tid: number, token: bigint) => number;
+      cancel(channel.pid, pending.tid, pending.token);
+    }
+    this.pendingEntropyReads.clear();
     // Teardown has not yet transitioned these live tasks in Rust. Consume
     // every exact target pin before discarding the immutable host plans.
     for (const channel of Array.from(this.blockingRetrySnapshots.keys())) {
@@ -18614,6 +18647,9 @@ export class CentralizedKernelWorker {
       case "generic-channel":
         this.#replayGenericBlockingRetry(channel, snapshot, entry);
         return;
+      case "guest-io":
+        this.#handleGuestIo(channel, snapshot.request, entry, snapshot);
+        return;
       case "select":
         if (snapshot.syscallNr === SYS_PSELECT6) {
           this.handlePselect6(channel, snapshot.origArgs, entry, snapshot);
@@ -18621,16 +18657,7 @@ export class CentralizedKernelWorker {
           this.handleSelect(channel, snapshot.origArgs, entry, snapshot);
         }
         return;
-      case "flattened-transfer":
-        this.#handleFlattenedTransfer(
-          channel,
-          snapshot.syscallNr,
-          snapshot.origArgs,
-          snapshot.request,
-          entry,
-          snapshot,
-        );
-        return;
+
     }
   }
 
@@ -19539,6 +19566,11 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    const entropy = this.pendingEntropyReads.get(channel);
+    if (entropy) {
+      this.#advanceEntropyRead(channel, entropy, entry);
+      return;
+    }
     const snapshot = this.blockingRetrySnapshots.get(channel);
     if (snapshot) {
       this.#replayBlockingRetrySnapshot(channel, snapshot, entry);
@@ -20711,245 +20743,179 @@ export class CentralizedKernelWorker {
     });
   }
 
-  /** Name the one contiguous kernel operation a large transfer performs. */
-  #scalarTransferSyscall(syscallNr: number): number {
-    // Only the scalar transfers reach this path now. The vector syscalls are
-    // dispatched to the kernel under their own numbers, which walks the
-    // caller's iovec table itself.
-    switch (syscallNr) {
-      case SYS_WRITE:
-        return SYS_WRITE;
-      case SYS_PWRITE:
-        return SYS_PWRITE;
-      case SYS_READ:
-        return SYS_READ;
-      case SYS_PREAD:
-        return SYS_PREAD;
-      default:
-        throw new KernelScratchError(
-          "unsupported scratch transfer syscall " + String(syscallNr),
-          EINVAL,
-        );
-    }
-  }
-
-  #copyFlattenedTransferInput(
-    lease: import("./kernel-scratch").KernelScratchLease,
-    processMem: Uint8Array,
-    entries: readonly CheckedProcessIovec[],
-    destinationOffset: number,
-  ): void {
-    let flattenedOffset = destinationOffset;
-    for (const entry of entries) {
-      if (entry.len > 0) {
-        lease.copyFrom(
-          processMem,
-          flattenedOffset,
-          entry.base,
-          entry.len,
-        );
-      }
-      flattenedOffset += entry.len;
-    }
-  }
-
-  #snapshotFlattenedTransferInput(
+  /** Execute only large scalar I/O, with guest addresses in a fixed header. */
+  #executeGuestIo(
     channel: ChannelInfo,
-    entries: readonly CheckedProcessIovec[],
-    totalData: number,
-  ): Uint8Array {
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const snapshot = new Uint8Array(totalData);
-    let offset = 0;
-    for (const entry of entries) {
-      if (entry.len > 0) {
-        snapshot.set(
-          processMem.subarray(entry.base, entry.base + entry.len),
-          offset,
-        );
-      }
-      offset += entry.len;
-    }
-    if (offset !== totalData) {
-      throw new KernelScratchError(
-        "flattened transfer snapshot length mismatch",
-        EIO,
-      );
-    }
-    return snapshot;
-  }
-
-  #copyFlattenedTransferOutput(
-    lease: import("./kernel-scratch").KernelScratchLease,
-    processMem: Uint8Array,
-    entries: readonly CheckedProcessIovec[],
-    sourceOffset: number,
-    byteLength: number,
-  ): void {
-    let flattenedOffset = sourceOffset;
-    let remaining = byteLength;
-    for (const entry of entries) {
-      if (remaining === 0) break;
-      const copyLength = Math.min(entry.len, remaining);
-      if (copyLength > 0) {
-        lease.copyTo(
-          processMem,
-          flattenedOffset,
-          entry.base,
-          copyLength,
-        );
-      }
-      flattenedOffset += entry.len;
-      remaining -= copyLength;
-    }
-    if (remaining !== 0) {
-      throw new KernelScratchError(
-        "kernel transfer result exceeds caller iovecs",
-        EIO,
-      );
-    }
-  }
-
-  #checkedChannelTransferResult(
-    rawRetVal: bigint,
-    errVal: number,
-    capacity: number,
-  ): { retVal: number; errVal: number } {
-    if (
-      !Number.isSafeInteger(errVal)
-      || errVal < 0
-      || errVal > MAX_KERNEL_TASK_ID
-    ) {
-      return { retVal: -1, errVal: EIO };
-    }
-    if (rawRetVal >= 0n) {
-      if (errVal !== 0 || rawRetVal > BigInt(capacity)) {
-        return { retVal: -1, errVal: EIO };
-      }
-      return { retVal: Number(rawRetVal), errVal: 0 };
-    }
-    if (rawRetVal === -1n && errVal > 0) {
-      return { retVal: -1, errVal };
-    }
-    return { retVal: -1, errVal: EIO };
-  }
-
-  #checkedReservedTransferResult(
-    rawResult: number,
-    capacity: number,
-  ): { retVal: number; errVal: number } {
-    if (!Number.isSafeInteger(rawResult)) {
-      return { retVal: -1, errVal: EIO };
-    }
-    if (rawResult >= 0) {
-      if (rawResult > capacity) {
-        return { retVal: -1, errVal: EIO };
-      }
-      return { retVal: rawResult, errVal: 0 };
-    }
-    const rawErrno = -rawResult;
-    if (rawErrno > 0 && rawErrno <= MAX_KERNEL_TASK_ID) {
-      return { retVal: -1, errVal: rawErrno };
-    }
-    return { retVal: -1, errVal: EIO };
-  }
-
-  /**
-   * Flatten one logical vector into the ordinary channel allocation.
-   *
-   * WHY: the iovec table is a caller/kernel parsing detail, not part of the
-   * host transport. One contiguous scalar dispatch preserves datagram and
-   * pipe operation boundaries while making the exact CH_DATA_SIZE capacity
-   * proof independent of table size or alignment padding.
-   */
-  #executeMainScratchTransfer(
-    channel: ChannelInfo,
-    syscallNr: number,
-    request: FlattenedTransferRequest,
+    request: GuestIoRequest,
     entry: KernelWorkerEntryContext,
-    retryToken = 0n,
-  ): { retVal: number; errVal: number } {
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const scalarSyscall = this.#scalarTransferSyscall(syscallNr);
+    retryToken: bigint,
+  ): { retVal: number; errVal: number; rawRetVal: bigint } {
     this.#bindKernelTidForChannel(channel, entry);
     return this.#requireMainScratchRegion().withLease((lease) => {
-      if (request.read) {
-        lease.fill(0, CH_DATA, request.totalData);
-      } else if (request.inputBytes) {
-        lease.copyFrom(
-          request.inputBytes,
-          CH_DATA,
-          0,
-          request.totalData,
-        );
-      } else {
-        this.#copyFlattenedTransferInput(
-          lease,
-          processMem,
-          request.entries,
-          CH_DATA,
-        );
-      }
-
-      const kernelView = lease.dataView(0, CH_DATA);
-      kernelView.setUint32(CH_SYSCALL, scalarSyscall, true);
+      const header = lease.dataView(0, CH_DATA);
+      header.setUint32(CH_SYSCALL, request.syscallNr, true);
       for (let index = 0; index < CH_ARGS_COUNT; index++) {
-        kernelView.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, 0n, true);
+        header.setBigInt64(CH_ARGS + index * CH_ARG_SIZE,
+          BigInt(request.adjustedArgs[index] ?? 0), true);
       }
-      kernelView.setBigInt64(CH_ARGS, BigInt(request.fd), true);
-      lease.writeAddress(
-        CH_ARGS + CH_ARG_SIZE,
-        CH_DATA,
-        request.totalData,
-        "u64-le",
-      );
-      kernelView.setBigInt64(
-        CH_ARGS + 2 * CH_ARG_SIZE,
-        BigInt(request.totalData),
-        true,
-      );
-      if (request.offset !== null) {
-        kernelView.setBigInt64(
-          CH_ARGS + 3 * CH_ARG_SIZE,
-          request.offset,
-          true,
-        );
-      }
-
       const previousHandlePid = this.currentHandlePid;
       this.currentHandlePid = channel.pid;
       try {
-        this.#invokeEntryScratchExport(
-          entry,
-          lease,
-          "kernel_handle_channel",
-          [
-            lease.exportPointer(0, CH_TOTAL_SIZE),
-            CH_TOTAL_SIZE,
-            channel.pid,
-            retryToken,
-          ],
-        );
+        this.#invokeEntryScratchExport(entry, lease, "kernel_handle_guest_io", [
+          lease.exportPointer(0, CH_TOTAL_SIZE), CH_TOTAL_SIZE, channel.pid, retryToken,
+        ]);
       } finally {
         this.currentHandlePid = previousHandlePid;
       }
-
-      const result = this.#checkedChannelTransferResult(
-        kernelView.getBigInt64(CH_RETURN, true),
-        kernelView.getUint32(CH_ERRNO, true),
-        request.totalData,
-      );
-      if (request.read && result.retVal > 0) {
-        this.#copyFlattenedTransferOutput(
-          lease,
-          processMem,
-          request.entries,
-          CH_DATA,
-          result.retVal,
-        );
+      // Reacquire after dispatch: a kernel allocation may grow its memory.
+      const result = lease.dataView(0, CH_DATA);
+      const rawRetVal = result.getBigInt64(CH_RETURN, true);
+      const errVal = result.getUint32(CH_ERRNO, true);
+      if (errVal === (ENTROPY_READ_PENDING >>> 0)) {
+        return { retVal: -1, errVal, rawRetVal };
       }
-      return result;
+      const length = BigInt(request.adjustedArgs[
+        request.syscallNr === ABI_SYSCALLS.Getrandom ? 1 : 2
+      ] ?? 0);
+      if ((errVal !== 0 && rawRetVal !== -1n)
+        || (errVal === 0 && (rawRetVal < 0n || rawRetVal > length
+          || rawRetVal > BigInt(MAX_REPORTABLE_TRANSFER_BYTES)))) {
+        return { retVal: -1, errVal: EIO, rawRetVal };
+      }
+      return { retVal: Number(rawRetVal), errVal, rawRetVal };
     });
+  }
+
+  #handleGuestIo(
+    channel: ChannelInfo,
+    request: GuestIoRequest,
+    entry: KernelWorkerEntryContext,
+    replaySnapshot?: GuestIoBlockingRetrySnapshot,
+  ): void {
+    const { syscallNr, origArgs } = request;
+    let result: { retVal: number; errVal: number; rawRetVal: bigint };
+    try {
+      result = this.#executeGuestIo(channel, request, entry, replaySnapshot?.retryToken ?? 0n);
+    } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
+      if (this.#kernelFatalError !== null
+        || error instanceof KernelTransferExecuteTrapError
+        || error instanceof KernelTaskBindingError
+        || error instanceof KernelReentrantEntryError) throw error;
+      console.error("[kernel-worker] guest I/O failed for pid=" + channel.pid, error);
+      result = { retVal: -1, errVal: EIO, rawRetVal: -1n };
+    }
+    if (this.#finishSignalTermination(channel, entry)) return;
+    if (result.errVal === (ENTROPY_READ_PENDING >>> 0)) {
+      this.#queueEntropyRead(channel, result.rawRetVal, entry);
+      return;
+    }
+    const persistenceBackpressure = result.errVal === EAGAIN
+      && this.#takeRootfsCompactionRequest(entry);
+    const disposition = replaySnapshot ?? (result.errVal === EAGAIN
+      ? this.#captureBlockingRetryDisposition(channel, syscallNr, origArgs, entry,
+          vectorRequestForbidsEagainRetry(syscallNr, origArgs), persistenceBackpressure)
+      : undefined);
+    const deliveredSignal = this.#dequeueSignalForDelivery(channel, entry,
+      result.retVal > 0 || (disposition?.applicableSocketTimeoutMs ?? 0) > 0);
+    if (this.#finishSignalTermination(channel, entry)) return;
+    if (result.retVal === -1 && result.errVal === EAGAIN) {
+      if (!replaySnapshot) {
+        if (!disposition) this.#failBlockingRetryProtocol("guest I/O lacks retry disposition");
+        if (!this.#rememberBlockingRetrySnapshot(channel, {
+          ...disposition, kind: "guest-io", syscallNr, origArgs,
+          request, retryToken: 0n,
+        }, entry)) return;
+      }
+      this.handleBlockingRetry(channel, syscallNr, origArgs, [], entry,
+        replaySnapshot !== undefined, deliveredSignal, undefined, persistenceBackpressure);
+      return;
+    }
+    if ((this.sharedMmapBackings?.size ?? 0) > 0) {
+      this.handleSharedMappingsAfterFileSyscall(channel, syscallNr, origArgs,
+        result.retVal, result.errVal,
+        syscallNr === SYS_PWRITE ? BigInt(request.adjustedArgs[3] ?? 0) : undefined,
+        undefined, entry);
+      if (this.hostReaped?.has(channel.pid)) return;
+    }
+    this.completeChannel(channel, syscallNr, origArgs, undefined,
+      result.retVal, result.errVal, [], undefined, entry);
+  }
+
+  #queueEntropyRead(channel: ChannelInfo, token: bigint, entry: KernelWorkerEntryContext): void {
+    if (token <= 0n) this.#failBlockingRetryProtocol("invalid entropy continuation token");
+    const registration = this.processes.get(channel.pid);
+    const request = this.activeChannelRequests.get(channel);
+    if (!registration || !request) this.#failBlockingRetryProtocol("entropy read has no captured task registration");
+    const pending = { token, tid: this.guestTidForChannel(channel), registration, request, timer: null };
+    this.pendingEntropyReads.set(channel, pending);
+    this.#scheduleEntropyRead(channel, pending, entry);
+  }
+
+  #scheduleEntropyRead(channel: ChannelInfo, pending: PendingEntropyRead, entry: KernelWorkerEntryContext): void {
+    // No scratch lease, Wasm view, or lexical entry survives a worker turn.
+    entry.deferProtocolEffect(() => {
+      if (this.pendingEntropyReads.get(channel) !== pending) return;
+      pending.timer = this.#registerTimeout(() => {
+        pending.timer = null;
+        this.#runOrDeferChannelKernelEntry(channel, "entropy read continuation", next => {
+          this.#advanceEntropyRead(channel, pending, next);
+          return undefined;
+        }, pending);
+      }, this.stoppedPids.has(channel.pid) ? 10 : 0);
+    });
+  }
+
+  #advanceEntropyRead(
+    channel: ChannelInfo, pending: PendingEntropyRead, entry: KernelWorkerEntryContext,
+  ): void {
+    if (this.pendingEntropyReads.get(channel) !== pending) return;
+    if (pending.timer !== null) {
+      this.#cancelRegisteredTimeout(pending.timer);
+      pending.timer = null;
+    }
+    const currentRegistration = this.processes.get(channel.pid);
+    const generation = currentRegistration === pending.registration
+      ? this.#processExecGenerationWithinKernelEntry(channel.pid, entry) : undefined;
+    if (generation instanceof Error
+      && !(generation instanceof KernelTaskBindingError && generation.errno === ESRCH)) {
+      this.#failBlockingRetryProtocol("cannot confirm entropy read caller generation", generation);
+    }
+    if (currentRegistration !== pending.registration
+      || this.activeChannelRequests.get(channel) !== pending.request
+      || generation !== pending.registration.execGeneration) {
+      const cancel = entry.instance.exports.kernel_entropy_read_cancel as
+        (pid: number, tid: number, token: bigint) => number;
+      cancel(channel.pid, pending.tid, pending.token);
+      this.pendingEntropyReads.delete(channel);
+      return;
+    }
+    let result: number = ENTROPY_READ_PENDING;
+    if (!this.stoppedPids.has(channel.pid) && !this.pendingResumePids.has(channel.pid)) {
+      const identity = this.#cancellationPointIdentity(channel);
+      const cancelled = identity.cancellationPoint && identity.cancellationWakeAllowed
+        && this.pendingCancels.has(channel);
+      const step = entry.instance.exports.kernel_entropy_read_step as
+        (pid: number, tid: number, token: bigint, interrupted: number) => number;
+      const previousHandlePid = this.currentHandlePid;
+      this.currentHandlePid = channel.pid;
+      try {
+        result = step(channel.pid, pending.tid, pending.token,
+          cancelled || this.resumePreparedSignals.has(channel) ? 1 : 0);
+      } finally {
+        this.currentHandlePid = previousHandlePid;
+      }
+      if (cancelled && result !== ENTROPY_READ_PENDING) this.pendingCancels.delete(channel);
+    }
+    if (this.#finishSignalTermination(channel, entry)) return;
+    if (result === ENTROPY_READ_PENDING) {
+      this.#scheduleEntropyRead(channel, pending, entry);
+      return;
+    }
+    this.pendingEntropyReads.delete(channel);
+    this.#dequeueSignalForDelivery(channel, entry, result > 0);
+    if (this.#finishSignalTermination(channel, entry)) return;
+    this.completeChannelRawAndRelisten(channel, result < 0 ? -1 : result, result < 0 ? -result : 0, entry);
   }
 
   #beginLargeTransferScratch(
@@ -21225,407 +21191,6 @@ export class CentralizedKernelWorker {
       return finish(lease);
     });
     return { value, errno: 0 };
-  }
-
-  /**
-   * Execute one large transfer while its kernel-owned allocation is leased.
-   *
-   * Normal Rust errno returns transition Executing to Ready and are always
-   * followed by cancellation. A JavaScript/Wasm exception cannot run Rust's
-   * Ready transition; that path revokes the host lease, skips unsafe cancel,
-   * and throws a kernel-fatal error out of the dedicated Worker.
-   */
-  #executeReservedScratchTransfer(
-    channel: ChannelInfo,
-    syscallNr: number,
-    request: FlattenedTransferRequest,
-    entry: KernelWorkerEntryContext,
-    retryToken = 0n,
-  ): { retVal: number; errVal: number } {
-    if (this.#largeTransferScratchInUse) {
-      // Channel entry is deferred before reaching this method. Seeing the
-      // reservation twice is therefore an internal ownership violation, not
-      // a guest-visible resource conflict.
-      throw new KernelReentrantEntryError(
-        "kernel_transfer_io_execute reservation",
-      );
-    }
-    this.#largeTransferScratchInUse = true;
-
-    const processMem = new Uint8Array(channel.memory.buffer);
-    let reservation: ReservedTransferScratch | null = null;
-    let result = { retVal: -1, errVal: EIO };
-    let executeStarted = false;
-    let executeReturned = false;
-    let fatalError: KernelTransferExecuteTrapError | null = null;
-    try {
-      const begun = this.#beginLargeTransferScratch(
-        request.totalData,
-        entry,
-      );
-      reservation = begun.reservation;
-      if (!reservation?.region) {
-        result = { retVal: -1, errVal: begun.errno };
-      } else {
-        const activeRegion = reservation.region;
-        const activeToken = reservation.token;
-        result = activeRegion.withLease((lease) => {
-          if (request.read) {
-            lease.fill(0, 0, request.totalData);
-          } else if (request.inputBytes) {
-            lease.copyFrom(
-              request.inputBytes,
-              0,
-              0,
-              request.totalData,
-            );
-          } else {
-            this.#copyFlattenedTransferInput(
-              lease,
-              processMem,
-              request.entries,
-              0,
-            );
-          }
-
-          executeStarted = true;
-          // Host imports such as stdin routing use the selected process id.
-          // Preserve a prior binding so reentrant callbacks cannot silently
-          // replace their outer operation's host-side identity.
-          const previousHandlePid = this.currentHandlePid;
-          this.currentHandlePid = channel.pid;
-          let rawResult: number;
-          try {
-            rawResult = this.#invokeEntryScratchExport(
-              entry,
-              lease,
-              "kernel_transfer_io_execute",
-              [
-                channel.pid,
-                this.guestTidForChannel(channel),
-                activeToken,
-                this.toKernelPtr(request.totalData),
-                syscallNr,
-                request.fd,
-                request.offset ?? 0n,
-                retryToken,
-              ],
-            );
-          } finally {
-            this.currentHandlePid = previousHandlePid;
-          }
-          executeReturned = true;
-          const checked = this.#checkedReservedTransferResult(
-            rawResult,
-            request.totalData,
-          );
-          if (request.read && checked.retVal > 0) {
-            this.#copyFlattenedTransferOutput(
-              lease,
-              processMem,
-              request.entries,
-              0,
-              checked.retVal,
-            );
-          }
-          return checked;
-        });
-      }
-    } catch (error) {
-      if (isKernelExportFailure(error)) {
-        fatalError = new KernelTransferExecuteTrapError(
-          executeStarted && !executeReturned
-            ? "kernel transfer execute trapped with a global reservation active"
-            : "kernel transfer reservation export trapped",
-          error,
-        );
-      } else if (error instanceof KernelTransferExecuteTrapError) {
-        fatalError = error;
-      } else if (this.#kernelFatalError !== null) {
-        fatalError = new KernelTransferExecuteTrapError(
-          "kernel transfer reservation export trapped",
-          error,
-        );
-      } else if (executeStarted && !executeReturned) {
-        fatalError = new KernelTransferExecuteTrapError(
-          "kernel transfer execute trapped with a global reservation active",
-          error,
-        );
-      } else {
-        result = { retVal: -1, errVal: EIO };
-      }
-    } finally {
-      if (reservation?.region) {
-        try {
-          reservation.region.revoke();
-        } catch (error) {
-          fatalError ??= new KernelTransferExecuteTrapError(
-            "kernel transfer lease could not be revoked",
-            error,
-          );
-        }
-      }
-      if (reservation && fatalError === null) {
-        try {
-          // WHY: a host notification may have queued while the execute export
-          // owned Rust state. The exact lexical entry remains live through
-          // settlement, so cancellation completes under the same scoped
-          // authority before any queued ingress can run.
-          this.#cancelLargeTransferScratch(
-            reservation.token,
-            entry,
-          );
-        } catch (error) {
-          this.#rethrowKernelEntryFatal(error);
-          fatalError = new KernelTransferExecuteTrapError(
-            "kernel transfer reservation could not be settled",
-            error,
-          );
-        }
-      }
-      // A fatal path leaves the guard set. No later code in this kernel
-      // instance may begin another transfer before the Worker terminates.
-      if (fatalError === null) this.#largeTransferScratchInUse = false;
-    }
-
-    if (fatalError !== null) throw fatalError;
-    return result;
-  }
-
-  #handleFlattenedTransfer(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    request: FlattenedTransferRequest,
-    entry: KernelWorkerEntryContext,
-    replaySnapshot?: FlattenedBlockingRetrySnapshot,
-  ): void {
-    if (this.#largeTransferScratchInUse) {
-      throw new KernelReentrantEntryError(
-        "flattened transfer reservation",
-      );
-    }
-    let result: { retVal: number; errVal: number };
-    try {
-      result = request.totalData <= CH_DATA_SIZE
-        ? this.#executeMainScratchTransfer(
-            channel,
-            syscallNr,
-            request,
-            entry,
-            replaySnapshot?.retryToken ?? 0n,
-          )
-        : this.#executeReservedScratchTransfer(
-          channel,
-          syscallNr,
-          request,
-          entry,
-          replaySnapshot?.retryToken ?? 0n,
-        );
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      if (
-        this.#kernelFatalError !== null
-        || error instanceof KernelTransferExecuteTrapError
-        || error instanceof KernelTaskBindingError
-        || error instanceof KernelReentrantEntryError
-      ) {
-        throw error;
-      }
-      console.error(
-        "[kernel-worker] scratch transfer failed for pid="
-          + String(channel.pid) + ":",
-        error,
-      );
-      result = { retVal: -1, errVal: EIO };
-    }
-
-    // WHY: the transfer ran a real syscall, and Rust delivers default signal
-    // actions before returning. A write that raised SIGPIPE (or SIGXFSZ) has
-    // already made this process an Exited zombie. Finish that termination
-    // before any further kernel entry: signal dequeue, retry disposition, and
-    // shared-mapping sync all require a live task, and Rust correctly rejects
-    // a dead one. This is the same boundary the generic syscall path stops at.
-    if (this.#finishSignalTermination(channel, entry)) return;
-
-    const retryDisposition: BlockingRetryDisposition | undefined =
-      replaySnapshot
-      ?? (
-        result.retVal === -1
-        && result.errVal === EAGAIN
-          ? this.#captureBlockingRetryDisposition(
-              channel,
-              syscallNr,
-              origArgs,
-              entry,
-              vectorRequestForbidsEagainRetry(syscallNr, origArgs),
-            )
-          : undefined
-      );
-    const deliveredSignal = this.#dequeueSignalForDelivery(
-      channel,
-      entry,
-      (retryDisposition?.applicableSocketTimeoutMs ?? 0) > 0,
-    );
-    if (this.#finishSignalTermination(channel, entry)) return;
-
-    if (result.retVal === -1 && result.errVal === EAGAIN) {
-      if (!replaySnapshot) {
-        if (!retryDisposition) {
-          this.#failBlockingRetryProtocol(
-            `vector syscall ${syscallNr} EAGAIN has no frozen disposition`,
-          );
-        }
-        if (
-          !this.#rememberBlockingRetrySnapshot(
-            channel,
-            {
-              ...retryDisposition,
-              kind: "flattened-transfer",
-              syscallNr,
-              origArgs: origArgs.slice(),
-              request,
-              retryToken: 0n,
-            },
-            entry,
-          )
-        ) return;
-      }
-      this.handleBlockingRetry(
-        channel,
-        syscallNr,
-        origArgs,
-        [],
-        entry,
-        replaySnapshot !== undefined,
-        deliveredSignal,
-      );
-      return;
-    }
-
-    if (!request.read) {
-      this.handleSharedMappingsAfterFileSyscall(
-        channel,
-        syscallNr,
-        origArgs,
-        result.retVal,
-        result.errVal,
-        syscallNr === SYS_PWRITE ? request.offset ?? undefined : undefined,
-        undefined,
-        entry,
-      );
-    }
-    this.completeChannel(
-      channel,
-      syscallNr,
-      origArgs,
-      undefined,
-      result.retVal,
-      result.errVal,
-      [],
-      undefined,
-      entry,
-    );
-  }
-
-  /**
-   * Handle large write/pwrite as one operation, not channel-sized chunks.
-   */
-  #handleLargeWrite(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const length = origArgs[2] ?? 0;
-    if (
-      !Number.isSafeInteger(length)
-      || length < 0
-      || length > MAX_REPORTABLE_TRANSFER_BYTES
-    ) {
-      this.completeChannelRawAndRelisten(channel, -1, EINVAL, entry);
-      return;
-    }
-    let source: { pointer: number; length: number };
-    try {
-      source = this.checkedProcessRange(
-        channel,
-        rawArgs[1] ?? 0n,
-        length,
-        "large write source",
-      );
-    } catch (error) {
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    const entries = [{ base: source.pointer, len: source.length }];
-    this.#handleFlattenedTransfer(
-      channel,
-      syscallNr,
-      origArgs,
-      {
-        fd: origArgs[0],
-        entries,
-        totalData: source.length,
-        read: false,
-        offset: syscallNr === SYS_PWRITE ? rawArgs[3] ?? 0n : null,
-        inputBytes: this.#snapshotFlattenedTransferInput(
-          channel,
-          entries,
-          source.length,
-        ),
-      },
-      entry,
-    );
-  }
-
-  /**
-   * Handle large read/pread as one operation, not channel-sized chunks.
-   */
-  #handleLargeRead(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    rawArgs: readonly bigint[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const length = origArgs[2] ?? 0;
-    if (
-      !Number.isSafeInteger(length)
-      || length < 0
-      || length > MAX_REPORTABLE_TRANSFER_BYTES
-    ) {
-      this.completeChannelRawAndRelisten(channel, -1, EINVAL, entry);
-      return;
-    }
-    let destination: { pointer: number; length: number };
-    try {
-      destination = this.checkedProcessRange(
-        channel,
-        rawArgs[1] ?? 0n,
-        length,
-        "large read destination",
-      );
-    } catch (error) {
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    this.#handleFlattenedTransfer(
-      channel,
-      syscallNr,
-      origArgs,
-      {
-        fd: origArgs[0],
-        entries: [{ base: destination.pointer, len: destination.length }],
-        totalData: destination.length,
-        read: true,
-        offset: syscallNr === SYS_PREAD ? rawArgs[3] ?? 0n : null,
-      },
-      entry,
-    );
   }
 
   #completeForkWithinKernelEntry(
