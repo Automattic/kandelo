@@ -17,6 +17,10 @@ dependency_only = [
   "sqlite-amalgamation-source",
   "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
+  "asciidoc-source",
+  "docbook-xml-source",
+  "docbook-xsl-source",
+  "scdoc-source",
 ]
 registry_non_roots = []
 
@@ -195,6 +199,10 @@ name = "dbus"
 class = "user-software"
 
 [[packages]]
+name = "dbus-docs"
+class = "browser-product"
+
+[[packages]]
 name = "diffutils"
 class = "user-software"
 
@@ -267,6 +275,10 @@ name = "foot"
 class = "user-software"
 
 [[packages]]
+name = "foot-docs"
+class = "browser-product"
+
+[[packages]]
 name = "freetype"
 class = "platform"
 
@@ -293,6 +305,10 @@ class = "platform"
 [[packages]]
 name = "git"
 class = "user-software"
+
+[[packages]]
+name = "git-docs"
+class = "browser-product"
 
 [[packages]]
 name = "glib"
@@ -827,6 +843,10 @@ name = "cage"
 class = "user-software"
 
 [[packages]]
+name = "cage-docs"
+class = "browser-product"
+
+[[packages]]
 name = "json-c"
 class = "platform"
 
@@ -835,8 +855,16 @@ name = "sway"
 class = "user-software"
 
 [[packages]]
+name = "sway-docs"
+class = "browser-product"
+
+[[packages]]
 name = "labwc"
 class = "user-software"
+
+[[packages]]
+name = "labwc-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sfwbar"
@@ -849,6 +877,10 @@ class = "browser-product"
 [[packages]]
 name = "swaybg"
 class = "user-software"
+
+[[packages]]
+name = "swaybg-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sdl2-mixer-playwave"

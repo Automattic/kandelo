@@ -19,6 +19,22 @@
 #       literally; a token missing from <in> is a hard failure, so an
 #       upstream template change cannot silently ship a stale page.
 #
+#   kandelo_man_pages_release_date <version> <version=YYYY-MM-DD>...
+#       Print the named release's date (its release tag's date). Page
+#       generators that stamp a date (scdoc, DocBook XSL) otherwise read
+#       the build clock, which the dev shell pins to 1980. A version with
+#       no recorded date is a hard failure, so a version bump has to
+#       record its release date too.
+#
+#   kandelo_man_pages_build_scdoc
+#       Build scdoc for the build machine from the declared scdoc-source
+#       dependency and set KANDELO_SCDOC to it. scdoc is the page
+#       generator of the wlroots-family projects (sway, foot, labwc, ...).
+#
+#   kandelo_man_pages_scdoc <release-date> <in.scd> <out>
+#       Render one page with scdoc, dated <release-date>, the way
+#       upstream meson builds do (`scdoc < in > out`).
+#
 #   install_package_man_pages <docs-pkg> <tree-dir> <spec>...
 #       Stage the named pages and install them as the package's declared
 #       `<docs-pkg>.zip` output. Each spec is one of:
@@ -93,6 +109,71 @@ kandelo_man_pages_substitute() {
         content="${content//"$token"/"$value"}"
     done
     printf '%s' "$content" > "$out"
+}
+
+kandelo_man_pages_release_date() {
+    local version="${1:-}"
+    if [ "$#" -lt 2 ] || [ -z "$version" ]; then
+        echo "kandelo_man_pages_release_date: usage:" \
+            "kandelo_man_pages_release_date <version> <version=YYYY-MM-DD>..." >&2
+        return 2
+    fi
+    shift
+    local pair date=""
+    for pair in "$@"; do
+        if [ "${pair%%=*}" = "$version" ]; then
+            date="${pair#*=}"
+        fi
+    done
+    case "$date" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) printf '%s\n' "$date" ;;
+        "")
+            echo "kandelo_man_pages_release_date: no release date recorded" \
+                "for version $version" >&2
+            return 1
+            ;;
+        *)
+            echo "kandelo_man_pages_release_date: '$date' is not YYYY-MM-DD" >&2
+            return 2
+            ;;
+    esac
+}
+
+kandelo_man_pages_build_scdoc() {
+    local work="${KANDELO_PACKAGE_WORK_DIR:-${WASM_POSIX_DEP_WORK_DIR:-}}"
+    if [ -z "$work" ]; then
+        echo "kandelo_man_pages_build_scdoc: requires KANDELO_PACKAGE_WORK_DIR" >&2
+        return 2
+    fi
+    local src="$work/scdoc-src"
+    kandelo_package_stage_source_dependency scdoc-source "$src" "$work" || return
+    # Upstream's Makefile links statically, which macOS cannot do; scdoc
+    # only runs here, so link it the build machine's default way.
+    make -C "$src" CC=cc LDFLAGS= scdoc > "$work/scdoc-build.log" 2>&1 || {
+        tail -40 "$work/scdoc-build.log" >&2
+        return 1
+    }
+    KANDELO_SCDOC="$src/scdoc"
+}
+
+kandelo_man_pages_scdoc() {
+    local date="${1:-}" in="${2:-}" out="${3:-}" epoch
+    if [ "$#" -ne 3 ] || [ -z "$date" ] || [ -z "$in" ] || [ -z "$out" ]; then
+        echo "kandelo_man_pages_scdoc: usage:" \
+            "kandelo_man_pages_scdoc <release-date> <in.scd> <out>" >&2
+        return 2
+    fi
+    if [ -z "${KANDELO_SCDOC:-}" ]; then
+        echo "kandelo_man_pages_scdoc: run kandelo_man_pages_build_scdoc first" >&2
+        return 2
+    fi
+    # scdoc prints SOURCE_DATE_EPOCH as a UTC date.
+    epoch="$(perl -MTime::Local=timegm -e '
+        my ($y, $m, $d) = split /-/, $ARGV[0];
+        print timegm(0, 0, 0, $d, $m - 1, $y);
+    ' "$date")" || return
+    mkdir -p "$(dirname "$out")"
+    SOURCE_DATE_EPOCH="$epoch" "$KANDELO_SCDOC" < "$in" > "$out"
 }
 
 install_package_man_pages() {

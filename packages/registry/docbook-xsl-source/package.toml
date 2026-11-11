@@ -1,0 +1,15 @@
+# The DocBook XSL stylesheets (non-namespaced build), which turn DocBook
+# into man pages for git-docs and dbus-docs under the build machine's
+# xsltproc. A build-time input only; nothing from this tree is installed.
+kind = "source"
+name = "docbook-xsl-source"
+version = "1.79.2"
+
+[source]
+url = "https://github.com/docbook/xslt10-stylesheets/releases/download/release%2F1.79.2/docbook-xsl-nons-1.79.2.tar.bz2"
+sha256 = "ee8b9eca0b7a8f89075832a2da7534bce8c5478fc8fc2676f512d5d87d832102"
+provider = "archive"
+
+[license]
+spdx = "DocBook-Stylesheet"
+url = "https://github.com/docbook/xslt10-stylesheets/blob/release/1.79.2/xsl/COPYING"

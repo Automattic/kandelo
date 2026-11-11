@@ -1,0 +1,16 @@
+# The DocBook XML 4.4 DTD and its XML catalog. dbus's page sources declare
+# this DTD and use the entities it defines (&hellip; and others), so
+# dbus-docs resolves it through the catalog when DocBook XSL reads them.
+# A build-time input only; nothing from this tree is installed.
+kind = "source"
+name = "docbook-xml-source"
+version = "4.4"
+
+[source]
+url = "https://www.oasis-open.org/docbook/xml/4.4/docbook-xml-4.4.zip"
+sha256 = "02f159eb88c4254d95e831c51c144b1863b216d909b5ff45743a1ce6f5273090"
+provider = "archive"
+
+[license]
+spdx = "DocBook-XML"
+url = "https://www.oasis-open.org/docbook/xml/4.4/"
