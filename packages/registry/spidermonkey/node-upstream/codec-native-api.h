@@ -21,6 +21,10 @@
 #include <vector>
 #include <uv.h>
 #include "js/TypeDecls.h"
+#ifndef NODE_WANT_INTERNALS
+#define NODE_WANT_INTERNALS 1
+#endif
+#include "node-env-properties.h"
 
 namespace kandelo::node { struct TraceProcess; }
 namespace node {
@@ -142,6 +146,7 @@ class Value {
   Maybe<int32_t> Int32Value(Local<Context>);
   Maybe<uint32_t> Uint32Value(Local<Context>);
   MaybeLocal<String> ToString(Local<Context>);
+  MaybeLocal<Object> ToObject(Local<Context>);
   MaybeLocal<String> ToDetailString(Local<Context>);
 };
 class Name : public Value { public: using Value::Value; };
@@ -455,6 +460,9 @@ class TryCatch {
   std::unique_ptr<CatchScope> scope_;
  public: explicit TryCatch(Isolate*);~TryCatch();
 };
+class Exception {
+ public: static Local<Value> Error(Local<String>);
+};
 }
 namespace kandelo_node_codec_impl {
 using namespace kandelo_node_codec_api;
@@ -610,7 +618,10 @@ class Environment {
   void Exit(ExitCode);void set_process_emit_warning_sync(Local<Function>);
   const std::vector<std::string>& argv();const std::vector<std::string>& exec_argv();
   const std::string& exec_path();ExclusiveAccess<HostPort>* inspector_host_port();
-  Local<String> process_string();Local<Value> exit_info_private_symbol();
+#define KANDELO_ENV_STRING_ACCESSOR(name, text) Local<String> name();
+  PER_ISOLATE_STRING_PROPERTIES(KANDELO_ENV_STRING_ACCESSOR)
+#undef KANDELO_ENV_STRING_ACCESSOR
+  Local<Value> exit_info_private_symbol();
   struct ExitInfo {Local<Int32Array> GetJSArray();};
   ExitInfo exit_info();
   using EmbedderPreload=void(*)(Environment*,Local<Object>,Local<Function>);

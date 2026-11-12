@@ -3551,6 +3551,13 @@
       "builtinId": null
     },
     {
+      "path": "src/api/exceptions.cc",
+      "role": "provenance",
+      "bytes": 8256,
+      "sha256": "36cd3250e4c7a957a32548d403b5e9e4c3014bc4a13adf17f69d5e30a9fa8ce5",
+      "builtinId": null
+    },
+    {
       "path": "src/async_context_frame.cc",
       "role": "provenance",
       "bytes": 2750,

@@ -32,7 +32,7 @@
     ],
     "routePresenceIsCompleteBindingSupport": false,
     "unmatchedBehavior": "ERR_KANDELO_NOT_IMPLEMENTED; actual Native Node binding missing error",
-    "currentSourceBuildStatus": "revision53 compiles whole original process/dotenv/environment/path units but fails linking on26symbols; source route is not runtime support"
+    "currentSourceBuildStatus": "revision54 compiles whole original process/dotenv/environment/path/API exception units but fails linking on25symbols; source route is not runtime support"
   },
   "bindings": [
     {

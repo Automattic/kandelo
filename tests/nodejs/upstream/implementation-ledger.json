@@ -10,7 +10,7 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 574,
+    "importedFiles": 575,
     "taskQueuePartialCatalog": "task-queue-contracts.json",
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
     "constantsPartialCatalog": "constants-contracts.json",
@@ -74,7 +74,9 @@
     "processInvocationCompileEvidence": "process-invocation-compile-check.json",
     "libuvExecutablePathEvidence": "libuv-exepath-engine-check.json",
     "processFilesPartialCatalog": "process-files-contracts.json",
-    "processFilesCompileEvidence": "process-files-compile-check.json"
+    "processFilesCompileEvidence": "process-files-compile-check.json",
+    "processErrorsPartialCatalog": "process-errors-contracts.json",
+    "processErrorsCompileEvidence": "process-errors-compile-check.json"
   },
   "implementation": [
     {
@@ -306,6 +308,12 @@
       "sourceStatus": "Complete unchanged node_dotenv.cc/node_env_var.cc/path.cc compile in revision53. Actual engine root/object/byte/timezone and original option/store adapters defined. Final engine link fails on26symbols; no new runnable artifact.",
       "evidence": "process-files-compile-check.json",
       "remaining": "Remaining process_methods backends; env proxy/interceptors, worker store selection, full path/URL and all new runtime validation remain unfinished"
+    },
+    {
+      "area": "original native system-error factories",
+      "sourceStatus": "Complete unchanged src/api/exceptions.cc compiles in revision54 over actual intrinsic Error/capture, rooted ToObject and all295original string-key accessors. ThrowUVException/ThrowErrnoException now resolve; errno_string remains a new missing prerequisite. Final link fails on25symbols; no current runtime artifact.",
+      "evidence": "process-errors-compile-check.json",
+      "remaining": "Whole original errno-name algorithm/fatal unit; full error/realm/GC/exception runtime validation and remaining process-methods backends"
     }
   ],
   "runtimeConformance": {
@@ -1588,7 +1596,7 @@
     }
   },
   "nextWork": [
-    "Implement remaining26 real backend definitions for lifecycle/at-exit/signals, native errors/permissions, actual resource-owner registries, heap/allocator accounting and native loading. Whole dotenv/path/environment units now compile, but no revision53 artifact or runtime validation exists. Worker environment copy/share, process.env interceptors, full path/URL and additional unused factory dependencies remain open. Kernel resource-accounting fixes still need a deferred kernel build reported before proceeding.",
+    "Close remaining25 native link symbols: original errno-name algorithm, lifecycle/at-exit/signals, permissions, real resource-owner registries, heap/allocator accounting, native loading and three libuv memory APIs. Whole original system-error factories now compile;8authenticated native-reference error controls are not guest validation. No revision54 runtime artifact. Additional unused factory/env proxy/worker/path/URL interfaces remain open. Kernel accounting fixes require reporting the deferred build need before proceeding.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1597,24 +1605,26 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 53,
+    "packageRevision": 54,
     "status": "failed final link",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 26,
-    "evidence": "process-files-compile-check.json",
+    "undefinedSymbols": 25,
+    "evidence": "process-errors-compile-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
-    "buildCacheKey": "9a366495ba6bbf75587a79f152f4d9d67a1fe2b5a7d5c95375a1fb17693fad05",
+    "buildCacheKey": "20082bb0b2aafad38413ab3a61cefd9c52ba3fa7eaff1c68bb3672ee35d67f98",
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-process-file-storage-1112-064651-87df",
+    "buildJob": "node-original-system-errors-1112-065932-3d8c",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
-    "resolvedSinceRevision52": [
-      "kandelo_node_codec_impl::BufferValue::BufferValue(kandelo_node_codec_api::Isolate*, kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>)",
-      "kandelo_node_codec_impl::Dotenv::ParsePath(std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
-      "kandelo_node_codec_impl::Dotenv::SetEnvironment(kandelo_node_codec_impl::Environment*)",
-      "kandelo_node_codec_impl::ToNamespacedPath(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::BufferValue*)"
+    "wholeOriginalExceptionFactoryUnitCompiles": true,
+    "resolvedSinceRevision53": [
+      "kandelo_node_codec_impl::Environment::ThrowErrnoException(int, char const*, char const*, char const*)",
+      "kandelo_node_codec_impl::Environment::ThrowUVException(int, char const*, char const*, char const*, char const*)"
+    ],
+    "introducedSinceRevision53": [
+      "kandelo_node_codec_impl::errors::errno_string(int)"
     ]
   },
   "currentLibuvExecutablePath": {

@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 53 source connects the original process initializer,
-native invocation state and complete original dotenv/environment/path units,
-but its targeted build still fails final linking on 26 symbols and has no
-runnable artifact. The original native tracing agent, binding,
+The current revision 54 source connects the original process initializer,
+native invocation state, complete original dotenv/environment/path units and
+the original system-error factories. Its targeted build still fails final
+linking on 25 symbols and has no runnable artifact. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -88,7 +88,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 574 files after complete native source/header additions; every
+manifest has 575 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -2227,3 +2227,51 @@ advancement. Revision 50 remains the last runnable engine and still stops at
 CJS/ESM entrypaths, the full catalog/roadmap and user review remain outstanding.
 Full products/images, kernel/successor-ABI builds and overall suites remain
 deferred; no kernel, libc, ABI or host adapter change was made in this phase.
+
+
+## Whole original API exception factories (revision 54; link incomplete)
+
+The consumed `UVException` and `ErrnoException` factories live in complete
+`src/api/exceptions.cc`, separately from the larger fatal/message error unit.
+Revision 54 imports and compiles that complete unchanged file. Upstream still
+owns message formatting, guest `strerror`/libuv metadata selection, UTF8 path
+conversion, property inclusion and write order. Native Environment throwing
+methods delegate construction to those factories and hand the result to the
+actual engine pending-exception primitive.
+
+The embedding supplies actual intrinsic Error creation and captured stacks,
+using SpiderMonkey's existing embedding stack policy. The original message's
+UTF16 units remain rooted without an encoding round trip. Object conversion
+enters the actual native Context and uses the engine's own conversion and
+exception behavior. All 295 original property-string declarations/getters
+expand from the complete original `env_properties.h` macro; getter results
+are real engine atoms with rooted handles. These definitions have compile
+evidence only, not full consumer or error compatibility evidence.
+
+The original POSIX errno-name algorithm belongs to `node_errors.cc` and
+remains unresolved. It is not replaced with libuv names, whose unknown and
+unmapped cases differ. The full fatal/uncaught dispatch remains unavailable;
+compiling the API unit's unreferenced `FatalException` entry does not implement
+that backend. The [bounded error catalog](../tests/nodejs/upstream/process-errors-contracts.json)
+records ownership, exceptional cases and four-host validation obligations.
+Its lexical source review records 74 sites in 14 original native files;
+semantic/alias/reachability coverage remains incomplete.
+
+Eight controls pass on the authenticated Darwin arm64 native reference. They
+record actual `chdir`, `loadEnvFile` and failed `execve` errors, including
+Unicode paths, property descriptors/order, errno sign and intrinsic prototype
+with a replaced global Error. They also demonstrate the separate original
+errno/libuv message formats. Each child rehashes the pinned reference before
+execution and uses the recorded PATH/LANG/TZ environment. This is native
+reference evidence only; no new guest/runtime comparison is claimed.
+
+The normal revision-54 build has zero C++ compiler errors and fails final
+linking on 25 symbols: both Environment exception methods resolve, while
+`errors::errno_string` is newly exposed. The log, exact inputs and missing
+contracts are in [process-errors-compile-check.json](../tests/nodejs/upstream/process-errors-compile-check.json).
+The manifest has 575 records; all 574 prior records and 443 JavaScript files
+remain byte-identical, and a fresh full import reproduces the manifest.
+No revision-54 runtime artifact or startup advancement exists. Revision 50
+remains the last runnable engine. Full startup, separate CJS/ESM entrypaths,
+complete catalog/roadmap and user review remain outstanding. Full products,
+images, kernel/successor-ABI builds and overall suites remain deferred.

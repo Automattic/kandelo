@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
-  "scope": "Complete original process/dotenv/environment/path units and embedding prerequisites compile; revision53 fails linking on26symbols. No current runnable engine or startup validation.",
+  "scope": "Complete original process/dotenv/environment/path and API exception units compile; revision54 fails linking on25symbols. No current runnable engine or startup validation.",
   "completeBindingContract": false,
   "nativeSourceReview": {
     "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
@@ -1006,7 +1006,7 @@
     "fullV8PropertyInterfaceCompatibility": false
   },
   "sourceCompilation": {
-    "evidence": "process-files-compile-check.json",
+    "evidence": "process-errors-compile-check.json",
     "wholeOriginalMethodsAndObjectUnitsCompile": true,
     "sourceInitializerConnected": true,
     "finalLinkSucceeded": false,
@@ -1022,8 +1022,6 @@
       "kandelo_node_codec_impl::AsyncWrap::persistent()",
       "kandelo_node_codec_impl::CheckProcessPermission(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::permission::PermissionScope, std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
       "kandelo_node_codec_impl::Environment::Exit(kandelo_node_codec_impl::ExitCode)",
-      "kandelo_node_codec_impl::Environment::ThrowErrnoException(int, char const*, char const*, char const*)",
-      "kandelo_node_codec_impl::Environment::ThrowUVException(int, char const*, char const*, char const*, char const*)",
       "kandelo_node_codec_impl::Environment::handle_wrap_queue()",
       "kandelo_node_codec_impl::Environment::req_wrap_queue()",
       "kandelo_node_codec_impl::HandleWrap::HasRef(kandelo_node_codec_impl::HandleWrap*)",
@@ -1034,22 +1032,24 @@
       "kandelo_node_codec_impl::RunAtExit(kandelo_node_codec_impl::Environment*)",
       "kandelo_node_codec_impl::binding::DLOpen(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
       "kandelo_node_codec_impl::binding::DLOpenBinary(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+      "kandelo_node_codec_impl::errors::errno_string(int)",
       "uv_get_available_memory",
       "uv_get_constrained_memory",
       "uv_resident_set_memory"
     ],
-    "undefinedSymbolCount": 26,
+    "undefinedSymbolCount": 25,
     "allSymbolsForThisLinkInvocation": true,
     "fullContractInventoryComplete": false,
     "originalCreateProcessObjectActivated": false,
     "originalCreateProcessObjectMayNeedAdditionalContracts": true,
-    "finalBuildJob": "node-process-file-storage-1112-064651-87df",
-    "finalBuildCacheKey": "9a366495ba6bbf75587a79f152f4d9d67a1fe2b5a7d5c95375a1fb17693fad05",
+    "finalBuildJob": "node-original-system-errors-1112-065932-3d8c",
+    "finalBuildCacheKey": "20082bb0b2aafad38413ab3a61cefd9c52ba3fa7eaff1c68bb3672ee35d67f98",
     "wholeOriginalFormattingHeadersCompile": true,
-    "packageRevision": 53,
+    "packageRevision": 54,
     "currentRuntimeArtifact": null,
-    "priorCompileEvidence": "process-invocation-compile-check.json",
-    "wholeOriginalProcessFilesCompile": true
+    "priorCompileEvidence": "process-files-compile-check.json",
+    "wholeOriginalProcessFilesCompile": true,
+    "wholeOriginalExceptionFactoriesCompile": true
   },
   "sourceImport": {
     "priorFiles": 561,
@@ -1106,6 +1106,18 @@
       "bytes": "Actual string UTF8 or native view byte copy and terminator",
       "objects": "Explicit prototype and real property definitions; enumerable own names and retained numeric indices",
       "timezone": "Original POSIX tzset then actual JS::ResetTimeZone; cross-worker/Intl behavior unvalidated"
+    },
+    "systemErrorFactories": {
+      "catalog": "process-errors-contracts.json",
+      "evidence": "process-errors-compile-check.json",
+      "status": "Complete upstream API factory unit and real engine primitives compile; not runtime validated",
+      "remaining": "Original errno_string and fatal/uncaught dispatch unavailable",
+      "genericDefinitions": [
+        "actual UTF16 intrinsic Error/capture",
+        "actual Context-scoped ToObject",
+        "295original macro-owned property keys"
+      ],
+      "nativeReferenceOnlyControls": 8
     }
   },
   "knownPlatformGaps": [

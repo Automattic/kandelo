@@ -9,17 +9,17 @@
     {
       "path": "tests/nodejs/upstream/dependency-graph.json",
       "bytes": 3006060,
-      "sha256": "bf80d2153aef01480f42218e7af0546fdcdc0df2928929a40c74f467ae2185bb"
+      "sha256": "44bd2b4bfd9cbeb66cba174eed27158ece0f4e33d2be05fd401efeefb7196f5a"
     },
     {
       "path": "tests/nodejs/upstream/native-registration-index.json",
-      "bytes": 188954,
-      "sha256": "f5747ad44b2a36d3b84e32afe5a1fc6be6a24fab5519fb33ecfc9a0abc64ce9b"
+      "bytes": 188953,
+      "sha256": "e41ca58f31d90566c58ab5b3dbbc0edda5e9180ca6f255502ebb9c6440aca2e3"
     },
     {
       "path": "tests/nodejs/upstream/backend-binding-reviews.json",
-      "bytes": 16567,
-      "sha256": "dbdc5a137bada96ae4c57e670995abdc969e103f7f4c65a186f5b1fa1e81a159"
+      "bytes": 16581,
+      "sha256": "58f5cec579154b0fe2f50ac867987bcbc3f06ff579ec137783f4b73bc8da0421"
     },
     {
       "path": "tests/nodejs/upstream/dependency-dynamic-reviews.json",
@@ -33,8 +33,8 @@
     },
     {
       "path": "third_party/nodejs/sources.json",
-      "bytes": 133905,
-      "sha256": "bca29badac67ed701ada29f29ca95fcf195573a8f7aa8798d55eeb17c815028e"
+      "bytes": 134114,
+      "sha256": "2a3f801fe13cc553e66b13d81b5488e6c96177eb4f753d60dccd595d0049b5a0"
     }
   ],
   "counts": {
@@ -89,7 +89,7 @@
     ],
     "routePresenceIsCompleteBindingSupport": false,
     "unmatchedBehavior": "ERR_KANDELO_NOT_IMPLEMENTED; actual Native Node binding missing error",
-    "currentSourceBuildStatus": "revision53 compiles whole original process/dotenv/environment/path units but fails linking on26symbols; source route is not runtime support",
+    "currentSourceBuildStatus": "revision54 compiles whole original process/dotenv/environment/path/API exception units but fails linking on25symbols; source route is not runtime support",
     "matchesPriorTestedArtifactInput": false,
     "priorDispatcherInput": {
       "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",

@@ -15,6 +15,7 @@
 
 #include "jsapi.h"
 #include "jsfriendapi.h"
+#include "jsexn.h"
 
 #include "jit/AtomicOperations.h"
 #include "js/Array.h"
@@ -48,7 +49,7 @@
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/codec-agent-includes.h"
 #include "shell/node-upstream/codec-native-api.h"
-#include "shell/node-upstream/process-files-native-api.h"
+#include "shell/node-upstream/process-errors-native-api.h"
 #include "shell/node-upstream/codecs-upstream/errors.generated.h"
 #define v8 kandelo_node_codec_api
 #define node kandelo_node_codec_impl
@@ -308,6 +309,25 @@ static Local<Value> Error(Isolate* isolate, JSExnType type, const char* code, st
   if (!value) return {};
   JS::RootedValue codeValue(f.cx,JS::StringValue(value)); CHECK(JS_SetProperty(f.cx,object,"code",codeValue));
   return f.OwnValue(error);
+}
+Local<Value> Exception::Error(Local<String> input) {
+  auto& f=*Frame::current;if(JS_IsExceptionPending(f.cx))return {};
+  StressCollection(f);
+  JS::RootedObject stack(f.cx);if(!js::CaptureStack(f.cx,&stack))return {};
+  // Preserve original UTF16 message units and the real realm's Error intrinsic.
+  JS::RootedString message(f.cx,input->cell().value.toString());
+  JS::RootedString filename(f.cx,JS_GetEmptyString(f.cx));
+  JS::Rooted<mozilla::Maybe<JS::Value>> cause(f.cx,mozilla::Nothing());
+  JS::RootedValue result(f.cx);
+  if(!JS::CreateError(f.cx,JSEXN_ERR,stack,filename,0,JS::ColumnNumberOneOrigin(1),nullptr,message,cause,&result))return {};
+  return f.OwnValue(result);
+}
+MaybeLocal<Object> Value::ToObject(Local<Context> context) {
+  auto& f=Current(context->isolate);if(JS_IsExceptionPending(f.cx))return {};
+  Context::Scope home(context);JS::RootedValue value(f.cx,cell().value);
+  if(!JS_WrapValue(f.cx,&value))return {};
+  JS::RootedObject object(f.cx,JS::ToObject(f.cx,value));if(!object)return {};
+  JS::RootedValue result(f.cx,JS::ObjectValue(*object));return f.Own<Object>(result);
 }
 MaybeLocal<String> Value::ToString(Local<Context> context) {
   auto& f = Current(context->isolate); if (JS_IsExceptionPending(f.cx)) return {};
@@ -638,6 +658,20 @@ BufferValue::BufferValue(Isolate* isolate,Local<Value> input) {
 Environment* Environment::GetCurrent(Local<Context> context) { return &Current(context->isolate).state->environment; }
 Environment* Environment::GetCurrent(const FunctionCallbackInfo<Value>& args) { return GetCurrent(args.GetIsolate()->GetCurrentContext()); }
 Isolate* Environment::isolate() { return isolate_; }
+#define KANDELO_ENV_STRING_ACCESSOR(name, text) \
+Local<String> Environment::name() { \
+  auto& f=Current(isolate());AssertForeground(); \
+  JS::RootedString string(f.cx,JS_AtomizeString(f.cx,text));if(!string)return {}; \
+  JS::RootedValue value(f.cx,JS::StringValue(string));return f.Own<String>(value); \
+}
+PER_ISOLATE_STRING_PROPERTIES(KANDELO_ENV_STRING_ACCESSOR)
+#undef KANDELO_ENV_STRING_ACCESSOR
+void Environment::ThrowUVException(int error,const char* syscall,const char* message,const char* path,const char* dest) {
+  AssertForeground();isolate()->ThrowException(UVException(isolate(),error,syscall,message,path,dest));
+}
+void Environment::ThrowErrnoException(int error,const char* syscall,const char* message,const char* path) {
+  AssertForeground();isolate()->ThrowException(ErrnoException(isolate(),error,syscall,message,path));
+}
 std::shared_ptr<KVStore> Environment::env_vars(){AssertForeground();return per_process::system_environment;}
 std::shared_ptr<NativeEnvOptions> Environment::options(){
   auto& f=Current(isolate());AssertForeground();kandelo::node::NativeEnvironmentFlags flags;
