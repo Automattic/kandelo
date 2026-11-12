@@ -114,7 +114,9 @@ function expectDeadStartUsesOrdinaryTeardown(handler: string, entry: string): vo
     handler,
     `${entry} must not roll back a lifecycle-owned generation`,
   ).toMatch(
-    /catch \(error\) \{\s*if \(lifecycleTeardownStarted\) throw error;/s,
+    // A fork may first join an exit owner's replay retirement (#1678;
+    // fork-replay-host-parity.test.ts checks that join).
+    /catch \(error\) \{\s*(?:if \(await waitForForkReplayRetirement\(forkReplay, error\)\) return \[\];\s*)?if \(lifecycleTeardownStarted\) throw error;/s,
   );
 }
 

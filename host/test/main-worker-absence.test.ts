@@ -9,7 +9,9 @@ import { createWorkerQuiescence, prepareProcessWorkerAbsence, sealProcessWorkerA
 import { MockWorkerHandle, type WorkerHandle } from "../src/worker-adapter";
 import { ProcessMemoryAllocator, acquireForkMemoryClone, FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 import { ProcessGenerationObservations, type ProcessGenerationEventData } from "../src/process-generation-observation";
-import { ForkReplayGateCoordinator, observeForkReplayWorker } from "../src/fork-replay-gate";
+import {
+  ForkReplayGateCoordinator, observeForkReplayWorker, retireForkReplayWorker, waitForForkReplayRetirement,
+} from "../src/fork-replay-gate";
 import { VforkLifetimeCoordinator, VforkAddressSpaceBusyError } from "../src/vfork-lifetime";
 import { ExactProcessGenerationDetachLedger } from "../src/process-generation-detach";
 import { signalExitStatus } from "../src/trap-signals";
@@ -84,7 +86,7 @@ function actualMainLaunchControl(host: Host, ptrWidth: 4 | 8, vfork: boolean, mo
     processes, processMemoryAllocator: allocator, sampleProcessMemoryStats: () => undefined, vforkMechanismTraceEnabled: false,
     prepareProcessWorkerAbsence, sealProcessWorkerAbsence, processWorkerRetirementProven, waitForProcessWorkerRetirement,
     traceVforkMechanism() {}, injectVforkWorkerStartFailure: false, injectedVforkWorkerStartFailure: false, acquireForkMemoryClone, DeferredWorkerHandle, createWorkerAbsence, createWorkerQuiescence,
-    ForkReplayGateCoordinator, VforkAddressSpaceBusyError, observeForkReplayWorker: (gate: ForkReplayGateCoordinator, ...rest: any[]) => {
+    ForkReplayGateCoordinator, retireForkReplayWorker, waitForForkReplayRetirement, VforkAddressSpaceBusyError, observeForkReplayWorker: (gate: ForkReplayGateCoordinator, ...rest: any[]) => {
       replay = gate; (observeForkReplayWorker as any)(gate, ...rest);
     },
     retryKernelEntryResult: async (operation: () => unknown) => operation(), waitForProcessTeardowns: async () => {},
