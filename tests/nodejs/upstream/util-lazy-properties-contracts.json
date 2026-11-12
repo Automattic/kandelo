@@ -176,12 +176,12 @@
   "implemented": true,
   "fullContractCatalogComplete": false,
   "currentFailure": {
-    "binding": "messaging",
+    "binding": "diagnostics_channel",
     "name": "Error",
     "code": "ERR_KANDELO_NOT_IMPLEMENTED",
-    "message": "Native Node binding 'messaging' is not implemented",
-    "location": "node:internal/worker/js_transferable:21; node:internal/bootstrap/node:149",
-    "evidence": "build-config-engine-check.json",
+    "message": "Native Node binding 'diagnostics_channel' is not implemented",
+    "location": "node:diagnostics_channel:36; node:internal/process/per_thread:57; node:internal/bootstrap/node:152",
+    "evidence": "messaging-engine-check.json",
     "startupAccepted": false
   },
   "implementationEvidence": "lazy-data-engine-check.json",
@@ -211,6 +211,15 @@
       "message": "Requested native builtin metadata/cache/source-text backend is not implemented",
       "location": "node:internal/bootstrap/node:135",
       "evidence": "lazy-data-engine-check.json",
+      "startupAccepted": false
+    },
+    {
+      "binding": "messaging",
+      "name": "Error",
+      "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+      "message": "Native Node binding 'messaging' is not implemented",
+      "location": "node:internal/worker/js_transferable:21; node:internal/bootstrap/node:149",
+      "evidence": "build-config-engine-check.json",
       "startupAccepted": false
     }
   ]

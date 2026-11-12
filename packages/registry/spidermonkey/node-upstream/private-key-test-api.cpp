@@ -1,5 +1,7 @@
 #include "shell/node-upstream/private-key-test-api.h"
 
+#include <cstring>
+
 #include "jsapi.h"
 
 #include "builtin/ModuleObject.h"
@@ -26,6 +28,7 @@
 #include "shell/node-upstream/codecs.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
+#include "shell/node-upstream/realm.h"
 #include "shell/node-upstream/trace-agent-test-api.h"
 #include "shell/node-upstream/types.h"
 #include "shell/ShellModuleObjectWrapper.h"
@@ -35,6 +38,44 @@ namespace kandelo::node {
 namespace {
 
 static int externalReferenceToken = 42;
+bool MessagingNativeForTesting(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  if (!args.get(0).isString()) {
+    JS_ReportErrorASCII(cx, "Messaging native control requires operation String");
+    return false;
+  }
+  JS::RootedString operationString(cx, args[0].toString());
+  JS::UniqueChars operation = JS_EncodeStringToUTF8(cx, operationString);
+  if (!operation) return false;
+  JS::RootedObject runtime(cx, js::shell::GetShellContext(cx)->upstreamNodeRuntime);
+  if (!runtime) { JS_ReportErrorASCII(cx, "Native Node runtime is not initialized"); return false; }
+  JS::RootedObject target(cx, JS::CurrentGlobalOrNull(cx));
+  if (argc > 2) {
+    if (!args[2].isObject()) { JS_ReportErrorASCII(cx, "Messaging native target must be a global"); return false; }
+    target = js::CheckedUnwrapDynamic(&args[2].toObject(), cx, false);
+    if (!target) return false;
+    if (!JS_IsGlobalObject(target)) { JS_ReportErrorASCII(cx, "Messaging native target must be a global"); return false; }
+  }
+  JS::RootedValue result(cx);
+  {
+    JSAutoRealm home(cx, target);
+    if (!std::strcmp(operation.get(), "get")) {
+      if (!GetMessagingDeserializer(cx, runtime, &result)) return false;
+    } else if (!std::strcmp(operation.get(), "clear")) {
+      if (!ClearMessagingDeserializer(cx, runtime)) return false;
+    } else if (!std::strcmp(operation.get(), "call")) {
+      if (!args.get(1).isString()) { JS_ReportErrorASCII(cx, "Messaging native call requires info String"); return false; }
+      JS::RootedValue info(cx, args[1]);
+      if (!JS_WrapValue(cx, &info)) return false;
+      JS::RootedString infoString(cx, info.toString());
+      if (!CallMessagingDeserializer(cx, runtime, infoString, &result)) return false;
+    } else { JS_ReportErrorASCII(cx, "Unknown messaging native control operation"); return false; }
+  }
+  if (!JS_WrapValue(cx, &result)) return false;
+  args.rval().set(result);
+  return true;
+}
+
 bool NativeLazyProducer(JSContext* cx,JS::HandleObject holder,JS::HandleId id,
                          JS::HandleValue producer,JS::MutableHandleValue result) {
   JS::RootedValueArray<2> arguments(cx);
@@ -382,6 +423,7 @@ bool ModuleNamespaceForTesting(JSContext* cx, unsigned argc, JS::Value* vp) {
 
 bool DefinePrivateKeyTestAPI(JSContext* cx) {
   static const JSFunctionSpec functions[] = {
+      JS_FN("messagingNative", MessagingNativeForTesting, 2, 0),
       JS_FN("defineNativeLazy", DefineNativeLazyForTesting, 3, 0),
       JS_FN("compileFunctionBody", CompileFunctionBodyForTesting, 3, 0),
       JS_FN("newPrivateKey", NewPrivateKey, 0, 0),

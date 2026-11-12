@@ -52,7 +52,7 @@ namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3, NodeComplete = 4 };
-enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Continuation, Timers, TaskQueue, AsyncWrap, Symbols, Buffer, BufferPrototype, Snapshot, SerializeCallback, DeserializeCallback, DeserializeMain, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Continuation, Timers, TaskQueue, AsyncWrap, Symbols, Buffer, BufferPrototype, Messaging, MessagingDeserializer, Snapshot, SerializeCallback, DeserializeCallback, DeserializeMain, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -264,6 +264,46 @@ JSObject* BuiltinsBinding(JSContext* cx, JS::HandleObject state) {
   if (!JS_DefineFunctions(cx, binding, methods) || !JS_FreezeObject(cx, binding)) return nullptr;
   JS::SetReservedSlot(state, Builtins, JS::ObjectValue(*binding)); return binding;
 }
+bool RegisterMessagingDeserializer(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject state(cx, Owner(cx, args));
+  if (!state) return false;
+  MOZ_RELEASE_ASSERT(args.get(0).isObject() && JS::IsCallable(&args[0].toObject()),
+                     "Messaging deserializer must be a Function");
+  JS::RootedObject runtime(cx, Runtime(cx));
+  if (!SetMessagingDeserializer(cx, runtime, args[0])) return false;
+  args.rval().setUndefined();
+  return true;
+}
+bool UnavailableStructuredClone(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject state(cx, Owner(cx, args));
+  if (!state) return false;
+  return Missing(cx, "Native structured clone/transfer backend is not implemented");
+}
+JSObject* MessagingBinding(JSContext* cx, JS::HandleObject state) {
+  JS::Value cached = JS::GetReservedSlot(state, Messaging);
+  if (cached.isObject()) return &cached.toObject();
+  JS::RootedObject binding(cx, JS_NewPlainObject(cx));
+  JS::RootedObject runtime(cx, Runtime(cx));
+  JS::RootedObject exports(cx, GetCurrentContextExports(cx, runtime));
+  JS::RootedObject setter(cx, Function(cx, state, RegisterMessagingDeserializer, 0,
+                                     "setDeserializerCreateObjectFunction"));
+  JS::RootedObject clone(cx, Function(cx, state, UnavailableStructuredClone, 0,
+                                    "structuredClone"));
+  if (!binding || !exports || !setter || !clone) return nullptr;
+  JS::RootedValue dom(cx), quota(cx);
+  if (!JS_GetProperty(cx, exports, "DOMException", &dom)) return nullptr;
+  MOZ_RELEASE_ASSERT(dom.isObject() && JS::IsCallable(&dom.toObject()),
+                     "DOMException must be a Function");
+  if (!JS_GetProperty(cx, exports, "QuotaExceededError", &quota) ||
+      !JS_SetProperty(cx, binding, "DOMException", dom) ||
+      !JS_SetProperty(cx, binding, "QuotaExceededError", quota) ||
+      !JS_DefineProperty(cx, binding, "setDeserializerCreateObjectFunction", setter, JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx, binding, "structuredClone", clone, JSPROP_ENUMERATE)) return nullptr;
+  JS::SetReservedSlot(state, Messaging, JS::ObjectValue(*binding));
+  return binding;
+}
 bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
   auto args = JS::CallArgsFromVp(argc, vp);
   JS::RootedObject state(cx, Owner(cx, args)); if (!state) return false;
@@ -367,6 +407,7 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
       JS::SetReservedSlot(state, slot, JS::ObjectValue(*binding));
     }
   }
+  else if (name == "messaging") binding = MessagingBinding(cx, state);
   else if (name == "module_wrap") binding = GetCurrentContextModuleWrapBinding(cx, runtime);
   else if (name == "errors") binding = GetErrorStackBinding(cx);
   else if (name == "util") {
@@ -379,9 +420,12 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
       if (!binding || !symbols || !constants ||
           !JS_DefineProperty(cx, binding, "privateSymbols", symbols, JSPROP_ENUMERATE) ||
           !JS_DefineProperty(cx, binding, "constants", constants, JSPROP_ENUMERATE)) return false;
-      for (const auto& entry : {std::pair{"kExiting", kExiting}, std::pair{"kExitCode", kExitCode},
-                               std::pair{"kHasExitCode", kHasExitCode}})
-        if (!JS_DefineProperty(cx, constants, entry.first, int32_t(entry.second), JSPROP_ENUMERATE)) return false;
+      static constexpr std::pair<const char*, int32_t> constantRows[] = {
+          {"kExiting", kExiting}, {"kExitCode", kExitCode},
+          {"kHasExitCode", kHasExitCode}, {"kDisallowCloneAndTransfer", 0},
+          {"kTransferable", 1}, {"kCloneable", 2}};
+      for (const auto& entry : constantRows)
+        if (!JS_DefineProperty(cx, constants, entry.first, entry.second, JSPROP_ENUMERATE)) return false;
       JS::RootedObject lazy(cx,Function(cx,state,DefineLazyProperties,0,"defineLazyProperties"));
       if(!lazy||!JS_DefineProperty(cx,binding,"defineLazyProperties",lazy,JSPROP_ENUMERATE))return false;
       JS::SetReservedSlot(state, Util, JS::ObjectValue(*binding));
@@ -659,3 +703,57 @@ JSObject* GetRealmBufferPrototype(JSContext* cx,JS::HandleObject realm) {
   JS::RootedObject result(cx,&value.toObject());return JS_WrapObject(cx,&result)?result.get():nullptr;
 }
 }
+
+namespace kandelo::node {
+JSObject* PrincipalMessagingOwner(JSContext* cx, JS::HandleObject runtime, bool required = true) {
+  JS::RootedObject owner(cx, GetRuntimePrincipalRealm(cx, runtime, required));
+  if (!owner) return nullptr;
+  owner = js::CheckedUnwrapDynamic(owner, cx, false);
+  if (!owner) return nullptr;
+  MOZ_RELEASE_ASSERT(JS::GetClass(owner) == &kRealm);
+  return owner;
+}
+bool GetMessagingDeserializer(JSContext* cx, JS::HandleObject runtime,
+                               JS::MutableHandleValue result) {
+  JS::RootedObject owner(cx, PrincipalMessagingOwner(cx, runtime));
+  if (!owner) return false;
+  result.set(JS::GetReservedSlot(owner, MessagingDeserializer));
+  return JS_WrapValue(cx, result);
+}
+bool SetMessagingDeserializer(JSContext* cx, JS::HandleObject runtime,
+                               JS::HandleValue input) {
+  JS::RootedObject owner(cx, PrincipalMessagingOwner(cx, runtime));
+  if (!owner || !CheckRealmLibraryActive(cx, owner)) return false;
+  // Original principal value setters permit native clearing and replacement;
+  // nonempty writes require principal current context in debug builds only.
+  MOZ_ASSERT(input.isUndefined() || JS::GetObjectRealmOrNull(owner) == JS::GetCurrentRealmOrNull(cx));
+  JSAutoRealm home(cx, owner);
+  JS::RootedValue value(cx, input);
+  if (!JS_WrapValue(cx, &value)) return false;
+  JS::SetReservedSlot(owner, MessagingDeserializer, value);
+  return true;
+}
+bool ClearMessagingDeserializer(JSContext* cx, JS::HandleObject runtime) {
+  JS::RootedObject owner(cx, PrincipalMessagingOwner(cx, runtime, false));
+  if (!owner) return !JS_IsExceptionPending(cx);
+  JSAutoRealm home(cx, owner);
+  JS::SetReservedSlot(owner, MessagingDeserializer, JS::UndefinedValue());
+  return true;
+}
+bool CallMessagingDeserializer(JSContext* cx, JS::HandleObject runtime,
+                                JS::HandleString info, JS::MutableHandleValue result) {
+  JS::RootedObject owner(cx, PrincipalMessagingOwner(cx, runtime));
+  if (!owner || !CheckRealmLibraryActive(cx, owner)) return false;
+  if (&JS::GetReservedSlot(owner, Global).toObject() != JS::CurrentGlobalOrNull(cx))
+    return Throw(cx, "ERR_MESSAGE_TARGET_CONTEXT_UNAVAILABLE",
+                 "A message object could not be deserialized successfully in the target vm.Context");
+  JS::RootedValue callback(cx, JS::GetReservedSlot(owner, MessagingDeserializer));
+  MOZ_RELEASE_ASSERT(callback.isObject() && JS::IsCallable(&callback.toObject()),
+                     "Messaging deserializer is not registered");
+  JS::RootedValueArray<1> arguments(cx);
+  arguments[0].setString(info);
+  // This is the actual constructor callback call stage, not Message decoding,
+  // JSTransferable wrapping or clone/transfer completion.
+  return JS::Call(cx, JS::NullHandleValue, callback, arguments, result);
+}
+}  // namespace kandelo::node

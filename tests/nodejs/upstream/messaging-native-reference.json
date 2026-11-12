@@ -1,0 +1,213 @@
+{
+  "native": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixtures": [
+    {
+      "path": "tests/nodejs/upstream/messaging-native-prefix.cjs",
+      "bytes": 483,
+      "sha256": "91501667dd0d2099d3275084c3ad04b48fa9fad6e8d68a159fd6e90d201b6ebe"
+    },
+    {
+      "path": "tests/nodejs/upstream/messaging-shared-controls.js",
+      "bytes": 4650,
+      "sha256": "91d3d9d6ac440fc64d469da3b8781f7e80cb0770078eb53608cc5eacc09cbc1b"
+    }
+  ],
+  "generatedFixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-messaging-native.vf0nbsve/reference.cjs",
+    "bytes": 5104,
+    "sha256": "0ee0688376dc110a0f4b66a800d8d17ba8346c3196c7ad276b39531720489e11"
+  },
+  "flags": [
+    "--no-warnings",
+    "--no-node-snapshot",
+    "--expose-internals",
+    "--expose-gc"
+  ],
+  "result": {
+    "exitCode": 0,
+    "stdout": "{\"kind\":\"native-messaging-registration-reference\",\"cases\":12,\"failures\":0,\"observations\":[{\"name\":\"implemented-native-function-descriptors\",\"status\":\"pass\",\"detail\":{\"setDeserializerCreateObjectFunction\":{\"name\":\"setDeserializerCreateObjectFunction\",\"length\":0,\"writable\":true,\"enumerable\":true,\"configurable\":true},\"structuredClone\":{\"name\":\"structuredClone\",\"length\":0,\"writable\":true,\"enumerable\":true,\"configurable\":true}}},{\"name\":\"actual-original-dom-constructors-are-exported\",\"status\":\"pass\",\"detail\":{\"DOMException\":{\"name\":\"DOMException\",\"length\":0,\"writable\":true,\"enumerable\":true,\"configurable\":true},\"QuotaExceededError\":{\"name\":\"QuotaExceededError\",\"length\":0,\"writable\":true,\"enumerable\":true,\"configurable\":true}}},{\"name\":\"messaging-binding-is-mutable\",\"status\":\"pass\",\"detail\":{\"frozen\":false,\"extensible\":true}},{\"name\":\"registration-and-replacement-never-invoke-the-function\",\"status\":\"pass\",\"detail\":{\"first\":\"undefined\",\"second\":\"undefined\",\"calls\":0}},{\"name\":\"bound-and-callable-proxy-functions-are-accepted-without-calling\",\"status\":\"pass\",\"detail\":{\"calls\":0,\"revokedAccepted\":true}},{\"name\":\"native-transfer-mode-layout-and-descriptors\",\"status\":\"pass\",\"detail\":{\"kDisallowCloneAndTransfer\":{\"value\":0,\"writable\":true,\"enumerable\":true,\"configurable\":true},\"kTransferable\":{\"value\":1,\"writable\":true,\"enumerable\":true,\"configurable\":true},\"kCloneable\":{\"value\":2,\"writable\":true,\"enumerable\":true,\"configurable\":true}}},{\"name\":\"original-transfer-marking-writes-real-own-private-mode\",\"status\":\"pass\",\"detail\":[{\"mode\":0,\"keys\":0,\"inherited\":true},{\"mode\":2,\"keys\":0,\"inherited\":true},{\"mode\":1,\"keys\":0,\"inherited\":true},{\"mode\":3,\"keys\":0,\"inherited\":true}]},{\"name\":\"original-transfer-marking-admits-nonextensible-real-objects\",\"status\":\"pass\",\"detail\":{\"mode\":3,\"extensible\":false,\"keys\":0}},{\"name\":\"original-domexception-host-hooks-preserve-data-and-symbol-identity\",\"status\":\"pass\",\"detail\":{\"info\":\"internal/worker/clone_dom_exception:DOMException\",\"message\":\"m\\u0000\\ud800\",\"name\":\"DataCloneError\",\"code\":25,\"mode\":2,\"stackType\":\"string\"}},{\"name\":\"original-quota-host-hooks-preserve-private-class-data\",\"status\":\"pass\",\"detail\":{\"info\":\"internal/worker/clone_dom_exception:QuotaExceededError\",\"message\":\"limit\",\"name\":\"QuotaExceededError\",\"quota\":5,\"requested\":9,\"mode\":2}},{\"name\":\"original-primitive-clone-fast-path-needs-no-native-serialization\",\"status\":\"pass\",\"detail\":[\"object\",\"undefined\",\"number\",\"number\",\"number\",\"number\",\"bigint\",\"boolean\",\"string\"]},{\"name\":\"original-setup-registers-its-handler-and-missing-arg-error-remains-original\",\"status\":\"pass\",\"detail\":{\"name\":\"TypeError\",\"code\":\"ERR_MISSING_ARGS\"}}]}\n",
+    "stderr": ""
+  },
+  "detail": {
+    "kind": "native-messaging-registration-reference",
+    "cases": 12,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "implemented-native-function-descriptors",
+        "status": "pass",
+        "detail": {
+          "setDeserializerCreateObjectFunction": {
+            "name": "setDeserializerCreateObjectFunction",
+            "length": 0,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          },
+          "structuredClone": {
+            "name": "structuredClone",
+            "length": 0,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          }
+        }
+      },
+      {
+        "name": "actual-original-dom-constructors-are-exported",
+        "status": "pass",
+        "detail": {
+          "DOMException": {
+            "name": "DOMException",
+            "length": 0,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          },
+          "QuotaExceededError": {
+            "name": "QuotaExceededError",
+            "length": 0,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          }
+        }
+      },
+      {
+        "name": "messaging-binding-is-mutable",
+        "status": "pass",
+        "detail": {
+          "frozen": false,
+          "extensible": true
+        }
+      },
+      {
+        "name": "registration-and-replacement-never-invoke-the-function",
+        "status": "pass",
+        "detail": {
+          "first": "undefined",
+          "second": "undefined",
+          "calls": 0
+        }
+      },
+      {
+        "name": "bound-and-callable-proxy-functions-are-accepted-without-calling",
+        "status": "pass",
+        "detail": {
+          "calls": 0,
+          "revokedAccepted": true
+        }
+      },
+      {
+        "name": "native-transfer-mode-layout-and-descriptors",
+        "status": "pass",
+        "detail": {
+          "kDisallowCloneAndTransfer": {
+            "value": 0,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          },
+          "kTransferable": {
+            "value": 1,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          },
+          "kCloneable": {
+            "value": 2,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          }
+        }
+      },
+      {
+        "name": "original-transfer-marking-writes-real-own-private-mode",
+        "status": "pass",
+        "detail": [
+          {
+            "mode": 0,
+            "keys": 0,
+            "inherited": true
+          },
+          {
+            "mode": 2,
+            "keys": 0,
+            "inherited": true
+          },
+          {
+            "mode": 1,
+            "keys": 0,
+            "inherited": true
+          },
+          {
+            "mode": 3,
+            "keys": 0,
+            "inherited": true
+          }
+        ]
+      },
+      {
+        "name": "original-transfer-marking-admits-nonextensible-real-objects",
+        "status": "pass",
+        "detail": {
+          "mode": 3,
+          "extensible": false,
+          "keys": 0
+        }
+      },
+      {
+        "name": "original-domexception-host-hooks-preserve-data-and-symbol-identity",
+        "status": "pass",
+        "detail": {
+          "info": "internal/worker/clone_dom_exception:DOMException",
+          "message": "m\u0000\ud800",
+          "name": "DataCloneError",
+          "code": 25,
+          "mode": 2,
+          "stackType": "string"
+        }
+      },
+      {
+        "name": "original-quota-host-hooks-preserve-private-class-data",
+        "status": "pass",
+        "detail": {
+          "info": "internal/worker/clone_dom_exception:QuotaExceededError",
+          "message": "limit",
+          "name": "QuotaExceededError",
+          "quota": 5,
+          "requested": 9,
+          "mode": 2
+        }
+      },
+      {
+        "name": "original-primitive-clone-fast-path-needs-no-native-serialization",
+        "status": "pass",
+        "detail": [
+          "object",
+          "undefined",
+          "number",
+          "number",
+          "number",
+          "number",
+          "bigint",
+          "boolean",
+          "string"
+        ]
+      },
+      {
+        "name": "original-setup-registers-its-handler-and-missing-arg-error-remains-original",
+        "status": "pass",
+        "detail": {
+          "name": "TypeError",
+          "code": "ERR_MISSING_ARGS"
+        }
+      }
+    ]
+  }
+}

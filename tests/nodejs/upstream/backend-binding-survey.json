@@ -18,8 +18,8 @@
     },
     {
       "path": "tests/nodejs/upstream/backend-binding-reviews.json",
-      "bytes": 16058,
-      "sha256": "808f04cabc4983fe517141df842eac304d70ac044b2083b3a0a99e308f1c71fc"
+      "bytes": 16194,
+      "sha256": "12c8d36e5b7cc908122ca1655d7121b0dfb40a0ace0a343093df4d799fbdc8dd"
     },
     {
       "path": "tests/nodejs/upstream/dependency-dynamic-reviews.json",
@@ -45,8 +45,8 @@
     "literalBindingNames": 72,
     "sourceRegistrationNames": 77,
     "literalBindingsWithInitializerSyntax": 72,
-    "literalBindingsWithKandeloRoute": 18,
-    "literalBindingsWithoutKandeloRoute": 54,
+    "literalBindingsWithKandeloRoute": 19,
+    "literalBindingsWithoutKandeloRoute": 53,
     "sourceOnlyInitializerNames": [
       "debug"
     ],
@@ -61,7 +61,7 @@
   },
   "dispatcher": {
     "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
-    "sha256": "67590dbf66ca444cb169b3ca76a1b7dc1b155de2912bc586ded94f0342f77e73",
+    "sha256": "d5f54e4f8d31e48ba6aba5c7e42c99630727feb462bf7056e544d5005fe75732",
     "functionStart": "bool InternalBinding(",
     "functionEnd": "bool LinkedBinding(",
     "reviewedRouteNames": [
@@ -73,6 +73,7 @@
       "constants",
       "errors",
       "icu",
+      "messaging",
       "mksnapshot",
       "module_wrap",
       "options",
@@ -2454,10 +2455,10 @@
         73
       ],
       "registrationBuildSelectionEvaluated": false,
-      "kandeloSourceRoute": false,
-      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
       "reviewRoutingFamily": "workers",
-      "boundedContractInventory": null,
+      "boundedContractInventory": "messaging-contracts.json",
       "apiContractComplete": false,
       "fourHostConformance": "not established by this source survey"
     },

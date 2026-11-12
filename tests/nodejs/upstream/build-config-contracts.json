@@ -133,9 +133,10 @@
     "configurationReadAndFrozenByOriginalBody": true,
     "completed": false,
     "nextErrorCode": "ERR_KANDELO_NOT_IMPLEMENTED",
-    "nextError": "Native Node binding 'messaging' is not implemented",
-    "nextLocation": "node:internal/worker/js_transferable:21; node:internal/bootstrap/node:149",
-    "normalNodeMode": "legacy"
+    "nextError": "Native Node binding 'diagnostics_channel' is not implemented",
+    "nextLocation": "node:diagnostics_channel:36; node:internal/process/per_thread:57; node:internal/bootstrap/node:152",
+    "normalNodeMode": "legacy",
+    "currentEvidence": "messaging-engine-check.json"
   },
   "remaining": [
     "Full builtins native methods/categories/natives/cache/source-text contract",
@@ -145,5 +146,13 @@
     "Genuine empty/simple output/errors/jobs/exit and separate CJS/ESM acceptance"
   ],
   "implemented": true,
-  "fullNativeBindingContractComplete": false
+  "fullNativeBindingContractComplete": false,
+  "historicalStartup": {
+    "configurationReadAndFrozenByOriginalBody": true,
+    "completed": false,
+    "nextErrorCode": "ERR_KANDELO_NOT_IMPLEMENTED",
+    "nextError": "Native Node binding 'messaging' is not implemented",
+    "nextLocation": "node:internal/worker/js_transferable:21; node:internal/bootstrap/node:149",
+    "normalNodeMode": "legacy"
+  }
 }

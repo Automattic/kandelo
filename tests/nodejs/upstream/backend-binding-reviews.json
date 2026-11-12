@@ -4,7 +4,7 @@
   "scope": "Reviewed survey routing and dispatcher snapshot. Family names organize further review, not API/owning-layer or native-contract completion.",
   "dispatcher": {
     "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
-    "sha256": "67590dbf66ca444cb169b3ca76a1b7dc1b155de2912bc586ded94f0342f77e73",
+    "sha256": "d5f54e4f8d31e48ba6aba5c7e42c99630727feb462bf7056e544d5005fe75732",
     "functionStart": "bool InternalBinding(",
     "functionEnd": "bool LinkedBinding(",
     "reviewedRouteNames": [
@@ -16,6 +16,7 @@
       "constants",
       "errors",
       "icu",
+      "messaging",
       "mksnapshot",
       "module_wrap",
       "options",
@@ -238,8 +239,8 @@
     {
       "name": "messaging",
       "reviewRoutingFamily": "workers",
-      "contractInventory": null,
-      "contractReview": "full binding contract audit outstanding"
+      "contractInventory": "messaging-contracts.json",
+      "contractReview": "Startup registration/constructor-call stage partial review; full messaging, serialization, transport and lifetime contracts incomplete"
     },
     {
       "name": "mksnapshot",

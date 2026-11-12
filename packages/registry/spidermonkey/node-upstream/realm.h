@@ -8,6 +8,10 @@ enum class SnapshotCallback { Serialize, Deserialize, Main };
 bool GetSnapshotCallback(JSContext*,JS::HandleObject,SnapshotCallback,JS::MutableHandleValue);
 bool SetSnapshotCallback(JSContext*,JS::HandleObject,SnapshotCallback,JS::HandleValue);
 bool ClearSnapshotCallbacks(JSContext*,JS::HandleObject);
+bool GetMessagingDeserializer(JSContext*,JS::HandleObject,JS::MutableHandleValue);
+bool SetMessagingDeserializer(JSContext*,JS::HandleObject,JS::HandleValue);
+bool ClearMessagingDeserializer(JSContext*,JS::HandleObject);
+bool CallMessagingDeserializer(JSContext*,JS::HandleObject,JS::HandleString,JS::MutableHandleValue);
 bool RequireRealmBuiltin(JSContext*,JS::HandleObject,JS::HandleValue,JS::MutableHandleValue);
 // Allocation does not run JS. Publish in the canonical context before Run.
 JSObject* AllocateRealmLibraryState(JSContext* cx);

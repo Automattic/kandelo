@@ -15,8 +15,9 @@ The native principal-body entry calls complete `internal/bootstrap/node` with
 protected state. It now executes the original internal tracing helper and
 passes the live `mksnapshot` binding and native lazy data-property setup in
 original `buffer.js`. It now reads real build configuration and the original
-body freezes `process.config`, then stops at missing `messaging` in
-`internal/worker/js_transferable:21`, called by `internal/bootstrap/node:149`. The original native tracing agent, binding,
+body freezes `process.config` and registers the original messaging constructor
+callback, then stops at missing `diagnostics_channel` in `diagnostics_channel:36`,
+via `internal/process/per_thread:57` and `internal/bootstrap/node:152`. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -1830,3 +1831,49 @@ This is a real next failure, not successful startup. Normal node mode stays
 legacy. Empty/simple startup, CJS/ESM and the complete catalog/ordered roadmap
 remain unfinished. Only focused empty-filesystem fixtures ran; full products,
 images, successor ABI builds and overall suites remain deferred.
+
+
+## Native messaging startup support (revision 47)
+
+The native messaging binding now registers the original JavaScript deserializer
+constructor callback in an actual traced principal-Realm slot. Registration
+returns undefined without invoking the function; replacement and native clearing
+are permitted. Native invocation checks the real target context, uses a null
+receiver and one actual UTF-16 info String, and preserves the result, Promise or
+exception. This is the constructor-call stage only. Full Message decoding, host
+object wrapping and transfer completion remain unimplemented.
+
+DOMException and QuotaExceededError are the original canonical per-context
+constructors. The util constants now expose the actual transfer-mode flags
+0, 1 and 2 alongside the existing canonical private key. The original setup
+closure resolves module:Constructor through the same original builtin require
+and cache. No upstream JavaScript or Node C++ function bodies were rewritten
+or excerpted. The native structuredClone entry fails explicitly with
+ERR_KANDELO_NOT_IMPLEMENTED; the original JavaScript primitive fast path works.
+No port handles, serialization results or worker delivery are fabricated.
+
+Twenty-seven controls and ten process drivers pass on each of Node, Chromium,
+Firefox and WebKit. Twelve bounded groups match the authenticated native Node
+reference exactly. Controls exercise real GC roots, replacement, reentrancy,
+wrong-context errors, original constructor/clone hooks, Promise draining and
+exit behavior. Foreground Environment shutdown clears the root; full retirement
+and cancellation remain unproved. Selected config/lazy/snapshot checks on four
+hosts and Environment/options/process/realm checks on Node also pass: 185 guest
+processes and 67 expected assertion traps in the retained reports. Initial
+stopped and failed builds are retained, followed by the successful normal
+revision-47 build. See [messaging-contracts.json](../tests/nodejs/upstream/messaging-contracts.json)
+and [messaging-engine-check.json](../tests/nodejs/upstream/messaging-engine-check.json).
+
+All 557 imported identities, including 443 JavaScript files and 10,993,403
+JavaScript bytes, remain unchanged. The source survey now records 19 dispatcher
+routes and 53 literal binding names without routes; route presence does not
+establish complete API support. The full 77-role native catalog is incomplete.
+
+The actual original principal bootstrap now fails on diagnostics_channel at
+diagnostics_channel:36, via internal/process/per_thread:57 and bootstrap:152.
+Genuine startup, empty/simple execution, output/error/exit acceptance and
+separate CJS/ESM entrypaths remain unfinished. Normal node mode still uses the
+legacy bootstrap. Structured clone/transfer, MessagePort/MessageChannel, worker
+transport, full native methods and lifecycle remain catalog gaps. Only focused
+empty-filesystem guest fixtures ran; full products/images, successor ABI builds
+and overall suites remain deferred.

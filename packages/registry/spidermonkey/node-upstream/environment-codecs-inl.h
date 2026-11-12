@@ -184,7 +184,8 @@ void Environment::Shutdown(JSContext* cx) {
     std::lock_guard lock(data_->mutex);CHECK(data_->pending.empty());data_->closed=true;
   }
   kandelo::node::DetachRuntimeForeground(cx,runtime,this);data_->wake=nullptr;
-  CHECK(kandelo::node::ClearSnapshotCallbacks(cx,runtime));data_->embedderPreload=nullptr;
+  CHECK(kandelo::node::ClearSnapshotCallbacks(cx,runtime));
+  CHECK(kandelo::node::ClearMessagingDeserializer(cx,runtime));data_->embedderPreload=nullptr;
   state->aliasedControls.clear();
   if(data_->weakRegistered){JS_RemoveWeakPointerZonesCallback(cx,api::UpdateEnvironmentWeakEdges);data_->weakRegistered=false;}
   for(auto& root:state->weakGlobals){CHECK(!root->strong);root->weak=nullptr;}
