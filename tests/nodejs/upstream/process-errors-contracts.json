@@ -56,7 +56,7 @@
       "signature": "Local<Value>(Isolate*,int errorno,const char* syscall,const char* msg,const char* path)",
       "algorithmOwner": "Complete unchanged src/api/exceptions.cc",
       "behavior": "Uses original errors::errno_string and guest strerror for null/empty msg. Original one-byte message/code strings; UTF8 path conversion. Null path/syscall omit those properties; empty path remains an explicit empty string. Own errno/code/path/syscall properties are set in original order on a real engine Error.",
-      "missingPrerequisite": "errors::errno_string still unresolved; original full node_errors.cc owns the POSIX mapping and returns empty string for unknown values. It is not replaced with libuv error names (which differ for unknown/unmapped errno values)."
+      "nativePrimitiveStatus": "Original errno-name algorithm now compiles in complete node_errors.cc over actual guest errno constants; no current runtime validation."
     },
     {
       "name": "UVException",
@@ -105,7 +105,6 @@
     "workerAndRealm": "Principal/active-context crossing and worker startup require runtime validation; no host Error or host Node APIs are used."
   },
   "remainingNativeContracts": [
-    "errors::errno_string in complete original node_errors.cc",
     "errors::TriggerUncaughtException and full fatal/message/source-map/stack/report/inspector interfaces",
     "all other process-methods lifecycle/permissions/owner registry/heap/native loading/libuv memory backends",
     "additional unused process-object factory contracts"
@@ -134,5 +133,6 @@
     },
     "controls": 8,
     "scope": "Darwin arm64 chdir/loadEnvFile/failed-execve native Error shape/property order and intrinsic prototype, including Unicode paths and replaced global Error. Not guest validation."
-  }
+  },
+  "errnoNameCompileEvidence": "fatal-errors-compile-check.json"
 }

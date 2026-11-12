@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 54 source connects the original process initializer,
+The current revision 55 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
-the original system-error factories. Its targeted build still fails final
-linking on 25 symbols and has no runnable artifact. The original native tracing agent, binding,
+the original system-error factories and errno-name unit. Its targeted build
+still fails final linking on 24 symbols and has no runnable artifact. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -88,7 +88,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 575 files after complete native source/header additions; every
+manifest has 576 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -2275,3 +2275,52 @@ No revision-54 runtime artifact or startup advancement exists. Revision 50
 remains the last runnable engine. Full startup, separate CJS/ESM entrypaths,
 complete catalog/roadmap and user review remain outstanding. Full products,
 images, kernel/successor-ABI builds and overall suites remain deferred.
+
+
+## Whole original errno-name/fatal error unit (revision 55; link incomplete)
+
+Revision 55 imports and compiles complete unchanged `src/node_errors.cc`.
+The original conditional errno-name algorithm now uses actual guest errno
+constants; its unknown-value result remains the original empty string.
+No switch or function body was extracted or rewritten. The original fatal
+initializer has its own unused adapter identity. The existing bounded native
+error-stack binding remains unchanged; full fatal/error initialization is
+not activated.
+
+The whole unit typechecks against consumed native Message, ScriptOrigin,
+StackTrace, TryCatch, report, policy and scheduling declarations. These
+operations remain unavailable. Dead stripping of unused functions is not
+support. Normal SetImmediate only erases its callback type and delegates to
+an undefined native scheduling backend; it does not post to a substitute
+queue or manufacture ref state. Fatal-only policy access/mutex ownership
+also remains a declaration; it must not recursively lock the general options
+snapshot accessor when implemented. Original trace/report option projections
+read the actual original flags under their mutex, with compile evidence only.
+See the [bounded fatal-error catalog](../tests/nodejs/upstream/fatal-errors-contracts.json).
+
+A separate [memory contract audit](../tests/nodejs/upstream/process-memory-contracts.json)
+found that existing external counters cover only explicitly registered
+allocations. Native backing stores, ordinary/shared engine buffers and retained
+storage require complete allocation-lifetime accounting. SpiderMonkey's standard
+object-element category combines ordinary object and ArrayBuffer storage;
+external backings are deliberately left to their owner, and shared backing
+reporting apportions ownership by reference counts. These categories cannot be
+silently relabeled as complete Node buffer/external totals. Retained native
+storage can outlive JavaScript detach, so a live-object traversal alone is also
+insufficient. No memory backend, guessed GC/RSS mapping, zero size callback,
+kernel change or deferred build was added. These are implementation gaps;
+no browser-specific impossibility is established by the source review.
+
+The first normal build failed on eight missing interface declarations. The
+corrected normal build has zero C++ compiler errors and fails linking on 24
+symbols, with the original errno-name dependency resolved. All three attempts and
+exact inputs are retained in
+[fatal-errors-compile-check.json](../tests/nodejs/upstream/fatal-errors-compile-check.json).
+The authenticated import has 576 records; all 575 prior records and all 443
+JavaScript files remain byte-identical, and a fresh complete import reproduces
+the manifest. No new native-reference or guest runtime controls were run.
+Revision 50 remains the last runnable engine, still stopped at process_methods.
+Full startup, empty/simple/error/jobs/exit and CJS/ESM on four hosts, full catalog
+and ordered roadmap remain unfinished. Full products/images,
+kernel/successor-ABI builds and overall suites remain deferred. Stop for explicit
+user review before implementing the broader backend roadmap.

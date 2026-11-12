@@ -6,7 +6,7 @@
 #include <ranges>
 namespace ada {struct url_aggregator;}
 namespace kandelo_node_codec_api {
-class Boolean:public Value {public:using Value::Value;};
+class Boolean:public Value {public:using Value::Value;static Local<Boolean> New(Isolate*,bool);bool Value()const;};
 enum class Intercepted{kNo,kYes};
 enum class PropertyHandlerFlags{kHasNoSideEffect};
 struct NamedPropertyHandlerConfiguration {
@@ -42,7 +42,7 @@ class KVStore {
  Maybe<void> AssignToObject(Isolate*,Local<Context>,Local<Object>);
  static std::shared_ptr<KVStore> CreateMapKVStore();
 };
-struct NativeEnvOptions {bool pending_deprecation,trace_env,trace_env_js_stack,trace_env_native_stack;};
+struct NativeEnvOptions {bool pending_deprecation,trace_env,trace_env_js_stack,trace_env_native_stack,trace_uncaught,extra_info_on_fatal_exception;};
 struct NativeEnvIsolateOptions {std::shared_ptr<NativeEnvOptions> per_env;};
 namespace per_process {
  extern std::shared_ptr<KVStore> system_environment;

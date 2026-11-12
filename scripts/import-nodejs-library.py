@@ -66,7 +66,7 @@ def select_sources(members, prefix):
                        'deps/ada/ada.h',
                        'src/debug_utils.h',
                        'src/debug_utils-inl.h',
-                       'src/node_errors.h',
+                       'src/node_errors.h', 'src/node_errors.cc',
                        'src/node_i18n.cc', 'src/node_i18n.h',
                        'src/api/encoding.cc', 'src/api/exceptions.cc', 'src/util-inl.h',
                        'src/node_internals.h',

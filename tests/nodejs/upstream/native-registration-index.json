@@ -6,7 +6,7 @@
     "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
   },
   "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
-  "sourceManifestSha256": "2a3f801fe13cc553e66b13d81b5488e6c96177eb4f753d60dccd595d0049b5a0",
+  "sourceManifestSha256": "bedff8462e432d4c43621f21ac49b355c7148b4f821a300760993887965ede16",
   "sourceOffsetUnits": "Unicode code points; line numbers are one-based",
   "counts": {
     "nativeFilesScanned": 460,
@@ -1776,7 +1776,7 @@
       "bytes": 45641,
       "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d",
       "registrations": 2,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_errors.h",

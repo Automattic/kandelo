@@ -35,6 +35,7 @@ template<class T,class MutexT> class ExclusiveAccess;
 namespace kandelo_node_codec_api {
 class ArrayBuffer; class SharedArrayBuffer; class Value; class Name; class Object; class String; class Function; class Isolate; class ObjectTemplate; class FunctionTemplate;class Array;
 struct NamedPropertyHandlerConfiguration;struct IndexedPropertyHandlerConfiguration;
+class Message;class StackTrace;
 template<class T> class PropertyCallbackInfo;
 struct Cell; struct Frame; struct View; struct MemoryAccount; struct State; struct Context; struct ContextScopeData; struct StartupData;
 struct HeapStatisticsData;
@@ -107,6 +108,7 @@ struct Context {
   };
   Local<Object> Global();
   Local<Object> GetExtrasBindingObject();
+  int GetNumberOfEmbedderDataFields();Local<Value> GetEmbedderData(int);
   template<class T> MaybeLocal<T> GetDataFromSnapshotOnce(size_t) {
     Crash("Native heap snapshot deserialization is not implemented");
   }
@@ -142,6 +144,7 @@ class Value {
   bool IsBoolean() const;
   bool IsFloat64Array() const;
   bool IsTrue() const;
+  bool IsFalse() const;bool IsNativeError() const;
   Maybe<int64_t> IntegerValue(Local<Context>);
   Maybe<int32_t> Int32Value(Local<Context>);
   Maybe<uint32_t> Uint32Value(Local<Context>);
@@ -216,6 +219,8 @@ class Object : public Value {
   static Local<Object> New(Isolate*);
   static Local<Object> New(Isolate*,Local<Value>,Local<Name>*,Local<Value>*,size_t);
   MaybeLocal<Array> GetOwnPropertyNames(Local<Context>);
+  MaybeLocal<Value> GetPrivate(Local<Context>,Local<Value>);
+  Local<String> GetConstructorName();
   Maybe<bool> DefineOwnProperty(Local<Context>,Local<Name>,Local<Value>,PropertyAttribute=None);
   void* GetAlignedPointerFromInternalField(int,EmbedderDataTag);
   Maybe<bool> Set(Local<Context>,Local<Value>,Local<Value>);
@@ -333,6 +338,7 @@ class String : public Name {
   };
   enum class WriteFlags { kReplaceInvalidUtf8 };
   static Local<String> Empty(Isolate*);
+  static Local<String> NewFromUtf8Literal(Isolate*,const char*);
   static Local<String> Concat(Isolate*,Local<String>,Local<String>);
   static MaybeLocal<String> NewFromUtf8(Isolate*,const char*,NewStringType=NewStringType::kNormal,int=-1);
   static MaybeLocal<String> NewFromOneByte(Isolate*,const uint8_t*,NewStringType,int);
@@ -367,6 +373,8 @@ class Isolate {
   void SetContinuationPreservedEmbedderDataV2(Local<Value>);
   void ThrowException(Local<Value>);
   void GetHeapStatistics(HeapStatistics*);
+  static Isolate* TryGetCurrent();bool InContext();
+  enum MessageErrorLevel{kMessageError=1,kMessageWarning=2};
   enum class TimeZoneDetection{kRedetect,kSkip};
   void DateTimeConfigurationChangeNotification(TimeZoneDetection);
 };
@@ -459,9 +467,13 @@ struct CatchScope;
 class TryCatch {
   std::unique_ptr<CatchScope> scope_;
  public: explicit TryCatch(Isolate*);~TryCatch();
+ bool HasCaught()const;bool HasTerminated()const;bool IsVerbose()const;bool CanContinue()const;
+ Local<Value> Exception()const;Local<kandelo_node_codec_api::Message> Message()const;
+ Local<Value> ReThrow();void Reset();void SetVerbose(bool);
 };
 class Exception {
  public: static Local<Value> Error(Local<String>);
+ static Local<Message> CreateMessage(Isolate*,Local<Value>);
 };
 }
 namespace kandelo_node_codec_impl {
@@ -508,7 +520,7 @@ template<class T,size_t N=64> class ArrayBufferViewContents {
   explicit ArrayBufferViewContents(Local<Value>);
   T* data() const;size_t length() const;
 };
-class Environment;class IsolateData;class BaseObject;struct NativeRealmData;class KVStore;struct NativeEnvOptions;struct NativeEnvIsolateOptions;
+class Environment;class IsolateData;class BaseObject;struct NativeRealmData;class KVStore;struct NativeEnvOptions;struct NativeEnvIsolateOptions;struct FatalIsolateOptions;
 class EnabledDebugList;
 class AsyncWrap;class ReqWrapBase;class HandleWrap;class NodeArrayBufferAllocator;
 class ProcessImmediateInfo;
@@ -535,6 +547,9 @@ class Realm {
   template<class T,class... Args> T* AddBindingData(Local<Object>,Args&&...);
   void RegisterObject(BaseObject*);void ForgetObject(BaseObject*);void RunCleanup();
   Kind kind() const;void set_buffer_prototype_object(Local<Object>);
+  void set_prepare_stack_trace_callback(Local<Function>);
+  void set_enhance_fatal_stack_before_inspector(Local<Function>);
+  void set_enhance_fatal_stack_after_inspector(Local<Function>);
 };
 class Cleanable;
 class CleanableQueue;
@@ -608,6 +623,13 @@ class Environment {
   std::shared_ptr<KVStore> env_vars();std::shared_ptr<NativeEnvOptions> options();
   std::string GetCwd(const std::string&);
   bool EmitProcessEnvWarning();
+  bool source_maps_enabled();void set_source_maps_enabled(bool);
+  Local<Function> get_source_map_error_source();void set_get_source_map_error_source(Local<Function>);
+  Local<Function> maybe_cache_generated_source_map();void set_maybe_cache_generated_source_map(Local<Function>);
+  Local<Function> enhance_fatal_stack_before_inspector();Local<Function> enhance_fatal_stack_after_inspector();
+  Local<Value> decorated_private_symbol();Local<Value> arrow_message_private_symbol();
+  bool printed_error();void set_printed_error(bool);bool abort_on_uncaught_exception();
+  Local<Object> process_object();ExitCode exit_code(ExitCode);
   EnabledDebugList* enabled_debug_list();
   void ThrowUVException(int,const char*,const char* = nullptr,const char* = nullptr,const char* = nullptr);
   void ThrowErrnoException(int,const char*,const char* = nullptr,const char* = nullptr);
@@ -641,6 +663,10 @@ class Environment {
   void Shutdown(JSContext*);
   EnvironmentData& data() { return *data_; }
   void Post(std::unique_ptr<NativeImmediate>);
+  void SetImmediateNative(std::function<void(Environment*)>);
+  template<class Callback> void SetImmediate(Callback&& callback) {
+    SetImmediateNative(std::function<void(Environment*)>(std::forward<Callback>(callback)));
+  }
   template<class Callback> void SetImmediateThreadsafe(Callback&& callback) {
     using Stored=std::decay_t<Callback>;
     Post(std::make_unique<NativeImmediateCallback<Stored>>(std::forward<Callback>(callback)));
@@ -650,6 +676,7 @@ class IsolateData {
  public: Isolate* isolate();void set_i18n_converter_template(Local<ObjectTemplate>);
   bool is_building_snapshot() const;
   NodeArrayBufferAllocator* node_allocator();
+  std::shared_ptr<FatalIsolateOptions> options();
   Local<ObjectTemplate> env_proxy_template();void set_env_proxy_template(Local<ObjectTemplate>);
   void set_env_proxy_ctor_template(Local<FunctionTemplate>);
 };
@@ -730,7 +757,7 @@ void SetMethodNoSideEffect(Local<Context>,Local<Object>,const char*,void(*)(cons
 void SetFastMethod(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&),const CFunction*);
 void SetFastMethodNoSideEffect(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&),const CFunction*);
 namespace per_process {
-struct BufferOptions { bool zero_fill_all_buffers;std::shared_ptr<NativeEnvIsolateOptions> per_isolate; };
+struct BufferOptions { bool zero_fill_all_buffers;bool report_on_fatalerror;std::shared_ptr<NativeEnvIsolateOptions> per_isolate; };
 struct BufferOptionsAccess { const BufferOptions* operator->() const; };
 inline const BufferOptionsAccess cli_options;
 }

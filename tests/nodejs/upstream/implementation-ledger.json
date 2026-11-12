@@ -10,7 +10,7 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 575,
+    "importedFiles": 576,
     "taskQueuePartialCatalog": "task-queue-contracts.json",
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
     "constantsPartialCatalog": "constants-contracts.json",
@@ -76,7 +76,10 @@
     "processFilesPartialCatalog": "process-files-contracts.json",
     "processFilesCompileEvidence": "process-files-compile-check.json",
     "processErrorsPartialCatalog": "process-errors-contracts.json",
-    "processErrorsCompileEvidence": "process-errors-compile-check.json"
+    "processErrorsCompileEvidence": "process-errors-compile-check.json",
+    "fatalErrorsPartialCatalog": "fatal-errors-contracts.json",
+    "fatalErrorsCompileEvidence": "fatal-errors-compile-check.json",
+    "processMemoryPartialCatalog": "process-memory-contracts.json"
   },
   "implementation": [
     {
@@ -314,6 +317,12 @@
       "sourceStatus": "Complete unchanged src/api/exceptions.cc compiles in revision54 over actual intrinsic Error/capture, rooted ToObject and all295original string-key accessors. ThrowUVException/ThrowErrnoException now resolve; errno_string remains a new missing prerequisite. Final link fails on25symbols; no current runtime artifact.",
       "evidence": "process-errors-compile-check.json",
       "remaining": "Whole original errno-name algorithm/fatal unit; full error/realm/GC/exception runtime validation and remaining process-methods backends"
+    },
+    {
+      "area": "whole original errno-name/fatal error unit",
+      "sourceStatus": "Complete unchanged node_errors.cc compiles in revision55; genuine guest errno-name algorithm now resolves. Full fatal initializer is not routed and consumed message/stack/report/policy/scheduling interfaces remain declarations. Final link fails on24symbols; no new runnable artifact.",
+      "evidence": "fatal-errors-compile-check.json",
+      "remaining": "All new runtime validation and remaining process backends. Memory ownership audit confirms missing complete buffer/external accounting; no unrelated counter/metric substitution made."
     }
   ],
   "runtimeConformance": {
@@ -1596,7 +1605,7 @@
     }
   },
   "nextWork": [
-    "Close remaining25 native link symbols: original errno-name algorithm, lifecycle/at-exit/signals, permissions, real resource-owner registries, heap/allocator accounting, native loading and three libuv memory APIs. Whole original system-error factories now compile;8authenticated native-reference error controls are not guest validation. No revision54 runtime artifact. Additional unused factory/env proxy/worker/path/URL interfaces remain open. Kernel accounting fixes require reporting the deferred build need before proceeding.",
+    "Close24 remaining startup-required native symbols: lifecycle/at-exit/signals, permissions, real resource-owner registries, heap/allocator accounting, native loading and3libuv memory APIs. Full original errno algorithm resolves; fatal/message/stack/report paths remain unavailable. process-memory-contracts.json records actual ownership gaps; do not alias narrow counters or fixed kernel values. No revision55 artifact/runtime proof.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1605,25 +1614,22 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 54,
+    "packageRevision": 55,
     "status": "failed final link",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 25,
-    "evidence": "process-errors-compile-check.json",
+    "undefinedSymbols": 24,
+    "evidence": "fatal-errors-compile-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
-    "buildCacheKey": "20082bb0b2aafad38413ab3a61cefd9c52ba3fa7eaff1c68bb3672ee35d67f98",
+    "buildCacheKey": "acf3c39bc01fbf0f3cc53721f6f116495f647d21927da7a89d8bb8c4b7d4d955",
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-original-system-errors-1112-065932-3d8c",
+    "buildJob": "node-fatal-errors-final-1112-074430-5a89",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
-    "resolvedSinceRevision53": [
-      "kandelo_node_codec_impl::Environment::ThrowErrnoException(int, char const*, char const*, char const*)",
-      "kandelo_node_codec_impl::Environment::ThrowUVException(int, char const*, char const*, char const*, char const*)"
-    ],
-    "introducedSinceRevision53": [
+    "wholeOriginalFatalErrorUnitCompiles": true,
+    "resolvedSinceRevision54": [
       "kandelo_node_codec_impl::errors::errno_string(int)"
     ]
   },

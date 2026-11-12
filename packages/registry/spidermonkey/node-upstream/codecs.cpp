@@ -676,7 +676,7 @@ std::shared_ptr<KVStore> Environment::env_vars(){AssertForeground();return per_p
 std::shared_ptr<NativeEnvOptions> Environment::options(){
   auto& f=Current(isolate());AssertForeground();kandelo::node::NativeEnvironmentFlags flags;
   CHECK(kandelo::node::ReadEnvironmentFlags(f.cx,f.realm,&flags));
-  return std::make_shared<NativeEnvOptions>(NativeEnvOptions{flags.pendingDeprecation,flags.traceEnv,flags.traceEnvJsStack,flags.traceEnvNativeStack});
+  return std::make_shared<NativeEnvOptions>(NativeEnvOptions{flags.pendingDeprecation,flags.traceEnv,flags.traceEnvJsStack,flags.traceEnvNativeStack,flags.traceUncaught,flags.extraInfoOnFatal});
 }
 Isolate* IsolateData::isolate() { return &Frame::current->state->isolate; }
 void IsolateData::set_i18n_converter_template(Local<ObjectTemplate> value) {

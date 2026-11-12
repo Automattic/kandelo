@@ -3719,6 +3719,13 @@
       "builtinId": null
     },
     {
+      "path": "src/node_errors.cc",
+      "role": "provenance",
+      "bytes": 45641,
+      "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d",
+      "builtinId": null
+    },
+    {
       "path": "src/node_errors.h",
       "role": "provenance",
       "bytes": 23299,

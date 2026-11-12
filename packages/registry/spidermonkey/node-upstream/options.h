@@ -11,7 +11,7 @@ struct NativeTracingConfiguration {
   bool permissionsEnabled = false;
 };
 struct NativeEnvironmentFlags {
-  bool zeroFill,pendingDeprecation,traceEnv,traceEnvJsStack,traceEnvNativeStack;
+  bool zeroFill,pendingDeprecation,traceEnv,traceEnvJsStack,traceEnvNativeStack,traceUncaught,extraInfoOnFatal,reportOnFatal;
 };
 NativeEnvironmentFlags ReadProcessEnvironmentFlags();
 bool ReadEnvironmentFlags(JSContext*,JS::HandleObject,NativeEnvironmentFlags*);

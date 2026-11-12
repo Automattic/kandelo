@@ -392,12 +392,12 @@ bool NativeZeroFillBuffersEnabled() {
 NativeEnvironmentFlags ReadProcessEnvironmentFlags() {
   n::Mutex::ScopedLock lock(n::per_process::cli_options_mutex);
   const auto& process=n::per_process::cli_options;const auto& env=process->per_isolate->per_env;
-  return {process->zero_fill_all_buffers,env->pending_deprecation,env->trace_env,env->trace_env_js_stack,env->trace_env_native_stack};
+  return {process->zero_fill_all_buffers,env->pending_deprecation,env->trace_env,env->trace_env_js_stack,env->trace_env_native_stack,env->trace_uncaught,env->extra_info_on_fatal_exception,n::per_process::cli_options->report_on_fatalerror};
 }
 bool ReadEnvironmentFlags(JSContext* cx,JS::HandleObject realm,NativeEnvironmentFlags* flags) {
   if(!CheckRealmLibraryActive(cx,realm))return false;auto* data=Data(cx,realm);if(!data)return false;
   n::Mutex::ScopedLock lock(n::per_process::cli_options_mutex);const auto& env=data->environment;
-  *flags={n::per_process::cli_options->zero_fill_all_buffers,env->pending_deprecation,env->trace_env,env->trace_env_js_stack,env->trace_env_native_stack};return true;
+  *flags={n::per_process::cli_options->zero_fill_all_buffers,env->pending_deprecation,env->trace_env,env->trace_env_js_stack,env->trace_env_native_stack,env->trace_uncaught,env->extra_info_on_fatal_exception,n::per_process::cli_options->report_on_fatalerror};return true;
 }
 uint16_t NativeInspectorPort() {
   n::Mutex::ScopedLock lock(n::per_process::cli_options_mutex);
