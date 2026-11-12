@@ -288,8 +288,9 @@ version in a trailing comment. Same-repo `./.github/...` references are the
 only exception. Never restore mutable tag or branch refs.
 
 Use short `Area: Purpose` commit/PR titles. PR descriptions have `## Why`,
-`## What changed` and `## Validation`; state what ran and what did not. Keep
-prose plain and descriptions short. Do not hard-wrap PR prose; wrap commit
+`## What changed` and `## Validation`. What changed opens by saying how the
+Why is resolved: what is true now and how. State what ran and what did not.
+Keep prose plain and descriptions short. Do not hard-wrap PR prose; wrap commit
 bodies at 72 columns except tables, code, generated text and URLs. Preserve
 human contributor authorship when rewriting history and verify it before
 force-pushing. Never credit AI tools in commits or PR descriptions.
