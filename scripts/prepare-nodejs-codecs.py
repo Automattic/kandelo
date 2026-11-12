@@ -9,7 +9,7 @@ def prepare(manifest,output):
   row=files[name];b=(manifest.parent/'upstream'/name).read_bytes()
   if len(b)!=row['bytes'] or hashlib.sha256(b).hexdigest()!=row['sha256']:raise ValueError('native codec identity mismatch: '+name)
   return b
- names=['src/string_decoder.cc','src/string_decoder.h','src/string_decoder-inl.h','src/string_bytes.cc','src/string_bytes.h','src/node_buffer.h','src/node_buffer.cc','src/aliased_buffer.h','src/aliased_buffer-inl.h','src/node_i18n.cc','src/node_i18n.h','src/api/encoding.cc']
+ names=['src/string_decoder.cc','src/string_decoder.h','src/string_decoder-inl.h','src/string_bytes.cc','src/string_bytes.h','src/node_buffer.h','src/node_buffer.cc','src/aliased_buffer.h','src/aliased_buffer-inl.h','src/node_i18n.cc','src/node_i18n.h','src/api/encoding.cc','src/base_object_types.h','src/node_snapshotable.h','src/node_diagnostics_channel.cc','src/node_diagnostics_channel.h']
  for name in names:
   output.mkdir(parents=True,exist_ok=True);(output/Path(name).name).write_bytes(verified(name))
  enum=re.search(rb'enum encoding \{.*?\n\};',verified('src/node.h'),re.S)

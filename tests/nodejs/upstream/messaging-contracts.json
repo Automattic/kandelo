@@ -571,14 +571,25 @@
     "Messaging later: actual shared serialization/host wrapper/cycle identity, validated transfer ownership and publication, then worker/port transport and lifecycle on four hosts"
   ],
   "currentFailure": {
-    "binding": "diagnostics_channel",
+    "binding": "process_methods",
     "name": "Error",
     "code": "ERR_KANDELO_NOT_IMPLEMENTED",
-    "message": "Native Node binding 'diagnostics_channel' is not implemented",
-    "location": "node:diagnostics_channel:36; node:internal/process/per_thread:57; node:internal/bootstrap/node:152",
-    "evidence": "messaging-engine-check.json",
+    "message": "Native Node binding 'process_methods' is not implemented",
+    "location": "node:internal/process/per_thread:68; node:internal/bootstrap/node:152",
+    "evidence": "diagnostics-engine-check.json",
     "startupAccepted": false
   },
   "normalNodeMode": "legacy",
-  "upstreamStartup": false
+  "upstreamStartup": false,
+  "historicalFailures": [
+    {
+      "binding": "diagnostics_channel",
+      "name": "Error",
+      "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+      "message": "Native Node binding 'diagnostics_channel' is not implemented",
+      "location": "node:diagnostics_channel:36; node:internal/process/per_thread:57; node:internal/bootstrap/node:152",
+      "evidence": "messaging-engine-check.json",
+      "startupAccepted": false
+    }
+  ]
 }

@@ -13,7 +13,7 @@ export const lazyDataCases=[
   ['enumerability-boolean',`define({},'internal/util/types',[],1)`,'Lazy property enumerability Boolean'],
   ['key-string',`define({},'internal/util/types',[1])`,'Lazy property key String'],
  ].map(([name,body,stderr])=>({name:'native-lazy-assertion-'+name,source:setup+body,code:132,trap:true,stderr})),
- {name:'actual-principal-bootstrap-advances-to-diagnostics-channel',source:setup+`let error;try{api.runNodeBootstrap()}catch(caught){error={name:caught.name,code:caught.code,message:caught.message}}print(JSON.stringify({error,realm:api.inspectRealm(),startupAccepted:false}));`,code:0},
+ {name:'actual-principal-bootstrap-advances-to-process-methods',source:setup+`let error;try{api.runNodeBootstrap()}catch(caught){error={name:caught.name,code:caught.code,message:caught.message}}print(JSON.stringify({error,realm:api.inspectRealm(),startupAccepted:false}));`,code:0},
  {name:'native-lazy-promise-jobs-drain-on-natural-exit',source:setup+`const target={};api.defineNativeLazy(target,'value',()=>Promise.resolve().then(()=>print('NATIVE_LAZY_JOB_DONE')));target.value;`,code:0,stdout:'NATIVE_LAZY_JOB_DONE'},
  {name:'natural-exit-does-not-evaluate-unresolved-properties',source:retained,code:0,stdout:'NATIVE_LAZY_ARMED'},
  {name:'explicit-quit-with-unresolved-properties',source:retained+'quit(23)',code:23,stdout:'NATIVE_LAZY_ARMED'},
@@ -25,8 +25,8 @@ export function verifyLazyDataResult(control:typeof lazyDataCases[number],result
  if('stderr'in control){if(!result.stderr.includes(control.stderr!))throw Error(result.stderr)}else if(result.stderr!=='')throw Error(result.stderr);
  if('stdout'in control){if(result.stdout.trim()!==control.stdout)throw Error(result.stdout);return{status:'pass'}}
  const detail=JSON.parse(result.stdout);
- if(control.name==='actual-principal-bootstrap-advances-to-diagnostics-channel'){
-  if(detail.error?.name!=='Error'||detail.error?.code!=='ERR_KANDELO_NOT_IMPLEMENTED'||detail.error?.message!=="Native Node binding 'diagnostics_channel' is not implemented"||detail.realm.nodeBootstrapPhase!==3||detail.startupAccepted!==false)throw Error(JSON.stringify(detail));return detail;
+ if(control.name==='actual-principal-bootstrap-advances-to-process-methods'){
+  if(detail.error?.name!=='Error'||detail.error?.code!=='ERR_KANDELO_NOT_IMPLEMENTED'||detail.error?.message!=="Native Node binding 'process_methods' is not implemented"||detail.realm.nodeBootstrapPhase!==3||detail.startupAccepted!==false)throw Error(JSON.stringify(detail));return detail;
  }
  if(detail.cases!==29||detail.sharedCases!==19||detail.failures||detail.observations.some((r:any)=>r.status!=='pass')||detail.upstreamStartup!==false)throw Error(JSON.stringify(detail));
  const native=JSON.parse(readFileSync('tests/nodejs/upstream/lazy-data-native-reference.json','utf8')).detail;

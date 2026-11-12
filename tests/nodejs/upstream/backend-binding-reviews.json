@@ -4,7 +4,7 @@
   "scope": "Reviewed survey routing and dispatcher snapshot. Family names organize further review, not API/owning-layer or native-contract completion.",
   "dispatcher": {
     "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
-    "sha256": "d5f54e4f8d31e48ba6aba5c7e42c99630727feb462bf7056e544d5005fe75732",
+    "sha256": "1757e0472cd7df166dc0be406d79334a63ede8595386b90c296a6a35d151ddae",
     "functionStart": "bool InternalBinding(",
     "functionEnd": "bool LinkedBinding(",
     "reviewedRouteNames": [
@@ -14,6 +14,7 @@
       "builtins",
       "config",
       "constants",
+      "diagnostics_channel",
       "errors",
       "icu",
       "messaging",
@@ -125,8 +126,8 @@
     {
       "name": "diagnostics_channel",
       "reviewRoutingFamily": "async",
-      "contractInventory": null,
-      "contractReview": "full binding contract audit outstanding"
+      "contractInventory": "diagnostics-contracts.json",
+      "contractReview": "Whole native diagnostics unit and bounded live ownership/source consumer review; full producer, pointer, exceptional, worker and lifecycle contracts incomplete"
     },
     {
       "name": "dtls",

@@ -4,6 +4,7 @@
 // Definitions operate on actual rooted SpiderMonkey values and owned bytes.
 #include <algorithm>
 #include <bit>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -13,6 +14,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include "js/TypeDecls.h"
@@ -20,7 +22,7 @@
 namespace kandelo::node { struct TraceProcess; }
 namespace kandelo_node_codec_api {
 class ArrayBuffer; class SharedArrayBuffer; class Value; class Object; class String; class Function; class Isolate; class ObjectTemplate; class FunctionTemplate;
-struct Cell; struct Frame; struct View; struct MemoryAccount; struct State; struct Context; struct ContextScopeData;
+struct Cell; struct Frame; struct View; struct MemoryAccount; struct State; struct Context; struct ContextScopeData; struct StartupData;
 [[noreturn]] void Crash(const char*);
 bool SameLocal(Value*,Value*);
 bool SameLocal(Context*,Context*);
@@ -124,6 +126,7 @@ std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate*,Local<Value>);
 Local<Value> ReadGlobalRoot(Isolate*,const std::shared_ptr<GlobalRoot>&);
 void MakeGlobalWeak(Isolate*,const std::shared_ptr<GlobalRoot>&);
 bool GlobalRootIsEmpty(const std::shared_ptr<GlobalRoot>&);
+JSObject* BorrowGlobalObject(const std::shared_ptr<GlobalRoot>&);
 template<class T> class Global {
   Isolate* isolate_=nullptr;
   std::shared_ptr<GlobalRoot> value_;
@@ -137,6 +140,7 @@ template<class T> class Global {
   void Reset() { value_.reset();isolate_=nullptr; }
   void SetWeak() { MakeGlobalWeak(isolate_,value_); }
   Local<T> Get(Isolate* isolate) const { return ReadGlobalRoot(isolate,value_).template As<T>(); }
+  JSObject* BorrowObject() const { return BorrowGlobalObject(value_); }
 };
 class Object : public Value {
  public:
@@ -146,7 +150,11 @@ class Object : public Value {
   Maybe<bool> SetPrototypeV2(Local<Context>,Local<Object>);
   MaybeLocal<Value> Get(Local<Context>,Local<Value>);
 };
-class Function : public Object { public: using Object::Object; };
+class Function : public Object {
+ public: using Object::Object;
+  MaybeLocal<Value> Call(Local<Context>,Local<Value>,int,Local<Value>*);
+  MaybeLocal<Object> NewInstance(Local<Context>);
+};
 class Array : public Object {
  public:
   using Object::Object;
@@ -205,7 +213,7 @@ class Uint8Array : public TypedArray {
 KANDELO_NATIVE_TYPED_ARRAYS(KANDELO_DECLARE_TYPED_ARRAY)
 #undef KANDELO_DECLARE_TYPED_ARRAY
 class Number : public Value { public: using Value::Value;static Local<Number> New(Isolate*,double);double Value() const; };
-class Integer : public Number { public: using Number::Number;static Local<Integer> New(Isolate*,int);int64_t Value() const; };
+class Integer : public Number { public: using Number::Number;static Local<Integer> New(Isolate*,int);static Local<Integer> NewFromUnsigned(Isolate*,uint32_t);int64_t Value() const; };
 using Int32=Integer;
 using Uint32=Integer;
 class ObjectTemplate : public Object {
@@ -216,6 +224,7 @@ class ObjectTemplate : public Object {
 class FunctionTemplate : public Object {
  public: using Object::Object;
   Local<ObjectTemplate> InstanceTemplate();
+  MaybeLocal<Function> GetFunction(Local<Context>);
   void SetClassName(Local<String>);
 };
 enum class NewStringType { kNormal };
@@ -241,7 +250,7 @@ class String : public Value {
   enum class WriteFlags { kReplaceInvalidUtf8 };
   static Local<String> Empty(Isolate*);
   static Local<String> Concat(Isolate*,Local<String>,Local<String>);
-  static MaybeLocal<String> NewFromUtf8(Isolate*,const char*,NewStringType,int);
+  static MaybeLocal<String> NewFromUtf8(Isolate*,const char*,NewStringType=NewStringType::kNormal,int=-1);
   static MaybeLocal<String> NewFromOneByte(Isolate*,const uint8_t*,NewStringType,int);
   static MaybeLocal<String> NewFromTwoByte(Isolate*,const uint16_t*,NewStringType,int);
   static MaybeLocal<String> NewExternalOneByte(Isolate*,ExternalOneByteStringResource*);
@@ -265,6 +274,7 @@ class String : public Value {
 struct Factory { Isolate* isolate; Local<Value> undefined_value(); };
 class Isolate {
  public:
+  static Isolate* GetCurrent();
   std::weak_ptr<State> owner;
   Factory factory_{this};
   Factory* factory() { return &factory_; }
@@ -273,6 +283,7 @@ class Isolate {
   void SetContinuationPreservedEmbedderDataV2(Local<Value>);
   void ThrowException(Local<Value>);
 };
+Local<Value> Undefined(Isolate*);
 class HandleScope {
  protected:
   Frame* frame_;size_t previous_,previousContexts_;
@@ -385,11 +396,20 @@ template<class T,size_t N=64> class ArrayBufferViewContents {
   explicit ArrayBufferViewContents(Local<Value>);
   T* data() const;size_t length() const;
 };
-class Environment;class IsolateData;
+class Environment;class IsolateData;class BaseObject;struct NativeRealmData;
 class Realm {
+  std::unique_ptr<NativeRealmData> data_;
  public:
+  Realm(Isolate*,Local<Object>);~Realm();
   enum class Kind { kPrincipal, kShadow };
   static Realm* GetCurrent(const FunctionCallbackInfo<Value>&);
+  static Realm* GetCurrent(Local<Context>);
+  Isolate* isolate();Environment* env();Local<Context> context();
+  Local<Object> owner();
+  BaseObject* GetBindingRaw(size_t);void InstallBindingRaw(size_t,BaseObject*);
+  template<class T> T* GetBindingData() { return static_cast<T*>(GetBindingRaw(size_t(T::binding_type_int))); }
+  template<class T,class... Args> T* AddBindingData(Local<Object>,Args&&...);
+  void RegisterObject(BaseObject*);void ForgetObject(BaseObject*);void RunCleanup();
   Kind kind() const;void set_buffer_prototype_object(Local<Object>);
 };
 class Cleanable;
@@ -455,6 +475,7 @@ class Environment {
   static Environment* GetCurrent(Isolate*);
   static Environment* GetCurrent(const FunctionCallbackInfo<Value>&);
   Isolate* isolate();Local<Context> context();Local<ObjectTemplate> i18n_converter_template();
+  Realm* principal_realm();bool can_call_into_js() const;
   using EmbedderPreload=void(*)(Environment*,Local<Object>,Local<Function>);
   EmbedderPreload embedder_preload();void set_embedder_preload(EmbedderPreload);
   Local<Object> buffer_prototype_object();Local<Value> untransferable_object_private_symbol();
@@ -501,8 +522,14 @@ class BaseObject {
   std::unique_ptr<NativeObjectOwner> owner_;
  public:
   static constexpr int kInternalFieldCount=2;
+  static constexpr int kSlot=0;
   BaseObject(Environment*,Local<Object>);virtual ~BaseObject();
+  BaseObject(Realm*,Local<Object>);
   void MakeWeak();static BaseObject* Unwrap(Local<Object>);
+  void ClearWeak();Local<Object> object() const;Realm* realm() const;
+  void Detach();bool IsDetached() const;
+  static Local<FunctionTemplate> MakeLazilyInitializedJSTemplate(Environment*);
+  virtual bool is_snapshotable() const { return false; }
   Environment* env();
   virtual void MemoryInfo(MemoryTracker*) const { Crash("Native heap snapshot traversal is not implemented"); }
 };
@@ -521,6 +548,7 @@ Local<FunctionTemplate> NewFunctionTemplate(Isolate*,void(*)(const FunctionCallb
 void SetProtoMethod(Isolate*,Local<FunctionTemplate>,const char*,void(*)(const FunctionCallbackInfo<Value>&));
 void SetConstructorFunction(Local<Context>,Local<Object>,const char*,Local<FunctionTemplate>);
 MaybeLocal<Value> ToV8Value(Local<Context>,const std::string&,Isolate*);
+MaybeLocal<Value> ToV8Value(Local<Context>,std::string_view);
 bool StringEqualNoCase(const char*,const char*);
 void THROW_ERR_INVALID_ARG_TYPE(Isolate*,const char*);
 void THROW_ERR_ENCODING_INVALID_ENCODED_DATA(Isolate*,const char*,const char*);
@@ -653,4 +681,5 @@ extern Initializer initializer;
 #define SPREAD_BUFFER_ARG(value,name) \
   char* name##_data=kandelo_node_codec_impl::Buffer::Data(value); \
   size_t name##_length=kandelo_node_codec_impl::Buffer::Length(value)
+#include "shell/node-upstream/native-object-api.h"
 #endif

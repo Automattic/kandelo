@@ -6,7 +6,7 @@
     "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
   },
   "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
-  "sourceManifestSha256": "bca37a1dff2dead5e0f9a6bd68c56e714c7f14634361bd53b613c2f3de3ca33f",
+  "sourceManifestSha256": "e413fa69b85dac5ded3318ab6600fb73ef859471bf19108f95556c5ce6ecf483",
   "sourceOffsetUnits": "Unicode code points; line numbers are one-based",
   "counts": {
     "nativeFilesScanned": 460,
@@ -180,7 +180,7 @@
       "bytes": 3773,
       "sha256": "f9627f9c8e8746aea08a761475a2124062453e0becf382d66df74636b870d2b1",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/blob_serializer_deserializer-inl.h",
@@ -1727,14 +1727,14 @@
       "bytes": 10920,
       "sha256": "b28f81fec9a23b759640ac464609bd9f4384acdae0d85a2ecf99c3ad7ad7a4ca",
       "registrations": 3,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_diagnostics_channel.h",
       "bytes": 3645,
       "sha256": "88af9b33b6eee82430a0ba6923f50aefb5a2de850e1e7b993c85ab0d9745a6ee",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_dir.cc",
@@ -2287,7 +2287,7 @@
       "bytes": 6326,
       "sha256": "ac7868b171bd9449318b25b30f05c47a6d38df21e5878d6b26cfe11cb265af6d",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_sockaddr-inl.h",

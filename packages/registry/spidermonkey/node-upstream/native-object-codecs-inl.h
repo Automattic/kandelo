@@ -1,0 +1,195 @@
+#ifndef KANDELO_NATIVE_OBJECT_CODECS_INL_H
+#define KANDELO_NATIVE_OBJECT_CODECS_INL_H
+
+#include <map>
+#define v8 kandelo_node_codec_api
+#define node kandelo_node_codec_impl
+#include "shell/node-upstream/codecs-upstream/node_diagnostics_channel.h"
+#undef node
+#undef v8
+
+namespace kandelo_node_codec_api {
+Isolate* Isolate::GetCurrent(){CHECK(Frame::current);return &Frame::current->state->isolate;}
+Local<Value> Undefined(Isolate* isolate){auto& f=Current(isolate);JS::RootedValue value(f.cx,JS::UndefinedValue());return f.OwnValue(value);}
+MaybeLocal<Value> Function::Call(Local<Context> context,Local<Value> receiver,int argc,Local<Value>* argv) {
+  auto& f=Current(context->isolate);Context::Scope home(context);CHECK_GE(argc,0);if(JS_IsExceptionPending(f.cx))return {};
+  JS::RootedValue callable(f.cx,cell().value),target(f.cx,Input(receiver)),result(f.cx);
+  JS::RootedValueVector arguments(f.cx);
+  if(!JS_WrapValue(f.cx,&callable)||!JS_WrapValue(f.cx,&target))return {};
+  for(int i=0;i<argc;++i){JS::RootedValue value(f.cx,Input(argv[i]));if(!JS_WrapValue(f.cx,&value)||!arguments.append(value))return {};}
+  if(!JS::Call(f.cx,target,callable,arguments,&result))return {};return f.OwnValue(result);
+}
+MaybeLocal<Object> Function::NewInstance(Local<Context> context) {
+  auto& f=Current(context->isolate);Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};
+  JS::RootedValue constructor(f.cx,cell().value);JS::RootedObject object(f.cx);
+  if(!JS_WrapValue(f.cx,&constructor)||!JS::Construct(f.cx,constructor,JS::HandleValueArray::empty(),&object))return {};
+  JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Object>(value);
+}
+MaybeLocal<Function> FunctionTemplate::GetFunction(Local<Context> context) {
+  auto& f=Current(context->isolate);Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};JS::RootedValue value(f.cx,cell().value);
+  if(!JS_WrapValue(f.cx,&value))return {};CHECK(value.isObject()&&JS::IsCallable(&value.toObject()));return f.Own<Function>(value);
+}
+Local<Integer> Integer::NewFromUnsigned(Isolate* isolate,uint32_t value) {
+  auto& f=Current(isolate);JS::RootedValue number(f.cx,JS::NumberValue(double(value)));return f.Own<Integer>(number);
+}
+}
+namespace kandelo_node_codec_impl {
+const JSClass nativeBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
+const JSClass nativeChannelClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
+struct NativeRealmData {
+  Isolate* isolate;
+  Global<Object> owner;
+  std::map<size_t,BaseObject*> bindings;
+  std::set<BaseObject*> objects;
+  explicit NativeRealmData(Isolate* isolate,Local<Object> input):isolate(isolate),owner(isolate,input){owner.SetWeak();}
+};
+Realm::Realm(Isolate* isolate,Local<Object> owner):data_(std::make_unique<NativeRealmData>(isolate,owner)){}
+Realm::~Realm(){CHECK(data_->objects.empty()&&data_->bindings.empty());}
+Isolate* Realm::isolate(){return data_->isolate;}
+Environment* Realm::env(){return &Current(isolate()).state->environment;}
+Local<Object> Realm::owner(){return data_->owner.Get(isolate());}
+Local<Context> Realm::context(){
+  auto& f=Current(isolate());auto value=owner();if(value.IsEmpty())return {};
+  JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(value)));if(!object)return {};
+  JS::RootedObject global(f.cx,JS::GetNonCCWObjectGlobal(object));return f.OwnContext(global);
+}
+Realm* Realm::GetCurrent(const FunctionCallbackInfo<Value>& args){return GetCurrent(args.GetIsolate()->GetCurrentContext());}
+Realm* Realm::GetCurrent(Local<Context> context){
+  auto& f=Current(context->isolate);Context::Scope home(context);
+  JS::RootedObject runtime(f.cx,kandelo::node::GetRealmRuntime(f.cx,f.realm));if(!runtime)return nullptr;
+  JS::RootedObject object(f.cx,kandelo::node::GetCurrentRealmOwner(f.cx,runtime));if(!object)return nullptr;
+  object=js::CheckedUnwrapDynamic(object,f.cx,false);if(!object)return nullptr;
+  for(auto& realm:f.state->realms){
+    auto held=realm->owner();if(held.IsEmpty())continue;
+    if(UnwrapObject(f.cx,Input(held))==object)return realm.get();
+  }
+  JS::RootedValue value(f.cx,JS::ObjectValue(*object));
+  auto realm=std::make_unique<Realm>(context->isolate,f.Own<Object>(value));auto* result=realm.get();
+  f.state->realms.push_back(std::move(realm));return result;
+}
+Realm* Environment::principal_realm(){auto context=this->context();return context.IsEmpty()?nullptr:Realm::GetCurrent(context);}
+bool Environment::can_call_into_js()const{return !data_->stopping&&!data_->closed;}
+BaseObject* Realm::GetBindingRaw(size_t index){env()->AssertForeground();auto it=data_->bindings.find(index);return it==data_->bindings.end()?nullptr:it->second;}
+void Realm::InstallBindingRaw(size_t index,BaseObject* object){env()->AssertForeground();CHECK(!data_->bindings.contains(index)&&data_->objects.contains(object));data_->bindings.emplace(index,object);}
+void Realm::RegisterObject(BaseObject* object){env()->AssertForeground();CHECK(data_->objects.insert(object).second);}
+void Realm::ForgetObject(BaseObject* object){
+  CHECK(data_->objects.erase(object)==1);
+  for(auto it=data_->bindings.begin();it!=data_->bindings.end();)if(it->second==object)it=data_->bindings.erase(it);else ++it;
+}
+void Realm::RunCleanup(){
+  env()->AssertForeground();
+  // Bindings release their actual detached channel references before remaining
+  // weak wrappers. Destructors unregister each pointer before another visit.
+  while(!data_->bindings.empty())delete data_->bindings.begin()->second;
+  // A detached object still present here has an outstanding native owner.
+  // Never free behind that owner's shared reference during retirement.
+  while(!data_->objects.empty()){auto* object=*data_->objects.begin();CHECK(!object->IsDetached());delete object;}
+}
+BaseObject::BaseObject(Realm* realm,Local<Object> input){
+  auto& f=Current(realm->isolate());JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
+  CHECK(object&&JS::GetClass(object)==&nativeBindingClass&&JS::GetReservedSlot(object,0).isUndefined());
+  owner_=std::make_unique<NativeObjectOwner>(f,object);owner_->realm=realm;
+  owner_->handle.Reset(realm->isolate(),input);owner_->root.reset();
+  JS::RootedValue home(f.cx,Input(realm->owner()));
+  {JSAutoRealm enter(f.cx,object);CHECK(JS_WrapValue(f.cx,&home));JS::SetReservedSlot(object,1,home);JS::SetReservedSlot(object,0,JS::PrivateValue(this));}
+  realm->RegisterObject(this);
+}
+BaseObject::~BaseObject(){
+  if(owner_->realm){
+    // A weak edge is updated by the engine even during a moving collection.
+    auto& handle=owner_->handle;
+    // Destruction can run from a foreground GC finalizer with no native Frame.
+    // The traced wrapper edge is read without allocating or invoking JS.
+    auto object=handle.BorrowObject();
+    if(object)JS::SetReservedSlot(object,0,JS::UndefinedValue());
+    owner_->realm->ForgetObject(this);
+  }else (owner_->category?owner_->state->traceReleased:owner_->state->icuReleased).fetch_add(1);
+}
+void BaseObject::ClearWeak(){auto value=object();CHECK(!value.IsEmpty());owner_->handle.Reset(&owner_->state->isolate,value);}
+Local<Object> BaseObject::object()const{CHECK(owner_->realm);return owner_->handle.Get(&owner_->state->isolate);}
+Realm* BaseObject::realm()const{CHECK(owner_->realm);return owner_->realm;}
+void BaseObject::Detach(){CHECK(owner_->realm&&!owner_->detached);owner_->detached=true;}
+bool BaseObject::IsDetached()const{return owner_->detached;}
+SnapshotableObject::SnapshotableObject(Realm* realm,Local<Object> wrap,EmbedderObjectType type):BaseObject(realm,wrap),type_(type){}
+namespace {
+bool NativeObjectConstructor(JSContext* cx,unsigned argc,JS::Value* vp){
+  auto args=JS::CallArgsFromVp(argc,vp);CHECK(args.isConstructing());
+  JS::RootedObject object(cx,JS_NewObjectForConstructor(cx,&nativeChannelClass,args));if(!object)return false;
+  args.rval().setObject(*object);return true;
+}
+}
+Local<FunctionTemplate> BaseObject::MakeLazilyInitializedJSTemplate(Environment* environment){
+  auto& f=Current(environment->isolate());JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,NativeObjectConstructor,0,JSFUN_CONSTRUCTOR,""));if(!function)return {};
+  JS::RootedObject object(f.cx,JS_GetFunctionObject(function)),prototype(f.cx,JS_NewPlainObject(f.cx));
+  if(!prototype||!JS_DefineProperty(f.cx,prototype,"constructor",object,0)||!JS_DefineProperty(f.cx,object,"prototype",prototype,JSPROP_PERMANENT))return {};
+  js::SetFunctionNativeReserved(object,0,JS::Int32Value(kInternalFieldCount));
+  JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<FunctionTemplate>(value);
+}
+MaybeLocal<Value> ToV8Value(Local<Context> context,std::string_view text){
+  Context::Scope home(context);return String::NewFromUtf8(context->isolate,text.data(),NewStringType::kNormal,int(text.size()));
+}
+}
+namespace kandelo::node {
+JSObject* CreateDiagnosticsBinding(JSContext* cx,JS::HandleObject realm){
+  JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if(!runtime)return nullptr;
+  auto state=api::Data(cx,runtime);if(!state)return nullptr;api::Frame frame(cx,realm,state,nullptr,api::Domain::Diagnostics);
+  JS::RootedObject object(cx,JS_NewObject(cx,&native::nativeBindingClass));if(!object)return nullptr;frame.binding=object;
+  JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
+  native::IsolateData isolateData;
+  kandelo_diagnostics_adapter::isolate_initializer(&isolateData,frame.Own<api::ObjectTemplate>(value));
+  if(JS_IsExceptionPending(cx))return nullptr;
+  kandelo_diagnostics_adapter::initializer(frame.Own<api::Object>(value),frame.OwnValue(unused),state->isolate.GetCurrentContext(),nullptr);
+  return JS_IsExceptionPending(cx)?nullptr:object.get();
+}
+}
+namespace kandelo::node {
+namespace {
+bool DiagnosticsNativeControl(JSContext* cx,unsigned argc,JS::Value* vp){
+  auto args=JS::CallArgsFromVp(argc,vp);
+  if(!args.get(0).isString()){JS_ReportErrorASCII(cx,"Native diagnostics control requires operation String");return false;}
+  JS::RootedString operationString(cx,args[0].toString());auto operation=JS_EncodeStringToUTF8(cx,operationString);if(!operation)return false;
+  JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);auto state=api::Data(cx,runtime);if(!state)return false;
+  JS::RootedObject realm(cx,GetRuntimePrincipalRealm(cx,runtime));if(!realm)return false;realm=js::CheckedUnwrapDynamic(realm,cx,false);if(!realm||!CheckRealmLibraryActive(cx,realm))return false;
+  JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
+  auto* owner=native::Realm::GetCurrent(state->isolate.GetCurrentContext());if(!owner)return false;
+  auto* binding=owner->GetBindingData<native::diagnostics_channel::BindingData>();
+  if(!binding){JS_ReportErrorASCII(cx,"Actual diagnostics binding is not initialized");return false;}
+  args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"linker")){
+    auto callback=binding->link_callback_.Get(&state->isolate);if(!callback.IsEmpty())args.rval().set(api::Input(callback));return !JS_IsExceptionPending(cx);
+  }
+  if(!std::strcmp(operation.get(),"inspect")){
+    JS::RootedObject result(cx,JS_NewPlainObject(cx));if(!result)return false;
+    for(auto [key,value]:std::initializer_list<std::pair<const char*,size_t>>{{"capacity",binding->subscribers_.Length()},{"indexes",binding->channel_indices_.size()},{"nextIndex",binding->next_channel_index_},{"nativeSlots",binding->channels_.size()},{"nativeRealms",state->realms.size()}}){
+      JS::RootedValue number(cx,JS::NumberValue(double(value)));if(!JS_DefineProperty(cx,result,key,number,JSPROP_ENUMERATE))return false;
+    }
+    args.rval().setObject(*result);return true;
+  }
+  if(!args.get(1).isString()){JS_ReportErrorASCII(cx,"Native diagnostics channel requires name String");return false;}
+  JS::RootedString name(cx,args[1].toString());auto* linear=name->ensureLinear(cx);if(!linear)return false;
+  const size_t length=JS::GetDeflatedUTF8StringLength(linear);auto bytes=JS_EncodeStringToUTF8(cx,name);if(!bytes)return false;
+  const std::string_view key(bytes.get(),length);
+  if(!std::strcmp(operation.get(),"index")){args.rval().setNumber(binding->GetOrCreateChannelIndex(std::string(key)));return !JS_IsExceptionPending(cx);}
+  if(!std::strcmp(operation.get(),"status")){
+    if(!args.get(2).isObject()||!JS::IsCallable(&args[2].toObject())){JS_ReportErrorASCII(cx,"Native channel status callback requires Function");return false;}
+    auto callback=std::make_shared<api::Global<api::Function>>(&state->isolate,frame.Own<api::Function>(args[2]));
+    auto* isolate=&state->isolate;const auto index=binding->GetOrCreateChannelIndex(std::string(key));
+    binding->SetChannelStatusCallback(index,[callback,isolate](bool active){
+      auto& f=api::Current(isolate);auto function=callback->Get(isolate);if(function.IsEmpty())return;
+      JS::RootedValue flag(f.cx,JS::BooleanValue(active));api::Local<api::Value> argv[]={f.OwnValue(flag)};
+      USE(function->Call(isolate->GetCurrentContext(),api::Undefined(isolate),1,argv));
+    });return !JS_IsExceptionPending(cx);
+  }
+  auto channel=native::diagnostics_channel::Channel::Get(&state->environment,key);if(JS_IsExceptionPending(cx))return false;
+  if(!channel){JS_ReportErrorASCII(cx,"Native diagnostics channel could not be created");return false;}
+  if(!std::strcmp(operation.get(),"get")){auto object=channel->object();if(object.IsEmpty())return false;args.rval().set(api::Input(object));return true;}
+  if(!std::strcmp(operation.get(),"has")){args.rval().setBoolean(channel->HasSubscribers());return true;}
+  if(!std::strcmp(operation.get(),"linked")){args.rval().setBoolean(channel->IsLinked());return true;}
+  if(!std::strcmp(operation.get(),"unlink")){channel->Unlink();return true;}
+  if(!std::strcmp(operation.get(),"publish")){JS::RootedValue message(cx,args.get(2));if(!JS_WrapValue(cx,&message))return false;channel->Publish(&state->environment,frame.OwnValue(message));return !JS_IsExceptionPending(cx);}
+  JS_ReportErrorASCII(cx,"Unknown native diagnostics operation");return false;
+}
+}
+bool DefineDiagnosticsTestAPI(JSContext* cx,JS::HandleObject target){return JS_DefineFunction(cx,target,"diagnosticsNative",DiagnosticsNativeControl,2,0);}
+}
+#endif

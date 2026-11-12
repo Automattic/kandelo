@@ -23,7 +23,7 @@ export function verifyMessagingResult(control:typeof messagingCases[number],resu
  if('stdout'in control){if(result.stdout.trim()!==control.stdout)throw Error(result.stdout);return{status:'pass'}}
  const detail=JSON.parse(result.stdout);
  if(control.name==='original-principal-bootstrap-passes-real-messaging-setup'){
-  if(detail.error?.name!=='Error'||detail.error?.code!=='ERR_KANDELO_NOT_IMPLEMENTED'||detail.error?.message!=="Native Node binding 'diagnostics_channel' is not implemented"||!detail.error.stack.includes('node:diagnostics_channel:36:')||!detail.error.stack.includes('node:internal/bootstrap/node:152:')||detail.realm.nodeBootstrapPhase!==3||detail.registered!==true||detail.startupAccepted!==false)throw Error(JSON.stringify(detail));return detail;
+  if(detail.error?.name!=='Error'||detail.error?.code!=='ERR_KANDELO_NOT_IMPLEMENTED'||detail.error?.message!=="Native Node binding 'process_methods' is not implemented"||!detail.error.stack.includes('node:internal/process/per_thread:68:')||!detail.error.stack.includes('node:internal/bootstrap/node:152:')||detail.realm.nodeBootstrapPhase!==3||detail.registered!==true||detail.startupAccepted!==false)throw Error(JSON.stringify(detail));return detail;
  }
  if(detail.cases!==27||detail.sharedCases!==12||detail.failures||detail.observations.some((r:any)=>r.status!=='pass')||detail.callbackCallStageOnly!==true||detail.structuredCloneImplemented!==false||detail.workerOrPortTransportImplemented!==false||detail.upstreamStartup!==false)throw Error(JSON.stringify(detail));
  const native=JSON.parse(readFileSync('tests/nodejs/upstream/messaging-native-reference.json','utf8')).detail;

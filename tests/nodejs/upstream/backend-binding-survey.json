@@ -9,17 +9,17 @@
     {
       "path": "tests/nodejs/upstream/dependency-graph.json",
       "bytes": 3006060,
-      "sha256": "f8b025a1dfdffc42753cdaf966cf13ddba06bc9b553997fc26f43c05576d69ad"
+      "sha256": "5b234a8e0238fc368dedb5a6d29318b910dade3c84cb06517d15e401a7f3140e"
     },
     {
       "path": "tests/nodejs/upstream/native-registration-index.json",
-      "bytes": 188970,
-      "sha256": "bb812c3eac4012da9238f3e20111d400134af9aa753b559d05c4d30db5170f66"
+      "bytes": 188966,
+      "sha256": "a44fc56edc7eb3234d50b41473df74781317bfd3fc49843538f7bc2d530786c3"
     },
     {
       "path": "tests/nodejs/upstream/backend-binding-reviews.json",
-      "bytes": 16194,
-      "sha256": "12c8d36e5b7cc908122ca1655d7121b0dfb40a0ace0a343093df4d799fbdc8dd"
+      "bytes": 16367,
+      "sha256": "0358e8e73fc25930849c97e17bff4b65edcffd791a677d12d526ae71c6ef4f11"
     },
     {
       "path": "tests/nodejs/upstream/dependency-dynamic-reviews.json",
@@ -33,8 +33,8 @@
     },
     {
       "path": "third_party/nodejs/sources.json",
-      "bytes": 130353,
-      "sha256": "bca37a1dff2dead5e0f9a6bd68c56e714c7f14634361bd53b613c2f3de3ca33f"
+      "bytes": 131213,
+      "sha256": "e413fa69b85dac5ded3318ab6600fb73ef859471bf19108f95556c5ce6ecf483"
     }
   ],
   "counts": {
@@ -45,8 +45,8 @@
     "literalBindingNames": 72,
     "sourceRegistrationNames": 77,
     "literalBindingsWithInitializerSyntax": 72,
-    "literalBindingsWithKandeloRoute": 19,
-    "literalBindingsWithoutKandeloRoute": 53,
+    "literalBindingsWithKandeloRoute": 20,
+    "literalBindingsWithoutKandeloRoute": 52,
     "sourceOnlyInitializerNames": [
       "debug"
     ],
@@ -61,7 +61,7 @@
   },
   "dispatcher": {
     "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
-    "sha256": "d5f54e4f8d31e48ba6aba5c7e42c99630727feb462bf7056e544d5005fe75732",
+    "sha256": "1757e0472cd7df166dc0be406d79334a63ede8595386b90c296a6a35d151ddae",
     "functionStart": "bool InternalBinding(",
     "functionEnd": "bool LinkedBinding(",
     "reviewedRouteNames": [
@@ -71,6 +71,7 @@
       "builtins",
       "config",
       "constants",
+      "diagnostics_channel",
       "errors",
       "icu",
       "messaging",
@@ -1477,10 +1478,10 @@
         31
       ],
       "registrationBuildSelectionEvaluated": false,
-      "kandeloSourceRoute": false,
-      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
       "reviewRoutingFamily": "async",
-      "boundedContractInventory": null,
+      "boundedContractInventory": "diagnostics-contracts.json",
       "apiContractComplete": false,
       "fourHostConformance": "not established by this source survey"
     },

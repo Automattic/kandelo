@@ -158,7 +158,6 @@ void String::WriteOneByteV2(Isolate* isolate,size_t start,size_t length,uint8_t*
 }
 namespace kandelo_node_codec_impl {
 using namespace api;
-Realm* Realm::GetCurrent(const FunctionCallbackInfo<Value>& args) { Current(args.GetIsolate());static thread_local Realm realm;return &realm; }
 Realm::Kind Realm::kind() const {
   auto& frame=*Frame::current;JS::RootedObject runtime(frame.cx,kandelo::node::GetRealmRuntime(frame.cx,frame.realm));CHECK(runtime);
   JS::RootedObject principal(frame.cx,kandelo::node::GetRuntimePrincipalRealm(frame.cx,runtime));CHECK(principal);

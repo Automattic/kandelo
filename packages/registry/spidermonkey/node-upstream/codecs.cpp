@@ -68,7 +68,7 @@
 #include "vm/JSFunction.h"
 #include "vm/StringType.h"
 
-namespace kandelo_node_codec_impl { extern const JSClass categoryClass; }
+namespace kandelo_node_codec_impl { extern const JSClass categoryClass,nativeBindingClass,nativeChannelClass; }
 namespace api = kandelo_node_codec_api;
 namespace native = kandelo_node_codec_impl;
 namespace kandelo_node_codec_api {
@@ -78,13 +78,14 @@ struct State {
   native::Environment environment{&isolate};
   std::vector<std::unique_ptr<native::AliasedControl>> aliasedControls;
   std::vector<std::shared_ptr<GlobalRoot>> weakGlobals;
+  std::vector<std::unique_ptr<native::Realm>> realms;
   std::atomic<size_t> externalBytes{0}, created{0}, released{0}, spans{0}, collections{0};
   std::atomic<size_t> bufferCreated{0},bufferFreed{0},bufferBytes{0};
   bool stressGc=false;
   std::atomic<size_t> traceCreated{0},traceReleased{0};
   std::atomic<size_t> icuCreated{0},icuReleased{0};
 };
-enum class Domain { Decoder, Icu, Trace, Continuation, Environment, Buffer, Snapshot };
+enum class Domain { Decoder, Icu, Trace, Continuation, Environment, Buffer, Snapshot, Diagnostics };
 const JSClass traceBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(3)};
 const JSClass continuationBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct Cell {
@@ -340,6 +341,8 @@ MaybeLocal<String> String::NewFromTwoByte(Isolate* isolate, const uint16_t* byte
 }
 MaybeLocal<String> String::NewFromUtf8(Isolate* isolate, const char* bytes, NewStringType type, int length) {
   auto& f = Current(isolate); if (JS_IsExceptionPending(f.cx)) return {};
+  CHECK_GE(length,-1);
+  if(length==-1){const size_t count=std::strlen(bytes);CHECK_LE(count,size_t(INT_MAX));length=int(count);}
   StressCollection(f);
   size_t count = 0;
   auto chars = JS::LossyUTF8CharsToNewTwoByteCharsZ(f.cx, JS::UTF8Chars(bytes, size_t(length)), &count, js::StringBufferArena);
@@ -554,6 +557,9 @@ struct NativeObjectOwner {
   std::shared_ptr<State> state;
   bool category=false;
   std::unique_ptr<JS::PersistentRootedObject> root;
+  Global<Object> handle;
+  Realm* realm=nullptr;
+  bool detached=false;
   NativeObjectOwner(Frame& frame,JS::HandleObject object):state(frame.state),
       root(std::make_unique<JS::PersistentRootedObject>(frame.cx,object)) { category=frame.domain==api::Domain::Trace; }
 };
@@ -570,16 +576,21 @@ const JSClass converterClass={"Converter",JSCLASS_HAS_RESERVED_SLOTS(BaseObject:
 BaseObject::BaseObject(Environment* environment,Local<Object> input) {
   auto& f=*Frame::current;JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
   CHECK(environment==&f.state->environment);
-  CHECK(object && JS::GetClass(object)==(f.domain==api::Domain::Trace?&categoryClass:&converterClass) && JS::GetReservedSlot(object,0).isUndefined());
+  CHECK(object && JS::GetClass(object)==(f.domain==api::Domain::Diagnostics?&nativeChannelClass:f.domain==api::Domain::Trace?&categoryClass:&converterClass) && JS::GetReservedSlot(object,0).isUndefined());
   owner_=std::make_unique<NativeObjectOwner>(f,object);
   // Keep ownership in the traced graph after MakeWeak drops the native root.
   JS::SetReservedSlot(object,1,JS::ObjectValue(*f.realm));
   JS::SetReservedSlot(object,0,JS::PrivateValue(this));
-  (owner_->category?owner_->state->traceCreated:owner_->state->icuCreated).fetch_add(1);
+  if(f.domain==api::Domain::Diagnostics){
+    owner_->realm=environment->principal_realm();CHECK(owner_->realm);
+    owner_->handle.Reset(&f.state->isolate,input);owner_->root.reset();owner_->realm->RegisterObject(this);
+  }else (owner_->category?owner_->state->traceCreated:owner_->state->icuCreated).fetch_add(1);
 }
-BaseObject::~BaseObject() { (owner_->category?owner_->state->traceReleased:owner_->state->icuReleased).fetch_add(1); }
 Environment* BaseObject::env() { CHECK(owner_->state==Frame::current->state);return &owner_->state->environment; }
-void BaseObject::MakeWeak() { CHECK(owner_->root);owner_->root.reset(); }
+void BaseObject::MakeWeak() {
+  if(owner_->realm){owner_->handle.SetWeak();return;}
+  CHECK(owner_->root);owner_->root.reset();
+}
 BaseObject* BaseObject::Unwrap(Local<Object> input) {
   auto& f=*Frame::current;JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
   if (!object || JS::GetClass(object)!=(f.domain==api::Domain::Trace?&categoryClass:&converterClass)) return nullptr;
@@ -759,7 +770,7 @@ void SetMethod(Local<Context> context,Local<Object> target,const char* name,void
     CHECK(JS_SetProperty(f.cx,targetObject,name,value));
     JS::Rooted<JSAtom*> atom(f.cx,js::Atomize(f.cx,name,std::strlen(name)));CHECK(atom);function->setAtom(atom);return;
   }
-  bool ownProperties=f.domain==Domain::Icu || f.domain==Domain::Buffer || f.domain==Domain::Snapshot;
+  bool ownProperties=f.domain==Domain::Icu || f.domain==Domain::Buffer || f.domain==Domain::Snapshot || f.domain==Domain::Diagnostics;
   JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,api::Invoke,0,0,ownProperties?name:"")); CHECK_NOT_NULL(function);
   JS::RootedObject object(f.cx,JS_GetFunctionObject(function)),binding(f.cx,&target->cell().value.toObject());
   // Each actual function owns its typed callback metadata. No process-global
@@ -833,5 +844,6 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 #include "shell/node-upstream/buffer-codecs-inl.h"
 #include "shell/node-upstream/continuation-codecs-inl.h"
 #include "shell/node-upstream/environment-codecs-inl.h"
+#include "shell/node-upstream/native-object-codecs-inl.h"
 #include "shell/node-upstream/snapshot-codecs-inl.h"
 #include "shell/node-upstream/trace-codecs-inl.h"

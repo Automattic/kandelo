@@ -478,6 +478,13 @@ JSObject* GetCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime, bool i
   return RealmLibrarySnapshot(cx, state, inspect);
 }
 
+JSObject* GetCurrentRealmOwner(JSContext* cx,JS::HandleObject runtime) {
+  JS::RootedObject context(cx,ReadyContext(cx,runtime));if(!context)return nullptr;
+  const auto value=JS::GetReservedSlot(context,RealmLibrary);
+  if(!value.isObject()){Report(cx,"Node realm has not been initialized");return nullptr;}
+  JS::RootedObject owner(cx,&value.toObject());return JS_WrapObject(cx,&owner)?owner.get():nullptr;
+}
+
 bool RunCurrentNodeBootstrap(JSContext* cx, JS::HandleObject runtime) {
   JS::RootedObject context(cx, ReadyContext(cx, runtime));
   if (!context) return false;

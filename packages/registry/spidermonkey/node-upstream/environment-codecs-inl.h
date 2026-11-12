@@ -30,6 +30,12 @@ bool GlobalRootIsEmpty(const std::shared_ptr<GlobalRoot>& root) {
   if(auto state=root->state.lock())state->environment.AssertForeground();
   return root->weakMode?!root->weak:!root->strong;
 }
+JSObject* BorrowGlobalObject(const std::shared_ptr<GlobalRoot>& root) {
+  if(!root)return nullptr;
+  if(root->weakMode)return root->weak;
+  if(!root->strong)return nullptr;
+  const auto value=root->strong->cell().value.get();CHECK(value.isObject());return &value.toObject();
+}
 void MakeGlobalWeak(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root) {
   auto& frame=Current(isolate);CHECK(root&&root->state.lock()==frame.state&&!root->weakMode&&root->strong);
   frame.state->environment.AssertForeground();
@@ -179,6 +185,12 @@ void Environment::Shutdown(JSContext* cx) {
     realm=js::CheckedUnwrapDynamic(realm,cx,false);CHECK(realm);
     JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,nullptr,api::Domain::Environment);
     do {data_->cleanables.CleanAll();CHECK(Drain(cx));}while(!data_->cleanables.IsEmpty()||HasPending());
+  }
+  {
+    JS::RootedObject realm(cx,kandelo::node::GetRuntimePrincipalRealm(cx,runtime));CHECK(realm);
+    realm=js::CheckedUnwrapDynamic(realm,cx,false);CHECK(realm);
+    JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,nullptr,api::Domain::Environment);
+    for(auto& owner:state->realms)owner->RunCleanup();
   }
   {
     std::lock_guard lock(data_->mutex);CHECK(data_->pending.empty());data_->closed=true;

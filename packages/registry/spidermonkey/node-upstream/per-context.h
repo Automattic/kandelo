@@ -41,6 +41,9 @@ JSObject* InspectCurrentTimerState(JSContext* cx, JS::HandleObject runtime);
 bool InitializeCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime);
 bool RunCurrentNodeBootstrap(JSContext* cx, JS::HandleObject runtime);
 JSObject* GetCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime, bool inspect);
+// Actual canonical native owner; unlike GetCurrentRealmLibrary, no diagnostic
+// snapshot is allocated. Valid after the native realm has been published.
+JSObject* GetCurrentRealmOwner(JSContext*,JS::HandleObject);
 bool RequireCurrentRealmBuiltin(JSContext*,JS::HandleObject,JS::HandleValue,JS::MutableHandleValue);
 
 // Privileged diagnostics return a snapshot, never the canonical carrier/key.

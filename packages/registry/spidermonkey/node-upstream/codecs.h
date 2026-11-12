@@ -4,6 +4,7 @@
 namespace kandelo::node {
 JSObject* CreateBufferBinding(JSContext* cx, JS::HandleObject realm);
 JSObject* CreateSnapshotBinding(JSContext*,JS::HandleObject);
+JSObject* CreateDiagnosticsBinding(JSContext*,JS::HandleObject);
 bool DefineNativeContextTestAPI(JSContext*,JS::HandleObject);
 JSObject* CreateCodecState(JSContext* cx);
 JSObject* CreateStringDecoderBinding(JSContext* cx, JS::HandleObject realm);
@@ -16,6 +17,7 @@ JSObject* InspectCodecState(JSContext* cx, JS::HandleObject runtime);
 bool SetCodecGcStress(JSContext* cx, JS::HandleObject runtime, bool enabled);
 void ShutdownRuntimeCodecs(JSContext* cx);
 bool DefineAliasedTestAPI(JSContext* cx, JS::HandleObject api);
+bool DefineDiagnosticsTestAPI(JSContext*,JS::HandleObject);
 bool DefineBufferNativeTestAPI(JSContext* cx, JS::HandleObject api);
 bool DefineEnvironmentTestAPI(JSContext* cx, JS::HandleObject api);
 }

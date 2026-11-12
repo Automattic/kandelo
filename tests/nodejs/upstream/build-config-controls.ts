@@ -18,7 +18,7 @@ export function verifyBuildConfigResult(control:typeof buildConfigCases[number],
  if('stdout'in control){if(result.stdout.trim()!==control.stdout)throw Error(result.stdout);return{status:'pass'}}
  const detail=JSON.parse(result.stdout);
  if(control.name==='original-principal-freezes-real-build-config-before-next-gap'){
-  if(detail.error?.name!=='Error'||detail.error?.code!=='ERR_KANDELO_NOT_IMPLEMENTED'||detail.error?.message!=="Native Node binding 'diagnostics_channel' is not implemented"||!detail.error.stack.includes('node:internal/bootstrap/node:152:')||!detail.error.stack.includes('node:diagnostics_channel:36:')||detail.phase!==3||!detail.frozen||!detail.variablesFrozen||!detail.libraryFilesFrozen||detail.startupAccepted!==false)throw Error(JSON.stringify(detail));
+  if(detail.error?.name!=='Error'||detail.error?.code!=='ERR_KANDELO_NOT_IMPLEMENTED'||detail.error?.message!=="Native Node binding 'process_methods' is not implemented"||!detail.error.stack.includes('node:internal/bootstrap/node:152:')||!detail.error.stack.includes('node:internal/process/per_thread:68:')||detail.phase!==3||!detail.frozen||!detail.variablesFrozen||!detail.libraryFilesFrozen||detail.startupAccepted!==false)throw Error(JSON.stringify(detail));
   if(detail.descriptor.writable!==false||detail.descriptor.enumerable!==true||detail.descriptor.configurable!==true)throw Error(JSON.stringify(detail));return detail;
  }
  if(detail.cases!==15||detail.sharedCases!==9||detail.failures||detail.upstreamStartup!==false||detail.observations.some((r:any)=>r.status!=='pass'))throw Error(JSON.stringify(detail));

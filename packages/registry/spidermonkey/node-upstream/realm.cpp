@@ -52,7 +52,7 @@ namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3, NodeComplete = 4 };
-enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Continuation, Timers, TaskQueue, AsyncWrap, Symbols, Buffer, BufferPrototype, Messaging, MessagingDeserializer, Snapshot, SerializeCallback, DeserializeCallback, DeserializeMain, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Continuation, Timers, TaskQueue, AsyncWrap, Symbols, Buffer, BufferPrototype, Messaging, MessagingDeserializer, Diagnostics, Snapshot, SerializeCallback, DeserializeCallback, DeserializeMain, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -408,6 +408,11 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
     }
   }
   else if (name == "messaging") binding = MessagingBinding(cx, state);
+  else if (name == "diagnostics_channel") {
+    const auto cached=JS::GetReservedSlot(state,Diagnostics);
+    if(cached.isObject())binding=&cached.toObject();
+    else {binding=CreateDiagnosticsBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,Diagnostics,JS::ObjectValue(*binding));}
+  }
   else if (name == "module_wrap") binding = GetCurrentContextModuleWrapBinding(cx, runtime);
   else if (name == "errors") binding = GetErrorStackBinding(cx);
   else if (name == "util") {

@@ -16,8 +16,8 @@ protected state. It now executes the original internal tracing helper and
 passes the live `mksnapshot` binding and native lazy data-property setup in
 original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
-callback, then stops at missing `diagnostics_channel` in `diagnostics_channel:36`,
-via `internal/process/per_thread:57` and `internal/bootstrap/node:152`. The original native tracing agent, binding,
+callback and completes original diagnostics setup, then stops at missing
+`process_methods` in `internal/process/per_thread:68`, via bootstrap:152. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -1877,3 +1877,62 @@ legacy bootstrap. Structured clone/transfer, MessagePort/MessageChannel, worker
 transport, full native methods and lifecycle remain catalog gaps. Only focused
 empty-filesystem guest fixtures ran; full products/images, successor ABI builds
 and overall suites remain deferred.
+
+
+## Whole native diagnostics binding (revision 48)
+
+The complete original node_diagnostics_channel.cc/h now compiles over real
+SpiderMonkey/Kandelo primitives. Its indexing, growth, linking, publish caching
+and native callback algorithms remain intact. Four complete native files were
+added, including the original snapshotable and native object type headers. All
+557 previous imported records and all 443 JavaScript files/10,993,403 bytes are
+unchanged; the manifest now contains 561 authenticated records. No V8 binding
+generation, heap serialization or rewritten upstream algorithms are introduced.
+
+The embedding now provides actual per-global native Realm identities, weak
+binding-data lookup, GC-owned native wrappers and detached channel references.
+Native owners retain actual JS wrappers; the final native release clears the
+private pointer. Realm cleanup releases binding callbacks and native channels
+before weak-edge bookkeeping is removed. The engine's canonical owner accessor
+returns the real NodeRealmLibrary, never a diagnostic snapshot. Existing-object
+sharing pointers are rejected at compile time; their full pointer-cell contract
+remains unavailable. Outstanding external detached owners cannot be force-freed
+at shutdown. Full producer cleanup ordering remains a prerequisite.
+
+The original BindingData creates a real 1,024-entry AliasedUint32Array. Native
+growth preserves counts and publishes a replacement array; original JavaScript
+reads the current array. Native Channel instances link through the original JS
+callback and cache/call the actual publish method. Real source assertions,
+callback exceptions, receivers, status ordering and GC roots are preserved.
+Original internal/util WeakReference executes unchanged using the guest engine's
+WeakRef and an actual strong-reference count. Native channels are not simulated
+with a JS-only map or host Node builtins.
+
+Twenty-seven controls and ten drivers pass on each of Node, Chromium, Firefox
+and WebKit. Twelve bounded groups match an authenticated native Node reference
+exactly. The remaining controls exercise actual native early linking, source
+counters/status callbacks, GC, replacement, exception identity, publish caching,
+unlink/retry, UTF-8 names and growth to 2,048 entries. Selected messaging/config/
+lazy/snapshot/Buffer four-host and Environment/options/process/realm/ICU/trace
+Node regressions also pass: 264 guest processes and 91 expected assertion traps.
+See [diagnostics-contracts.json](../tests/nodejs/upstream/diagnostics-contracts.json)
+and [diagnostics-engine-check.json](../tests/nodejs/upstream/diagnostics-engine-check.json).
+Initial source ordering, missing native API details and include-style failures
+are retained. The first successful artifact's evidence is retained separately
+from the final pointer-interface build and its checks.
+
+This establishes bounded live diagnostics behavior. External crypto, SQLite and
+permission producer integration, non-detached pointer forms, full GC admission,
+reentrant mutation, active async stores/windows, subscriber fatal routing,
+worker/cancellation/security/OOM and full exceptional lifetime remain open.
+Original heap snapshot entrypoints compile but serialization/restoration and
+heap traversal remain unavailable. The source survey has 20 dispatcher routes
+and 52 literal binding names without routes; full 77-role contracts remain
+incomplete. Route presence is not complete support.
+
+Genuine principal bootstrap now fails on process_methods at per_thread:68,
+called by bootstrap:152. Startup, empty/simple execution and separate CJS/ESM
+acceptance remain unfinished. Normal node mode still uses the legacy bootstrap.
+Only focused empty-filesystem fixtures ran. Full products/images, successor ABI
+builds and overall suites remain deferred; broader backend implementation still
+requires the startup/catalog review gate.

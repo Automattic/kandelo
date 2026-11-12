@@ -3572,6 +3572,13 @@
       "builtinId": null
     },
     {
+      "path": "src/base_object_types.h",
+      "role": "provenance",
+      "bytes": 3773,
+      "sha256": "f9627f9c8e8746aea08a761475a2124062453e0becf382d66df74636b870d2b1",
+      "builtinId": null
+    },
+    {
       "path": "src/builtin_info.cc",
       "role": "provenance",
       "bytes": 1447,
@@ -3646,6 +3653,20 @@
       "role": "provenance",
       "bytes": 3729,
       "sha256": "2d6ad6acdba0376bf8286eb3ebd03fd3706bd7fd78f799527fa4ecaca216cec8",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_diagnostics_channel.cc",
+      "role": "provenance",
+      "bytes": 10920,
+      "sha256": "b28f81fec9a23b759640ac464609bd9f4384acdae0d85a2ecf99c3ad7ad7a4ca",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_diagnostics_channel.h",
+      "role": "provenance",
+      "bytes": 3645,
+      "sha256": "88af9b33b6eee82430a0ba6923f50aefb5a2de850e1e7b993c85ab0d9745a6ee",
       "builtinId": null
     },
     {
@@ -3744,6 +3765,13 @@
       "role": "provenance",
       "bytes": 7461,
       "sha256": "6f69832d201a93647cae0889091556c14015d50a23a8a7022d56746c78daa319",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_snapshotable.h",
+      "role": "provenance",
+      "bytes": 6326,
+      "sha256": "ac7868b171bd9449318b25b30f05c47a6d38df21e5878d6b26cfe11cb265af6d",
       "builtinId": null
     },
     {
