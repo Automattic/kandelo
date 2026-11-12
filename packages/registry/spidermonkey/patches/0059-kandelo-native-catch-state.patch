@@ -1,0 +1,36 @@
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -218,2 +218,5 @@
+   bool upstreamErrorStackPreparing = false;
++  // Set by actual uncatchable shell termination, independently of exit status
++  // or a pending JavaScript throw. Native catch/reset must not cancel it.
++  bool upstreamNodeExecutionTerminated = false;
+   JS::ModuleResolveHook upstreamPreviousModuleResolve = nullptr;
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3447,1 +3447,2 @@
++  if (!result) sc->upstreamNodeExecutionTerminated = true;
+   if (!result && sc->exitCode == 0) {
+@@ -5098,2 +5099,3 @@
+   sc->quitting = true;
++  sc->upstreamNodeExecutionTerminated = true;
+ }
+@@ -5105,2 +5107,3 @@
+   sc->quitting = false;
++  sc->upstreamNodeExecutionTerminated = false;
+ }
+--- a/js/src/vm/JSContext.h
++++ b/js/src/vm/JSContext.h
+@@ -759,2 +759,12 @@
+  public:
++  // The native compatibility layer roots the actual pending value and stack
++  // while running catch/finally cleanup. Preserve its engine classification
++  // across rethrow, including OOM/recursion, instead of normalizing to Throwing.
++  JS::ExceptionStatus kandeloExceptionStatus() const { return status; }
++  void restoreKandeloExceptionStatus(JS::ExceptionStatus captured) {
++    MOZ_ASSERT(isExceptionPending());
++    MOZ_ASSERT(JS::IsCatchableExceptionStatus(captured));
++    status = captured;
++  }
++
+   bool isExceptionPending() const {

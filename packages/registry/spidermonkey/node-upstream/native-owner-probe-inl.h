@@ -63,6 +63,69 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"catch")) {
+    if(!args.get(1).isString()||!args.get(2).isObject()||!JS::IsCallable(&args[2].toObject())) {
+      JS_ReportErrorASCII(cx,"Native catch control requires mode and Function");return false;
+    }
+    JS::RootedString modeString(cx,args[1].toString());auto mode=JS_EncodeStringToUTF8(cx,modeString);if(!mode)return false;
+    auto* isolate=&state->isolate;auto context=isolate->GetCurrentContext();
+    if(!std::strcmp(mode.get(),"verbose")) { api::TryCatch caught(isolate);caught.SetVerbose(true);return false; }
+    if(!std::strcmp(mode.get(),"preservePending")) {
+      JS::RootedValue prior(cx,args.get(3));JS_SetPendingException(cx,prior);
+      {api::TryCatch caught(isolate);USE(frame.Own<api::Function>(args[2])->Call(context,api::Undefined(isolate),0,nullptr));CHECK(caught.HasCaught());}
+      return false;
+    }
+    if(!std::strcmp(mode.get(),"rethrow")) {
+      {api::TryCatch caught(isolate);USE(frame.Own<api::Function>(args[2])->Call(context,api::Undefined(isolate),0,nullptr));
+       CHECK(caught.HasCaught());CHECK(caught.ReThrow()->IsUndefined());caught.Reset();}
+      return false;
+    }
+    JS::RootedValue result(cx),exception(cx);bool failed=false,caught=false,terminated=false,canContinue=false,innerCaught=false,sameStack=false,resetCaught=false;
+    {
+      api::TryCatch handler(isolate);CHECK(!handler.IsVerbose());handler.SetVerbose(false);
+      if(!std::strcmp(mode.get(),"nested")) {
+        JS::RootedObject throwStack(cx);
+        {api::TryCatch inner(isolate);
+         failed=frame.Own<api::Function>(args[2])->Call(context,api::Undefined(isolate),0,nullptr).IsEmpty();
+         innerCaught=inner.HasCaught();throwStack=state->catchScope->stack;
+         CHECK(inner.ReThrow()->IsUndefined());inner.Reset();}
+        JS::ExceptionStack pending(cx);CHECK(JS_IsExceptionPending(cx));if(!JS::GetPendingExceptionStack(cx,&pending))return false;
+        sameStack=throwStack&&throwStack==pending.stack();
+      } else {
+        {api::HandleScope temporary(isolate);api::Local<api::Value> value;
+         failed=!frame.Own<api::Function>(args[2])->Call(context,api::Undefined(isolate),0,nullptr).ToLocal(&value);
+         if(!failed) {
+           result=api::Input(value);
+           if(!std::strcmp(mode.get(),"get")) {
+             CHECK(value->IsObject());auto key=api::String::NewFromUtf8(isolate,"owner").ToLocalChecked();
+             failed=value.As<api::Object>()->Get(context,key).IsEmpty();
+           } else if(!std::strcmp(mode.get(),"number")) {
+             failed=value->NumberValue(context).IsNothing();
+           }
+         }}
+        if(!std::strcmp(mode.get(),"reset")) { handler.Reset();resetCaught=handler.HasCaught(); }
+        if(args.get(3).isObject()&&JS::IsCallable(&args[3].toObject())) {
+          USE(frame.Own<api::Function>(args[3])->Call(context,api::Undefined(isolate),0,nullptr));
+        }
+      }
+      caught=handler.HasCaught();terminated=handler.HasTerminated();canContinue=handler.CanContinue();
+      if(terminated) {
+        handler.Reset();CHECK(handler.HasTerminated());
+        std::fprintf(stdout,"NATIVE_CATCH_TERMINATED:%d:%d:%d\n",caught,terminated,canContinue);return false;
+      }
+      auto value=handler.Exception();if(!value.IsEmpty())exception=api::Input(value);
+      handler.Reset();CHECK(!handler.HasCaught());
+    }
+    if(JS_IsExceptionPending(cx))return false;
+    JS::RootedObject output(cx,JS_NewPlainObject(cx));if(!output)return false;
+    if(!JS_DefineProperty(cx,output,"exception",exception,JSPROP_ENUMERATE)||!JS_DefineProperty(cx,output,"result",result,JSPROP_ENUMERATE))return false;
+    for(auto [name,value]:std::initializer_list<std::pair<const char*,bool>>{
+        {"failed",failed},{"caught",caught},{"terminated",terminated},{"canContinue",canContinue},
+        {"innerCaught",innerCaught},{"sameThrowStack",sameStack},{"resetCaught",resetCaught}}) {
+      if(!JS_DefineProperty(cx,output,name,value,JSPROP_ENUMERATE))return false;
+    }
+    args.rval().setObject(*output);return true;
+  }
   if(!std::strcmp(operation.get(),"number")){
     auto value=frame.OwnValue(args.get(1))->NumberValue(state->isolate.GetCurrentContext());
     if(value.IsNothing())return false;args.rval().setNumber(value.FromJust());return true;

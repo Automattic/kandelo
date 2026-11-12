@@ -149,7 +149,7 @@
     {
       "surface": "InternalMakeCallback and original GetOwner TryCatchScope",
       "contract": "Original callback keeps provider/ID values before JS can delete this; restores callback frame/async context, jobs, exception policy. Owner walk ignores property-get exceptions under original normal catch scope.",
-      "gap": "Callback and generic TryCatch/message/error/report engine implementations remain missing. No uncaught/error flags, empty stacks or fake callback success."
+      "gap": "Owning-engine caught-value/nesting/reset/rethrow/shell-termination primitives are implemented with bounded four-host private validation. Original catch-policy header constructors, Message/stack/source metadata, callback/error/report closure remain missing. See scoped-catch-contracts.json."
     },
     {
       "surface": "General BaseObject inspection",
@@ -194,5 +194,7 @@
     "Finish full77-role graph-wide catalog/roadmap, nested Wasm last unless startup needs it; stop for explicit broader-roadmap user review."
   ],
   "compileEvidence": "async-resource-engine-check.json",
-  "originalInitializerConnected": false
+  "originalInitializerConnected": false,
+  "scopedCatchPrerequisiteCatalog": "scoped-catch-contracts.json",
+  "scopedCatchPrerequisiteEvidence": "scoped-catch-engine-check.json"
 }

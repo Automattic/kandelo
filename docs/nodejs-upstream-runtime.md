@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 57 source connects the original process initializer,
+The current revision 58 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 64 symbols and has no normal runnable artifact.
+still fails final linking on 58 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -2417,3 +2417,47 @@ and [exact source/build/primitive evidence](../tests/nodejs/upstream/async-resou
 Full normal startup, empty/simple/errors/jobs/exit, separate CJS/ESM and the full
 catalog/roadmap are still unfinished. Full products/images, kernel/successor ABI
 and overall suites remain deferred; explicit broader-roadmap review is required.
+
+
+## Scoped exception prerequisites (revision 58; normal link incomplete)
+
+The native embedding now retains actual SpiderMonkey pending exception values,
+throw stacks and engine classifications in rooted catch scopes. API-depth
+tracking lets intervening JavaScript handlers run before an outer native handler
+can catch a failure. Nested scopes, reset and rethrow preserve value identity
+through moving GC, temporary native handles, foreign realms and reentry. Rethrow
+also retains the actual pending SavedFrame stack; reset after rethrow does not
+cancel the scheduled exception. Prior pending exceptions survive cleanup scopes.
+
+Actual shell quit and uncatchable interrupt events set terminal execution state
+independently of a pending JavaScript throw or numeric exit status. Native catch
+reset does not cancel termination. The covered JS-entry primitives and native
+function/property callbacks preserve its failure. Out-of-memory classification
+is retained for CanContinue, but forced-OOM behavior has not been validated.
+Default nonverbose handling is supported; enabling verbose reporting fails
+explicitly until message/listener ownership exists.
+
+Thirteen new private diagnostic drivers pass on Node, Chromium, Firefox and
+WebKit, including ten thrown-value identities, real quit status 17 and real
+uncatchable interrupt status 6. All eleven preceding ownership/number/symbol and
+original-library regression drivers pass on the same artifact and unchanged
+kernel: 24 drivers per host. The diagnostic still rejects process_methods and
+cannot install or satisfy normal package resolution. No normal startup or full
+original AsyncWrap lifecycle is established by these checks.
+
+The normal build has zero C++ errors and 58 unresolved symbols, down from 64 after
+six real scoped-catch dependencies resolve. Original TryCatchScope and
+PrinterTryCatch inline constructors must be integrated through the complete
+unchanged node_errors.h header, together with its original error templates.
+Message/StackTrace/StackFrame/ScriptOrigin, verbose/fatal/uncaught/report/source-map
+and scheduling support remain incomplete. The current explicit API entry list
+is bounded; full allocation/OOM, debugger and cancellation coverage remains an
+obligation. No constructor excerpt, guessed metadata or always-false caught or
+terminated state substitutes for those backends.
+
+See the [bounded catch catalog](../tests/nodejs/upstream/scoped-catch-contracts.json)
+and [identified source/build/runtime evidence](../tests/nodejs/upstream/scoped-catch-engine-check.json).
+All 577 imports and 443 JavaScript files/10,993,403 bytes remain unchanged. The full
+startup/CJS/ESM milestone and complete backend inventory/roadmap remain unfinished.
+Full products/images, kernel/successor-ABI builds and overall suites remain
+explicitly deferred; the broader backend roadmap requires user review.

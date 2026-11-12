@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
-  "scope": "Complete original process/error and AsyncWrap units compile; revision57 normal link fails on64symbols. Original GetOwner exposes catch/error/report closure. Private number/symbol primitives are independently validated; startup remains unproven.",
+  "scope": "Complete original process/error and AsyncWrap units compile; revision58 normal link fails on58symbols after six scoped-catch dependencies resolve. Private catch primitives are independently validated; startup remains unproven.",
   "completeBindingContract": false,
   "nativeSourceReview": {
     "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
@@ -1176,5 +1176,7 @@
   "nativeOwnerPrerequisiteCatalog": "native-owner-contracts.json",
   "nativeOwnerPrerequisiteEvidence": "native-owner-engine-check.json",
   "asyncResourceCatalog": "async-resource-contracts.json",
-  "asyncResourceEvidence": "async-resource-engine-check.json"
+  "asyncResourceEvidence": "async-resource-engine-check.json",
+  "scopedCatchCatalog": "scoped-catch-contracts.json",
+  "scopedCatchEvidence": "scoped-catch-engine-check.json"
 }

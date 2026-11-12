@@ -32,7 +32,7 @@ void MakeGlobalWeakTenured(Isolate* isolate,const std::shared_ptr<GlobalRoot>& r
 Isolate* Isolate::GetCurrent(){CHECK(Frame::current);return &Frame::current->state->isolate;}
 Local<Value> Undefined(Isolate* isolate){auto& f=Current(isolate);JS::RootedValue value(f.cx,JS::UndefinedValue());return f.OwnValue(value);}
 MaybeLocal<Value> Function::Call(Local<Context> context,Local<Value> receiver,int argc,Local<Value>* argv) {
-  auto& f=Current(context->isolate);Context::Scope home(context);CHECK_GE(argc,0);if(JS_IsExceptionPending(f.cx))return {};
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);CHECK_GE(argc,0);if(JS_IsExceptionPending(f.cx))return {};
   JS::RootedValue callable(f.cx,cell().value),target(f.cx,Input(receiver)),result(f.cx);
   JS::RootedValueVector arguments(f.cx);
   if(!JS_WrapValue(f.cx,&callable)||!JS_WrapValue(f.cx,&target))return {};
@@ -40,13 +40,13 @@ MaybeLocal<Value> Function::Call(Local<Context> context,Local<Value> receiver,in
   if(!JS::Call(f.cx,target,callable,arguments,&result))return {};return f.OwnValue(result);
 }
 MaybeLocal<Object> Function::NewInstance(Local<Context> context) {
-  auto& f=Current(context->isolate);Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};
   JS::RootedValue constructor(f.cx,cell().value);JS::RootedObject object(f.cx);
   if(!JS_WrapValue(f.cx,&constructor)||!JS::Construct(f.cx,constructor,JS::HandleValueArray::empty(),&object))return {};
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Object>(value);
 }
 MaybeLocal<Function> FunctionTemplate::GetFunction(Local<Context> context) {
-  auto& f=Current(context->isolate);Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};JS::RootedValue value(f.cx,cell().value);
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};JS::RootedValue value(f.cx,cell().value);
   if(!JS_WrapValue(f.cx,&value))return {};CHECK(value.isObject()&&JS::IsCallable(&value.toObject()));return f.Own<Function>(value);
 }
 Local<Integer> Integer::NewFromUnsigned(Isolate* isolate,uint32_t value) {

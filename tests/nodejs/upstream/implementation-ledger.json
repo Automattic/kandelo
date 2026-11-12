@@ -83,7 +83,9 @@
     "nativeOwnerPartialCatalog": "native-owner-contracts.json",
     "nativeOwnerDiagnosticEvidence": "native-owner-engine-check.json",
     "asyncResourcePartialCatalog": "async-resource-contracts.json",
-    "asyncResourceCompileAndPrimitiveEvidence": "async-resource-engine-check.json"
+    "asyncResourceCompileAndPrimitiveEvidence": "async-resource-engine-check.json",
+    "scopedCatchPartialCatalog": "scoped-catch-contracts.json",
+    "scopedCatchEngineEvidence": "scoped-catch-engine-check.json"
   },
   "implementation": [
     {
@@ -339,6 +341,12 @@
       "sourceStatus": "Complete original class/cc/inl compile without algorithms or excerpts. Number conversion uses actual SpiderMonkey ToNumber and symbols reuse canonical inventory;22newcontrols plus prior9drivers pass in a private profile on4hosts.",
       "evidence": "async-resource-engine-check.json",
       "remaining": "Initializer unconnected, normal link64 after original GetOwner exposes catch/error/report closure. Full3slot/native Private/template/AsyncHooks/callback/weak-destroy/resource producers remain unavailable."
+    },
+    {
+      "area": "native scoped catch value, lifetime and termination prerequisites",
+      "sourceStatus": "Actual SpiderMonkey pending exception and SavedFrame roots, API-depth ordering, nested reset/rethrow and real shell termination state;13new private drivers plus11prior drivers pass per host on Node/Chromium/Firefox/WebKit. No upstream bodies changed.",
+      "evidence": "scoped-catch-engine-check.json",
+      "remaining": "Normal engine unlinked58; whole original policy header constructors, Message/source/stack metadata, verbose/fatal/uncaught/report scheduling, full boundary/OOM audit and original resource producers remain incomplete."
     }
   ],
   "runtimeConformance": {
@@ -1621,7 +1629,7 @@
     }
   },
   "nextWork": [
-    "Implement real scoped catch/exception/message and original error/report policy closure exposed by complete original AsyncWrap::GetOwner; current normal link64. Then actual3slot/private/template/canonical AsyncHooks state and original handle/request producers/queues. Private number/symbol controls are not class/startup proof.",
+    "Integrate complete original node_errors.h policy constructors/templates and genuine Message/SavedFrame/source metadata, then full error/report/uncaught/native scheduling closure. Current normal link58; scoped caught-value/nesting/reset/rethrow/shell-termination prerequisites have private4host evidence. Continue actual3slot/private/template/canonical AsyncHooks/resource producers as startup requires; no broader roadmap before review.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1630,17 +1638,17 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 57,
+    "packageRevision": 58,
     "status": "failed final link",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 64,
-    "evidence": "async-resource-engine-check.json",
+    "undefinedSymbols": 58,
+    "evidence": "scoped-catch-engine-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
-    "buildCacheKey": "71240bb70a92aa8ea0f06332937436d89b2c6814df57456a327f82dff8883432",
+    "buildCacheKey": "f15de1d9ce33c8f897ce17a907200e3c79f4f5088f796412f792a43436f991ff",
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-original-async-clean-1112-094854-eed7",
+    "buildJob": "node-scoped-catch-normal-1112-101456-7784",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1658,7 +1666,15 @@
       "kandelo_node_codec_impl::AsyncWrap::GetOwner()",
       "kandelo_node_codec_impl::AsyncWrap::MemoryInfoName() const"
     ],
-    "linkExpansionReason": "Complete original AsyncWrap::GetOwner reaches original TryCatchScope destructor and fatal/exception/report dependency closure. Absence of a direct missing symbol is not full runtime support."
+    "linkExpansionReason": "Complete original AsyncWrap::GetOwner reaches original TryCatchScope destructor and fatal/exception/report dependency closure. Absence of a direct missing symbol is not full runtime support.",
+    "resolvedSinceRevision57": [
+      "kandelo_node_codec_api::TryCatch::CanContinue() const",
+      "kandelo_node_codec_api::TryCatch::Exception() const",
+      "kandelo_node_codec_api::TryCatch::HasCaught() const",
+      "kandelo_node_codec_api::TryCatch::HasTerminated() const",
+      "kandelo_node_codec_api::TryCatch::ReThrow()",
+      "kandelo_node_codec_api::TryCatch::Reset()"
+    ]
   },
   "currentLibuvExecutablePath": {
     "packageRevision": 5,
@@ -1676,11 +1692,11 @@
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   },
   "currentNativeOwnerDiagnostic": {
-    "evidence": "async-resource-engine-check.json",
-    "packageRevision": 57,
+    "evidence": "scoped-catch-engine-check.json",
+    "packageRevision": 58,
     "normalPackageArtifact": false,
     "controlsPerHost": 12,
-    "driversPerHost": 11,
+    "driversPerHost": 24,
     "hosts": [
       "node",
       "chromium",
@@ -1698,6 +1714,7 @@
     "privateProfileRejectsProcessMethods": true,
     "newNumberControlsPerHost": 18,
     "newCanonicalSymbolControlsPerHost": 4,
-    "wholeAsyncWrapClassRuntimeValidated": false
+    "wholeAsyncWrapClassRuntimeValidated": false,
+    "newScopedCatchDriversPerHost": 13
   }
 }

@@ -15,7 +15,7 @@ static int64_t IntegerNumber(double number) {
   return int64_t(number);
 }
 Maybe<int64_t> Value::IntegerValue(Local<Context> context) {
-  auto& frame=Current(context->isolate);Context::Scope home(context);double number;
+  auto& frame=Current(context->isolate);NativeEntry nativeEntry(frame);if(nativeEntry.Terminated())return {};Context::Scope home(context);double number;
   JS::RootedValue input(frame.cx,cell().value);
   if(!JS_WrapValue(frame.cx,&input)||!JS::ToNumber(frame.cx,input,&number))return {};
   return Just(IntegerNumber(number));
@@ -37,12 +37,12 @@ Local<Context> HandleScope::EscapeRoot(Local<Context> input) {
   return output;
 }
 Maybe<bool> Object::SetPrototypeV2(Local<Context> context,Local<Object> prototype) {
-  auto& frame=Current(context->isolate);Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());
+  auto& frame=Current(context->isolate);NativeEntry nativeEntry(frame);if(nativeEntry.Terminated())return {};Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());
   JS::RootedObject proto(frame.cx,&prototype->cell().value.toObject());
   if(!JS_WrapObject(frame.cx,&object)||!JS_WrapObject(frame.cx,&proto)||!JS_SetPrototype(frame.cx,object,proto))return {};return Just(true);
 }
 Maybe<bool> Object::SetPrivate(Local<Context> context,Local<Value> property,Local<Value> input) {
-  auto& frame=Current(context->isolate);Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());
+  auto& frame=Current(context->isolate);NativeEntry nativeEntry(frame);if(nativeEntry.Terminated())return {};Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());
   JS::RootedValue key(frame.cx,Input(property)),value(frame.cx,Input(input));CHECK(key.isSymbol());
   JS::RootedSymbol symbol(frame.cx,key.toSymbol());
   CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);

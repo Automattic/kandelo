@@ -15,13 +15,13 @@ void ReturnRaw(Isolate* isolate,const JS::Value& value) {
   else {CHECK(f.propertyHolder);f.propertyReturn.set(value);}
 }
 MaybeLocal<Value> Object::Get(Local<Context> context,Local<Value> property) {
-  auto& f=Current(context->isolate);Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedId key(f.cx);JS::RootedValue name(f.cx,Input(property)),result(f.cx);
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedId key(f.cx);JS::RootedValue name(f.cx,Input(property)),result(f.cx);
   if(!JS_WrapObject(f.cx,&object)||!JS_WrapValue(f.cx,&name)||!JS_ValueToId(f.cx,name,&key)||!JS_GetPropertyById(f.cx,object,key,&result))return {};
   return f.OwnValue(result);
 }
 uint32_t Array::Length() const { auto& f=*Frame::current;JS::RootedObject object(f.cx,&cell().value.toObject());uint32_t length;CHECK(JS::GetArrayLength(f.cx,object,&length));return length; }
 MaybeLocal<Value> Array::Get(Local<Context> context,uint32_t index) {
-  auto& f=Current(context->isolate);Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedValue value(f.cx);
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedValue value(f.cx);
   if(!JS_WrapObject(f.cx,&object)||!JS_GetElement(f.cx,object,index,&value))return {};return f.OwnValue(value);
 }
 size_t String::Utf8Length(Isolate* isolate,Local<String> input) {
@@ -166,6 +166,7 @@ namespace kandelo_trace_builtin_api::internal {
 Local<Value> NewTraceTypeError(Isolate* isolate,MessageTemplate message) {const char* text=TraceMessage(message);CHECK(text);return kandelo_node_codec_api::Error(isolate,JSEXN_TYPEERR,nullptr,text);}
 MaybeLocal<Value> JsonStringify(Isolate* isolate,Local<Value> input,Local<Value> replacer,Local<Value> space) {
   auto& f=kandelo_node_codec_api::Current(isolate);CHECK(replacer->IsUndefined() && space->IsUndefined());
+  kandelo_node_codec_api::NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};
   struct Output {std::vector<char16_t> text;bool called=false;} output;
   auto writer=[](const char16_t* text,uint32_t length,void* raw)->bool{auto& output=*static_cast<Output*>(raw);output.called=true;output.text.insert(output.text.end(),text,text+length);return true;};
   JS::RootedObject noReplacer(f.cx);JS::RootedValue undefined(f.cx,JS::UndefinedValue());

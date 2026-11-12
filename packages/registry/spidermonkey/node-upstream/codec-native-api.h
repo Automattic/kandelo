@@ -486,6 +486,7 @@ struct CatchScope;
 class TryCatch {
   std::unique_ptr<CatchScope> scope_;
  public: explicit TryCatch(Isolate*);~TryCatch();
+ TryCatch(const TryCatch&)=delete;TryCatch& operator=(const TryCatch&)=delete;
  bool HasCaught()const;bool HasTerminated()const;bool IsVerbose()const;bool CanContinue()const;
  Local<Value> Exception()const;Local<kandelo_node_codec_api::Message> Message()const;
  Local<Value> ReThrow();void Reset();void SetVerbose(bool);

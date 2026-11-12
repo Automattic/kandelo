@@ -80,6 +80,8 @@ const JSClass icuBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct NativeOwnerProbeState;
 struct State {
   Isolate isolate;
+  CatchScope* catchScope=nullptr;
+  size_t nativeEntryDepth=0;
   native::Environment environment{&isolate};
   std::vector<std::unique_ptr<native::AliasedControl>> aliasedControls;
   std::vector<std::shared_ptr<GlobalRoot>> weakGlobals;
@@ -145,6 +147,19 @@ static Frame& Current(Isolate* isolate) {
   MOZ_RELEASE_ASSERT(&Frame::current->state->isolate == isolate);
   return *Frame::current;
 }
+static void CaptureNativeException(State&);
+// A JavaScript call can reenter native code. Only the handler at the returning
+// API depth may catch its failure; an outer native handler must let intervening
+// JavaScript catch/finally blocks run first.
+struct NativeEntry {
+  State& state;
+  JSContext* cx;
+  explicit NativeEntry(Frame& frame):state(*frame.state),cx(frame.cx) {
+    CaptureNativeException(state);++state.nativeEntryDepth;
+  }
+  bool Terminated()const { return js::shell::GetShellContext(cx)->upstreamNodeExecutionTerminated; }
+  ~NativeEntry() { --state.nativeEntryDepth;CaptureNativeException(state); }
+};
 static void StressCollection(Frame& frame) {
   if (!frame.state->stressGc) return;
   const uint32_t before=JS_GetGCParameter(frame.cx,JSGC_NUMBER);
@@ -211,18 +226,18 @@ bool Value::IsUint32() const {
       n>=0 && n<=UINT32_MAX && std::trunc(n)==n;
 }
 Maybe<uint32_t> Value::Uint32Value(Local<Context> context) {
-  auto& f=Current(context->isolate);Context::Scope home(context);uint32_t value;
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);uint32_t value;
   JS::RootedValue input(f.cx,cell().value);
   if (!JS_WrapValue(f.cx,&input)||!JS::ToUint32(f.cx,input,&value)) return {};return Just(value);
 }
 Maybe<int32_t> Value::Int32Value(Local<Context> context) {
-  auto& f=Current(context->isolate);Context::Scope home(context);int32_t value;
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);int32_t value;
   JS::RootedValue input(f.cx,cell().value);
   if (!JS_WrapValue(f.cx,&input)||!JS::ToInt32(f.cx,input,&value)) return {};
   return Just(value);
 }
 Maybe<double> Value::NumberValue(Local<Context> context) {
-  auto& f=Current(context->isolate);Context::Scope home(context);double value;
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);double value;
   JS::RootedValue input(f.cx,cell().value);
   if(!JS_WrapValue(f.cx,&input)||!JS::ToNumber(f.cx,input,&value))return {};
   return Just(value);
@@ -267,12 +282,77 @@ void ReturnNumber(Isolate* isolate,double value) { ReturnRaw(isolate,JS::DoubleV
 void ReturnBoolean(Isolate* isolate,bool value) { ReturnRaw(isolate,JS::BooleanValue(value)); }
 int ArgumentCount(Isolate* isolate) { auto& f=Current(isolate);CHECK(f.arguments);return int(f.arguments->length()); }
 struct CatchScope {
+  State& state;
+  JSContext* cx;
+  CatchScope* previous;
+  size_t depth;
+  JS::PersistentRootedValue exception;
+  JS::PersistentRootedObject stack;
+  JS::ExceptionStatus status=JS::ExceptionStatus::None;
+  bool terminated=false,rethrow=false;
   JS::AutoSaveExceptionState saved;
-  explicit CatchScope(JSContext* cx):saved(cx) {}
-  ~CatchScope() { saved.restore(); }
+  explicit CatchScope(Frame& frame):state(*frame.state),cx(frame.cx),
+      previous(state.catchScope),depth(state.nativeEntryDepth),exception(cx),
+      stack(cx),saved(cx) { state.catchScope=this; }
+  bool Caught()const { return terminated||JS::IsCatchableExceptionStatus(status); }
+  void Capture() {
+    if(state.catchScope!=this||state.nativeEntryDepth!=depth||rethrow)return;
+    terminated=js::shell::GetShellContext(cx)->upstreamNodeExecutionTerminated;
+    if(!JS_IsExceptionPending(cx))return;
+    auto pendingStatus=cx->kandeloExceptionStatus();JS::ExceptionStack pending(cx);
+    if(!JS::GetPendingExceptionStack(cx,&pending)) {
+      // Retrieving/wrapping a cross-realm exception may itself fail. Preserve
+      // that real engine failure rather than clearing it or reporting success.
+      return;
+    }
+    exception=pending.exception();stack=pending.stack();status=pendingStatus;
+    JS_ClearPendingException(cx);
+  }
+  ~CatchScope() {
+    Capture();CHECK(state.catchScope==this);state.catchScope=previous;
+    if(JS_IsExceptionPending(cx)&&!rethrow) { saved.drop();return; }
+    if(terminated||cx->isPropagatingForcedReturn()) { saved.drop();return; }
+    if(rethrow&&Caught()) {
+      saved.drop();JS::RootedValue value(cx,exception);JS::RootedObject frames(cx,stack);
+      if(!JS_WrapValue(cx,&value)||!JS_WrapObject(cx,&frames))return;
+      JS::ExceptionStack pending(cx,value,frames);JS::SetPendingExceptionStack(cx,pending);
+      cx->restoreKandeloExceptionStatus(status);return;
+    }
+    saved.restore();
+  }
 };
-TryCatch::TryCatch(Isolate* isolate):scope_(std::make_unique<CatchScope>(Current(isolate).cx)) {}
+static void CaptureNativeException(State& state) {
+  if(state.catchScope)state.catchScope->Capture();
+}
+TryCatch::TryCatch(Isolate* isolate) {
+  auto& frame=Current(isolate);CaptureNativeException(*frame.state);
+  scope_=std::make_unique<CatchScope>(frame);
+}
 TryCatch::~TryCatch()=default;
+bool TryCatch::HasCaught()const { scope_->Capture();return scope_->Caught(); }
+bool TryCatch::HasTerminated()const { scope_->Capture();return scope_->terminated; }
+bool TryCatch::CanContinue()const {
+  scope_->Capture();return !scope_->terminated&&scope_->status!=JS::ExceptionStatus::OutOfMemory;
+}
+Local<Value> TryCatch::Exception()const {
+  if(!HasCaught())return {};
+  auto& frame=Current(&scope_->state.isolate);
+  if(scope_->terminated)return Null(&scope_->state.isolate);
+  JS::RootedValue value(frame.cx,scope_->exception);
+  if(!JS_WrapValue(frame.cx,&value))return {};return frame.OwnValue(value);
+}
+Local<Value> TryCatch::ReThrow() {
+  if(!HasCaught())return {};scope_->rethrow=true;
+  return Undefined(&scope_->state.isolate);
+}
+void TryCatch::Reset() {
+  scope_->Capture();if(scope_->rethrow||scope_->terminated)return;
+  scope_->status=JS::ExceptionStatus::None;scope_->exception=JS::UndefinedValue();scope_->stack=nullptr;
+}
+bool TryCatch::IsVerbose()const { return false; }
+void TryCatch::SetVerbose(bool value) {
+  if(value)Crash("Native catch message listener/verbose reporting is not implemented");
+}
 Context::Context(Isolate* input,std::unique_ptr<Cell> root):isolate(input),global(std::move(root)) {}
 Context::~Context()=default;
 bool SameLocal(Context* left,Context* right) {
@@ -333,21 +413,21 @@ Local<Value> Exception::Error(Local<String> input) {
   return f.OwnValue(result);
 }
 MaybeLocal<Object> Value::ToObject(Local<Context> context) {
-  auto& f=Current(context->isolate);if(JS_IsExceptionPending(f.cx))return {};
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};if(JS_IsExceptionPending(f.cx))return {};
   Context::Scope home(context);JS::RootedValue value(f.cx,cell().value);
   if(!JS_WrapValue(f.cx,&value))return {};
   JS::RootedObject object(f.cx,JS::ToObject(f.cx,value));if(!object)return {};
   JS::RootedValue result(f.cx,JS::ObjectValue(*object));return f.Own<Object>(result);
 }
 MaybeLocal<String> Value::ToString(Local<Context> context) {
-  auto& f = Current(context->isolate); if (JS_IsExceptionPending(f.cx)) return {};
+  auto& f = Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {}; if (JS_IsExceptionPending(f.cx)) return {};
   Context::Scope home(context);JS::RootedValue input(f.cx,cell().value);
   if(!JS_WrapValue(f.cx,&input))return {};
   JS::RootedString string(f.cx, JS::ToString(f.cx, input)); if (!string) return {};
   JS::RootedValue value(f.cx, JS::StringValue(string)); return f.Own<String>(value);
 }
 Maybe<bool> Object::Set(Local<Context> context, Local<Value> property, Local<Value> input) {
-  auto& f = Current(context->isolate); if (JS_IsExceptionPending(f.cx)) return {};
+  auto& f = Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {}; if (JS_IsExceptionPending(f.cx)) return {};
   Context::Scope home(context);
   JS::RootedObject object(f.cx, &cell().value.toObject()); JS::RootedId id(f.cx);
   JS::RootedValue name(f.cx, Input(property)), value(f.cx, Input(input));
@@ -387,7 +467,7 @@ Local<Object> Object::New(Isolate* isolate,Local<Value> prototype,
   JS::RootedValue result(f.cx,JS::ObjectValue(*object));return f.Own<Object>(result);
 }
 MaybeLocal<Array> Object::GetOwnPropertyNames(Local<Context> context) {
-  auto& f=Current(context->isolate);Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};
   JS::RootedObject object(f.cx,&cell().value.toObject());if(!JS_WrapObject(f.cx,&object))return {};
   JS::RootedIdVector keys(f.cx);if(!js::GetPropertyKeys(f.cx,object,JSITER_OWNONLY,&keys))return {};
   JS::RootedValueVector values(f.cx);
@@ -405,7 +485,7 @@ MaybeLocal<Array> Object::GetOwnPropertyNames(Local<Context> context) {
 }
 Maybe<bool> Object::DefineOwnProperty(Local<Context> context,Local<Name> key,
                                      Local<Value> input,PropertyAttribute attrs) {
-  auto& f=Current(context->isolate);if(JS_IsExceptionPending(f.cx))return {};
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};if(nativeEntry.Terminated()||JS_IsExceptionPending(f.cx))return {};
   Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());
   JS::RootedValue name(f.cx,Input(key)),value(f.cx,Input(input));JS::RootedId id(f.cx);
   if(!JS_WrapObject(f.cx,&object)||!JS_WrapValue(f.cx,&name)||!JS_WrapValue(f.cx,&value)||!JS_ValueToId(f.cx,name,&id))return {};
@@ -416,7 +496,7 @@ Maybe<bool> Object::DefineOwnProperty(Local<Context> context,Local<Name> key,
   return Just(true);
 }
 Maybe<bool> Array::Set(Local<Context> context, int32_t index, Local<Value> input) {
-  auto& f = Current(context->isolate);Context::Scope home(context);JS::RootedObject object(f.cx, &cell().value.toObject());
+  auto& f = Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);JS::RootedObject object(f.cx, &cell().value.toObject());
   JS::RootedValue value(f.cx, Input(input));
   if (!JS_WrapObject(f.cx,&object)||!JS_WrapValue(f.cx,&value)||!JS_SetElement(f.cx, object, index, value)) return {}; return Just(true);
 }
@@ -876,7 +956,7 @@ void ObjectTemplate::SetInternalFieldCount(int count) {
   } else js::SetFunctionNativeReserved(&cell().value.toObject(),0,JS::Int32Value(count));
 }
 MaybeLocal<Object> ObjectTemplate::NewInstance(Local<Context> context) {
-  auto& f=Current(context->isolate);if (JS_IsExceptionPending(f.cx)) return {};
+  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};if (JS_IsExceptionPending(f.cx)) return {};
   Context::Scope home(context);
   JS::RootedObject constructor(f.cx,&cell().value.toObject());
   CHECK(js::GetFunctionNativeReserved(constructor,0).toInt32()==native::BaseObject::kInternalFieldCount);
@@ -949,7 +1029,8 @@ bool Invoke(JSContext* cx,unsigned argc,JS::Value* vp) {
   CHECK(span.size>=sizeof(native::StringDecoder));
   CHECK(span.bytes[native::StringDecoder::kBufferedBytes]+span.bytes[native::StringDecoder::kMissingBytes]<=native::StringDecoder::kIncompleteCharactersEnd);
   }
-  FunctionCallbackInfo<Value> call(&state->isolate); callback->callback(call); return !JS_IsExceptionPending(cx);
+  FunctionCallbackInfo<Value> call(&state->isolate); callback->callback(call);
+  return !JS_IsExceptionPending(cx)&&!js::shell::GetShellContext(cx)->upstreamNodeExecutionTerminated;
 }
 }
 }  // namespace kandelo_node_codec_api

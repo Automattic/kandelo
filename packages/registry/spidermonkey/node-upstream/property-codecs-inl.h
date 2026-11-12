@@ -52,7 +52,7 @@ bool InvokeNativeProperty(JSContext* cx,JS::HandleObject holder,
     PropertyCallbackInfo<Value> info(&state->isolate);
     callbacks->getter(name,info);
   }
-  if(JS_IsExceptionPending(cx))return false;
+  if(JS_IsExceptionPending(cx)||js::shell::GetShellContext(cx)->upstreamNodeExecutionTerminated)return false;
   output.set(frame.propertyReturn);return JS_WrapValue(cx,output);
 }
 bool ReadNativeProperty(JSContext* cx,JS::HandleObject holder,
@@ -84,7 +84,7 @@ Maybe<bool> Object::SetNativeDataProperty(
     Local<Context> context,Local<Name> name,AccessorNameGetterCallback getter,
     AccessorNameSetterCallback setter,Local<Value> data,PropertyAttribute attrs,
     SideEffectType getterEffect,SideEffectType setterEffect) {
-  auto& frame=Current(context->isolate);if(JS_IsExceptionPending(frame.cx))return {};
+  auto& frame=Current(context->isolate);NativeEntry nativeEntry(frame);if(nativeEntry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
   if(!getter||(unsigned(attrs)&~7u)) {
     JS_ReportErrorASCII(frame.cx,"Native data property requires a getter and valid attributes");return {};
   }
