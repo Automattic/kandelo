@@ -679,14 +679,17 @@
     "observableContract": "Live data descriptor; no exposed JS accessor functions; inherited writes define receiver data; readonly/configurable rules retained",
     "engineEvidence": "native-data-engine-check.json",
     "nativeReference": "native-data-native-reference.json",
-    "nativeAdapterOrProcessBindingImplemented": false,
     "limitations": [
       "Proxy native targets explicitly rejected",
       "Getter callback reentrant descriptor recursion not claimed compatible",
       "Existing live tests use privileged native thunks, not process binding substitutes",
       "Native debugPort conversion exception may still update state to 0; fixture only compares attribute ordering in this case",
-      "Full V8 templates/interceptor/security/side-effect metadata contract not implemented"
-    ]
+      "Full V8 templates/interceptor/security/side-effect metadata contract not implemented",
+      "ShouldThrowOnError/interceptor strictness metadata and debugger side-effect enforcement unavailable; stored classifications do not establish inspector support"
+    ],
+    "nativePropertyCallbackAdapterImplemented": true,
+    "processObjectAndMethodsUnitsIntegrated": false,
+    "nativeCallbackEvidence": "property-callback-engine-check.json"
   },
   "platformAccountingGaps": [
     {
@@ -744,5 +747,227 @@
     "docs/nodejs-upstream-runtime.md"
   ],
   "fullRoadmapImplementationAuthorized": false,
-  "upstreamStartup": false
+  "upstreamStartup": false,
+  "boundedConsumerAliasReview": {
+    "scope": "Bounded manual process consumer alias review; not complete alias dataflow or graph execution proof",
+    "completeAliasDataflow": false,
+    "sites": [
+      {
+        "path": "lib/internal/process/per_thread.js",
+        "line": 68,
+        "sourceLine": "const binding = internalBinding('process_methods');",
+        "sourceBytes": 16763,
+        "sourceSha256": "4c4bf8e32964fe1a18e15ea4a38ead7738955685af7db5555e0d40ea6cc7bece",
+        "kind": "module-alias",
+        "exports": [
+          "hrtimeBuffer",
+          "hrtime",
+          "hrtimeBigInt"
+        ],
+        "notes": "binding names actual shared native object; hrtimeBuffer.buffer used to construct BigUint64Array at module load"
+      },
+      {
+        "path": "lib/internal/process/per_thread.js",
+        "line": 107,
+        "sourceLine": "function wrapProcessMethods(binding) {",
+        "sourceBytes": 16763,
+        "sourceSha256": "4c4bf8e32964fe1a18e15ea4a38ead7738955685af7db5555e0d40ea6cc7bece",
+        "kind": "function-parameter-alias",
+        "exports": [
+          "cpuUsage",
+          "threadCpuUsage",
+          "memoryUsage",
+          "rss",
+          "resourceUsage",
+          "loadEnvFile",
+          "execve",
+          "_rawDebug"
+        ],
+        "notes": "binding parameter receives same rawMethods via the single literal wrapProcessMethods call at bootstrap/node:169; symbolic other callers remain open"
+      },
+      {
+        "path": "lib/internal/bootstrap/node.js",
+        "line": 153,
+        "sourceLine": "const rawMethods = internalBinding('process_methods');",
+        "sourceBytes": 16325,
+        "sourceSha256": "02a0489fb6713fc59e8fc95582ebd44a50b0f4c4a48d6e1c7879724ac6b93332",
+        "kind": "native-function-export-attachment",
+        "exports": [
+          "dlopen",
+          "uptime",
+          "_getActiveRequests",
+          "_getActiveHandles",
+          "getActiveResourcesInfo",
+          "reallyExit",
+          "_kill",
+          "constrainedMemory",
+          "availableMemory"
+        ],
+        "notes": "These values are attached directly to actual shared process object. Wrapper outputs from wrapProcessMethods are separate JS functions"
+      },
+      {
+        "path": "lib/internal/bootstrap/node.js",
+        "line": 357,
+        "sourceLine": "internalBinding('process_methods').setEmitWarningSync(emitWarningSync);",
+        "sourceBytes": 16325,
+        "sourceSha256": "02a0489fb6713fc59e8fc95582ebd44a50b0f4c4a48d6e1c7879724ac6b93332",
+        "kind": "warning-root-registration",
+        "exports": [
+          "setEmitWarningSync"
+        ],
+        "notes": "Stores original emitWarningSync callback in native Environment"
+      },
+      {
+        "path": "lib/internal/bootstrap/switches/does_own_process_state.js",
+        "line": 4,
+        "sourceLine": "const rawMethods = internalBinding('process_methods');",
+        "sourceBytes": 3835,
+        "sourceSha256": "eab185e4a26a807d21da8f3addba046b7a91e5ba2ca0bba86ef062663dd6f4aa",
+        "kind": "owned-process-native-methods",
+        "exports": [
+          "abort",
+          "chdir",
+          "cwd",
+          "umask"
+        ],
+        "notes": "Actual guest state changes; JS caches cwd and resets it after successful native chdir; original snapshot callbacks clear JS cache"
+      },
+      {
+        "path": "lib/internal/bootstrap/switches/does_not_own_process_state.js",
+        "line": 4,
+        "sourceLine": "const rawMethods = internalBinding('process_methods');",
+        "sourceBytes": 1285,
+        "sourceSha256": "3cc0d582c196f255992cd6733eafc9a30b0b27b176b1aaf811e416a4cb482800",
+        "kind": "non-owning-process-native-methods",
+        "exports": [
+          "cwd",
+          "umask"
+        ],
+        "notes": "JS rejects writes to process umask and provides unavailable abort/chdir; native cwd and read-only umask still real"
+      },
+      {
+        "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+        "line": 7,
+        "sourceLine": "const rawMethods = internalBinding('process_methods');",
+        "sourceBytes": 9468,
+        "sourceSha256": "da6d9350b7f2284dfc3613e43fd295c521d51aacc3674d79df76290f74cd55ab",
+        "kind": "main-thread-method-attachment",
+        "exports": [
+          "_debugProcess",
+          "_debugEnd"
+        ],
+        "notes": "Original JS attaches native debug operations"
+      },
+      {
+        "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+        "line": 287,
+        "sourceLine": "rawMethods.resetStdioForTesting = function() {",
+        "sourceBytes": 9468,
+        "sourceSha256": "da6d9350b7f2284dfc3613e43fd295c521d51aacc3674d79df76290f74cd55ab",
+        "kind": "javascript-owned-shared-binding-augmentation",
+        "exports": [
+          "resetStdioForTesting"
+        ],
+        "notes": "Original JS assigns its own function to shared binding. Not a missing registered C++ method; must retain mutability and shared object identity"
+      },
+      {
+        "path": "lib/internal/process/pre_execution.js",
+        "line": 337,
+        "sourceLine": "  const binding = internalBinding('process_methods');",
+        "sourceBytes": 29504,
+        "sourceSha256": "b87b010a0f42b40bc7af93195b520193e49dd1ac80a30ece13642978737c351c",
+        "kind": "pre-execution-process-patch",
+        "exports": [
+          "patchProcessObject"
+        ],
+        "notes": "Native call occurs during entrypath preparation, not binding initialization alone"
+      },
+      {
+        "path": "lib/internal/vfs/setup.js",
+        "line": 1066,
+        "sourceLine": "      const { dlopenBinary } = internalBinding('process_methods');",
+        "sourceBytes": 41509,
+        "sourceSha256": "46720bcf0cdfc8d9cbfc12507fc19cbf8ed151ecae03a2468f1219f69dd53387",
+        "kind": "conditional-native-addon-byte-loader",
+        "exports": [
+          "dlopenBinary"
+        ],
+        "notes": "Only when process addon path begins normalized reserved VFS prefix; require(fs) and raw binary loading remain native prerequisites"
+      },
+      {
+        "path": "lib/inspector.js",
+        "line": 38,
+        "sourceLine": "const { _debugEnd } = internalBinding('process_methods');",
+        "sourceBytes": 7308,
+        "sourceSha256": "0b967712491f7ce3330529c5dd64deac8c91a7b1c894628258e1e32225e73d39",
+        "kind": "conditional-native-debug-stop",
+        "exports": [
+          "_debugEnd"
+        ],
+        "notes": "inspector availability check precedes require/binding use"
+      }
+    ],
+    "usedRegisteredMethods": [
+      "_debugEnd",
+      "_debugProcess",
+      "_getActiveHandles",
+      "_getActiveRequests",
+      "_kill",
+      "_rawDebug",
+      "abort",
+      "availableMemory",
+      "chdir",
+      "constrainedMemory",
+      "cpuUsage",
+      "cwd",
+      "dlopen",
+      "dlopenBinary",
+      "execve",
+      "getActiveResourcesInfo",
+      "hrtime",
+      "hrtimeBigInt",
+      "loadEnvFile",
+      "memoryUsage",
+      "patchProcessObject",
+      "reallyExit",
+      "resourceUsage",
+      "rss",
+      "setEmitWarningSync",
+      "threadCpuUsage",
+      "umask",
+      "uptime"
+    ],
+    "registeredMethodsNotAccountedByThisReview": [
+      "causeSegfault"
+    ],
+    "sharedBindingData": [
+      "hrtimeBuffer"
+    ],
+    "javascriptOwnedAugmentations": [
+      "resetStdioForTesting"
+    ],
+    "falsePositiveCaution": "binding identifiers in bootstrap/node also name config/builtins in other lexical scopes; bare receiver regex is not a binding provenance proof",
+    "sourceIndexLiteralSites": 9,
+    "reviewRecords": 11,
+    "open": [
+      "dynamic/symbolic callers and user mutation of process methods",
+      "full signature/error/worker/exceptional native lifecycle",
+      "transitive consumers of methods attached to process and wrapper results"
+    ]
+  },
+  "nativePropertyCallbackInterface": {
+    "implemented": [
+      "Object::SetNativeDataProperty",
+      "PropertyCallbackInfo::GetIsolate",
+      "PropertyCallbackInfo::Data",
+      "PropertyCallbackInfo::HolderV2",
+      "PropertyCallbackInfo::GetReturnValue",
+      "Environment::GetCurrent(PropertyCallbackInfo)",
+      "Value::Int32Value"
+    ],
+    "evidence": "property-callback-engine-check.json",
+    "rooting": "Actual separate native callback frame and traced realm/payload slots; no captured native frame",
+    "fullNativeProcessIntegration": false,
+    "fullV8PropertyInterfaceCompatibility": false
+  }
 }

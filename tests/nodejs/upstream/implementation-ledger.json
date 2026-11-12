@@ -67,7 +67,8 @@
     "diagnosticsPartialCatalog": "diagnostics-contracts.json",
     "diagnosticsEngineEvidence": "diagnostics-engine-check.json",
     "processMethodsPartialCatalog": "process-methods-contracts.json",
-    "nativeDataEngineEvidence": "native-data-engine-check.json"
+    "nativeDataEngineEvidence": "native-data-engine-check.json",
+    "propertyCallbackEngineEvidence": "property-callback-engine-check.json"
   },
   "implementation": [
     {
@@ -303,7 +304,7 @@
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "native-data-engine-check.json"
+      "latestArtifactEvidence": "property-callback-engine-check.json"
     },
     "Chromium": {
       "upstreamStartup": "Original principal body completes original diagnostics setup, then fails on process_methods at internal/process/per_thread:68 via internal/bootstrap/node:152; startup not achieved",
@@ -312,7 +313,7 @@
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "native-data-engine-check.json"
+      "latestArtifactEvidence": "property-callback-engine-check.json"
     },
     "Firefox": {
       "upstreamStartup": "Original principal body completes original diagnostics setup, then fails on process_methods at internal/process/per_thread:68 via internal/bootstrap/node:152; startup not achieved",
@@ -321,7 +322,7 @@
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "native-data-engine-check.json"
+      "latestArtifactEvidence": "property-callback-engine-check.json"
     },
     "WebKit": {
       "upstreamStartup": "Original principal body completes original diagnostics setup, then fails on process_methods at internal/process/per_thread:68 via internal/bootstrap/node:152; startup not achieved",
@@ -330,7 +331,7 @@
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "native-data-engine-check.json"
+      "latestArtifactEvidence": "property-callback-engine-check.json"
     },
     "libuvStandaloneLoop": {
       "hosts": [
@@ -495,6 +496,22 @@
       "upstreamStartup": false,
       "completePropertyInterfaceConformance": false,
       "next": "native process callback adapter and whole process object/methods units with genuine prerequisites"
+    },
+    "nativePropertyCallbackPrerequisite": {
+      "evidence": "property-callback-engine-check.json",
+      "hosts": [
+        "Node",
+        "Chromium",
+        "Firefox",
+        "WebKit"
+      ],
+      "controlsPerHost": 35,
+      "driversPerHost": 5,
+      "exactNativeGroups": 12,
+      "nativePropertyCallbackInterfaceImplemented": true,
+      "wholeProcessUnitsIntegrated": false,
+      "upstreamStartup": false,
+      "completeInterfaceConformance": false
     }
   },
   "validationLimits": {

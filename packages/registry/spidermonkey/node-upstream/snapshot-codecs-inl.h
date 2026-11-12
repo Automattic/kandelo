@@ -81,6 +81,10 @@ bool NativeContextControl(JSContext* cx,unsigned argc,JS::Value* vp) {
     if(!JS_DefineProperty(cx,result,"current",current,JSPROP_ENUMERATE)||!JS_DefineProperty(cx,result,"principal",owner,JSPROP_ENUMERATE)||!JS_DefineProperty(cx,result,"target",selected,JSPROP_ENUMERATE))return false;
     args.rval().setObject(*result);return true;
   }
+  if(!std::strcmp(operation.get(),"int32")){
+    auto input=frame.OwnValue(args.get(2));int32_t value;if(!input->Int32Value(context).To(&value))return false;
+    CHECK(caller==isolate->GetCurrentContext());args.rval().setInt32(value);return true;
+  }
   if(!std::strcmp(operation.get(),"integer")){
     auto input=frame.OwnValue(args.get(2));int64_t value;if(!input->IntegerValue(context).To(&value))return false;
     CHECK(caller==isolate->GetCurrentContext());args.rval().setNumber(double(value));return true;

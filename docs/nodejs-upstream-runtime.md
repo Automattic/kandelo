@@ -2002,3 +2002,79 @@ bootstrap:152. This prerequisite does not advance that startup result. Normal
 complete catalog and ordered roadmap remain unfinished. Full products/images,
 successor-ABI builds and overall suites remain deferred. Broader backend
 implementation still requires the startup/catalog user review gate.
+
+## Native property callback interface (revision 50)
+
+The generic native embedding now supplies `Object::SetNativeDataProperty`,
+`PropertyCallbackInfo<Value/void>`, actual `Name` roots for strings/symbols,
+callback data, `HolderV2`, Environment lookup and return-value slots over the
+revision-49 engine primitive. Property callbacks use a separate rooted frame
+rather than a function's argument return slot. Nested native functions and
+property calls restore the previous frame. Default getter returns are
+undefined; setter returns default to success, with explicit false propagated
+as an operation failure. Attribute flags map to real engine descriptors.
+
+Native metadata holds callback pointers and side-effect classifications;
+actual traced slots hold the canonical creation-realm owner and callback data.
+No native closure captures a JS frame or hides persistent payload roots.
+Definition contexts must match target creation realms. Reads validate the
+owning realm, so a failed owner cannot enter through a live caller. Callback
+payloads, holders and return values remain rooted across moving GC, nested
+calls and reentrant deletion. These are the interfaces consumed by the original
+process callbacks, implemented on SpiderMonkey; no V8 binding generation or
+V8 implementation bodies are involved.
+
+`Value::Int32Value` now performs actual engine coercion in the selected native
+Context scope, preserving a conversion exception and returning an empty Maybe
+on failure. This is required for the original debug-port setter's existing
+`FromMaybe(0)` path. Its complete native body remains to be integrated; the
+adapter does not reproduce its range-validation or fallback algorithm.
+
+Thirty-five callback controls and five guest drivers pass per host on Node,
+Chromium, Firefox and WebKit. Twelve bounded groups match the existing
+actual native Node property observations. Checks cover data/holder/name/Context
+identity, default/typed/local returns, all eight attribute combinations,
+setter rejection, Int32 coercion, nested frame restoration, failed owners,
+GC, reentry and cross-compartment payload identity. Selected raw-data,
+diagnostics, messaging, configuration, lazy, snapshot and Buffer four-host
+regressions, plus Environment/options/process/realm/ICU/trace Node controls,
+pass on identical artifacts: 304 guest processes and 91 expected assertions.
+The engine is 59,315,932 bytes, SHA-256
+`7d52fdb1b3d011da7d9f084d572a517d34dad2382dc48252c23264d36f315cea`.
+See [property-callback-engine-check.json](../tests/nodejs/upstream/property-callback-engine-check.json).
+
+The first build failed because the new header was omitted from the normal
+source-staging list. Adding it to `prepare-build.sh` fixed that build failure;
+both logs are retained. New controls and selected regressions use empty guest
+filesystems. Full products/images, successor-ABI builds and overall suites remain
+deferred. Browser cleanup permission warnings and Vite notices remain retained.
+No host, kernel, libc, libuv or ABI surface changed. All 561 imported source
+records and 443 JavaScript files remain unchanged.
+
+The callback interface is partial. Proxy targets are explicitly rejected;
+`ShouldThrowOnError`/interceptor operation metadata and debugger side-effect
+enforcement are unavailable. Classifications are retained without claiming
+inspector support or optimization. Complete templates, arbitrary getter
+reentrant descriptor recursion, OOM/security/lifecycle and cross-runtime
+contracts remain unproved. Privileged test callbacks exercise native
+marshalling, not a substitute process binding.
+
+The bounded consumer alias review accounts for 28 of the 29 registered methods;
+`causeSegfault` is an exported native internal test operation with no consumer
+identified in that review. Original JavaScript adds `resetStdioForTesting` to
+the same shared binding object; it is not a missing C++ export. The actual
+`hrtimeBuffer` is read during module evaluation, and its backing buffer is
+shared with a `BigUint64Array`. Full alias/dataflow and transitive mutable
+process-method consumers remain open. See the updated
+[partial process inventory](../tests/nodejs/upstream/process-methods-contracts.json).
+
+The complete original process object and process-methods units are not yet
+compiled. Native templates/metadata, process state/permissions, HostPort/title,
+real request/handle registries, timer counts, warning roots, exit and time origin,
+resource accounting, full native addon/dotenv dependencies and honest unsupported
+contracts still need integration. Existing zero-filled `getrusage` and fixed
+`sysinfo` values remain platform gaps. Genuine principal startup still fails at
+`process_methods` in `internal/process/per_thread:68`; this callback prerequisite
+does not advance it. Empty/simple startup, output/errors/jobs/exit, separate
+CJS/ESM, the full catalog and ordered roadmap remain unfinished. The broader
+backend roadmap remains behind the startup/catalog user review gate.

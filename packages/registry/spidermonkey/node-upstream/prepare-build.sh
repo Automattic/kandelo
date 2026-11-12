@@ -50,6 +50,7 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/diagnostics-upstream.cpp" \
     "$node_consumer/native-object-api.h" \
     "$node_consumer/native-object-codecs-inl.h" \
+    "$node_consumer/property-codecs-inl.h" \
     "$node_consumer/aliased-codecs-inl.h" \
     "$node_consumer/buffer-codecs-inl.h" \
     "$node_consumer/codecs.cpp" \

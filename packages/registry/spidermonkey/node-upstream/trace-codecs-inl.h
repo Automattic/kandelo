@@ -9,7 +9,11 @@ Local<Value> True(Isolate* isolate) { auto& f=Current(isolate);JS::RootedValue v
 Local<Value> False(Isolate* isolate) { auto& f=Current(isolate);JS::RootedValue v(f.cx,JS::BooleanValue(false));return f.OwnValue(v); }
 Local<Value> Factory::undefined_value() { auto& f=Current(isolate);JS::RootedValue v(f.cx,JS::UndefinedValue());return f.OwnValue(v); }
 Local<Object> Receiver(Isolate* isolate) { auto& f=Current(isolate);CHECK(f.receiver.isObject());return f.Own<Object>(f.receiver); }
-void ReturnRaw(Isolate* isolate,const JS::Value& value) { auto& f=Current(isolate);if(!JS_IsExceptionPending(f.cx))f.arguments->rval().set(value); }
+void ReturnRaw(Isolate* isolate,const JS::Value& value) {
+  auto& f=Current(isolate);if(JS_IsExceptionPending(f.cx))return;
+  if(f.arguments)f.arguments->rval().set(value);
+  else {CHECK(f.propertyHolder);f.propertyReturn.set(value);}
+}
 MaybeLocal<Value> Object::Get(Local<Context> context,Local<Value> property) {
   auto& f=Current(context->isolate);Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedId key(f.cx);JS::RootedValue name(f.cx,Input(property)),result(f.cx);
   if(!JS_WrapObject(f.cx,&object)||!JS_WrapValue(f.cx,&name)||!JS_ValueToId(f.cx,name,&key)||!JS_GetPropertyById(f.cx,object,key,&result))return {};

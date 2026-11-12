@@ -66,6 +66,7 @@
 #include "vm/ArrayObject.h"
 #include "vm/JSAtomUtils.h"
 #include "vm/JSFunction.h"
+#include "vm/NativeObject.h"
 #include "vm/StringType.h"
 
 namespace kandelo_node_codec_impl { extern const JSClass categoryClass,nativeBindingClass,nativeChannelClass; }
@@ -85,7 +86,7 @@ struct State {
   std::atomic<size_t> traceCreated{0},traceReleased{0};
   std::atomic<size_t> icuCreated{0},icuReleased{0};
 };
-enum class Domain { Decoder, Icu, Trace, Continuation, Environment, Buffer, Snapshot, Diagnostics };
+enum class Domain { Decoder, Icu, Trace, Continuation, Environment, Buffer, Snapshot, Diagnostics, NativeProperty };
 const JSClass traceBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(3)};
 const JSClass continuationBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct Cell {
@@ -97,6 +98,8 @@ struct Frame {
   JS::RootedObject realm;
   JS::RootedObject binding;
   JS::RootedValue receiver;
+  JS::RootedObject propertyHolder;
+  JS::RootedValue propertyData, propertyReturn;
   std::shared_ptr<kandelo::node::TraceProcess> tracing;
   std::shared_ptr<State> state;
   JS::CallArgs* arguments;
@@ -109,7 +112,7 @@ struct Frame {
   inline static thread_local Frame* current = nullptr;
   Frame(JSContext* cx, JS::HandleObject realm, std::shared_ptr<State> state,
         JS::CallArgs* arguments = nullptr, Domain domain = Domain::Decoder)
-      : cx(cx), realm(cx, realm), binding(cx), receiver(cx), state(std::move(state)), arguments(arguments), domain(domain),
+      : cx(cx), realm(cx, realm), binding(cx), receiver(cx), propertyHolder(cx), propertyData(cx), propertyReturn(cx), state(std::move(state)), arguments(arguments), domain(domain),
         previous(current) { current = this; }
   ~Frame();
   template<class T> Local<T> Own(JS::HandleValue value) {
@@ -195,10 +198,17 @@ Maybe<uint32_t> Value::Uint32Value(Local<Context> context) {
   JS::RootedValue input(f.cx,cell().value);
   if (!JS_WrapValue(f.cx,&input)||!JS::ToUint32(f.cx,input,&value)) return {};return Just(value);
 }
+Maybe<int32_t> Value::Int32Value(Local<Context> context) {
+  auto& f=Current(context->isolate);Context::Scope home(context);int32_t value;
+  JS::RootedValue input(f.cx,cell().value);
+  if (!JS_WrapValue(f.cx,&input)||!JS::ToInt32(f.cx,input,&value)) return {};
+  return Just(value);
+}
 Local<Value> Frame::OwnValue(JS::HandleValue value) {
   // Source Local::As must refer to the actual C++ wrapper type as well as the
   // actual engine value. A string-tagged base object is not a String object.
   if (value.isString()) return Own<String>(value);
+  if (value.isSymbol()) return Own<Name>(value);
   if (auto* view=UnwrapView(cx,value)) {
     if(JS_IsUint8Array(view))return Own<Uint8Array>(value);
     switch(JS_GetArrayBufferViewType(view)) {
@@ -225,13 +235,13 @@ Local<Value> Argument(Isolate* isolate, int index) {
   JS::RootedValue value(f.cx, f.arguments->get(index)); return f.OwnValue(value);
 }
 void Return(Isolate* isolate, Local<Value> value) {
-  auto& f = Current(isolate); MOZ_RELEASE_ASSERT(f.arguments);
+  auto& f = Current(isolate);
   if (!value.IsEmpty() && !JS_IsExceptionPending(f.cx)) {
-    JS::RootedValue output(f.cx,Input(value));if(JS_WrapValue(f.cx,&output))f.arguments->rval().set(output);
+    JS::RootedValue output(f.cx,Input(value));if(JS_WrapValue(f.cx,&output))ReturnRaw(isolate,output);
   }
 }
-void ReturnNumber(Isolate* isolate,double value) { auto& f=Current(isolate);if (!JS_IsExceptionPending(f.cx))f.arguments->rval().setNumber(value); }
-void ReturnBoolean(Isolate* isolate,bool value) { auto& f=Current(isolate);if (!JS_IsExceptionPending(f.cx))f.arguments->rval().setBoolean(value); }
+void ReturnNumber(Isolate* isolate,double value) { ReturnRaw(isolate,JS::DoubleValue(value)); }
+void ReturnBoolean(Isolate* isolate,bool value) { ReturnRaw(isolate,JS::BooleanValue(value)); }
 int ArgumentCount(Isolate* isolate) { auto& f=Current(isolate);CHECK(f.arguments);return int(f.arguments->length()); }
 struct CatchScope {
   JS::AutoSaveExceptionState saved;
@@ -845,5 +855,6 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 #include "shell/node-upstream/continuation-codecs-inl.h"
 #include "shell/node-upstream/environment-codecs-inl.h"
 #include "shell/node-upstream/native-object-codecs-inl.h"
+#include "shell/node-upstream/property-codecs-inl.h"
 #include "shell/node-upstream/snapshot-codecs-inl.h"
 #include "shell/node-upstream/trace-codecs-inl.h"

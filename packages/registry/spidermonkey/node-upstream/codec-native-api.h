@@ -21,7 +21,8 @@
 
 namespace kandelo::node { struct TraceProcess; }
 namespace kandelo_node_codec_api {
-class ArrayBuffer; class SharedArrayBuffer; class Value; class Object; class String; class Function; class Isolate; class ObjectTemplate; class FunctionTemplate;
+class ArrayBuffer; class SharedArrayBuffer; class Value; class Name; class Object; class String; class Function; class Isolate; class ObjectTemplate; class FunctionTemplate;
+template<class T> class PropertyCallbackInfo;
 struct Cell; struct Frame; struct View; struct MemoryAccount; struct State; struct Context; struct ContextScopeData; struct StartupData;
 [[noreturn]] void Crash(const char*);
 bool SameLocal(Value*,Value*);
@@ -117,9 +118,15 @@ class Value {
   bool IsBoolean() const;
   bool IsTrue() const;
   Maybe<int64_t> IntegerValue(Local<Context>);
+  Maybe<int32_t> Int32Value(Local<Context>);
   Maybe<uint32_t> Uint32Value(Local<Context>);
   MaybeLocal<String> ToString(Local<Context>);
 };
+class Name : public Value { public: using Value::Value; };
+enum PropertyAttribute { None=0, ReadOnly=1, DontEnum=2, DontDelete=4 };
+enum class SideEffectType { kHasSideEffect, kHasNoSideEffect, kHasSideEffectToReceiver };
+using AccessorNameGetterCallback=void(*)(Local<Name>,const PropertyCallbackInfo<Value>&);
+using AccessorNameSetterCallback=void(*)(Local<Name>,Local<Value>,const PropertyCallbackInfo<void>&);
 std::unique_ptr<Value> RetainRoot(Isolate*,Local<Value>);
 struct GlobalRoot;
 std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate*,Local<Value>);
@@ -149,6 +156,12 @@ class Object : public Value {
   Maybe<bool> SetPrivate(Local<Context>,Local<Value>,Local<Value>);
   Maybe<bool> SetPrototypeV2(Local<Context>,Local<Object>);
   MaybeLocal<Value> Get(Local<Context>,Local<Value>);
+  Maybe<bool> SetNativeDataProperty(
+      Local<Context>,Local<Name>,AccessorNameGetterCallback,
+      AccessorNameSetterCallback=nullptr,Local<Value> = {},
+      PropertyAttribute=None,
+      SideEffectType=SideEffectType::kHasSideEffect,
+      SideEffectType=SideEffectType::kHasSideEffect);
 };
 class Function : public Object {
  public: using Object::Object;
@@ -228,9 +241,9 @@ class FunctionTemplate : public Object {
   void SetClassName(Local<String>);
 };
 enum class NewStringType { kNormal };
-class String : public Value {
+class String : public Name {
  public:
-  using Value::Value;
+  using Name::Name;
   static const size_t kMaxLength;
   class ExternalOneByteStringResource {
    public: virtual ~ExternalOneByteStringResource()=default;
@@ -330,6 +343,8 @@ void ReturnNumber(Isolate*,double);
 void ReturnBoolean(Isolate*,bool);
 int ArgumentCount(Isolate*);
 Local<Object> Receiver(Isolate*);
+Local<Object> PropertyHolder(Isolate*);
+Local<Value> PropertyData(Isolate*);
 void ReturnRaw(Isolate*, const JS::Value&);
 template<class T> class ReturnValue {
   Isolate* isolate_;
@@ -351,6 +366,17 @@ template<class T> class FunctionCallbackInfo {
   int Length() const { return ArgumentCount(isolate_); }
   Local<Value> operator[](int index) const { return Argument(isolate_,index); }
   Local<Object> This() const { return Receiver(isolate_); }
+  ReturnValue<T> GetReturnValue() const { return ReturnValue<T>(isolate_); }
+};
+// Consumed property callback interface. Interceptor-only operation/strictness
+// information is not yet supplied by the engine primitive.
+template<class T> class PropertyCallbackInfo {
+  Isolate* isolate_;
+ public:
+  explicit PropertyCallbackInfo(Isolate* isolate):isolate_(isolate) {}
+  Isolate* GetIsolate() const { return isolate_; }
+  Local<Value> Data() const { return PropertyData(isolate_); }
+  Local<Object> HolderV2() const { return PropertyHolder(isolate_); }
   ReturnValue<T> GetReturnValue() const { return ReturnValue<T>(isolate_); }
 };
 struct CatchScope;
@@ -474,6 +500,9 @@ class Environment {
   static Environment* GetCurrent(Local<Context>);
   static Environment* GetCurrent(Isolate*);
   static Environment* GetCurrent(const FunctionCallbackInfo<Value>&);
+  template<class T> static Environment* GetCurrent(const PropertyCallbackInfo<T>& info) {
+    return GetCurrent(info.GetIsolate());
+  }
   Isolate* isolate();Local<Context> context();Local<ObjectTemplate> i18n_converter_template();
   Realm* principal_realm();bool can_call_into_js() const;
   using EmbedderPreload=void(*)(Environment*,Local<Object>,Local<Function>);
