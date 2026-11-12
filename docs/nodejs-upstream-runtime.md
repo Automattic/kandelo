@@ -1580,8 +1580,17 @@ no creator instance, snapshot index, heap graph or restored object is fabricated
 No patch to `node_snapshotable.cc` or native function excerpt has been applied.
 
 The reviewed contract inventory records seven binding exports, per-Realm state,
-three shared Environment callback slots, compiler/preload behavior and original
-JavaScript guards. A fresh ordinary native Node reference, run with
+three strong callback slots owned by the principal Realm, compiler/preload
+behavior and original JavaScript guards. Environment accessors forward to that
+principal Realm. Its native setter requires the principal context for nonempty
+assignment under the original debug assertion and accepts empty input to clear
+storage; the binding methods separately enforce their fatal single-assignment
+checks. The native adapter still needs that principal-versus-active context
+distinction and the callback accessors. The existing runtime principal owner
+and foreground shutdown are reuse foundations, not a complete implementation.
+See the [ownership review](../tests/nodejs/upstream/mksnapshot-ownership.md) for
+source locations, loop/teardown obligations and remaining four-host checks.
+A fresh ordinary native Node reference, run with
 `--no-node-snapshot`, passes eight controls. That flag matters: the first
 reference invocation used the default embedded snapshot and aborted at the
 original empty-deserialize-callback CHECK because restoration had already

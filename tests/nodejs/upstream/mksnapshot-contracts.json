@@ -66,19 +66,19 @@
       "name": "setSerializeCallback",
       "kind": "function",
       "sourceLine": 1636,
-      "contract": "CHECK Environment callback slot empty, then CHECK argument is Function, then retain actual function in Environment slot"
+      "contract": "CHECK principal-realm callback slot empty via Environment accessor, then CHECK argument is Function, then retain actual function through the principal-realm setter; preserve original assertion order"
     },
     {
       "name": "setDeserializeCallback",
       "kind": "function",
       "sourceLine": 1643,
-      "contract": "CHECK Environment callback slot empty, then CHECK argument is Function, then retain actual function in Environment slot"
+      "contract": "CHECK principal-realm callback slot empty via Environment accessor, then CHECK argument is Function, then retain actual function through the principal-realm setter; preserve original assertion order"
     },
     {
       "name": "setDeserializeMainFunction",
       "kind": "function",
       "sourceLine": 1650,
-      "contract": "CHECK Environment callback slot empty, then CHECK argument is Function, then retain actual function in Environment slot"
+      "contract": "CHECK principal-realm callback slot empty via Environment accessor, then CHECK argument is Function, then retain actual function through the principal-realm setter; preserve original assertion order"
     },
     {
       "name": "anonymousMainPath",
@@ -95,7 +95,7 @@
     }
   ],
   "sharedState": {
-    "callbacks": "Three independent strong Environment Function slots shared by native callers across realms; single-assignment original CHECKs stay fatal",
+    "callbacks": "Three independent strong Function Globals owned by the principal Realm. Environment accessors forward to principal_realm_, not the calling realm. Original nonempty PrincipalRealm setter checks that its context is current. Native storage accepts empty input to clear; binding Set* methods separately enforce fatal empty-slot/function CHECKs.",
     "callbacksAreScheduledOnRegistration": false,
     "registrationAddsEventLoopReferences": false,
     "freshVersusRestored": "Native --no-node-snapshot starts with empty slots; default native executable restores an embedded snapshot that already has a deserialize callback. Never use default-restored reference state as evidence of empty fresh state.",
@@ -157,10 +157,241 @@
   "validationObligations": [
     "Identified-artifact ordinary-mode descriptors and original JS guards on Node/Chromium/Firefox/WebKit",
     "Actual compiled source, syntax/error identity, function roots and Promise jobs",
-    "Original callback duplicate/nonfunction assertions; real cross-realm Environment ownership",
+    "Original callback duplicate/nonfunction assertions; principal-realm context invariant, actual roots and native clearing, child-realm/runtime isolation and foreground teardown",
     "Actual preload hook admission/invocation/error propagation",
     "State-view strong JS ownership and native weak finalization through moving GC and teardown",
     "Explicit unsupported snapshot entrypoints; never fabricate snapshot indices, blobs, native types or restored handles",
     "Continue genuine bootstrap and separately CJS/ESM; catalog does not establish startup or module compatibility"
-  ]
+  ],
+  "ownershipReview": {
+    "guide": "mksnapshot-ownership.md",
+    "sourceAudit": "mksnapshot-ownership-check.json",
+    "scope": "Manual source contract review with authenticated file/span accounting; no new runtime implementation or behavior evidence",
+    "principalContextRequiredForNonemptySetter": "Original DCHECK_IMPLIES, not a JavaScript exception; release reference does not test this assertion",
+    "nativeStorageMayClear": true,
+    "nativeStorageIsWriteOnce": false,
+    "registrationIsWriteOnce": "Original binding-level empty-slot CHECK; native setter separately supports clearing",
+    "normalLoopClearing": "SpinEventLoopInternal clears serialize callback after liveness/beforeExit/serialize drain and before EmitProcessExitInternal; stopping returns before this normal-exit tail",
+    "deserializeQueue": "Original pre_execution calls exported JS runDeserializeCallbacks directly; do not add an extra native call merely because the persistent slot exists",
+    "existingKandeloOwner": "per-context.cpp RegisterRuntimePrincipalRealm/GetRuntimePrincipalRealm; runtime-shared codec State/Environment; foreground Drain/Shutdown enter registered principal realm",
+    "unimplementedNativeContextContract": "codec Environment::context currently returns active isolate context; Context carries isolate pointer and Frame determines current engine realm. Principal-context identity and callback accessors/root retirement remain missing.",
+    "bindingDataAndCallbackOwnersDiffer": true,
+    "startupDependencyOrder": [
+      "native principal-context identity/accessors using existing owner",
+      "original live snapshot binding with real state view and compiler",
+      "original registration assertions plus native empty-handle clearing",
+      "actual required entrypath/loop invocation and teardown validation"
+    ],
+    "runtimeOrBuildChanged": false,
+    "runtimeValidationRemaining": [
+      "principal versus active context on all four hosts",
+      "callback roots across moving GC and child/runtime isolation",
+      "original duplicate and nonfunction fatal assertions",
+      "debug principal-context invariant in assertion-enabled artifact",
+      "no registration invocation or loop references",
+      "real invocation/error identity/context restoration/reentrant cleanup",
+      "root retirement before engine teardown",
+      "genuine snapshot persistence separately unsupported"
+    ],
+    "sourceEvidence": [
+      {
+        "path": "src/env_properties.h",
+        "bytes": 42469,
+        "sha256": "891cb90ba1164eecc1ae5eef69ef3102369eeebc7630dccda2ca5737a2a097ad",
+        "reviewedSpans": [
+          {
+            "lines": [
+              476,
+              538
+            ],
+            "sha256": "cf8217877ca544b5541ded9646b26d9acefc957f20e3e7fadb18c269abcc7157",
+            "purpose": "per-realm callback declarations"
+          }
+        ]
+      },
+      {
+        "path": "src/env-inl.h",
+        "bytes": 31879,
+        "sha256": "f1849fd70267de7467ad49f06b67fb63bddd29f01cfc208e01c9776b54be8f41",
+        "reviewedSpans": [
+          {
+            "lines": [
+              948,
+              962
+            ],
+            "sha256": "e62e16cb4e2c8f2d7e52980fa082c7d10c43465209e3c511f1e4ad9c03cd823c",
+            "purpose": "Environment forwards to principal realm and principal context"
+          }
+        ]
+      },
+      {
+        "path": "src/node_realm.h",
+        "bytes": 7461,
+        "sha256": "6f69832d201a93647cae0889091556c14015d50a23a8a7022d56746c78daa319",
+        "reviewedSpans": [
+          {
+            "lines": [
+              152,
+              177
+            ],
+            "sha256": "02ec9df7598fc6e7a821efe90de44f30bf877ba64f05d6c97a4f113d4ecc4dba",
+            "purpose": "virtual accessors and strong Global members"
+          }
+        ]
+      },
+      {
+        "path": "src/node_realm.cc",
+        "bytes": 14435,
+        "sha256": "f3c7636f85409e09cc2c1a34781f51e7144aec04d1dd71e2512f01b2b1f48fda",
+        "reviewedSpans": [
+          {
+            "lines": [
+              100,
+              165
+            ],
+            "sha256": "44f75ef7dca1e849d0272136ab2eef2b55d8d0d1de431e789b33157c8b0925ce",
+            "purpose": "real persistent value serialization/restoration"
+          },
+          {
+            "lines": [
+              227,
+              235
+            ],
+            "sha256": "94d5d59c91490c900ef4a253479cd9940ef96de90fd437ff5eca1f37f391a279",
+            "purpose": "native binding-data and object cleanup"
+          },
+          {
+            "lines": [
+              292,
+              305
+            ],
+            "sha256": "3dbf10e8fcb89c54759eecc23c0fd267203158152da88906aecfc89fa8b12031",
+            "purpose": "principal strong getters and reset setters with context DCHECK"
+          },
+          {
+            "lines": [
+              319,
+              325
+            ],
+            "sha256": "859a646abcbb15d47c4b8aca07aeaa7a4b6b9af16e2717951e9f0b60435568df",
+            "purpose": "principal realm unassignment at destruction"
+          }
+        ]
+      },
+      {
+        "path": "src/env.cc",
+        "bytes": 99205,
+        "sha256": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8",
+        "reviewedSpans": [
+          {
+            "lines": [
+              1209,
+              1258
+            ],
+            "sha256": "0696b9522068e30d6d9136deab253906eef0d692173d8de7db5115b67c160f25",
+            "purpose": "Environment destructor resets principal realm"
+          },
+          {
+            "lines": [
+              1515,
+              1533
+            ],
+            "sha256": "e3ed6d83592f2657a871f74807e6e0459b4e98012cf2a89fe4a63c53437e02d5",
+            "purpose": "real serialize and deserialize-main invocation"
+          },
+          {
+            "lines": [
+              1535,
+              1558
+            ],
+            "sha256": "41bb760da34bc3beba0b7693dfa675909864d65016f34c64569a7279c71081e9",
+            "purpose": "native cleanup drain"
+          }
+        ]
+      },
+      {
+        "path": "src/api/embed_helpers.cc",
+        "bytes": 11163,
+        "sha256": "e270d4a24a40a75a1d9abfc90fefdb519b34e3cfbd90fe9959bd6bcc82e11c5d",
+        "reviewedSpans": [
+          {
+            "lines": [
+              23,
+              79
+            ],
+            "sha256": "99830edafc4ab6475bef34b55230600d0197b1d4814299f3bf11541d0ef08748",
+            "purpose": "real event-loop invocation and serialize slot clearing"
+          }
+        ]
+      },
+      {
+        "path": "src/node.cc",
+        "bytes": 63148,
+        "sha256": "5c04920541a06ef404d98eb0089f7947cbb72ab44ab612b207e735f9daa9f6ef",
+        "reviewedSpans": [
+          {
+            "lines": [
+              349,
+              363
+            ],
+            "sha256": "f514c77bc71a24e198b40a0db7a409c0141bb923f57b7f4ea710744dfbbc2692",
+            "purpose": "registered deserialize-main entrypath precedence and main-thread CHECK"
+          }
+        ]
+      },
+      {
+        "path": "src/node_snapshotable.cc",
+        "bytes": 63084,
+        "sha256": "8cf7a64854d3b55c0eb6413c4205779db1e4043c3bf63b1161825430985e99c0",
+        "reviewedSpans": [
+          {
+            "lines": [
+              1636,
+              1655
+            ],
+            "sha256": "b739c083ba03349e70b77cc4613eb956718758f58ec037ed499934767bdf280d",
+            "purpose": "original registration assertions and forwarding setters"
+          },
+          {
+            "lines": [
+              1665,
+              1690
+            ],
+            "sha256": "0b0e0079290e0f9d8043e12ba7d90cab0cf43df863b32f7d15db47788b44f6b8",
+            "purpose": "separate weak per-realm byte-view owner"
+          }
+        ]
+      },
+      {
+        "path": "lib/internal/process/pre_execution.js",
+        "bytes": 29504,
+        "sha256": "b87b010a0f42b40bc7af93195b520193e49dd1ac80a30ece13642978737c351c",
+        "reviewedSpans": [
+          {
+            "lines": [
+              157,
+              170
+            ],
+            "sha256": "42056379d0c457eea7274a7b3f99864be4cd8318f6df7021d84106d9d13d70c9",
+            "purpose": "direct original deserialize queue invocation"
+          }
+        ]
+      },
+      {
+        "path": "lib/internal/v8/startup_snapshot.js",
+        "bytes": 4451,
+        "sha256": "4eee95d7fa66dff0d64e84da2511bdfc2edd42ed3ebec99590618004c1c2701c",
+        "reviewedSpans": [
+          {
+            "lines": [
+              32,
+              75
+            ],
+            "sha256": "b5da7ce165d61f21ca5d06c8f2df51ebaa7f87995e7ccec13e094768e447f3a5",
+            "purpose": "original JS deserialize queues and native registration"
+          }
+        ]
+      }
+    ]
+  }
 }

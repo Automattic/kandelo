@@ -54,7 +54,8 @@
     "commonJsLoaderSourceIndexed": true,
     "esmLoaderSourceIndexed": true,
     "functionCompilerPartialCatalog": "function-compiler-contracts.json",
-    "functionCompilerEngineEvidence": "function-compiler-engine-check.json"
+    "functionCompilerEngineEvidence": "function-compiler-engine-check.json",
+    "mksnapshotOwnershipReview": "mksnapshot-ownership.md"
   },
   "implementation": [
     {
@@ -858,7 +859,12 @@
       "nativeReferenceControls": 8,
       "nativeReferenceFreshMode": "--no-node-snapshot",
       "architectureDecision": "Pending user reply: reviewed C++ feature guards preserving original bodies, complete native snapshot unit port first, or explicit authorization for direct Kandelo native contracts",
-      "upstreamStartup": false
+      "upstreamStartup": false,
+      "ownershipReview": "mksnapshot-ownership.md",
+      "ownershipSourceAudit": "mksnapshot-ownership-check.json",
+      "callbackOwner": "principal Realm strong Globals; Environment forwards, nonempty assignment requires principal current context under original DCHECK",
+      "nativeCallbackStorageImplemented": false,
+      "nativePrincipalContextContractImplemented": false
     },
     "nativeFunctionCompiler": {
       "inventory": "function-compiler-contracts.json",
