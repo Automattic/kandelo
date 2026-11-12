@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "scope": "Shared guest engine function-body compilation for native-known parameter metadata; not a V8 ScriptCompiler/contextify/mksnapshot binding or complete startup contract",
+  "sourceVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "owningLayer": "SpiderMonkey package embedding/compiler; actual guest engine globals, functions and source storage, not outer-host Node builtins",
+  "implementation": {
+    "entry": "kandelo::node::CompileNativeFunctionBody",
+    "inputBody": "Complete rooted runtime-provided JSString; stable UTF-16 units and explicit length, including embedded NUL and unpaired surrogate units; no UTF-8 normalization or substring source replacement",
+    "parameterMetadata": "Native unsigned count and immutable Latin-1 C-string names, matching the owning engine CompileFunction interface. Current diagnostic uses the three native-known require/__filename/__dirname names. This is not the complete arbitrary UTF-16 V8 argument-name interface.",
+    "filenameMetadata": "Native UTF-8 C string. Diagnostic probe rejects NUL/unpaired-surrogate JS filenames explicitly instead of truncating/replacing them. Full V8 ScriptOrigin string/options are not implemented by this primitive.",
+    "compiler": "Actual JS::CompileFunction with anonymous ordinary function, forced full parse and current global lexical environment; same internal helper now used by original builtin compiler",
+    "sourceCoordinates": "Engine supplies function prelude; options begin at line0 so complete supplied body starts at diagnostic line1",
+    "globalEnvironment": "No caller frame or dependency substitute object enters environment chain. C++ helper compiles in current Realm; private control admits an actual checked global and enters its Realm.",
+    "ownership": "Engine owns compiled function/source. Original source object can die, closures retain live passed objects and source values, no strong native function cache is added.",
+    "errors": "Actual parser SyntaxErrors/pending exception; actual foreign syntax-error prototype/caller restoration and thrown-value identity; private protocol type errors do not coerce inputs.",
+    "scheduling": "Compiler does not execute body or add event-loop references. Actual compiled code creates ordinary Promise/await jobs handled by existing engine loop; full async-resource/Promise lifecycle integration remains separate."
+  },
+  "consumers": [
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.cpp",
+      "role": "Existing complete pinned builtin Function compilation now shares exact global-environment helper; source registry/wrappers unchanged",
+      "integrated": true
+    },
+    {
+      "path": "src/node_snapshotable.cc",
+      "line": 1605,
+      "role": "Original CompileSerializeMain needs real function-body compilation with three native-known parameters",
+      "integrated": false,
+      "architectureChoice": "Pending; no source excerpt/import/feature-guard patch applied"
+    }
+  ],
+  "privateDiagnostics": {
+    "entry": "__kandeloUpstreamTest.compileFunctionBody(global, filename, body)",
+    "exposure": "Only explicit privileged upstream test mode; no public JS module or Native Node binding registration",
+    "argumentNames": [
+      "require",
+      "__filename",
+      "__dirname"
+    ],
+    "realmAdmission": "Genuine global or checked WindowProxy only; arbitrary objects/proxies are rejected without invoking proxy getters",
+    "scope": "Tests engine primitive directly; does not reimplement/register original snapshot binding"
+  },
+  "validation": {
+    "fixture": "function-compiler-engine-controls.js",
+    "sharedFixture": "function-compiler-shared-controls.js",
+    "nativeReference": "function-compiler-native-reference.json",
+    "nativeMethod": "Authenticated native Node vm/contextify uses original V8 ScriptCompiler implementation; reference harness only",
+    "nativeSharedGroups": 21,
+    "nodeGuestControls": 25,
+    "additionalDrivers": 3,
+    "browserStatus": "all controls/drivers pass on identical artifact",
+    "evidence": "function-compiler-engine-check.json",
+    "hosts": [
+      "Node",
+      "Chromium",
+      "Firefox",
+      "WebKit"
+    ],
+    "controlsPerHost": 25,
+    "exactNativeGroupsPerHost": 21,
+    "priorRegressions": "selected prior Node and four-host controls pass on same revision43 artifact"
+  },
+  "remaining": [
+    "genuine mksnapshot full-source architecture choice and binding integration",
+    "full arbitrary ScriptOrigin/resource metadata, UTF-16 argument-name and context-extension/code-cache interface where required",
+    "complete contextify/VM/deadline/security/cache/module callback/native lifecycle contracts",
+    "all four-host startup empty/simple output/errors/jobs/exit and separate CJS/ESM entrypaths",
+    "complete reconciled native/backend graph contracts and dependency-ordered roadmap; user review before broader implementation"
+  ],
+  "upstreamJavascriptChanged": false,
+  "upstreamNativeAlgorithmExcerptedOrRewritten": false,
+  "snapshotStateOrHeapBuilderImplemented": false,
+  "completeNodeStartup": false,
+  "completePublicVmCompatibility": false
+}

@@ -6,6 +6,7 @@
 #include "js/Array.h"
 #include "js/CallAndConstruct.h"
 #include "js/CallArgs.h"
+#include "js/CharacterEncoding.h"
 #include "js/Conversions.h"
 #include "js/ErrorReport.h"
 #include "js/friend/WindowProxy.h"
@@ -14,11 +15,14 @@
 #include "js/PropertyAndElement.h"
 #include "js/Realm.h"
 #include "js/RootingAPI.h"
+#include "js/StableStringChars.h"
+#include "js/String.h"
 #include "js/Symbol.h"
 #include "js/Wrapper.h"
 #include "shell/jsshell.h"
 #include "shell/node-upstream/async-wrap.h"
 #include "shell/node-upstream/buffer-memory.h"
+#include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/codecs.h"
 #include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/per-context.h"
@@ -30,6 +34,53 @@ namespace kandelo::node {
 namespace {
 
 static int externalReferenceToken = 42;
+bool CompileFunctionBodyForTesting(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  if (argc != 3 || !args[0].isObject() || !args[1].isString() ||
+      !args[2].isString()) {
+    JS_ReportErrorASCII(cx, "native function compiler control requires global, filename and body");
+    return false;
+  }
+  JS::RootedObject global(cx, js::CheckedUnwrapDynamic(&args[0].toObject(), cx, false));
+  if (!global) return false;
+  global = js::ToWindowIfWindowProxy(global);
+  if (!JS_IsGlobalObject(global)) {
+    JS_ReportErrorASCII(cx, "native function compiler control requires a genuine global");
+    return false;
+  }
+  JS::RootedString filename(cx, args[1].toString()), body(cx, args[2].toString());
+  JS::AutoStableStringChars filenameChars(cx);
+  if (!filenameChars.initTwoByte(cx, filename)) return false;
+  const auto* chars = filenameChars.twoByteChars();
+  const size_t length = JS_GetStringLength(filename);
+  for (size_t i = 0; i < length; ++i) {
+    char16_t unit = chars[i];
+    if (unit == 0 || (unit & 0xfc00) == 0xdc00 ||
+        ((unit & 0xfc00) == 0xd800 &&
+         (++i == length || (chars[i] & 0xfc00) != 0xdc00))) {
+      // The diagnostic probe supplies native UTF-8 C-string metadata, not the
+      // complete V8 ScriptOrigin interface. Never silently truncate or replace.
+      JS_ReportErrorASCII(cx, "native compiler probe filename must be well-formed UTF-8 metadata without NUL");
+      return false;
+    }
+  }
+  JS::UniqueChars encoded = JS_EncodeStringToUTF8(cx, filename);
+  if (!encoded) return false;
+  // These are native-known formal names, as used by the reviewed startup
+  // consumer. This probe does not implement or register its original binding.
+  const char* const parameters[] = {"require", "__filename", "__dirname"};
+  JS::RootedValue result(cx);
+  {
+    JSAutoRealm home(cx, global);
+    JS::RootedFunction function(cx, CompileNativeFunctionBody(cx, encoded.get(),
+                                                            body, 3, parameters));
+    if (!function) return false;
+    result.setObject(*JS_GetFunctionObject(function));
+  }
+  if (!JS_WrapValue(cx, &result)) return false;
+  args.rval().set(result);
+  return true;
+}
 bool ConfigureNativeOptions(JSContext* cx, unsigned argc, JS::Value* vp) {
   auto args = JS::CallArgsFromVp(argc, vp);
   bool array = false;
@@ -311,6 +362,7 @@ bool ModuleNamespaceForTesting(JSContext* cx, unsigned argc, JS::Value* vp) {
 
 bool DefinePrivateKeyTestAPI(JSContext* cx) {
   static const JSFunctionSpec functions[] = {
+      JS_FN("compileFunctionBody", CompileFunctionBodyForTesting, 3, 0),
       JS_FN("newPrivateKey", NewPrivateKey, 0, 0),
       JS_FN("newExternal", NewExternal, 0, 0),
       JS_FN("configureOptions", ConfigureNativeOptions, 2, 0),

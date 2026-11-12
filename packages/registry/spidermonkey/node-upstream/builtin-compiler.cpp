@@ -10,6 +10,8 @@
 #include "js/ErrorReport.h"
 #include "js/Modules.h"
 #include "js/SourceText.h"
+#include "js/StableStringChars.h"
+#include "js/String.h"
 
 namespace kandelo::node {
 namespace {
@@ -30,6 +32,19 @@ bool InitSource(JSContext* cx, const BuiltinSourceView& source,
   return text.init(cx,
                    reinterpret_cast<const mozilla::Utf8Unit*>(source.utf8),
                    source.length, JS::SourceOwnership::Borrowed);
+}
+
+template <typename Unit>
+JSFunction* CompileGlobalFunction(JSContext* cx,
+                                 const JS::ReadOnlyCompileOptions& options,
+                                 unsigned parameterCount,
+                                 const char* const* parameterNames,
+                                 JS::SourceText<Unit>& text) {
+  // The target global lexical environment is implicit. Never capture a caller
+  // frame or inject a separate per-module dependency object into this chain.
+  const JS::EnvironmentChain environment(cx, JS::SupportUnscopables::No);
+  return JS::CompileFunction(cx, environment, options, nullptr, parameterCount,
+                             parameterNames, text);
 }
 
 }  // namespace
@@ -62,10 +77,24 @@ JSFunction* CompileBuiltinFunction(JSContext* cx, std::string_view id) {
   }
   // Global lexical scope is implicit. No caller/user object enters the builtin
   // scope chain. A null name also avoids CompileFunction's Latin-1 name API.
-  const JS::EnvironmentChain environment(cx, JS::SupportUnscopables::No);
-  return JS::CompileFunction(cx, environment, options, nullptr,
-                             parameterCount,
-                             source->parameters, text);
+  return CompileGlobalFunction(cx, options, parameterCount, source->parameters,
+                               text);
+}
+
+JSFunction* CompileNativeFunctionBody(JSContext* cx, const char* filename,
+                                      JS::HandleString body,
+                                      unsigned parameterCount,
+                                      const char* const* parameterNames) {
+  JS::AutoStableStringChars characters(cx);
+  if (!characters.initTwoByte(cx, body)) return nullptr;
+  JS::SourceText<char16_t> text;
+  if (!text.init(cx, characters.twoByteChars(), JS_GetStringLength(body),
+                 JS::SourceOwnership::Borrowed)) return nullptr;
+  JS::CompileOptions options(cx);
+  // Match the builtin compiler: the engine adds its own opening wrapper line,
+  // so the unchanged supplied function body starts at diagnostic line one.
+  options.setFileAndLine(filename, 0).setForceFullParse();
+  return CompileGlobalFunction(cx, options, parameterCount, parameterNames, text);
 }
 
 JSObject* CompileBuiltinSourceTextModule(JSContext* cx, std::string_view id) {

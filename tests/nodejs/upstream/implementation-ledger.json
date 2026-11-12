@@ -52,7 +52,9 @@
     "historicalFamilyReviewsLinked": 19,
     "historicalPRReuseRecordsLinked": 33,
     "commonJsLoaderSourceIndexed": true,
-    "esmLoaderSourceIndexed": true
+    "esmLoaderSourceIndexed": true,
+    "functionCompilerPartialCatalog": "function-compiler-contracts.json",
+    "functionCompilerEngineEvidence": "function-compiler-engine-check.json"
   },
   "implementation": [
     {
@@ -242,6 +244,12 @@
       "sourceStatus": "revision42 compiles complete unchanged headers;21 selected controls plus5 assertion/exit drivers pass on Node/Chromium/Firefox/WebKit",
       "evidence": "aliased-engine-check.json",
       "remaining": "mksnapshot integration and architecture choice; heap serialization/graph traversal and complete ownership/OOM/concurrency audit remain incomplete"
+    },
+    {
+      "area": "shared native function-body engine compiler",
+      "sourceStatus": "actual UTF16 source/current-global compilation, context/source roots and parser errors implemented; existing builtin path shares helper;25controls+3drivers pass perhost",
+      "evidence": "function-compiler-engine-check.json",
+      "remaining": "mksnapshot source architecture choice/binding; full ScriptOrigin/parameter/context-extension/cache and wider contextify/VM/deadline/security/module callback interfaces unimplemented; complete startup and catalog unfinished"
     }
   ],
   "runtimeConformance": {
@@ -398,17 +406,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 42,
+    "packageRevision": 43,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "aliased-engine-check.json",
+    "evidence": "function-compiler-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "21AliasedBuffer controls plus5drivers perhost; selected prior regressions pass; startup still missing mksnapshot",
+    "packageRuntimeScope": "Shared native function-body compiler25controls+3drivers perhost;21exact native groups; selected prior regressions pass; startup still missing mksnapshot",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "Existing Mozilla Linux triplet/defines remain; linked libuv uses the true Kandelo build and explicit public-layout selector before legacy macros",
     "symbolicWasmNamesRetained": true,
@@ -850,6 +858,22 @@
       "nativeReferenceControls": 8,
       "nativeReferenceFreshMode": "--no-node-snapshot",
       "architectureDecision": "Pending user reply: reviewed C++ feature guards preserving original bodies, complete native snapshot unit port first, or explicit authorization for direct Kandelo native contracts",
+      "upstreamStartup": false
+    },
+    "nativeFunctionCompiler": {
+      "inventory": "function-compiler-contracts.json",
+      "evidence": "function-compiler-engine-check.json",
+      "actualCurrentGlobalFunctionBodyCompilation": true,
+      "runtimeUtf16SourcePreserved": true,
+      "builtinGlobalEnvironmentHelperShared": true,
+      "nativeParameterMetadata": "Latin-1 C-string names; diagnostic uses fixed3native-known formals",
+      "nativeOriginMetadata": "UTF-8 C string; complete arbitrary ScriptOrigin strings/options not implemented by this primitive",
+      "controlsPerHost": 25,
+      "otherDriversPerHost": 3,
+      "exactNativeGroups": 21,
+      "mksnapshotBindingImplemented": false,
+      "fullV8ScriptCompilerInterfaceImplemented": false,
+      "publicContextifyVmCompatibilityEstablished": false,
       "upstreamStartup": false
     }
   },

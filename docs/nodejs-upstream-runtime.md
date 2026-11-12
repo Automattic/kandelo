@@ -1606,3 +1606,40 @@ guest process drivers with 44 expected source assertion traps. The ordinary
 package resolver reuses the exact tested artifact. Separate Firefox storage
 cleanup EACCES warnings are retained without a cleanup guarantee. No full
 product/image, successor-ABI or overall conformance suite was run.
+
+
+## Native function-body compiler prerequisite
+
+Revision 43 adds an underlying compiler for a complete runtime-provided UTF-16
+function body with native-known C-string parameter and origin metadata. It uses
+SpiderMonkey's actual CompileFunction in the current global lexical environment.
+The existing unchanged builtin-source path shares that global-environment helper.
+No caller frame or separate dependency environment is captured, and the public
+Function constructor is not consulted. The engine owns the compiled source and
+function; original input strings can be collected and closures retain live values.
+The supplied body starts at diagnostic line one after the engine's own wrapper.
+
+This is engine/compiler support required by the reviewed live snapshot APIs
+under every pending native-source route. It does not implement the mksnapshot
+binding, a V8 snapshot builder, a public node:vm replacement or the complete
+V8 ScriptCompiler interface. Native formal-name metadata follows the engine's
+Latin-1 C-string contract, with three known names in the diagnostic. Origin
+metadata is a native UTF-8 C string; the private probe explicitly rejects NUL
+and unpaired-surrogate filenames. Arbitrary V8 ScriptOrigin/UTF-16 argument-name,
+context-extension/cache/security/deadline and module callback contracts remain
+separate work. The JavaScript source body itself preserves every UTF-16 unit,
+including NUL and unpaired-surrogate units inside literals.
+
+All four hosts pass 25 focused controls and three job/exit drivers on identical
+engine/kernel bytes. Twenty-one observation groups match the authenticated native
+Node vm/contextify function compiler exactly. Tests exercise target intrinsics,
+global lexical state, foreign parser exception identity and realm restoration,
+source lifetime, live closures, full GC, strict/sloppy/new-target behavior and
+actual Promise/await jobs. Existing selected binding controls also pass on the
+new artifact. These are bounded engine controls, not full VM or startup acceptance.
+Genuine bootstrap still fails on the missing mksnapshot binding, whose source
+architecture question remains pending; no snapshot C++ import/patch or function
+excerpt has been applied. Full products/images, successor ABI builds and overall
+suites remain deferred. See
+[function-compiler-contracts.json](../tests/nodejs/upstream/function-compiler-contracts.json)
+and [function-compiler-engine-check.json](../tests/nodejs/upstream/function-compiler-engine-check.json).

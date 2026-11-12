@@ -130,7 +130,13 @@
       "Port the complete snapshot translation unit and actual dependencies first",
       "Implement genuine Kandelo native contracts directly, requiring explicit exception to no rewritten upstream algorithms"
     ],
-    "independentPrerequisite": "Complete original AliasedBuffer header pair and genuine typed/weak engine primitives"
+    "independentPrerequisite": "Complete original AliasedBuffer header pair and genuine typed/weak engine primitives",
+    "independentCompilerPrerequisite": {
+      "implemented": "Shared underlying native function-body compiler for native-known parameter metadata; actual engine compilation/context/source ownership",
+      "evidence": "function-compiler-engine-check.json",
+      "nativeSnapshotBindingImplemented": false,
+      "nativeV8ScriptCompilerInterfaceComplete": false
+    }
   },
   "reference": {
     "fixture": {
