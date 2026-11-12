@@ -213,6 +213,12 @@ void SetFastMethod(Local<Context> context,Local<Object> target,const char* name,
   JS::Rooted<JSAtom*> empty(frame.cx,js::Atomize(frame.cx,"",0));CHECK(empty);nativeFunction.setAtom(empty);
 }
 void SetFastMethodNoSideEffect(Local<Context> context,Local<Object> target,const char* name,Callback callback,const CFunction* fast) { SetFastMethod(context,target,name,callback,fast); }
+void SetMethodNoSideEffect(Isolate* isolate,Local<ObjectTemplate> target,const char* name,Callback callback) {
+  SetMethodNoSideEffect(isolate->GetCurrentContext(),Local<Object>(target),name,callback);
+}
+void SetFastMethodNoSideEffect(Isolate* isolate,Local<ObjectTemplate> target,const char* name,Callback callback,const CFunction* fast) {
+  SetFastMethodNoSideEffect(isolate->GetCurrentContext(),Local<Object>(target),name,callback,fast);
+}
 }
 namespace kandelo::node {
 namespace {

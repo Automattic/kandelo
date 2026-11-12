@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
-  "scope": "Partial process_methods prerequisite/source audit; binding not integrated; no startup advancement claimed",
+  "scope": "Both whole original process units and complete original formatting headers compile over native embedding interfaces; actual source route/initializers fail final linking. No revision51 artifact or runtime validation.",
   "completeBindingContract": false,
   "nativeSourceReview": {
     "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
@@ -25,10 +25,45 @@
         "path": "src/node_process_object.cc",
         "bytes": 8595,
         "sha256": "301c1819a6cd59a48bd28f4c2252298137b6631cc33dda0ddb55dd8067d48957"
+      },
+      {
+        "path": "src/debug_utils.h",
+        "bytes": 7892,
+        "sha256": "040b8d03509d8908cb5521f038ba9d95dab01f022b06070401e548d731596cb5"
+      },
+      {
+        "path": "src/debug_utils-inl.h",
+        "bytes": 9757,
+        "sha256": "98e67d4365e66ac0345cba12f238905b2c349c76d1fe918ce975bb542f722aad"
+      },
+      {
+        "path": "src/node_dotenv.h",
+        "bytes": 1130,
+        "sha256": "a88e46ee815d45c7f58188655f117f526a34811e6db536f5b404c5d5a2050180"
+      },
+      {
+        "path": "src/path.h",
+        "bytes": 1049,
+        "sha256": "fd447905dae3570d308fc6746ab7ffef9571d79b7c3aa67805f0f564d767549a"
+      },
+      {
+        "path": "src/permission/permission_base.h",
+        "bytes": 3099,
+        "sha256": "db98ec7e2de879cdc644aa72d307f9f42572044bf8ff460cacb3d05af37b0e8d"
+      },
+      {
+        "path": "src/node_revert.h",
+        "bytes": 2129,
+        "sha256": "281e00e8265720a12ce69e88267dfabf33c57c16a91795c49ee4d5cf7c63cbcb"
+      },
+      {
+        "path": "src/node_mutex.h",
+        "bytes": 8585,
+        "sha256": "13208fe79bf345733d992eb7e1c598817fdab79ab859a2b81cec92b0e1763572"
       }
     ]
   },
-  "wholeNativeFilesImportedThisStep": false,
+  "wholeNativeFilesImportedThisStep": true,
   "upstreamConsumers": {
     "binding": {
       "name": "process_methods",
@@ -266,7 +301,7 @@
       "nativeFunction": "SlowHrtime",
       "source": "src/node_process_methods.cc",
       "line": 684,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -274,7 +309,7 @@
       "nativeFunction": "SlowHrtimeBigInt",
       "source": "src/node_process_methods.cc",
       "line": 686,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -282,7 +317,7 @@
       "nativeFunction": "DebugProcess",
       "source": "src/node_process_methods.cc",
       "line": 787,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -290,7 +325,7 @@
       "nativeFunction": "Abort",
       "source": "src/node_process_methods.cc",
       "line": 788,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -298,7 +333,7 @@
       "nativeFunction": "CauseSegfault",
       "source": "src/node_process_methods.cc",
       "line": 789,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -306,7 +341,7 @@
       "nativeFunction": "Chdir",
       "source": "src/node_process_methods.cc",
       "line": 790,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -314,7 +349,7 @@
       "nativeFunction": "Umask",
       "source": "src/node_process_methods.cc",
       "line": 792,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -322,7 +357,7 @@
       "nativeFunction": "MemoryUsage",
       "source": "src/node_process_methods.cc",
       "line": 793,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -330,7 +365,7 @@
       "nativeFunction": "GetConstrainedMemory",
       "source": "src/node_process_methods.cc",
       "line": 794,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -338,7 +373,7 @@
       "nativeFunction": "GetAvailableMemory",
       "source": "src/node_process_methods.cc",
       "line": 795,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -346,7 +381,7 @@
       "nativeFunction": "Rss",
       "source": "src/node_process_methods.cc",
       "line": 796,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -354,7 +389,7 @@
       "nativeFunction": "CPUUsage",
       "source": "src/node_process_methods.cc",
       "line": 797,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -362,7 +397,7 @@
       "nativeFunction": "ThreadCPUUsage",
       "source": "src/node_process_methods.cc",
       "line": 798,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -370,7 +405,7 @@
       "nativeFunction": "ResourceUsage",
       "source": "src/node_process_methods.cc",
       "line": 799,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -378,7 +413,7 @@
       "nativeFunction": "DebugEnd",
       "source": "src/node_process_methods.cc",
       "line": 801,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -386,7 +421,7 @@
       "nativeFunction": "GetActiveRequests",
       "source": "src/node_process_methods.cc",
       "line": 802,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -394,7 +429,7 @@
       "nativeFunction": "GetActiveHandles",
       "source": "src/node_process_methods.cc",
       "line": 803,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -402,7 +437,7 @@
       "nativeFunction": "GetActiveResourcesInfo",
       "source": "src/node_process_methods.cc",
       "line": 804,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -410,7 +445,7 @@
       "nativeFunction": "Kill",
       "source": "src/node_process_methods.cc",
       "line": 805,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -418,7 +453,7 @@
       "nativeFunction": "RawDebug",
       "source": "src/node_process_methods.cc",
       "line": 806,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -426,7 +461,7 @@
       "nativeFunction": "Cwd",
       "source": "src/node_process_methods.cc",
       "line": 808,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -434,7 +469,7 @@
       "nativeFunction": "binding::DLOpen",
       "source": "src/node_process_methods.cc",
       "line": 809,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -442,7 +477,7 @@
       "nativeFunction": "binding::DLOpenBinary",
       "source": "src/node_process_methods.cc",
       "line": 810,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -450,7 +485,7 @@
       "nativeFunction": "ReallyExit",
       "source": "src/node_process_methods.cc",
       "line": 811,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -458,7 +493,7 @@
       "nativeFunction": "Execve",
       "source": "src/node_process_methods.cc",
       "line": 814,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "__POSIX__ && !__PASE__"
     },
     {
@@ -466,7 +501,7 @@
       "nativeFunction": "Uptime",
       "source": "src/node_process_methods.cc",
       "line": 816,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -474,7 +509,7 @@
       "nativeFunction": "PatchProcessObject",
       "source": "src/node_process_methods.cc",
       "line": 817,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -482,7 +517,7 @@
       "nativeFunction": "LoadEnvFile",
       "source": "src/node_process_methods.cc",
       "line": 819,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     },
     {
@@ -490,7 +525,7 @@
       "nativeFunction": "SetEmitWarningSync",
       "source": "src/node_process_methods.cc",
       "line": 821,
-      "status": "not integrated",
+      "status": "whole source compiles; final link incomplete; not runtime validated",
       "guard": "unconditional registration; callback bodies retain platform guards"
     }
   ],
@@ -969,5 +1004,113 @@
     "rooting": "Actual separate native callback frame and traced realm/payload slots; no captured native frame",
     "fullNativeProcessIntegration": false,
     "fullV8PropertyInterfaceCompatibility": false
-  }
+  },
+  "sourceCompilation": {
+    "evidence": "process-units-compile-check.json",
+    "wholeOriginalMethodsAndObjectUnitsCompile": true,
+    "sourceInitializerConnected": true,
+    "finalLinkSucceeded": false,
+    "revision51RuntimeArtifact": null,
+    "undefinedSymbols": [
+      "kandelo_node_codec_api::HeapStatistics::HeapStatistics()",
+      "kandelo_node_codec_api::HeapStatistics::external_memory() const",
+      "kandelo_node_codec_api::HeapStatistics::total_heap_size() const",
+      "kandelo_node_codec_api::HeapStatistics::used_heap_size() const",
+      "kandelo_node_codec_api::HeapStatistics::~HeapStatistics()",
+      "kandelo_node_codec_api::Isolate::GetHeapStatistics(kandelo_node_codec_api::HeapStatistics*)",
+      "kandelo_node_codec_impl::AsyncWrap::GetOwner()",
+      "kandelo_node_codec_impl::AsyncWrap::MemoryInfoName() const",
+      "kandelo_node_codec_impl::AsyncWrap::persistent()",
+      "kandelo_node_codec_impl::BufferValue::BufferValue(kandelo_node_codec_api::Isolate*, kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>)",
+      "kandelo_node_codec_impl::CheckProcessPermission(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::permission::PermissionScope, std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
+      "kandelo_node_codec_impl::Dotenv::ParsePath(std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
+      "kandelo_node_codec_impl::Dotenv::SetEnvironment(kandelo_node_codec_impl::Environment*)",
+      "kandelo_node_codec_impl::Environment::Exit(kandelo_node_codec_impl::ExitCode)",
+      "kandelo_node_codec_impl::Environment::ThrowErrnoException(int, char const*, char const*, char const*)",
+      "kandelo_node_codec_impl::Environment::ThrowUVException(int, char const*, char const*, char const*, char const*)",
+      "kandelo_node_codec_impl::Environment::argv()",
+      "kandelo_node_codec_impl::Environment::exec_argv()",
+      "kandelo_node_codec_impl::Environment::exec_path()",
+      "kandelo_node_codec_impl::Environment::handle_wrap_queue()",
+      "kandelo_node_codec_impl::Environment::owns_process_state() const",
+      "kandelo_node_codec_impl::Environment::req_wrap_queue()",
+      "kandelo_node_codec_impl::HandleWrap::HasRef(kandelo_node_codec_impl::HandleWrap*)",
+      "kandelo_node_codec_impl::HasSignalJSHandler(int)",
+      "kandelo_node_codec_impl::IsolateData::node_allocator()",
+      "kandelo_node_codec_impl::NodeArrayBufferAllocator::total_mem_usage() const",
+      "kandelo_node_codec_impl::ReqWrapBase::GetAsyncWrap()",
+      "kandelo_node_codec_impl::RunAtExit(kandelo_node_codec_impl::Environment*)",
+      "kandelo_node_codec_impl::ToNamespacedPath(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::BufferValue*)",
+      "kandelo_node_codec_impl::binding::DLOpen(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+      "kandelo_node_codec_impl::binding::DLOpenBinary(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+      "kandelo_node_codec_impl::per_process::node_start_time",
+      "uv_get_available_memory",
+      "uv_get_constrained_memory",
+      "uv_resident_set_memory"
+    ],
+    "undefinedSymbolCount": 35,
+    "allSymbolsForThisLinkInvocation": true,
+    "fullContractInventoryComplete": false,
+    "originalCreateProcessObjectActivated": false,
+    "originalCreateProcessObjectMayNeedAdditionalContracts": true,
+    "finalBuildJob": "node-process-format-includes-1112-051131-b713",
+    "finalBuildCacheKey": "70b207b6eb5f30832a4774131bc367485de85fa58d48c8db89d1fb2520d85f11",
+    "wholeOriginalFormattingHeadersCompile": true
+  },
+  "sourceImport": {
+    "priorFiles": 561,
+    "currentFiles": 570,
+    "newWholeFiles": 9,
+    "allPriorRecordsAndBytesUnchanged": true,
+    "preexistingWholeProcessObject": "src/node_process_object.cc was already imported as metadata provenance; it is newly compiled",
+    "javascriptFiles": 443,
+    "javascriptBytes": 10993403,
+    "javascriptChanged": false,
+    "reimportManifestByteIdentical": true,
+    "evidence": "process-units-compile-check.json"
+  },
+  "compiledEmbeddingPrerequisites": {
+    "runtimeValidated": false,
+    "scope": "Definitions compiled in the final failed-link build; not runtime or whole-interface support",
+    "canonicalTimerState": "Environment borrows the existing uv_loop_t and pins/roots the actual shared timeout/immediate typed arrays for the callback frame",
+    "bootstrapState": "Reads actual full-bootstrap completion; NodeBodyDone remains insufficient",
+    "warningCallback": "Actual Environment-owned Global<Function>, cleared at shutdown; automatic warning emission remains unfinished",
+    "inspectorPort": "Delegates to the original options owner under native mutexes; no independent default/copy",
+    "bindingOwnership": "Actual native class, owning State, active realm and original SnapshotableObject type checked before returning native pointer",
+    "formatting": "Complete original debug_utils.h/inl, original provider-name macro metadata, native byte-length libc stream writes and UTF8/NUL-preserving engine error strings",
+    "genericEnginePrimitives": [
+      "Maybe presence/checked conversion",
+      "independently rooted LocalVector<Value>",
+      "actual Array/Object creation and property attributes",
+      "actual Float64Array brand",
+      "owned UTF8 string bytes",
+      "string-vector conversion",
+      "native method-template overloads preserving normal callback metadata"
+    ]
+  },
+  "knownPlatformGaps": [
+    {
+      "owner": "guest kernel",
+      "path": "crates/runtime-core/src/syscalls.rs",
+      "symbol": "sys_getrusage",
+      "observedImplementation": "success with zero-filled rusage; not genuine resource measurements",
+      "affects": [
+        "process.cpuUsage",
+        "process.resourceUsage"
+      ],
+      "boundary": "implementation gap; not established browser impossibility",
+      "deferredBuildRequiredForFix": true
+    },
+    {
+      "owner": "guest kernel",
+      "path": "crates/runtime-core/src/syscalls.rs",
+      "symbol": "sys_sysinfo",
+      "observedImplementation": "fixed uptime, total/free memory and process count; not genuine system measurements",
+      "affects": [
+        "native memory/accounting prerequisites"
+      ],
+      "boundary": "implementation gap; do not use as real process data",
+      "deferredBuildRequiredForFix": true
+    }
+  ]
 }

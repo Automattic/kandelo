@@ -370,6 +370,14 @@ bool NativeZeroFillBuffersEnabled() {
   n::Mutex::ScopedLock lock(n::per_process::cli_options_mutex);
   return n::per_process::cli_options->zero_fill_all_buffers;
 }
+uint16_t NativeInspectorPort() {
+  n::Mutex::ScopedLock lock(n::per_process::cli_options_mutex);
+  return n::per_process::cli_options->per_isolate->per_env->get_debug_options()->host_port.port();
+}
+void SetNativeInspectorPort(uint16_t port) {
+  n::Mutex::ScopedLock lock(n::per_process::cli_options_mutex);
+  n::per_process::cli_options->per_isolate->per_env->get_debug_options()->host_port.set_port(port);
+}
 bool NativeAsyncContextFrameEnabled() {
   n::Mutex::ScopedLock lock(n::per_process::cli_options_mutex);
   return n::per_process::cli_options->per_isolate->per_env->async_context_frame;

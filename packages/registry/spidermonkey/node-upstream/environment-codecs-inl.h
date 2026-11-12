@@ -87,7 +87,10 @@ struct EnvironmentData {
   size_t probesCreated=0,probesCleaned=0,probeBytes=0,weakThreadReleases=0;
   std::vector<std::unique_ptr<EnvironmentCleanupProbe>> probes;
   std::vector<std::unique_ptr<api::Global<api::ArrayBuffer>>> weakControls;
-  explicit EnvironmentData(Environment* environment):cleanables(environment) {}
+  api::Global<api::Function> processEmitWarningSync;
+  ProcessImmediateInfo immediate;
+  ExclusiveAccess<HostPort> inspector;
+  explicit EnvironmentData(Environment* environment):cleanables(environment),immediate(environment) {}
 };
 Environment::Environment(Isolate* isolate):isolate_(isolate),data_(std::make_unique<EnvironmentData>(this)) {}
 Environment::~Environment() { CHECK((!data_->initialized||data_->closed)&&data_->cleanables.IsEmpty()&&data_->pending.empty()); }
@@ -121,6 +124,41 @@ JSObject* Environment::memory_owner(JSContext* cx) {
 bool Environment::IsClosed() const { std::lock_guard lock(data_->mutex);return data_->closed; }
 Environment::EmbedderPreload Environment::embedder_preload() { AssertForeground();return data_->embedderPreload; }
 void Environment::set_embedder_preload(EmbedderPreload hook) { AssertForeground();data_->embedderPreload=hook; }
+uv_loop_t* Environment::event_loop() {
+  AssertForeground();CHECK(data_->initialized&&!data_->closed&&data_->runtime);
+  JS::RootedObject runtime(data_->cx,*data_->runtime);
+  auto* loop=kandelo::node::GetRuntimeEventLoop(data_->cx,runtime);CHECK(loop);return loop;
+}
+const int32_t* Environment::timeout_info() {
+  AssertForeground();CHECK(data_->initialized&&!data_->closed&&data_->runtime);
+  auto& f=Current(isolate());JS::RootedObject runtime(f.cx,*data_->runtime);
+  JS::RootedObject array(f.cx,kandelo::node::GetRuntimeTimerInfo(f.cx,runtime,false));CHECK(array);
+  JS::RootedValue value(f.cx,JS::ObjectValue(*array));
+  auto& span=f.Borrow(f.OwnValue(value));CHECK_EQ(span.size,sizeof(int32_t));
+  return reinterpret_cast<const int32_t*>(span.bytes);
+}
+ProcessImmediateInfo* Environment::immediate_info() { AssertForeground();return &data_->immediate; }
+uint32_t ProcessImmediateInfo::ref_count() const {
+  environment_->AssertForeground();auto& data=environment_->data();
+  CHECK(data.initialized&&!data.closed&&data.runtime);
+  auto& f=Current(environment_->isolate());JS::RootedObject runtime(f.cx,*data.runtime);
+  JS::RootedObject array(f.cx,kandelo::node::GetRuntimeTimerInfo(f.cx,runtime,true));CHECK(array);
+  JS::RootedValue value(f.cx,JS::ObjectValue(*array));
+  auto& span=f.Borrow(f.OwnValue(value));CHECK_EQ(span.size,3*sizeof(uint32_t));
+  return reinterpret_cast<const uint32_t*>(span.bytes)[1];
+}
+bool Environment::has_run_bootstrapping_code() const {
+  AssertForeground();CHECK(data_->initialized&&!data_->closed&&data_->runtime);
+  JS::RootedObject runtime(data_->cx,*data_->runtime);
+  JS::RootedObject principal(data_->cx,kandelo::node::GetRuntimePrincipalRealm(data_->cx,runtime));CHECK(principal);
+  return kandelo::node::HasCompletedNodeBootstrap(data_->cx,principal);
+}
+void Environment::set_process_emit_warning_sync(Local<Function> callback) {
+  AssertForeground();CHECK(!IsClosed());data_->processEmitWarningSync.Reset(isolate(),callback);
+}
+int HostPort::port() const { return kandelo::node::NativeInspectorPort(); }
+void HostPort::set_port(int port) { kandelo::node::SetNativeInspectorPort(uint16_t(port)); }
+ExclusiveAccess<HostPort>* Environment::inspector_host_port() { AssertForeground();return &data_->inspector; }
 Local<Context> Environment::context() {
   auto& frame=Current(isolate());AssertForeground();CHECK(data_->runtime&&data_->cx==frame.cx);
   JS::RootedObject runtime(frame.cx,*data_->runtime);
@@ -198,6 +236,7 @@ void Environment::Shutdown(JSContext* cx) {
   kandelo::node::DetachRuntimeForeground(cx,runtime,this);data_->wake=nullptr;
   CHECK(kandelo::node::ClearSnapshotCallbacks(cx,runtime));
   CHECK(kandelo::node::ClearMessagingDeserializer(cx,runtime));data_->embedderPreload=nullptr;
+  data_->processEmitWarningSync.Reset();
   state->aliasedControls.clear();
   if(data_->weakRegistered){JS_RemoveWeakPointerZonesCallback(cx,api::UpdateEnvironmentWeakEdges);data_->weakRegistered=false;}
   for(auto& root:state->weakGlobals){CHECK(!root->strong);root->weak=nullptr;}

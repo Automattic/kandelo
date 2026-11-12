@@ -5,6 +5,7 @@ namespace kandelo::node {
 JSObject* CreateBufferBinding(JSContext* cx, JS::HandleObject realm);
 JSObject* CreateSnapshotBinding(JSContext*,JS::HandleObject);
 JSObject* CreateDiagnosticsBinding(JSContext*,JS::HandleObject);
+JSObject* CreateProcessMethodsBinding(JSContext*,JS::HandleObject);
 bool DefineNativeContextTestAPI(JSContext*,JS::HandleObject);
 bool DefineNativePropertyTestAPI(JSContext*,JS::HandleObject);
 JSObject* CreateCodecState(JSContext* cx);

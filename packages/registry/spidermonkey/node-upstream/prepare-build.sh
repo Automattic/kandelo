@@ -48,6 +48,9 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/types.h" \
     "$node_consumer/buffer-upstream.cpp" \
     "$node_consumer/diagnostics-upstream.cpp" \
+    "$node_consumer/process-methods-upstream.cpp" \
+    "$node_consumer/process-object-upstream.cpp" \
+    "$node_consumer/process-native-api.h" \
     "$node_consumer/native-object-api.h" \
     "$node_consumer/native-object-codecs-inl.h" \
     "$node_consumer/property-codecs-inl.h" \

@@ -6,7 +6,7 @@
     "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
   },
   "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
-  "sourceManifestSha256": "e413fa69b85dac5ded3318ab6600fb73ef859471bf19108f95556c5ce6ecf483",
+  "sourceManifestSha256": "6450ff566f281298da599f26c4e7e93b069aace0a5f1316caaf72b5d7034ae4f",
   "sourceOffsetUnits": "Unicode code points; line numbers are one-based",
   "counts": {
     "nativeFilesScanned": 460,
@@ -789,7 +789,7 @@
       "bytes": 9757,
       "sha256": "98e67d4365e66ac0345cba12f238905b2c349c76d1fe918ce975bb542f722aad",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/debug_utils.cc",
@@ -803,7 +803,7 @@
       "bytes": 7892,
       "sha256": "040b8d03509d8908cb5521f038ba9d95dab01f022b06070401e548d731596cb5",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/diagnosticfilename-inl.h",
@@ -1762,7 +1762,7 @@
       "bytes": 1130,
       "sha256": "a88e46ee815d45c7f58188655f117f526a34811e6db536f5b404c5d5a2050180",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_env_var.cc",
@@ -2112,14 +2112,14 @@
       "bytes": 737,
       "sha256": "22ad1b25a496672fa61429c06cb6848c25d50c5c81618e20ea8b83c35d0e5987",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_process.h",
       "bytes": 3909,
       "sha256": "92d60126064d1f132ec7179d957a7baee2aa4cb5d47cf8f4505a2ec29c0308d6",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_process_events.cc",
@@ -2133,7 +2133,7 @@
       "bytes": 29912,
       "sha256": "909b412cc5fa20de7eb1a0de081849edd98dbe4a239ae412e48551eb2deb0b39",
       "registrations": 3,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_process_object.cc",
@@ -2210,7 +2210,7 @@
       "bytes": 2129,
       "sha256": "281e00e8265720a12ce69e88267dfabf33c57c16a91795c49ee4d5cf7c63cbcb",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_root_certs.h",
@@ -2560,7 +2560,7 @@
       "bytes": 1049,
       "sha256": "fd447905dae3570d308fc6746ab7ffef9571d79b7c3aa67805f0f564d767549a",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/permission/boolean_permission.h",
@@ -2602,7 +2602,7 @@
       "bytes": 3099,
       "sha256": "db98ec7e2de879cdc644aa72d307f9f42572044bf8ff460cacb3d05af37b0e8d",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/pipe_wrap.cc",

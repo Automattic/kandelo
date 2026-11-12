@@ -11,19 +11,35 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <list>
 #include <memory>
 #include <set>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
+#include <uv.h>
 #include "js/TypeDecls.h"
 
 namespace kandelo::node { struct TraceProcess; }
+namespace node {
+struct LibuvMutexTraits;
+template<class Traits> class MutexBase;
+template<class T,class MutexT> class ExclusiveAccess;
+}
 namespace kandelo_node_codec_api {
 class ArrayBuffer; class SharedArrayBuffer; class Value; class Name; class Object; class String; class Function; class Isolate; class ObjectTemplate; class FunctionTemplate;
 template<class T> class PropertyCallbackInfo;
 struct Cell; struct Frame; struct View; struct MemoryAccount; struct State; struct Context; struct ContextScopeData; struct StartupData;
+struct HeapStatisticsData;
+class HeapStatistics {
+  std::unique_ptr<HeapStatisticsData> data_;
+ public:
+  HeapStatistics();~HeapStatistics();
+  size_t total_heap_size() const;size_t used_heap_size() const;size_t external_memory() const;
+};
+enum class EmbedderDataTag { kDefault };
 [[noreturn]] void Crash(const char*);
 bool SameLocal(Value*,Value*);
 bool SameLocal(Context*,Context*);
@@ -58,7 +74,9 @@ template<class T> class Maybe {
   explicit Maybe(T value):present_(true),value_(value) {}
   bool To(T* out) const { if(present_) *out=value_;return present_; }
   bool IsNothing() const { return !present_; }
+  bool IsJust() const { return present_; }
   T FromJust() const { if(!present_) Crash("Empty native codec result");return value_; }
+  T ToChecked() const { return FromJust(); }
   T FromMaybe(T fallback) const { return present_?value_:fallback; }
   void Check() const { if(!present_ || !value_) Crash("Failed native codec result"); }
 };
@@ -116,11 +134,13 @@ class Value {
   bool IsInt32() const;
   bool IsUint32() const;
   bool IsBoolean() const;
+  bool IsFloat64Array() const;
   bool IsTrue() const;
   Maybe<int64_t> IntegerValue(Local<Context>);
   Maybe<int32_t> Int32Value(Local<Context>);
   Maybe<uint32_t> Uint32Value(Local<Context>);
   MaybeLocal<String> ToString(Local<Context>);
+  MaybeLocal<String> ToDetailString(Local<Context>);
 };
 class Name : public Value { public: using Value::Value; };
 enum PropertyAttribute { None=0, ReadOnly=1, DontEnum=2, DontDelete=4 };
@@ -128,6 +148,23 @@ enum class SideEffectType { kHasSideEffect, kHasNoSideEffect, kHasSideEffectToRe
 using AccessorNameGetterCallback=void(*)(Local<Name>,const PropertyCallbackInfo<Value>&);
 using AccessorNameSetterCallback=void(*)(Local<Name>,Local<Value>,const PropertyCallbackInfo<void>&);
 std::unique_ptr<Value> RetainRoot(Isolate*,Local<Value>);
+// Value roots remain owned independently of temporary caller HandleScopes.
+// Other LocalVector element types require their own typed ownership support.
+template<class T> class LocalVector {
+  static_assert(std::is_same_v<T,Value>);
+  Isolate* isolate_;
+  std::vector<std::unique_ptr<Value>> roots_;
+  std::vector<Local<Value>> values_;
+ public:
+  explicit LocalVector(Isolate* isolate):isolate_(isolate) {}
+  void push_back(Local<Value> value) {
+    auto root=RetainRoot(isolate_,value);
+    values_.emplace_back(root.get());roots_.push_back(std::move(root));
+  }
+  void emplace_back(Local<Value> value) { push_back(value); }
+  Local<Value>* data() { return values_.data(); }
+  size_t size() const { return values_.size(); }
+};
 struct GlobalRoot;
 std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate*,Local<Value>);
 Local<Value> ReadGlobalRoot(Isolate*,const std::shared_ptr<GlobalRoot>&);
@@ -152,6 +189,9 @@ template<class T> class Global {
 class Object : public Value {
  public:
   using Value::Value;
+  static Local<Object> New(Isolate*);
+  Maybe<bool> DefineOwnProperty(Local<Context>,Local<Name>,Local<Value>,PropertyAttribute=None);
+  void* GetAlignedPointerFromInternalField(int,EmbedderDataTag);
   Maybe<bool> Set(Local<Context>,Local<Value>,Local<Value>);
   Maybe<bool> SetPrivate(Local<Context>,Local<Value>,Local<Value>);
   Maybe<bool> SetPrototypeV2(Local<Context>,Local<Object>);
@@ -172,6 +212,7 @@ class Array : public Object {
  public:
   using Object::Object;
   static Local<Array> New(Isolate*);
+  static Local<Array> New(Isolate*,Local<Value>*,size_t);
   Maybe<bool> Set(Local<Context>,int32_t,Local<Value>);
   uint32_t Length() const;
   MaybeLocal<Value> Get(Local<Context>,uint32_t);
@@ -236,6 +277,7 @@ class ObjectTemplate : public Object {
 };
 class FunctionTemplate : public Object {
  public: using Object::Object;
+  static Local<FunctionTemplate> New(Isolate*);
   Local<ObjectTemplate> InstanceTemplate();
   MaybeLocal<Function> GetFunction(Local<Context>);
   void SetClassName(Local<String>);
@@ -295,6 +337,7 @@ class Isolate {
   Local<Value> GetContinuationPreservedEmbedderDataV2();
   void SetContinuationPreservedEmbedderDataV2(Local<Value>);
   void ThrowException(Local<Value>);
+  void GetHeapStatistics(HeapStatistics*);
 };
 Local<Value> Undefined(Isolate*);
 class HandleScope {
@@ -413,6 +456,13 @@ class TwoByteValue : public MaybeStackBuffer<uint16_t> {
 };
 class Utf8Value : public MaybeStackBuffer<char> {
  public: explicit Utf8Value(Isolate*,Local<Value>);
+  std::string_view ToStringView() const { return {out(),length()}; }
+  std::string ToString() const { return {out(),length()}; }
+};
+class BufferValue : public MaybeStackBuffer<char> {
+ public:
+  BufferValue(Isolate*,Local<Value>);
+  std::string ToString() const { return {out(),length()}; }
 };
 struct SpanOwner;
 template<class T,size_t N=64> class ArrayBufferViewContents {
@@ -423,6 +473,18 @@ template<class T,size_t N=64> class ArrayBufferViewContents {
   T* data() const;size_t length() const;
 };
 class Environment;class IsolateData;class BaseObject;struct NativeRealmData;
+class EnabledDebugList;
+class AsyncWrap;class ReqWrapBase;class HandleWrap;class NodeArrayBufferAllocator;
+class ProcessImmediateInfo;
+using Mutex=::node::MutexBase<::node::LibuvMutexTraits>;
+template<class T> using ExclusiveAccess=::node::ExclusiveAccess<T,Mutex>;
+// A view of the original native options owner's inspector address. The port
+// lives in that owner and is shared with option parsing, not copied here.
+class HostPort {
+ public:
+  int port() const;void set_port(int);
+};
+enum class ExitCode : int;
 class Realm {
   std::unique_ptr<NativeRealmData> data_;
  public:
@@ -505,6 +567,20 @@ class Environment {
   }
   Isolate* isolate();Local<Context> context();Local<ObjectTemplate> i18n_converter_template();
   Realm* principal_realm();bool can_call_into_js() const;
+  bool owns_process_state() const;bool has_run_bootstrapping_code() const;
+  EnabledDebugList* enabled_debug_list();
+  void ThrowUVException(int,const char*,const char* = nullptr,const char* = nullptr,const char* = nullptr);
+  void ThrowErrnoException(int,const char*,const char* = nullptr,const char* = nullptr);
+  uv_loop_t* event_loop();
+  std::list<ReqWrapBase*>* req_wrap_queue();
+  std::list<HandleWrap*>* handle_wrap_queue();
+  const int32_t* timeout_info();ProcessImmediateInfo* immediate_info();
+  void Exit(ExitCode);void set_process_emit_warning_sync(Local<Function>);
+  const std::vector<std::string>& argv();const std::vector<std::string>& exec_argv();
+  const std::string& exec_path();ExclusiveAccess<HostPort>* inspector_host_port();
+  Local<String> process_string();Local<Value> exit_info_private_symbol();
+  struct ExitInfo {Local<Int32Array> GetJSArray();};
+  ExitInfo exit_info();
   using EmbedderPreload=void(*)(Environment*,Local<Object>,Local<Function>);
   EmbedderPreload embedder_preload();void set_embedder_preload(EmbedderPreload);
   Local<Object> buffer_prototype_object();Local<Value> untransferable_object_private_symbol();
@@ -530,6 +606,7 @@ class Environment {
 class IsolateData {
  public: Isolate* isolate();void set_i18n_converter_template(Local<ObjectTemplate>);
   bool is_building_snapshot() const;
+  NodeArrayBufferAllocator* node_allocator();
 };
 struct NativeObjectOwner;
 class MemoryTracker;
@@ -555,6 +632,7 @@ class BaseObject {
   BaseObject(Environment*,Local<Object>);virtual ~BaseObject();
   BaseObject(Realm*,Local<Object>);
   void MakeWeak();static BaseObject* Unwrap(Local<Object>);
+  static BaseObject* UnwrapNativeBinding(Local<Object>);
   void ClearWeak();Local<Object> object() const;Realm* realm() const;
   void Detach();bool IsDetached() const;
   static Local<FunctionTemplate> MakeLazilyInitializedJSTemplate(Environment*);

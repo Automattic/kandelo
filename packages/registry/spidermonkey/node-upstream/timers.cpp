@@ -460,6 +460,19 @@ bool DispatchRuntimeTimers(JSContext* cx, JS::HandleObject runtime,
   return true;
 }
 
+uv_loop_t* GetRuntimeEventLoop(JSContext* cx,JS::HandleObject runtime) {
+  JS::RootedObject wrapped(cx,GetRuntimeTimerState(cx,runtime,false));
+  if(!wrapped){Report(cx,"Native timer loop is not initialized");return nullptr;}
+  JS::RootedObject state(cx,UnwrapState(cx,wrapped));if(!state)return nullptr;
+  return &Native(state)->loop;
+}
+JSObject* GetRuntimeTimerInfo(JSContext* cx,JS::HandleObject runtime,bool immediate) {
+  JS::RootedObject wrapped(cx,GetRuntimeTimerState(cx,runtime,false));
+  if(!wrapped){Report(cx,"Native timer counters are not initialized");return nullptr;}
+  JS::RootedObject state(cx,UnwrapState(cx,wrapped));if(!state)return nullptr;
+  JS::RootedObject array(cx,&JS::GetReservedSlot(state,immediate?ImmediateInfo:TimeoutInfo).toObject());
+  if(!JS_WrapObject(cx,&array))return nullptr;return array;
+}
 void* AttachRuntimeForeground(JSContext* cx,JS::HandleObject runtime,void* owner,
                               RuntimeForegroundCallback callback,RuntimeForegroundPending pending) {
   JS::RootedObject wrapped(cx,GetRuntimeTimerState(cx,runtime,true));if(!wrapped)return nullptr;

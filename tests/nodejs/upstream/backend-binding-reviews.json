@@ -4,7 +4,7 @@
   "scope": "Reviewed survey routing and dispatcher snapshot. Family names organize further review, not API/owning-layer or native-contract completion.",
   "dispatcher": {
     "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
-    "sha256": "1757e0472cd7df166dc0be406d79334a63ede8595386b90c296a6a35d151ddae",
+    "sha256": "061648e176f3eca99d26f891eec6079bc90b61b3a882384aab717742e8b79b59",
     "functionStart": "bool InternalBinding(",
     "functionEnd": "bool LinkedBinding(",
     "reviewedRouteNames": [
@@ -21,6 +21,7 @@
       "mksnapshot",
       "module_wrap",
       "options",
+      "process_methods",
       "string_decoder",
       "symbols",
       "task_queue",
@@ -30,7 +31,8 @@
       "util"
     ],
     "routePresenceIsCompleteBindingSupport": false,
-    "unmatchedBehavior": "ERR_KANDELO_NOT_IMPLEMENTED; actual Native Node binding missing error"
+    "unmatchedBehavior": "ERR_KANDELO_NOT_IMPLEMENTED; actual Native Node binding missing error",
+    "currentSourceBuildStatus": "revision51 compiles whole process units but fails linking; source route is not runtime support"
   },
   "bindings": [
     {

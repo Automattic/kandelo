@@ -47,6 +47,7 @@
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/codec-agent-includes.h"
 #include "shell/node-upstream/codec-native-api.h"
+#include "shell/node-upstream/process-native-api.h"
 #include "shell/node-upstream/codecs-upstream/errors.generated.h"
 #define v8 kandelo_node_codec_api
 #define node kandelo_node_codec_impl
@@ -182,6 +183,10 @@ bool Value::IsArrayBufferView() const {
 bool Value::IsArrayBuffer() const { auto* o=UnwrapObject(Frame::current->cx,cell().value);return o && JS::IsArrayBufferObject(o); }
 bool Value::IsSharedArrayBuffer() const { auto* o=UnwrapObject(Frame::current->cx,cell().value);return o && JS::IsSharedArrayBufferObject(o); }
 bool Value::IsBoolean() const { return cell().value.isBoolean(); }
+bool Value::IsFloat64Array() const {
+  auto* view=UnwrapView(Frame::current->cx,cell().value);
+  return view&&JS_GetArrayBufferViewType(view)==JS::Scalar::Float64;
+}
 bool Value::IsTrue() const { return cell().value.isBoolean() && cell().value.toBoolean(); }
 bool Value::IsInt32() const {
   auto value=cell().value.get();if (!value.isNumber()) return false;
@@ -281,10 +286,12 @@ void Isolate::ThrowException(Local<Value> value) {
 }
 HandleScope::HandleScope(Isolate* isolate) : frame_(&Current(isolate)), previous_(frame_->roots.size()), previousContexts_(frame_->contexts.size()) {}
 HandleScope::~HandleScope() { frame_->contexts.resize(previousContexts_);frame_->roots.resize(previous_); }
-static Local<Value> Error(Isolate* isolate, JSExnType type, const char* code, const char* text) {
+static Local<Value> Error(Isolate* isolate, JSExnType type, const char* code, std::string_view text) {
   auto& f = Current(isolate); if (JS_IsExceptionPending(f.cx)) return {};
   JS::RootedObject stack(f.cx); if (!JS::CaptureCurrentStack(f.cx, &stack)) return {};
-  JS::RootedString filename(f.cx, JS_NewStringCopyZ(f.cx, "")), message(f.cx, JS_NewStringCopyZ(f.cx, text));
+  CHECK_LE(text.size(),size_t(INT_MAX));Local<String> encoded;
+  if(!String::NewFromUtf8(isolate,text.data(),NewStringType::kNormal,int(text.size())).ToLocal(&encoded))return {};
+  JS::RootedString filename(f.cx, JS_NewStringCopyZ(f.cx, "")), message(f.cx, encoded->cell().value.toString());
   JS::Rooted<mozilla::Maybe<JS::Value>> cause(f.cx, mozilla::Nothing()); JS::RootedValue error(f.cx);
   if (!filename || !message || !JS::CreateError(f.cx, type, stack, filename, 0,
       JS::ColumnNumberOneOrigin(1), nullptr, message, cause, &error)) return {};
@@ -314,6 +321,31 @@ Maybe<bool> Object::Set(Local<Context> context, Local<Value> property, Local<Val
 Local<Array> Array::New(Isolate* isolate) {
   auto& f = Current(isolate); JS::RootedObject object(f.cx, JS::NewArrayObject(f.cx, 0)); if (!object) return {};
   JS::RootedValue value(f.cx, JS::ObjectValue(*object)); return f.Own<Array>(value);
+}
+Local<Array> Array::New(Isolate* isolate,Local<Value>* entries,size_t count) {
+  auto& f=Current(isolate);JS::RootedValueVector values(f.cx);
+  for(size_t i=0;i<count;++i){
+    JS::RootedValue value(f.cx,Input(entries[i]));
+    if(!JS_WrapValue(f.cx,&value)||!values.append(value))return {};
+  }
+  JS::RootedObject object(f.cx,JS::NewArrayObject(f.cx,values));if(!object)return {};
+  JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Array>(value);
+}
+Local<Object> Object::New(Isolate* isolate) {
+  auto& f=Current(isolate);JS::RootedObject object(f.cx,JS_NewPlainObject(f.cx));if(!object)return {};
+  JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Object>(value);
+}
+Maybe<bool> Object::DefineOwnProperty(Local<Context> context,Local<Name> key,
+                                     Local<Value> input,PropertyAttribute attrs) {
+  auto& f=Current(context->isolate);if(JS_IsExceptionPending(f.cx))return {};
+  Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());
+  JS::RootedValue name(f.cx,Input(key)),value(f.cx,Input(input));JS::RootedId id(f.cx);
+  if(!JS_WrapObject(f.cx,&object)||!JS_WrapValue(f.cx,&name)||!JS_WrapValue(f.cx,&value)||!JS_ValueToId(f.cx,name,&id))return {};
+  unsigned flags=(attrs&DontEnum)?0:JSPROP_ENUMERATE;
+  if(attrs&ReadOnly)flags|=JSPROP_READONLY;
+  if(attrs&DontDelete)flags|=JSPROP_PERMANENT;
+  if(!JS_DefinePropertyById(f.cx,object,id,value,flags))return {};
+  return Just(true);
 }
 Maybe<bool> Array::Set(Local<Context> context, int32_t index, Local<Value> input) {
   auto& f = Current(context->isolate);Context::Scope home(context);JS::RootedObject object(f.cx, &cell().value.toObject());
@@ -612,6 +644,23 @@ BaseObject* BaseObject::Unwrap(Local<Object> input) {
 Local<String> OneByteString(Isolate* isolate,const char* text) {
   return String::NewFromOneByte(isolate,reinterpret_cast<const uint8_t*>(text),NewStringType::kNormal,int(std::strlen(text))).ToLocalChecked();
 }
+Local<String> OneByteString(Isolate* isolate,const std::string& text) {
+  CHECK_LE(text.size(),String::kMaxLength);
+  return String::NewFromOneByte(isolate,reinterpret_cast<const uint8_t*>(text.data()),NewStringType::kNormal,int(text.size())).ToLocalChecked();
+}
+MaybeLocal<Value> ToV8Value(Local<Context> context,const std::vector<std::string>& input) {
+  auto& f=Current(context->isolate);Context::Scope home(context);
+  if(JS_IsExceptionPending(f.cx))return {};
+  JS::RootedValueVector values(f.cx);
+  for(const auto& text:input){
+    if(text.size()>size_t(String::kMaxLength)){context->isolate->ThrowException(ERR_STRING_TOO_LONG(context->isolate));return {};}
+    Local<String> string;
+    if(!String::NewFromUtf8(context->isolate,text.data(),NewStringType::kNormal,int(text.size())).ToLocal(&string))return {};
+    JS::RootedValue value(f.cx,Input(string));if(!values.append(value))return {};
+  }
+  JS::RootedObject array(f.cx,JS::NewArrayObject(f.cx,values));if(!array)return {};
+  JS::RootedValue value(f.cx,JS::ObjectValue(*array));return f.OwnValue(value);
+}
 bool StringEqualNoCase(const char* a,const char* b) {
   // The encoding parser requires ASCII folding independent of guest locale.
   locale_t ascii=newlocale(LC_CTYPE_MASK,"C",nullptr);CHECK_NOT_NULL(ascii);
@@ -620,6 +669,30 @@ bool StringEqualNoCase(const char* a,const char* b) {
 void THROW_ERR_INVALID_ARG_TYPE(Isolate* isolate,const char* text) {
   auto error=api::Error(isolate,JSEXN_TYPEERR,"ERR_INVALID_ARG_TYPE",text);
   if (!error.IsEmpty()) isolate->ThrowException(error);
+}
+void THROW_ERR_INVALID_ARG_TYPE(Environment* env,const char* format,const std::string& argument) {
+  auto text=SPrintF(format,argument);
+  auto value=api::Error(env->isolate(),JSEXN_TYPEERR,"ERR_INVALID_ARG_TYPE",text);
+  if(!value.IsEmpty())env->isolate()->ThrowException(value);
+}
+void FWrite(FILE* stream,const std::string& bytes) {
+  // The guest libc FILE owns buffering, descriptor writes and stream errors.
+  // Byte length is explicit: embedded NULs are output, not terminators.
+  std::fwrite(bytes.data(),1,bytes.size(),stream);
+}
+std::string ToUpper(std::string_view input) {
+  std::string result(input);
+  for(char& character:result)
+    if(character>='a'&&character<='z')character=char(character-'a'+'A');
+  return result;
+}
+void THROW_ERR_INVALID_ARG_VALUE(Environment* env,const char* text) {
+  auto value=api::Error(env->isolate(),JSEXN_TYPEERR,"ERR_INVALID_ARG_VALUE",text);
+  if(!value.IsEmpty())env->isolate()->ThrowException(value);
+}
+void THROW_ERR_MISSING_ARGS(Environment* env,const char* text) {
+  auto value=api::Error(env->isolate(),JSEXN_TYPEERR,"ERR_MISSING_ARGS",text);
+  if(!value.IsEmpty())env->isolate()->ThrowException(value);
 }
 void THROW_ERR_ENCODING_INVALID_ENCODED_DATA(Isolate* isolate,const char* format,const char* encoding) {
   int length=std::snprintf(nullptr,0,format,encoding);CHECK_GE(length,0);
@@ -812,6 +885,18 @@ JSObject* CreateCodecState(JSContext* cx) {
   JS::RootedObject object(cx,JS_NewObject(cx,&api::stateClass)); if (!object) return nullptr;
   auto state=std::make_shared<api::State>(); state->isolate.owner=state;
   JS::SetReservedSlot(object,0,JS::PrivateValue(new std::shared_ptr<api::State>(state))); return object;
+}
+JSObject* CreateProcessMethodsBinding(JSContext* cx,JS::HandleObject realm) {
+  JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if(!runtime)return nullptr;
+  auto state=api::Data(cx,runtime);if(!state)return nullptr;
+  api::Frame frame(cx,realm,state,nullptr,api::Domain::Diagnostics);
+  JS::RootedObject object(cx,JS_NewObject(cx,&native::nativeBindingClass));if(!object)return nullptr;
+  frame.binding=object;JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
+  native::IsolateData isolateData;
+  kandelo_process_methods_adapter::isolate_initializer(&isolateData,frame.Own<api::ObjectTemplate>(value));
+  if(JS_IsExceptionPending(cx))return nullptr;
+  kandelo_process_methods_adapter::initializer(frame.Own<api::Object>(value),frame.OwnValue(unused),state->isolate.GetCurrentContext(),nullptr);
+  return JS_IsExceptionPending(cx)?nullptr:object.get();
 }
 JSObject* CreateStringDecoderBinding(JSContext* cx,JS::HandleObject realm) {
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm)); if (!runtime) return nullptr;

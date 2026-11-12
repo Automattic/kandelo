@@ -110,6 +110,23 @@ Local<Object> BaseObject::object()const{CHECK(owner_->realm);return owner_->hand
 Realm* BaseObject::realm()const{CHECK(owner_->realm);return owner_->realm;}
 void BaseObject::Detach(){CHECK(owner_->realm&&!owner_->detached);owner_->detached=true;}
 bool BaseObject::IsDetached()const{return owner_->detached;}
+BaseObject* BaseObject::UnwrapNativeBinding(Local<Object> input) {
+  auto& f=*Frame::current;f.state->environment.AssertForeground();
+  JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
+  if(!object||JS::GetClass(object)!=&nativeBindingClass)return nullptr;
+  auto pointer=JS::GetReservedSlot(object,0);if(pointer.isUndefined())return nullptr;
+  auto* native=static_cast<BaseObject*>(pointer.toPrivate());
+  if(native->owner_->state!=f.state||!native->owner_->realm||native->owner_->detached)return nullptr;
+  JS::RootedObject realm(f.cx,&JS::GetReservedSlot(object,1).toObject());
+  if(!kandelo::node::CheckRealmLibraryActive(f.cx,realm))return nullptr;
+  return native;
+}
+BaseObject* UnwrapSnapshotable(Local<Object> input,EmbedderObjectType type) {
+  auto* object=BaseObject::UnwrapNativeBinding(input);
+  if(!object||!object->is_snapshotable())return nullptr;
+  auto* snapshotable=static_cast<SnapshotableObject*>(object);
+  return snapshotable->type()==type?object:nullptr;
+}
 SnapshotableObject::SnapshotableObject(Realm* realm,Local<Object> wrap,EmbedderObjectType type):BaseObject(realm,wrap),type_(type){}
 namespace {
 bool NativeObjectConstructor(JSContext* cx,unsigned argc,JS::Value* vp){

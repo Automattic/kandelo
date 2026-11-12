@@ -9,17 +9,17 @@
     {
       "path": "tests/nodejs/upstream/dependency-graph.json",
       "bytes": 3006060,
-      "sha256": "5b234a8e0238fc368dedb5a6d29318b910dade3c84cb06517d15e401a7f3140e"
+      "sha256": "e29bd2bf3fba7eb84b64da5c35ed4c19279c7e14ad9d3f2d434785847125f936"
     },
     {
       "path": "tests/nodejs/upstream/native-registration-index.json",
-      "bytes": 188966,
-      "sha256": "a44fc56edc7eb3234d50b41473df74781317bfd3fc49843538f7bc2d530786c3"
+      "bytes": 188957,
+      "sha256": "c5b967290ad696cd7a33426de3e3c5c57831502913b7d9ceef6d9fe51cc84714"
     },
     {
       "path": "tests/nodejs/upstream/backend-binding-reviews.json",
-      "bytes": 16367,
-      "sha256": "0358e8e73fc25930849c97e17bff4b65edcffd791a677d12d526ae71c6ef4f11"
+      "bytes": 16522,
+      "sha256": "96e441368bd344cff670eeacc0725f2825a84d2bb89a3a05a701aea5fcb4e9b7"
     },
     {
       "path": "tests/nodejs/upstream/dependency-dynamic-reviews.json",
@@ -33,8 +33,8 @@
     },
     {
       "path": "third_party/nodejs/sources.json",
-      "bytes": 131213,
-      "sha256": "e413fa69b85dac5ded3318ab6600fb73ef859471bf19108f95556c5ce6ecf483"
+      "bytes": 133086,
+      "sha256": "6450ff566f281298da599f26c4e7e93b069aace0a5f1316caaf72b5d7034ae4f"
     }
   ],
   "counts": {
@@ -45,8 +45,8 @@
     "literalBindingNames": 72,
     "sourceRegistrationNames": 77,
     "literalBindingsWithInitializerSyntax": 72,
-    "literalBindingsWithKandeloRoute": 20,
-    "literalBindingsWithoutKandeloRoute": 52,
+    "literalBindingsWithKandeloRoute": 21,
+    "literalBindingsWithoutKandeloRoute": 51,
     "sourceOnlyInitializerNames": [
       "debug"
     ],
@@ -61,7 +61,7 @@
   },
   "dispatcher": {
     "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
-    "sha256": "1757e0472cd7df166dc0be406d79334a63ede8595386b90c296a6a35d151ddae",
+    "sha256": "061648e176f3eca99d26f891eec6079bc90b61b3a882384aab717742e8b79b59",
     "functionStart": "bool InternalBinding(",
     "functionEnd": "bool LinkedBinding(",
     "reviewedRouteNames": [
@@ -78,6 +78,7 @@
       "mksnapshot",
       "module_wrap",
       "options",
+      "process_methods",
       "string_decoder",
       "symbols",
       "task_queue",
@@ -88,6 +89,7 @@
     ],
     "routePresenceIsCompleteBindingSupport": false,
     "unmatchedBehavior": "ERR_KANDELO_NOT_IMPLEMENTED; actual Native Node binding missing error",
+    "currentSourceBuildStatus": "revision51 compiles whole process units but fails linking; source route is not runtime support",
     "matchesPriorTestedArtifactInput": false,
     "priorDispatcherInput": {
       "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
@@ -3001,8 +3003,8 @@
         96
       ],
       "registrationBuildSelectionEvaluated": false,
-      "kandeloSourceRoute": false,
-      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
       "reviewRoutingFamily": "processes",
       "boundedContractInventory": null,
       "apiContractComplete": false,

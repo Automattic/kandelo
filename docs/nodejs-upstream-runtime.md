@@ -16,8 +16,10 @@ protected state. It now executes the original internal tracing helper and
 passes the live `mksnapshot` binding and native lazy data-property setup in
 original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
-callback and completes original diagnostics setup, then stops at missing
-`process_methods` in `internal/process/per_thread:68`, via bootstrap:152. The original native tracing agent, binding,
+callback and completes original diagnostics setup, then the last runnable revision stops at missing
+`process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
+The current revision 51 source connects the original process initializer, but
+its targeted build still fails final linking and has no runnable artifact. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -84,7 +86,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 557 files after complete native source/header additions; every
+manifest has 570 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -2078,3 +2080,49 @@ contracts still need integration. Existing zero-filled `getrusage` and fixed
 does not advance it. Empty/simple startup, output/errors/jobs/exit, separate
 CJS/ESM, the full catalog and ordered roadmap remain unfinished. The broader
 backend roadmap remains behind the startup/catalog user review gate.
+
+
+## Whole original process units (revision 51; link incomplete)
+
+The current source compiles complete unchanged `node_process_methods.cc` and
+`node_process_object.cc`, and captures/calls their actual original initializer
+callbacks through a cached `process_methods` source route. Final linking still
+fails on 35 unique symbols. There is **no runnable revision-51 artifact**, no new
+startup advancement, and no current four-host runtime evidence. Revision 50 is
+the last identified runnable artifact. The 35 symbols cover this link invocation;
+they are not the complete native interface catalog. The original
+`CreateProcessObject` factory is still unused and may require more contracts.
+
+Nine whole files were added to the authenticated import, bringing it to 570;
+all prior 561 records and all 443 JavaScript files (10,993,403 bytes) are unchanged.
+`node_process_object.cc` already existed as provenance and is newly compiled.
+The original formatting algorithms stay in complete `debug_utils.h` and
+`debug_utils-inl.h`; only declarative provider-name macros are staged separately
+from the already imported `async_wrap.h`. No function body is extracted and no
+upstream JavaScript or native algorithm is rewritten. A fresh import reproduces
+the manifest byte for byte.
+
+The compiled embedding definitions now connect the process Environment to the
+canonical libuv loop and actual live timer arrays, rooted/pinned for native frame
+borrows. They retain/clear the warning callback, read actual full-bootstrap
+completion, share inspector-port state with the original options parser, check
+native binding ownership/type, and supply rooted arrays, property definitions,
+string conversions and method registration. Formatting uses the original
+algorithms over guest libc byte writes and explicit-length UTF-8 engine strings.
+These definitions have compile evidence; runtime behavior remains untested.
+
+The final targeted normal build has zero compiler errors and fails linking.
+All seven build attempts and exact missing symbols are retained in
+[process-units-compile-check.json](../tests/nodejs/upstream/process-units-compile-check.json).
+Source-index controls, canonical regeneration and altered-edge rejection pass;
+a native-only raw-debug control preserves NUL/UTF-8/percent bytes. Neither is
+validation of the unlinked engine. Declaration-only backends remain missing,
+including resource queues, process ownership/arguments, exit/at-exit/signals,
+permissions, system errors, dotenv/path handling, heap/allocator accounting,
+native loading and three libuv memory functions. Known guest kernel rusage
+zeroes and fixed sysinfo values are implementation gaps, not real measurements
+or proven browser boundaries. Fixing them would require a deferred kernel build;
+no such change/build was made. Full products/images, successor-ABI builds and
+overall suites remain deferred; original assertions and async-context guards
+remain intact. Startup, separate CJS/ESM entrypaths and the full catalog/roadmap
+remain incomplete.

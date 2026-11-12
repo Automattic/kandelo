@@ -432,7 +432,7 @@ bash "$SCRIPT_DIR/node-upstream/prepare-build.sh" \
 
 export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -DUV_PLATFORM_KANDELO=1"
 export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -I$V8_TRACING_PREFIX/include -DUV_PLATFORM_KANDELO=1 -DV8_PLATFORM_KANDELO=1"
-export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a $V8_TRACING_PREFIX/lib/libv8-tracing.a $LIBUV_PREFIX/lib/libuv.a $NBYTES_PREFIX/lib/libnbytes.a $SIMDUTF_PREFIX/lib/libsimdutf.a -lpthread -Wl,-z,stack-size=16777216"
+export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a $V8_TRACING_PREFIX/lib/libv8-tracing.a $LIBUV_PREFIX/lib/libuv.a $NBYTES_PREFIX/lib/libnbytes.a $SIMDUTF_PREFIX/lib/libsimdutf.a -lpthread -Wl,-z,stack-size=16777216 -Wl,--error-limit=0"
 
 
 # Record this recipe's actual flags without executing a host layout probe.

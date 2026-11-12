@@ -2,6 +2,7 @@
 #define KANDELO_NODE_TIMERS_H
 
 #include <cstdint>
+#include <uv.h>
 
 #include "js/TypeDecls.h"
 
@@ -17,6 +18,10 @@ bool DispatchRuntimeTimers(JSContext* cx, JS::HandleObject runtime,
                            int* dispatched,
                            int64_t* nextDelay);
 JSObject* InspectRuntimeTimers(JSContext* cx, JS::HandleObject runtime);
+// Borrowed from the canonical timer state. The caller must retain the runtime;
+// array storage is borrowed separately under the codec frame's pin/root rules.
+uv_loop_t* GetRuntimeEventLoop(JSContext*, JS::HandleObject);
+JSObject* GetRuntimeTimerInfo(JSContext*, JS::HandleObject, bool immediate);
 // The canonical loop owns the actual async handle. Native producers may only
 // send its wake token; attaching, ref changes and retirement stay foreground.
 using RuntimeForegroundCallback = bool (*)(JSContext*, void*);

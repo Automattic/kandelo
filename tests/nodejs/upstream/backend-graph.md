@@ -18,8 +18,8 @@ implement the broader backend roadmap.
 | Upstream native source/header files scanned | 460 from the authenticated source archive |
 | Native registration sites | 160 across four explicitly recognized macros |
 | Registration names | 77: 73 initializer names and four external-reference-only names |
-| Current Kandelo dispatcher routes | 18 of the 72 literal names; these remain bounded implementations |
-| Literal names without a current dispatcher route | 54 |
+| Current Kandelo source dispatcher routes | 21 of the 72 literal names; process_methods is source-wired but fails final linking |
+| Literal names without a current dispatcher route | 51 |
 | Historical evidence linked | All 19 family source-review records and 33 PR reuse records |
 
 See [dependency-graph.json](dependency-graph.json),
@@ -35,8 +35,9 @@ ordinary internalBinding exports.
 A route in Kandelo's `InternalBinding` function establishes source dispatch,
 not API completeness. A native library such as libuv can already be present
 while the upstream Node binding named `uv` still lacks a route. The survey
-checks the exact dispatcher bytes against the prior identified-artifact
-receipt. It adds no guest runtime evidence.
+checks the exact dispatcher bytes against the current source review. The new
+process_methods route has no runnable artifact; its presence is not runtime
+support. Earlier identified-artifact receipts retain their historical scope.
 
 ## Paths that remain visible
 
@@ -83,9 +84,8 @@ original binding contracts; retain neither old public shims nor excerpt assembly
 
 The user selected implementing the live `mksnapshot` native interface directly
 against SpiderMonkey/Kandelo. No V8 binding generation, heap serialization port
-or upstream C++ function excerpt is used. That new route is under focused
-runtime validation; route presence does not establish startup or full API
-support. Preserve the original JavaScript and the
+or upstream C++ function excerpt is used. The live snapshot route has bounded four-host evidence; route presence does
+not establish startup or full API support. Preserve the original JavaScript and the
 no-excerpts/no-rewritten-algorithms constraint.
 After startup, reconcile the complete catalog and dependency-ordered validation
 roadmap, then stop for user review before broader backend implementation.
