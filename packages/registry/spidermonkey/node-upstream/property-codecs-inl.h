@@ -38,7 +38,7 @@ bool InvokeNativeProperty(JSContext* cx,JS::HandleObject holder,
   JS::RootedObject realm(cx,&JS::GetReservedSlot(metadata,1).toObject());
   if(!kandelo::node::CheckRealmLibraryActive(cx,realm))return false;
   JS::RootedObject runtime(cx,kandelo::node::GetRealmRuntime(cx,realm));if(!runtime)return false;
-  auto state=Data(cx,runtime);if(!state)return false;
+  auto state=ReadCodecState(cx,runtime);if(!state)return false;
   Frame frame(cx,realm,state,nullptr,callbacks->domain);
   frame.binding=holder;frame.receiver=receiver;frame.propertyHolder=holder;
   frame.propertyData=JS::GetReservedSlot(metadata,2);
@@ -157,7 +157,7 @@ bool DefineNativePropertyForTesting(JSContext* cx,unsigned argc,JS::Value* vp) {
   }
   JS::RootedObject target(cx,js::CheckedUnwrapDynamic(&args[0].toObject(),cx,false));if(!target)return false;
   JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);
-  auto state=api::Data(cx,runtime);if(!state)return false;
+  auto state=api::ReadCodecState(cx,runtime);if(!state)return false;
   JSAutoRealm home(cx,target);
   JS::RootedObject realm(cx,GetCurrentRealmOwner(cx,runtime));if(!realm)return false;
   api::Frame frame(cx,realm,state,nullptr,api::Domain::NativeProperty);

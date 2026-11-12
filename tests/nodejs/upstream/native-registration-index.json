@@ -6,7 +6,7 @@
     "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
   },
   "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
-  "sourceManifestSha256": "27535d4ac665b7e36a0852002e7503496495ae9c1abdbce864ba2e1fcd9e9190",
+  "sourceManifestSha256": "137b9d6b596eadcb0a0cb8cca91bc5cc9a3199305ec06b092f63cbcaba0e4338",
   "sourceOffsetUnits": "Unicode code points; line numbers are one-based",
   "counts": {
     "nativeFilesScanned": 460,
@@ -1629,7 +1629,7 @@
       "bytes": 1544,
       "sha256": "f0b176fcf52d09e4f2fee7f3caabd29b93a12e1d7f96d499898148998702a396",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_config.cc",
@@ -2399,7 +2399,7 @@
       "bytes": 2790,
       "sha256": "3131c977c70f925931ba9df71d994adcaa7905e3b5fdf69969e9d0df90235ba4",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_url.cc",
@@ -3218,7 +3218,7 @@
       "bytes": 32624,
       "sha256": "d5ff5ddf59fea718016f5028ec54661ea8f92e37070d82c7dae2e39ab1e91172",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/util.h",

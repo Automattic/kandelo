@@ -21,7 +21,7 @@ Maybe<int64_t> Value::IntegerValue(Local<Context> context) {
   return Just(IntegerNumber(number));
 }
 Local<Number> Number::New(Isolate* isolate,double number) {
-  auto& frame=Current(isolate);JS::RootedValue value(frame.cx,JS::DoubleValue(number));return frame.Own<Integer>(value);
+  auto& frame=Current(isolate);JS::RootedValue value(frame.cx,JS::DoubleValue(number));return frame.OwnValue(value).As<Number>();
 }
 double Number::Value() const { CHECK(IsNumber());return cell().value.toNumber(); }
 Local<Value> HandleScope::EscapeRoot(Local<Value> input) {
@@ -36,9 +36,11 @@ Local<Context> HandleScope::EscapeRoot(Local<Context> input) {
   frame_->contexts.insert(frame_->contexts.begin()+previousContexts_,std::move(owned));++previousContexts_;
   return output;
 }
-Maybe<bool> Object::SetPrototypeV2(Local<Context> context,Local<Object> prototype) {
+Maybe<bool> Object::SetPrototypeV2(Local<Context> context,Local<Value> prototype) {
   auto& frame=Current(context->isolate);NativeEntry nativeEntry(frame);if(nativeEntry.Terminated())return {};Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());
-  JS::RootedObject proto(frame.cx,&prototype->cell().value.toObject());
+  JS::RootedValue input(frame.cx,Input(prototype));
+  if(!input.isObjectOrNull()){JS_ReportErrorASCII(frame.cx,"Native prototype must be object or null");return {};}
+  JS::RootedObject proto(frame.cx,input.toObjectOrNull());
   if(!JS_WrapObject(frame.cx,&object)||!JS_WrapObject(frame.cx,&proto)||!JS_SetPrototype(frame.cx,object,proto))return {};return Just(true);
 }
 Maybe<bool> Object::SetPrivate(Local<Context> context,Local<Value> property,Local<Value> input) {
@@ -190,32 +192,7 @@ const per_process::BufferOptions* per_process::BufferOptionsAccess::operator->()
     flags.pendingDeprecation,flags.traceEnv,flags.traceEnvJsStack,flags.traceEnvNativeStack,flags.traceUncaught,flags.extraInfoOnFatal};
   return &value;
 }
-std::unique_ptr<BackingStore> AdoptIntoBackingStore(Isolate* isolate,void* data,size_t size,BackingStore::DeleterCallback deleter,void* hint) {
-  Current(isolate);return ArrayBuffer::NewBackingStore(data,size,deleter,hint);
-}
-Local<String> OneByteString(Isolate* isolate,const uint8_t* data,size_t length) { CHECK_LE(length,String::kMaxLength);return String::NewFromOneByte(isolate,data,NewStringType::kNormal,int(length)).ToLocalChecked(); }
-void SetMethodNoSideEffect(Local<Context> context,Local<Object> target,const char* name,Callback callback) {
-  // The normal engine-native dispatcher is the execution path. V8 inspector
-  // side-effect annotations are not represented as SpiderMonkey guarantees.
-  SetMethod(context,target,name,callback);
-}
-void SetFastMethod(Local<Context> context,Local<Object> target,const char* name,Callback callback,const CFunction* fast) {
-  CHECK(fast && fast->signature);SetMethod(context,target,name,callback);
-  auto& frame=Current(context->isolate);JS::RootedObject targetObject(frame.cx,&target->cell().value.toObject());JS::RootedValue function(frame.cx);
-  CHECK(JS_GetProperty(frame.cx,targetObject,name,&function));auto* closure=&js::GetFunctionNativeReserved(&function.toObject(),1).toObject();
-  static_cast<api::CallbackOwner*>(JS::GetReservedSlot(closure,0).toPrivate())->fast=fast->signature;
-  // Original SetFastMethod installs an unnamed FunctionTemplate; its property
-  // key does not become the native function's own name (src/util.cc).
-  auto& nativeFunction=function.toObject().as<JSFunction>();CHECK(!nativeFunction.hasResolvedName());
-  JS::Rooted<JSAtom*> empty(frame.cx,js::Atomize(frame.cx,"",0));CHECK(empty);nativeFunction.setAtom(empty);
-}
-void SetFastMethodNoSideEffect(Local<Context> context,Local<Object> target,const char* name,Callback callback,const CFunction* fast) { SetFastMethod(context,target,name,callback,fast); }
-void SetMethodNoSideEffect(Isolate* isolate,Local<ObjectTemplate> target,const char* name,Callback callback) {
-  SetMethodNoSideEffect(isolate->GetCurrentContext(),Local<Object>(target),name,callback);
-}
-void SetFastMethodNoSideEffect(Isolate* isolate,Local<ObjectTemplate> target,const char* name,Callback callback,const CFunction* fast) {
-  SetFastMethodNoSideEffect(isolate->GetCurrentContext(),Local<Object>(target),name,callback,fast);
-}
+
 }
 namespace kandelo::node {
 namespace {
@@ -229,7 +206,7 @@ void ReleaseBufferProbe(char* data,void* hint) {
 bool BufferNativeControl(JSContext* cx,unsigned argc,JS::Value* vp) {
   auto args=JS::CallArgsFromVp(argc,vp);if(!args.get(0).isString()){JS_ReportErrorASCII(cx,"Native Buffer control requires an operation");return false;}
   JS::RootedString operationString(cx,args[0].toString());auto operation=JS_EncodeStringToUTF8(cx,operationString);if(!operation)return false;
-  JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);auto state=api::Data(cx,runtime);if(!state)return false;
+  JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);auto state=api::ReadCodecState(cx,runtime);if(!state)return false;
   JS::RootedObject realm(cx,GetRuntimePrincipalRealm(cx,runtime));if(!realm)return false;realm=js::CheckedUnwrapDynamic(realm,cx,false);if(!realm||!CheckRealmLibraryActive(cx,realm))return false;
   api::Frame frame(cx,realm,state,&args,api::Domain::Buffer);args.rval().setUndefined();auto* isolate=&state->isolate;auto* environment=&state->environment;
   if(!std::strcmp(operation.get(),"inspect")){
@@ -273,7 +250,7 @@ bool DefineBufferNativeTestAPI(JSContext* cx,JS::HandleObject api) {
 
 JSObject* CreateBufferBinding(JSContext* cx,JS::HandleObject realm) {
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if(!runtime)return nullptr;
-  auto state=api::Data(cx,runtime);if(!state)return nullptr;api::Frame frame(cx,realm,state,nullptr,api::Domain::Buffer);
+  auto state=api::ReadCodecState(cx,runtime);if(!state)return nullptr;api::Frame frame(cx,realm,state,nullptr,api::Domain::Buffer);
   JS::RootedObject object(cx,JS_NewPlainObject(cx));if(!object)return nullptr;frame.binding=object;
   JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
   kandelo_buffer_adapter::initializer(frame.Own<api::Object>(value),frame.OwnValue(unused),state->isolate.GetCurrentContext(),nullptr);

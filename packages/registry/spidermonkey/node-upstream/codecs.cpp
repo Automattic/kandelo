@@ -205,6 +205,10 @@ void Isolate::DateTimeConfigurationChangeNotification(TimeZoneDetection detectio
   auto& f=Current(this);f.state->environment.AssertForeground();
   CHECK(detection==TimeZoneDetection::kRedetect);JS::ResetTimeZone();
 }
+bool Value::IsValue()const{return true;}
+bool Value::IsPrivate()const{return false;}
+bool Value::IsBigInt()const{return cell().value.isBigInt();}
+bool Value::IsNull()const{return cell().value.isNull();}
 bool Value::IsString() const { return cell().value.isString(); }
 bool Value::IsSymbol() const { return cell().value.isSymbol(); }
 bool Value::IsArray() const { auto* object=UnwrapObject(Frame::current->cx,cell().value);return object && object->is<js::ArrayObject>(); }
@@ -274,7 +278,11 @@ Local<Value> Frame::OwnValue(JS::HandleValue value) {
     if (JS::IsCallable(&value.toObject())) return Own<Function>(value);
     return Own<Object>(value);
   }
-  if (value.isNumber()) return Own<Integer>(value);
+  if (value.isNumber()) {
+    const double number=value.toNumber();
+    if(std::isfinite(number)&&number>=0&&number<=UINT32_MAX&&std::trunc(number)==number&&!(number==0&&std::signbit(number)))return Own<Uint32>(value);
+    return Own<Integer>(value);
+  }
   return Own<Value>(value);
 }
 Local<Value> Argument(Isolate* isolate, int index) {
@@ -516,7 +524,7 @@ Maybe<bool> Array::Set(Local<Context> context, int32_t index, Local<Value> input
 }
 static int64_t IntegerNumber(double);
 Local<Integer> Integer::New(Isolate* isolate, int input) {
-  auto& f = Current(isolate); JS::RootedValue value(f.cx, JS::Int32Value(input)); return f.Own<Integer>(value);
+  auto& f = Current(isolate); JS::RootedValue value(f.cx, JS::Int32Value(input)); return f.OwnValue(value).As<Integer>();
 }
 int64_t Integer::Value() const { CHECK(IsNumber());return IntegerNumber(cell().value.toNumber()); }
 static_assert(JS::MaxStringLength<=INT_MAX);
@@ -532,16 +540,18 @@ Local<String> String::Concat(Isolate* isolate, Local<String> left, Local<String>
   JS::RootedString string(f.cx, JS_ConcatStrings(f.cx, a, b)); if (!string) return {};
   JS::RootedValue value(f.cx, JS::StringValue(string)); return f.Own<String>(value);
 }
-MaybeLocal<String> String::NewFromOneByte(Isolate* isolate, const uint8_t* bytes, NewStringType, int length) {
+MaybeLocal<String> String::NewFromOneByte(Isolate* isolate, const uint8_t* bytes, NewStringType type, int length) {
   auto& f = Current(isolate); if (JS_IsExceptionPending(f.cx)) return {};
   StressCollection(f);
-  JS::RootedString string(f.cx, JS_NewStringCopyN(f.cx, reinterpret_cast<const char*>(bytes), size_t(length))); if (!string) return {};
+  CHECK_GE(length,-1);if(length==-1)length=int(std::strlen(reinterpret_cast<const char*>(bytes)));
+  JS::RootedString string(f.cx,type==NewStringType::kInternalized?JS_AtomizeStringN(f.cx,reinterpret_cast<const char*>(bytes),size_t(length)):JS_NewStringCopyN(f.cx,reinterpret_cast<const char*>(bytes),size_t(length))); if (!string) return {};
   JS::RootedValue value(f.cx, JS::StringValue(string)); return f.Own<String>(value);
 }
-MaybeLocal<String> String::NewFromTwoByte(Isolate* isolate, const uint16_t* bytes, NewStringType, int length) {
+MaybeLocal<String> String::NewFromTwoByte(Isolate* isolate, const uint16_t* bytes, NewStringType type, int length) {
   auto& f = Current(isolate); if (JS_IsExceptionPending(f.cx)) return {};
   StressCollection(f);
-  JS::RootedString string(f.cx, JS_NewUCStringCopyN(f.cx, reinterpret_cast<const char16_t*>(bytes), size_t(length))); if (!string) return {};
+  CHECK_GE(length,-1);if(length==-1){length=0;while(bytes[length])++length;}
+  JS::RootedString string(f.cx,type==NewStringType::kInternalized?JS_AtomizeUCStringN(f.cx,reinterpret_cast<const char16_t*>(bytes),size_t(length)):JS_NewUCStringCopyN(f.cx,reinterpret_cast<const char16_t*>(bytes),size_t(length))); if (!string) return {};
   JS::RootedValue value(f.cx, JS::StringValue(string)); return f.Own<String>(value);
 }
 MaybeLocal<String> String::NewFromUtf8(Isolate* isolate, const char* bytes, NewStringType type, int length) {
@@ -621,7 +631,7 @@ template<class Resource, class Character> class External final : public JSExtern
  public:
   explicit External(Resource* resource) : resource_(resource) {}
   void Release(const void* chars) const {
-    MOZ_RELEASE_ASSERT(chars==resource_->data()); delete resource_; delete this;
+    MOZ_RELEASE_ASSERT(chars==resource_->data()); resource_->Dispose(); delete this;
   }
   void finalize(JS::Latin1Char* chars) const override { Release(chars); }
   void finalize(char16_t* chars) const override { Release(chars); }
@@ -683,83 +693,6 @@ struct SpanOwner {
     state->spans.fetch_sub(1);
   }
 };
-template<class T,size_t N> ArrayBufferViewContents<T,N>::ArrayBufferViewContents(Local<ArrayBufferView> input) {
-  auto& frame=*Frame::current; JS::RootedObject object(frame.cx, UnwrapView(frame.cx, Input(input)));
-  CHECK_NOT_NULL(object); owner_=std::make_unique<SpanOwner>(frame, object);
-}
-template<class T,size_t N> ArrayBufferViewContents<T,N>::ArrayBufferViewContents(Local<Value> input) {
-  auto& frame=*Frame::current;JS::RootedObject object(frame.cx,api::UnwrapBytes(frame.cx,Input(input)));
-  CHECK_NOT_NULL(object);owner_=std::make_unique<SpanOwner>(frame,object);
-}
-template<class T,size_t N> ArrayBufferViewContents<T,N>::~ArrayBufferViewContents()=default;
-template<class T,size_t N> T* ArrayBufferViewContents<T,N>::data() const { return reinterpret_cast<T*>(owner_->bytes); }
-template<class T,size_t N> size_t ArrayBufferViewContents<T,N>::length() const { return owner_->size; }
-template class ArrayBufferViewContents<char,64>;
-template class ArrayBufferViewContents<uint8_t,64>;
-template<class T,size_t N> MaybeStackBuffer<T,N>::MaybeStackBuffer() { stack_[0]=T{}; }
-template<class T,size_t N> MaybeStackBuffer<T,N>::MaybeStackBuffer(size_t length) : MaybeStackBuffer() { AllocateSufficientStorage(length); }
-template<class T,size_t N> MaybeStackBuffer<T,N>::~MaybeStackBuffer() { if (data_!=stack_) std::free(data_); }
-template<class T,size_t N> T* MaybeStackBuffer<T,N>::out() { return data_; }
-template<class T,size_t N> const T* MaybeStackBuffer<T,N>::out() const { return data_; }
-template<class T,size_t N> T* MaybeStackBuffer<T,N>::operator*() { return data_; }
-template<class T,size_t N> size_t MaybeStackBuffer<T,N>::length() const { return length_; }
-template<class T,size_t N> void MaybeStackBuffer<T,N>::SetLength(size_t length) { CHECK_LE(length,capacity_); length_=length; }
-template<class T,size_t N> void MaybeStackBuffer<T,N>::AllocateSufficientStorage(size_t length) {
-  if (length>capacity_) {
-    CHECK_LE(length,std::numeric_limits<size_t>::max()/sizeof(T));
-    auto* data=static_cast<T*>(std::malloc(length*sizeof(T))); CHECK_NOT_NULL(data);
-    std::memcpy(data,data_,length_*sizeof(T)); if (data_!=stack_) std::free(data_);
-    data_=data; capacity_=length;
-  }
-  // The original utility sets logical length even when existing storage fits.
-  length_=length;
-}
-template<class T,size_t N> bool MaybeStackBuffer<T,N>::IsAllocated() const { return data_!=stack_; }
-template<class T,size_t N> void MaybeStackBuffer<T,N>::Release() { CHECK(data_!=stack_); data_=stack_; length_=0; capacity_=N; }
-template class MaybeStackBuffer<uint8_t,1024>;
-template class MaybeStackBuffer<char,256>;
-template class MaybeStackBuffer<char,512>;
-template class MaybeStackBuffer<char,1024>;
-template class MaybeStackBuffer<char,4096>;
-template class MaybeStackBuffer<char16_t,1024>;
-template class MaybeStackBuffer<char16_t,256>;
-template class MaybeStackBuffer<uint16_t,256>;
-template class MaybeStackBuffer<uint16_t,1024>;
-template class MaybeStackBuffer<Local<Value>,256>;
-template<class T> T* UncheckedMalloc(size_t length) {
-  if (length>std::numeric_limits<size_t>::max()/sizeof(T)) return nullptr;
-  return static_cast<T*>(std::malloc(length*sizeof(T)));
-}
-template char* UncheckedMalloc<char>(size_t);
-template uint16_t* UncheckedMalloc<uint16_t>(size_t);
-TwoByteValue::TwoByteValue(Isolate* isolate, Local<Value> input) {
-  auto& f=Current(isolate); Local<String> string;
-  if (!input->ToString(isolate->GetCurrentContext()).ToLocal(&string)) return;
-  AllocateSufficientStorage(string->Length()); string->WriteV2(isolate,0,string->Length(),out());
-  if (!JS_IsExceptionPending(f.cx)) SetLength(string->Length());
-}
-Utf8Value::Utf8Value(Isolate* isolate,Local<Value> input) {
-  auto& f=Current(isolate);Local<String> string;
-  if (!input->ToString(isolate->GetCurrentContext()).ToLocal(&string)) { Invalidate();return; }
-  JS::RootedString value(f.cx,string->cell().value.toString());
-  auto bytes=JS_EncodeStringToUTF8(f.cx,value);if (!bytes) { Invalidate();return; }
-  JSLinearString* linear=value->ensureLinear(f.cx);if (!linear) { Invalidate();return; }
-  size_t length=JS::GetDeflatedUTF8StringLength(linear);
-  AllocateSufficientStorage(length+1);std::memcpy(out(),bytes.get(),length+1);SetLength(length);
-}
-BufferValue::BufferValue(Isolate* isolate,Local<Value> input) {
-  auto& f=Current(isolate);
-  if(input.IsEmpty()){Invalidate();return;}
-  if(input->IsString()){
-    Utf8Value bytes(isolate,input);if(JS_IsExceptionPending(f.cx)||bytes.IsInvalidated()){Invalidate();return;}
-    AllocateSufficientStorage(bytes.length()+1);std::memcpy(out(),bytes.out(),bytes.length()+1);SetLength(bytes.length());return;
-  }
-  JS::RootedObject view(f.cx,UnwrapView(f.cx,Input(input)));
-  if(!view){Invalidate();return;}
-  JS::RootedValue value(f.cx,JS::ObjectValue(*view));auto& span=f.Borrow(f.OwnValue(value));
-  CHECK_LT(span.size,std::numeric_limits<size_t>::max());AllocateSufficientStorage(span.size+1);
-  js::jit::AtomicOperations::memcpySafeWhenRacy(reinterpret_cast<uint8_t*>(out()),SharedMem<uint8_t*>::shared(span.bytes),span.size);SetLengthAndZeroTerminate(span.size);
-}
 Environment* Environment::GetCurrent(Local<Context> context) { return &Current(context->isolate).state->environment; }
 Environment* Environment::GetCurrent(const FunctionCallbackInfo<Value>& args) { return GetCurrent(args.GetIsolate()->GetCurrentContext()); }
 Isolate* Environment::isolate() { return isolate_; }
@@ -848,46 +781,10 @@ BaseObject* BaseObject::Unwrap(Local<Object> input) {
   if (!kandelo::node::CheckRealmLibraryActive(f.cx,realm)) return nullptr;
   return static_cast<BaseObject*>(value.toPrivate());
 }
-Local<String> OneByteString(Isolate* isolate,const char* text) {
-  return String::NewFromOneByte(isolate,reinterpret_cast<const uint8_t*>(text),NewStringType::kNormal,int(std::strlen(text))).ToLocalChecked();
-}
-Local<String> Uint32ToString(Local<Context> context,uint32_t input) {
-  auto& f=Current(context->isolate);Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};
-  JS::RootedValue number(f.cx,JS::NumberValue(double(input)));JS::RootedString string(f.cx,JS::ToString(f.cx,number));if(!string)return {};
-  JS::RootedValue value(f.cx,JS::StringValue(string));return f.Own<String>(value);
-}
-Local<String> OneByteString(Isolate* isolate,const std::string& text) {
-  CHECK_LE(text.size(),String::kMaxLength);
-  return String::NewFromOneByte(isolate,reinterpret_cast<const uint8_t*>(text.data()),NewStringType::kNormal,int(text.size())).ToLocalChecked();
-}
-MaybeLocal<Value> ToV8Value(Local<Context> context,const std::vector<std::string>& input) {
-  auto& f=Current(context->isolate);Context::Scope home(context);
-  if(JS_IsExceptionPending(f.cx))return {};
-  JS::RootedValueVector values(f.cx);
-  for(const auto& text:input){
-    if(text.size()>size_t(String::kMaxLength)){context->isolate->ThrowException(ERR_STRING_TOO_LONG(context->isolate));return {};}
-    Local<String> string;
-    if(!String::NewFromUtf8(context->isolate,text.data(),NewStringType::kNormal,int(text.size())).ToLocal(&string))return {};
-    JS::RootedValue value(f.cx,Input(string));if(!values.append(value))return {};
-  }
-  JS::RootedObject array(f.cx,JS::NewArrayObject(f.cx,values));if(!array)return {};
-  JS::RootedValue value(f.cx,JS::ObjectValue(*array));return f.OwnValue(value);
-}
-bool StringEqualNoCase(const char* a,const char* b) {
-  // The encoding parser requires ASCII folding independent of guest locale.
-  locale_t ascii=newlocale(LC_CTYPE_MASK,"C",nullptr);CHECK_NOT_NULL(ascii);
-  bool same=strcasecmp_l(a,b,ascii)==0;freelocale(ascii);return same;
-}
 void FWrite(FILE* stream,const std::string& bytes) {
   // The guest libc FILE owns buffering, descriptor writes and stream errors.
   // Byte length is explicit: embedded NULs are output, not terminators.
   std::fwrite(bytes.data(),1,bytes.size(),stream);
-}
-std::string ToUpper(std::string_view input) {
-  std::string result(input);
-  for(char& character:result)
-    if(character>='a'&&character<='z')character=char(character-'a'+'A');
-  return result;
 }
 }  // namespace kandelo_node_codec_impl
 
@@ -957,7 +854,7 @@ void Finalize(JS::GCContext*,JSObject* object) {
 }
 const JSClassOps stateOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,Finalize};
 const JSClass stateClass={"NodeCodecState",JSCLASS_HAS_RESERVED_SLOTS(2)|JSCLASS_FOREGROUND_FINALIZE,&stateOps};
-std::shared_ptr<State> Data(JSContext* cx,JS::HandleObject runtime) {
+std::shared_ptr<State> ReadCodecState(JSContext* cx,JS::HandleObject runtime) {
   JS::RootedObject state(cx,kandelo::node::GetRuntimeCodecState(cx,runtime,true)); if (!state) return {};
   state=js::CheckedUnwrapDynamic(state,cx,false); if (!state) return {};
   MOZ_RELEASE_ASSERT(JS::GetClass(state)==&stateClass);
@@ -976,7 +873,7 @@ bool Invoke(JSContext* cx,unsigned argc,JS::Value* vp) {
   JS::RootedObject runtime(cx,kandelo::node::GetRealmRuntime(cx,realm)); if (!runtime) return false;
   CHECK(JS::GetClass(closure)==&callbackClass);
   auto* callback=static_cast<CallbackOwner*>(JS::GetReservedSlot(closure,0).toPrivate());
-  auto state=Data(cx,runtime); if (!state) return false; Frame frame(cx,realm,state,&args,callback->domain);
+  auto state=ReadCodecState(cx,runtime); if (!state) return false; Frame frame(cx,realm,state,&args,callback->domain);
   frame.binding=&JS::GetReservedSlot(closure,1).toObject();
   frame.receiver=args.thisv();
   if (callback->domain==Domain::Trace) {
@@ -1014,40 +911,6 @@ bool Invoke(JSContext* cx,unsigned argc,JS::Value* vp) {
 }  // namespace kandelo_node_codec_api
 
 namespace kandelo_node_codec_impl {
-Local<FunctionTemplate> NewFunctionTemplate(Isolate* isolate,std::nullptr_t empty) {
-  return api::CreateConverterTemplate(isolate,empty);
-}
-void SetMethod(Local<Context> context,Local<Object> target,const char* name,void(*callback)(const FunctionCallbackInfo<Value>&)) {
-  auto& f=Current(context->isolate);
-  // Callback metadata is owned by the active binding realm. Cross-context
-  // template/function materialization is a separate, unsupported contract.
-  CHECK(context==context->isolate->GetCurrentContext());
-  if (f.domain==Domain::Trace) {
-    JS::RootedFunction function(f.cx,api::TraceFunction(f,"",callback,0,false,false));CHECK_NOT_NULL(function);
-    JS::RootedObject targetObject(f.cx,&target->cell().value.toObject());
-    JS::RootedValue value(f.cx,JS::ObjectValue(*JS_GetFunctionObject(function)));
-    CHECK(JS_SetProperty(f.cx,targetObject,name,value));
-    JS::Rooted<JSAtom*> atom(f.cx,js::Atomize(f.cx,name,std::strlen(name)));CHECK(atom);function->setAtom(atom);return;
-  }
-  bool ownProperties=f.domain==Domain::Icu || f.domain==Domain::Buffer || f.domain==Domain::Snapshot || f.domain==Domain::Diagnostics;
-  JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,api::Invoke,0,0,ownProperties?name:"")); CHECK_NOT_NULL(function);
-  JS::RootedObject object(f.cx,JS_GetFunctionObject(function)),binding(f.cx,&target->cell().value.toObject());
-  // Each actual function owns its typed callback metadata. No process-global
-  // mutable callback table can race between independently created runtimes.
-  JS::RootedObject closure(f.cx,JS_NewObject(f.cx,&api::callbackClass)); CHECK_NOT_NULL(closure);
-  JS::SetReservedSlot(closure,0,JS::PrivateValue(new api::CallbackOwner{callback,f.domain}));
-  JS::SetReservedSlot(closure,1,JS::ObjectValue(*binding));
-  js::SetFunctionNativeReserved(object,0,JS::ObjectValue(*f.realm));
-  js::SetFunctionNativeReserved(object,1,JS::ObjectValue(*closure));
-  JS::RootedValue value(f.cx,JS::ObjectValue(*object));
-  if (ownProperties) { CHECK(JS_DefineProperty(f.cx,binding,name,value,JSPROP_ENUMERATE));return; }
-  CHECK(JS_SetProperty(f.cx,binding,name,value));
-  CHECK(!function->hasResolvedName());
-  JS::Rooted<JSAtom*> atom(f.cx,js::Atomize(f.cx,name,std::strlen(name))); CHECK_NOT_NULL(atom); function->setAtom(atom);
-}
-void SetMethod(Isolate* isolate,Local<ObjectTemplate> target,const char* name,void(*callback)(const FunctionCallbackInfo<Value>&)) {
-  SetMethod(isolate->GetCurrentContext(),Local<Object>(target),name,callback);
-}
 }
 namespace kandelo::node {
 bool TraceNativeCallIsActive() {
@@ -1067,7 +930,7 @@ JSObject* CreateProcessMethodsBinding(JSContext* cx,JS::HandleObject realm) {
   JS_ReportErrorASCII(cx,"process_methods is unavailable in the private native-owner diagnostic build");return nullptr;
 #else
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if(!runtime)return nullptr;
-  auto state=api::Data(cx,runtime);if(!state)return nullptr;
+  auto state=api::ReadCodecState(cx,runtime);if(!state)return nullptr;
   api::Frame frame(cx,realm,state,nullptr,api::Domain::Diagnostics);
   if(!state->environment.PrepareProcessInvocation())return nullptr;
   JS::RootedObject object(cx,JS_NewObject(cx,&native::nativeBindingClass));if(!object)return nullptr;
@@ -1081,7 +944,7 @@ JSObject* CreateProcessMethodsBinding(JSContext* cx,JS::HandleObject realm) {
 }
 JSObject* CreateStringDecoderBinding(JSContext* cx,JS::HandleObject realm) {
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm)); if (!runtime) return nullptr;
-  auto state=api::Data(cx,runtime); if (!state) return nullptr; api::Frame frame(cx,realm,state);
+  auto state=api::ReadCodecState(cx,runtime); if (!state) return nullptr; api::Frame frame(cx,realm,state);
   JS::RootedObject object(cx,JS_NewPlainObject(cx)); if (!object) return nullptr;
   JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
   kandelo_codec_adapter::initializer(frame.Own<api::Object>(value),frame.OwnValue(unused),state->isolate.GetCurrentContext(),nullptr);
@@ -1089,7 +952,7 @@ JSObject* CreateStringDecoderBinding(JSContext* cx,JS::HandleObject realm) {
 }
 JSObject* CreateIcuBinding(JSContext* cx,JS::HandleObject realm) {
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if (!runtime) return nullptr;
-  auto state=api::Data(cx,runtime);if (!state) return nullptr;api::Frame frame(cx,realm,state,nullptr,api::Domain::Icu);
+  auto state=api::ReadCodecState(cx,runtime);if (!state) return nullptr;api::Frame frame(cx,realm,state,nullptr,api::Domain::Icu);
   JS::RootedObject object(cx,JS_NewObject(cx,&api::icuBindingClass));if (!object) return nullptr;frame.binding=object;
   JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
   native::IsolateData data;
@@ -1099,7 +962,7 @@ JSObject* CreateIcuBinding(JSContext* cx,JS::HandleObject realm) {
   if (JS_IsExceptionPending(cx)) return nullptr;return object;
 }
 JSObject* InspectCodecState(JSContext* cx,JS::HandleObject runtime) {
-  auto state=api::Data(cx,runtime); if (!state) return nullptr;
+  auto state=api::ReadCodecState(cx,runtime); if (!state) return nullptr;
   JS::RootedObject object(cx,JS_NewPlainObject(cx)); if (!object) return nullptr;
   for (const auto& item:std::initializer_list<std::pair<const char*,size_t>>{
       {"externalBytes",state->externalBytes.load()},{"created",state->created.load()},
@@ -1112,7 +975,7 @@ JSObject* InspectCodecState(JSContext* cx,JS::HandleObject runtime) {
   return object;
 }
 bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
-  auto state=api::Data(cx,runtime); if (!state) return false; state->stressGc=enabled; return true;
+  auto state=api::ReadCodecState(cx,runtime); if (!state) return false; state->stressGc=enabled; return true;
 }
 }
 

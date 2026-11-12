@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 60 source connects the original process initializer,
+The current revision 61 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 57 symbols and has no normal runnable artifact.
+still fails final linking on 70 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -2554,3 +2554,54 @@ catalog and its ordered roadmap remain incomplete.
 See the [bounded persistent-handle catalog](../tests/nodejs/upstream/persistent-handle-contracts.json)
 and [identified build/runtime evidence](../tests/nodejs/upstream/persistent-handle-engine-check.json).
 All 577 imported identities and 443 JavaScript files/10,993,403 bytes are unchanged.
+
+
+## Complete original native utilities (revision 61; no runnable artifact)
+
+The complete unchanged util.h, util-inl.h and util.cc now compile in the native
+engine build, together with the complete original node_concepts.h and
+node_union_bytes.h. Three whole files are newly imported; every prior imported
+identity and all 443 JavaScript files/10,993,403 bytes are unchanged. The import
+now has 580 files. The recipe stages these original files byte-identically.
+No constructor/function excerpt or rewritten upstream algorithm is introduced.
+
+The integration removes provisional stack-buffer/view/string wrapper classes,
+allocation/multiplication/endian/case helpers, scope cleanup, persistent
+conversion, duplicate KVStore declarations and native method-installation
+helpers. It also removes duplicate assertion/property/buffer macros. Original
+utility classes, assertions, templates and installation bodies now own those
+algorithms. Tracing's process-title adapter delegates to the original bounded
+retry helper. Namespace aliases route original assertions to the same original
+error-policy bodies without changing those macros.
+
+The engine API adds value-kind Data declarations, actual atom construction for
+internalized strings, external resource Dispose dispatch and a distinct Uint32
+constructor/wrapper. These changes have compilation evidence only. Native
+function/template/signature, scoped-rooted vector data, GC/initialization,
+byte-view and other required contracts still have undefined operations.
+There is no V8 heap data, serialization implementation or fabricated initialized
+state. The exploratory vector assignment hook was withdrawn because it did not
+satisfy copy-out/move/swap/retirement lifetime rules. Vector data methods remain
+undefined until the actual scoped-root implementation is supplied.
+
+The normal package compiles with zero C++ errors but fails linking on 70
+unique symbols. The private diagnostic also compiles but fails linking on
+13 symbols: neither profile produces a current executable. Revision 60's
+32-driver results on four hosts remain historical evidence and are not renewed
+for these inputs. No guest/browser/native-reference runtime tests ran this phase.
+The compiler failures, sorted-include mistake, recursive include-path mistake,
+unsigned constructor ambiguity and corrected style failures are retained.
+
+Utility source-policy closure is still incomplete. The pre-existing ICU
+Buffer::New(Environment*,MaybeStackBuffer*) ownership adapter corresponds to an
+original template in node_internals.h; it requires complete-header integration.
+Template parsing and selected instantiation do not establish complete template
+or engine-API conformance. Real original-helper execution and ownership/error/
+GC/reentry controls on all four hosts remain required before runtime acceptance.
+
+See the [bounded utility catalog](../tests/nodejs/upstream/utilities-contracts.json)
+and [identified source/build evidence](../tests/nodejs/upstream/utilities-engine-check.json).
+Startup, separate CJS/ESM, full backend inventory and ordered roadmap remain
+incomplete. Full products/images, kernel/successor-ABI rebuilds and overall suites
+remain deferred. ABI 56 and immutable ABI 55 are unchanged; broader roadmap work
+still requires explicit user review.

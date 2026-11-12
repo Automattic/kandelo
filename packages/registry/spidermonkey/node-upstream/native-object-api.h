@@ -57,7 +57,6 @@ using IsolateInitializer=void(*)(kandelo_node_codec_impl::IsolateData*,Local<Obj
 extern Initializer initializer;
 extern IsolateInitializer isolate_initializer;
 }
-#define MAYBE_FIELD_PTR(ptr,field) ((ptr)==nullptr?nullptr:&((ptr)->field))
 #ifndef USE
 #define USE(value) ((void)(value))
 #endif

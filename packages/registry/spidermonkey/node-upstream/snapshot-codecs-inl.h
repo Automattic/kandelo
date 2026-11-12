@@ -69,7 +69,7 @@ bool NativeContextControl(JSContext* cx,unsigned argc,JS::Value* vp) {
     JS_ReportErrorASCII(cx,"Native context control requires a genuine global");return false;
   }
   JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);
-  auto state=api::Data(cx,runtime);if(!state)return false;
+  auto state=api::ReadCodecState(cx,runtime);if(!state)return false;
   JS::RootedObject realm(cx,GetRuntimePrincipalRealm(cx,runtime));if(!realm)return false;
   api::Frame frame(cx,realm,state,nullptr,api::Domain::Snapshot);auto* isolate=&state->isolate;
   auto caller=isolate->GetCurrentContext();api::Local<api::Context> context;
@@ -121,7 +121,7 @@ bool NativeContextControl(JSContext* cx,unsigned argc,JS::Value* vp) {
 }
 JSObject* CreateSnapshotBinding(JSContext* cx,JS::HandleObject realm) {
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if(!runtime)return nullptr;
-  auto state=api::Data(cx,runtime);if(!state)return nullptr;
+  auto state=api::ReadCodecState(cx,runtime);if(!state)return nullptr;
   api::Frame frame(cx,realm,state,nullptr,api::Domain::Snapshot);
   JS::RootedObject binding(cx,JS_NewObject(cx,&snapshotClass));if(!binding)return nullptr;frame.binding=binding;
   auto owner=std::make_unique<SnapshotBindingState>(&state->isolate);

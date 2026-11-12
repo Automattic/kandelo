@@ -95,24 +95,6 @@ Local<Object> Context::GetExtrasBindingObject() {
 }
 namespace kandelo_node_codec_impl {
 const JSClass categoryClass={"CategorySet",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
-Local<FunctionTemplate> NewFunctionTemplate(Isolate* isolate,void(*callback)(const FunctionCallbackInfo<Value>&)) {
-  auto& f=api::Current(isolate);CHECK(f.domain==api::Domain::Trace);
-  JS::RootedFunction fn(f.cx,api::TraceFunction(f,"",callback,0,true,false));if(!fn)return {};
-  JS::RootedValue value(f.cx,JS::ObjectValue(*JS_GetFunctionObject(fn)));return f.Own<FunctionTemplate>(value);
-}
-void SetProtoMethod(Isolate* isolate,Local<FunctionTemplate> constructor,const char* name,void(*callback)(const FunctionCallbackInfo<Value>&)) {
-  auto& f=api::Current(isolate);JS::RootedObject ctor(f.cx,&constructor->cell().value.toObject());JS::RootedValue prototype(f.cx);
-  CHECK(JS_GetProperty(f.cx,ctor,"prototype",&prototype));JS::RootedObject object(f.cx,&prototype.toObject());
-  JS::RootedFunction fn(f.cx,api::TraceFunction(f,name,callback,0,false,true));CHECK(fn);
-  JS::RootedObject function(f.cx,JS_GetFunctionObject(fn));CHECK(JS_DefineProperty(f.cx,object,name,function,JSPROP_ENUMERATE));
-}
-void SetConstructorFunction(Local<Context> context,Local<Object> target,const char* name,Local<FunctionTemplate> constructor) {
-  CHECK(context==context->isolate->GetCurrentContext());
-  auto& f=api::Current(context->isolate);auto string=OneByteString(context->isolate,name);constructor->SetClassName(string);
-  JS::RootedObject object(f.cx,&target->cell().value.toObject());JS::RootedValue value(f.cx,api::Input(constructor));CHECK(JS_SetProperty(f.cx,object,name,value));
-  JS::SetReservedSlot(f.binding,2,value);
-}
-MaybeLocal<Value> ToV8Value(Local<Context> context,const std::string& text,Isolate* isolate) { CHECK(context->isolate==isolate);Context::Scope home(context);return String::NewFromUtf8(isolate,text.data(),NewStringType::kNormal,int(text.size())); }
 namespace {
 struct TraceObserver final : public v8::TracingController::TraceStateObserver {
   bool armed=false;
@@ -187,7 +169,7 @@ namespace kandelo::node {
 JSObject* CreateTraceBinding(JSContext* cx,JS::HandleObject realm) {
   auto process=GetTraceProcess(cx,realm);if(!process)return nullptr;
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if(!runtime)return nullptr;
-  auto state=api::Data(cx,runtime);if(!state)return nullptr;api::Frame frame(cx,realm,state,nullptr,api::Domain::Trace);frame.tracing=process;
+  auto state=api::ReadCodecState(cx,runtime);if(!state)return nullptr;api::Frame frame(cx,realm,state,nullptr,api::Domain::Trace);frame.tracing=process;
   JS::RootedObject object(cx,JS_NewObject(cx,&api::traceBindingClass));if(!object)return nullptr;frame.binding=object;
   JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
   kandelo_trace_adapter::initializer(frame.Own<api::Object>(value),frame.OwnValue(unused),state->isolate.GetCurrentContext(),nullptr);

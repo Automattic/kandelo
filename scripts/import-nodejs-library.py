@@ -69,6 +69,7 @@ def select_sources(members, prefix):
                        'src/node_errors.h', 'src/node_errors.cc',
                        'src/node_i18n.cc', 'src/node_i18n.h',
                        'src/api/encoding.cc', 'src/api/exceptions.cc', 'src/util-inl.h',
+                       'src/util.cc', 'src/node_concepts.h', 'src/node_union_bytes.h',
                        'src/node_internals.h',
                        'src/node_trace_events.cc',
                        'src/async_context_frame.cc', 'src/async_context_frame.h',

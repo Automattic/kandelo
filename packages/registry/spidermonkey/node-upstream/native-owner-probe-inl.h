@@ -58,7 +58,7 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JS::RootedString operationString(cx,args[0].toString());
   auto operation=JS_EncodeStringToUTF8(cx,operationString);if(!operation)return false;
   JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);
-  auto state=api::Data(cx,runtime);if(!state)return false;
+  auto state=api::ReadCodecState(cx,runtime);if(!state)return false;
   JS::RootedObject realm(cx,GetRuntimePrincipalRealm(cx,runtime));if(!realm)return false;
   realm=js::CheckedUnwrapDynamic(realm,cx,false);if(!realm||!CheckRealmLibraryActive(cx,realm))return false;
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);

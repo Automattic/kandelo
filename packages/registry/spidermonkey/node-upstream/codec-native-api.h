@@ -14,6 +14,7 @@
 #include <list>
 #include <memory>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -41,6 +42,7 @@ template<class T> class WeakCallbackInfo {
  public: Isolate* GetIsolate() const;T* GetParameter() const;
 };
 template<class T> class PropertyCallbackInfo;
+template<class T> class FunctionCallbackInfo;
 struct Cell; struct Frame; struct View; struct MemoryAccount; struct State; struct Context; struct ContextScopeData; struct StartupData;
 struct HeapStatisticsData;
 class HeapStatistics {
@@ -127,7 +129,8 @@ class SnapshotCreator {
     Crash("Native heap snapshot serialization is not implemented");
   }
 };
-class Value {
+class Data {public:virtual ~Data()=default;virtual bool IsValue()const=0;virtual bool IsPrivate()const=0;};
+class Value:public Data {
   std::unique_ptr<Cell> cell_;
  public:
   using RootFactory=std::unique_ptr<Value>(*)(std::unique_ptr<Cell>);
@@ -145,7 +148,7 @@ class Value {
   bool IsSymbol() const;
   bool IsArray() const;
   bool IsFunction() const;
-  bool IsNumber() const;
+  bool IsNumber() const;bool IsBigInt()const;bool IsNull()const;Local<String> TypeOf(Isolate*);
   bool IsUndefined() const;
   bool IsNullOrUndefined() const;
   static double NumberValue(Value*);
@@ -167,7 +170,7 @@ class Value {
   MaybeLocal<String> ToDetailString(Local<Context>);
 };
 class Name : public Value { public: using Value::Value; };
-class Symbol : public Name {public:using Name::Name;};
+class Symbol : public Name {public:using Name::Name;static Local<Symbol> GetDispose(Isolate*);static Local<Symbol> GetAsyncDispose(Isolate*);};
 class Private : public Value {public:using Value::Value;Local<Value> Name();};
 class MicrotaskQueue {public:void EnqueueMicrotask(Isolate*,void(*)(void*),void*);};
 enum PropertyAttribute { None=0, ReadOnly=1, DontEnum=2, DontDelete=4 };
@@ -204,9 +207,10 @@ template<class T> class LocalVector {
     values_.emplace_back(root.get());roots_.push_back(std::move(root));
   }
   void emplace_back(Local<T> value) { push_back(value); }
-  Local<T>* data() { return values_.data(); }
-  const Local<T>* data()const{return values_.data();}
+  Local<T>* data();  // Direct writable slots need the complete scoped-root backend.
+  const Local<T>* data()const;
   void reserve(size_t size){roots_.reserve(size);values_.reserve(size);}
+  void resize(size_t size){roots_.resize(size);values_.resize(size);}
   size_t size() const { return values_.size(); }
 };
 struct GlobalRoot;
@@ -282,7 +286,7 @@ class Object : public Value {
   Local<Value> GetInternalField(int);void SetInternalField(int,Local<Value>);
   Maybe<bool> Set(Local<Context>,Local<Value>,Local<Value>);
   Maybe<bool> SetPrivate(Local<Context>,Local<Value>,Local<Value>);
-  Maybe<bool> SetPrototypeV2(Local<Context>,Local<Object>);
+  Maybe<bool> SetPrototypeV2(Local<Context>,Local<Value>);
   MaybeLocal<Value> Get(Local<Context>,Local<Value>);
   Maybe<bool> SetNativeDataProperty(
       Local<Context>,Local<Name>,AccessorNameGetterCallback,
@@ -295,6 +299,7 @@ class Function : public Object {
  public: using Object::Object;
   MaybeLocal<Value> Call(Local<Context>,Local<Value>,int,Local<Value>*);
   MaybeLocal<Object> NewInstance(Local<Context>);
+  void SetName(Local<String>);
 };
 class Array : public Object {
  public:
@@ -302,12 +307,15 @@ class Array : public Object {
   static Local<Array> New(Isolate*);
   static Local<Array> New(Isolate*,const Local<Value>*,size_t);
   Maybe<bool> Set(Local<Context>,int32_t,Local<Value>);
+  enum class CallbackResult{kContinue,kBreak};
+  Maybe<void> Iterate(Local<Context>,CallbackResult(*)(uint32_t,Local<Value>,void*),void*);
   uint32_t Length() const;
   MaybeLocal<Value> Get(Local<Context>,uint32_t);
 };
 class ArrayBufferView : public Object {
  public: using Object::Object;
   Local<ArrayBuffer> Buffer();size_t ByteOffset() const;size_t ByteLength() const;
+  bool HasBuffer()const;size_t CopyContents(void*,size_t);
 };
 enum class BackingStoreInitializationMode { kZeroInitialized, kUninitialized };
 enum class BackingStoreOnFailureMode { kReturnNull };
@@ -322,7 +330,8 @@ struct BackingStore {
   ~BackingStore();
 };
 class ArrayBuffer : public Object {
- public: using Object::Object;
+ public:
+  class Allocator {public:virtual ~Allocator()=default;static Allocator* NewDefaultAllocator();}; using Object::Object;
   static std::unique_ptr<BackingStore> NewBackingStore(void*,size_t,void(*)(void*,size_t,void*),void*);
   static std::unique_ptr<BackingStore> NewBackingStore(Isolate*,size_t,BackingStoreInitializationMode,BackingStoreOnFailureMode);
   static Local<ArrayBuffer> New(Isolate*,std::unique_ptr<BackingStore>);
@@ -357,34 +366,47 @@ KANDELO_NATIVE_TYPED_ARRAYS(KANDELO_DECLARE_TYPED_ARRAY)
 class Number : public Value { public: using Value::Value;static Local<Number> New(Isolate*,double);double Value() const; };
 class Integer : public Number { public: using Number::Number;static Local<Integer> New(Isolate*,int);static Local<Integer> NewFromUnsigned(Isolate*,uint32_t);int64_t Value() const; };
 using Int32=Integer;
-using Uint32=Integer;
-class ObjectTemplate : public Object {
- public: using Object::Object;
+class Uint32:public Integer {public:using Integer::Integer;static Local<Uint32> New(Isolate*,uint32_t);uint32_t Value()const;};
+class Signature;class CFunction;
+using FunctionCallback=void(*)(const FunctionCallbackInfo<Value>&);
+enum class ConstructorBehavior{kAllow,kThrow};
+template<class T> using MemorySpan=std::span<T>;
+class Template:public Object {public:using Object::Object;void Set(Local<Name>,Local<Data>);};
+class ObjectTemplate : public Template {
+ public: using Template::Template;
   static Local<ObjectTemplate> New(Isolate*,Local<FunctionTemplate>);
   void SetHandler(const NamedPropertyHandlerConfiguration&);
   void SetHandler(const IndexedPropertyHandlerConfiguration&);
   void SetInternalFieldCount(int);
   MaybeLocal<Object> NewInstance(Local<Context>);
 };
-class FunctionTemplate : public Object {
- public: using Object::Object;
-  static Local<FunctionTemplate> New(Isolate*);
+class FunctionTemplate : public Template {
+ public: using Template::Template;
+  static Local<FunctionTemplate> New(Isolate*,FunctionCallback=nullptr,Local<Value> = {},Local<Signature> = {},int=0,ConstructorBehavior=ConstructorBehavior::kAllow,SideEffectType=SideEffectType::kHasSideEffect,const CFunction* = nullptr);
+  static Local<FunctionTemplate> NewWithCFunctionOverloads(Isolate*,FunctionCallback,Local<Value>,Local<Signature>,int,ConstructorBehavior,SideEffectType,MemorySpan<const CFunction>);
+  Local<ObjectTemplate> PrototypeTemplate();
   Local<ObjectTemplate> InstanceTemplate();
   MaybeLocal<Function> GetFunction(Local<Context>);
   void SetClassName(Local<String>);
   void Inherit(Local<FunctionTemplate>);
 };
-enum class NewStringType { kNormal };
+enum class NewStringType { kNormal, kInternalized };
+class Signature:public Data {public:static Local<Signature> New(Isolate*,Local<FunctionTemplate>);};
+class Set:public Object {public:using Object::Object;static Local<Set> New(Isolate*);MaybeLocal<Set> Add(Local<Context>,Local<Value>);};
+class Map:public Object {public:using Object::Object;static Local<Map> New(Isolate*);MaybeLocal<Map> Set(Local<Context>,Local<Value>,Local<Value>);};
+class Boolean:public Value {public:using Value::Value;static Local<Boolean> New(Isolate*,bool);bool Value()const;};
+class DictionaryTemplate:public Data {public:Local<Object> NewInstance(Local<Context>,MemorySpan<MaybeLocal<Value>>);};
+class OutputStream {public:enum WriteResult{kContinue,kAbort};virtual ~OutputStream()=default;virtual int GetChunkSize()=0;virtual void EndOfStream()=0;virtual WriteResult WriteAsciiChunk(char*,int)=0;};
 class String : public Name {
  public:
   using Name::Name;
   static const int kMaxLength;
   class ExternalOneByteStringResource {
-   public: virtual ~ExternalOneByteStringResource()=default;
+   public: virtual ~ExternalOneByteStringResource()=default;virtual void Dispose(){delete this;}
     virtual const char* data() const=0;virtual size_t length() const=0;
   };
   class ExternalStringResource {
-   public: virtual ~ExternalStringResource()=default;
+   public: virtual ~ExternalStringResource()=default;virtual void Dispose(){delete this;}
     virtual const uint16_t* data() const=0;virtual size_t length() const=0;
   };
   class ValueView {
@@ -420,8 +442,14 @@ class String : public Name {
   size_t WriteUtf8V2(Isolate*,char*,size_t,WriteFlags);
 };
 struct Factory { Isolate* isolate; Local<Value> undefined_value(); };
+class Platform;struct CppHeapCreateParams {std::vector<void*> custom_spaces;};
+class CppHeap {public:static std::unique_ptr<CppHeap> Create(Platform*,const CppHeapCreateParams&);};
+struct IsolateScopeData;
 class Isolate {
  public:
+  class Scope {std::unique_ptr<IsolateScopeData> data_;public:explicit Scope(Isolate*);~Scope();};
+  struct CreateParams {ArrayBuffer::Allocator* array_buffer_allocator=nullptr;CppHeap* cpp_heap=nullptr;};
+  static Isolate* Allocate();static void Initialize(Isolate*,const CreateParams&);void LowMemoryNotification();
   static Isolate* GetCurrent();
   std::weak_ptr<State> owner;
   Factory factory_{this};
@@ -537,50 +565,12 @@ class Exception {
  static Local<Message> CreateMessage(Isolate*,Local<Value>);
 };
 }
+#ifndef KANDELO_NODE_UTILITY_NATIVE_API_H
+#include "shell/node-upstream/utility-native-api.h"
+#endif
 namespace kandelo_node_codec_impl {
 using namespace kandelo_node_codec_api;
-template<class T,size_t N=1024> class MaybeStackBuffer {
-  T stack_[N];T* data_=stack_;size_t length_=0,capacity_=N;
- public:
-  MaybeStackBuffer();explicit MaybeStackBuffer(size_t);~MaybeStackBuffer();
-  MaybeStackBuffer(const MaybeStackBuffer&)=delete;
-  T* out();const T* out() const;T* operator*();
-  void SetLengthAndZeroTerminate(size_t n) { if(n>=capacity_) Crash("Native terminator capacity");data_[n]=T{};length_=n; }
-  T& operator[](size_t index) { CHECK_INDEX(index);return data_[index]; }
-  const T& operator[](size_t index) const { CHECK_INDEX(index);return data_[index]; }
-  const T* operator*() const { return data_; }
-  size_t length() const;void SetLength(size_t);void AllocateSufficientStorage(size_t);
-  bool IsAllocated() const;void Release();
-  bool IsInvalidated() const { return data_==nullptr; }
-  void Invalidate() { if(IsAllocated()) Crash("Invalidate allocated native storage");data_=nullptr;length_=0;capacity_=0; }
- private: void CHECK_INDEX(size_t index) const { if(index>=length_) Crash("Native stack buffer index"); }
-};
-template<class T> T* UncheckedMalloc(size_t);
-template<class A,class B> size_t MultiplyWithOverflowCheck(A a,B b) {
-  size_t out;if(__builtin_mul_overflow(size_t(a),size_t(b),&out))Crash("Native allocation multiplication overflow");return out;
-}
-inline constexpr bool IsBigEndian() { return std::endian::native==std::endian::big; }
-class TwoByteValue : public MaybeStackBuffer<uint16_t> {
- public: explicit TwoByteValue(Isolate*,Local<Value>);
-};
-class Utf8Value : public MaybeStackBuffer<char> {
- public: explicit Utf8Value(Isolate*,Local<Value>);
-  std::string_view ToStringView() const { return {out(),length()}; }
-  std::string ToString() const { return {out(),length()}; }
-};
-class BufferValue : public MaybeStackBuffer<char> {
- public:
-  BufferValue(Isolate*,Local<Value>);
-  std::string ToString() const { return {out(),length()}; }
-};
 struct SpanOwner;
-template<class T,size_t N=64> class ArrayBufferViewContents {
-  std::unique_ptr<SpanOwner> owner_;
- public:
-  explicit ArrayBufferViewContents(Local<ArrayBufferView>);~ArrayBufferViewContents();
-  explicit ArrayBufferViewContents(Local<Value>);
-  T* data() const;size_t length() const;
-};
 class Environment;class IsolateData;class BaseObject;struct NativeRealmData;class KVStore;struct NativeEnvOptions;struct NativeEnvIsolateOptions;struct FatalIsolateOptions;
 class EnabledDebugList;
 class AsyncWrap;class ReqWrapBase;class HandleWrap;class NodeArrayBufferAllocator;
@@ -813,20 +803,6 @@ class BaseObject {
 template<class T> bool Unwrap(T** output,Local<Object> object) {
   *output=static_cast<T*>(BaseObject::Unwrap(object));return *output!=nullptr;
 }
-template<class T> class ScopeLeave {
-  T callback_;
- public: explicit ScopeLeave(T callback):callback_(std::move(callback)){}~ScopeLeave(){callback_();}
-  ScopeLeave(const ScopeLeave&)=delete;
-};
-template<class T> auto OnScopeLeave(T callback) { return ScopeLeave<T>(std::move(callback)); }
-Local<String> OneByteString(Isolate*,const char*);
-Local<FunctionTemplate> NewFunctionTemplate(Isolate*,std::nullptr_t);
-Local<FunctionTemplate> NewFunctionTemplate(Isolate*,void(*)(const FunctionCallbackInfo<Value>&));
-void SetProtoMethod(Isolate*,Local<FunctionTemplate>,const char*,void(*)(const FunctionCallbackInfo<Value>&));
-void SetConstructorFunction(Local<Context>,Local<Object>,const char*,Local<FunctionTemplate>);
-MaybeLocal<Value> ToV8Value(Local<Context>,const std::string&,Isolate*);
-MaybeLocal<Value> ToV8Value(Local<Context>,std::string_view);
-bool StringEqualNoCase(const char*,const char*);
 namespace Buffer {
 MaybeLocal<Object> New(Environment*,size_t);
 MaybeLocal<Object> Copy(Environment*,const char*,size_t);
@@ -839,18 +815,11 @@ template<class T,size_t N> MaybeLocal<Object> New(Environment* env,MaybeStackBuf
 }
 }
 
-std::unique_ptr<BackingStore> AdoptIntoBackingStore(Isolate*,void*,size_t,BackingStore::DeleterCallback,void*);
-Local<String> OneByteString(Isolate*,const uint8_t*,size_t);
-void SetMethodNoSideEffect(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&));
-void SetFastMethod(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&),const CFunction*);
-void SetFastMethodNoSideEffect(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&),const CFunction*);
 namespace per_process {
 struct BufferOptions { bool zero_fill_all_buffers;bool report_on_fatalerror;std::shared_ptr<NativeEnvIsolateOptions> per_isolate; };
 struct BufferOptionsAccess { const BufferOptions* operator->() const; };
 inline const BufferOptionsAccess cli_options;
 }
-void SetMethod(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&));
-void SetMethod(Isolate*,Local<ObjectTemplate>,const char*,void(*)(const FunctionCallbackInfo<Value>&));
 class ExternalReferenceRegistry {
  public:
   void Register(void(*)(const FunctionCallbackInfo<Value>&)) { Crash("Native snapshot external-reference registry is not implemented"); }
@@ -891,60 +860,12 @@ extern Initializer initializer;
 }
 #define NODE_WANT_INTERNALS 1
 #define NODE_EXTERN
-#ifdef CHECK
-#undef CHECK
-#undef CHECK_EQ
-#undef CHECK_NE
-#undef CHECK_LE
-#undef CHECK_LT
-#undef CHECK_GE
-#undef CHECK_GT
-#undef CHECK_IMPLIES
-#undef CHECK_NULL
-#undef CHECK_NOT_NULL
-#undef UNREACHABLE
-#endif
-#define CHECK(x) do { if(!(x)) kandelo_node_codec_api::Crash(#x); } while(false)
-#define CHECK_EQ(x,y) CHECK((x)==(y))
-#define CHECK_NE(x,y) CHECK((x)!=(y))
-#define CHECK_LE(x,y) CHECK((x)<=(y))
-#define CHECK_LT(x,y) CHECK((x)<(y))
-#define CHECK_GE(x,y) CHECK((x)>=(y))
-#define CHECK_GT(x,y) CHECK((x)>(y))
-#define CHECK_IMPLIES(x,y) CHECK(!(x)||(y))
-#define MUST_USE_RESULT __attribute__((warn_unused_result))
-#define CHECK_NOT_NULL(x) CHECK((x)!=nullptr)
-#ifdef DEBUG
-#define DCHECK(x) CHECK(x)
-#define DCHECK_EQ(x,y) CHECK_EQ(x,y)
-#define DCHECK_LT(x,y) CHECK_LT(x,y)
-#define DCHECK_GE(x,y) CHECK_GE(x,y)
-#define DCHECK_LE(x,y) CHECK_LE(x,y)
-#define DCHECK_NULL(x) CHECK((x)==nullptr)
-#define DCHECK_NOT_NULL(x) CHECK_NOT_NULL(x)
-#define DCHECK_IMPLIES(x,y) CHECK_IMPLIES(x,y)
-#else
-#define DCHECK(x) ((void)0)
-#define DCHECK_EQ(x,y) ((void)0)
-#define DCHECK_LT(x,y) ((void)0)
-#define DCHECK_GE(x,y) ((void)0)
-#define DCHECK_LE(x,y) ((void)0)
-#define DCHECK_NULL(x) ((void)0)
-#define DCHECK_NOT_NULL(x) ((void)0)
-#define DCHECK_IMPLIES(x,y) ((void)0)
-#endif
-#define UNREACHABLE(...) kandelo_node_codec_api::Crash("Unreachable original codec operation")
-#define FIXED_ONE_BYTE_STRING(isolate,text) kandelo_node_codec_api::String::NewFromOneByte(isolate,reinterpret_cast<const uint8_t*>(text),kandelo_node_codec_api::NewStringType::kNormal,sizeof(text)-1).ToLocalChecked()
 #define NODE_BINDING_CONTEXT_AWARE_INTERNAL(name,callback) namespace kandelo_codec_adapter { Initializer initializer=::callback; }
 #define NODE_BINDING_EXTERNAL_REFERENCE(name,callback)
-#define ABORT() kandelo_node_codec_api::Crash("Original native abort")
 #define ASSIGN_OR_RETURN_UNWRAP(output,object) do { if(!kandelo_node_codec_impl::Unwrap(output,object)) return; } while(false)
 #define SET_NO_MEMORY_INFO()
 #define SET_MEMORY_INFO_NAME(name)
 #define SET_SELF_SIZE(name)
 #define TRACK_V8_FAST_API_CALL(name) kandelo_node_codec_api::Crash("V8 fast JIT entry is unavailable in SpiderMonkey")
-#define SPREAD_BUFFER_ARG(value,name) \
-  char* name##_data=kandelo_node_codec_impl::Buffer::Data(value); \
-  size_t name##_length=kandelo_node_codec_impl::Buffer::Length(value)
 #include "shell/node-upstream/native-object-api.h"
 #endif

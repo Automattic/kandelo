@@ -3677,6 +3677,13 @@
       "builtinId": null
     },
     {
+      "path": "src/node_concepts.h",
+      "role": "provenance",
+      "bytes": 1544,
+      "sha256": "f0b176fcf52d09e4f2fee7f3caabd29b93a12e1d7f96d499898148998702a396",
+      "builtinId": null
+    },
+    {
       "path": "src/node_constants.cc",
       "role": "provenance",
       "bytes": 32398,
@@ -3880,6 +3887,13 @@
       "builtinId": null
     },
     {
+      "path": "src/node_union_bytes.h",
+      "role": "provenance",
+      "bytes": 2790,
+      "sha256": "3131c977c70f925931ba9df71d994adcaa7905e3b5fdf69969e9d0df90235ba4",
+      "builtinId": null
+    },
+    {
       "path": "src/node_version.h",
       "role": "provenance",
       "bytes": 4637,
@@ -4066,6 +4080,13 @@
       "role": "provenance",
       "bytes": 27698,
       "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561",
+      "builtinId": null
+    },
+    {
+      "path": "src/util.cc",
+      "role": "provenance",
+      "bytes": 32624,
+      "sha256": "d5ff5ddf59fea718016f5028ec54661ea8f92e37070d82c7dae2e39ab1e91172",
       "builtinId": null
     },
     {

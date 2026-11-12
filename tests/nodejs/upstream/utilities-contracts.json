@@ -1,0 +1,137 @@
+{
+  "schema": 1,
+  "scope": "Complete original util.h/util-inl.h/util.cc/node_concepts.h/node_union_bytes.h compilation integration; native dependencies and runtime conformance remain incomplete",
+  "sourcePinChanged": false,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "wholeSourceFiles": [
+    {
+      "path": "third_party/nodejs/upstream/src/util.h",
+      "bytes": 43448,
+      "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/util-inl.h",
+      "bytes": 27698,
+      "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/util.cc",
+      "bytes": 32624,
+      "sha256": "d5ff5ddf59fea718016f5028ec54661ea8f92e37070d82c7dae2e39ab1e91172"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_concepts.h",
+      "bytes": 1544,
+      "sha256": "f0b176fcf52d09e4f2fee7f3caabd29b93a12e1d7f96d499898148998702a396"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_union_bytes.h",
+      "bytes": 2790,
+      "sha256": "3131c977c70f925931ba9df71d994adcaa7905e3b5fdf69969e9d0df90235ba4"
+    }
+  ],
+  "portableAlgorithms": "Original allocation/retry, intrusive lists, scope cleanup, string/numeric/container conversions, stack buffers, view access, persistent conversion, helper installation, diagnostic names, external resource union and isolate RAII bodies retained whole. Template parse/selected instantiation is separate from complete template conformance.",
+  "owningLayers": [
+    {
+      "area": "managed value/data and handle containers",
+      "owner": "SpiderMonkey embedding",
+      "contracts": [
+        "Data value-kind interface",
+        "Local/PersistentBase layout and actual root lifetime",
+        "LocalVector independent slot ownership, resize/data writes and local escape semantics"
+      ],
+      "status": "Value-kind Data interface added. Writable/const LocalVector::data are deliberately undefined until actual slot rooting and caller-scope copy-out/move/retirement semantics are implemented. Generic Data/Private/Signature/Context remain incomplete"
+    },
+    {
+      "area": "strings and bytes",
+      "owner": "SpiderMonkey embedding and shared-buffer storage",
+      "contracts": [
+        "Internalized normal/Latin1/UTF16 constructors",
+        "String::ValueView and WriteUtf8V2",
+        "ArrayBufferView HasBuffer/CopyContents",
+        "External resource Dispose and static UnionBytes lifetime"
+      ],
+      "status": "Actual atom construction and Dispose routing changed; view queries/copies remain native link prerequisites; no current runtime proof"
+    },
+    {
+      "area": "native functions/templates",
+      "owner": "SpiderMonkey native callback/template layer",
+      "contracts": [
+        "FunctionTemplate New/GetFunction, signature brand, constructor behavior and instance/prototype templates",
+        "Template Set",
+        "Function SetName",
+        "Symbol dispose/asyncDispose",
+        "SideEffectType and CFunction overload ownership"
+      ],
+      "status": "Original installation helpers now compiled instead of own bodies; missing native operations remain undefined, no fabricated function/template handles"
+    },
+    {
+      "area": "allocation and isolate lifetime",
+      "owner": "SpiderMonkey runtime/embedding and real libc allocator",
+      "contracts": [
+        "Actual engine initialization state",
+        "TryGetCurrent/LowMemoryNotification actual collection/retry",
+        "Isolate/allocator/platform registration, CppHeap/RAII interfaces"
+      ],
+      "status": "Complete original utility retry and RAII bodies retained; missing native operations are declarations only, no V8 heap data or serialization implementation"
+    },
+    {
+      "area": "assertion/error policy",
+      "owner": "Complete original Node node_errors.cc and native report/stack backend",
+      "contracts": [
+        "Original CHECK/ABORT/Assert/GetAbortHandler routing",
+        "Aliases preserve namespace lookup without changing original macro bodies",
+        "Specific error type, fd/file-mode validation"
+      ],
+      "status": "Original utility assertion macros restored. Normal error unit remains whole; private diagnostic lacks that full dependency closure and is not accepted as current runtime evidence"
+    }
+  ],
+  "removedProvisionalImplementations": [
+    "MaybeStackBuffer generic/value-only declarations and implementations",
+    "ArrayBufferViewContents wrapper implementation",
+    "Utf8Value/TwoByteValue/BufferValue constructors",
+    "UncheckedMalloc and multiplication/endian helpers",
+    "ToUpper ASCII loop and locale StringEqualNoCase",
+    "OneByteString/Uint32ToString/ToV8Value overloads",
+    "OnScopeLeave/ScopeLeave",
+    "PersistentToLocal Default adapter",
+    "KVStore duplicate class declaration",
+    "NewFunctionTemplate/SetMethod/SetFastMethod/SetProtoMethod/SetConstructorFunction helper bodies",
+    "AdoptIntoBackingStore helper",
+    "Tracing process-title retry loop now delegates to complete original GetProcessTitle",
+    "Duplicate assertion/property/string/buffer-spread macros"
+  ],
+  "remainingSourcePolicyGaps": [
+    {
+      "source": {
+        "path": "third_party/nodejs/upstream/src/node_internals.h",
+        "bytes": 18334,
+        "sha256": "3674f02a2b459ee579815761816bc450349aef9ff231349f39bca7b6c19ae0c7"
+      },
+      "consumer": "Original node_i18n.cc ToBufferEndian and conversion returns",
+      "gap": "Pre-existing own Buffer::New(Environment*,MaybeStackBuffer*) portable ownership bridge in codec-native-api.h corresponds to original node_internals.h Buffer template. Must replace by complete node_internals.h integration; no excerpt or rewritten algorithm permitted."
+    },
+    {
+      "consumer": "Original utility typed buffers and complete graph-wide LocalVector uses",
+      "gap": "The exploratory assignment-hook implementation was withdrawn: copies could retain a vector-owned C++ wrapper past vector retirement, and swap/move needed correct caller-scope ownership. Local::copy stays trivial and vector data methods remain undefined, exposing the real missing scoped-root backend at link time. No runtime or full source-policy acceptance."
+    }
+  ],
+  "validationObligations": [
+    "Normal/private compilation and actual unresolved symbol inventory",
+    "Byte-identical whole-source staging and all prior source/JavaScript identities",
+    "Actual original PersistentToLocal strong/weak execution on four hosts",
+    "Original generic/typed buffer growth, resize, release, invalidation, array construction and GC roots across nested scopes, data writes, copy-out/move/swap/destruction",
+    "Original intrusive lists with node/head destruction and reentry-safe scope cleanup",
+    "Original case conversion/classic locale and string/numeric/container semantics",
+    "Original UTF8/UTF16/NUL/surrogate and external-resource Dispose/static ownership cases",
+    "Original function helper installation, callback constructor/signature/realm/GC semantics and prior regression fixtures on four hosts",
+    "Actual allocation retry/OOM and initialization/shutdown behavior; no fabricated initialized state"
+  ],
+  "evidence": "utilities-engine-check.json",
+  "currentRuntimeValidated": false,
+  "completeUtilityBackend": false,
+  "unmodifiedSourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false,
+  "remaining": "Finish genuine utility dependencies and node_internals source-policy closure; then Message/stack/report/lifecycle/scheduling and unchanged startup, separate CJS/ESM, complete backend catalog/ordered roadmap and user review before broader execution"
+}

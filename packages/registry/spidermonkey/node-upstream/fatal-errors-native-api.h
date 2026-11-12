@@ -35,15 +35,12 @@ struct OOMDetails {bool is_heap_oom;const char* detail;};
 struct ModifyCodeGenerationFromStringsResult {bool codegen_allowed;MaybeLocal<String> modified_source;};
 }
 namespace kandelo_node_codec_impl {
-using ::node::arraysize;
 struct FatalProcessOptions {bool report_on_fatalerror;};
 struct FatalProcessOptionsAccess {const FatalProcessOptions* operator->()const;};
 namespace per_process {
  extern Mutex cli_options_mutex;
  extern FatalProcessOptionsAccess fatal_cli_options;
 }
-using AbortHandler=void(*)(const char*,const char*);
-struct AssertionInfo {const char* file_line;const char* message;const char* function;};
 enum class StackTracePrefix{kAt,kNumber};
 namespace ContextEmbedderIndex {extern const int kAllowCodeGenerationFromStrings;}
 struct FatalIsolateOptions {bool report_uncaught_exception;};
@@ -56,11 +53,5 @@ MaybeLocal<StackTrace> GetCurrentStackTrace(Isolate*,int=10);
 std::string FormatErrorMessage(Isolate*,Local<Context>,const std::string&,Local<Message>,bool);
 void PrintStackTrace(Isolate*,Local<StackTrace>,StackTracePrefix=StackTracePrefix::kAt);
 }
-#define ABORT_NO_BACKTRACE() std::abort()
-#define ABORT_WITH_DETAILS(location,message) kandelo_node_codec_impl::AbortWithDetails(location,message)
-#ifdef ABORT
-#undef ABORT
-#endif
-#define ABORT() ABORT_WITH_DETAILS(__FILE__,nullptr)
 #define NODE_DEFINE_CONSTANT(target,name) kandelo_node_codec_impl::DefineErrorConstant(isolate,target,#name,name)
 #endif

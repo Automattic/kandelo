@@ -344,7 +344,7 @@ bool EnvironmentControl(JSContext* cx,unsigned argc,JS::Value* vp) {
   auto args=JS::CallArgsFromVp(argc,vp);if(!args.get(0).isString()){JS_ReportErrorASCII(cx,"Native environment control requires an operation");return false;}
   JS::RootedString operationString(cx,args[0].toString());
   auto operation=JS_EncodeStringToUTF8(cx,operationString);if(!operation)return false;
-  JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);auto state=api::Data(cx,runtime);if(!state)return false;
+  JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);auto state=api::ReadCodecState(cx,runtime);if(!state)return false;
   JS::RootedObject realm(cx,GetRuntimePrincipalRealm(cx,runtime));if(!realm)return false;
   realm=js::CheckedUnwrapDynamic(realm,cx,false);if(!realm)return false;
   api::Frame frame(cx,realm,state,&args,api::Domain::Environment);auto& environment=state->environment;auto& data=environment.data();

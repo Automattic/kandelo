@@ -19,9 +19,8 @@
 #undef node
 #include "shell/node-upstream/resource-native-api.h"
 namespace kandelo_node_codec_impl {
-using ::node::GetProcessTitle;
+std::string GetProcessTitle(const char*);
 namespace tracing=::node::tracing;
-inline constexpr size_t PATH_MAX_BYTES=PATH_MAX;
 // The namespace-token adapter also changes an ordinary member named `node`.
 // Forward that member to the actual shared native metadata; never copy V8 facts.
 struct ProcessVersionsView {
@@ -49,16 +48,10 @@ class ReqWrapBase {public:AsyncWrap* GetAsyncWrap();};
 class HandleWrap : public AsyncWrap {public:static bool HasRef(HandleWrap*);};
 void RunAtExit(Environment*);bool HasSignalJSHandler(int);
 bool CheckProcessPermission(Environment*,permission::PermissionScope,std::string_view);
-template<class T> concept NumericOrEnum=std::is_arithmetic_v<T>||std::is_enum_v<T>;
-std::string ToUpper(std::string_view);
 namespace binding {
 void DLOpen(const FunctionCallbackInfo<Value>&);
 void DLOpenBinary(const FunctionCallbackInfo<Value>&);
 }
-void SetMethodNoSideEffect(Isolate*,Local<ObjectTemplate>,const char*,void(*)(const FunctionCallbackInfo<Value>&));
-void SetFastMethodNoSideEffect(Isolate*,Local<ObjectTemplate>,const char*,void(*)(const FunctionCallbackInfo<Value>&),const CFunction*);
-Local<String> OneByteString(Isolate*,const std::string&);
-MaybeLocal<Value> ToV8Value(Local<Context>,const std::vector<std::string>&);
 BaseObject* UnwrapSnapshotable(Local<Object>,EmbedderObjectType);
 template<class T> T* FromJSObject(Local<Object> object) {
   return static_cast<T*>(UnwrapSnapshotable(object,T::type_int));
@@ -87,9 +80,4 @@ extern IsolateInitializer isolate_initializer;
 #define __POSIX__ 1
 #define THROW_IF_INSUFFICIENT_PERMISSIONS(env,scope,path) \
  do {if(!kandelo_node_codec_impl::CheckProcessPermission(env,scope,path))return;}while(false)
-#define READONLY_PROPERTY(target,key,value) \
- (target)->DefineOwnProperty(isolate->GetCurrentContext(),FIXED_ONE_BYTE_STRING(isolate,key),value,kandelo_node_codec_api::ReadOnly).Check()
-#define READONLY_STRING_PROPERTY(target,key,value) \
- READONLY_PROPERTY(target,key,kandelo_node_codec_impl::OneByteString(isolate,value))
-#define USE(value) static_cast<void>(value)
 #endif

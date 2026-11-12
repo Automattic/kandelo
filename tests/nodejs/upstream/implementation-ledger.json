@@ -89,7 +89,9 @@
     "errorPolicyPartialCatalog": "error-policy-contracts.json",
     "errorPolicyEngineEvidence": "error-policy-engine-check.json",
     "persistentHandlePartialCatalog": "persistent-handle-contracts.json",
-    "persistentHandleEngineEvidence": "persistent-handle-engine-check.json"
+    "persistentHandleEngineEvidence": "persistent-handle-engine-check.json",
+    "utilityPartialCatalog": "utilities-contracts.json",
+    "utilityEngineEvidence": "utilities-engine-check.json"
   },
   "implementation": [
     {
@@ -363,6 +365,12 @@
       "status": "four-host private diagnostic prerequisite; complete upstream utility integration pending",
       "evidence": "persistent-handle-engine-check.json",
       "remaining": "Compile complete util.h/util-inl.h and execute original PersistentToLocal fast path; actual Message/stack/report/lifecycle/scheduling and startup remain incomplete"
+    },
+    {
+      "area": "complete original native utility units and headers",
+      "status": "Whole original util.h/util-inl.h/util.cc/node_concepts.h/node_union_bytes.h compiled; required engine APIs still undefined, no runnable current artifact",
+      "evidence": "utilities-engine-check.json",
+      "remaining": "Real function/template/slot/GC/byte-view contracts, complete node_internals.h ownership bridge/source-policy closure, Message/stack/report/lifecycle/scheduling, startup and full catalog"
     }
   ],
   "runtimeConformance": {
@@ -1146,6 +1154,12 @@
       "status": "real SpiderMonkey rooted-handle prerequisite implemented and diagnosed on four hosts",
       "evidence": "persistent-handle-engine-check.json",
       "originalUtilityIntegrationComplete": false
+    },
+    "nativeUtilities": {
+      "status": "complete original files compile, engine backend/link and node_internals source-policy gaps remain",
+      "evidence": "utilities-engine-check.json",
+      "currentRuntimeValidated": false,
+      "unmodifiedSourcePolicySatisfied": false
     }
   },
   "nativeDifferentialControls": {
@@ -1650,7 +1664,7 @@
     }
   },
   "nextWork": [
-    "Complete whole original util.h/util-inl.h/util.cc integration and audit provisional helpers. PersistentBase/Global now have stable typed native wrappers and actual root/weak transitions, but original PersistentToLocal fast path is not yet executed. Existing ToUpper ASCII helper remains a source-policy gap. Then genuine Message/SavedFrame/source metadata, report/lifecycle/scheduling and startup. Normal link still57; no broader roadmap before review.",
+    "Implement actual native function/template, writable rooted LocalVector slots and caller-scope copy/move/retirement, GC/initialization, byte-view and related utility contracts required by whole original utility bodies. Normal link70; private link13, no current artifact. Replace remaining ICU Buffer::New(Environment*,MaybeStackBuffer*) bridge via complete node_internals.h; no excerpts/rewritten algorithms. Then Message/stack/report/lifecycle/scheduling, real startup and full catalog; broader roadmap still requires review.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1659,17 +1673,17 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 60,
+    "packageRevision": 61,
     "status": "failed final link",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 57,
-    "evidence": "persistent-handle-engine-check.json",
+    "undefinedSymbols": 70,
+    "evidence": "utilities-engine-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
-    "buildCacheKey": "72d18a4d30fae87a8a3f7c8066c704fd2f58fbc07a70d91adec61de3940ecdee",
+    "buildCacheKey": "6b1820a7e7b73b46221b6923fe98eff3a65205288d6951ce5bd6c9c4e457349f",
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-persistent-normal-1112-114924-0e46",
+    "buildJob": "node-utilities-normal-link-1112-131129-532e",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1701,7 +1715,24 @@
       "kandelo_node_codec_impl::errors::TryCatchScope::TryCatchScope(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::errors::TryCatchScope::CatchMode)"
     ],
     "persistentHandleLayoutPrerequisitesCompile": true,
-    "wholeOriginalUtilitiesCompile": false
+    "wholeOriginalUtilitiesCompile": true,
+    "sourceIdentityRecords": 580,
+    "removedSinceRevision60": [],
+    "addedSinceRevision60": [
+      "kandelo_node_codec_api::ArrayBufferView::CopyContents(void*, unsigned long)",
+      "kandelo_node_codec_api::ArrayBufferView::HasBuffer() const",
+      "kandelo_node_codec_api::Function::SetName(kandelo_node_codec_api::Local<kandelo_node_codec_api::String>)",
+      "kandelo_node_codec_api::FunctionTemplate::New(kandelo_node_codec_api::Isolate*, void (*)(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&), kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Signature>, int, kandelo_node_codec_api::ConstructorBehavior, kandelo_node_codec_api::SideEffectType, kandelo_node_codec_api::CFunction const*)",
+      "kandelo_node_codec_api::FunctionTemplate::PrototypeTemplate()",
+      "kandelo_node_codec_api::Isolate::LowMemoryNotification()",
+      "kandelo_node_codec_api::Isolate::TryGetCurrent()",
+      "kandelo_node_codec_api::LocalVector<kandelo_node_codec_api::Value>::data()",
+      "kandelo_node_codec_api::Signature::New(kandelo_node_codec_api::Isolate*, kandelo_node_codec_api::Local<kandelo_node_codec_api::FunctionTemplate>)",
+      "kandelo_node_codec_api::Template::Set(kandelo_node_codec_api::Local<kandelo_node_codec_api::Name>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Data>)",
+      "kandelo_node_codec_impl::DumpJavaScriptBacktrace(_IO_FILE*)",
+      "kandelo_node_codec_impl::DumpNativeBacktrace(_IO_FILE*)",
+      "kandelo_node_codec_impl::per_process::v8_initialized"
+    ]
   },
   "currentLibuvExecutablePath": {
     "packageRevision": 5,
@@ -1719,6 +1750,21 @@
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   },
   "currentNativeOwnerDiagnostic": {
+    "evidence": "utilities-engine-check.json",
+    "packageRevision": 61,
+    "normalPackageArtifact": false,
+    "startupAccepted": false,
+    "normalEngineLinked": false,
+    "privateProfileRejectsProcessMethods": true,
+    "linked": false,
+    "currentRuntimeValidated": false,
+    "currentDriversPerHost": 0,
+    "lastRuntimeValidatedRevision": 60,
+    "historicalDriversPerHost": 32,
+    "undefinedSymbols": 13,
+    "historicalEvidence": "persistent-handle-engine-check.json"
+  },
+  "historicalNativeOwnerDiagnostic": {
     "evidence": "persistent-handle-engine-check.json",
     "packageRevision": 60,
     "normalPackageArtifact": false,

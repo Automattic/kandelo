@@ -66,8 +66,10 @@ MaybeLocal<Function> FunctionTemplate::GetFunction(Local<Context> context) {
   auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};JS::RootedValue value(f.cx,cell().value);
   if(!JS_WrapValue(f.cx,&value))return {};CHECK(value.isObject()&&JS::IsCallable(&value.toObject()));return f.Own<Function>(value);
 }
+Local<Uint32> Uint32::New(Isolate* isolate,uint32_t value){return Integer::NewFromUnsigned(isolate,value).As<Uint32>();}
+uint32_t Uint32::Value()const{CHECK(IsUint32());return uint32_t(cell().value.toNumber());}
 Local<Integer> Integer::NewFromUnsigned(Isolate* isolate,uint32_t value) {
-  auto& f=Current(isolate);JS::RootedValue number(f.cx,JS::NumberValue(double(value)));return f.Own<Integer>(number);
+  auto& f=Current(isolate);JS::RootedValue number(f.cx,JS::NumberValue(double(value)));return f.Own<Uint32>(number);
 }
 }
 namespace kandelo_node_codec_impl {
@@ -217,14 +219,11 @@ Local<FunctionTemplate> BaseObject::MakeLazilyInitializedJSTemplate(Environment*
   js::SetFunctionNativeReserved(object,0,JS::Int32Value(kInternalFieldCount));
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<FunctionTemplate>(value);
 }
-MaybeLocal<Value> ToV8Value(Local<Context> context,std::string_view text){
-  Context::Scope home(context);return String::NewFromUtf8(context->isolate,text.data(),NewStringType::kNormal,int(text.size()));
-}
 }
 namespace kandelo::node {
 JSObject* CreateDiagnosticsBinding(JSContext* cx,JS::HandleObject realm){
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if(!runtime)return nullptr;
-  auto state=api::Data(cx,runtime);if(!state)return nullptr;api::Frame frame(cx,realm,state,nullptr,api::Domain::Diagnostics);
+  auto state=api::ReadCodecState(cx,runtime);if(!state)return nullptr;api::Frame frame(cx,realm,state,nullptr,api::Domain::Diagnostics);
   JS::RootedObject object(cx,JS_NewObject(cx,&native::nativeBindingClass));if(!object)return nullptr;frame.binding=object;
   JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
   native::IsolateData isolateData;
@@ -240,7 +239,7 @@ bool DiagnosticsNativeControl(JSContext* cx,unsigned argc,JS::Value* vp){
   auto args=JS::CallArgsFromVp(argc,vp);
   if(!args.get(0).isString()){JS_ReportErrorASCII(cx,"Native diagnostics control requires operation String");return false;}
   JS::RootedString operationString(cx,args[0].toString());auto operation=JS_EncodeStringToUTF8(cx,operationString);if(!operation)return false;
-  JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);auto state=api::Data(cx,runtime);if(!state)return false;
+  JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);auto state=api::ReadCodecState(cx,runtime);if(!state)return false;
   JS::RootedObject realm(cx,GetRuntimePrincipalRealm(cx,runtime));if(!realm)return false;realm=js::CheckedUnwrapDynamic(realm,cx,false);if(!realm||!CheckRealmLibraryActive(cx,realm))return false;
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   auto* owner=native::Realm::GetCurrent(state->isolate.GetCurrentContext());if(!owner)return false;

@@ -43,9 +43,7 @@ class AsyncHooks {
 };
 struct async_context {double async_id;double trigger_async_id;};
 MaybeLocal<Value> InternalMakeCallback(Environment*,Local<Object>,Local<Object>,Local<Function>,int,Local<Value>*,async_context,Local<Value>);
-struct PersistentToLocal {
- template<class T> static Local<T> Default(Isolate* isolate,const Global<T>& root){return root.Get(isolate);}
-};
+
 }
 namespace kandelo_async_resource_adapter {
 using namespace kandelo_node_codec_api;

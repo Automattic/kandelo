@@ -62,7 +62,21 @@ enum encoding ParseEncoding(v8::Isolate*, v8::Local<v8::Value>, v8::Local<v8::Va
  for name in ['env.h','v8.h']:(policy/name).write_bytes(include)
  (policy/'node_buffer.h').write_text('#include "shell/node-upstream/codecs-upstream/node_buffer.h"\n')
  (output/'node_errors.h').write_text('#include "shell/node-upstream/error-policy-native-api.h"\n')
+ engine_include=output.parent/'utility-engine-includes';engine_include.mkdir(parents=True,exist_ok=True)
+ (engine_include/'v8.h').write_bytes(include)
+ utility=output.parent/'utilities-upstream';utility.mkdir(parents=True,exist_ok=True)
+ for name in ['util.h','util-inl.h','util.cc','node_concepts.h','node_union_bytes.h','node_exit_code.h','node_revert.h']:
+  (utility/name).write_bytes(verified('src/'+name))
+ for name in ['v8.h','v8-inspector.h','v8-profiler.h','v8-isolate.h','v8-value.h','node.h']:
+  (utility/name).write_bytes(include)
+ for name in ['node_internals.h','node_snapshot_builder.h','node_v8_platform-inl.h']:
+  (utility/name).write_text('#include "shell/node-upstream/utility-support-native-api.h"\n')
+ for name in ['env-inl.h','debug_utils-inl.h']:
+  (utility/name).write_text('#include "shell/node-upstream/process-native-api.h"\n')
+ for name in ['node_buffer.h','string_bytes.h']:
+  (utility/name).write_text('#include "shell/node-upstream/codecs-upstream/'+name+'"\n')
+ (utility/'node_errors.h').write_text('#include "shell/node-upstream/error-policy-native-api.h"\n')
  (output/'errors.generated.h').unlink(missing_ok=True)
- return {'completeNativeFiles':len(names)+13,'wholeOriginalErrorPolicyHeader':True,'asyncProviderMetadataMacros':4,'fullEncodingEnumOnly':True,'functionBodiesExtracted':False,'javascriptGenerated':False}
+ return {'completeNativeFiles':len(names)+20,'wholeOriginalUtilities':True,'wholeOriginalErrorPolicyHeader':True,'asyncProviderMetadataMacros':4,'fullEncodingEnumOnly':True,'functionBodiesExtracted':False,'javascriptGenerated':False}
 if __name__=='__main__':
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--manifest',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args();print(json.dumps(prepare(a.manifest,a.output)))

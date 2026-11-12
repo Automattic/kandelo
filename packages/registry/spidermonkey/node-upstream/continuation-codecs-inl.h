@@ -36,7 +36,7 @@ void Set(const FunctionCallbackInfo<Value>& args) { args.GetIsolate()->SetContin
 namespace kandelo::node {
 JSObject* CreateContinuationBinding(JSContext* cx,JS::HandleObject realm) {
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if(!runtime)return nullptr;
-  auto state=api::Data(cx,runtime);if(!state)return nullptr;
+  auto state=api::ReadCodecState(cx,runtime);if(!state)return nullptr;
   api::Frame frame(cx,realm,state,nullptr,api::Domain::Continuation);
   JS::RootedObject object(cx,JS_NewObject(cx,&api::continuationBindingClass));if(!object)return nullptr;frame.binding=object;
   JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
@@ -52,7 +52,7 @@ bool WithContinuationScopeControl(JSContext* cx,unsigned argc,JS::Value* vp) {
   JS::RootedObject runtime(cx,js::shell::GetShellContext(cx)->upstreamNodeRuntime);
   JS::RootedObject realm(cx,GetRuntimePrincipalRealm(cx,runtime));if(!realm)return false;
   realm=js::CheckedUnwrapDynamic(realm,cx,false);if(!realm||!CheckRealmLibraryActive(cx,realm))return false;
-  auto state=api::Data(cx,runtime);if(!state)return false;
+  auto state=api::ReadCodecState(cx,runtime);if(!state)return false;
   api::Frame frame(cx,realm,state,&args,api::Domain::Continuation);
   JS::RootedValue value(cx,args[0]),callback(cx,args[1]);
   return kandelo_continuation_adapter::WithFrame(&state->isolate,frame.OwnValue(value),[&]{
