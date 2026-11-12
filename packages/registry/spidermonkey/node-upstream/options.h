@@ -10,6 +10,11 @@ struct NativeTracingConfiguration {
   std::string filePattern, categories;
   bool permissionsEnabled = false;
 };
+struct NativeEnvironmentFlags {
+  bool zeroFill,pendingDeprecation,traceEnv,traceEnvJsStack,traceEnvNativeStack;
+};
+NativeEnvironmentFlags ReadProcessEnvironmentFlags();
+bool ReadEnvironmentFlags(JSContext*,JS::HandleObject,NativeEnvironmentFlags*);
 bool ReadNativeTracingConfiguration(JSContext* cx, JS::HandleObject realm,
                                     NativeTracingConfiguration* result);
 bool NativeAsyncContextFrameEnabled();

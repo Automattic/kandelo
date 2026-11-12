@@ -2,6 +2,14 @@
 #define KANDELO_NODE_CONTINUATION_CODECS_INL_H
 
 namespace kandelo_node_codec_api {
+template<class T> std::unique_ptr<T> RetainTypedRoot(Isolate* isolate,Local<T> input) {
+  auto& frame=Current(isolate);if(input.IsEmpty())return nullptr;
+  JS::RootedValue value(frame.cx,Input(input));
+  if constexpr(std::is_same_v<T,Name>)CHECK(value.isString()||value.isSymbol());
+  return std::make_unique<T>(std::make_unique<Cell>(frame.cx,value));
+}
+template std::unique_ptr<Value> RetainTypedRoot(Isolate*,Local<Value>);
+template std::unique_ptr<Name> RetainTypedRoot(Isolate*,Local<Name>);
 std::unique_ptr<Value> RetainRoot(Isolate* isolate,Local<Value> input) {
   auto& frame=Current(isolate);CHECK(!input.IsEmpty());
   JS::RootedValue value(frame.cx,Input(input));

@@ -23,6 +23,7 @@
 #include "js/CallArgs.h"
 #include "js/CharacterEncoding.h"
 #include "js/Conversions.h"
+#include "js/Date.h"
 #include "js/Equality.h"
 #include "js/ErrorReport.h"
 #include "js/Exception.h"
@@ -47,7 +48,7 @@
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/codec-agent-includes.h"
 #include "shell/node-upstream/codec-native-api.h"
-#include "shell/node-upstream/process-native-api.h"
+#include "shell/node-upstream/process-files-native-api.h"
 #include "shell/node-upstream/codecs-upstream/errors.generated.h"
 #define v8 kandelo_node_codec_api
 #define node kandelo_node_codec_impl
@@ -170,7 +171,13 @@ static JSObject* UnwrapBytes(JSContext* cx, JS::HandleValue input) {
 Value::Value(std::unique_ptr<Cell> cell) : cell_(std::move(cell)) {}
 Value::~Value() = default;
 Cell& Value::cell() const { return *cell_; }
+Local<Value> Null(Isolate* isolate){auto& f=Current(isolate);JS::RootedValue value(f.cx,JS::NullValue());return f.OwnValue(value);}
+void Isolate::DateTimeConfigurationChangeNotification(TimeZoneDetection detection) {
+  auto& f=Current(this);f.state->environment.AssertForeground();
+  CHECK(detection==TimeZoneDetection::kRedetect);JS::ResetTimeZone();
+}
 bool Value::IsString() const { return cell().value.isString(); }
+bool Value::IsSymbol() const { return cell().value.isSymbol(); }
 bool Value::IsArray() const { auto* object=UnwrapObject(Frame::current->cx,cell().value);return object && object->is<js::ArrayObject>(); }
 bool Value::IsFunction() const { return cell().value.isObject() && JS::IsCallable(&cell().value.toObject()); }
 bool Value::IsNumber() const { return cell().value.isNumber(); }
@@ -322,7 +329,7 @@ Local<Array> Array::New(Isolate* isolate) {
   auto& f = Current(isolate); JS::RootedObject object(f.cx, JS::NewArrayObject(f.cx, 0)); if (!object) return {};
   JS::RootedValue value(f.cx, JS::ObjectValue(*object)); return f.Own<Array>(value);
 }
-Local<Array> Array::New(Isolate* isolate,Local<Value>* entries,size_t count) {
+Local<Array> Array::New(Isolate* isolate,const Local<Value>* entries,size_t count) {
   auto& f=Current(isolate);JS::RootedValueVector values(f.cx);
   for(size_t i=0;i<count;++i){
     JS::RootedValue value(f.cx,Input(entries[i]));
@@ -334,6 +341,37 @@ Local<Array> Array::New(Isolate* isolate,Local<Value>* entries,size_t count) {
 Local<Object> Object::New(Isolate* isolate) {
   auto& f=Current(isolate);JS::RootedObject object(f.cx,JS_NewPlainObject(f.cx));if(!object)return {};
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Object>(value);
+}
+Local<Object> Object::New(Isolate* isolate,Local<Value> prototype,
+                          Local<Name>* names,Local<Value>* entries,size_t count) {
+  auto& f=Current(isolate);if(JS_IsExceptionPending(f.cx))return {};
+  JS::RootedValue parent(f.cx,Input(prototype));if(!JS_WrapValue(f.cx,&parent))return {};
+  CHECK(parent.isNull()||parent.isObject());
+  JS::RootedObject proto(f.cx,parent.isObject()?&parent.toObject():nullptr);
+  JS::RootedObject object(f.cx,JS_NewObjectWithGivenProto(f.cx,nullptr,proto));if(!object)return {};
+  for(size_t i=0;i<count;++i){
+    JS::RootedValue name(f.cx,Input(names[i])),value(f.cx,Input(entries[i]));JS::RootedId id(f.cx);
+    if(!JS_WrapValue(f.cx,&name)||!JS_WrapValue(f.cx,&value)||!JS_ValueToId(f.cx,name,&id)||
+        !JS_DefinePropertyById(f.cx,object,id,value,JSPROP_ENUMERATE))return {};
+  }
+  JS::RootedValue result(f.cx,JS::ObjectValue(*object));return f.Own<Object>(result);
+}
+MaybeLocal<Array> Object::GetOwnPropertyNames(Local<Context> context) {
+  auto& f=Current(context->isolate);Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};
+  JS::RootedObject object(f.cx,&cell().value.toObject());if(!JS_WrapObject(f.cx,&object))return {};
+  JS::RootedIdVector keys(f.cx);if(!js::GetPropertyKeys(f.cx,object,JSITER_OWNONLY,&keys))return {};
+  JS::RootedValueVector values(f.cx);
+  for(size_t i=0;i<keys.length();++i){
+    JS::RootedValue value(f.cx);uint32_t index;
+    // The consumed default interface keeps array indices numeric, including
+    // indices too large for SpiderMonkey's compact integer property-key tag.
+    if(keys[i].isString()&&keys[i].toString()->asAtom().isIndex(&index)&&index!=UINT32_MAX)
+      value.setNumber(double(index));
+    else if(!JS_IdToValue(f.cx,keys[i],&value))return {};
+    if(!values.append(value))return {};
+  }
+  JS::RootedObject array(f.cx,JS::NewArrayObject(f.cx,values));if(!array)return {};
+  JS::RootedValue value(f.cx,JS::ObjectValue(*array));return f.Own<Array>(value);
 }
 Maybe<bool> Object::DefineOwnProperty(Local<Context> context,Local<Name> key,
                                      Local<Value> input,PropertyAttribute attrs) {
@@ -554,6 +592,7 @@ template<class T,size_t N> void MaybeStackBuffer<T,N>::AllocateSufficientStorage
 template<class T,size_t N> bool MaybeStackBuffer<T,N>::IsAllocated() const { return data_!=stack_; }
 template<class T,size_t N> void MaybeStackBuffer<T,N>::Release() { CHECK(data_!=stack_); data_=stack_; length_=0; capacity_=N; }
 template class MaybeStackBuffer<uint8_t,1024>;
+template class MaybeStackBuffer<char,256>;
 template class MaybeStackBuffer<char,512>;
 template class MaybeStackBuffer<char,1024>;
 template class MaybeStackBuffer<char,4096>;
@@ -561,6 +600,7 @@ template class MaybeStackBuffer<char16_t,1024>;
 template class MaybeStackBuffer<char16_t,256>;
 template class MaybeStackBuffer<uint16_t,256>;
 template class MaybeStackBuffer<uint16_t,1024>;
+template class MaybeStackBuffer<Local<Value>,256>;
 template<class T> T* UncheckedMalloc(size_t length) {
   if (length>std::numeric_limits<size_t>::max()/sizeof(T)) return nullptr;
   return static_cast<T*>(std::malloc(length*sizeof(T)));
@@ -582,9 +622,28 @@ Utf8Value::Utf8Value(Isolate* isolate,Local<Value> input) {
   size_t length=JS::GetDeflatedUTF8StringLength(linear);
   AllocateSufficientStorage(length+1);std::memcpy(out(),bytes.get(),length+1);SetLength(length);
 }
+BufferValue::BufferValue(Isolate* isolate,Local<Value> input) {
+  auto& f=Current(isolate);
+  if(input.IsEmpty()){Invalidate();return;}
+  if(input->IsString()){
+    Utf8Value bytes(isolate,input);if(JS_IsExceptionPending(f.cx)||bytes.IsInvalidated()){Invalidate();return;}
+    AllocateSufficientStorage(bytes.length()+1);std::memcpy(out(),bytes.out(),bytes.length()+1);SetLength(bytes.length());return;
+  }
+  JS::RootedObject view(f.cx,UnwrapView(f.cx,Input(input)));
+  if(!view){Invalidate();return;}
+  JS::RootedValue value(f.cx,JS::ObjectValue(*view));auto& span=f.Borrow(f.OwnValue(value));
+  CHECK_LT(span.size,std::numeric_limits<size_t>::max());AllocateSufficientStorage(span.size+1);
+  js::jit::AtomicOperations::memcpySafeWhenRacy(reinterpret_cast<uint8_t*>(out()),SharedMem<uint8_t*>::shared(span.bytes),span.size);SetLengthAndZeroTerminate(span.size);
+}
 Environment* Environment::GetCurrent(Local<Context> context) { return &Current(context->isolate).state->environment; }
 Environment* Environment::GetCurrent(const FunctionCallbackInfo<Value>& args) { return GetCurrent(args.GetIsolate()->GetCurrentContext()); }
 Isolate* Environment::isolate() { return isolate_; }
+std::shared_ptr<KVStore> Environment::env_vars(){AssertForeground();return per_process::system_environment;}
+std::shared_ptr<NativeEnvOptions> Environment::options(){
+  auto& f=Current(isolate());AssertForeground();kandelo::node::NativeEnvironmentFlags flags;
+  CHECK(kandelo::node::ReadEnvironmentFlags(f.cx,f.realm,&flags));
+  return std::make_shared<NativeEnvOptions>(NativeEnvOptions{flags.pendingDeprecation,flags.traceEnv,flags.traceEnvJsStack,flags.traceEnvNativeStack});
+}
 Isolate* IsolateData::isolate() { return &Frame::current->state->isolate; }
 void IsolateData::set_i18n_converter_template(Local<ObjectTemplate> value) {
   auto& f=*Frame::current;CHECK(f.binding && JS::GetClass(f.binding)==&api::icuBindingClass);
@@ -643,6 +702,11 @@ BaseObject* BaseObject::Unwrap(Local<Object> input) {
 }
 Local<String> OneByteString(Isolate* isolate,const char* text) {
   return String::NewFromOneByte(isolate,reinterpret_cast<const uint8_t*>(text),NewStringType::kNormal,int(std::strlen(text))).ToLocalChecked();
+}
+Local<String> Uint32ToString(Local<Context> context,uint32_t input) {
+  auto& f=Current(context->isolate);Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};
+  JS::RootedValue number(f.cx,JS::NumberValue(double(input)));JS::RootedString string(f.cx,JS::ToString(f.cx,number));if(!string)return {};
+  JS::RootedValue value(f.cx,JS::StringValue(string));return f.Own<String>(value);
 }
 Local<String> OneByteString(Isolate* isolate,const std::string& text) {
   CHECK_LE(text.size(),String::kMaxLength);

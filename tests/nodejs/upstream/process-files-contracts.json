@@ -1,0 +1,193 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Bounded whole-file dotenv/path/environment prerequisites for process_methods. Compile-only integration; no runnable current engine or completed process.env proxy.",
+  "completeBindingContract": false,
+  "runtimeValidated": false,
+  "startupAccepted": false,
+  "sourceIdentity": {
+    "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+    "files": [
+      {
+        "path": "deps/ada/ada.h",
+        "role": "provenance",
+        "bytes": 426310,
+        "sha256": "0010b17b3ff489e13998e86d921b16e1643e370ee3276c584f1b0c4b72bdf628",
+        "builtinId": null
+      },
+      {
+        "path": "src/node_dotenv.cc",
+        "role": "provenance",
+        "bytes": 11522,
+        "sha256": "750bcdf4300a8a2ba1d4d572c7f8a51b10f50694262acf23d90409200465da4d",
+        "builtinId": null
+      },
+      {
+        "path": "src/node_dotenv.h",
+        "role": "provenance",
+        "bytes": 1130,
+        "sha256": "a88e46ee815d45c7f58188655f117f526a34811e6db536f5b404c5d5a2050180",
+        "builtinId": null
+      },
+      {
+        "path": "src/node_env_var.cc",
+        "role": "provenance",
+        "bytes": 23835,
+        "sha256": "9b3bfe0143640e9e8ce00ff982385162c288e1361742d250384a515b88958b66",
+        "builtinId": null
+      },
+      {
+        "path": "src/path.cc",
+        "role": "provenance",
+        "bytes": 11600,
+        "sha256": "b87accff213c9b1302b831b8f93e3d75e1a019eadf48429da3e976e5f23ee54c",
+        "builtinId": null
+      },
+      {
+        "path": "src/path.h",
+        "role": "provenance",
+        "bytes": 1049,
+        "sha256": "fd447905dae3570d308fc6746ab7ffef9571d79b7c3aa67805f0f564d767549a",
+        "builtinId": null
+      }
+    ],
+    "completeOriginalBodies": true,
+    "javascriptChanged": false
+  },
+  "nativeConsumerLocations": {
+    "evidence": {
+      "path": ".context/node-process-files/integration/native-consumers.json",
+      "bytes": 89646,
+      "sha256": "a2dee673d681f078a17b93429d144e0f0366cf4bcb27df51600ccb01496663f1"
+    },
+    "scannedFiles": 460,
+    "lexicalSites": 116,
+    "completeSemanticConsumerAudit": false
+  },
+  "contractGroups": [
+    {
+      "name": "dotenv file parsing and application",
+      "nativeInterface": [
+        "Dotenv::GetDataFromArgs(vector<string>)",
+        "Dotenv::ParseContent(string_view)",
+        "Dotenv::ParsePath(string_view) -> ParseResult",
+        "Dotenv::SetEnvironment(Environment*) -> Maybe<void>",
+        "Dotenv::ToObject(Environment*) -> MaybeLocal<Object>",
+        "Dotenv::AssignNodeOptionsIfAvailable(string*)"
+      ],
+      "consumers": [
+        "src/node_process_methods.cc: LoadEnvFile",
+        "src/node.cc: startup option/environment processing",
+        "src/node_util.cc: parseEnv"
+      ],
+      "owner": "Complete original node_dotenv.cc; uv_fs_* synchronous operations delegate to real guest libc/VFS; engine embedding owns rooted strings/objects",
+      "stateAndErrors": "Original map owns copied strings. Existing environment values win. ParsePath uses original Valid/FileError/InvalidContent results; original callers own errno/error selection. Engine conversion failures propagate Maybe emptiness.",
+      "schedulingAndLifecycle": "Synchronous borrowed Environment and path; original scope guards clean each uv_fs request and close the real descriptor. No invented async handle or queue.",
+      "validationRequired": [
+        "quotes, escapes, comments, multiline and invalid content against pinned native reference",
+        "empty, long, unicode and embedded-NUL inputs under original assertions",
+        "actual guest open/read/close success/failure and descriptor cleanup",
+        "preserve existing values; original NODE_OPTIONS ordering and permission/error behavior",
+        "null-prototype ToObject, own data-property attributes, roots across GC and conversion exceptions"
+      ]
+    },
+    {
+      "name": "environment stores",
+      "nativeInterface": [
+        "KVStore::Get/Set/Query/Delete/Enumerate/Pairs",
+        "KVStore::Clone/CreateMapKVStore/AssignFromObject/AssignToObject",
+        "per_process::system_environment"
+      ],
+      "owner": "Complete original node_env_var.cc RealEnvStore/MapKVStore; original mutex; libuv uv_os_* and actual guest environ; typed handles/realm scope in engine embedding",
+      "stateAndErrors": "Original RealEnvStore backs canonical process environment, original MapKVStore owns copies. Missing keys and insufficient getenv capacity retain original behavior. Environment accessor currently selects the original shared process store; worker copy/share selection is not implemented or validated.",
+      "schedulingAndLifecycle": "Synchronous original mutex and owned strings. Typed LocalVector roots are independent of temporary HandleScopes. Temporary Value-mode buffer roots until array construction. No JS environment proxy created.",
+      "timezone": "Original POSIX branch calls tzset for TZ mutation; embedding kRedetect calls actual JS::ResetTimeZone. Cross-worker cache invalidation and ICU propagation remain unvalidated.",
+      "validationRequired": [
+        "missing/empty/long/unicode keys and values, inherited environment and mutation coherence",
+        "enumeration/pairs order and ownership, clone isolation, SHARE_ENV versus copied worker environments",
+        "original AssignFromObject enumerable own names with default numeric-index retention, symbols excluded, getters/conversion errors and proxy errors",
+        "GC/reentry/OOM during LocalVector construction, assignment, escaping and array creation",
+        "TZ set/delete and Date/Intl behavior per host; no host-environment substitution"
+      ]
+    },
+    {
+      "name": "environment interceptor template",
+      "nativeInterface": [
+        "CreateEnvProxyTemplate(IsolateData*)",
+        "named getter/setter/query/deleter/enumerator/definer",
+        "indexed getter/setter/query/deleter/definer"
+      ],
+      "owner": "Original node_env_var.cc algorithms; genuine SpiderMonkey native property interceptors and IsolateData template roots still needed",
+      "status": "Declarations permit whole original source to typecheck. PropertyDescriptor/handler configuration, template storage, warnings, deprecation and trace/backtrace interfaces remain unavailable; dead stripping of unused functions is not support.",
+      "validationRequired": [
+        "original symbol and numeric-name behavior",
+        "own descriptors, deletion, definition rejection, nullish/string conversion and warnings",
+        "principal/active realm, reentry, GC, proxy errors and template lifecycle",
+        "actual trace-env options and original native/JS stack output"
+      ]
+    },
+    {
+      "name": "native path support",
+      "nativeInterface": [
+        "NormalizeString",
+        "PathResolve(Environment*,vector<string_view>)",
+        "ToNamespacedPath(Environment*,BufferValue*)",
+        "FromNamespacedPath(string*)",
+        "IsAbsoluteFilePath(string_view)",
+        "NormalizeFileURLOrPath(Environment*,string_view)"
+      ],
+      "owner": "Complete original path.cc. BufferValue copies actual string UTF8 or actual view bytes with explicit terminator. POSIX ToNamespacedPath original body has no operation.",
+      "status": "Whole unit compiles; only consumed process-method paths participate in current link. GetCwd and URL FileURLToPath backend remain declarations. Complete Ada header supplies types only; Ada parser implementation is not linked.",
+      "validationRequired": [
+        "string and buffer views with byte offsets, empty/detached/shared backing and mutation",
+        "normalization, absolute/relative/empty paths and actual cwd errors",
+        "URL parsing and encoding errors through actual Ada/Node URL backend when activated",
+        "generic API host parity and no Windows identity claims on POSIX target"
+      ]
+    }
+  ],
+  "newGenericEmbeddingDefinitions": [
+    "typed independently rooted LocalVector<Value/Name> including indexed assignment",
+    "Object::New with explicit null/object prototype and own enumerable writable configurable values",
+    "Object::GetOwnPropertyNames default enumerable own names, symbols excluded, numeric indices retained",
+    "Uint32ToString through actual engine conversion",
+    "BufferValue native UTF8/view copy",
+    "Environment::env_vars selects actual original shared store",
+    "Environment/process options project actual original flags under mutex",
+    "Isolate kRedetect resets actual engine timezone cache",
+    "Null, IsSymbol and ReturnValue::SetUndefined"
+  ],
+  "unimplementedDeclarations": [
+    "named/indexed handler configurations",
+    "PropertyDescriptor accessors",
+    "ObjectTemplate handler creation/storage",
+    "Environment::GetCwd/EmitProcessEnvWarning",
+    "IsolateData environment templates",
+    "native/JS backtrace and original deprecation/definition errors",
+    "url::FileURLToPath"
+  ],
+  "owningLayerBoundaries": {
+    "guest": "Real guest libc/VFS/environment; host Node builtins are not backends",
+    "engine": "SpiderMonkey values, descriptors, root ownership and timezone cache",
+    "knownKernelGaps": "getrusage zero-filled success and sysinfo fixed fields remain known gaps. No resource-accounting claims or kernel build this phase."
+  },
+  "hostsRequired": [
+    "node",
+    "chromium",
+    "firefox",
+    "webkit"
+  ],
+  "fourHostRuntimeEvidence": null,
+  "compileEvidence": "process-files-compile-check.json",
+  "previousRuntimeEvidence": "property-callback-engine-check.json",
+  "previousRuntimeEvidenceIsHistorical": true,
+  "dependencyOrder": [
+    "compile complete original files and close real required interfaces",
+    "finish remaining process_methods link prerequisites without synthetic queues/metrics",
+    "activate whole factory only with real additional consumed contracts",
+    "validate new environment/parser/path behavior and original startup on identified artifacts on all four hosts",
+    "empty/simple/error/jobs/exit and separate CJS/ESM",
+    "complete full graph catalog/ordered roadmap; stop for user review before broader implementation"
+  ],
+  "fullRoadmapImplementationAuthorized": false
+}

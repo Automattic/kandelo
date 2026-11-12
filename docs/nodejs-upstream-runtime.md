@@ -18,9 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 52 source connects the original process initializer and
-native invocation state, but its targeted build still fails final linking on
-30 symbols and has no runnable artifact. The original native tracing agent, binding,
+The current revision 53 source connects the original process initializer,
+native invocation state and complete original dotenv/environment/path units,
+but its targeted build still fails final linking on 26 symbols and has no
+runnable artifact. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -87,7 +88,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 570 files after complete native source/header additions; every
+manifest has 574 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -2176,3 +2177,53 @@ the last runnable engine; its runtime receipts remain historical. All 570 source
 records and 443 JavaScript files are unchanged this step. Full startup, separate
 CJS/ESM, full catalog/roadmap and user review remain outstanding. Full products,
 kernel/successor-ABI builds and overall suites remain deferred.
+
+
+## Whole original dotenv, environment and path units (revision 53; link incomplete)
+
+Revision 53 compiles complete unchanged `src/node_dotenv.cc`,
+`src/node_env_var.cc` and `src/path.cc`. The authenticated import adds those
+three files and the complete Ada header, bringing it to 574 records. All 570
+prior records and every one of the 443 JavaScript files remain byte-identical;
+a fresh full import reproduces the manifest exactly. Ada supplies types for
+compiling the original path unit; its parser implementation and Node URL
+conversion backend are not linked.
+
+The original dotenv parser and environment algorithms remain in their complete
+upstream files. Synchronous file access uses genuine `uv_fs_*` operations.
+The canonical Environment selects the original `RealEnvStore` and original
+mutex, whose `uv_os_*` calls use actual guest environment state. Worker store
+copy/share selection remains unfinished. The engine bridge now supplies typed
+independent roots for `LocalVector<Value/Name>`, indexed assignment, real object
+creation with an explicit prototype, enumerable own property names with numeric
+indices retained, and native string/view byte copies. Environment flags are
+read from original options under their mutex. The original POSIX timezone
+mutation calls `tzset`; the bridge then resets SpiderMonkey's actual timezone
+cache. These additions have compile evidence only.
+
+The environment proxy interceptor/template, property descriptor, warning,
+backtrace and URL conversion interfaces remain declarations. Their unused
+functions can be discarded by normal linking; this does not establish their
+support. No `process.env` proxy was created or tested, and no parser, timezone,
+worker environment or generic engine conformance result is claimed. The bounded
+[process-files catalog](../tests/nodejs/upstream/process-files-contracts.json)
+records these prerequisites, ownership and validation obligations. A lexical
+scan of all 460 original native source/header files records 116 related sites;
+it is not complete semantic consumer analysis.
+
+The final normal build reports zero C++ compiler errors and 26 unresolved
+symbols, down from 30. `BufferValue`, both consumed dotenv methods and the
+original POSIX namespaced-path method now resolve. The six attempt logs and
+exact build inputs are retained in
+[process-files-compile-check.json](../tests/nodejs/upstream/process-files-compile-check.json).
+Real resource-owner registries, native errors/permissions, lifecycle/signals,
+heap/allocator accounting, native loading and three libuv memory functions
+remain missing. The unused original process-object factory may require more
+interfaces than this linker list shows.
+
+There is no revision-53 runtime artifact, new guest test result or startup
+advancement. Revision 50 remains the last runnable engine and still stops at
+`process_methods`. Empty/simple execution, output/errors/jobs/exit, separate
+CJS/ESM entrypaths, the full catalog/roadmap and user review remain outstanding.
+Full products/images, kernel/successor-ABI builds and overall suites remain
+deferred; no kernel, libc, ABI or host adapter change was made in this phase.

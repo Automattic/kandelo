@@ -6,7 +6,7 @@
     "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
   },
   "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
-  "sourceManifestSha256": "6450ff566f281298da599f26c4e7e93b069aace0a5f1316caaf72b5d7034ae4f",
+  "sourceManifestSha256": "bca29badac67ed701ada29f29ca95fcf195573a8f7aa8798d55eeb17c815028e",
   "sourceOffsetUnits": "Unicode code points; line numbers are one-based",
   "counts": {
     "nativeFilesScanned": 460,
@@ -1755,7 +1755,7 @@
       "bytes": 11522,
       "sha256": "750bcdf4300a8a2ba1d4d572c7f8a51b10f50694262acf23d90409200465da4d",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_dotenv.h",
@@ -1769,7 +1769,7 @@
       "bytes": 23835,
       "sha256": "9b3bfe0143640e9e8ce00ff982385162c288e1361742d250384a515b88958b66",
       "registrations": 1,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/node_errors.cc",
@@ -2553,7 +2553,7 @@
       "bytes": 11600,
       "sha256": "b87accff213c9b1302b831b8f93e3d75e1a019eadf48429da3e976e5f23ee54c",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/path.h",

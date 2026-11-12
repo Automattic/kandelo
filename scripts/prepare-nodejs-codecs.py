@@ -12,6 +12,10 @@ def prepare(manifest,output):
  names=['src/string_decoder.cc','src/string_decoder.h','src/string_decoder-inl.h','src/string_bytes.cc','src/string_bytes.h','src/node_buffer.h','src/node_buffer.cc','src/aliased_buffer.h','src/aliased_buffer-inl.h','src/node_i18n.cc','src/node_i18n.h','src/api/encoding.cc','src/base_object_types.h','src/node_snapshotable.h','src/node_diagnostics_channel.cc','src/node_diagnostics_channel.h','src/node_process_methods.cc','src/node_process_object.cc','src/node_process.h','src/node_process-inl.h','src/node_mutex.h','src/node_dotenv.h','src/path.h','src/permission/permission_base.h','src/node_revert.h']
  for name in names:
   output.mkdir(parents=True,exist_ok=True);target=output/(name[4:] if name.startswith('src/permission/')else Path(name).name);target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(verified(name))
+ for name in ['src/node_dotenv.cc','src/path.cc','src/node_env_var.cc','deps/ada/ada.h']:
+  (output/Path(name).name).write_bytes(verified(name))
+ (output/'node_file.h').write_text('#include "shell/node-upstream/process-native-api.h"\n')
+ (output/'node_url.h').write_text('#include "shell/node-upstream/process-native-api.h"\n')
  # Keep the complete original formatting algorithms in their own include
  # directory, leaving other consumers' declaration-only debug shims intact.
  support=output/'process-support';support.mkdir(parents=True,exist_ok=True)
@@ -50,6 +54,6 @@ enum encoding ParseEncoding(v8::Isolate*, v8::Local<v8::Value>, v8::Local<v8::Va
   if not re.search(r'V\('+code+r',\s*'+kind+r'\)',errors) or json.dumps(text) not in errors:raise ValueError('unreviewed native error metadata: '+code)
   metadata.append('inline constexpr Error '+name+'{'+json.dumps(code)+','+json.dumps(text)+','+str(kind=='RangeError').lower()+'};')
  (output/'errors.generated.h').write_text('namespace kandelo_codec_metadata {\nstruct Error { const char* code; const char* text; bool range; };\n'+'\n'.join(metadata)+'\n}\n')
- return {'completeNativeFiles':len(names)+2,'asyncProviderMetadataMacros':4,'fullEncodingEnumOnly':True,'functionBodiesExtracted':False,'javascriptGenerated':False}
+ return {'completeNativeFiles':len(names)+6,'asyncProviderMetadataMacros':4,'fullEncodingEnumOnly':True,'functionBodiesExtracted':False,'javascriptGenerated':False}
 if __name__=='__main__':
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--manifest',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args();print(json.dumps(prepare(a.manifest,a.output)))

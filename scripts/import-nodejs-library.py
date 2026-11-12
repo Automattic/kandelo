@@ -62,6 +62,8 @@ def select_sources(members, prefix):
                        'src/node_process.h', 'src/node_process-inl.h',
                        'src/node_dotenv.h', 'src/path.h', 'src/permission/permission_base.h',
                        'src/node_revert.h',
+                       'src/node_dotenv.cc', 'src/path.cc', 'src/node_env_var.cc',
+                       'deps/ada/ada.h',
                        'src/debug_utils.h',
                        'src/debug_utils-inl.h',
                        'src/node_errors.h',

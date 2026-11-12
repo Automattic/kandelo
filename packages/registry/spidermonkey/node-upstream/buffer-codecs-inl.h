@@ -183,7 +183,12 @@ IsolateData* Environment::isolate_data() { Current(isolate());static thread_loca
 bool IsolateData::is_building_snapshot() const { return false; } // This embedding creates live realms; it has no snapshot builder.
 void Environment::ThrowRangeError(const char* text) { auto value=Error(isolate(),JSEXN_RANGEERR,nullptr,text);if(!value.IsEmpty())isolate()->ThrowException(value); }
 const per_process::BufferOptions* per_process::BufferOptionsAccess::operator->() const {
-  static thread_local BufferOptions value;value.zero_fill_all_buffers=kandelo::node::NativeZeroFillBuffersEnabled();return &value;
+  static thread_local BufferOptions value;
+  auto flags=kandelo::node::ReadProcessEnvironmentFlags();value.zero_fill_all_buffers=flags.zeroFill;
+  if(!value.per_isolate){value.per_isolate=std::make_shared<NativeEnvIsolateOptions>();value.per_isolate->per_env=std::make_shared<NativeEnvOptions>();}
+  *value.per_isolate->per_env=NativeEnvOptions{
+    flags.pendingDeprecation,flags.traceEnv,flags.traceEnvJsStack,flags.traceEnvNativeStack};
+  return &value;
 }
 std::unique_ptr<BackingStore> AdoptIntoBackingStore(Isolate* isolate,void* data,size_t size,BackingStore::DeleterCallback deleter,void* hint) {
   Current(isolate);return ArrayBuffer::NewBackingStore(data,size,deleter,hint);

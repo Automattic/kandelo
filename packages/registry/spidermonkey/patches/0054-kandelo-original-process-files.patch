@@ -1,0 +1,39 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -40,5 +40,7 @@
+     "node-upstream/decoder-upstream.cpp",
+     "node-upstream/diagnostics-upstream.cpp",
++    "node-upstream/dotenv-upstream.cpp",
+     "node-upstream/encoding-upstream.cpp",
++    "node-upstream/env-var-upstream.cpp",
+     "node-upstream/error-stack.cpp",
+     "node-upstream/icu-upstream.cpp",
+@@ -47,6 +49,7 @@
+     "node-upstream/module-wrap.cpp",
+     "node-upstream/options-upstream.cpp",
+     "node-upstream/options.cpp",
++    "node-upstream/path-upstream.cpp",
+     "node-upstream/per-context.cpp",
+     "node-upstream/private-key-test-api.cpp",
+     "node-upstream/process-methods-upstream.cpp",
+@@ -210,4 +213,7 @@
+ SOURCES["node-upstream/buffer-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+ SOURCES["node-upstream/diagnostics-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+ SOURCES["node-upstream/process-methods-upstream.cpp"].flags += ["-std=c++20", "-ferror-limit=100", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+ SOURCES["node-upstream/process-object-upstream.cpp"].flags += ["-std=c++20", "-ferror-limit=100", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
++SOURCES["node-upstream/dotenv-upstream.cpp"].flags += ["-std=c++20", "-ferror-limit=100", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
++SOURCES["node-upstream/env-var-upstream.cpp"].flags += ["-std=c++20", "-ferror-limit=100", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
++SOURCES["node-upstream/path-upstream.cpp"].flags += ["-std=c++20", "-ferror-limit=100", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -97,6 +97,10 @@
+         "shell/node-upstream/codecs-upstream/node_process-inl.h",
+         "shell/node-upstream/codecs-upstream/node_diagnostics_channel.cc",
+         "shell/node-upstream/codecs-upstream/node_diagnostics_channel.h",
++        "shell/node-upstream/codecs-upstream/node_dotenv.cc",
++        "shell/node-upstream/codecs-upstream/path.cc",
++        "shell/node-upstream/codecs-upstream/node_env_var.cc",
++        "shell/node-upstream/codecs-upstream/ada.h",
+         "shell/node-upstream/codecs-upstream/node_buffer.cc",
+         "shell/node-upstream/codecs-upstream/encoding.cc",
+         "shell/node-upstream/codecs-upstream/node_i18n.cc",

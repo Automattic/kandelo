@@ -93,6 +93,13 @@
       "builtinId": "internal/deps/acorn/acorn/dist/acorn"
     },
     {
+      "path": "deps/ada/ada.h",
+      "role": "provenance",
+      "bytes": 426310,
+      "sha256": "0010b17b3ff489e13998e86d921b16e1643e370ee3276c584f1b0c4b72bdf628",
+      "builtinId": null
+    },
+    {
       "path": "deps/amaro/LICENSE.md",
       "role": "license",
       "bytes": 1089,
@@ -3684,10 +3691,24 @@
       "builtinId": null
     },
     {
+      "path": "src/node_dotenv.cc",
+      "role": "provenance",
+      "bytes": 11522,
+      "sha256": "750bcdf4300a8a2ba1d4d572c7f8a51b10f50694262acf23d90409200465da4d",
+      "builtinId": null
+    },
+    {
       "path": "src/node_dotenv.h",
       "role": "provenance",
       "bytes": 1130,
       "sha256": "a88e46ee815d45c7f58188655f117f526a34811e6db536f5b404c5d5a2050180",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_env_var.cc",
+      "role": "provenance",
+      "bytes": 23835,
+      "sha256": "9b3bfe0143640e9e8ce00ff982385162c288e1361742d250384a515b88958b66",
       "builtinId": null
     },
     {
@@ -3849,6 +3870,13 @@
       "role": "provenance",
       "bytes": 79780,
       "sha256": "aa23343f3d6740eade97d6ddae8988b030bfd0ef82e6597da172c7234c5dc96e",
+      "builtinId": null
+    },
+    {
+      "path": "src/path.cc",
+      "role": "provenance",
+      "bytes": 11600,
+      "sha256": "b87accff213c9b1302b831b8f93e3d75e1a019eadf48429da3e976e5f23ee54c",
       "builtinId": null
     },
     {

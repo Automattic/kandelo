@@ -29,7 +29,8 @@ template<class Traits> class MutexBase;
 template<class T,class MutexT> class ExclusiveAccess;
 }
 namespace kandelo_node_codec_api {
-class ArrayBuffer; class SharedArrayBuffer; class Value; class Name; class Object; class String; class Function; class Isolate; class ObjectTemplate; class FunctionTemplate;
+class ArrayBuffer; class SharedArrayBuffer; class Value; class Name; class Object; class String; class Function; class Isolate; class ObjectTemplate; class FunctionTemplate;class Array;
+struct NamedPropertyHandlerConfiguration;struct IndexedPropertyHandlerConfiguration;
 template<class T> class PropertyCallbackInfo;
 struct Cell; struct Frame; struct View; struct MemoryAccount; struct State; struct Context; struct ContextScopeData; struct StartupData;
 struct HeapStatisticsData;
@@ -122,6 +123,7 @@ class Value {
   bool IsObject() const;
   bool IsTypedArray() const;
   bool IsString() const;
+  bool IsSymbol() const;
   bool IsArray() const;
   bool IsFunction() const;
   bool IsNumber() const;
@@ -148,21 +150,38 @@ enum class SideEffectType { kHasSideEffect, kHasNoSideEffect, kHasSideEffectToRe
 using AccessorNameGetterCallback=void(*)(Local<Name>,const PropertyCallbackInfo<Value>&);
 using AccessorNameSetterCallback=void(*)(Local<Name>,Local<Value>,const PropertyCallbackInfo<void>&);
 std::unique_ptr<Value> RetainRoot(Isolate*,Local<Value>);
-// Value roots remain owned independently of temporary caller HandleScopes.
-// Other LocalVector element types require their own typed ownership support.
+template<class T> std::unique_ptr<T> RetainTypedRoot(Isolate*,Local<T>);
+// Typed independent roots survive temporary caller HandleScopes. Assignment
+// replaces the actual retained cell instead of retaining an obsolete handle.
 template<class T> class LocalVector {
-  static_assert(std::is_same_v<T,Value>);
+  static_assert(std::is_same_v<T,Value>||std::is_same_v<T,Name>);
   Isolate* isolate_;
-  std::vector<std::unique_ptr<Value>> roots_;
-  std::vector<Local<Value>> values_;
+  std::vector<std::unique_ptr<T>> roots_;
+  std::vector<Local<T>> values_;
+  void Assign(size_t index,Local<T> value) {
+    auto root=RetainTypedRoot<T>(isolate_,value);values_[index]=Local<T>(root.get());roots_[index]=std::move(root);
+  }
  public:
-  explicit LocalVector(Isolate* isolate):isolate_(isolate) {}
-  void push_back(Local<Value> value) {
-    auto root=RetainRoot(isolate_,value);
+  class Reference {
+    LocalVector* owner_;size_t index_;
+   public:
+    Reference(LocalVector* owner,size_t index):owner_(owner),index_(index) {}
+    Reference& operator=(Local<T> value){owner_->Assign(index_,value);return *this;}
+    Reference& operator=(const Reference& value){return *this=Local<T>(value);}
+    operator Local<T>()const{return owner_->values_[index_];}
+    T* operator->()const{return owner_->values_[index_].get();}
+  };
+  explicit LocalVector(Isolate* isolate,size_t size=0):isolate_(isolate),roots_(size),values_(size) {}
+  Reference operator[](size_t index){return Reference(this,index);}
+  Local<T> operator[](size_t index)const{return values_[index];}
+  void push_back(Local<T> value) {
+    auto root=RetainTypedRoot<T>(isolate_,value);
     values_.emplace_back(root.get());roots_.push_back(std::move(root));
   }
-  void emplace_back(Local<Value> value) { push_back(value); }
-  Local<Value>* data() { return values_.data(); }
+  void emplace_back(Local<T> value) { push_back(value); }
+  Local<T>* data() { return values_.data(); }
+  const Local<T>* data()const{return values_.data();}
+  void reserve(size_t size){roots_.reserve(size);values_.reserve(size);}
   size_t size() const { return values_.size(); }
 };
 struct GlobalRoot;
@@ -190,6 +209,8 @@ class Object : public Value {
  public:
   using Value::Value;
   static Local<Object> New(Isolate*);
+  static Local<Object> New(Isolate*,Local<Value>,Local<Name>*,Local<Value>*,size_t);
+  MaybeLocal<Array> GetOwnPropertyNames(Local<Context>);
   Maybe<bool> DefineOwnProperty(Local<Context>,Local<Name>,Local<Value>,PropertyAttribute=None);
   void* GetAlignedPointerFromInternalField(int,EmbedderDataTag);
   Maybe<bool> Set(Local<Context>,Local<Value>,Local<Value>);
@@ -212,7 +233,7 @@ class Array : public Object {
  public:
   using Object::Object;
   static Local<Array> New(Isolate*);
-  static Local<Array> New(Isolate*,Local<Value>*,size_t);
+  static Local<Array> New(Isolate*,const Local<Value>*,size_t);
   Maybe<bool> Set(Local<Context>,int32_t,Local<Value>);
   uint32_t Length() const;
   MaybeLocal<Value> Get(Local<Context>,uint32_t);
@@ -272,6 +293,9 @@ using Int32=Integer;
 using Uint32=Integer;
 class ObjectTemplate : public Object {
  public: using Object::Object;
+  static Local<ObjectTemplate> New(Isolate*,Local<FunctionTemplate>);
+  void SetHandler(const NamedPropertyHandlerConfiguration&);
+  void SetHandler(const IndexedPropertyHandlerConfiguration&);
   void SetInternalFieldCount(int);
   MaybeLocal<Object> NewInstance(Local<Context>);
 };
@@ -338,8 +362,11 @@ class Isolate {
   void SetContinuationPreservedEmbedderDataV2(Local<Value>);
   void ThrowException(Local<Value>);
   void GetHeapStatistics(HeapStatistics*);
+  enum class TimeZoneDetection{kRedetect,kSkip};
+  void DateTimeConfigurationChangeNotification(TimeZoneDetection);
 };
 Local<Value> Undefined(Isolate*);
+Local<Value> Null(Isolate*);
 class HandleScope {
  protected:
   Frame* frame_;size_t previous_,previousContexts_;
@@ -400,6 +427,7 @@ template<class T> class ReturnValue {
   void Set(int64_t value) const { ReturnNumber(isolate_,double(value)); }
   void Set(uint64_t value) const { ReturnNumber(isolate_,double(value)); }
   void SetEmptyString() const { Return(isolate_,String::Empty(isolate_)); }
+  void SetUndefined()const{Return(isolate_,Undefined(isolate_));}
 };
 template<class T> class FunctionCallbackInfo {
   Isolate* isolate_;
@@ -472,7 +500,7 @@ template<class T,size_t N=64> class ArrayBufferViewContents {
   explicit ArrayBufferViewContents(Local<Value>);
   T* data() const;size_t length() const;
 };
-class Environment;class IsolateData;class BaseObject;struct NativeRealmData;
+class Environment;class IsolateData;class BaseObject;struct NativeRealmData;class KVStore;struct NativeEnvOptions;struct NativeEnvIsolateOptions;
 class EnabledDebugList;
 class AsyncWrap;class ReqWrapBase;class HandleWrap;class NodeArrayBufferAllocator;
 class ProcessImmediateInfo;
@@ -569,6 +597,9 @@ class Environment {
   Realm* principal_realm();bool can_call_into_js() const;
   bool owns_process_state() const;bool has_run_bootstrapping_code() const;
   bool PrepareProcessInvocation();
+  std::shared_ptr<KVStore> env_vars();std::shared_ptr<NativeEnvOptions> options();
+  std::string GetCwd(const std::string&);
+  bool EmitProcessEnvWarning();
   EnabledDebugList* enabled_debug_list();
   void ThrowUVException(int,const char*,const char* = nullptr,const char* = nullptr,const char* = nullptr);
   void ThrowErrnoException(int,const char*,const char* = nullptr,const char* = nullptr);
@@ -608,6 +639,8 @@ class IsolateData {
  public: Isolate* isolate();void set_i18n_converter_template(Local<ObjectTemplate>);
   bool is_building_snapshot() const;
   NodeArrayBufferAllocator* node_allocator();
+  Local<ObjectTemplate> env_proxy_template();void set_env_proxy_template(Local<ObjectTemplate>);
+  void set_env_proxy_ctor_template(Local<FunctionTemplate>);
 };
 struct NativeObjectOwner;
 class MemoryTracker;
@@ -686,7 +719,7 @@ void SetMethodNoSideEffect(Local<Context>,Local<Object>,const char*,void(*)(cons
 void SetFastMethod(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&),const CFunction*);
 void SetFastMethodNoSideEffect(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&),const CFunction*);
 namespace per_process {
-struct BufferOptions { bool zero_fill_all_buffers; };
+struct BufferOptions { bool zero_fill_all_buffers;std::shared_ptr<NativeEnvIsolateOptions> per_isolate; };
 struct BufferOptionsAccess { const BufferOptions* operator->() const; };
 inline const BufferOptionsAccess cli_options;
 }
