@@ -339,7 +339,7 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
   JS::RootedObject api(cx, JS_NewPlainObject(cx));
   if (!api || !JS_DefineFunctions(cx, api, functions) ||
       !DefineTraceAgentTestAPI(cx, api) || !DefineContinuationTestAPI(cx, api) ||
-      !DefineBufferMemoryTestAPI(cx, api) || !DefineEnvironmentTestAPI(cx, api) || !DefineBufferNativeTestAPI(cx, api)) {
+      !DefineBufferMemoryTestAPI(cx, api) || !DefineEnvironmentTestAPI(cx, api) || !DefineBufferNativeTestAPI(cx, api) || !DefineAliasedTestAPI(cx, api)) {
     return false;
   }
   JS::RootedObject global(cx, JS::CurrentGlobalOrNull(cx));

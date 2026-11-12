@@ -13,6 +13,7 @@ bool TraceNativeCallIsActive();
 JSObject* InspectCodecState(JSContext* cx, JS::HandleObject runtime);
 bool SetCodecGcStress(JSContext* cx, JS::HandleObject runtime, bool enabled);
 void ShutdownRuntimeCodecs(JSContext* cx);
+bool DefineAliasedTestAPI(JSContext* cx, JS::HandleObject api);
 bool DefineBufferNativeTestAPI(JSContext* cx, JS::HandleObject api);
 bool DefineEnvironmentTestAPI(JSContext* cx, JS::HandleObject api);
 }

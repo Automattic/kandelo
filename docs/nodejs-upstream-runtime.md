@@ -26,7 +26,10 @@ allocation, retained storage, views, encodings and principal prototypes.
 Its original CallbackInfo cleanup runs on all four hosts. Thirty shared
 native control groups match exactly; a standalone native Node reentry
 discrepancy is retained separately. Full lifecycle/exceptional coverage remains
-incomplete. Earlier revision sections below describe their evidence at the time.
+incomplete. Original AliasedBuffer headers now compile over real typed/weak
+engine handles with focused four-host controls; mksnapshot source review
+does not establish the missing binding. Earlier
+revision sections below describe their evidence at the time.
 Complete Node startup, empty/simple evaluation,
 user CJS/ESM entrypaths and browser startup remain unrun. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
@@ -76,7 +79,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 554 files after complete native source/header additions; every
+manifest has 557 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -1534,3 +1537,63 @@ are not established. No full product/image, successor-ABI or overall suite ran.
 See [buffer-contracts.json](../tests/nodejs/upstream/buffer-contracts.json) and
 [buffer-engine-check.json](../tests/nodejs/upstream/buffer-engine-check.json)
 for coverage, exact identities, retained failures and remaining obligations.
+
+
+## Original AliasedBuffer and snapshot boundary
+
+The complete original `src/aliased_buffer.h` and `src/aliased_buffer-inl.h`
+are imported without edits. They supply native mapped state used by Node's
+Environment and snapshot binding. The bridge allocates actual engine typed
+arrays for all ten original classes and supplies move-only strong Global
+handles, cleared weak handles and typed-array lengths. Before publishing a
+weak edge, it promotes a nursery target while the real strong root remains
+installed. Engine weak-zone callbacks update the edge through moving GC.
+The original allocation, alias, copy, reserve and release bodies stay in the
+original headers. Private controls require a valid live view before borrowed
+native pointer access and reject detached backing. Those controls are test
+admission checks, not a new public Node API or a general detached-pointer policy.
+
+Revision 42 passes 21 selected controls plus five assertion/exit drivers on
+Node, Chromium, Firefox and WebKit using identical engine/kernel bytes. Every
+host exercises an actual nursery target becoming tenured, weak collection,
+copy/growth/subview identity, all ten native element types and the original
+alignment/bounds CHECKs. These are engine ownership controls, not a native
+Node differential or full AliasedBuffer API audit. Exact identities, retained
+failed attempts and regression evidence are in
+[aliased-engine-check.json](../tests/nodejs/upstream/aliased-engine-check.json).
+
+The one-byte state required by `mksnapshot` uses this original class. The
+binding itself is still missing. Its complete C++ unit also contains V8 heap
+serialization, code-cache generation, snapshot configuration parsing and
+restoration of many native types. There is no actual snapshot builder or heap
+graph traversal in this embedding. Their native API boundaries fail explicitly;
+no creator instance, snapshot index, heap graph or restored object is fabricated.
+No patch to `node_snapshotable.cc` or native function excerpt has been applied.
+
+The reviewed contract inventory records seven binding exports, per-Realm state,
+three shared Environment callback slots, compiler/preload behavior and original
+JavaScript guards. A fresh ordinary native Node reference, run with
+`--no-node-snapshot`, passes eight controls. That flag matters: the first
+reference invocation used the default embedded snapshot and aborted at the
+original empty-deserialize-callback CHECK because restoration had already
+populated the slot. The failed invocation is retained; it is a reference-state
+mismatch, not a runtime defect. The reference runner checks the executable's
+exact identity immediately before execution. This evidence does not validate
+a Kandelo mksnapshot binding or V8 serialization.
+
+A user decision remains pending between reviewed C++ feature guards preserving
+original live-binding bodies, porting the entire snapshot unit and dependencies,
+or explicitly allowing direct Kandelo-native contract implementations. Continue
+independent required engine primitives while that choice is pending. Upstream
+JavaScript and the no-excerpts/no-rewritten-algorithms constraint remain intact.
+See [aliased-contracts.json](../tests/nodejs/upstream/aliased-contracts.json),
+[mksnapshot-contracts.json](../tests/nodejs/upstream/mksnapshot-contracts.json)
+and [the native reference](../tests/nodejs/upstream/mksnapshot-live-native-reference.json).
+
+The selected prior controls pass on the same revision-42 artifact: 310 named
+primitive cases, native tracing and agent controls, and four-host Buffer,
+continuation, memory and Environment checks. The combined evidence covers 210
+guest process drivers with 44 expected source assertion traps. The ordinary
+package resolver reuses the exact tested artifact. Separate Firefox storage
+cleanup EACCES warnings are retained without a cleanup guarantee. No full
+product/image, successor-ABI or overall conformance suite was run.

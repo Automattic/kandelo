@@ -1,0 +1,160 @@
+{
+  "schema": 1,
+  "scope": "Reviewed live mksnapshot binding plus known V8 serialization boundary; implementation pending an architectural decision, not complete native/public graph catalog",
+  "sourceVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceArchive": {
+    "path": "node-v26.13.0.tar.gz",
+    "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+    "sources": [
+      {
+        "path": "src/node_snapshotable.cc",
+        "bytes": 63084,
+        "sha256": "8cf7a64854d3b55c0eb6413c4205779db1e4043c3bf63b1161825430985e99c0",
+        "importedIntoRuntime": false
+      },
+      {
+        "path": "src/node_snapshotable.h",
+        "bytes": 6326,
+        "sha256": "ac7868b171bd9449318b25b30f05c47a6d38df21e5878d6b26cfe11cb265af6d",
+        "importedIntoRuntime": false
+      },
+      {
+        "path": "src/node_snapshot_builder.h",
+        "bytes": 1905,
+        "sha256": "1c8f6cfd2ef11ae6d33acace893168da1ae34f0d80140d052d25d251c6cdb8dc",
+        "importedIntoRuntime": false
+      }
+    ]
+  },
+  "nativeUnit": {
+    "path": "src/node_snapshotable.cc",
+    "wholeUnitRoles": [
+      "snapshot blob serialization/deserialization, data and configuration parsing",
+      "V8 heap snapshot builder and code cache generation",
+      "SnapshotableObject and per-native-type internal-field serialization/restoration",
+      "ordinary binding methods and per-context native state"
+    ],
+    "liveBindingLines": [
+      1594,
+      1767
+    ],
+    "dependenciesNotImplemented": [
+      "V8 SnapshotCreator/heap serialization/context data restore and external reference table",
+      "all serializable native object factories and genuine restored Realm/Environment state",
+      "simdjson dependency required by whole snapshot configuration parser"
+    ],
+    "sourceExcerptsAllowed": false,
+    "upstreamJavaScriptChanged": false
+  },
+  "exports": [
+    {
+      "name": "runEmbedderPreload",
+      "kind": "function",
+      "sourceLine": 1594,
+      "contract": "CHECK a real optional Environment embedder-preload hook exists, exactly 2 arguments, process Object and require Function; invoke hook with actual Environment",
+      "scheduling": "Synchronous hook invocation; exceptions must propagate through embedding policy"
+    },
+    {
+      "name": "compileSerializeMain",
+      "kind": "function",
+      "sourceLine": 1605,
+      "contract": "Compile a real function body using supplied source and filename with require,__filename,__dirname formal parameters. ScriptOrigin line/column 0 and shared-origin flag. Return actual compiled function; preserve actual syntax errors and thrown values.",
+      "ownership": "Function and captured values rooted by engine; compilation failure is not a placeholder function"
+    },
+    {
+      "name": "setSerializeCallback",
+      "kind": "function",
+      "sourceLine": 1636,
+      "contract": "CHECK Environment callback slot empty, then CHECK argument is Function, then retain actual function in Environment slot"
+    },
+    {
+      "name": "setDeserializeCallback",
+      "kind": "function",
+      "sourceLine": 1643,
+      "contract": "CHECK Environment callback slot empty, then CHECK argument is Function, then retain actual function in Environment slot"
+    },
+    {
+      "name": "setDeserializeMainFunction",
+      "kind": "function",
+      "sourceLine": 1650,
+      "contract": "CHECK Environment callback slot empty, then CHECK argument is Function, then retain actual function in Environment slot"
+    },
+    {
+      "name": "anonymousMainPath",
+      "kind": "string",
+      "sourceLine": 1659,
+      "value": "__node_anonymous_main"
+    },
+    {
+      "name": "isBuildingSnapshotBuffer",
+      "kind": "Uint8Array",
+      "sourceLine": 1665,
+      "contract": "One actual byte from original AliasedUint8Array; publish JS view, initialize from actual IsolateData snapshot configuration and make native Global weak. Ordinary fresh live mode byte 0. Genuine restoration rebuilds buffer from actual snapshot data.",
+      "ownership": "Per-context BindingData belongs to actual Realm and actual target native internal fields; JS binding owns view; native weak owner does not retain unreachable binding"
+    }
+  ],
+  "sharedState": {
+    "callbacks": "Three independent strong Environment Function slots shared by native callers across realms; single-assignment original CHECKs stay fatal",
+    "callbacksAreScheduledOnRegistration": false,
+    "registrationAddsEventLoopReferences": false,
+    "freshVersusRestored": "Native --no-node-snapshot starts with empty slots; default native executable restores an embedded snapshot that already has a deserialize callback. Never use default-restored reference state as evidence of empty fresh state.",
+    "normalLiveMode": "Snapshot mode reflects actual native snapshot builder/configuration ownership, not a copied request flag or claimed success. User flags requiring unsupported snapshots must be rejected explicitly."
+  },
+  "consumers": [
+    {
+      "path": "lib/internal/v8/startup_snapshot.js",
+      "role": "Eager destructuring of callback setters and state view. Ordinary-mode addSerialize/addDeserialize/setDeserializeMain throw ERR_NOT_BUILDING_SNAPSHOT before function validation; initializeCallbacks only registers during building; real JS callback queues and runner semantics remain unchanged."
+    },
+    {
+      "path": "lib/buffer.js",
+      "role": "Reads ordinary snapshot mode and conditionally registers deserialize work"
+    },
+    {
+      "path": "lib/internal/process/pre_execution.js",
+      "role": "Reads actual snapshot mode; runs original deserialize queues; calls embedder hook only when present"
+    },
+    {
+      "path": "lib/internal/main/mksnapshot.js",
+      "role": "Uses actual compiler and anonymous main path; requires genuine builder workflow beyond ordinary startup"
+    },
+    {
+      "path": "lib/v8.js",
+      "role": "Public startupSnapshot namespace backed by original startup_snapshot module"
+    }
+  ],
+  "architectureDecision": {
+    "status": "awaiting user reply; no native source patch or function excerpt applied",
+    "recommended": "Reviewed C++ feature guards around unavailable V8-only builder/serialization regions; retain complete source and original live binding bodies",
+    "alternatives": [
+      "Port the complete snapshot translation unit and actual dependencies first",
+      "Implement genuine Kandelo native contracts directly, requiring explicit exception to no rewritten upstream algorithms"
+    ],
+    "independentPrerequisite": "Complete original AliasedBuffer header pair and genuine typed/weak engine primitives"
+  },
+  "reference": {
+    "fixture": {
+      "path": "tests/nodejs/upstream/mksnapshot-live-native-controls.cjs",
+      "bytes": 4310,
+      "sha256": "525d53c3fbf073b985b8d7e34ec0234cf0a7fff65ee42dbcf8db7799b233cd12"
+    },
+    "scope": "Fresh live native Node with --no-node-snapshot; 8 controls, not engine mksnapshot integration or snapshot support",
+    "embeddedSnapshotCollision": "First reference invocation without --no-node-snapshot aborted at original deserialize callback empty-slot CHECK. Retained under .context/node-snapshot/reference/embedded-snapshot-callback-collision.json; harness phase mismatch, not a runtime defect.",
+    "report": "mksnapshot-live-native-reference.json",
+    "runner": "scripts/run-nodejs-mksnapshot-native-controls.py",
+    "retainedFailedRestoredInvocation": {
+      "path": ".context/node-snapshot/reference/embedded-snapshot-callback-collision.json",
+      "bytes": 6041,
+      "sha256": "5525211f550626bf042b1f271aa48b2a25754f7c6bf91bd62b7eb46a7f86dce8"
+    }
+  },
+  "validationObligations": [
+    "Identified-artifact ordinary-mode descriptors and original JS guards on Node/Chromium/Firefox/WebKit",
+    "Actual compiled source, syntax/error identity, function roots and Promise jobs",
+    "Original callback duplicate/nonfunction assertions; real cross-realm Environment ownership",
+    "Actual preload hook admission/invocation/error propagation",
+    "State-view strong JS ownership and native weak finalization through moving GC and teardown",
+    "Explicit unsupported snapshot entrypoints; never fabricate snapshot indices, blobs, native types or restored handles",
+    "Continue genuine bootstrap and separately CJS/ESM; catalog does not establish startup or module compatibility"
+  ]
+}

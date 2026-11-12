@@ -68,7 +68,19 @@ template<> class Maybe<void> {
 template<class T> Maybe<T> Just(T value) { return Maybe<T>(value); }
 template<class T> Maybe<T> Nothing() { return {}; }
 inline Maybe<void> JustVoid() { return Maybe<void>(true); }
-struct Context { Isolate* isolate; Local<Object> GetExtrasBindingObject(); };
+struct Context {
+  Isolate* isolate;Local<Object> GetExtrasBindingObject();
+  template<class T> MaybeLocal<T> GetDataFromSnapshotOnce(size_t) {
+    Crash("Native heap snapshot deserialization is not implemented");
+  }
+};
+class SnapshotCreator {
+ public:
+  SnapshotCreator()=delete;
+  template<class T> size_t AddData(Local<Context>,Local<T>) {
+    Crash("Native heap snapshot serialization is not implemented");
+  }
+};
 class Value {
   std::unique_ptr<Cell> cell_;
  public:
@@ -100,10 +112,16 @@ struct GlobalRoot;
 std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate*,Local<Value>);
 Local<Value> ReadGlobalRoot(Isolate*,const std::shared_ptr<GlobalRoot>&);
 void MakeGlobalWeak(Isolate*,const std::shared_ptr<GlobalRoot>&);
+bool GlobalRootIsEmpty(const std::shared_ptr<GlobalRoot>&);
 template<class T> class Global {
   Isolate* isolate_=nullptr;
   std::shared_ptr<GlobalRoot> value_;
  public:
+  Global()=default;
+  Global(Isolate* isolate,Local<T> value) { Reset(isolate,value); }
+  Global(const Global&)=delete;Global& operator=(const Global&)=delete;
+  Global(Global&&)=default;Global& operator=(Global&&)=default;
+  bool IsEmpty() const { return GlobalRootIsEmpty(value_); }
   void Reset(Isolate* isolate,Local<T> value) { isolate_=isolate;value_=NewGlobalRoot(isolate,value); }
   void Reset() { value_.reset();isolate_=nullptr; }
   void SetWeak() { MakeGlobalWeak(isolate_,value_); }
@@ -157,12 +175,24 @@ class SharedArrayBuffer : public ArrayBuffer {
  public:using ArrayBuffer::ArrayBuffer;
   size_t CopyArrayBufferBytes(size_t,size_t,Local<SharedArrayBuffer>,size_t);
 };
-class Uint8Array : public ArrayBufferView {
+class TypedArray : public ArrayBufferView {
+ public:using ArrayBufferView::ArrayBufferView;size_t Length() const;
+};
+class Uint8Array : public TypedArray {
  public:
-  using ArrayBufferView::ArrayBufferView;
+  using TypedArray::TypedArray;
   static const size_t kMaxLength;
   static Local<Uint8Array> New(Local<ArrayBuffer>,size_t,size_t);
 };
+#define KANDELO_NATIVE_TYPED_ARRAYS(V) \
+ V(Int8Array,Int8) V(Int16Array,Int16) V(Uint16Array,Uint16) \
+ V(Int32Array,Int32) V(Uint32Array,Uint32) V(Float32Array,Float32) \
+ V(Float64Array,Float64) V(BigInt64Array,BigInt64) V(BigUint64Array,BigUint64)
+#define KANDELO_DECLARE_TYPED_ARRAY(Name,Scalar) \
+ class Name : public TypedArray { public:using TypedArray::TypedArray; \
+ static Local<Name> New(Local<ArrayBuffer>,size_t,size_t); };
+KANDELO_NATIVE_TYPED_ARRAYS(KANDELO_DECLARE_TYPED_ARRAY)
+#undef KANDELO_DECLARE_TYPED_ARRAY
 class Number : public Value { public: using Value::Value;static Local<Number> New(Isolate*,double);double Value() const; };
 class Integer : public Number { public: using Number::Number;static Local<Integer> New(Isolate*,int);int64_t Value() const; };
 using Int32=Integer;
@@ -325,6 +355,9 @@ template<class T,size_t N=1024> class MaybeStackBuffer {
  private: void CHECK_INDEX(size_t index) const { if(index>=length_) Crash("Native stack buffer index"); }
 };
 template<class T> T* UncheckedMalloc(size_t);
+template<class A,class B> size_t MultiplyWithOverflowCheck(A a,B b) {
+  size_t out;if(__builtin_mul_overflow(size_t(a),size_t(b),&out))Crash("Native allocation multiplication overflow");return out;
+}
 inline constexpr bool IsBigEndian() { return std::endian::native==std::endian::big; }
 class TwoByteValue : public MaybeStackBuffer<uint16_t> {
  public: explicit TwoByteValue(Isolate*,Local<Value>);
@@ -382,6 +415,14 @@ class CleanableQueue {
   size_t size() const { return size_; }
   void CleanAll();
 };
+struct AliasedControl {
+  virtual ~AliasedControl()=default;
+  virtual Local<Value> Array(Isolate*) const=0;
+  virtual double Read(size_t)const=0;virtual void Write(size_t,double)=0;
+  virtual void Reserve(size_t)=0;virtual void Release()=0;virtual void Weaken()=0;
+  virtual std::unique_ptr<AliasedControl> Copy()const=0;
+  virtual const void* Uint8Backing()const { return nullptr; }
+};
 struct EnvironmentData;
 struct NativeImmediate {
   virtual ~NativeImmediate()=default;
@@ -427,9 +468,20 @@ class IsolateData {
   bool is_building_snapshot() const;
 };
 struct NativeObjectOwner;
+class MemoryTracker;
+class MemoryRetainer {
+ public:
+  virtual ~MemoryRetainer()=default;
+  virtual size_t SelfSize() const=0;
+  virtual const char* MemoryInfoName() const=0;
+  virtual void MemoryInfo(MemoryTracker*) const=0;
+};
 class MemoryTracker {
  public: virtual ~MemoryTracker()=default;
   virtual void TrackField(const char*,const std::set<std::string>&)=0;
+  template<class T> void TrackField(const char*,const T&) {
+    Crash("Native heap snapshot traversal is not implemented");
+  }
 };
 class BaseObject {
   std::unique_ptr<NativeObjectOwner> owner_;
@@ -557,10 +609,18 @@ extern Initializer initializer;
 #define DCHECK(x) CHECK(x)
 #define DCHECK_EQ(x,y) CHECK_EQ(x,y)
 #define DCHECK_LT(x,y) CHECK_LT(x,y)
+#define DCHECK_GE(x,y) CHECK_GE(x,y)
+#define DCHECK_LE(x,y) CHECK_LE(x,y)
+#define DCHECK_NULL(x) CHECK((x)==nullptr)
+#define DCHECK_NOT_NULL(x) CHECK_NOT_NULL(x)
 #else
 #define DCHECK(x) ((void)0)
 #define DCHECK_EQ(x,y) ((void)0)
 #define DCHECK_LT(x,y) ((void)0)
+#define DCHECK_GE(x,y) ((void)0)
+#define DCHECK_LE(x,y) ((void)0)
+#define DCHECK_NULL(x) ((void)0)
+#define DCHECK_NOT_NULL(x) ((void)0)
 #endif
 #define UNREACHABLE(...) kandelo_node_codec_api::Crash("Unreachable original codec operation")
 #define FIXED_ONE_BYTE_STRING(isolate,text) kandelo_node_codec_api::String::NewFromOneByte(isolate,reinterpret_cast<const uint8_t*>(text),kandelo_node_codec_api::NewStringType::kNormal,sizeof(text)-1).ToLocalChecked()

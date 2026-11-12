@@ -9,13 +9,13 @@ def prepare(manifest,output):
   row=files[name];b=(manifest.parent/'upstream'/name).read_bytes()
   if len(b)!=row['bytes'] or hashlib.sha256(b).hexdigest()!=row['sha256']:raise ValueError('native codec identity mismatch: '+name)
   return b
- names=['src/string_decoder.cc','src/string_decoder.h','src/string_decoder-inl.h','src/string_bytes.cc','src/string_bytes.h','src/node_buffer.h','src/node_buffer.cc','src/node_i18n.cc','src/node_i18n.h','src/api/encoding.cc']
+ names=['src/string_decoder.cc','src/string_decoder.h','src/string_decoder-inl.h','src/string_bytes.cc','src/string_bytes.h','src/node_buffer.h','src/node_buffer.cc','src/aliased_buffer.h','src/aliased_buffer-inl.h','src/node_i18n.cc','src/node_i18n.h','src/api/encoding.cc']
  for name in names:
   output.mkdir(parents=True,exist_ok=True);(output/Path(name).name).write_bytes(verified(name))
  enum=re.search(rb'enum encoding \{.*?\n\};',verified('src/node.h'),re.S)
  if not enum or re.sub(rb'\s+',b' ',enum[0])!=b'enum encoding { ASCII, UTF8, BASE64, UCS2, BINARY, HEX, BUFFER, BASE64URL, LATIN1 = BINARY };':raise ValueError('unreviewed original codec enum')
  include=b'#include "shell/node-upstream/codec-native-api.h"\n'
- for name in ['node_blob.h','node_debug.h','v8-fast-api-calls.h','node_errors.h','node_external_reference.h','util.h','v8.h','v8-external-memory-accounter.h','base_object.h','base_object-inl.h','env.h','node_internals.h','util-inl.h']:(output/name).write_bytes(include)
+ for name in ['memory_tracker.h','memory_tracker-inl.h','node_blob.h','node_debug.h','v8-fast-api-calls.h','node_errors.h','node_external_reference.h','util.h','v8.h','v8-external-memory-accounter.h','base_object.h','base_object-inl.h','env.h','node_internals.h','util-inl.h']:(output/name).write_bytes(include)
  declarations=b'''enum encoding ParseEncoding(const char*, enum encoding);
 enum encoding ParseEncoding(v8::Isolate*, v8::Local<v8::Value>, enum encoding);
 enum encoding ParseEncoding(v8::Isolate*, v8::Local<v8::Value>, v8::Local<v8::Value>, enum encoding);

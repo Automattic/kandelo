@@ -55,6 +55,7 @@ def select_sources(members, prefix):
                        'src/string_decoder.cc', 'src/string_decoder.h',
                        'src/string_decoder-inl.h', 'src/string_bytes.cc',
                        'src/string_bytes.h', 'src/node_buffer.h', 'src/node_buffer.cc',
+                       'src/aliased_buffer.h', 'src/aliased_buffer-inl.h',
                        'src/node_errors.h',
                        'src/node_i18n.cc', 'src/node_i18n.h',
                        'src/api/encoding.cc', 'src/util-inl.h',

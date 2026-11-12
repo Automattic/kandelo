@@ -103,7 +103,7 @@
   "remaining": [
     "whole original Buffer/CallbackInfo now integrated; exhaustive exceptional/concurrent paths still open",
     "full native API extremes/OOM/security/worker/snapshot/immutable/Wasm and transient allocation-pressure coverage",
-    "additional Global API/nursery-object weak semantics not established",
+    "additional Global API/object kinds remain unestablished; selected nursery typed-array semantics have separate AliasedBuffer evidence",
     "generic async callback/resource IDs/Promise lifecycle/fatal policy incomplete",
     "worker hook installed but worker/fork/cancellation lifecycle unvalidated",
     "independently owned delayed producer/request liveness and full concurrent teardown/OOM unproven",
@@ -111,5 +111,9 @@
     "complete backend catalog and startup/CJS/ESM unachieved"
   ],
   "fullCatalogComplete": false,
-  "broaderRoadmapAuthorized": false
+  "broaderRoadmapAuthorized": false,
+  "additionalWeakTypedArrayEvidence": {
+    "evidence": "aliased-engine-check.json",
+    "scope": "Selected original AliasedBuffer handles with actual nursery promotion and moving-GC/weak collection; not all Global API/object kinds"
+  }
 }

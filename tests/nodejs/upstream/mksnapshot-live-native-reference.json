@@ -1,0 +1,190 @@
+{
+  "invocation": {
+    "flags": [
+      "--no-warnings",
+      "--no-node-snapshot",
+      "--expose-internals",
+      "--expose-gc"
+    ],
+    "environment": {
+      "PATH": "/usr/bin:/bin",
+      "LANG": "C",
+      "TZ": "UTC"
+    }
+  },
+  "native": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixture": {
+    "path": "tests/nodejs/upstream/mksnapshot-live-native-controls.cjs",
+    "bytes": 4310,
+    "sha256": "525d53c3fbf073b985b8d7e34ec0234cf0a7fff65ee42dbcf8db7799b233cd12"
+  },
+  "code": 0,
+  "stdout": "{\"kind\":\"native-mksnapshot-live-reference\",\"cases\":8,\"failures\":0,\"observations\":[{\"name\":\"binding-export-descriptors-and-live-state\",\"status\":\"pass\",\"detail\":{\"runEmbedderPreload\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"type\":\"function\",\"name\":\"runEmbedderPreload\",\"length\":0}},\"compileSerializeMain\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"type\":\"function\",\"name\":\"compileSerializeMain\",\"length\":0}},\"setSerializeCallback\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"type\":\"function\",\"name\":\"setSerializeCallback\",\"length\":0}},\"setDeserializeCallback\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"type\":\"function\",\"name\":\"setDeserializeCallback\",\"length\":0}},\"setDeserializeMainFunction\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"type\":\"function\",\"name\":\"setDeserializeMainFunction\",\"length\":0}},\"anonymousMainPath\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":\"__node_anonymous_main\"},\"isBuildingSnapshotBuffer\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"type\":\"Uint8Array\",\"length\":1,\"bytes\":[0],\"bufferByteLength\":1}}}},{\"name\":\"ordinary-mode-and-original-js-snapshot-guards\",\"status\":\"pass\",\"detail\":[{\"error\":{\"name\":\"Error\",\"code\":\"ERR_NOT_BUILDING_SNAPSHOT\",\"message\":\"Operation cannot be invoked when not building startup snapshot\"}},{\"error\":{\"name\":\"Error\",\"code\":\"ERR_NOT_BUILDING_SNAPSHOT\",\"message\":\"Operation cannot be invoked when not building startup snapshot\"}},{\"error\":{\"name\":\"Error\",\"code\":\"ERR_NOT_BUILDING_SNAPSHOT\",\"message\":\"Operation cannot be invoked when not building startup snapshot\"}},{\"value\":\"undefined\"}]},{\"name\":\"compile-serialize-main-builds-real-three-parameter-function\",\"status\":\"pass\",\"detail\":{\"name\":\"\",\"length\":3,\"output\":[23,\"actual-filename\",\"actual-directory\",3,17]}},{\"name\":\"compiled-function-retains-actual-source-and-pending-jobs\",\"status\":\"pass\",\"detail\":[\"retained-filename\",29]},{\"name\":\"function-body-syntax-errors-propagate-real-exceptions\",\"status\":\"pass\",\"detail\":{\"name\":\"SyntaxError\"}},{\"name\":\"compiled-throw-keeps-real-filename-and-error-identity\",\"status\":\"pass\",\"detail\":{\"same\":true}},{\"name\":\"ordinary-js-callback-runners-have-empty-real-queues\",\"status\":\"pass\",\"detail\":true},{\"name\":\"native-environment-retains-all-registered-callbacks-across-gc\",\"status\":\"pass\",\"detail\":{\"retained\":3,\"called\":0}}]}\n",
+  "stderr": "",
+  "detail": {
+    "kind": "native-mksnapshot-live-reference",
+    "cases": 8,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "binding-export-descriptors-and-live-state",
+        "status": "pass",
+        "detail": {
+          "runEmbedderPreload": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "type": "function",
+              "name": "runEmbedderPreload",
+              "length": 0
+            }
+          },
+          "compileSerializeMain": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "type": "function",
+              "name": "compileSerializeMain",
+              "length": 0
+            }
+          },
+          "setSerializeCallback": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "type": "function",
+              "name": "setSerializeCallback",
+              "length": 0
+            }
+          },
+          "setDeserializeCallback": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "type": "function",
+              "name": "setDeserializeCallback",
+              "length": 0
+            }
+          },
+          "setDeserializeMainFunction": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "type": "function",
+              "name": "setDeserializeMainFunction",
+              "length": 0
+            }
+          },
+          "anonymousMainPath": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": "__node_anonymous_main"
+          },
+          "isBuildingSnapshotBuffer": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "type": "Uint8Array",
+              "length": 1,
+              "bytes": [
+                0
+              ],
+              "bufferByteLength": 1
+            }
+          }
+        }
+      },
+      {
+        "name": "ordinary-mode-and-original-js-snapshot-guards",
+        "status": "pass",
+        "detail": [
+          {
+            "error": {
+              "name": "Error",
+              "code": "ERR_NOT_BUILDING_SNAPSHOT",
+              "message": "Operation cannot be invoked when not building startup snapshot"
+            }
+          },
+          {
+            "error": {
+              "name": "Error",
+              "code": "ERR_NOT_BUILDING_SNAPSHOT",
+              "message": "Operation cannot be invoked when not building startup snapshot"
+            }
+          },
+          {
+            "error": {
+              "name": "Error",
+              "code": "ERR_NOT_BUILDING_SNAPSHOT",
+              "message": "Operation cannot be invoked when not building startup snapshot"
+            }
+          },
+          {
+            "value": "undefined"
+          }
+        ]
+      },
+      {
+        "name": "compile-serialize-main-builds-real-three-parameter-function",
+        "status": "pass",
+        "detail": {
+          "name": "",
+          "length": 3,
+          "output": [
+            23,
+            "actual-filename",
+            "actual-directory",
+            3,
+            17
+          ]
+        }
+      },
+      {
+        "name": "compiled-function-retains-actual-source-and-pending-jobs",
+        "status": "pass",
+        "detail": [
+          "retained-filename",
+          29
+        ]
+      },
+      {
+        "name": "function-body-syntax-errors-propagate-real-exceptions",
+        "status": "pass",
+        "detail": {
+          "name": "SyntaxError"
+        }
+      },
+      {
+        "name": "compiled-throw-keeps-real-filename-and-error-identity",
+        "status": "pass",
+        "detail": {
+          "same": true
+        }
+      },
+      {
+        "name": "ordinary-js-callback-runners-have-empty-real-queues",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "native-environment-retains-all-registered-callbacks-across-gc",
+        "status": "pass",
+        "detail": {
+          "retained": 3,
+          "called": 0
+        }
+      }
+    ]
+  }
+}

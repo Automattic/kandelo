@@ -3523,6 +3523,20 @@
       "builtinId": null
     },
     {
+      "path": "src/aliased_buffer-inl.h",
+      "role": "provenance",
+      "bytes": 8694,
+      "sha256": "056df681ed699aa07b06b4e9adec470d5dd12c6cfdb5f4dacf4edae3dea06769",
+      "builtinId": null
+    },
+    {
+      "path": "src/aliased_buffer.h",
+      "role": "provenance",
+      "bytes": 6468,
+      "sha256": "a374d00816da192d44e45b1566c986081b26ad0dbea73401405682fd2b4434ec",
+      "builtinId": null
+    },
+    {
       "path": "src/api/encoding.cc",
       "role": "provenance",
       "bytes": 5371,

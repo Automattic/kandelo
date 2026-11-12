@@ -25,10 +25,22 @@ Local<Value> ReadGlobalRoot(Isolate* isolate,const std::shared_ptr<GlobalRoot>& 
   else {CHECK(root->strong);value=root->strong->cell().value;}
   if(!JS_WrapValue(frame.cx,&value))return {};return frame.OwnValue(value);
 }
+bool GlobalRootIsEmpty(const std::shared_ptr<GlobalRoot>& root) {
+  if(!root)return true;
+  if(auto state=root->state.lock())state->environment.AssertForeground();
+  return root->weakMode?!root->weak:!root->strong;
+}
 void MakeGlobalWeak(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root) {
   auto& frame=Current(isolate);CHECK(root&&root->state.lock()==frame.state&&!root->weakMode&&root->strong);
   frame.state->environment.AssertForeground();
   JS::RootedObject object(frame.cx,UnwrapObject(frame.cx,root->strong->cell().value));CHECK(object);
+  // Weak-zone callbacks update tenured edges. Promote a nursery target while
+  // its actual strong root is still installed, before publishing a weak edge.
+  // This avoids treating a nursery post-barrier as a strong weak-handle root.
+  if(js::gc::IsInsideNursery(object)){
+    JS::PrepareForFullGC(frame.cx);JS::NonIncrementalGC(frame.cx,JS::GCOptions::Normal,JS::GCReason::API);
+    CHECK(!js::gc::IsInsideNursery(object));
+  }
   // The registry retains only native records. These edges are deliberately
   // weak and are updated by the engine's weak-zone callback, never traced.
   frame.state->weakGlobals.push_back(root);root->weak=object;root->weakMode=true;root->strong.reset();
@@ -160,6 +172,7 @@ void Environment::Shutdown(JSContext* cx) {
     std::lock_guard lock(data_->mutex);CHECK(data_->pending.empty());data_->closed=true;
   }
   kandelo::node::DetachRuntimeForeground(cx,runtime,this);data_->wake=nullptr;
+  state->aliasedControls.clear();
   if(data_->weakRegistered){JS_RemoveWeakPointerZonesCallback(cx,api::UpdateEnvironmentWeakEdges);data_->weakRegistered=false;}
   for(auto& root:state->weakGlobals){CHECK(!root->strong);root->weak=nullptr;}
   state->weakGlobals.clear();data_->weakControls.clear();data_->probes.clear();data_->runtime.reset();

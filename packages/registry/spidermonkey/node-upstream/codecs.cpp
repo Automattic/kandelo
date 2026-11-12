@@ -71,6 +71,7 @@ const JSClass icuBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct State {
   Isolate isolate;
   native::Environment environment{&isolate};
+  std::vector<std::unique_ptr<native::AliasedControl>> aliasedControls;
   std::vector<std::shared_ptr<GlobalRoot>> weakGlobals;
   std::atomic<size_t> externalBytes{0}, created{0}, released{0}, spans{0}, collections{0};
   std::atomic<size_t> bufferCreated{0},bufferFreed{0},bufferBytes{0};
@@ -186,6 +187,12 @@ Local<Value> Frame::OwnValue(JS::HandleValue value) {
   if (value.isString()) return Own<String>(value);
   if (auto* view=UnwrapView(cx,value)) {
     if(JS_IsUint8Array(view))return Own<Uint8Array>(value);
+    switch(JS_GetArrayBufferViewType(view)) {
+#define KANDELO_OWN_TYPED_ARRAY(Name,Kind) case JS::Scalar::Kind:return Own<Name>(value);
+      KANDELO_NATIVE_TYPED_ARRAYS(KANDELO_OWN_TYPED_ARRAY)
+#undef KANDELO_OWN_TYPED_ARRAY
+      default:break;
+    }
     return Own<ArrayBufferView>(value);
   }
   if (value.isObject()) {
@@ -775,6 +782,7 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 }
 }
 
+#include "shell/node-upstream/aliased-codecs-inl.h"
 #include "shell/node-upstream/buffer-codecs-inl.h"
 #include "shell/node-upstream/continuation-codecs-inl.h"
 #include "shell/node-upstream/environment-codecs-inl.h"
