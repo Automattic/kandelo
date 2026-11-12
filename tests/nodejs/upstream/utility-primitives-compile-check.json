@@ -1,26 +1,26 @@
 {
   "schema": 1,
-  "verifiedAt": "2026-11-12T18:50:21.715212+00:00",
+  "verifiedAt": "2026-11-12T19:00:40.761422+00:00",
   "scope": "Seven genuine native utility operations compile and resolve; exact remaining link failures. No current executable or runtime acceptance.",
-  "sourceHeadAtBuild": "4567eced97b0a106eee2e2658e34c7c625f25410",
+  "sourceHeadAtBuild": "0e5f14bfb194a3f2a3f46ecd2d6f7cdaf34895e2",
   "testedInputsWereUncommitted": true,
   "packageRevision": 62,
   "programABI": 56,
   "historicalABI55Changed": false,
   "sourcePinChanged": false,
   "normalEngine": {
-    "job": "node-utility-primitives-normal-1112-134306-1adb",
+    "job": "node-utility-primitives-final-normal-1112-135447-a97a",
     "profile": "normal",
     "exitCode": 1,
     "log": {
-      "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-normal-1112-134306-1adb.log",
-      "bytes": 285167,
-      "sha256": "179e693c2c53506fed9ec29e7d7c982a05800685a44a3f016a4b98de2a249053"
+      "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-final-normal-1112-135447-a97a.log",
+      "bytes": 285666,
+      "sha256": "ee9150c0c0449c8204b2855e28c3c30ff3c8a2193b2ecea25e70f72d20f0311b"
     },
     "jobLog": {
-      "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-normal-1112-134306-1adb-job.log",
-      "bytes": 2995,
-      "sha256": "82fe834586ee9423e9f618d9f6dd76eec9b66283846214e7be28e13ffc45dca4"
+      "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-final-normal-1112-135447-a97a-job.log",
+      "bytes": 3001,
+      "sha256": "4d3f442e38dcc2f3fd97b67954bc77d7fdfaca23ad27a90f186fb73752decf0b"
     },
     "compileErrors": [],
     "undefinedSymbols": [
@@ -89,7 +89,7 @@
       "uv_resident_set_memory"
     ],
     "undefinedSymbolCount": 63,
-    "buildCacheKey": "f84f31c4e29153ab7f8cb5a3ff58ea4ac22fb6ab199b35f2b4c0d27e5bbb6789",
+    "buildCacheKey": "2b717b93b0d6edbceac46cd3d30db323fbfd6cf9423dcf5bc77aaa27a5bfbee1",
     "linked": false,
     "program": null,
     "runtimeValidation": false,
@@ -105,18 +105,18 @@
     "addedSinceRevision61": []
   },
   "privateDiagnostic": {
-    "job": "node-utility-primitives-private-1112-134306-0c13",
+    "job": "node-utility-primitives-final-private-1112-135447-40a3",
     "profile": "private",
     "exitCode": 2,
     "log": {
-      "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-private-1112-134306-0c13.log",
-      "bytes": 370382,
-      "sha256": "47049c039cf838176e703b709203354d60abb7c662db8ae64fc7025033ebe815"
+      "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-final-private-1112-135447-40a3.log",
+      "bytes": 374072,
+      "sha256": "b643781ca0d9d686461d12bfd1e5bb36fdc635c333810b1d0c2d7d9396f726e3"
     },
     "jobLog": {
-      "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-private-1112-134306-0c13-job.log",
-      "bytes": 370382,
-      "sha256": "47049c039cf838176e703b709203354d60abb7c662db8ae64fc7025033ebe815"
+      "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-final-private-1112-135447-40a3-job.log",
+      "bytes": 374072,
+      "sha256": "b643781ca0d9d686461d12bfd1e5bb36fdc635c333810b1d0c2d7d9396f726e3"
     },
     "compileErrors": [],
     "undefinedSymbols": [
@@ -1000,8 +1000,8 @@
     },
     {
       "path": "packages/registry/spidermonkey/patches/0062-kandelo-native-engine-lifecycle.patch",
-      "bytes": 567,
-      "sha256": "a57807ad3db98ef7a4fc1bca1ece446d0ae33c64dabb9793dba41c929819cc8e"
+      "bytes": 566,
+      "sha256": "041631d621b2563ad95678c3c9cb64c2197b3f2902d3a156653f6a9e9999494d"
     },
     {
       "path": "packages/registry/spidermonkey/patches/README.md",
@@ -4022,8 +4022,8 @@
   "actualRecipeCopiedNativeInputs": 93,
   "stagingEvidence": {
     "path": ".context/node-utility-primitives/build-audit.json",
-    "bytes": 213955,
-    "sha256": "19cb4711798710cf4e0e16e6e7f2eebcc34aa748daf7ae4f1f175906dbda46d7"
+    "bytes": 214591,
+    "sha256": "0bc259efdff3519155054bfd811d6c69cd77299353efefb0893fc56fb58bba18"
   },
   "wholeOriginalStaging": [
     {
@@ -4033,7 +4033,7 @@
         "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
       },
       "staged": {
-        "path": ".scratch/agent-jobs/node-utility-primitives-private-1112-134306-0c13/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/util.h",
+        "path": ".scratch/agent-jobs/node-utility-primitives-final-private-1112-135447-40a3/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/util.h",
         "bytes": 43448,
         "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
       }
@@ -4045,7 +4045,7 @@
         "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561"
       },
       "staged": {
-        "path": ".scratch/agent-jobs/node-utility-primitives-private-1112-134306-0c13/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/util-inl.h",
+        "path": ".scratch/agent-jobs/node-utility-primitives-final-private-1112-135447-40a3/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/util-inl.h",
         "bytes": 27698,
         "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561"
       }
@@ -4057,7 +4057,7 @@
         "sha256": "d5ff5ddf59fea718016f5028ec54661ea8f92e37070d82c7dae2e39ab1e91172"
       },
       "staged": {
-        "path": ".scratch/agent-jobs/node-utility-primitives-private-1112-134306-0c13/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/util.cc",
+        "path": ".scratch/agent-jobs/node-utility-primitives-final-private-1112-135447-40a3/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/util.cc",
         "bytes": 32624,
         "sha256": "d5ff5ddf59fea718016f5028ec54661ea8f92e37070d82c7dae2e39ab1e91172"
       }
@@ -4069,7 +4069,7 @@
         "sha256": "f0b176fcf52d09e4f2fee7f3caabd29b93a12e1d7f96d499898148998702a396"
       },
       "staged": {
-        "path": ".scratch/agent-jobs/node-utility-primitives-private-1112-134306-0c13/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/node_concepts.h",
+        "path": ".scratch/agent-jobs/node-utility-primitives-final-private-1112-135447-40a3/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/node_concepts.h",
         "bytes": 1544,
         "sha256": "f0b176fcf52d09e4f2fee7f3caabd29b93a12e1d7f96d499898148998702a396"
       }
@@ -4081,7 +4081,7 @@
         "sha256": "3131c977c70f925931ba9df71d994adcaa7905e3b5fdf69969e9d0df90235ba4"
       },
       "staged": {
-        "path": ".scratch/agent-jobs/node-utility-primitives-private-1112-134306-0c13/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/node_union_bytes.h",
+        "path": ".scratch/agent-jobs/node-utility-primitives-final-private-1112-135447-40a3/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/node_union_bytes.h",
         "bytes": 2790,
         "sha256": "3131c977c70f925931ba9df71d994adcaa7905e3b5fdf69969e9d0df90235ba4"
       }
@@ -4093,7 +4093,7 @@
         "sha256": "7f1429f80db6bf171f1b17133268a141b4dcef7cc4dcb33483fa9e3f24f7957d"
       },
       "staged": {
-        "path": ".scratch/agent-jobs/node-utility-primitives-private-1112-134306-0c13/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/node_exit_code.h",
+        "path": ".scratch/agent-jobs/node-utility-primitives-final-private-1112-135447-40a3/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/node_exit_code.h",
         "bytes": 3271,
         "sha256": "7f1429f80db6bf171f1b17133268a141b4dcef7cc4dcb33483fa9e3f24f7957d"
       }
@@ -4105,7 +4105,7 @@
         "sha256": "281e00e8265720a12ce69e88267dfabf33c57c16a91795c49ee4d5cf7c63cbcb"
       },
       "staged": {
-        "path": ".scratch/agent-jobs/node-utility-primitives-private-1112-134306-0c13/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/node_revert.h",
+        "path": ".scratch/agent-jobs/node-utility-primitives-final-private-1112-135447-40a3/scratch/owner-build/spidermonkey-source/js/src/shell/node-upstream/utilities-upstream/node_revert.h",
         "bytes": 2129,
         "sha256": "281e00e8265720a12ce69e88267dfabf33c57c16a91795c49ee4d5cf7c63cbcb"
       }
@@ -4126,20 +4126,20 @@
   "catalogs": [
     {
       "path": "tests/nodejs/upstream/utility-primitives-contracts.json",
-      "bytes": 8164,
-      "sha256": "5ed1502eba0a5951d3307716ddc481b6666c8d3f1643a916f6d8b19c11bf1ba9"
+      "bytes": 9714,
+      "sha256": "b94c732ec4bd0b576b6d0b40bb03cccd15b3010ef9cf3011a1fb7b694babf0bf"
     }
   ],
   "currentStateDocuments": [
     {
       "path": "tests/nodejs/upstream/implementation-ledger.json",
-      "bytes": 91844,
-      "sha256": "466718fa724aceee2b05c5048d1e68bf421d968ce8f6fd8dcd49a85c107af1eb"
+      "bytes": 91918,
+      "sha256": "54f16218d63f2b5961aecb00907128f0f558fb375ff48aad56ed5622a48ecc42"
     },
     {
       "path": "docs/nodejs-upstream-runtime.md",
-      "bytes": 171069,
-      "sha256": "a384d74bddb8319cd7fc625470ba465a6ec8b130ce4af84188f7ca62d36b7664"
+      "bytes": 171226,
+      "sha256": "4ad6819475b5b4369314ef258d49a8357204fdc78a67ee868aa0c72838474ac3"
     }
   ],
   "engineOperationsCompiledNotRuntimeValidated": [
@@ -4185,12 +4185,37 @@
     {
       "path": ".context/node-utility-primitives/build-inputs.json",
       "bytes": 141799,
-      "sha256": "48f42c6459aa7bfce428eb4259f89ccc4bf28a1bbde136e4b95bccce60a59f30"
+      "sha256": "ef40d5459463df60fafef1a736a36dbc33369ca3bd32fb0e35133b3b7bf17210"
     },
     {
       "path": ".context/node-utility-primitives/build-audit.json",
+      "bytes": 214591,
+      "sha256": "0bc259efdff3519155054bfd811d6c69cd77299353efefb0893fc56fb58bba18"
+    },
+    {
+      "path": ".context/node-utility-primitives/initial-build-audit.json",
       "bytes": 213955,
       "sha256": "19cb4711798710cf4e0e16e6e7f2eebcc34aa748daf7ae4f1f175906dbda46d7"
+    },
+    {
+      "path": ".context/node-utility-primitives/initial-build-inputs.json",
+      "bytes": 141799,
+      "sha256": "48f42c6459aa7bfce428eb4259f89ccc4bf28a1bbde136e4b95bccce60a59f30"
+    },
+    {
+      "path": ".context/node-utility-primitives/initial-compile-check.json",
+      "bytes": 170478,
+      "sha256": "b64242d0dce256f5990a600494aae0a0559db6ddab3b1a2ac91a3a9e68de22ad"
+    },
+    {
+      "path": ".context/node-utility-primitives/initial-source-graph-check.json",
+      "bytes": 11461,
+      "sha256": "c336a7765740973e175312c522bb0dafb6435b2bc02a096e85d6bcdc958065d0"
+    },
+    {
+      "path": ".context/node-utility-primitives/formatting-preflight-failures.json",
+      "bytes": 470,
+      "sha256": "b599dbb8faf17191c118a708b54b9eb31536aeead86fceeb1cee0f3aad572f91"
     },
     {
       "path": ".context/node-utility-primitives/lifecycle-patch-preflight.json",
@@ -4205,22 +4230,22 @@
     {
       "path": ".context/node-utility-primitives/patch-chain-check.json",
       "bytes": 12162,
-      "sha256": "6efe9d22132ee10bed76766c29c8b1e1d899ed9966831075f7a762cfb28bff60"
+      "sha256": "35c2908d8af94cab4918fb241a6d08097e2bc2986169626660432752281d324e"
     },
     {
       "path": ".context/node-utility-primitives/patch-chain-check.log",
-      "bytes": 636,
-      "sha256": "d172bf3ef3bcacc80b90733cd722aee1ec67c34daeaae31fb0e1ea5dc56f259d"
+      "bytes": 763,
+      "sha256": "c34056ff54aa05ee6100fddc639055371925df532c236c9f30eddb7d510c7752"
     },
     {
       "path": ".context/node-utility-primitives/style-check.log",
-      "bytes": 600,
-      "sha256": "16002a41ecf7c87473a4dfc35577c456ed2d2d193d6ca081ed8c1111fca60a35"
+      "bytes": 473,
+      "sha256": "0eb3c854cc3f405cfbc045821fcfabda6bb9a826c466671b34fcf442766f60b8"
     },
     {
       "path": ".context/node-utility-primitives/source-graph-check.json",
       "bytes": 11461,
-      "sha256": "c336a7765740973e175312c522bb0dafb6435b2bc02a096e85d6bcdc958065d0"
+      "sha256": "62b95850af2bd98d3b08f0627890e2f93b3381c58b1f9c0a73410034dec9b9c1"
     },
     {
       "path": ".context/node-utility-primitives/source-graph-check.log",
@@ -4228,7 +4253,172 @@
       "sha256": "61b30ed0e7e7ea3c484c8cc08a898c9b597440c687ee6eb78581cafcb11b3767"
     }
   ],
+  "priorBuildsBeforePatchFormattingCorrection": [
+    {
+      "job": "node-utility-primitives-normal-1112-134306-1adb",
+      "profile": "normal",
+      "exitCode": 1,
+      "log": {
+        "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-normal-1112-134306-1adb.log",
+        "bytes": 285167,
+        "sha256": "179e693c2c53506fed9ec29e7d7c982a05800685a44a3f016a4b98de2a249053"
+      },
+      "jobLog": {
+        "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-normal-1112-134306-1adb-job.log",
+        "bytes": 2995,
+        "sha256": "82fe834586ee9423e9f618d9f6dd76eec9b66283846214e7be28e13ffc45dca4"
+      },
+      "compileErrors": [],
+      "undefinedSymbols": [
+        "kandelo_node_codec_api::Exception::CreateMessage(kandelo_node_codec_api::Isolate*, kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>)",
+        "kandelo_node_codec_api::FunctionTemplate::New(kandelo_node_codec_api::Isolate*, void (*)(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&), kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Signature>, int, kandelo_node_codec_api::ConstructorBehavior, kandelo_node_codec_api::SideEffectType, kandelo_node_codec_api::CFunction const*)",
+        "kandelo_node_codec_api::FunctionTemplate::PrototypeTemplate()",
+        "kandelo_node_codec_api::HeapStatistics::HeapStatistics()",
+        "kandelo_node_codec_api::HeapStatistics::external_memory() const",
+        "kandelo_node_codec_api::HeapStatistics::total_heap_size() const",
+        "kandelo_node_codec_api::HeapStatistics::used_heap_size() const",
+        "kandelo_node_codec_api::HeapStatistics::~HeapStatistics()",
+        "kandelo_node_codec_api::Isolate::GetHeapStatistics(kandelo_node_codec_api::HeapStatistics*)",
+        "kandelo_node_codec_api::Message::GetEndColumn()",
+        "kandelo_node_codec_api::Message::GetLineNumber(kandelo_node_codec_api::Local<kandelo_node_codec_api::Context>)",
+        "kandelo_node_codec_api::Message::GetScriptOrigin()",
+        "kandelo_node_codec_api::Message::GetScriptResourceName()",
+        "kandelo_node_codec_api::Message::GetSourceLine(kandelo_node_codec_api::Local<kandelo_node_codec_api::Context>)",
+        "kandelo_node_codec_api::Message::GetStackTrace()",
+        "kandelo_node_codec_api::Message::GetStartColumn()",
+        "kandelo_node_codec_api::Message::kNoScriptIdInfo",
+        "kandelo_node_codec_api::Object::GetConstructorName()",
+        "kandelo_node_codec_api::Object::GetPrivate(kandelo_node_codec_api::Local<kandelo_node_codec_api::Context>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>)",
+        "kandelo_node_codec_api::ScriptOrigin::ColumnOffset()",
+        "kandelo_node_codec_api::ScriptOrigin::LineOffset()",
+        "kandelo_node_codec_api::ScriptOrigin::SourceMapUrl()",
+        "kandelo_node_codec_api::Signature::New(kandelo_node_codec_api::Isolate*, kandelo_node_codec_api::Local<kandelo_node_codec_api::FunctionTemplate>)",
+        "kandelo_node_codec_api::StackFrame::GetColumn()",
+        "kandelo_node_codec_api::StackFrame::GetFunctionName()",
+        "kandelo_node_codec_api::StackFrame::GetLineNumber()",
+        "kandelo_node_codec_api::StackFrame::GetScriptId()",
+        "kandelo_node_codec_api::StackFrame::GetScriptName()",
+        "kandelo_node_codec_api::StackFrame::IsEval()",
+        "kandelo_node_codec_api::StackTrace::GetFrame(kandelo_node_codec_api::Isolate*, int)",
+        "kandelo_node_codec_api::StackTrace::GetFrameCount()",
+        "kandelo_node_codec_api::String::NewFromUtf8Literal(kandelo_node_codec_api::Isolate*, char const*)",
+        "kandelo_node_codec_api::Template::Set(kandelo_node_codec_api::Local<kandelo_node_codec_api::Name>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Data>)",
+        "kandelo_node_codec_api::TryCatch::Message() const",
+        "kandelo_node_codec_api::Value::IsNativeError() const",
+        "kandelo_node_codec_impl::CheckProcessPermission(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::permission::PermissionScope, std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
+        "kandelo_node_codec_impl::DumpJavaScriptBacktrace(_IO_FILE*)",
+        "kandelo_node_codec_impl::DumpNativeBacktrace(_IO_FILE*)",
+        "kandelo_node_codec_impl::Environment::Exit(kandelo_node_codec_impl::ExitCode)",
+        "kandelo_node_codec_impl::Environment::arrow_message_private_symbol()",
+        "kandelo_node_codec_impl::Environment::decorated_private_symbol()",
+        "kandelo_node_codec_impl::Environment::enhance_fatal_stack_after_inspector()",
+        "kandelo_node_codec_impl::Environment::enhance_fatal_stack_before_inspector()",
+        "kandelo_node_codec_impl::Environment::get_source_map_error_source()",
+        "kandelo_node_codec_impl::Environment::handle_wrap_queue()",
+        "kandelo_node_codec_impl::Environment::printed_error()",
+        "kandelo_node_codec_impl::Environment::req_wrap_queue()",
+        "kandelo_node_codec_impl::Environment::set_printed_error(bool)",
+        "kandelo_node_codec_impl::Environment::source_maps_enabled()",
+        "kandelo_node_codec_impl::HandleWrap::HasRef(kandelo_node_codec_impl::HandleWrap*)",
+        "kandelo_node_codec_impl::HasSignalJSHandler(int)",
+        "kandelo_node_codec_impl::IsolateData::node_allocator()",
+        "kandelo_node_codec_impl::IsolateData::options()",
+        "kandelo_node_codec_impl::NodeArrayBufferAllocator::total_mem_usage() const",
+        "kandelo_node_codec_impl::ReqWrapBase::GetAsyncWrap()",
+        "kandelo_node_codec_impl::ResetStdio()",
+        "kandelo_node_codec_impl::RunAtExit(kandelo_node_codec_impl::Environment*)",
+        "kandelo_node_codec_impl::TriggerNodeReport(kandelo_node_codec_impl::Environment*, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&, char const*, char const*, kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>)",
+        "kandelo_node_codec_impl::binding::DLOpen(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+        "kandelo_node_codec_impl::binding::DLOpenBinary(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+        "uv_get_available_memory",
+        "uv_get_constrained_memory",
+        "uv_resident_set_memory"
+      ],
+      "undefinedSymbolCount": 63,
+      "buildCacheKey": "f84f31c4e29153ab7f8cb5a3ff58ea4ac22fb6ab199b35f2b4c0d27e5bbb6789",
+      "linked": false,
+      "program": null,
+      "runtimeValidation": false,
+      "removedSinceRevision61": [
+        "kandelo_node_codec_api::ArrayBufferView::CopyContents(void*, unsigned long)",
+        "kandelo_node_codec_api::ArrayBufferView::HasBuffer() const",
+        "kandelo_node_codec_api::Function::SetName(kandelo_node_codec_api::Local<kandelo_node_codec_api::String>)",
+        "kandelo_node_codec_api::Isolate::LowMemoryNotification()",
+        "kandelo_node_codec_api::Isolate::TryGetCurrent()",
+        "kandelo_node_codec_api::LocalVector<kandelo_node_codec_api::Value>::data()",
+        "kandelo_node_codec_impl::per_process::v8_initialized"
+      ],
+      "addedSinceRevision61": []
+    },
+    {
+      "job": "node-utility-primitives-private-1112-134306-0c13",
+      "profile": "private",
+      "exitCode": 2,
+      "log": {
+        "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-private-1112-134306-0c13.log",
+        "bytes": 370382,
+        "sha256": "47049c039cf838176e703b709203354d60abb7c662db8ae64fc7025033ebe815"
+      },
+      "jobLog": {
+        "path": ".context/node-utility-primitives/build-logs/node-utility-primitives-private-1112-134306-0c13-job.log",
+        "bytes": 370382,
+        "sha256": "47049c039cf838176e703b709203354d60abb7c662db8ae64fc7025033ebe815"
+      },
+      "compileErrors": [],
+      "undefinedSymbols": [
+        "kandelo_node_codec_api::FunctionTemplate::New(kandelo_node_codec_api::Isolate*, void (*)(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&), kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Signature>, int, kandelo_node_codec_api::ConstructorBehavior, kandelo_node_codec_api::SideEffectType, kandelo_node_codec_api::CFunction const*)",
+        "kandelo_node_codec_api::FunctionTemplate::PrototypeTemplate()",
+        "kandelo_node_codec_api::Signature::New(kandelo_node_codec_api::Isolate*, kandelo_node_codec_api::Local<kandelo_node_codec_api::FunctionTemplate>)",
+        "kandelo_node_codec_api::Template::Set(kandelo_node_codec_api::Local<kandelo_node_codec_api::Name>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Data>)",
+        "kandelo_node_codec_impl::DumpJavaScriptBacktrace(_IO_FILE*)",
+        "kandelo_node_codec_impl::DumpNativeBacktrace(_IO_FILE*)"
+      ],
+      "undefinedSymbolCount": 6,
+      "buildCacheKey": null,
+      "linked": false,
+      "program": null,
+      "runtimeValidation": false,
+      "removedSinceRevision61": [
+        "kandelo_node_codec_api::ArrayBufferView::CopyContents(void*, unsigned long)",
+        "kandelo_node_codec_api::ArrayBufferView::HasBuffer() const",
+        "kandelo_node_codec_api::Function::SetName(kandelo_node_codec_api::Local<kandelo_node_codec_api::String>)",
+        "kandelo_node_codec_api::Isolate::LowMemoryNotification()",
+        "kandelo_node_codec_api::Isolate::TryGetCurrent()",
+        "kandelo_node_codec_api::LocalVector<kandelo_node_codec_api::Value>::data()",
+        "kandelo_node_codec_impl::per_process::v8_initialized"
+      ],
+      "addedSinceRevision61": []
+    }
+  ],
+  "patchFormattingCorrection": {
+    "engineSourceUnchanged": true,
+    "sourceEquivalence": {
+      "path": ".context/node-utility-primitives/patch-formatting-source-equivalence.json",
+      "bytes": 1201,
+      "sha256": "f7f43f028d4b72b55ae28c9251ffe5f47cbc57fad9e6abe797afc118f018a292"
+    },
+    "finalBuildInputsRefreshed": true,
+    "earlierBuildInputs": {
+      "path": ".context/node-utility-primitives/initial-build-inputs.json",
+      "bytes": 141799,
+      "sha256": "48f42c6459aa7bfce428eb4259f89ccc4bf28a1bbde136e4b95bccce60a59f30"
+    },
+    "rejectedContextCandidate": {
+      "path": ".context/node-utility-primitives/formatting-preflight-failures.json",
+      "bytes": 470,
+      "sha256": "b599dbb8faf17191c118a708b54b9eb31536aeead86fceeb1cee0f3aad572f91"
+    }
+  },
   "failuresRetained": [
+    {
+      "kind": "Final patch formatting check",
+      "detail": "Initial staged diff check reported whitespace in a blank unified-diff context line. The final patch uses an empty context line and strict canonical patching yields identical engine source. A shortened-context candidate failed preflight and its reject is retained; no build used it.",
+      "evidence": {
+        "path": ".context/node-utility-primitives/formatting-preflight-failures.json",
+        "bytes": 470,
+        "sha256": "b599dbb8faf17191c118a708b54b9eb31536aeead86fceeb1cee0f3aad572f91"
+      }
+    },
     {
       "kind": "Host-tool preflight harness error",
       "detail": "Mac host patch rejected a zero-context hunk under --fuzz=0. Canonical dev-shell GNU patch2.8 applies both hunks with zero fuzz and matches actual package build. Both actual recipe builds used canonical tools; no registry fix/retry required.",
@@ -4258,7 +4448,7 @@
   "newNativeReferenceChildren": 0,
   "currentRuntimeValidated": false,
   "sourcePolicySatisfied": false,
-  "remainingSourcePolicyGap": "Existing ICU Buffer::New(Environment*,MaybeStackBuffer*) ownership bridge requires complete original node_internals.h integration",
+  "remainingSourcePolicyGap": "Existing ICU Buffer ownership bridge and FWrite byte/stream helper require complete original node_internals.h and debug_utils.cc integration",
   "startupAccepted": false,
   "normalStartupAdvanced": false,
   "wholeGoalComplete": false,

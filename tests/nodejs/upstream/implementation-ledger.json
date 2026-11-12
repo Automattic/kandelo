@@ -1672,7 +1672,7 @@
     }
   },
   "nextWork": [
-    "Implement genuine FunctionTemplate.New/PrototypeTemplate, Signature.New and Template.Set with rooted callback/realm ownership and receiver brands, plus complete original debug_utils backtrace source/dependency closure. Normal63/private6 symbols remain; neither profile has an executable. Replace the existing Buffer ownership bridge through complete node_internals.h integration. Then identified four-host original-utility/regression execution, prior Message/source/report/lifecycle dependencies, real startup and full catalog; broader roadmap requires user review.",
+    "Implement genuine FunctionTemplate.New/PrototypeTemplate, Signature.New and Template.Set with rooted callback/realm ownership and receiver brands, plus complete original debug_utils backtrace source/dependency closure. Normal63/private6 symbols remain; neither profile has an executable. Replace the existing Buffer ownership bridge through complete node_internals.h integration and retire FWrite through complete debug_utils.cc integration. Then identified four-host original-utility/regression execution, prior Message/source/report/lifecycle dependencies, real startup and full catalog; broader roadmap requires user review.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1689,9 +1689,9 @@
     "evidence": "utility-primitives-compile-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
-    "buildCacheKey": "f84f31c4e29153ab7f8cb5a3ff58ea4ac22fb6ab199b35f2b4c0d27e5bbb6789",
+    "buildCacheKey": "2b717b93b0d6edbceac46cd3d30db323fbfd6cf9423dcf5bc77aaa27a5bfbee1",
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-utility-primitives-normal-1112-134306-1adb",
+    "buildJob": "node-utility-primitives-final-normal-1112-135447-a97a",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1766,7 +1766,7 @@
     "historicalDriversPerHost": 32,
     "undefinedSymbols": 6,
     "historicalEvidence": "persistent-handle-engine-check.json",
-    "buildJob": "node-utility-primitives-private-1112-134306-0c13"
+    "buildJob": "node-utility-primitives-final-private-1112-135447-40a3"
   },
   "historicalNativeOwnerDiagnostic": {
     "evidence": "persistent-handle-engine-check.json",

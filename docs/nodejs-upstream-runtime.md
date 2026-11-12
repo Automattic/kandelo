@@ -2650,6 +2650,8 @@ original sources with real engine/platform dependencies. Function/template
 receiver brands, callback/realm/GC ownership and general naming behavior still
 need implementation or runtime validation. The existing node_internals.h Buffer
 ownership-template bridge remains an explicit source-policy gap.
+The existing FWrite byte/stream helper also corresponds to a function owned
+by the complete original debug_utils.cc and must retire during that integration.
 
 All 580 imported identities, including 443 JavaScript files/10,993,403 bytes,
 match the unchanged manifest. All 93 recipe-copied native adapter inputs and

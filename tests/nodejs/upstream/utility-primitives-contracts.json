@@ -166,5 +166,34 @@
     "Complete node_internals.h integration to retire the pre-existing ownership-template bridge",
     "Prior Message/source/report/lifecycle/scheduling and process dependencies, real startup and separate CJS/ESM",
     "Full backend catalog, dependency-ordered roadmap and explicit user review before broader implementation"
-  ]
+  ],
+  "remainingSourcePolicyGaps": [
+    {
+      "consumer": "Original node_i18n.cc buffer conversion returns",
+      "existingAdapter": "codec-native-api.h Buffer::New(Environment*,MaybeStackBuffer*)",
+      "requiredWholeSource": "src/node_internals.h"
+    },
+    {
+      "consumer": "Original debug_utils-inl.h FPrintF",
+      "existingAdapter": "codecs.cpp FWrite(FILE*,const std::string&) byte/stream helper",
+      "requiredWholeSource": "src/debug_utils.cc",
+      "reason": "The complete original unit owns FWrite as well as both missing backtrace bodies; retire the adapter during whole-unit integration."
+    }
+  ],
+  "backtraceWholeSourceReview": {
+    "archivePath": "src/debug_utils.cc",
+    "reviewedCopy": {
+      "path": ".context/node-vector-roots/source/src/debug_utils.cc",
+      "bytes": 16324,
+      "sha256": "9f2904508a8443beb454dc789a07d60afb2f2ec7f9b2f56bc651d9c66edb0ea3"
+    },
+    "additionalDependencies": [
+      "complete original debug_utils.h debug categories and NativeSymbolDebuggingContext",
+      "credentials.SafeGetenv and original case conversion",
+      "real GetCurrentStackTrace/PrintStackTrace and StackTrace frame count",
+      "POSIX symbol/stack support selected by original feature branches",
+      "uv_walk/uv_loop_close and real handle metadata"
+    ],
+    "platformBoundary": "Original header itself provides a no-symbol/no-native-stack fallback when native symbol debugging is unavailable. Determine the actual target branch and document its capability; never invent frames or copy these bodies."
+  }
 }
