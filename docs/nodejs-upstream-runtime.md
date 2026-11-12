@@ -13,7 +13,8 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry calls complete `internal/bootstrap/node` with
 protected state. It now executes the original internal tracing helper and
-reaches the missing `mksnapshot` binding through original `buffer.js`. The original native tracing agent, binding,
+passes the live `mksnapshot` binding and currently stops at the missing native
+`util.defineLazyProperties` export in original `buffer.js`. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -27,11 +28,12 @@ Its original CallbackInfo cleanup runs on all four hosts. Thirty shared
 native control groups match exactly; a standalone native Node reentry
 discrepancy is retained separately. Full lifecycle/exceptional coverage remains
 incomplete. Original AliasedBuffer headers now compile over real typed/weak
-engine handles with focused four-host controls; mksnapshot source review
-does not establish the missing binding. Earlier
+engine handles with focused four-host controls. The live snapshot interface is
+implemented directly with SpiderMonkey/Kandelo primitives; no V8 bindings or
+heap snapshot format are generated. Earlier
 revision sections below describe their evidence at the time.
 Complete Node startup, empty/simple evaluation,
-user CJS/ESM entrypaths and browser startup remain unrun. The native process
+user CJS/ESM entrypaths and browser startup remain unachieved. The native process
 and util/builtins bindings remain partial; no complete module compatibility or
 443-source guest payload readback is established. ModuleWrap-owned dynamic
 imports and genuine source/synthetic graphs have focused Node-host controls.
@@ -1652,3 +1654,81 @@ excerpt has been applied. Full products/images, successor ABI builds and overall
 suites remain deferred. See
 [function-compiler-contracts.json](../tests/nodejs/upstream/function-compiler-contracts.json)
 and [function-compiler-engine-check.json](../tests/nodejs/upstream/function-compiler-engine-check.json).
+
+## Live snapshot interface and native Context identities (revision 44)
+
+The user clarified that the required contract is Node's internal native
+interface implemented against SpiderMonkey/Kandelo. The earlier native-source
+architecture question is resolved. The port does not import, extract or rewrite
+`node_snapshotable.cc`, generate V8 bindings, link a V8 JavaScript engine or
+produce V8 heap snapshot data. The complete upstream JavaScript remains
+unchanged, including its callback queues, guards and public startupSnapshot API.
+
+The live `mksnapshot` binding now exposes its five functions, anonymous-main path
+and actual one-byte mode view. Function bodies compile through SpiderMonkey's
+native UTF-16 compiler in the binding's active realm. The state view uses the
+original AliasedUint8Array implementation and a native weak handle; it reports
+ordinary execution because no snapshot builder is attached. Requests for actual
+heap serialization/restoration are not supported. No builder, restored callback,
+snapshot index or completion flag is fabricated.
+
+Serialize, deserialize and main callbacks occupy traced native reserved slots
+on the existing principal realm. Registration preserves the empty-slot then
+Function assertions without calling the function or changing loop liveness.
+The native storage helper accepts clearing, and foreground Environment shutdown
+retires all three roots. The optional preload hook has actual nullable native
+storage; invoking the export without a hook preserves the fatal contract.
+Positive embedder-hook admission and its options integration remain unvalidated.
+
+Native Context handles now root actual global identities. Current-context lookup
+uses the active engine global; Environment context lookup uses the registered
+principal owner. Context scopes enter and restore real SpiderMonkey realms, and
+selected conversion/property APIs honor supplied contexts with compartment
+wrapping. Locals can escape a native handle scope without losing their roots.
+This is a bounded native adapter, not the full V8 Context, Global<Context>,
+ObjectTemplate or FunctionTemplate interface. Cross-context native function
+materialization, non-Node-context Environment lookup, snapshot persistence and
+wider security/worker/OOM behavior remain separate contracts.
+
+Focused controls pass on Node, Chromium, Firefox and WebKit using identical
+revision-44 engine/kernel bytes: eight live-binding groups match the recorded
+authenticated native Node reference, and seventeen additional controls exercise
+context identity, moving GC, reentrant scope entry, principal-root ownership,
+clearing, actual callback results/errors/jobs and explicit origin limitations.
+Seven assertion drivers preserve nonfunction/duplicate ordering and missing-hook
+failure. Three exit drivers retain callbacks without calling them or keeping the
+loop alive. A separate original principal-body attempt confirms the next failure:
+`TypeError: defineLazyProperties is not a function` at `node:buffer:1572`.
+That captured failure is not successful startup.
+
+Native filenames containing NUL or unpaired UTF-16 units fail explicitly because
+the present compiler-origin path accepts UTF-8 C-string metadata. Source bodies
+still preserve all UTF-16 units. Automatic snapshot callback invocation at the
+full Node beforeExit/entrypath lifecycle is not integrated; privileged invocation
+controls prove only actual native call mechanics and context restoration.
+The normal node mode still uses its legacy bootstrap. Empty/simple genuine
+startup, separate CJS/ESM and the complete backend catalog/roadmap remain open.
+The dispatcher survey now has eighteen routes and fifty-four literal binding
+names without routes; every full API contract remains incomplete. Route presence
+is not module compatibility. See
+[mksnapshot-contracts.json](../tests/nodejs/upstream/mksnapshot-contracts.json)
+and [mksnapshot-engine-check.json](../tests/nodejs/upstream/mksnapshot-engine-check.json).
+
+Selected prior controls also pass on that same artifact, including 310 named
+primitive cases, tracing/agent checks and four-host compiler, Buffer,
+AliasedBuffer, continuation, memory and Environment checks. The combined final
+reports cover 278 guest process drivers and 72 expected assertion traps. The
+initial Buffer regression expectation required an older missing-binding error;
+those failed reports remain retained, and the corrected exact next-error check
+passes on all four hosts. The normal resolver reuses the exact tested prefix.
+No kernel/host/libc/ABI change, image/full-product build or overall suite was
+performed for this native package phase.
+
+The next startup dependency has a separate
+[lazy-property contract review](../tests/nodejs/upstream/util-lazy-properties-contracts.json)
+and seven authenticated native-only controls. They establish that descriptor
+queries materialize real data properties, while writes, deletion and freezing
+can avoid loading. The getter must use the actual holder creation realm and
+its protected original builtin loader. This evidence guides the required engine
+and embedding support; it does not implement the missing export or justify an
+observable JavaScript accessor substitute.

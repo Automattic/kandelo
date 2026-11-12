@@ -69,6 +69,6 @@ check('raw-structured-clone-transport-copies-without-invalidating-native-span',(
 let bootstrapFailure;
 check('upstream-bootstrap-advances-to-next-real-backend-gap',()=>{
  const global=newGlobal({newCompartment:true});api.initializeContext(global);api.initializeRealm(global);const error=outcome(()=>api.runNodeBootstrap(global));
- assert(error.error&&error.error.code==='ERR_KANDELO_NOT_IMPLEMENTED');bootstrapFailure={...error.error,compiledBuiltinIds:api.inspectRealm(global).compiledBuiltinIds};assert(!error.error.message.includes("binding 'buffer'"));return bootstrapFailure;
+ assert(error.error&&error.error.name==='TypeError'&&error.error.code===undefined&&error.error.message==='defineLazyProperties is not a function');bootstrapFailure={...error.error,compiledBuiltinIds:api.inspectRealm(global).compiledBuiltinIds};assert(!error.error.message.includes("binding 'buffer'"));return bootstrapFailure;
 });
 print(JSON.stringify({kind:'whole-original-native-buffer-controls',cases:observations.length,sharedCases,failures,observations,bootstrapFailure,native:api.bufferNative('inspect'),upstreamStartup:false}));if(failures)quit(1);

@@ -3,6 +3,8 @@
 #include "js/TypeDecls.h"
 namespace kandelo::node {
 JSObject* CreateBufferBinding(JSContext* cx, JS::HandleObject realm);
+JSObject* CreateSnapshotBinding(JSContext*,JS::HandleObject);
+bool DefineNativeContextTestAPI(JSContext*,JS::HandleObject);
 JSObject* CreateCodecState(JSContext* cx);
 JSObject* CreateStringDecoderBinding(JSContext* cx, JS::HandleObject realm);
 JSObject* CreateIcuBinding(JSContext* cx, JS::HandleObject realm);

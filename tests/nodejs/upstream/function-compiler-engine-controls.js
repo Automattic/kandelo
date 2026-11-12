@@ -23,8 +23,8 @@ const compilerErrorLocation=error=>({file:error.fileName,line:error.lineNumber})
   assert(compileBody(globalThis,'fixture:😀.js','return 79')()===79);return true;
  });
  let bootstrapFailure;
- check('compiler-prerequisite-does-not-fabricate-mksnapshot-or-bootstrap-completion',()=>{
-  const global=newGlobal({newCompartment:true});api.initializeContext(global);api.initializeRealm(global);const error=thrown(()=>api.runNodeBootstrap(global));assert(error.code==='ERR_KANDELO_NOT_IMPLEMENTED'&&error.message==="Native Node binding 'mksnapshot' is not implemented");bootstrapFailure={name:error.name,code:error.code,message:error.message};return bootstrapFailure;
+ check('compiler-preserves-next-real-bootstrap-failure',()=>{
+  const global=newGlobal({newCompartment:true});api.initializeContext(global);api.initializeRealm(global);const error=thrown(()=>api.runNodeBootstrap(global));assert(error.name==='TypeError'&&error.code===undefined&&error.message==="defineLazyProperties is not a function");bootstrapFailure={name:error.name,code:error.code,message:error.message};return bootstrapFailure;
  });
  print(JSON.stringify({kind:'native-function-body-compiler-prerequisite',cases:observations.length,sharedCases:shared.cases,failures,observations,bootstrapFailure,upstreamStartup:false}));if(failures)quit(1);
 })().catch(error=>{print(error.stack);quit(1)});

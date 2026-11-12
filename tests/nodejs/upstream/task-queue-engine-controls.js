@@ -104,7 +104,7 @@ check('libuv-callback-checkpoint-drains-real-jobs-and-live-ticks',()=>{
 });
 check('failed-realm-methods-retire-without-mutating-shared-state',()=>{
   const target=newGlobal({newCompartment:true});api.initializeContext(target);const other=api.initializeRealm(target),binding=other.internalBinding('task_queue');
-  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'Error');assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message,"Native Node binding 'mksnapshot' is not implemented");bootstrapFailure={name:error.name,code:error.code,message:error.message};
+  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'TypeError');assertEq(error.code,undefined);assertEq(error.message,"defineLazyProperties is not a function");bootstrapFailure={name:error.name,code:error.code,message:error.message};
   let called=false;assertEq(thrown(()=>binding.enqueueMicrotask(()=>called=true)).message.includes('Previous Node realm initialization failed'),true);run();assertEq(called,false);
 });
 reset();

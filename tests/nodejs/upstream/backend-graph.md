@@ -18,8 +18,8 @@ implement the broader backend roadmap.
 | Upstream native source/header files scanned | 460 from the authenticated source archive |
 | Native registration sites | 160 across four explicitly recognized macros |
 | Registration names | 77: 73 initializer names and four external-reference-only names |
-| Current Kandelo dispatcher routes | 17 of the 72 literal names; these remain bounded implementations |
-| Literal names without a current dispatcher route | 55 |
+| Current Kandelo dispatcher routes | 18 of the 72 literal names; these remain bounded implementations |
+| Literal names without a current dispatcher route | 54 |
 | Historical evidence linked | All 19 family source-review records and 33 PR reuse records |
 
 See [dependency-graph.json](dependency-graph.json),
@@ -81,9 +81,12 @@ source/salvage evidence. Their observation counts are not coverage denominators
 for this implementation. Reuse native mechanisms only after matching the actual
 original binding contracts; retain neither old public shims nor excerpt assembly.
 
-Genuine startup still stops at `mksnapshot`. Its native-source architecture
-choice is pending. Continue independent source review while preserving the
-original JavaScript and the no-excerpts/no-rewritten-algorithms constraint.
+The user selected implementing the live `mksnapshot` native interface directly
+against SpiderMonkey/Kandelo. No V8 binding generation, heap serialization port
+or upstream C++ function excerpt is used. That new route is under focused
+runtime validation; route presence does not establish startup or full API
+support. Preserve the original JavaScript and the
+no-excerpts/no-rewritten-algorithms constraint.
 After startup, reconcile the complete catalog and dependency-ordered validation
 roadmap, then stop for user review before broader backend implementation.
 Nested guest Wasm remains required and is implemented last unless startup needs

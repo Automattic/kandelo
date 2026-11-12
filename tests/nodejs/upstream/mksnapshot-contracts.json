@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "scope": "Reviewed live mksnapshot binding plus known V8 serialization boundary; implementation pending an architectural decision, not complete native/public graph catalog",
+  "scope": "Node live mksnapshot native interface implemented directly against SpiderMonkey/Kandelo, under focused validation; snapshots and complete API/graph compatibility remain unestablished",
   "sourceVersion": "26.13.0",
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
   "sourceArchive": {
@@ -124,19 +124,17 @@
     }
   ],
   "architectureDecision": {
-    "status": "awaiting user reply; no native source patch or function excerpt applied",
-    "recommended": "Reviewed C++ feature guards around unavailable V8-only builder/serialization regions; retain complete source and original live binding bodies",
-    "alternatives": [
-      "Port the complete snapshot translation unit and actual dependencies first",
-      "Implement genuine Kandelo native contracts directly, requiring explicit exception to no rewritten upstream algorithms"
-    ],
+    "status": "Resolved by user: preserve the native interface and implement it against SpiderMonkey/Kandelo; no V8-based binding generation or V8 snapshot port",
     "independentPrerequisite": "Complete original AliasedBuffer header pair and genuine typed/weak engine primitives",
     "independentCompilerPrerequisite": {
       "implemented": "Shared underlying native function-body compiler for native-known parameter metadata; actual engine compilation/context/source ownership",
       "evidence": "function-compiler-engine-check.json",
       "nativeSnapshotBindingImplemented": false,
       "nativeV8ScriptCompilerInterfaceComplete": false
-    }
+    },
+    "selected": "Direct engine-specific native binding implementation; unchanged upstream JavaScript retains all queue and public API algorithms",
+    "noUpstreamCppExcerptsOrAlgorithmCopies": true,
+    "implementationSource": "packages/registry/spidermonkey/node-upstream/snapshot-codecs-inl.h"
   },
   "reference": {
     "fixture": {
@@ -165,16 +163,16 @@
   ],
   "ownershipReview": {
     "guide": "mksnapshot-ownership.md",
-    "sourceAudit": "mksnapshot-ownership-check.json",
-    "scope": "Manual source contract review with authenticated file/span accounting; no new runtime implementation or behavior evidence",
+    "sourceAudit": "mksnapshot-ownership-check.json (historical source-review phase)",
+    "scope": "Authenticated source contracts plus current direct native backend; historical source-review receipt and current engine evidence are separate",
     "principalContextRequiredForNonemptySetter": "Original DCHECK_IMPLIES, not a JavaScript exception; release reference does not test this assertion",
     "nativeStorageMayClear": true,
     "nativeStorageIsWriteOnce": false,
     "registrationIsWriteOnce": "Original binding-level empty-slot CHECK; native setter separately supports clearing",
     "normalLoopClearing": "SpinEventLoopInternal clears serialize callback after liveness/beforeExit/serialize drain and before EmitProcessExitInternal; stopping returns before this normal-exit tail",
     "deserializeQueue": "Original pre_execution calls exported JS runDeserializeCallbacks directly; do not add an extra native call merely because the persistent slot exists",
-    "existingKandeloOwner": "per-context.cpp RegisterRuntimePrincipalRealm/GetRuntimePrincipalRealm; runtime-shared codec State/Environment; foreground Drain/Shutdown enter registered principal realm",
-    "unimplementedNativeContextContract": "codec Environment::context currently returns active isolate context; Context carries isolate pointer and Frame determines current engine realm. Principal-context identity and callback accessors/root retirement remain missing.",
+    "existingKandeloOwner": "Existing runtime principal registration reused; callbacks are actual traced reserved slots on that principal Realm, shared via Environment runtime ownership, and explicitly cleared at foreground shutdown",
+    "unimplementedNativeContextContract": "Real rooted Context identities, Context::Scope, principal Environment::context and selected context-taking operations implemented; full V8 Context/ObjectTemplate/FunctionTemplate API surface remains incomplete",
     "bindingDataAndCallbackOwnersDiffer": true,
     "startupDependencyOrder": [
       "native principal-context identity/accessors using existing owner",
@@ -182,16 +180,14 @@
       "original registration assertions plus native empty-handle clearing",
       "actual required entrypath/loop invocation and teardown validation"
     ],
-    "runtimeOrBuildChanged": false,
+    "runtimeOrBuildChanged": true,
     "runtimeValidationRemaining": [
-      "principal versus active context on all four hosts",
-      "callback roots across moving GC and child/runtime isolation",
-      "original duplicate and nonfunction fatal assertions",
-      "debug principal-context invariant in assertion-enabled artifact",
-      "no registration invocation or loop references",
-      "real invocation/error identity/context restoration/reentrant cleanup",
-      "root retirement before engine teardown",
-      "genuine snapshot persistence separately unsupported"
+      "automatic beforeExit/quiescence serialization callback invocation and deserialize-main entrypath integration",
+      "positive optional embedder-hook admission/options/error tests",
+      "callback roots released before teardown across workers and independently owned runtimes",
+      "debug principal-context assertion in assertion-enabled artifact",
+      "full engine origin string/interface surface, Context persistence and non-Node context Environment lookup",
+      "genuine heap snapshot serialization/restoration and broader OOM/security/cancellation paths"
     ],
     "sourceEvidence": [
       {
@@ -392,6 +388,35 @@
           }
         ]
       }
-    ]
+    ],
+    "currentRuntimeEvidence": "mksnapshot-engine-check.json"
+  },
+  "implementation": {
+    "status": "25focused controls/13guest drivers pass on all four hosts; selected prior regressions pass on identical artifact",
+    "bindingExportNames": [
+      "runEmbedderPreload",
+      "compileSerializeMain",
+      "setSerializeCallback",
+      "setDeserializeCallback",
+      "setDeserializeMainFunction",
+      "anonymousMainPath",
+      "isBuildingSnapshotBuffer"
+    ],
+    "callbackStorage": "Actual principal-realm traced JS slots; not duplicated process/global state or per-child binding ownership",
+    "stateView": "Original AliasedUint8Array with native weak handle; actual ordinary engine mode, no attached snapshot builder",
+    "compiler": "Real SpiderMonkey UTF16 body/global lexical compiler with require/__filename/__dirname formals",
+    "originBoundary": "Filename metadata with NUL or unpaired UTF16 is rejected explicitly because current engine origin path is UTF8 C-string metadata; never silently truncate/replace",
+    "optionalPreload": "Actual optional native Environment hook, absent in ordinary embedding; missing hook preserves fatal contract",
+    "snapshotsSupported": false,
+    "automaticSnapshotCallbackLifecycleComplete": false,
+    "fullInterfaceConformanceEstablished": false,
+    "upstreamStartupAccepted": false,
+    "evidence": "mksnapshot-engine-check.json",
+    "exactNativeGroups": 8,
+    "contextAndOwnershipControls": 17,
+    "assertionDriversPerHost": 7,
+    "exitDriversPerHost": 3,
+    "bootstrapFailure": "TypeError: defineLazyProperties is not a function at node:buffer:1572",
+    "normalNodeMode": "legacy bootstrap remains unchanged"
   }
 }

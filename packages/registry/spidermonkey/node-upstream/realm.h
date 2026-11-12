@@ -4,6 +4,10 @@
 #include "js/TypeDecls.h"
 
 namespace kandelo::node {
+enum class SnapshotCallback { Serialize, Deserialize, Main };
+bool GetSnapshotCallback(JSContext*,JS::HandleObject,SnapshotCallback,JS::MutableHandleValue);
+bool SetSnapshotCallback(JSContext*,JS::HandleObject,SnapshotCallback,JS::HandleValue);
+bool ClearSnapshotCallbacks(JSContext*,JS::HandleObject);
 // Allocation does not run JS. Publish in the canonical context before Run.
 JSObject* AllocateRealmLibraryState(JSContext* cx);
 bool SetRealmBufferPrototype(JSContext*,JS::HandleObject,JS::HandleObject);

@@ -4,7 +4,7 @@
   "scope": "Reviewed survey routing and dispatcher snapshot. Family names organize further review, not API/owning-layer or native-contract completion.",
   "dispatcher": {
     "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
-    "sha256": "35d69de09ea191c667e3224859feed657c803881ba12b39b26a87858b58d3af1",
+    "sha256": "98084fd639bc0dd66b7edb777b6710772f8b460b2cfa1ab1fdfba89b17c98e55",
     "functionStart": "bool InternalBinding(",
     "functionEnd": "bool LinkedBinding(",
     "reviewedRouteNames": [
@@ -16,6 +16,7 @@
       "constants",
       "errors",
       "icu",
+      "mksnapshot",
       "module_wrap",
       "options",
       "string_decoder",
@@ -441,8 +442,8 @@
     {
       "name": "util",
       "reviewRoutingFamily": "values",
-      "contractInventory": null,
-      "contractReview": "full binding contract audit outstanding"
+      "contractInventory": "util-lazy-properties-contracts.json",
+      "contractReview": "Startup-required lazy data-property partial review only; full util native contract audit outstanding"
     },
     {
       "name": "uv",

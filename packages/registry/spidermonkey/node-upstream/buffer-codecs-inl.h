@@ -15,8 +15,9 @@ static int64_t IntegerNumber(double number) {
   return int64_t(number);
 }
 Maybe<int64_t> Value::IntegerValue(Local<Context> context) {
-  auto& frame=Current(context->isolate);double number;
-  if(!JS::ToNumber(frame.cx,cell().value,&number))return {};
+  auto& frame=Current(context->isolate);Context::Scope home(context);double number;
+  JS::RootedValue input(frame.cx,cell().value);
+  if(!JS_WrapValue(frame.cx,&input)||!JS::ToNumber(frame.cx,input,&number))return {};
   return Just(IntegerNumber(number));
 }
 Local<Number> Number::New(Isolate* isolate,double number) {
@@ -29,18 +30,24 @@ Local<Value> HandleScope::EscapeRoot(Local<Value> input) {
   frame_->roots.insert(frame_->roots.begin()+previous_,std::move(owned));++previous_;
   return output;
 }
+Local<Context> HandleScope::EscapeRoot(Local<Context> input) {
+  CHECK(!input.IsEmpty());JS::RootedObject global(frame_->cx,&input->global->value.toObject());
+  auto output=frame_->OwnContext(global);auto owned=std::move(frame_->contexts.back());frame_->contexts.pop_back();
+  frame_->contexts.insert(frame_->contexts.begin()+previousContexts_,std::move(owned));++previousContexts_;
+  return output;
+}
 Maybe<bool> Object::SetPrototypeV2(Local<Context> context,Local<Object> prototype) {
-  auto& frame=Current(context->isolate);JS::RootedObject object(frame.cx,&cell().value.toObject());
+  auto& frame=Current(context->isolate);Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());
   JS::RootedObject proto(frame.cx,&prototype->cell().value.toObject());
-  if(!JS_SetPrototype(frame.cx,object,proto))return {};return Just(true);
+  if(!JS_WrapObject(frame.cx,&object)||!JS_WrapObject(frame.cx,&proto)||!JS_SetPrototype(frame.cx,object,proto))return {};return Just(true);
 }
 Maybe<bool> Object::SetPrivate(Local<Context> context,Local<Value> property,Local<Value> input) {
-  auto& frame=Current(context->isolate);JS::RootedObject object(frame.cx,&cell().value.toObject());
+  auto& frame=Current(context->isolate);Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());
   JS::RootedValue key(frame.cx,Input(property)),value(frame.cx,Input(input));CHECK(key.isSymbol());
   JS::RootedSymbol symbol(frame.cx,key.toSymbol());
   CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
   JS::RootedId id(frame.cx,JS::PropertyKey::Symbol(key.toSymbol()));
-  if(!JS_DefinePropertyById(frame.cx,object,id,value,0))return {};return Just(true);
+  if(!JS_WrapObject(frame.cx,&object)||!JS_WrapValue(frame.cx,&value)||!JS_DefinePropertyById(frame.cx,object,id,value,0))return {};return Just(true);
 }
 size_t ArrayBuffer::ByteLength() const {
   auto& frame=*Frame::current;JS::RootedObject buffer(frame.cx,UnwrapObject(frame.cx,cell().value));CHECK(buffer);

@@ -1,0 +1,186 @@
+{
+  "schema": 1,
+  "scope": "Startup-required util.defineLazyProperties partial native contract; not the complete util binding or backend graph",
+  "sourceVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "nativeSource": {
+    "path": "src/node_util.cc",
+    "bytes": 22384,
+    "sha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae",
+    "getterLines": [
+      364,
+      399
+    ],
+    "bindingLines": [
+      401,
+      441
+    ],
+    "registrationLine": 617,
+    "importedIntoRuntime": false
+  },
+  "interface": {
+    "name": "defineLazyProperties",
+    "signature": "target Object, id String, keys Array of Strings, optional enumerable Boolean default true",
+    "assertions": "At least3args; Object target, String id, Array keys; if argument count differs from3 then argument3 Boolean; every key String. Preserve assertion order and real key-get exceptions.",
+    "registration": "Register real native lazy data properties without loading the module. Return actual undefined, propagate actual definition/key-get failures.",
+    "getter": "Native callback has no JavaScript Function representation. Resolve the actual holder creation context and its Node Realm; call that realm builtin_module_require with null receiver and id; get named property from real module exports; propagate exceptions.",
+    "dataPropertySemantics": "Actual lazy data property rather than an observable JavaScript accessor function; descriptors materialize the value, writes can replace without loading, delete and freeze can proceed without loading. Preserve attributes and engine cache/reentrancy semantics.",
+    "invalidInvocation": "Original ERR_INVALID_INVOCATION for non-object holder or missing creation context; non-Node creation realms need explicit native ownership review, not invented Environment state."
+  },
+  "consumers": {
+    "indexedCallSites": 12,
+    "literalSites": 11,
+    "genericForwarders": 1,
+    "sites": [
+      {
+        "id": "lib/buffer.js:46466:defineLazyProperties",
+        "path": "lib/buffer.js",
+        "line": 1572,
+        "target": "internal/blob",
+        "lazyKeys": [
+          "Blob",
+          "resolveObjectURL"
+        ]
+      },
+      {
+        "id": "lib/buffer.js:46560:defineLazyProperties",
+        "path": "lib/buffer.js",
+        "line": 1577,
+        "target": "internal/file",
+        "lazyKeys": [
+          "File"
+        ]
+      },
+      {
+        "id": "lib/fs.js:109547:defineLazyProperties",
+        "path": "lib/fs.js",
+        "line": 4099,
+        "target": "internal/fs/dir",
+        "lazyKeys": [
+          "Dir",
+          "opendir",
+          "opendirSync"
+        ]
+      },
+      {
+        "id": "lib/internal/bootstrap/web/exposed-window-or-worker.js:1212:defineLazyProperties",
+        "path": "lib/internal/bootstrap/web/exposed-window-or-worker.js",
+        "line": 42,
+        "target": "internal/worker/js_transferable",
+        "lazyKeys": [
+          "structuredClone"
+        ]
+      },
+      {
+        "id": "lib/internal/bootstrap/web/exposed-window-or-worker.js:1311:defineLazyProperties",
+        "path": "lib/internal/bootstrap/web/exposed-window-or-worker.js",
+        "line": 47,
+        "target": "buffer",
+        "lazyKeys": [
+          "atob",
+          "btoa"
+        ]
+      },
+      {
+        "id": "lib/internal/util.js:18897:defineLazyProperties",
+        "path": "lib/internal/util.js",
+        "line": 675,
+        "target": null,
+        "lazyKeys": null
+      },
+      {
+        "id": "lib/util.js:20236:defineLazyProperties",
+        "path": "lib/util.js",
+        "line": 654,
+        "target": "internal/util/parse_args/parse_args",
+        "lazyKeys": [
+          "parseArgs"
+        ]
+      },
+      {
+        "id": "lib/util.js:20338:defineLazyProperties",
+        "path": "lib/util.js",
+        "line": 660,
+        "target": "internal/encoding",
+        "lazyKeys": [
+          "TextDecoder",
+          "TextEncoder"
+        ]
+      },
+      {
+        "id": "lib/util.js:20439:defineLazyProperties",
+        "path": "lib/util.js",
+        "line": 666,
+        "target": "internal/mime",
+        "lazyKeys": [
+          "MIMEType",
+          "MIMEParams"
+        ]
+      },
+      {
+        "id": "lib/util.js:20532:defineLazyProperties",
+        "path": "lib/util.js",
+        "line": 672,
+        "target": "internal/util/diff",
+        "lazyKeys": [
+          "diff"
+        ]
+      },
+      {
+        "id": "lib/util.js:20944:defineLazyProperties",
+        "path": "lib/util.js",
+        "line": 693,
+        "target": "internal/util/trace_sigint",
+        "lazyKeys": [
+          "setTraceSigInt"
+        ]
+      },
+      {
+        "id": "lib/worker_threads.js:1084:defineLazyProperties",
+        "path": "lib/worker_threads.js",
+        "line": 59,
+        "target": "internal/locks",
+        "lazyKeys": [
+          "locks"
+        ]
+      }
+    ],
+    "coverage": "Direct callee-name syntax in dependency-graph.json; aliases and generic forwarder domains remain open."
+  },
+  "currentFailure": {
+    "name": "TypeError",
+    "message": "defineLazyProperties is not a function",
+    "location": "node:buffer:1572",
+    "evidence": "mksnapshot-engine-check.json",
+    "startupAccepted": false
+  },
+  "owningLayers": {
+    "engine": "Native lazy data-property identity/materialization, descriptor, attributes, assignment/deletion/freeze, GC and exception/reentrancy state",
+    "embedding": "Actual holder creation Realm and protected builtin require closure; no second loader/cache",
+    "upstreamJavaScript": "Actual module resolution, caching, queues, public objects and algorithms stay original",
+    "hostKernelLibc": "No concrete boundary found for this getter; do not classify missing engine/embedding support as platform exclusion"
+  },
+  "prerequisites": [
+    "review actual SpiderMonkey native property support and extend the owning engine layer where required",
+    "preserve Node native binding interface using actual holder creation context",
+    "reuse real protected BuiltinRequire closure and original loader cache",
+    "root module ID/target/values across GC, errors, reentrancy and teardown"
+  ],
+  "nativeReference": {
+    "report": "util-lazy-properties-native-reference.json",
+    "fixture": "util-lazy-properties-native-controls.cjs",
+    "controls": 7,
+    "scope": "Authenticated native Node only; does not implement or prove a Kandelo getter"
+  },
+  "validationRemaining": [
+    "four-host registration without module evaluation",
+    "descriptor materialization and actual data descriptors without exposed getter Functions",
+    "write/delete/freeze without eager require and correct attributes",
+    "real holder-creation context across prototypes, child/vm contexts and receivers",
+    "cache behavior, repeated errors, retries, loader cycles, reentrant redefine/delete and exceptions",
+    "GC, cancellation/retirement, invalid holder/context and independently owned runtime isolation",
+    "full util exports/classes/signatures/errors and graph reconciliation"
+  ],
+  "implemented": false,
+  "fullContractCatalogComplete": false
+}

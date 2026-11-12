@@ -49,7 +49,7 @@ namespace {
 
 enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
 enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3, NodeComplete = 4 };
-enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Continuation, Timers, TaskQueue, AsyncWrap, Symbols, Buffer, BufferPrototype, InternalLoader,
+enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Continuation, Timers, TaskQueue, AsyncWrap, Symbols, Buffer, BufferPrototype, Snapshot, SerializeCallback, DeserializeCallback, DeserializeMain, InternalLoader,
             BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, Slots };
 const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
 const JSClass kProcess = {"process", 0};
@@ -276,6 +276,11 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
     JS::Value cached=JS::GetReservedSlot(state,Buffer);
     if(cached.isObject())binding=&cached.toObject();
     else {binding=CreateBufferBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,Buffer,JS::ObjectValue(*binding));}
+  }
+  else if (name == "mksnapshot") {
+    JS::Value cached=JS::GetReservedSlot(state,Snapshot);
+    if(cached.isObject())binding=&cached.toObject();
+    else {binding=CreateSnapshotBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,Snapshot,JS::ObjectValue(*binding));}
   }
   else if (name == "string_decoder") {
     JS::Value cached = JS::GetReservedSlot(state, StringDecoder);
@@ -552,6 +557,36 @@ JSObject* RealmLibrarySnapshot(JSContext* cx, JS::HandleObject state, bool inspe
 }  // namespace kandelo::node
 
 namespace kandelo::node {
+unsigned SnapshotCallbackSlot(SnapshotCallback kind) {
+  switch(kind){case SnapshotCallback::Serialize:return SerializeCallback;case SnapshotCallback::Deserialize:return DeserializeCallback;case SnapshotCallback::Main:return DeserializeMain;}
+  MOZ_CRASH("Invalid snapshot callback kind");
+}
+bool GetSnapshotCallback(JSContext* cx,JS::HandleObject runtime,SnapshotCallback kind,JS::MutableHandleValue result) {
+  JS::RootedObject owner(cx,GetRuntimePrincipalRealm(cx,runtime));if(!owner)return false;
+  owner=js::CheckedUnwrapDynamic(owner,cx,false);if(!owner)return false;
+  MOZ_RELEASE_ASSERT(JS::GetClass(owner)==&kRealm);
+  result.set(JS::GetReservedSlot(owner,SnapshotCallbackSlot(kind)));return JS_WrapValue(cx,result);
+}
+bool SetSnapshotCallback(JSContext* cx,JS::HandleObject runtime,SnapshotCallback kind,JS::HandleValue input) {
+  JS::RootedObject owner(cx,GetRuntimePrincipalRealm(cx,runtime));if(!owner)return false;
+  owner=js::CheckedUnwrapDynamic(owner,cx,false);if(!owner)return false;
+  MOZ_RELEASE_ASSERT(JS::GetClass(owner)==&kRealm);
+  // Upstream's principal setter admits empty handles for native clearing and
+  // asserts the principal context only for nonempty assignment.
+  MOZ_ASSERT(input.isUndefined()||JS::GetObjectRealmOrNull(owner)==JS::GetCurrentRealmOrNull(cx));
+  JSAutoRealm home(cx,owner);JS::RootedValue value(cx,input);if(!JS_WrapValue(cx,&value))return false;
+  JS::SetReservedSlot(owner,SnapshotCallbackSlot(kind),value);return true;
+}
+bool ClearSnapshotCallbacks(JSContext* cx,JS::HandleObject runtime) {
+  JS::RootedObject owner(cx,GetRuntimePrincipalRealm(cx,runtime,false));
+  // Initialization can fail before a principal realm is registered. No
+  // callback slot exists in that case; preserve actual lookup failures.
+  if(!owner)return !JS_IsExceptionPending(cx);
+  owner=js::CheckedUnwrapDynamic(owner,cx,false);if(!owner)return false;
+  JSAutoRealm home(cx,owner);
+  for(auto kind:{SnapshotCallback::Serialize,SnapshotCallback::Deserialize,SnapshotCallback::Main})JS::SetReservedSlot(owner,SnapshotCallbackSlot(kind),JS::UndefinedValue());
+  return true;
+}
 bool SetRealmBufferPrototype(JSContext* cx,JS::HandleObject realm,JS::HandleObject prototype) {
   JS::RootedObject owner(cx,js::CheckedUnwrapDynamic(realm,cx,false));if(!owner)return false;
   JSAutoRealm home(cx,owner);JS::RootedObject wrapped(cx,prototype);if(!JS_WrapObject(cx,&wrapped))return false;

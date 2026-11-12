@@ -422,16 +422,16 @@ bool RegisterRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime,
   JS::SetReservedSlot(runtime, PrincipalProcess, JS::ObjectValue(*wrappedProcess));
   return true;
 }
-JSObject* RuntimePrincipalObject(JSContext* cx, JS::HandleObject runtime, unsigned slot) {
+JSObject* RuntimePrincipalObject(JSContext* cx, JS::HandleObject runtime, unsigned slot, bool required = true) {
   if (!RuntimeReady(cx, runtime)) return nullptr;
   JS::Value value = JS::GetReservedSlot(runtime, slot);
-  if (!value.isObject()) { Report(cx, "Node environment has no principal realm"); return nullptr; }
+  if (!value.isObject()) { if(required)Report(cx, "Node environment has no principal realm"); return nullptr; }
   JS::RootedObject object(cx, &value.toObject());
   if (!JS_WrapObject(cx, &object)) return nullptr;
   return object;
 }
-JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime) {
-  return RuntimePrincipalObject(cx, runtime, PrincipalRealm);
+JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime, bool required) {
+  return RuntimePrincipalObject(cx, runtime, PrincipalRealm, required);
 }
 JSObject* GetRuntimePrincipalProcess(JSContext* cx, JS::HandleObject runtime) {
   return RuntimePrincipalObject(cx, runtime, PrincipalProcess);

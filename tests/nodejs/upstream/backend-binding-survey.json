@@ -18,8 +18,8 @@
     },
     {
       "path": "tests/nodejs/upstream/backend-binding-reviews.json",
-      "bytes": 15881,
-      "sha256": "982d08dec4dd0d27ca3d66922339dfed81e8f404f17a49d8b4e5544b42b12cf2"
+      "bytes": 15995,
+      "sha256": "3d92287ab583a900d625c409f7522252614b45561144b10de3fb5a726a35096d"
     },
     {
       "path": "tests/nodejs/upstream/dependency-dynamic-reviews.json",
@@ -45,8 +45,8 @@
     "literalBindingNames": 72,
     "sourceRegistrationNames": 77,
     "literalBindingsWithInitializerSyntax": 72,
-    "literalBindingsWithKandeloRoute": 17,
-    "literalBindingsWithoutKandeloRoute": 55,
+    "literalBindingsWithKandeloRoute": 18,
+    "literalBindingsWithoutKandeloRoute": 54,
     "sourceOnlyInitializerNames": [
       "debug"
     ],
@@ -61,7 +61,7 @@
   },
   "dispatcher": {
     "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
-    "sha256": "35d69de09ea191c667e3224859feed657c803881ba12b39b26a87858b58d3af1",
+    "sha256": "98084fd639bc0dd66b7edb777b6710772f8b460b2cfa1ab1fdfba89b17c98e55",
     "functionStart": "bool InternalBinding(",
     "functionEnd": "bool LinkedBinding(",
     "reviewedRouteNames": [
@@ -73,6 +73,7 @@
       "constants",
       "errors",
       "icu",
+      "mksnapshot",
       "module_wrap",
       "options",
       "string_decoder",
@@ -85,7 +86,12 @@
     ],
     "routePresenceIsCompleteBindingSupport": false,
     "unmatchedBehavior": "ERR_KANDELO_NOT_IMPLEMENTED; actual Native Node binding missing error",
-    "matchesPriorTestedArtifactInput": true,
+    "matchesPriorTestedArtifactInput": false,
+    "priorDispatcherInput": {
+      "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
+      "bytes": 29279,
+      "sha256": "35d69de09ea191c667e3224859feed657c803881ba12b39b26a87858b58d3af1"
+    },
     "priorRuntimeReceipt": "aliased-engine-check.json",
     "artifact": {
       "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev42-wasm32-abi56-00be21bb50a5d42177935176b7b2fc2bca08a8e2fd90ad9c32d9fcc69c6faa32/js.wasm",
@@ -2497,8 +2503,8 @@
         76
       ],
       "registrationBuildSelectionEvaluated": false,
-      "kandeloSourceRoute": false,
-      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
       "reviewRoutingFamily": "engine",
       "boundedContractInventory": "mksnapshot-contracts.json",
       "apiContractComplete": false,
@@ -4544,7 +4550,7 @@
       "kandeloSourceRoute": true,
       "implementationSurveyState": "route-present-contract-incomplete",
       "reviewRoutingFamily": "values",
-      "boundedContractInventory": null,
+      "boundedContractInventory": "util-lazy-properties-contracts.json",
       "apiContractComplete": false,
       "fourHostConformance": "not established by this source survey"
     },
@@ -5496,7 +5502,7 @@
   "esmStartupAccepted": false,
   "broaderRoadmapExecutionAuthorized": false,
   "next": [
-    "Resolve pending mksnapshot native-source architecture choice, preserving original JavaScript and no-excerpt/no-rewritten-algorithm constraint",
+    "Validate the user-selected direct SpiderMonkey/Kandelo mksnapshot interface, preserving original JavaScript and no-excerpt/no-rewritten-algorithm constraint",
     "Continue genuine startup and keep CJS/ESM identified-artifact evidence separate",
     "Audit exports/classes/methods/signatures/errors/ownership/lifecycle across all 77 source registration roles, including four external-reference-only owners",
     "Reconcile symbolic loader/transfer domains, native/generated registration mechanisms, alias flows and build selection",

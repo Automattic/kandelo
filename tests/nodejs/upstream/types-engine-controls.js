@@ -39,7 +39,7 @@ check('native-predicate-inspection-ignores-poisoned-public-constructor-propertie
 });
 check('whole-original-bootstrap-passes-types-and-invalidates-failed-realm-functions',()=>{
   const target=newGlobal({newCompartment:true});api.initializeContext(target);const other=api.initializeRealm(target),b=other.internalBinding('types'),predicate=b.isMap;
-  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'Error');assertEq(error.code,'ERR_KANDELO_NOT_IMPLEMENTED');assertEq(error.message,"Native Node binding 'mksnapshot' is not implemented");
+  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'TypeError');assertEq(error.code,undefined);assertEq(error.message,"defineLazyProperties is not a function");
   bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
   assertEq(thrown(()=>predicate(new Map())).message.includes('Previous Node realm initialization failed'),true);assertEq(thrown(()=>predicate()).message.includes('Previous Node realm initialization failed'),true);assertEq(types.isMap(new Map()),true);
 });

@@ -99,7 +99,7 @@ paths = [
     *[str(root/name) for name in ['binding-index.json', 'backend-binding-reviews.json',
        'dependency-dynamic-reviews.json', 'dependency-graph.json', 'native-registration-index.json',
        'backend-binding-survey.json', 'backend-graph.md', 'implementation-ledger.json',
-       'aliased-engine-check.json']],
+       'aliased-engine-check.json', 'mksnapshot-contracts.json']],
 ]
 record = {
     'schema': 1, 'verifiedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -126,7 +126,7 @@ record = {
     ],
     'runtimeCodeChanged': False, 'runtimeEvidenceAdded': False, 'startupAccepted': False,
     'completeNativeContractCatalog': False, 'broaderRoadmapExecutionAuthorized': False,
-    'pendingArchitectureChoice': 'mksnapshot full native unit combines live APIs and V8 serialization; preserve pending user choice and original-source constraint',
+    'nativeInterfaceDirection': json.loads((root/'mksnapshot-contracts.json').read_bytes())['architectureDecision']['status'],
     'remaining': ['genuine startup, empty/simple output/errors/jobs/exit and separate CJS/ESM on four hosts',
                   'full native export/class/member/signature/error/scheduling/ownership/lifecycle/owning-layer catalog',
                   'symbolic/alias/generated/build/native-transfer domains and per-host validation obligations',

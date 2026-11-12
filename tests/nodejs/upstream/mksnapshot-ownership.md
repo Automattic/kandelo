@@ -1,10 +1,12 @@
 # Snapshot callback ownership review
 
-This is a source contract review against the authenticated Node 26.13.0
-archive, not a runtime implementation or startup result. Source identities and
-review locations are recorded in `mksnapshot-contracts.json`; the audit receipt
-is `mksnapshot-ownership-check.json`. The native snapshot-source architecture
-choice remains pending.
+This source contract review uses the authenticated Node 26.13.0 archive.
+Source identities and review locations are recorded in
+`mksnapshot-contracts.json`. `mksnapshot-ownership-check.json` retains the
+historical input snapshot from the source-review phase; it does not audit later
+implementation changes. The user subsequently selected a direct native
+implementation of this interface against SpiderMonkey/Kandelo. No V8 bindings,
+heap serialization format or upstream C++ function excerpts are generated.
 
 The previous inventory called these three strong Environment slots shared
 across realms. That description omitted the actual owner and context rule.
@@ -50,15 +52,17 @@ state; `Environment::Drain` and `Shutdown` already enter the registered principa
 realm. These are reuse candidates, not a reason to allocate a second principal
 owner or one Environment per snapshot binding.
 
-The native codec adapter's current `Environment::context()` returns the
-isolate's active context. Its Context value carries the isolate pointer, and
-`Frame` determines the current engine realm. It does not yet implement the
-principal-versus-active context distinction needed here. Strong/weak Globals
-and foreground shutdown exist, but the three callback roots and their native
-accessors do not. No callback storage or context change was implemented during
-this review.
+The native adapter now represents Contexts with rooted actual global identities
+and enters them with a scoped engine realm guard. `Environment::context()`
+selects the existing principal owner; `Isolate::GetCurrentContext()` selects the
+active engine global. Selected conversion/property APIs honor their supplied
+context and wrap values across compartments. The three callback roots use
+traced reserved slots on the principal realm, with empty native clearing and
+foreground shutdown retirement. The live interface and these context primitives
+are under focused validation. Full Context/ObjectTemplate/FunctionTemplate APIs,
+automatic Node loop/entrypath callback invocation and snapshots remain incomplete.
 
-After resolving the source architecture choice, the startup dependency order
+Following the selected native interface route, the startup dependency order
 is: establish native principal-context identity and accessors using the existing
 owner; integrate the original live binding and its actual state view/compiler;
 preserve callback registration assertions and native clearing; then wire any
@@ -80,7 +84,7 @@ if that invariant is claimed tested; a release build cannot prove it.
 
 The existing eight native reference controls prove selected fresh live behavior
 and callback retention. They do not prove these cross-realm, teardown, loop or
-snapshot-restoration obligations. No new runtime test, build, four-host result
-or startup acceptance is claimed by this source review. Earlier runtime receipts
+snapshot-restoration obligations. This source review itself is not a runtime
+test, build, four-host result or startup acceptance. Earlier runtime receipts
 retain their original input identities; they are not rewritten to include this
 later catalog correction.

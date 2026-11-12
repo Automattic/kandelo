@@ -54,6 +54,7 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/continuation-upstream.cpp" \
     "$node_consumer/continuation-codecs-inl.h" \
     "$node_consumer/environment-codecs-inl.h" \
+    "$node_consumer/snapshot-codecs-inl.h" \
     "$node_consumer/codec-agent-includes.h" \
     "$node_consumer/codec-buffer-types.h" \
     "$node_consumer/decoder-upstream.cpp" \

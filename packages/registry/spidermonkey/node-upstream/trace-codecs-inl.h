@@ -11,14 +11,14 @@ Local<Value> Factory::undefined_value() { auto& f=Current(isolate);JS::RootedVal
 Local<Object> Receiver(Isolate* isolate) { auto& f=Current(isolate);CHECK(f.receiver.isObject());return f.Own<Object>(f.receiver); }
 void ReturnRaw(Isolate* isolate,const JS::Value& value) { auto& f=Current(isolate);if(!JS_IsExceptionPending(f.cx))f.arguments->rval().set(value); }
 MaybeLocal<Value> Object::Get(Local<Context> context,Local<Value> property) {
-  auto& f=Current(context->isolate);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedId key(f.cx);JS::RootedValue name(f.cx,Input(property)),result(f.cx);
-  if(!JS_ValueToId(f.cx,name,&key)||!JS_GetPropertyById(f.cx,object,key,&result))return {};
+  auto& f=Current(context->isolate);Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedId key(f.cx);JS::RootedValue name(f.cx,Input(property)),result(f.cx);
+  if(!JS_WrapObject(f.cx,&object)||!JS_WrapValue(f.cx,&name)||!JS_ValueToId(f.cx,name,&key)||!JS_GetPropertyById(f.cx,object,key,&result))return {};
   return f.OwnValue(result);
 }
 uint32_t Array::Length() const { auto& f=*Frame::current;JS::RootedObject object(f.cx,&cell().value.toObject());uint32_t length;CHECK(JS::GetArrayLength(f.cx,object,&length));return length; }
 MaybeLocal<Value> Array::Get(Local<Context> context,uint32_t index) {
-  auto& f=Current(context->isolate);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedValue value(f.cx);
-  if(!JS_GetElement(f.cx,object,index,&value))return {};return f.OwnValue(value);
+  auto& f=Current(context->isolate);Context::Scope home(context);JS::RootedObject object(f.cx,&cell().value.toObject());JS::RootedValue value(f.cx);
+  if(!JS_WrapObject(f.cx,&object)||!JS_GetElement(f.cx,object,index,&value))return {};return f.OwnValue(value);
 }
 size_t String::Utf8Length(Isolate* isolate,Local<String> input) {
   auto& f=Current(isolate);JS::RootedString string(f.cx,input->cell().value.toString());std::vector<char> encoded;
@@ -73,6 +73,7 @@ void SetTraceFieldCount(JSObject* object,int count) {
   auto value=js::GetFunctionNativeReserved(object,1);auto* callback=static_cast<CallbackOwner*>(JS::GetReservedSlot(&value.toObject(),0).toPrivate());callback->fieldCount=count;
 }
 Local<Object> Context::GetExtrasBindingObject() {
+  CHECK(Local<Context>(this)==isolate->GetCurrentContext());
   auto& f=Current(isolate);CHECK((f.domain==Domain::Trace&&JS::GetClass(f.binding)==&traceBindingClass)||(f.domain==Domain::Continuation&&JS::GetClass(f.binding)==&continuationBindingClass));
   auto cached=JS::GetReservedSlot(f.binding,0);
   if(cached.isObject()){JS::RootedValue value(f.cx,cached);return f.Own<Object>(value);}
@@ -102,11 +103,12 @@ void SetProtoMethod(Isolate* isolate,Local<FunctionTemplate> constructor,const c
   JS::RootedObject function(f.cx,JS_GetFunctionObject(fn));CHECK(JS_DefineProperty(f.cx,object,name,function,JSPROP_ENUMERATE));
 }
 void SetConstructorFunction(Local<Context> context,Local<Object> target,const char* name,Local<FunctionTemplate> constructor) {
+  CHECK(context==context->isolate->GetCurrentContext());
   auto& f=api::Current(context->isolate);auto string=OneByteString(context->isolate,name);constructor->SetClassName(string);
   JS::RootedObject object(f.cx,&target->cell().value.toObject());JS::RootedValue value(f.cx,api::Input(constructor));CHECK(JS_SetProperty(f.cx,object,name,value));
   JS::SetReservedSlot(f.binding,2,value);
 }
-MaybeLocal<Value> ToV8Value(Local<Context> context,const std::string& text,Isolate* isolate) { return String::NewFromUtf8(isolate,text.data(),NewStringType::kNormal,int(text.size())); }
+MaybeLocal<Value> ToV8Value(Local<Context> context,const std::string& text,Isolate* isolate) { CHECK(context->isolate==isolate);Context::Scope home(context);return String::NewFromUtf8(isolate,text.data(),NewStringType::kNormal,int(text.size())); }
 namespace {
 struct TraceObserver final : public v8::TracingController::TraceStateObserver {
   bool armed=false;

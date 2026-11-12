@@ -47,15 +47,17 @@
     "lazyRegistrationsIndexed": 37,
     "transferMetadataSitesIndexed": 18,
     "nativeSourceRegistrationNames": 77,
-    "literalBindingsWithDispatcherRoute": 17,
-    "literalBindingsWithoutDispatcherRoute": 55,
+    "literalBindingsWithDispatcherRoute": 18,
+    "literalBindingsWithoutDispatcherRoute": 54,
     "historicalFamilyReviewsLinked": 19,
     "historicalPRReuseRecordsLinked": 33,
     "commonJsLoaderSourceIndexed": true,
     "esmLoaderSourceIndexed": true,
     "functionCompilerPartialCatalog": "function-compiler-contracts.json",
     "functionCompilerEngineEvidence": "function-compiler-engine-check.json",
-    "mksnapshotOwnershipReview": "mksnapshot-ownership.md"
+    "mksnapshotOwnershipReview": "mksnapshot-ownership.md",
+    "mksnapshotEngineEvidence": "mksnapshot-engine-check.json",
+    "utilLazyPropertiesPartialCatalog": "util-lazy-properties-contracts.json"
   },
   "implementation": [
     {
@@ -251,40 +253,50 @@
       "sourceStatus": "actual UTF16 source/current-global compilation, context/source roots and parser errors implemented; existing builtin path shares helper;25controls+3drivers pass perhost",
       "evidence": "function-compiler-engine-check.json",
       "remaining": "mksnapshot source architecture choice/binding; full ScriptOrigin/parameter/context-extension/cache and wider contextify/VM/deadline/security/module callback interfaces unimplemented; complete startup and catalog unfinished"
+    },
+    {
+      "area": "native principal/current Context identities and live mksnapshot interface",
+      "sourceStatus": "Direct SpiderMonkey/Kandelo native interface; principal traced callback slots, actual original AliasedUint8Array and actual compiler; unchanged JS queues",
+      "evidence": "mksnapshot-engine-check.json",
+      "remaining": "util.defineLazyProperties/genuine startup; complete snapshot callback loop/entrypath lifecycle, origin/Context interfaces, snapshots and full backend catalog/roadmap"
     }
   ],
   "runtimeConformance": {
     "Node": {
-      "upstreamStartup": "principal body attempted; passes native buffer lookup and fails at mksnapshot; startup not achieved",
+      "upstreamStartup": "Original principal body passes live mksnapshot and fails at util.defineLazyProperties in node:buffer:1572; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
       "esmEntry": "not run",
-      "completeCoreCompatibility": "not established"
+      "completeCoreCompatibility": "not established",
+      "latestArtifactEvidence": "mksnapshot-engine-check.json"
     },
     "Chromium": {
-      "upstreamStartup": "principal body attempted; passes native buffer lookup and fails at mksnapshot; startup not achieved",
+      "upstreamStartup": "Original principal body passes live mksnapshot and fails at util.defineLazyProperties in node:buffer:1572; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
       "esmEntry": "not run",
-      "completeCoreCompatibility": "not established"
+      "completeCoreCompatibility": "not established",
+      "latestArtifactEvidence": "mksnapshot-engine-check.json"
     },
     "Firefox": {
-      "upstreamStartup": "principal body attempted; passes native buffer lookup and fails at mksnapshot; startup not achieved",
+      "upstreamStartup": "Original principal body passes live mksnapshot and fails at util.defineLazyProperties in node:buffer:1572; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
       "esmEntry": "not run",
-      "completeCoreCompatibility": "not established"
+      "completeCoreCompatibility": "not established",
+      "latestArtifactEvidence": "mksnapshot-engine-check.json"
     },
     "WebKit": {
-      "upstreamStartup": "principal body attempted; passes native buffer lookup and fails at mksnapshot; startup not achieved",
+      "upstreamStartup": "Original principal body passes live mksnapshot and fails at util.defineLazyProperties in node:buffer:1572; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
       "esmEntry": "not run",
-      "completeCoreCompatibility": "not established"
+      "completeCoreCompatibility": "not established",
+      "latestArtifactEvidence": "mksnapshot-engine-check.json"
     },
     "libuvStandaloneLoop": {
       "hosts": [
@@ -382,6 +394,22 @@
       "nativeDifferential": false,
       "evidence": "aliased-engine-check.json",
       "scope": "Original complete headers over real typed/weak engine ownership; not native mksnapshot, startup or full compatibility"
+    },
+    "mksnapshot": {
+      "evidence": "mksnapshot-engine-check.json",
+      "controlsPerHost": 25,
+      "driversPerHost": 13,
+      "exactNativeGroups": 8,
+      "hosts": [
+        "Node",
+        "Chromium",
+        "Firefox",
+        "WebKit"
+      ],
+      "automaticSnapshotCallbackLifecycleComplete": false,
+      "snapshotSerializationSupported": false,
+      "fullNativeInterfaceConformanceEstablished": false,
+      "upstreamStartup": false
     }
   },
   "validationLimits": {
@@ -407,13 +435,13 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 43,
+    "packageRevision": 44,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "function-compiler-engine-check.json",
+    "evidence": "mksnapshot-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
@@ -851,20 +879,24 @@
     },
     "mksnapshot": {
       "inventory": "mksnapshot-contracts.json",
-      "bindingImplemented": false,
+      "bindingImplemented": true,
       "completeOriginalNativeUnitImported": false,
       "cppFeatureGuardPatchApplied": false,
       "nativeBodiesExtractedOrRewritten": false,
       "nativeReference": "mksnapshot-live-native-reference.json",
       "nativeReferenceControls": 8,
       "nativeReferenceFreshMode": "--no-node-snapshot",
-      "architectureDecision": "Pending user reply: reviewed C++ feature guards preserving original bodies, complete native snapshot unit port first, or explicit authorization for direct Kandelo native contracts",
+      "architectureDecision": "User clarified: implement the same native interface directly against SpiderMonkey/Kandelo; no V8-based binding generation or V8 heap serialization port",
       "upstreamStartup": false,
       "ownershipReview": "mksnapshot-ownership.md",
-      "ownershipSourceAudit": "mksnapshot-ownership-check.json",
-      "callbackOwner": "principal Realm strong Globals; Environment forwards, nonempty assignment requires principal current context under original DCHECK",
-      "nativeCallbackStorageImplemented": false,
-      "nativePrincipalContextContractImplemented": false
+      "ownershipSourceAudit": "mksnapshot-ownership-check.json (historical source-review phase)",
+      "callbackOwner": "Actual traced slots on principal Realm; native empty clearing and foreground shutdown retirement",
+      "nativeCallbackStorageImplemented": true,
+      "nativePrincipalContextContractImplemented": "Selected real identity/scope/principal accessor and context-taking operations; full Context API incomplete",
+      "validationStatus": "25controls/13drivers perhost pass on identified revision44 artifact; selected prior regressions pass after correcting stale failure expectations",
+      "automaticSnapshotCallbackLifecycleComplete": false,
+      "fullNativeInterfaceConformanceEstablished": false,
+      "engineEvidence": "mksnapshot-engine-check.json"
     },
     "nativeFunctionCompiler": {
       "inventory": "function-compiler-contracts.json",
@@ -877,7 +909,7 @@
       "controlsPerHost": 25,
       "otherDriversPerHost": 3,
       "exactNativeGroups": 21,
-      "mksnapshotBindingImplemented": false,
+      "mksnapshotBindingImplemented": true,
       "fullV8ScriptCompilerInterfaceImplemented": false,
       "publicContextifyVmCompatibilityEstablished": false,
       "upstreamStartup": false
@@ -1033,6 +1065,11 @@
       "additionalOptionAndFatalContextReferences": 2,
       "evidence": "continuation-native-reference.json",
       "limits": "four active JS consumer checks pass only in fully bootstrapped native reference; guest source guard remains intact"
+    },
+    "utilLazyProperties": {
+      "report": "util-lazy-properties-native-reference.json",
+      "controls": 7,
+      "guestImplementationAdded": false
     }
   },
   "focusedGuestEngineControls": {
@@ -1151,7 +1188,10 @@
       "continuationEvidence": "continuation-engine-check.json",
       "continuationEngineCases": 27,
       "continuationAdditionalDrivers": 7,
-      "activeOriginalContinuationConsumersDeferred": 4
+      "activeOriginalContinuationConsumersDeferred": 4,
+      "latestArtifactEvidence": "mksnapshot-engine-check.json",
+      "latestPackageRevision": 44,
+      "startupNextGap": "util.defineLazyProperties at node:buffer:1572"
     },
     "Chromium": {
       "evidence": "icu-engine-check.json",
@@ -1195,7 +1235,10 @@
       "continuationAdditionalDrivers": 7,
       "activeOriginalContinuationConsumersDeferred": 4,
       "currentArtifactEvidence": "aliased-engine-check.json",
-      "regressionScope": "revision42 selected prior regressions plus21AliasedBuffer controls and5drivers perhost; no startup acceptance"
+      "regressionScope": "revision42 selected prior regressions plus21AliasedBuffer controls and5drivers perhost; no startup acceptance",
+      "latestArtifactEvidence": "mksnapshot-engine-check.json",
+      "latestPackageRevision": 44,
+      "startupNextGap": "util.defineLazyProperties at node:buffer:1572"
     },
     "Firefox": {
       "evidence": "icu-engine-check.json",
@@ -1239,7 +1282,10 @@
       "continuationAdditionalDrivers": 7,
       "activeOriginalContinuationConsumersDeferred": 4,
       "currentArtifactEvidence": "aliased-engine-check.json",
-      "regressionScope": "revision42 selected prior regressions plus21AliasedBuffer controls and5drivers perhost; no startup acceptance"
+      "regressionScope": "revision42 selected prior regressions plus21AliasedBuffer controls and5drivers perhost; no startup acceptance",
+      "latestArtifactEvidence": "mksnapshot-engine-check.json",
+      "latestPackageRevision": 44,
+      "startupNextGap": "util.defineLazyProperties at node:buffer:1572"
     },
     "WebKit": {
       "evidence": "icu-engine-check.json",
@@ -1283,12 +1329,15 @@
       "continuationAdditionalDrivers": 7,
       "activeOriginalContinuationConsumersDeferred": 4,
       "currentArtifactEvidence": "aliased-engine-check.json",
-      "regressionScope": "revision42 selected prior regressions plus21AliasedBuffer controls and5drivers perhost; no startup acceptance"
+      "regressionScope": "revision42 selected prior regressions plus21AliasedBuffer controls and5drivers perhost; no startup acceptance",
+      "latestArtifactEvidence": "mksnapshot-engine-check.json",
+      "latestPackageRevision": 44,
+      "startupNextGap": "util.defineLazyProperties at node:buffer:1572"
     }
   },
   "nextWork": [
-    "Resolve the pending mksnapshot native-source architecture choice; preserve original JavaScript and original native algorithms without excerpts. Independent whole AliasedBuffer prerequisites are integrated.",
-    "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review while mksnapshot architecture choice is pending; no broader backend roadmap implementation before review gate",
+    "Implement genuine native util.defineLazyProperties and continue unchanged principal startup; keep CJS/ESM, empty/simple output/errors/jobs/exit and full catalog/roadmap acceptance separate.",
+    "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Implement real mksnapshot source-mode/callback ownership; preserve explicit V8 serialization boundary",
     "Continue startup-required original Buffer/process/native closure and callback/Promise lifecycle/frame contracts",

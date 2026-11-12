@@ -27,12 +27,16 @@
 #include "js/ErrorReport.h"
 #include "js/Exception.h"
 #include "js/experimental/TypedData.h"
+#include "js/friend/WindowProxy.h"
 #include "js/GCAPI.h"
+#include "js/GlobalObject.h"
 #include "js/JSON.h"
 #include "js/MemoryFunctions.h"
 #include "js/Object.h"
 #include "js/PropertyAndElement.h"
+#include "js/Realm.h"
 #include "js/SharedArrayBuffer.h"
+#include "js/StableStringChars.h"
 #include "js/Stack.h"
 #include "js/String.h"
 #include "js/Symbol.h"
@@ -40,6 +44,7 @@
 #include "js/Wrapper.h"
 #include "shell/jsshell.h"
 #include "shell/node-upstream/buffer-memory.h"
+#include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/codec-agent-includes.h"
 #include "shell/node-upstream/codec-native-api.h"
 #include "shell/node-upstream/codecs-upstream/errors.generated.h"
@@ -79,7 +84,7 @@ struct State {
   std::atomic<size_t> traceCreated{0},traceReleased{0};
   std::atomic<size_t> icuCreated{0},icuReleased{0};
 };
-enum class Domain { Decoder, Icu, Trace, Continuation, Environment, Buffer };
+enum class Domain { Decoder, Icu, Trace, Continuation, Environment, Buffer, Snapshot };
 const JSClass traceBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(3)};
 const JSClass continuationBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct Cell {
@@ -96,6 +101,7 @@ struct Frame {
   JS::CallArgs* arguments;
   Domain domain;
   std::vector<std::unique_ptr<Value>> roots;
+  std::vector<std::unique_ptr<Context>> contexts;
   std::vector<std::unique_ptr<native::SpanOwner>> spans;
   std::vector<std::shared_ptr<void>> storage;
   Frame* previous;
@@ -111,6 +117,12 @@ struct Frame {
     return Local<T>(pointer);
   }
   Local<Value> OwnValue(JS::HandleValue value);
+  Local<Context> OwnContext(JS::HandleObject global) {
+    MOZ_RELEASE_ASSERT(JS_IsGlobalObject(global));
+    JS::RootedValue value(cx,JS::ObjectValue(*global));
+    auto context=std::make_unique<Context>(&state->isolate,std::make_unique<Cell>(cx,value));
+    auto* pointer=context.get();contexts.push_back(std::move(context));return Local<Context>(pointer);
+  }
   native::SpanOwner& Borrow(Local<Value> value);
 };
 [[noreturn]] void Crash(const char* text) {
@@ -178,8 +190,9 @@ bool Value::IsUint32() const {
       n>=0 && n<=UINT32_MAX && std::trunc(n)==n;
 }
 Maybe<uint32_t> Value::Uint32Value(Local<Context> context) {
-  auto& f=Current(context->isolate);uint32_t value;
-  if (!JS::ToUint32(f.cx,cell().value,&value)) return {};return Just(value);
+  auto& f=Current(context->isolate);Context::Scope home(context);uint32_t value;
+  JS::RootedValue input(f.cx,cell().value);
+  if (!JS_WrapValue(f.cx,&input)||!JS::ToUint32(f.cx,input,&value)) return {};return Just(value);
 }
 Local<Value> Frame::OwnValue(JS::HandleValue value) {
   // Source Local::As must refer to the actual C++ wrapper type as well as the
@@ -212,7 +225,9 @@ Local<Value> Argument(Isolate* isolate, int index) {
 }
 void Return(Isolate* isolate, Local<Value> value) {
   auto& f = Current(isolate); MOZ_RELEASE_ASSERT(f.arguments);
-  if (!value.IsEmpty() && !JS_IsExceptionPending(f.cx)) f.arguments->rval().set(Input(value));
+  if (!value.IsEmpty() && !JS_IsExceptionPending(f.cx)) {
+    JS::RootedValue output(f.cx,Input(value));if(JS_WrapValue(f.cx,&output))f.arguments->rval().set(output);
+  }
 }
 void ReturnNumber(Isolate* isolate,double value) { auto& f=Current(isolate);if (!JS_IsExceptionPending(f.cx))f.arguments->rval().setNumber(value); }
 void ReturnBoolean(Isolate* isolate,bool value) { auto& f=Current(isolate);if (!JS_IsExceptionPending(f.cx))f.arguments->rval().setBoolean(value); }
@@ -224,13 +239,37 @@ struct CatchScope {
 };
 TryCatch::TryCatch(Isolate* isolate):scope_(std::make_unique<CatchScope>(Current(isolate).cx)) {}
 TryCatch::~TryCatch()=default;
-Local<Context> Isolate::GetCurrentContext() { Current(this); return Local<Context>(&context); }
+Context::Context(Isolate* input,std::unique_ptr<Cell> root):isolate(input),global(std::move(root)) {}
+Context::~Context()=default;
+bool SameLocal(Context* left,Context* right) {
+  if(!left||!right)return left==right;
+  CHECK(left->isolate==right->isolate);
+  return left->global->value.get()==right->global->value.get();
+}
+struct ContextScopeData {
+  JSAutoRealm realm;
+  ContextScopeData(JSContext* cx,JSObject* global):realm(cx,global) {}
+};
+Context::Scope::Scope(Local<Context> context) {
+  CHECK(!context.IsEmpty());auto& frame=Current(context->isolate);
+  JS::RootedObject global(frame.cx,&context->global->value.toObject());
+  CHECK(JS_IsGlobalObject(global));data_=std::make_unique<ContextScopeData>(frame.cx,global);
+}
+Context::Scope::~Scope()=default;
+Local<Object> Context::Global() {
+  auto& frame=Current(isolate);JS::RootedValue value(frame.cx,global->value);
+  if(!JS_WrapValue(frame.cx,&value))return {};return frame.Own<Object>(value);
+}
+Local<Context> Isolate::GetCurrentContext() {
+  auto& frame=Current(this);JS::RootedObject global(frame.cx,JS::CurrentGlobalOrNull(frame.cx));
+  CHECK(global);return frame.OwnContext(global);
+}
 void Isolate::ThrowException(Local<Value> value) {
   auto& f = Current(this);
   if (!value.IsEmpty() && !JS_IsExceptionPending(f.cx)) JS_SetPendingException(f.cx, Input(value));
 }
-HandleScope::HandleScope(Isolate* isolate) : frame_(&Current(isolate)), previous_(frame_->roots.size()) {}
-HandleScope::~HandleScope() { frame_->roots.resize(previous_); }
+HandleScope::HandleScope(Isolate* isolate) : frame_(&Current(isolate)), previous_(frame_->roots.size()), previousContexts_(frame_->contexts.size()) {}
+HandleScope::~HandleScope() { frame_->contexts.resize(previousContexts_);frame_->roots.resize(previous_); }
 static Local<Value> Error(Isolate* isolate, JSExnType type, const char* code, const char* text) {
   auto& f = Current(isolate); if (JS_IsExceptionPending(f.cx)) return {};
   JS::RootedObject stack(f.cx); if (!JS::CaptureCurrentStack(f.cx, &stack)) return {};
@@ -247,14 +286,18 @@ static Local<Value> Error(Isolate* isolate, JSExnType type, const char* code, co
 }
 MaybeLocal<String> Value::ToString(Local<Context> context) {
   auto& f = Current(context->isolate); if (JS_IsExceptionPending(f.cx)) return {};
-  JS::RootedString string(f.cx, JS::ToString(f.cx, cell().value)); if (!string) return {};
+  Context::Scope home(context);JS::RootedValue input(f.cx,cell().value);
+  if(!JS_WrapValue(f.cx,&input))return {};
+  JS::RootedString string(f.cx, JS::ToString(f.cx, input)); if (!string) return {};
   JS::RootedValue value(f.cx, JS::StringValue(string)); return f.Own<String>(value);
 }
 Maybe<bool> Object::Set(Local<Context> context, Local<Value> property, Local<Value> input) {
   auto& f = Current(context->isolate); if (JS_IsExceptionPending(f.cx)) return {};
+  Context::Scope home(context);
   JS::RootedObject object(f.cx, &cell().value.toObject()); JS::RootedId id(f.cx);
   JS::RootedValue name(f.cx, Input(property)), value(f.cx, Input(input));
-  if (!JS_ValueToId(f.cx, name, &id) || !JS_SetPropertyById(f.cx, object, id, value)) return {};
+  if (!JS_WrapObject(f.cx,&object)||!JS_WrapValue(f.cx,&name)||!JS_WrapValue(f.cx,&value)||
+      !JS_ValueToId(f.cx, name, &id) || !JS_SetPropertyById(f.cx, object, id, value)) return {};
   return Just(true);
 }
 Local<Array> Array::New(Isolate* isolate) {
@@ -262,9 +305,9 @@ Local<Array> Array::New(Isolate* isolate) {
   JS::RootedValue value(f.cx, JS::ObjectValue(*object)); return f.Own<Array>(value);
 }
 Maybe<bool> Array::Set(Local<Context> context, int32_t index, Local<Value> input) {
-  auto& f = Current(context->isolate); JS::RootedObject object(f.cx, &cell().value.toObject());
+  auto& f = Current(context->isolate);Context::Scope home(context);JS::RootedObject object(f.cx, &cell().value.toObject());
   JS::RootedValue value(f.cx, Input(input));
-  if (!JS_SetElement(f.cx, object, index, value)) return {}; return Just(true);
+  if (!JS_WrapObject(f.cx,&object)||!JS_WrapValue(f.cx,&value)||!JS_SetElement(f.cx, object, index, value)) return {}; return Just(true);
 }
 static int64_t IntegerNumber(double);
 Local<Integer> Integer::New(Isolate* isolate, int input) {
@@ -497,7 +540,6 @@ Utf8Value::Utf8Value(Isolate* isolate,Local<Value> input) {
 Environment* Environment::GetCurrent(Local<Context> context) { return &Current(context->isolate).state->environment; }
 Environment* Environment::GetCurrent(const FunctionCallbackInfo<Value>& args) { return GetCurrent(args.GetIsolate()->GetCurrentContext()); }
 Isolate* Environment::isolate() { return isolate_; }
-Local<Context> Environment::context() { return isolate()->GetCurrentContext(); }
 Isolate* IsolateData::isolate() { return &Frame::current->state->isolate; }
 void IsolateData::set_i18n_converter_template(Local<ObjectTemplate> value) {
   auto& f=*Frame::current;CHECK(f.binding && JS::GetClass(f.binding)==&api::icuBindingClass);
@@ -624,8 +666,10 @@ void ObjectTemplate::SetInternalFieldCount(int count) {
 }
 MaybeLocal<Object> ObjectTemplate::NewInstance(Local<Context> context) {
   auto& f=Current(context->isolate);if (JS_IsExceptionPending(f.cx)) return {};
+  Context::Scope home(context);
   JS::RootedObject constructor(f.cx,&cell().value.toObject());
   CHECK(js::GetFunctionNativeReserved(constructor,0).toInt32()==native::BaseObject::kInternalFieldCount);
+  if(!JS_WrapObject(f.cx,&constructor))return {};
   JS::RootedValue callable(f.cx,JS::ObjectValue(*constructor));JS::RootedObject object(f.cx);
   if (!JS::Construct(f.cx,callable,JS::HandleValueArray::empty(),&object)) return {};
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Object>(value);
@@ -705,6 +749,9 @@ Local<FunctionTemplate> NewFunctionTemplate(Isolate* isolate,std::nullptr_t empt
 }
 void SetMethod(Local<Context> context,Local<Object> target,const char* name,void(*callback)(const FunctionCallbackInfo<Value>&)) {
   auto& f=Current(context->isolate);
+  // Callback metadata is owned by the active binding realm. Cross-context
+  // template/function materialization is a separate, unsupported contract.
+  CHECK(context==context->isolate->GetCurrentContext());
   if (f.domain==Domain::Trace) {
     JS::RootedFunction function(f.cx,api::TraceFunction(f,"",callback,0,false,false));CHECK_NOT_NULL(function);
     JS::RootedObject targetObject(f.cx,&target->cell().value.toObject());
@@ -712,7 +759,7 @@ void SetMethod(Local<Context> context,Local<Object> target,const char* name,void
     CHECK(JS_SetProperty(f.cx,targetObject,name,value));
     JS::Rooted<JSAtom*> atom(f.cx,js::Atomize(f.cx,name,std::strlen(name)));CHECK(atom);function->setAtom(atom);return;
   }
-  bool ownProperties=f.domain==Domain::Icu || f.domain==Domain::Buffer;
+  bool ownProperties=f.domain==Domain::Icu || f.domain==Domain::Buffer || f.domain==Domain::Snapshot;
   JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,api::Invoke,0,0,ownProperties?name:"")); CHECK_NOT_NULL(function);
   JS::RootedObject object(f.cx,JS_GetFunctionObject(function)),binding(f.cx,&target->cell().value.toObject());
   // Each actual function owns its typed callback metadata. No process-global
@@ -786,4 +833,5 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 #include "shell/node-upstream/buffer-codecs-inl.h"
 #include "shell/node-upstream/continuation-codecs-inl.h"
 #include "shell/node-upstream/environment-codecs-inl.h"
+#include "shell/node-upstream/snapshot-codecs-inl.h"
 #include "shell/node-upstream/trace-codecs-inl.h"

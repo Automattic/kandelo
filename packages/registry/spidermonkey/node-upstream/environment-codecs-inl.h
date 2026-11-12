@@ -69,6 +69,7 @@ struct EnvironmentData {
   uv_thread_t foreground=uv_thread_self();
   JSContext* cx=nullptr;
   std::unique_ptr<JS::PersistentRootedObject> runtime;
+  Environment::EmbedderPreload embedderPreload=nullptr;
   void* wake=nullptr;
   mutable std::mutex mutex;
   std::deque<std::unique_ptr<NativeImmediate>> pending;
@@ -112,6 +113,17 @@ JSObject* Environment::memory_owner(JSContext* cx) {
   return js::CheckedUnwrapDynamic(object,cx,false);
 }
 bool Environment::IsClosed() const { std::lock_guard lock(data_->mutex);return data_->closed; }
+Environment::EmbedderPreload Environment::embedder_preload() { AssertForeground();return data_->embedderPreload; }
+void Environment::set_embedder_preload(EmbedderPreload hook) { AssertForeground();data_->embedderPreload=hook; }
+Local<Context> Environment::context() {
+  auto& frame=Current(isolate());AssertForeground();CHECK(data_->runtime&&data_->cx==frame.cx);
+  JS::RootedObject runtime(frame.cx,*data_->runtime);
+  JS::RootedObject principal(frame.cx,kandelo::node::GetRuntimePrincipalRealm(frame.cx,runtime));
+  if(!principal)return {};
+  principal=js::CheckedUnwrapDynamic(principal,frame.cx,false);if(!principal)return {};
+  JS::RootedObject global(frame.cx,JS::GetNonCCWObjectGlobal(principal));
+  return frame.OwnContext(global);
+}
 bool Environment::HasPending() const { std::lock_guard lock(data_->mutex);return !data_->pending.empty(); }
 bool Environment::Initialize(JSContext* cx,JS::HandleObject runtime) {
   AssertForeground();
@@ -172,6 +184,7 @@ void Environment::Shutdown(JSContext* cx) {
     std::lock_guard lock(data_->mutex);CHECK(data_->pending.empty());data_->closed=true;
   }
   kandelo::node::DetachRuntimeForeground(cx,runtime,this);data_->wake=nullptr;
+  CHECK(kandelo::node::ClearSnapshotCallbacks(cx,runtime));data_->embedderPreload=nullptr;
   state->aliasedControls.clear();
   if(data_->weakRegistered){JS_RemoveWeakPointerZonesCallback(cx,api::UpdateEnvironmentWeakEdges);data_->weakRegistered=false;}
   for(auto& root:state->weakGlobals){CHECK(!root->strong);root->weak=nullptr;}

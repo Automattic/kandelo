@@ -33,7 +33,7 @@ JSObject* GetRuntimeCodecState(JSContext* cx, JS::HandleObject runtime, bool cre
 JSObject* GetRuntimeOptionsState(JSContext* cx, JS::HandleObject runtime, bool create);
 bool RegisterRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime,
                                    JS::HandleObject realm, JS::HandleObject process);
-JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime);
+JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime, bool required = true);
 JSObject* GetRuntimePrincipalProcess(JSContext* cx, JS::HandleObject runtime);
 bool ConfigureCurrentOptions(JSContext* cx, JS::HandleObject runtime, JS::HandleObject arguments, JS::HandleString environment);
 JSObject* InspectCurrentOptions(JSContext* cx, JS::HandleObject runtime);

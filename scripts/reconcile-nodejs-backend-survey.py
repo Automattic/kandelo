@@ -58,7 +58,9 @@ def reconcile():
     assert "ERR_KANDELO_NOT_IMPLEMENTED" in body
     previous = read(ROOT/'aliased-engine-check.json')
     matched = next(r for r in previous['testedInputs'] if r['path'] == dispatch['path'])
-    assert matched == identity(dispatch['path'])
+    # Keep the older artifact as historical evidence. A newly reviewed source
+    # route must not claim to match an artifact built before that route existed.
+    matches_prior_artifact = matched == identity(dispatch['path'])
     native_rows = {r['name']: r for r in native['bindings']}
     consumers = {r['name']: r for r in graph['bindings']}
     review_rows = {r['name']: r for r in reviews['bindings']}
@@ -120,7 +122,8 @@ def reconcile():
                    'sourceOnlyInitializerNames': [n for n, r in native_rows.items() if n not in consumers and r['hasInitializerSyntax']],
                    'externalReferenceOnlyNames': [n for n, r in native_rows.items() if not r['hasInitializerSyntax']],
                    'historicalFamiliesLinked': len(families), 'historicalPRsLinked': len(prs)},
-        'dispatcher': {**dispatch, 'matchesPriorTestedArtifactInput': True,
+        'dispatcher': {**dispatch, 'matchesPriorTestedArtifactInput': matches_prior_artifact,
+                       'priorDispatcherInput': matched,
                        'priorRuntimeReceipt': 'aliased-engine-check.json',
                        'artifact': previous['program']},
         'bindings': bindings,
@@ -140,7 +143,7 @@ def reconcile():
         'runtimeEvidenceAdded': False, 'completeNativeContractCatalog': False,
         'startupAccepted': False, 'commonJsStartupAccepted': False, 'esmStartupAccepted': False,
         'broaderRoadmapExecutionAuthorized': False,
-        'next': ['Resolve pending mksnapshot native-source architecture choice, preserving original JavaScript and no-excerpt/no-rewritten-algorithm constraint',
+        'next': ['Validate the user-selected direct SpiderMonkey/Kandelo mksnapshot interface, preserving original JavaScript and no-excerpt/no-rewritten-algorithm constraint',
                  'Continue genuine startup and keep CJS/ESM identified-artifact evidence separate',
                  'Audit exports/classes/methods/signatures/errors/ownership/lifecycle across all 77 source registration roles, including four external-reference-only owners',
                  'Reconcile symbolic loader/transfer domains, native/generated registration mechanisms, alias flows and build selection',

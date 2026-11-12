@@ -20,9 +20,10 @@
 namespace kandelo::node { struct TraceProcess; }
 namespace kandelo_node_codec_api {
 class ArrayBuffer; class SharedArrayBuffer; class Value; class Object; class String; class Function; class Isolate; class ObjectTemplate; class FunctionTemplate;
-struct Cell; struct Frame; struct View; struct MemoryAccount; struct State;
+struct Cell; struct Frame; struct View; struct MemoryAccount; struct State; struct Context; struct ContextScopeData;
 [[noreturn]] void Crash(const char*);
 bool SameLocal(Value*,Value*);
+bool SameLocal(Context*,Context*);
 template<class T> class Local {
   T* pointer_ = nullptr;
  public:
@@ -69,7 +70,17 @@ template<class T> Maybe<T> Just(T value) { return Maybe<T>(value); }
 template<class T> Maybe<T> Nothing() { return {}; }
 inline Maybe<void> JustVoid() { return Maybe<void>(true); }
 struct Context {
-  Isolate* isolate;Local<Object> GetExtrasBindingObject();
+  Isolate* isolate;
+  std::unique_ptr<Cell> global;
+  Context(Isolate*,std::unique_ptr<Cell>);
+  ~Context();
+  class Scope {
+    std::unique_ptr<ContextScopeData> data_;
+   public:
+    explicit Scope(Local<Context>);~Scope();
+  };
+  Local<Object> Global();
+  Local<Object> GetExtrasBindingObject();
   template<class T> MaybeLocal<T> GetDataFromSnapshotOnce(size_t) {
     Crash("Native heap snapshot deserialization is not implemented");
   }
@@ -122,7 +133,7 @@ template<class T> class Global {
   Global(const Global&)=delete;Global& operator=(const Global&)=delete;
   Global(Global&&)=default;Global& operator=(Global&&)=default;
   bool IsEmpty() const { return GlobalRootIsEmpty(value_); }
-  void Reset(Isolate* isolate,Local<T> value) { isolate_=isolate;value_=NewGlobalRoot(isolate,value); }
+  void Reset(Isolate* isolate,Local<T> value) { if(value.IsEmpty()){Reset();return;}isolate_=isolate;value_=NewGlobalRoot(isolate,value); }
   void Reset() { value_.reset();isolate_=nullptr; }
   void SetWeak() { MakeGlobalWeak(isolate_,value_); }
   Local<T> Get(Isolate* isolate) const { return ReadGlobalRoot(isolate,value_).template As<T>(); }
@@ -255,7 +266,6 @@ struct Factory { Isolate* isolate; Local<Value> undefined_value(); };
 class Isolate {
  public:
   std::weak_ptr<State> owner;
-  Context context{this};
   Factory factory_{this};
   Factory* factory() { return &factory_; }
   Local<Context> GetCurrentContext();
@@ -265,9 +275,10 @@ class Isolate {
 };
 class HandleScope {
  protected:
-  Frame* frame_;size_t previous_;
+  Frame* frame_;size_t previous_,previousContexts_;
  public:
   Local<Value> EscapeRoot(Local<Value>);
+  Local<Context> EscapeRoot(Local<Context>);
  public: explicit HandleScope(Isolate*);~HandleScope();
 };
 class EscapableHandleScope : public HandleScope {
@@ -276,7 +287,8 @@ class EscapableHandleScope : public HandleScope {
   using HandleScope::HandleScope;
   template<class T> Local<T> Escape(Local<T> value) {
     if(escaped_) Crash("Native handle scope escaped twice");escaped_=true;
-    return EscapeRoot(value).template As<T>();
+    if constexpr(std::is_same_v<T,Context>)return EscapeRoot(Local<Context>(value));
+    else return EscapeRoot(Local<Value>(value)).template As<T>();
   }
   template<class T> MaybeLocal<T> EscapeMaybe(MaybeLocal<T> value) {
     if(value.IsEmpty())return {};return Escape(value.ToLocalChecked());
@@ -443,6 +455,8 @@ class Environment {
   static Environment* GetCurrent(Isolate*);
   static Environment* GetCurrent(const FunctionCallbackInfo<Value>&);
   Isolate* isolate();Local<Context> context();Local<ObjectTemplate> i18n_converter_template();
+  using EmbedderPreload=void(*)(Environment*,Local<Object>,Local<Function>);
+  EmbedderPreload embedder_preload();void set_embedder_preload(EmbedderPreload);
   Local<Object> buffer_prototype_object();Local<Value> untransferable_object_private_symbol();
   IsolateData* isolate_data();void ThrowRangeError(const char*);
   void set_trace_category_state_function(Local<Function>);
