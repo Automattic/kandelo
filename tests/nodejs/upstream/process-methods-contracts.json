@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
-  "scope": "Both whole original process units and complete original formatting headers compile over native embedding interfaces; actual source route/initializers fail final linking. No revision51 artifact or runtime validation.",
+  "scope": "Complete original process units and native invocation/ownership definitions compile; revision52 still fails linking on30symbols. No runnable current engine or startup validation.",
   "completeBindingContract": false,
   "nativeSourceReview": {
     "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
@@ -1006,11 +1006,10 @@
     "fullV8PropertyInterfaceCompatibility": false
   },
   "sourceCompilation": {
-    "evidence": "process-units-compile-check.json",
+    "evidence": "process-invocation-compile-check.json",
     "wholeOriginalMethodsAndObjectUnitsCompile": true,
     "sourceInitializerConnected": true,
     "finalLinkSucceeded": false,
-    "revision51RuntimeArtifact": null,
     "undefinedSymbols": [
       "kandelo_node_codec_api::HeapStatistics::HeapStatistics()",
       "kandelo_node_codec_api::HeapStatistics::external_memory() const",
@@ -1028,11 +1027,7 @@
       "kandelo_node_codec_impl::Environment::Exit(kandelo_node_codec_impl::ExitCode)",
       "kandelo_node_codec_impl::Environment::ThrowErrnoException(int, char const*, char const*, char const*)",
       "kandelo_node_codec_impl::Environment::ThrowUVException(int, char const*, char const*, char const*, char const*)",
-      "kandelo_node_codec_impl::Environment::argv()",
-      "kandelo_node_codec_impl::Environment::exec_argv()",
-      "kandelo_node_codec_impl::Environment::exec_path()",
       "kandelo_node_codec_impl::Environment::handle_wrap_queue()",
-      "kandelo_node_codec_impl::Environment::owns_process_state() const",
       "kandelo_node_codec_impl::Environment::req_wrap_queue()",
       "kandelo_node_codec_impl::HandleWrap::HasRef(kandelo_node_codec_impl::HandleWrap*)",
       "kandelo_node_codec_impl::HasSignalJSHandler(int)",
@@ -1043,19 +1038,21 @@
       "kandelo_node_codec_impl::ToNamespacedPath(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::BufferValue*)",
       "kandelo_node_codec_impl::binding::DLOpen(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
       "kandelo_node_codec_impl::binding::DLOpenBinary(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
-      "kandelo_node_codec_impl::per_process::node_start_time",
       "uv_get_available_memory",
       "uv_get_constrained_memory",
       "uv_resident_set_memory"
     ],
-    "undefinedSymbolCount": 35,
+    "undefinedSymbolCount": 30,
     "allSymbolsForThisLinkInvocation": true,
     "fullContractInventoryComplete": false,
     "originalCreateProcessObjectActivated": false,
     "originalCreateProcessObjectMayNeedAdditionalContracts": true,
-    "finalBuildJob": "node-process-format-includes-1112-051131-b713",
-    "finalBuildCacheKey": "70b207b6eb5f30832a4774131bc367485de85fa58d48c8db89d1fb2520d85f11",
-    "wholeOriginalFormattingHeadersCompile": true
+    "finalBuildJob": "node-process-construction-identity-1112-054122-7585",
+    "finalBuildCacheKey": "24bbd42e88aca486b3c312d24ce151d0c29bbffa25c2467892c6b00e90d06941",
+    "wholeOriginalFormattingHeadersCompile": true,
+    "packageRevision": 52,
+    "currentRuntimeArtifact": null,
+    "priorCompileEvidence": "process-units-compile-check.json"
   },
   "sourceImport": {
     "priorFiles": 561,
@@ -1086,7 +1083,23 @@
       "owned UTF8 string bytes",
       "string-vector conversion",
       "native method-template overloads preserving normal callback metadata"
-    ]
+    ],
+    "processInvocation": {
+      "status": "compiled definitions; not runtime validated in SpiderMonkey",
+      "arguments": "References to original successfully configured NativeOptions vectors; retaining runtime roots their owner until shutdown",
+      "unconfiguredInvocation": "Explicit binding-initialization error; no empty/default argument fallback",
+      "executablePath": "Complete original libuv procfs-exepath.c reads actual guest image; Environment snapshots it at initialization before callbacks and retries full/truncated buffers",
+      "processStateOwnership": "Actual canonical shell runtime identity and ShellContext main/worker role; cleared at shutdown",
+      "startEpoch": "Actual uv_hrtime at the once-only guest main CaptureOptionsInvocation hook",
+      "argvNormalization": "Left in complete original internal/process/pre_execution.js; no native argv0 rewrite",
+      "validation": "libuv executable-path backend has separate four-host identified-artifact evidence; process Environment accessors have compile-only evidence",
+      "remainingValidation": [
+        "positive/negative configuration and argv ownership through actual startup",
+        "main/worker ownership and retirement",
+        "epoch/uptime consistency and errors",
+        "preload/rename ordering and partial initialization/OOM"
+      ]
+    }
   },
   "knownPlatformGaps": [
     {

@@ -890,6 +890,7 @@ JSObject* CreateProcessMethodsBinding(JSContext* cx,JS::HandleObject realm) {
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if(!runtime)return nullptr;
   auto state=api::Data(cx,runtime);if(!state)return nullptr;
   api::Frame frame(cx,realm,state,nullptr,api::Domain::Diagnostics);
+  if(!state->environment.PrepareProcessInvocation())return nullptr;
   JS::RootedObject object(cx,JS_NewObject(cx,&native::nativeBindingClass));if(!object)return nullptr;
   frame.binding=object;JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
   native::IsolateData isolateData;

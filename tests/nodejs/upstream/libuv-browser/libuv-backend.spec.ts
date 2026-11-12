@@ -49,9 +49,9 @@ test("real libuv loop backend", async ({ page, baseURL, browser }, testInfo) => 
     expect(row.hostDiagnostics).toEqual([]);
     const rows = row.stdout.trim().split("\n").map((line) => JSON.parse(line));
     const summary = rows.pop();
-    expect(summary).toEqual({ kind: "libuv-backend-controls", cases: 13, failures: 0 });
-    expect(rows).toHaveLength(13);
-    expect(new Set(rows.map((item) => item.case)).size).toBe(13);
+    expect(summary).toEqual({ kind: "libuv-backend-controls", cases: 17, failures: 0 });
+    expect(rows).toHaveLength(17);
+    expect(new Set(rows.map((item) => item.case)).size).toBe(17);
     expect(rows.every((item) => item.status === "pass")).toBe(true);
     await Promise.all(responses);
     expect(resources.some((item) => item.sha256 === identity(program).sha256)).toBe(true);

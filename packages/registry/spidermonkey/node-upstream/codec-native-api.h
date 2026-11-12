@@ -568,6 +568,7 @@ class Environment {
   Isolate* isolate();Local<Context> context();Local<ObjectTemplate> i18n_converter_template();
   Realm* principal_realm();bool can_call_into_js() const;
   bool owns_process_state() const;bool has_run_bootstrapping_code() const;
+  bool PrepareProcessInvocation();
   EnabledDebugList* enabled_debug_list();
   void ThrowUVException(int,const char*,const char* = nullptr,const char* = nullptr,const char* = nullptr);
   void ThrowErrnoException(int,const char*,const char* = nullptr,const char* = nullptr);

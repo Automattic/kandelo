@@ -8,6 +8,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <spawn.h>
+#include <sys/wait.h>
 
 #define CHECK(condition) do { if (!(condition)) { \
   fprintf(stderr, "FAIL line=%d condition=%s\n", __LINE__, #condition); \
@@ -140,7 +142,77 @@ static void fs_write_cb(uv_fs_t* request) {
   fs_buffer = uv_buf_init(fs_readback, sizeof(fs_readback));
   CHECK(uv_fs_read(&loop, &fs_request, file, &fs_buffer, 1, 0, fs_read_cb) == 0);
 }
-int main(void) {
+extern char** environ;
+static const char executable_copy[] = "/tmp/libuv-exepath-image";
+static void check_executable_path(void) {
+  char expected[8192], actual[8192];
+  ssize_t length = readlink("/proc/self/exe", expected, sizeof(expected));
+  CHECK(length > 0 && (size_t)length < sizeof(expected));
+  size_t size = sizeof(actual);
+  CHECK(uv_exepath(actual, &size) == 0);
+  CHECK(size == (size_t)length && actual[size] == '\0');
+  CHECK(memcmp(actual, expected, size) == 0);
+  passed("executable-path-canonical-procfs");
+
+  size = sizeof(actual);
+  actual[0] = '!';
+  CHECK(uv_exepath(NULL, &size) == UV_EINVAL && size == sizeof(actual));
+  CHECK(uv_exepath(actual, NULL) == UV_EINVAL && actual[0] == '!');
+  size = 0;
+  CHECK(uv_exepath(actual, &size) == UV_EINVAL && size == 0 && actual[0] == '!');
+  passed("executable-path-invalid-buffers");
+
+  memset(actual, '!', sizeof(actual));
+  size = 1;
+  CHECK(uv_exepath(actual, &size) == 0 && size == 0);
+  CHECK(actual[0] == '\0' && actual[1] == '!');
+  size = 8;
+  CHECK(uv_exepath(actual, &size) == 0);
+  CHECK(size == ((size_t)length < 7 ? (size_t)length : 7));
+  CHECK(memcmp(actual, expected, size) == 0 && actual[size] == '\0');
+  CHECK(actual[8] == '!');
+  size = (size_t)length + 1;
+  CHECK(uv_exepath(actual, &size) == 0 && size == (size_t)length);
+  CHECK(memcmp(actual, expected, size) == 0 && actual[size] == '\0');
+  passed("executable-path-bounds");
+
+  // Execute the actual retained image through a real new VFS name, with an
+  // unrelated argv[0]. The child must report the executable, not that argument.
+  CHECK(mkdir("/tmp", 0777) == 0 || errno == EEXIST);
+  int input = open("/proc/self/exe", O_RDONLY);
+  CHECK(input >= 0);
+  int output = open(executable_copy, O_CREAT|O_EXCL|O_WRONLY, 0700);
+  CHECK(output >= 0);
+  char bytes[4096];
+  for (;;) {
+    ssize_t count = read(input, bytes, sizeof(bytes));
+    if (count < 0 && errno == EINTR) continue;
+    CHECK(count >= 0);
+    if (count == 0) break;
+    for (ssize_t written = 0; written < count;) {
+      ssize_t step = write(output, bytes + written, (size_t)(count - written));
+      if (step < 0 && errno == EINTR) continue;
+      CHECK(step > 0);written += step;
+    }
+  }
+  CHECK(close(input) == 0 && close(output) == 0);
+  char* child_argv[] = {"misleading-node-name", "--exepath-child", NULL};
+  pid_t child;
+  CHECK(posix_spawn(&child, executable_copy, NULL, NULL, child_argv, environ) == 0);
+  int status;
+  CHECK(waitpid(child, &status, 0) == child);
+  CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  CHECK(unlink(executable_copy) == 0);
+  passed("executable-path-exec-identity");
+}
+int main(int argc, char** argv) {
+  if (argc == 2 && strcmp(argv[1], "--exepath-child") == 0) {
+    char path[8192];size_t size = sizeof(path);
+    CHECK(strcmp(argv[0], "misleading-node-name") == 0);
+    CHECK(uv_exepath(path, &size) == 0);
+    CHECK(size == strlen(executable_copy) && strcmp(path, executable_copy) == 0);
+    return 0;
+  }
   CHECK(setvbuf(stdout, NULL, _IONBF, 0) == 0);
   CHECK(UV_VERSION_MAJOR == 1 && UV_VERSION_MINOR == 52 && UV_VERSION_PATCH == 1);
   CHECK(uv_loop_size() == sizeof(uv_loop_t));
@@ -149,6 +221,7 @@ int main(void) {
   CHECK(uv_req_size(UV_FS) == sizeof(uv_fs_t));
   main_thread = uv_thread_self();
   passed("public-layout");
+  check_executable_path();
 
   CHECK(uv_loop_init(&loop) == 0);
   CHECK(uv_backend_fd(&loop) == -1); /* portable poll has no poller descriptor */

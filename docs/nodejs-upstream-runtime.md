@@ -18,8 +18,9 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 51 source connects the original process initializer, but
-its targeted build still fails final linking and has no runnable artifact. The original native tracing agent, binding,
+The current revision 52 source connects the original process initializer and
+native invocation state, but its targeted build still fails final linking on
+30 symbols and has no runnable artifact. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -2126,3 +2127,52 @@ no such change/build was made. Full products/images, successor-ABI builds and
 overall suites remain deferred; original assertions and async-context guards
 remain intact. Startup, separate CJS/ESM entrypaths and the full catalog/roadmap
 remain incomplete.
+
+
+## Process invocation and executable identity (revision 52; link incomplete)
+
+The native Environment now borrows the original options parser's successfully
+configured argument and exec-argument vectors. Its runtime root keeps the native
+options record alive, and shutdown clears the borrowed pointers before releasing
+that root. An unconfigured/failed profile rejects process binding initialization;
+no empty/default argument vector is manufactured. The existing once-only guest
+main invocation hook records the actual `uv_hrtime` epoch. Process-state ownership
+comes from the canonical shell runtime and its real main/worker context role.
+These embedding definitions compile, but remain untested in a runnable engine.
+
+The Environment snapshots its actual executable identity at initialization,
+before preload/native callbacks can rename the image. It retries a full libuv
+buffer rather than accepting a truncated identity. The original upstream
+`internal/process/pre_execution.js` still owns `argv0` preservation and `argv[0]`
+normalization. No upstream JavaScript or process algorithm was rewritten.
+Unavailable executable identity is an explicit initialization error; alternate
+embedding/failure/fallback paths remain incomplete contracts.
+
+Libuv revision 5 selects complete unchanged upstream `procfs-exepath.c` from the
+same authenticated Node archive. Its actual guest `/proc/self/exe` backend passes
+17 controls on each of Node, Chromium, Firefox and WebKit using identical probe
+and kernel artifacts. The added cases compare canonical procfs bytes, exercise
+invalid/small/exact buffers, and execute a real copied guest image from a new VFS
+name with an unrelated `argv[0]`. Existing loop/thread/pipe/filesystem controls
+also pass. The normal library and probe builds use the declared SDK/resolver,
+and the probe uses an empty guest filesystem. No kernel rebuild was needed.
+See [libuv-exepath-engine-check.json](../tests/nodejs/upstream/libuv-exepath-engine-check.json).
+Browser run-owned storage cleanup reported an EACCES warning; it is retained
+separately from the passing guest results. Rename/unlink/long/unicode paths and
+full libuv/process compatibility are not established by these controls.
+
+The final normal revision-52 engine build has zero compiler errors and still
+fails linking on 30 symbols, down from 35. Five native process-state symbols are
+now resolved. There is no new engine artifact or startup advancement. The first
+revision-52 build captured the path too late; source review moved that snapshot
+to Environment initialization, and the final normal build recompiles the corrected
+source. Both failed-link logs/keys are retained in
+[process-invocation-compile-check.json](../tests/nodejs/upstream/process-invocation-compile-check.json).
+Remaining dependencies include real request/handle owners, lifecycle/signals,
+permissions/system errors, heap/allocator accounting, parser/path/native loading
+and three libuv memory functions. The original process-object factory is still
+unused, so this linker list is not full interface closure. Revision 50 remains
+the last runnable engine; its runtime receipts remain historical. All 570 source
+records and 443 JavaScript files are unchanged this step. Full startup, separate
+CJS/ESM, full catalog/roadmap and user review remain outstanding. Full products,
+kernel/successor-ABI builds and overall suites remain deferred.

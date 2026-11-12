@@ -70,7 +70,9 @@
     "nativeDataEngineEvidence": "native-data-engine-check.json",
     "propertyCallbackEngineEvidence": "property-callback-engine-check.json",
     "currentSourceDispatcherRoutes": 21,
-    "processUnitsCompileEvidence": "process-units-compile-check.json"
+    "processUnitsCompileEvidence": "process-units-compile-check.json",
+    "processInvocationCompileEvidence": "process-invocation-compile-check.json",
+    "libuvExecutablePathEvidence": "libuv-exepath-engine-check.json"
   },
   "implementation": [
     {
@@ -1578,7 +1580,7 @@
     }
   },
   "nextWork": [
-    "Implement the remaining real process/Environment/ownership/argv/clock/lifecycle/error/permission/queue/allocator/native-library prerequisites exposed by the 35-symbol failed link; import whole dotenv/path/format support as needed, preserve original algorithms and assertions. Known kernel resource-accounting fixes require reporting the deferred-build need before proceeding.",
+    "Implement the remaining30 real backend definitions for lifecycle/at-exit/signals, native errors/permissions, actual resource-owner registries, heap/allocator accounting, whole dotenv/path support and native loading. Process invocation/ownership/epoch definitions now compile; libuv exepath has17controls on all4hosts. Kernel resource-accounting fixes still need a deferred kernel build reported before proceeding.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1587,17 +1589,32 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 51,
+    "packageRevision": 52,
     "status": "failed final link",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 35,
-    "evidence": "process-units-compile-check.json",
+    "undefinedSymbols": 30,
+    "evidence": "process-invocation-compile-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
-    "buildCacheKey": "70b207b6eb5f30832a4774131bc367485de85fa58d48c8db89d1fb2520d85f11",
+    "buildCacheKey": "24bbd42e88aca486b3c312d24ce151d0c29bbffa25c2467892c6b00e90d06941",
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-process-format-includes-1112-051131-b713",
+    "buildJob": "node-process-construction-identity-1112-054122-7585",
     "runtimeValidation": false
+  },
+  "currentLibuvExecutablePath": {
+    "packageRevision": 5,
+    "completeOriginalSource": "deps/uv/src/unix/procfs-exepath.c",
+    "evidence": "libuv-exepath-engine-check.json",
+    "controlsPerHost": 17,
+    "hosts": [
+      "node",
+      "chromium",
+      "firefox",
+      "webkit"
+    ],
+    "sameProgramAndKernel": true,
+    "scope": "empty-filesystem native C/libuv controls including real child exec; not upstream Node startup",
+    "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   }
 }

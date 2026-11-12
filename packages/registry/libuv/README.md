@@ -37,14 +37,21 @@ returns UV_ENOSYS. Process-title get/set also return UV_ENOSYS rather than
 upstream no-proctitle.c's successful no-ops. No title/argument storage is
 allocated. These are explicit gaps, not implemented functionality.
 
+Revision 5 also selects the complete unchanged upstream `procfs-exepath.c`.
+`uv_exepath` reads the guest kernel's actual `/proc/self/exe`, including its
+executed-image identity independently of `argv[0]`; it keeps upstream buffer
+validation, truncation and termination behavior. This requires no kernel change.
+See [libuv-exepath-engine-check.json](../../../tests/nodejs/upstream/libuv-exepath-engine-check.json)
+for current identified-artifact evidence, separate from the earlier loop receipt.
+
 This is an initial event-loop backend, not complete libuv support. OS-specific
-resource/CPU/network-interface reporting and executable-path functions have
-not been added; consumers of missing functions fail to link. Target-header AST
-and archive-symbol inventory found 318 declared public functions, with these
-ten missing: uv_cpu_info, uv_exepath, uv_get_available_memory,
+resource/CPU/network-interface reporting remains incomplete; consumers of missing
+functions fail to link. The revision-4 target-header AST and archive-symbol
+inventory found 318 declared public functions and ten missing definitions.
+Revision 5 supplies `uv_exepath`; the remaining nine are uv_cpu_info, uv_get_available_memory,
 uv_get_constrained_memory, uv_get_free_memory, uv_get_total_memory,
 uv_interface_addresses, uv_loadavg, uv_resident_set_memory and uv_uptime.
-The other 308 having symbols is not runtime conformance evidence. Process spawn,
+Symbol presence is not runtime conformance evidence. Process spawn,
 signal behavior, socket operations, DNS, cancellation, fork recovery, OOM and
 full teardown still need focused validation. No product image includes this
 library, and it is not in the local-supported build set. No generated upstream
@@ -52,7 +59,9 @@ man pages are shipped; upstream's documentation is Sphinx source, not an
 installed man-page set.
 
 The self-judging test/backend-controls.c uses real guest clocks, descriptors,
-threads and files. Its CMake consumer checks public ABI layouts and exercises
+threads and files. Executable-path controls compare real procfs bytes, test
+invalid/small/exact buffers, and execute a real copy of the guest image under a
+new VFS name with an unrelated `argv[0]`. Its CMake consumer checks public ABI layouts and exercises
 empty loops, timers/ref/close, prepare/check phases, cross-thread async wakeups,
 thread-pool work, pipe polling and async filesystem effects, plus explicit
 unsupported boundaries. Results and artifact identities belong in the upstream

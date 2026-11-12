@@ -18,8 +18,8 @@
     },
     {
       "path": "tests/nodejs/upstream/backend-binding-reviews.json",
-      "bytes": 16522,
-      "sha256": "96e441368bd344cff670eeacc0725f2825a84d2bb89a3a05a701aea5fcb4e9b7"
+      "bytes": 16568,
+      "sha256": "2ff80a21f4591d91ab59abedc2fcad9f82147bfb2154b438c0d0ec0a47030822"
     },
     {
       "path": "tests/nodejs/upstream/dependency-dynamic-reviews.json",
@@ -89,7 +89,7 @@
     ],
     "routePresenceIsCompleteBindingSupport": false,
     "unmatchedBehavior": "ERR_KANDELO_NOT_IMPLEMENTED; actual Native Node binding missing error",
-    "currentSourceBuildStatus": "revision51 compiles whole process units but fails linking; source route is not runtime support",
+    "currentSourceBuildStatus": "revision52 compiles whole process units and native invocation definitions but fails linking on30symbols; source route is not runtime support",
     "matchesPriorTestedArtifactInput": false,
     "priorDispatcherInput": {
       "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",

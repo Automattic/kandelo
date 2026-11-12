@@ -13,7 +13,8 @@ const program = resolve(programArgument);
 const reportPath = resolve(reportArgument);
 const kernel = resolveBinary("kernel.wasm");
 const expectedCases = [
-  "public-layout", "empty-loop", "timer-deadline-and-close",
+  "public-layout", "executable-path-canonical-procfs", "executable-path-invalid-buffers",
+  "executable-path-bounds", "executable-path-exec-identity", "empty-loop", "timer-deadline-and-close",
   "repeating-timer-stop", "unreferenced-timer-liveness", "busy-close-and-nowait",
   "prepare-check-phases", "thread-to-loop-async-wakeup",
   "threadpool-work-and-main-callback", "pipe-readiness-and-poll-close",

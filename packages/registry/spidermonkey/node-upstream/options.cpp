@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <utility>
+#include <uv.h>
 
 #include "jsapi.h"
 #include "jsfriendapi.h"
@@ -33,6 +34,11 @@
 #include "vm/StringType.h"
 
 
+namespace kandelo_node_codec_impl::per_process {
+// Populated at the actual guest program invocation, before creating any JS
+// context or worker. All native environments in this process share the epoch.
+uint64_t node_start_time=0;
+}
 namespace n = kandelo_node_options_impl;
 namespace kandelo_node_options_api {
 namespace {
@@ -54,6 +60,7 @@ using Callback = void (*)(const FunctionCallbackInfo<Value>&);
 std::vector<Callback> callbacks;
 n::StringVector invocation;
 bool nodeInvocation = false;
+bool invocationCaptured = false;
 void Finalize(JS::GCContext*, JSObject* object) {
   const auto value = JS::GetReservedSlot(object, 0);
   if (!value.isUndefined()) delete static_cast<NativeOptions*>(value.toPrivate());
@@ -354,7 +361,19 @@ bool ConfigureOptions(JSContext* cx,JS::HandleObject realm,JS::HandleObject argu
   return ParseProfile(frame,inputs,environment);
 }
 void CaptureOptionsInvocation(int argc,char** argv,bool mode) {
+  MOZ_RELEASE_ASSERT(!invocationCaptured);
+  kandelo_node_codec_impl::per_process::node_start_time=uv_hrtime();
   invocation.clear(); for (int i=0;i<argc;i++) invocation.emplace_back(argv[i]); nodeInvocation=mode;
+  invocationCaptured=true;
+}
+bool BorrowNativeInvocation(JSContext* cx,JS::HandleObject realm,
+                            const std::vector<std::string>** arguments,
+                            const std::vector<std::string>** execArguments) {
+  if(!CheckRealmLibraryActive(cx,realm))return false;
+  auto* data=Data(cx,realm);if(!data)return false;
+  if(!invocationCaptured||!data->configured)
+    return Error(cx,nullptr,"Native Node invocation has not been configured");
+  *arguments=&data->arguments;*execArguments=&data->execArguments;return true;
 }
 bool ReadNativeTracingConfiguration(JSContext* cx,JS::HandleObject realm,
                                     NativeTracingConfiguration* result) {

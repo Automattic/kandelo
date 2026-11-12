@@ -81,6 +81,10 @@ struct EnvironmentData {
   std::deque<std::unique_ptr<NativeImmediate>> pending;
   bool initialized=false,closed=false,stopping=false,draining=false;
   bool weakRegistered=false;
+  bool ownsProcessState=false,processInvocationReady=false;
+  const std::vector<std::string>* arguments=nullptr;
+  const std::vector<std::string>* execArguments=nullptr;
+  std::string executablePath;
   CleanableQueue cleanables;
   api::ExternalMemoryAccounter external{false};
   std::atomic<size_t> posted{0},executed{0},ownerChecks{0},payloadBytes{0};
@@ -124,6 +128,27 @@ JSObject* Environment::memory_owner(JSContext* cx) {
 bool Environment::IsClosed() const { std::lock_guard lock(data_->mutex);return data_->closed; }
 Environment::EmbedderPreload Environment::embedder_preload() { AssertForeground();return data_->embedderPreload; }
 void Environment::set_embedder_preload(EmbedderPreload hook) { AssertForeground();data_->embedderPreload=hook; }
+bool Environment::owns_process_state() const {
+  AssertForeground();CHECK(data_->initialized&&!data_->closed);return data_->ownsProcessState;
+}
+bool Environment::PrepareProcessInvocation() {
+  AssertForeground();CHECK(data_->initialized&&!data_->closed&&data_->runtime);
+  if(data_->processInvocationReady)return true;
+  auto& f=Current(isolate());
+  const std::vector<std::string>* arguments;const std::vector<std::string>* execArguments;
+  if(!kandelo::node::BorrowNativeInvocation(f.cx,f.realm,&arguments,&execArguments))return false;
+  data_->arguments=arguments;data_->execArguments=execArguments;
+  data_->processInvocationReady=true;return true;
+}
+const std::vector<std::string>& Environment::argv() {
+  AssertForeground();CHECK(data_->processInvocationReady&&!data_->closed);return *data_->arguments;
+}
+const std::vector<std::string>& Environment::exec_argv() {
+  AssertForeground();CHECK(data_->processInvocationReady&&!data_->closed);return *data_->execArguments;
+}
+const std::string& Environment::exec_path() {
+  AssertForeground();CHECK(data_->processInvocationReady&&!data_->closed);return data_->executablePath;
+}
 uv_loop_t* Environment::event_loop() {
   AssertForeground();CHECK(data_->initialized&&!data_->closed&&data_->runtime);
   JS::RootedObject runtime(data_->cx,*data_->runtime);
@@ -173,6 +198,22 @@ bool Environment::Initialize(JSContext* cx,JS::HandleObject runtime) {
   AssertForeground();
   if(data_->closed){JS_ReportErrorASCII(cx,"Native Node environment is closed");return false;}
   if(data_->initialized){CHECK(data_->cx==cx);return true;}
+  auto* shell=js::shell::GetShellContext(cx);CHECK(shell&&shell->cx_==cx);
+  JS::RootedObject canonical(cx,shell->upstreamNodeRuntime);
+  JS::RootedObject raw(cx,js::CheckedUnwrapDynamic(runtime,cx,false));if(!raw)return false;
+  if(raw!=canonical){JS_ReportErrorASCII(cx,"Native Environment requires its canonical runtime owner");return false;}
+  // Like the native Environment's construction-time identity, snapshot this
+  // before any preload/native callback can rename the executing guest image.
+  // The original JavaScript owns argv0 and argv[0] normalization separately.
+  std::vector<char> path(256);std::string executablePath;
+  for(;;){
+    size_t size=path.size();int status=uv_exepath(path.data(),&size);
+    if(status){JS_ReportErrorASCII(cx,"Guest executable path lookup failed: %s",uv_strerror(status));return false;}
+    // libuv succeeds with truncation. Retry a full buffer before publishing.
+    if(size<path.size()-1){executablePath.assign(path.data(),size);break;}
+    if(path.size()>size_t(api::String::kMaxLength)/2){JS_ReportErrorASCII(cx,"Guest executable path exceeds engine string capacity");return false;}
+    path.resize(path.size()*2);
+  }
   data_->cx=cx;data_->runtime=std::make_unique<JS::PersistentRootedObject>(cx,runtime);
   data_->wake=kandelo::node::AttachRuntimeForeground(cx,runtime,this,
       [](JSContext* cx,void* owner){return static_cast<Environment*>(owner)->Drain(cx);},
@@ -183,6 +224,8 @@ bool Environment::Initialize(JSContext* cx,JS::HandleObject runtime) {
     kandelo::node::DetachRuntimeForeground(cx,runtime,this);data_->wake=nullptr;data_->runtime.reset();return false;
   }
   data_->weakRegistered=true;data_->initialized=true;
+  data_->executablePath=std::move(executablePath);
+  data_->ownsProcessState=shell->isWorker==js::shell::ShellContext::MainThread;
   // One genuine context owner keeps Environment addresses and the canonical
   // loop alive until foreground shutdown, including background finalization.
   api::environmentOwners.push_back(state);return true;
@@ -240,7 +283,9 @@ void Environment::Shutdown(JSContext* cx) {
   state->aliasedControls.clear();
   if(data_->weakRegistered){JS_RemoveWeakPointerZonesCallback(cx,api::UpdateEnvironmentWeakEdges);data_->weakRegistered=false;}
   for(auto& root:state->weakGlobals){CHECK(!root->strong);root->weak=nullptr;}
-  state->weakGlobals.clear();data_->weakControls.clear();data_->probes.clear();data_->runtime.reset();
+  state->weakGlobals.clear();data_->weakControls.clear();data_->probes.clear();
+  data_->arguments=nullptr;data_->execArguments=nullptr;data_->processInvocationReady=false;
+  data_->ownsProcessState=false;data_->executablePath.clear();data_->runtime.reset();
   preserve.restore();
 }
 EnvironmentCleanupProbe::EnvironmentCleanupProbe(Environment* environment,size_t size,bool reenter,bool atExit)
