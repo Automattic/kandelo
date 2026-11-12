@@ -21,7 +21,7 @@ export function verifyMksnapshotResult(control:typeof mksnapshotCases[number],re
  if('stderr'in control){if(!result.stderr.includes(control.stderr!))throw Error(JSON.stringify(result))}else if(result.stderr!=='')throw Error(JSON.stringify(result));
  if('stdout'in control){if(result.stdout.trim()!==control.stdout)throw Error(JSON.stringify(result));return {status:'pass'}}
  const detail=JSON.parse(result.stdout);
- if(control.name==='original-principal-bootstrap-preserves-next-gap'){if(detail.error?.name!=='Error'||detail.error?.message!=='Requested native builtin metadata/cache/source-text backend is not implemented'||detail.error?.code!=='ERR_KANDELO_NOT_IMPLEMENTED'||detail.realm?.nodeBootstrapPhase!==3||!detail.realm.compiledBuiltinIds.includes('internal/v8/startup_snapshot')||detail.startupAccepted!==false)throw Error(JSON.stringify(detail));return detail}
+ if(control.name==='original-principal-bootstrap-preserves-next-gap'){if(detail.error?.name!=='Error'||detail.error?.message!=="Native Node binding 'messaging' is not implemented"||detail.error?.code!=='ERR_KANDELO_NOT_IMPLEMENTED'||detail.realm?.nodeBootstrapPhase!==3||!detail.realm.compiledBuiltinIds.includes('internal/v8/startup_snapshot')||detail.startupAccepted!==false)throw Error(JSON.stringify(detail));return detail}
  const expected=control.name==='live-native-snapshot-interface'?8:17;
  if(detail.failures||detail.cases!==expected||detail.observations.length!==expected||detail.observations.some((r:any)=>r.status!=='pass'))throw Error(JSON.stringify(detail));
  if(control.name==='live-native-snapshot-interface'){

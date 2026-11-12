@@ -160,16 +160,7 @@ using Initializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
 extern Initializer initializer;
 }
 #define NODE_WANT_INTERNALS 1
-// This embedding links OpenSSL and Intl, includes the full Amaro JS builtin,
-// and has no V8 platform, inspector, SQLite, FFI or single-executable backend.
-#define HAVE_OPENSSL 1
-#define HAVE_INSPECTOR 0
-#define NODE_USE_V8_PLATFORM 0
-#define HAVE_FFI 0
-#define HAVE_SQLITE 0
-#define HAVE_AMARO 1
-#define NODE_HAVE_I18N_SUPPORT 1
-#define DISABLE_SINGLE_EXECUTABLE_APPLICATION 1
+#include "shell/node-upstream/build-profile.h"
 #define NODE_EXTERN_PRIVATE
 #define NODE_EXTERN
 #define CHECK(x) do { if (!(x)) __builtin_trap(); } while (false)

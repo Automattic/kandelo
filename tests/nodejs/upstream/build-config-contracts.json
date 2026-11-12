@@ -1,0 +1,149 @@
+{
+  "schema": 1,
+  "scope": "Native builtins.config build descriptor; full builtins binding, GYP addon configuration and backend catalog remain incomplete",
+  "sourceVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "nativeSourceReview": {
+    "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+    "authenticatedWholeFiles": [
+      {
+        "path": "common.gypi",
+        "bytes": 30865,
+        "sha256": "d8048c8c74dbc930646a6fadb55789e383179d137cc9fbc6c886afdf60b13454"
+      },
+      {
+        "path": "configure.py",
+        "bytes": 112387,
+        "sha256": "1237f185de628bf45d9e773168ec4dec6f77d4e776c89932bbf3a8f8dd9bf792"
+      },
+      {
+        "path": "node.gyp",
+        "bytes": 56157,
+        "sha256": "4a4d08c3c9a49fc2e0994f28525ef2799a13f0b53141494d87490fbc88e11779"
+      },
+      {
+        "path": "node.gypi",
+        "bytes": 14241,
+        "sha256": "7fdc98fdbf58d80364d539de9e37229bcf738a0209fc4249a8d0d5aaa876a166"
+      },
+      {
+        "path": "src/node_builtins.cc",
+        "bytes": 37013,
+        "sha256": "e96508e01765d9f89cefb8e6508d87025e6ded4dc8bafc4a8c46a6e5c02305d2"
+      },
+      {
+        "path": "src/node_builtins.h",
+        "bytes": 9798,
+        "sha256": "7e283d85d6c10f44e9165e44b6db08db4abed119fa321892cf5e0d2679d4f4f5"
+      },
+      {
+        "path": "src/node_config.cc",
+        "bytes": 3257,
+        "sha256": "642279f8e5dfa487d84637992158eec193d8fe9f86484ffd2bfe5565c13d8193"
+      },
+      {
+        "path": "src/node_options.cc",
+        "bytes": 99186,
+        "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279"
+      },
+      {
+        "path": "src/node_process_object.cc",
+        "bytes": 8595,
+        "sha256": "301c1819a6cd59a48bd28f4c2252298137b6631cc33dda0ddb55dd8067d48957"
+      },
+      {
+        "path": "tools/configure.d/nodedownload.py",
+        "bytes": 4729,
+        "sha256": "1d2e91f17af0c715cbf83c5ad8696208ce80666408555a2fae7de803e8214da2"
+      },
+      {
+        "path": "tools/js2c.cc",
+        "bytes": 29928,
+        "sha256": "ad545ded8cd28da0beaee082c9f41677165cb2c42f7f83682ca24f003d8ddade"
+      }
+    ],
+    "getter": "src/node_builtins.cc:111,706",
+    "registration": "src/node_builtins.cc:873; CreatePerContextProperties freezes binding at917",
+    "generation": "configure.py actual configuration -> config.gypi -> tools/js2c.cc AddGypi/JSONify -> BuiltinLoader::GetConfig",
+    "nodeCppBodiesImportedOrExcerpted": false
+  },
+  "interface": {
+    "property": "config",
+    "value": "JSON string of actual build configuration",
+    "descriptor": {
+      "valueType": "string",
+      "get": "undefined",
+      "writable": false,
+      "enumerable": true,
+      "configurable": false
+    },
+    "binding": "frozen and nonextensible",
+    "consumer": "unchanged original JSONParse and recursive ObjectFreeze into process.config",
+    "processProperty": {
+      "writable": false,
+      "enumerable": true,
+      "configurable": true
+    }
+  },
+  "implementation": {
+    "engine": "existing actual traced native lazy DATA-property record, no JS getter Function",
+    "embedding": "native Mozilla JSONWriter and real UTF8 string creation, no user JSON/prototype hooks",
+    "profile": "shared build-profile.h retains original options selection, including HAVE_AMARO1; explicit missing compiled DTLS/QUIC/snapshot/cache units",
+    "target": "guest compiler arch, byte order and pointer width; actual OpenSSL library version; never host layout probes",
+    "producer": "actual recipe mozconfig/CFLAGS/CXXFLAGS/LDFLAGS serialized with logical path projection by declared generator",
+    "libraryFiles": "actual embedded BuiltinSourceAt registry paths, reconciled against authenticated manifest",
+    "schema": "variables, target_defaults and Kandelo producer settings; no copied V8 configuration or invented GYP addon ABI",
+    "sourceJavascriptChanged": false,
+    "v8BindingOrHeapSnapshotGeneration": false
+  },
+  "owningLayers": [
+    "package build and native embedding configuration",
+    "existing owning-engine native data-property support",
+    "unchanged original Node bootstrap consumes and freezes JSON"
+  ],
+  "consumers": {
+    "inventory": "build-config-consumers.json",
+    "parsedSources": 443,
+    "readSites": 7,
+    "writeSites": 1,
+    "candidateConfigMembers": 49,
+    "dynamicProcessMembers": 32,
+    "completeAliasOrDynamicDataflow": false,
+    "notes": "six literal process.config variable reads plus one file-local builtins producer candidate; candidates also include crypto/parser/test/config-binding objects. Dynamic process accesses remain recorded, not erased or assumed closed."
+  },
+  "reference": {
+    "report": "build-config-native-reference.json",
+    "exactSelectedGroups": 9,
+    "nativePhysicalBuildValuesCopied": false
+  },
+  "validation": {
+    "engineEvidence": "build-config-engine-check.json",
+    "controlsPerHost": 15,
+    "driversPerHost": 6,
+    "hosts": [
+      "Node",
+      "Chromium",
+      "Firefox",
+      "WebKit"
+    ],
+    "generatorControls": 8,
+    "fullConformance": false
+  },
+  "startup": {
+    "configurationReadAndFrozenByOriginalBody": true,
+    "completed": false,
+    "nextErrorCode": "ERR_KANDELO_NOT_IMPLEMENTED",
+    "nextError": "Native Node binding 'messaging' is not implemented",
+    "nextLocation": "node:internal/worker/js_transferable:21; node:internal/bootstrap/node:149",
+    "normalNodeMode": "legacy"
+  },
+  "remaining": [
+    "Full builtins native methods/categories/natives/cache/source-text contract",
+    "Full aliases/computed/worker/platform/exceptional catalog and ordered roadmap",
+    "Node native addon/GYP ABI configuration; no fabricated module/V8 ABI fields",
+    "Full security/OOM/failure-lifecycle/concurrent/worker/cancellation guarantees",
+    "Genuine empty/simple output/errors/jobs/exit and separate CJS/ESM acceptance"
+  ],
+  "implemented": true,
+  "fullNativeBindingContractComplete": false
+}

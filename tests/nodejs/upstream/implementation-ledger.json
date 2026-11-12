@@ -58,7 +58,10 @@
     "mksnapshotOwnershipReview": "mksnapshot-ownership.md",
     "mksnapshotEngineEvidence": "mksnapshot-engine-check.json",
     "utilLazyPropertiesPartialCatalog": "util-lazy-properties-contracts.json",
-    "utilLazyPropertiesEngineEvidence": "lazy-data-engine-check.json"
+    "utilLazyPropertiesEngineEvidence": "lazy-data-engine-check.json",
+    "buildConfigurationPartialCatalog": "build-config-contracts.json",
+    "buildConfigurationConsumerSyntax": "build-config-consumers.json",
+    "buildConfigurationEngineEvidence": "build-config-engine-check.json"
   },
   "implementation": [
     {
@@ -265,45 +268,51 @@
       "area": "native lazy data properties and original util binding interface",
       "sourceStatus": "Real SpiderMonkey traced property records and holder-creation-realm protected loader;29controls/12drivers perhost;19exact native groups",
       "evidence": "lazy-data-engine-check.json",
-      "remaining": "Proxy/non-Node realms and full exceptional/concurrent/worker/cancellation contracts; full util/catalog; genuine startup stops at builtins.config"
+      "remaining": "Proxy/non-Node realms and full exceptional/concurrent/worker/cancellation contracts; full util/catalog; genuine startup stops at messaging"
+    },
+    {
+      "area": "actual native build configuration",
+      "sourceStatus": "real frozen native DATA property, shared existing options profile, target compiler/library facts and actual recipe inputs; original principal body freezes process.config",
+      "evidence": "build-config-engine-check.json",
+      "remaining": "messaging/startup; full builtins/GYP addon/native contracts and complete catalog/roadmap"
     }
   ],
   "runtimeConformance": {
     "Node": {
-      "upstreamStartup": "Original principal body passes lazy property setup and fails at builtins.config in node:internal/bootstrap/node:135; startup not achieved",
+      "upstreamStartup": "Original principal body reads/freezes actual build configuration then fails on messaging at internal/worker/js_transferable:21, called by internal/bootstrap/node:149; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "lazy-data-engine-check.json"
+      "latestArtifactEvidence": "build-config-engine-check.json"
     },
     "Chromium": {
-      "upstreamStartup": "Original principal body passes lazy property setup and fails at builtins.config in node:internal/bootstrap/node:135; startup not achieved",
+      "upstreamStartup": "Original principal body reads/freezes actual build configuration then fails on messaging at internal/worker/js_transferable:21, called by internal/bootstrap/node:149; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "lazy-data-engine-check.json"
+      "latestArtifactEvidence": "build-config-engine-check.json"
     },
     "Firefox": {
-      "upstreamStartup": "Original principal body passes lazy property setup and fails at builtins.config in node:internal/bootstrap/node:135; startup not achieved",
+      "upstreamStartup": "Original principal body reads/freezes actual build configuration then fails on messaging at internal/worker/js_transferable:21, called by internal/bootstrap/node:149; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "lazy-data-engine-check.json"
+      "latestArtifactEvidence": "build-config-engine-check.json"
     },
     "WebKit": {
-      "upstreamStartup": "Original principal body passes lazy property setup and fails at builtins.config in node:internal/bootstrap/node:135; startup not achieved",
+      "upstreamStartup": "Original principal body reads/freezes actual build configuration then fails on messaging at internal/worker/js_transferable:21, called by internal/bootstrap/node:149; startup not achieved",
       "emptyEvaluation": "not run",
       "simpleScript": "not run",
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "lazy-data-engine-check.json"
+      "latestArtifactEvidence": "build-config-engine-check.json"
     },
     "libuvStandaloneLoop": {
       "hosts": [
@@ -443,17 +452,17 @@
     "oldPrArchives": "archive/node-upstream-reset-20261109/"
   },
   "buildIntegration": {
-    "packageRevision": 45,
+    "packageRevision": 46,
     "sourceInputsAndHostToolDeclared": true,
     "mozillaSourceListPatched": true,
     "actualPreparationHelperChecked": true,
     "engineTranslationUnitsCompiled": true,
     "packageBuilt": true,
-    "evidence": "lazy-data-engine-check.json",
+    "evidence": "build-config-engine-check.json",
     "priorObjectCompilationEvidence": "engine-object-compilation.json",
     "priorPreparationEvidence": "engine-build-wiring-check.json",
     "objectCheckOnly": false,
-    "packageRuntimeScope": "29native lazy property controls/12drivers perhost,19exact native groups; selected regressions on identical artifact;326guest drivers/96expected assertions combined; no startup acceptance",
+    "packageRuntimeScope": "15build configuration controls/6drivers perhost,9exact native groups; selected lazy/snapshot four-host and options/process/realm Node regressions;141guest processes/55expected assertions combined; no startup acceptance",
     "forkInstrumentationDiagnostic": "compiler facts code-hash mismatch after existing pre-instrumentation optimization; bounded native baseline reported, fork behavior not validated",
     "targetingDebt": "Existing Mozilla Linux triplet/defines remain; linked libuv uses the true Kandelo build and explicit public-layout selector before legacy macros",
     "symbolicWasmNamesRetained": true,
@@ -935,7 +944,20 @@
       "exactNativeGroups": 19,
       "fullNativeInterfaceConformanceEstablished": false,
       "upstreamStartup": false,
-      "next": "Actual build-owned builtins.config metadata"
+      "next": "Genuine startup now reaches messaging after original build configuration freezing"
+    },
+    "nativeBuildConfiguration": {
+      "inventory": "build-config-contracts.json",
+      "engineEvidence": "build-config-engine-check.json",
+      "implemented": true,
+      "sourceJavascriptChanged": false,
+      "v8ConfigurationCopied": false,
+      "hostLayoutProbes": false,
+      "actualAmaroSelectionRetained": true,
+      "profileOwner": "packages/registry/spidermonkey/node-upstream/build-profile.h",
+      "producerOwner": "actual recipe mozconfig/CFLAGS/CXXFLAGS/LDFLAGS",
+      "fullGypAddonConfiguration": false,
+      "upstreamStartup": false
     }
   },
   "nativeDifferentialControls": {
@@ -1096,6 +1118,13 @@
       "fourHostExactSelectedGroups": 19,
       "reentrantNativeAssertionBoundaryRetained": true,
       "fullDifferentialConformance": false
+    },
+    "buildConfiguration": {
+      "report": "build-config-native-reference.json",
+      "controls": 9,
+      "fourHostExactSelectedGroups": 9,
+      "nativePhysicalBuildValuesCopied": false,
+      "fullConformance": false
     }
   },
   "focusedGuestEngineControls": {
@@ -1121,8 +1150,8 @@
       "syntheticDriverRuns": 3,
       "syntheticDriverFailures": 0,
       "syntheticHostDiagnostics": 0,
-      "currentArtifactEvidence": "lazy-data-engine-check.json",
-      "regressionScope": "revision45 selected prior regressions and29lazy-property controls/12drivers perhost; no startup acceptance",
+      "currentArtifactEvidence": "build-config-engine-check.json",
+      "regressionScope": "revision46 build configuration15controls/6drivers perhost plus selected lazy/snapshot regressions; selected options/process/realm on Node; no startup acceptance",
       "moduleWrapEvidence": "dynamic-import-engine-check.json",
       "moduleWrapCases": 19,
       "moduleWrapFailures": 0,
@@ -1221,7 +1250,10 @@
       "lazyDataEvidence": "lazy-data-engine-check.json",
       "lazyDataCases": 29,
       "lazyDataDriverRuns": 12,
-      "lazyDataExactNativeGroups": 19
+      "lazyDataExactNativeGroups": 19,
+      "buildConfigurationCases": 15,
+      "buildConfigurationDrivers": 6,
+      "buildConfigurationExactNativeGroups": 9
     },
     "Chromium": {
       "evidence": "icu-engine-check.json",
@@ -1264,15 +1296,18 @@
       "continuationEngineCases": 27,
       "continuationAdditionalDrivers": 7,
       "activeOriginalContinuationConsumersDeferred": 4,
-      "currentArtifactEvidence": "lazy-data-engine-check.json",
-      "regressionScope": "revision45 selected prior regressions and29lazy-property controls/12drivers perhost; no startup acceptance",
+      "currentArtifactEvidence": "build-config-engine-check.json",
+      "regressionScope": "revision46 build configuration15controls/6drivers perhost plus selected lazy/snapshot regressions; selected options/process/realm on Node; no startup acceptance",
       "latestArtifactEvidence": "mksnapshot-engine-check.json",
       "latestPackageRevision": 44,
       "startupNextGap": "util.defineLazyProperties at node:buffer:1572",
       "lazyDataEvidence": "lazy-data-engine-check.json",
       "lazyDataCases": 29,
       "lazyDataDriverRuns": 12,
-      "lazyDataExactNativeGroups": 19
+      "lazyDataExactNativeGroups": 19,
+      "buildConfigurationCases": 15,
+      "buildConfigurationDrivers": 6,
+      "buildConfigurationExactNativeGroups": 9
     },
     "Firefox": {
       "evidence": "icu-engine-check.json",
@@ -1315,15 +1350,18 @@
       "continuationEngineCases": 27,
       "continuationAdditionalDrivers": 7,
       "activeOriginalContinuationConsumersDeferred": 4,
-      "currentArtifactEvidence": "lazy-data-engine-check.json",
-      "regressionScope": "revision45 selected prior regressions and29lazy-property controls/12drivers perhost; no startup acceptance",
+      "currentArtifactEvidence": "build-config-engine-check.json",
+      "regressionScope": "revision46 build configuration15controls/6drivers perhost plus selected lazy/snapshot regressions; selected options/process/realm on Node; no startup acceptance",
       "latestArtifactEvidence": "mksnapshot-engine-check.json",
       "latestPackageRevision": 44,
       "startupNextGap": "util.defineLazyProperties at node:buffer:1572",
       "lazyDataEvidence": "lazy-data-engine-check.json",
       "lazyDataCases": 29,
       "lazyDataDriverRuns": 12,
-      "lazyDataExactNativeGroups": 19
+      "lazyDataExactNativeGroups": 19,
+      "buildConfigurationCases": 15,
+      "buildConfigurationDrivers": 6,
+      "buildConfigurationExactNativeGroups": 9
     },
     "WebKit": {
       "evidence": "icu-engine-check.json",
@@ -1366,19 +1404,22 @@
       "continuationEngineCases": 27,
       "continuationAdditionalDrivers": 7,
       "activeOriginalContinuationConsumersDeferred": 4,
-      "currentArtifactEvidence": "lazy-data-engine-check.json",
-      "regressionScope": "revision45 selected prior regressions and29lazy-property controls/12drivers perhost; no startup acceptance",
+      "currentArtifactEvidence": "build-config-engine-check.json",
+      "regressionScope": "revision46 build configuration15controls/6drivers perhost plus selected lazy/snapshot regressions; selected options/process/realm on Node; no startup acceptance",
       "latestArtifactEvidence": "mksnapshot-engine-check.json",
       "latestPackageRevision": 44,
       "startupNextGap": "util.defineLazyProperties at node:buffer:1572",
       "lazyDataEvidence": "lazy-data-engine-check.json",
       "lazyDataCases": 29,
       "lazyDataDriverRuns": 12,
-      "lazyDataExactNativeGroups": 19
+      "lazyDataExactNativeGroups": 19,
+      "buildConfigurationCases": 15,
+      "buildConfigurationDrivers": 6,
+      "buildConfigurationExactNativeGroups": 9
     }
   },
   "nextWork": [
-    "Audit builtins.config consumers and implement actual Kandelo/SpiderMonkey build-owned Node-compatible metadata; no native V8 config copies, fabricated flags or empty placeholders. Continue unchanged principal startup; keep empty/simple/CJS/ESM and full catalog acceptance separate.",
+    "Audit and implement genuine startup-required messaging registration/ownership contract from original internal/worker/js_transferable. Preserve actual serialization/transfer boundaries and full worker/transport/catalog gaps; no fake handles or success stubs.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",

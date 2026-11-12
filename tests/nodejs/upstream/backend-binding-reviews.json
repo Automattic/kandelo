@@ -4,7 +4,7 @@
   "scope": "Reviewed survey routing and dispatcher snapshot. Family names organize further review, not API/owning-layer or native-contract completion.",
   "dispatcher": {
     "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
-    "sha256": "9deb6c53b486407ab2cdadfa65caf25f8d41d6ebddc1912a9a2f11ad26afaf33",
+    "sha256": "67590dbf66ca444cb169b3ca76a1b7dc1b155de2912bc586ded94f0342f77e73",
     "functionStart": "bool InternalBinding(",
     "functionEnd": "bool LinkedBinding(",
     "reviewedRouteNames": [
@@ -70,8 +70,8 @@
     {
       "name": "builtins",
       "reviewRoutingFamily": "loading",
-      "contractInventory": null,
-      "contractReview": "full binding contract audit outstanding"
+      "contractInventory": "build-config-contracts.json",
+      "contractReview": "bounded actual build descriptor interface; full builtins contract outstanding"
     },
     {
       "name": "cares_wrap",

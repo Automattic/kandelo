@@ -45,6 +45,8 @@
 #include "shell/node-upstream/types.h"
 #include "vm/NativeObject.h"
 
+#include "shell/node-upstream/build-config-inl.h"
+
 namespace kandelo::node {
 namespace {
 
@@ -247,7 +249,14 @@ JSObject* BuiltinsBinding(JSContext* cx, JS::HandleObject state) {
       !JS_DefineProperty(cx, binding, "compileFunction", compile, JSPROP_ENUMERATE) ||
       !JS_DefineProperty(cx, binding, "setInternalLoaders", loaders, JSPROP_ENUMERATE) ||
       !JS_DefineProperty(cx, binding, "builtinIds", Ids, nullptr, JSPROP_ENUMERATE)) return nullptr;
-  for (const char* property : {"config", "builtinCategories", "natives"})
+  JS::RootedId configuration(cx);
+  JS::RootedString configurationName(cx, JS_NewStringCopyZ(cx, "config"));
+  if (!configurationName || !JS_StringToId(cx, configurationName, &configuration)) return nullptr;
+  JS::ObjectOpResult defined;
+  if (!js::DefineKandeloLazyDataProperty(cx, binding, configuration,
+          NativeBuildConfiguration, JS::UndefinedHandleValue, JSPROP_ENUMERATE, defined) ||
+      !defined.checkStrict(cx, binding, configuration)) return nullptr;
+  for (const char* property : {"builtinCategories", "natives"})
     if (!JS_DefineProperty(cx, binding, property, Unimplemented, nullptr, JSPROP_ENUMERATE)) return nullptr;
   static const JSFunctionSpec methods[] = {
       JS_FN("getCacheUsage", Unimplemented, 0, 0), JS_FN("hasCachedBuiltins", Unimplemented, 0, 0),

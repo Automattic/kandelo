@@ -15,10 +15,10 @@ check('config-identity-and-readonly-real-build-fields',()=>{
     assertEq(descriptor.writable,false);assertEq(descriptor.enumerable,true);
   }
 });
-check('config-does-not-copy-unimplemented-native-feature-metadata',()=>{
+check('native-config-and-build-metadata-report-actual-selections',()=>{
   for(const name of ['hasNodeOptions','hasSmallICU'])assertEq(name in config,false);
   assertEq(thrown(()=>config.fipsMode).code,'ERR_KANDELO_NOT_IMPLEMENTED');
-  assertEq(thrown(()=>realm.internalBinding('builtins').config).code,'ERR_KANDELO_NOT_IMPLEMENTED');
+  const build=JSON.parse(realm.internalBinding('builtins').config);assertEq(build.variables.target_arch,'wasm32');assertEq(build.variables.node_use_amaro,true);assertEq(build.variables.node_use_ffi,false);assertEq(build.target_defaults.default_configuration,'Release');
 });
 check('default-locale-comes-from-the-native-engine',()=>{
   const locale=config.getDefaultLocale();assertEq(typeof locale,'string');assertEq(locale.length>0,true);

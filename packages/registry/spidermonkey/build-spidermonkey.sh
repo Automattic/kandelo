@@ -434,6 +434,21 @@ export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFI
 export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -I$V8_TRACING_PREFIX/include -DUV_PLATFORM_KANDELO=1 -DV8_PLATFORM_KANDELO=1"
 export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a $V8_TRACING_PREFIX/lib/libv8-tracing.a $LIBUV_PREFIX/lib/libuv.a $NBYTES_PREFIX/lib/libnbytes.a $SIMDUTF_PREFIX/lib/libsimdutf.a -lpthread -Wl,-z,stack-size=16777216"
 
+
+# Record this recipe's actual flags without executing a host layout probe.
+python3 "$REPO_ROOT/scripts/generate-nodejs-build-settings.py" \
+    --mozconfig "$MOZCONFIG_PATH" \
+    --path-map "$WORK_DIR=/usr/src/kandelo-build/spidermonkey" \
+    --path-map "$REPO_ROOT=/usr/src/kandelo" \
+    --path-map "$OPENSSL_PREFIX=/deps/openssl" \
+    --path-map "$ZLIB_PREFIX=/deps/zlib" \
+    --path-map "$ZSTD_PREFIX=/deps/zstd" \
+    --path-map "$LIBUV_PREFIX=/deps/libuv" \
+    --path-map "$NBYTES_PREFIX=/deps/nbytes" \
+    --path-map "$SIMDUTF_PREFIX=/deps/simdutf" \
+    --path-map "$V8_TRACING_PREFIX=/deps/v8-tracing" \
+    --output "$SRC_DIR/js/src/shell/node-upstream/node-build-settings.generated.h"
+
 if [ -f "$OBJ_DIR/config.status" ] && {
     ! grep -q 'getrandom_backend' "$OBJ_DIR/config.status" ||
         grep -q 'getrandom_backend=custom' "$OBJ_DIR/config.status" ||

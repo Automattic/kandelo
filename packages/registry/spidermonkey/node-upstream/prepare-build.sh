@@ -18,6 +18,8 @@ node_objects="$object_dir/node-upstream"
 
 mkdir -p "$shell_sources" "$node_objects"
 cp "$node_import/native/builtin-source-registry.cpp" \
+    "$node_consumer/build-profile.h" \
+    "$node_consumer/build-config-inl.h" \
     "$node_consumer/builtin-compiler.cpp" \
     "$node_consumer/builtin-compiler.h" \
     "$node_consumer/buffer-memory.cpp" \

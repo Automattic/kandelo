@@ -14,8 +14,9 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 The native principal-body entry calls complete `internal/bootstrap/node` with
 protected state. It now executes the original internal tracing helper and
 passes the live `mksnapshot` binding and native lazy data-property setup in
-original `buffer.js`. It currently stops at the unavailable `builtins.config`
-metadata read in `internal/bootstrap/node:135`. The original native tracing agent, binding,
+original `buffer.js`. It now reads real build configuration and the original
+body freezes `process.config`, then stops at missing `messaging` in
+`internal/worker/js_transferable:21`, called by `internal/bootstrap/node:149`. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -1779,3 +1780,53 @@ Empty/simple startup, output/errors/jobs/exit, separate CJS/ESM and the complete
 backend catalog/ordered roadmap remain unfinished. Normal node mode remains the
 legacy bootstrap. Full products/images, successor ABI builds and overall suites
 remain deferred; this phase used focused empty-filesystem guest fixtures.
+
+
+## Actual native build configuration (revision 46)
+
+`builtins.config` now provides a real frozen native data property containing JSON
+build metadata. The native getter uses Mozilla's JSON writer and actual UTF8
+string creation, without calling user JSON functions or prototype hooks. It
+uses the existing engine data-property record and preserves Node's readonly,
+enumerable, nonconfigurable descriptor with no exposed getter Function.
+
+The existing native options selection now has one shared profile header.
+Amaro's actual imported JavaScript and enabled option remain selected; metadata
+does not turn them off to avoid future execution gaps. FFI, inspector, full V8
+platform, DTLS/QUIC backends, snapshot builder and code cache remain absent from
+this embedding selection. Presence in metadata is build selection, not proof
+that every associated API works. Target architecture, byte order and pointer
+width come from the guest compiler; OpenSSL's numeric version comes from the
+actual linked library. Library paths come from the embedded source registry.
+
+A declared data-only generator serializes the recipe's actual mozconfig and
+CFLAGS/CXXFLAGS/LDFLAGS with logical path projection. It does not run host layout
+probes, copy native V8 configuration, invent a module ABI or reproduce Node's
+GYP algorithms. The descriptor records this Kandelo/SpiderMonkey producer; it
+is not complete GYP native-addon build configuration. Existing Mozilla Linux
+triplet targeting debt is recorded as an actual recipe input, not an assertion
+that Kandelo is Linux. All imported upstream sources remain unchanged.
+
+Fifteen controls and six drivers pass per host on Node, Chromium, Firefox and
+WebKit with the same revision-46 engine/kernel bytes. Nine property-control
+groups match an authenticated fresh native Node reference exactly. Actual build
+values intentionally describe this different binary. Eight generator controls
+pass. Selected lazy-property/snapshot four-host and options/process/realm Node
+regressions also pass: 141 guest processes and 55 expected assertion traps in
+these reports. Earlier wider regression reports remain historical evidence.
+The initial build's include-order failure and first native fixture marker error
+are retained; corrected checks pass. See
+[build-config-contracts.json](../tests/nodejs/upstream/build-config-contracts.json)
+and [build-config-engine-check.json](../tests/nodejs/upstream/build-config-engine-check.json).
+
+The source syntax inventory parses all 443 sources and retains seven read sites,
+one process.config definition, 49 config-member candidates and 32 dynamic
+process-member sites. It does not close alias/computed domains or complete the
+full backend catalog. The actual original principal body reads this metadata and
+recursively freezes process.config, variables and its library array. It next
+fails with `ERR_KANDELO_NOT_IMPLEMENTED: Native Node binding 'messaging' is not
+implemented` in `internal/worker/js_transferable:21`, called at bootstrap:149.
+This is a real next failure, not successful startup. Normal node mode stays
+legacy. Empty/simple startup, CJS/ESM and the complete catalog/ordered roadmap
+remain unfinished. Only focused empty-filesystem fixtures ran; full products,
+images, successor ABI builds and overall suites remain deferred.

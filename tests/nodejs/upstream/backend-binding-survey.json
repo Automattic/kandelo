@@ -18,8 +18,8 @@
     },
     {
       "path": "tests/nodejs/upstream/backend-binding-reviews.json",
-      "bytes": 15995,
-      "sha256": "3a953ed19e44460d8a40fe1e4b1f6455110efd66ad906519e70bc773e5371c81"
+      "bytes": 16058,
+      "sha256": "808f04cabc4983fe517141df842eac304d70ac044b2083b3a0a99e308f1c71fc"
     },
     {
       "path": "tests/nodejs/upstream/dependency-dynamic-reviews.json",
@@ -61,7 +61,7 @@
   },
   "dispatcher": {
     "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
-    "sha256": "9deb6c53b486407ab2cdadfa65caf25f8d41d6ebddc1912a9a2f11ad26afaf33",
+    "sha256": "67590dbf66ca444cb169b3ca76a1b7dc1b155de2912bc586ded94f0342f77e73",
     "functionStart": "bool InternalBinding(",
     "functionEnd": "bool LinkedBinding(",
     "reviewedRouteNames": [
@@ -446,7 +446,7 @@
       "kandeloSourceRoute": true,
       "implementationSurveyState": "route-present-contract-incomplete",
       "reviewRoutingFamily": "loading",
-      "boundedContractInventory": null,
+      "boundedContractInventory": "build-config-contracts.json",
       "apiContractComplete": false,
       "fourHostConformance": "not established by this source survey"
     },

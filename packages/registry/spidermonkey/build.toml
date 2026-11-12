@@ -7,6 +7,7 @@ inputs = [
   "packages/registry/spidermonkey/node-upstream",
   "third_party/nodejs",
   "scripts/generate-nodejs-source-registry.py",
+  "scripts/generate-nodejs-build-settings.py",
   "scripts/generate-nodejs-async-metadata.py",
   "scripts/prepare-nodejs-constants.py",
   "scripts/generate-nodejs-types.py",
@@ -23,4 +24,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 45
+revision    = 46

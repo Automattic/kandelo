@@ -175,20 +175,13 @@
   ],
   "implemented": true,
   "fullContractCatalogComplete": false,
-  "historicalFailure": {
-    "name": "TypeError",
-    "message": "defineLazyProperties is not a function",
-    "location": "node:buffer:1572",
-    "evidence": "mksnapshot-engine-check.json",
-    "startupAccepted": false
-  },
   "currentFailure": {
-    "binding": "builtins.config",
+    "binding": "messaging",
     "name": "Error",
     "code": "ERR_KANDELO_NOT_IMPLEMENTED",
-    "message": "Requested native builtin metadata/cache/source-text backend is not implemented",
-    "location": "node:internal/bootstrap/node:135",
-    "evidence": "lazy-data-engine-check.json",
+    "message": "Native Node binding 'messaging' is not implemented",
+    "location": "node:internal/worker/js_transferable:21; node:internal/bootstrap/node:149",
+    "evidence": "build-config-engine-check.json",
     "startupAccepted": false
   },
   "implementationEvidence": "lazy-data-engine-check.json",
@@ -202,5 +195,23 @@
     "reentrancy": "Cache only if the identical record still owns the property; retain current attributes and writes/deletions/replacements",
     "principalEntry": "Actual principal-only admission before original body compilation; failed secondary owner is retired",
     "review": "lazy-data-contracts.md"
-  }
+  },
+  "historicalFailures": [
+    {
+      "name": "TypeError",
+      "message": "defineLazyProperties is not a function",
+      "location": "node:buffer:1572",
+      "evidence": "mksnapshot-engine-check.json",
+      "startupAccepted": false
+    },
+    {
+      "binding": "builtins.config",
+      "name": "Error",
+      "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+      "message": "Requested native builtin metadata/cache/source-text backend is not implemented",
+      "location": "node:internal/bootstrap/node:135",
+      "evidence": "lazy-data-engine-check.json",
+      "startupAccepted": false
+    }
+  ]
 }
