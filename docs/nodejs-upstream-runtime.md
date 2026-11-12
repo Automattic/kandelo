@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 61 source connects the original process initializer,
+The current revision 62 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 70 symbols and has no normal runnable artifact.
+still fails final linking on 63 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -2605,3 +2605,62 @@ Startup, separate CJS/ESM, full backend inventory and ordered roadmap remain
 incomplete. Full products/images, kernel/successor-ABI rebuilds and overall suites
 remain deferred. ABI 56 and immutable ABI 55 are unchanged; broader roadmap work
 still requires explicit user review.
+
+
+## Native utility primitives (revision 62; no runnable artifact)
+
+Seven native utility contracts now compile and resolve. Normal builds reach
+final linking with zero C++ errors and 63 unique missing symbols, down from 70.
+The private diagnostic has zero C++ errors and six missing symbols, down from
+13. Neither build produces an executable. No guest, browser or native-reference
+runtime execution ran for revision 62; revision 60's four-host results remain
+historical. Compilation and link-symbol closure do not establish API conformance.
+
+LocalVector now stores contiguous trivial Local handles referring to stable
+cells owned by Frame/HandleScope. The pinned public interface explicitly
+supports this indirect-handle model: off-stack slots need no independent roots
+when their scope-owned cells already hold the roots. Removing the provisional
+vector-owned clones preserves same-scope copies across vector growth, movement,
+swap and retirement. A Local cannot outlive its owning handle scope; Global or
+an escaped handle supplies cross-scope ownership. The public V8 headers were
+reviewed as interface references only; no V8 implementation or heap data enters
+the build. Writable/const data access and trivial-layout assertions now compile
+with the unchanged original utility templates.
+
+ArrayBufferView.HasBuffer reads actual engine backing state. CopyContents
+roots and unwraps the view, bounds the copy by its current byte length and
+uses no-GC access to inline or backed bytes. Shared bytes use the engine's
+racy-copy operation. These operations do not materialize a buffer to answer
+the query or copy. TryGetCurrent returns the active native-frame isolate or
+null. LowMemoryNotification performs an actual full shrinking collection,
+preserving the pending exception value and saved throw stack. Function.SetName
+updates both the real JSFunction atom and its own name property.
+
+The original per_process.v8_initialized field is tied to actual shell lifecycle:
+false before initialization, true only after successful SpiderMonkey initialization,
+and false immediately before scope-exit shutdown. JS_IsInitialized alone cannot
+represent shutdown because its documented result stays true afterward. No V8
+heap serialization or fabricated initialized state is supplied.
+
+The remaining six private link contracts are FunctionTemplate.New,
+FunctionTemplate.PrototypeTemplate, Signature.New, Template.Set,
+DumpNativeBacktrace and DumpJavaScriptBacktrace. The prior 57 normal-process
+contracts remain unresolved as well. The backtrace bodies must come from whole
+original sources with real engine/platform dependencies. Function/template
+receiver brands, callback/realm/GC ownership and general naming behavior still
+need implementation or runtime validation. The existing node_internals.h Buffer
+ownership-template bridge remains an explicit source-policy gap.
+
+All 580 imported identities, including 443 JavaScript files/10,993,403 bytes,
+match the unchanged manifest. All 93 recipe-copied native adapter inputs and
+seven staged original utility files match their source bytes. Strict patch and
+style checks are recorded separately. An initial zero-fuzz preflight used the
+Mac host patch tool and failed; the canonical dev-shell GNU patch check passes
+with zero fuzz and matches the actual build file. Both package builds used the
+canonical toolchain and required no retry for that harness discrepancy.
+
+See the [native utility contracts](../tests/nodejs/upstream/utility-primitives-contracts.json)
+and [identified compilation evidence](../tests/nodejs/upstream/utility-primitives-compile-check.json).
+Startup, separate CJS/ESM, full backend catalog and ordered roadmap remain
+incomplete. Full products/images, kernel/successor-ABI rebuilds and overall
+suites remain deferred. ABI 56 and immutable ABI 55 are unchanged.

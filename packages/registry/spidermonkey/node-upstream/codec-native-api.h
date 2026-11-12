@@ -179,40 +179,43 @@ using AccessorNameGetterCallback=void(*)(Local<Name>,const PropertyCallbackInfo<
 using AccessorNameSetterCallback=void(*)(Local<Name>,Local<Value>,const PropertyCallbackInfo<void>&);
 std::unique_ptr<Value> RetainRoot(Isolate*,Local<Value>);
 template<class T> std::unique_ptr<T> RetainTypedRoot(Isolate*,Local<T>);
-// Typed independent roots survive temporary caller HandleScopes. Assignment
-// replaces the actual retained cell instead of retaining an obsolete handle.
+// Indirect locals reference actual cells owned by the active HandleScope.
+// This container owns its contiguous slots, not those cells: copying a Local
+// out survives vector relocation/retirement but cannot extend its handle scope.
+// Cross-scope ownership belongs to Global, not an off-stack Local copy.
 template<class T> class LocalVector {
-  static_assert(std::is_same_v<T,Value>||std::is_same_v<T,Name>);
-  Isolate* isolate_;
-  std::vector<std::unique_ptr<T>> roots_;
+  static_assert(std::is_base_of_v<Value,T>);
   std::vector<Local<T>> values_;
-  void Assign(size_t index,Local<T> value) {
-    auto root=RetainTypedRoot<T>(isolate_,value);values_[index]=Local<T>(root.get());roots_[index]=std::move(root);
-  }
  public:
-  class Reference {
-    LocalVector* owner_;size_t index_;
-   public:
-    Reference(LocalVector* owner,size_t index):owner_(owner),index_(index) {}
-    Reference& operator=(Local<T> value){owner_->Assign(index_,value);return *this;}
-    Reference& operator=(const Reference& value){return *this=Local<T>(value);}
-    operator Local<T>()const{return owner_->values_[index_];}
-    T* operator->()const{return owner_->values_[index_].get();}
-  };
-  explicit LocalVector(Isolate* isolate,size_t size=0):isolate_(isolate),roots_(size),values_(size) {}
-  Reference operator[](size_t index){return Reference(this,index);}
-  Local<T> operator[](size_t index)const{return values_[index];}
-  void push_back(Local<T> value) {
-    auto root=RetainTypedRoot<T>(isolate_,value);
-    values_.emplace_back(root.get());roots_.push_back(std::move(root));
-  }
-  void emplace_back(Local<T> value) { push_back(value); }
-  Local<T>* data();  // Direct writable slots need the complete scoped-root backend.
-  const Local<T>* data()const;
-  void reserve(size_t size){roots_.reserve(size);values_.reserve(size);}
-  void resize(size_t size){roots_.resize(size);values_.resize(size);}
-  size_t size() const { return values_.size(); }
+  explicit LocalVector(Isolate*){}
+  LocalVector(Isolate*,size_t size):values_(size){}
+  LocalVector(Isolate*,std::initializer_list<Local<T>> values):values_(values){}
+  Local<T>& operator[](size_t index){return values_[index];}
+  const Local<T>& operator[](size_t index)const{return values_[index];}
+  Local<T>& at(size_t index){return values_.at(index);}
+  const Local<T>& at(size_t index)const{return values_.at(index);}
+  Local<T>& front(){return values_.front();}
+  const Local<T>& front()const{return values_.front();}
+  Local<T>& back(){return values_.back();}
+  const Local<T>& back()const{return values_.back();}
+  Local<T>* data()noexcept{return values_.data();}
+  const Local<T>* data()const noexcept{return values_.data();}
+  auto begin()noexcept{return values_.begin();}auto end()noexcept{return values_.end();}
+  auto begin()const noexcept{return values_.begin();}auto end()const noexcept{return values_.end();}
+  void push_back(Local<T> value){values_.push_back(value);}
+  void pop_back(){values_.pop_back();}
+  template<class... Args> void emplace_back(Args&&... args){values_.emplace_back(std::forward<Args>(args)...);}
+  void reserve(size_t size){values_.reserve(size);}
+  void resize(size_t size){values_.resize(size);}
+  void shrink_to_fit(){values_.shrink_to_fit();}
+  void clear()noexcept{values_.clear();}
+  void swap(LocalVector& other)noexcept{values_.swap(other.values_);}
+  size_t size()const noexcept{return values_.size();}
+  bool empty()const noexcept{return values_.empty();}
 };
+static_assert(std::is_trivially_copyable_v<Local<Value>>);
+static_assert(std::is_standard_layout_v<Local<Value>>);
+
 struct GlobalRoot;
 std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate*,Local<Value>);
 Local<Value> ReadGlobalRoot(Isolate*,const std::shared_ptr<GlobalRoot>&);

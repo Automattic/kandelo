@@ -98,6 +98,22 @@ Local<ArrayBuffer> ArrayBufferView::Buffer() {
 }
 size_t ArrayBufferView::ByteOffset() const { return JS_GetArrayBufferViewByteOffset(UnwrapView(Frame::current->cx,cell().value)); }
 size_t ArrayBufferView::ByteLength() const { return JS_GetArrayBufferViewByteLength(UnwrapView(Frame::current->cx,cell().value)); }
+bool ArrayBufferView::HasBuffer() const {
+  auto& frame=*Frame::current;JS::RootedObject view(frame.cx,UnwrapView(frame.cx,cell().value));CHECK(view);
+  return view->as<js::ArrayBufferViewObject>().hasBuffer();
+}
+size_t ArrayBufferView::CopyContents(void* destination,size_t capacity) {
+  auto& frame=*Frame::current;JS::RootedObject view(frame.cx,UnwrapView(frame.cx,cell().value));CHECK(view);
+  // Copy under a no-GC guard so inline typed-array storage need not be
+  // materialized or pinned. Shared bytes require the engine's racy copy.
+  JS::AutoCheckCannotGC nogc;bool shared;
+  size_t count=std::min(capacity,JS_GetArrayBufferViewByteLength(view));
+  if(!count)return 0;CHECK(destination);
+  auto* source=static_cast<uint8_t*>(JS_GetArrayBufferViewData(view,&shared,nogc));CHECK(source);
+  if(shared)js::jit::AtomicOperations::memcpySafeWhenRacy(SharedMem<uint8_t*>::unshared(static_cast<uint8_t*>(destination)),SharedMem<uint8_t*>::shared(source),count);
+  else std::memcpy(destination,source,count);
+  return count;
+}
 size_t ArrayBuffer::CopyArrayBufferBytes(size_t start,size_t length,Local<ArrayBuffer> target,size_t destination) {
   if(target->WasDetached()||target->IsImmutable())return 0;
   size_t sourceLength=ByteLength(),targetLength=target->ByteLength();

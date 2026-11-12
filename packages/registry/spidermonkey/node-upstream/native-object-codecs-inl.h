@@ -47,7 +47,25 @@ void StrengthenPersistentCell(PersistentCell* cell){if(cell)MakeGlobalStrong(cel
 JSObject* BorrowPersistentObject(const PersistentCell* cell){return cell?BorrowGlobalObject(cell->root):nullptr;}
 
 Isolate* Isolate::GetCurrent(){CHECK(Frame::current);return &Frame::current->state->isolate;}
+Isolate* Isolate::TryGetCurrent(){return Frame::current?&Frame::current->state->isolate:nullptr;}
+void Isolate::LowMemoryNotification(){
+  auto& frame=Current(this);frame.state->environment.AssertForeground();
+  // A low-memory notification requests an actual full shrinking collection.
+  // Preserve both the pending thrown value and its saved throw stack.
+  JS::AutoSaveExceptionState saved(frame.cx);
+  JS::PrepareForFullGC(frame.cx);
+  JS::NonIncrementalGC(frame.cx,JS::GCOptions::Shrink,JS::GCReason::API);
+  saved.restore();
+}
 Local<Value> Undefined(Isolate* isolate){auto& f=Current(isolate);JS::RootedValue value(f.cx,JS::UndefinedValue());return f.OwnValue(value);}
+void Function::SetName(Local<String> name){
+  auto& frame=*Frame::current;JS::RootedObject object(frame.cx,UnwrapObject(frame.cx,cell().value));CHECK(object&&object->is<JSFunction>());
+  JSAutoRealm home(frame.cx,object);JS::RootedString string(frame.cx,name->cell().value.toString());
+  JS::Rooted<JSAtom*> atom(frame.cx,js::AtomizeString(frame.cx,string));CHECK(atom);
+  // Replace a previously resolved own name as well as the VM's function name.
+  CHECK(JS_DefineProperty(frame.cx,object,"name",string,JSPROP_READONLY));
+  object->as<JSFunction>().setAtom(atom);
+}
 MaybeLocal<Value> Function::Call(Local<Context> context,Local<Value> receiver,int argc,Local<Value>* argv) {
   auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);CHECK_GE(argc,0);if(JS_IsExceptionPending(f.cx))return {};
   JS::RootedValue callable(f.cx,cell().value),target(f.cx,Input(receiver)),result(f.cx);

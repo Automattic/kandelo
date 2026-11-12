@@ -32,6 +32,7 @@
 #include "js/friend/WindowProxy.h"
 #include "js/GCAPI.h"
 #include "js/GlobalObject.h"
+#include "js/Initialization.h"
 #include "js/JSON.h"
 #include "js/MemoryFunctions.h"
 #include "js/Object.h"
@@ -66,6 +67,7 @@
 #include "shell/node-upstream/trace-utf8-native.h"
 #include "shell/node-upstream/tracing-upstream/tracing/agent.h"
 #include "vm/ArrayBufferObject.h"
+#include "vm/ArrayBufferViewObject.h"
 #include "vm/ArrayObject.h"
 #include "vm/JSAtomUtils.h"
 #include "vm/JSFunction.h"
@@ -911,8 +913,13 @@ bool Invoke(JSContext* cx,unsigned argc,JS::Value* vp) {
 }  // namespace kandelo_node_codec_api
 
 namespace kandelo_node_codec_impl {
+namespace per_process {bool v8_initialized=false;}
 }
 namespace kandelo::node {
+void SetNativeEngineActive(bool active) {
+  MOZ_RELEASE_ASSERT(!active||JS_IsInitialized());
+  native::per_process::v8_initialized=active;
+}
 bool TraceNativeCallIsActive() {
   // A JSON getter or observer can enter another native binding before it
   // reaches the private teardown control. Inspect the entire native stack.

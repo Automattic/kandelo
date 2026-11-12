@@ -2,6 +2,7 @@
 #define KANDELO_NODE_CODECS_H
 #include "js/TypeDecls.h"
 namespace kandelo::node {
+void SetNativeEngineActive(bool);
 JSObject* CreateBufferBinding(JSContext* cx, JS::HandleObject realm);
 JSObject* CreateSnapshotBinding(JSContext*,JS::HandleObject);
 JSObject* CreateDiagnosticsBinding(JSContext*,JS::HandleObject);
