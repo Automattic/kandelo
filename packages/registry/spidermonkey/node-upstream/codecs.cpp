@@ -102,6 +102,9 @@ struct Cell {
   JS::PersistentRootedValue value;
   Cell(JSContext* cx, JS::HandleValue input) : value(cx, input) {}
 };
+template<class T> std::unique_ptr<Value> CloneWrapper(std::unique_ptr<Cell> cell) {
+  return std::make_unique<T>(std::move(cell),&CloneWrapper<T>);
+}
 struct Frame {
   JSContext* cx;
   JS::RootedObject realm;
@@ -125,11 +128,15 @@ struct Frame {
         previous(current) { current = this; }
   ~Frame();
   template<class T> Local<T> Own(JS::HandleValue value) {
-    auto item = std::make_unique<T>(std::make_unique<Cell>(cx, value));
-    auto* pointer = item.get(); roots.push_back(std::move(item));
+    auto item = CloneWrapper<T>(std::make_unique<Cell>(cx, value));
+    auto* pointer = static_cast<T*>(item.get()); roots.push_back(std::move(item));
     return Local<T>(pointer);
   }
   Local<Value> OwnValue(JS::HandleValue value);
+  Local<Value> OwnClone(const Value& source,JS::HandleValue value) {
+    auto item=source.CloneRoot(std::make_unique<Cell>(cx,value));
+    auto* pointer=item.get();roots.push_back(std::move(item));return Local<Value>(pointer);
+  }
   Local<Context> OwnContext(JS::HandleObject global) {
     MOZ_RELEASE_ASSERT(JS_IsGlobalObject(global));
     JS::RootedValue value(cx,JS::ObjectValue(*global));
@@ -188,9 +195,11 @@ static JSObject* UnwrapBytes(JSContext* cx, JS::HandleValue input) {
   return object && (JS_IsArrayBufferViewObject(object) || JS::IsArrayBufferObject(object) ||
                     JS::IsSharedArrayBufferObject(object)) ? object : nullptr;
 }
-Value::Value(std::unique_ptr<Cell> cell) : cell_(std::move(cell)) {}
+Value::Value(std::unique_ptr<Cell> cell,RootFactory factory)
+    :cell_(std::move(cell)),rootFactory_(factory?factory:&CloneWrapper<Value>){}
 Value::~Value() = default;
 Cell& Value::cell() const { return *cell_; }
+std::unique_ptr<Value> Value::CloneRoot(std::unique_ptr<Cell> cell)const{return rootFactory_(std::move(cell));}
 Local<Value> Null(Isolate* isolate){auto& f=Current(isolate);JS::RootedValue value(f.cx,JS::NullValue());return f.OwnValue(value);}
 void Isolate::DateTimeConfigurationChangeNotification(TimeZoneDetection detection) {
   auto& f=Current(this);f.state->environment.AssertForeground();
@@ -246,7 +255,7 @@ Local<Value> Frame::OwnValue(JS::HandleValue value) {
   // Source Local::As must refer to the actual C++ wrapper type as well as the
   // actual engine value. A string-tagged base object is not a String object.
   if (value.isString()) return Own<String>(value);
-  if (value.isSymbol()) return Own<Name>(value);
+  if (value.isSymbol()) return Own<Symbol>(value);
   if (auto* view=UnwrapView(cx,value)) {
     if(JS_IsUint8Array(view))return Own<Uint8Array>(value);
     switch(JS_GetArrayBufferViewType(view)) {

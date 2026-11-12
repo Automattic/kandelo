@@ -18,7 +18,7 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 59 source connects the original process initializer,
+The current revision 60 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
 still fails final linking on 57 symbols and has no normal runnable artifact.
@@ -2509,3 +2509,48 @@ All 577 imports and 443 JavaScript files/10,993,403 bytes remain unchanged. Full
 products/images, kernel/successor-ABI builds and overall suites remain deferred;
 the complete backend catalog/roadmap and its explicit user-review gate remain
 unfinished.
+
+
+## Native persistent-handle prerequisites (revision 60; startup incomplete)
+
+The native handle layer now supplies PersistentBase and Global with an actual
+Local as the first member of a standard-layout base. Compile-time checks enforce
+the layout consumed by the unchanged util.h PersistentToLocal::Strong fast path.
+The Local points to a stable C++ wrapper whose Cell contains the real SpiderMonkey
+root; it does not point directly into the moving JavaScript heap. An opaque native
+record owns the canonical isolate/root. No V8 heap data or serialization is used.
+
+Each engine-created wrapper carries its actual typed clone factory. Retaining a
+root or reading a Global now preserves that C++ wrapper type across local scopes,
+including typed arrays, strings, symbols and templates. Symbols created through
+OwnValue now have actual Symbol wrappers. Strengthening a live weak handle
+re-registers the stable Cell's PersistentRootedValue; weakening unregisters it and
+uses the existing weak-zone callback to update or clear the real object edge.
+Nursery promotion, foreground checks and allocation-free finalizer reads remain.
+A collected handle stays empty when strengthened. Move/reset transfer or retire
+the actual native record; Get/Local::New retain independent roots during reentry.
+
+Four new private drivers cover native-only strong ownership, observed nursery-to-tenured movement, actual
+weak collection and strengthening, move/self-move/reset, callbacks that retire
+their own persistent, foreign realms and original thrown-value identity. These
+and the previous 28 drivers pass on Node, Chromium, Firefox and WebKit using
+identical program/kernel bytes: 32 drivers per host. Original Buffer,
+AliasedBuffer, diagnostics, environment, catch and error-policy controls repeat.
+The build retains an intentional self-move warning in the diagnostic control.
+
+The normal build still has zero C++ errors and the same 57 unresolved symbols.
+The private diagnostic links but rejects process_methods and cannot install a
+normal package or node alias. Full products/images, kernel/successor-ABI builds
+and overall suites remain deferred; ABI 56 and immutable ABI 55 are unchanged.
+
+Complete util.h/util-inl.h/util.cc integration remains unfinished. The original
+PersistentToLocal fast path has layout-prerequisite proof, not execution proof;
+the provisional Default adapter remains until whole utility integration. The
+existing ToUpper and other provisional Node utilities still require source-policy
+closure. Generic Private/Data/Context handle kinds and parameterized weak
+callbacks remain unavailable or unproven. Startup, CommonJS/ESM, the full backend
+catalog and its ordered roadmap remain incomplete.
+
+See the [bounded persistent-handle catalog](../tests/nodejs/upstream/persistent-handle-contracts.json)
+and [identified build/runtime evidence](../tests/nodejs/upstream/persistent-handle-engine-check.json).
+All 577 imported identities and 443 JavaScript files/10,993,403 bytes are unchanged.

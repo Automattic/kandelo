@@ -53,6 +53,7 @@ enum class EmbedderDataTag { kDefault };
 [[noreturn]] void Crash(const char*);
 bool SameLocal(Value*,Value*);
 bool SameLocal(Context*,Context*);
+template<class T> class PersistentBase;
 template<class T> class Local {
   T* pointer_ = nullptr;
  public:
@@ -65,6 +66,7 @@ template<class T> class Local {
   bool IsEmpty() const { return !pointer_; }
   template<class U> bool operator==(Local<U> other) const { return SameLocal(pointer_,other.get()); }
   template<class U> Local<U> As() const { return Local<U>(static_cast<U*>(pointer_)); }
+  static Local<T> New(Isolate*,const PersistentBase<T>&);
 };
 template<class T> class MaybeLocal {
   Local<T> value_;
@@ -128,9 +130,14 @@ class SnapshotCreator {
 class Value {
   std::unique_ptr<Cell> cell_;
  public:
-  explicit Value(std::unique_ptr<Cell>);
+  using RootFactory=std::unique_ptr<Value>(*)(std::unique_ptr<Cell>);
+ private:
+  RootFactory rootFactory_;
+ public:
+  explicit Value(std::unique_ptr<Cell>,RootFactory=nullptr);
   virtual ~Value();
   Cell& cell() const;
+  std::unique_ptr<Value> CloneRoot(std::unique_ptr<Cell>) const;
   bool IsObject() const;
   bool IsValue()const;bool IsPrivate()const;bool SameValue(Local<Value>)const;
   bool IsTypedArray() const;
@@ -211,25 +218,57 @@ void MakeGlobalWeakTenured(Isolate*,const std::shared_ptr<GlobalRoot>&);
 bool GlobalRootIsWeak(const std::shared_ptr<GlobalRoot>&);
 bool GlobalRootIsEmpty(const std::shared_ptr<GlobalRoot>&);
 JSObject* BorrowGlobalObject(const std::shared_ptr<GlobalRoot>&);
-template<class T> class Global {
-  Isolate* isolate_=nullptr;
-  std::shared_ptr<GlobalRoot> value_;
+struct PersistentCell;
+PersistentCell* NewPersistentCell(Isolate*,Local<Value>);
+void DeletePersistentCell(PersistentCell*);
+Value* BorrowPersistentLocal(const PersistentCell*);
+Local<Value> ReadPersistentCell(Isolate*,const PersistentCell*);
+bool PersistentCellIsEmpty(const PersistentCell*);
+bool PersistentCellIsWeak(const PersistentCell*);
+void WeakenPersistentCell(PersistentCell*,bool);
+void StrengthenPersistentCell(PersistentCell*);
+JSObject* BorrowPersistentObject(const PersistentCell*);
+// The first member is an actual Local, pointer-interconvertible with this
+// standard-layout object. Node's unchanged PersistentToLocal::Strong borrows
+// this member; its pointee is a stable native wrapper, never a JS heap address.
+template<class T> class PersistentBase {
+  Local<T> local_;
+  PersistentCell* cell_=nullptr;
  public:
-  Global()=default;
-  Global(Isolate* isolate,Local<T> value) { Reset(isolate,value); }
-  Global(const Global&)=delete;Global& operator=(const Global&)=delete;
-  Global(Global&&)=default;Global& operator=(Global&&)=default;
-  bool IsEmpty() const { return GlobalRootIsEmpty(value_); }
-  void Reset(Isolate* isolate,Local<T> value) { if(value.IsEmpty()){Reset();return;}isolate_=isolate;value_=NewGlobalRoot(isolate,value); }
-  void Reset() { value_.reset();isolate_=nullptr; }
-  void SetWeak() { MakeGlobalWeak(isolate_,value_); }
+  PersistentBase()=default;
+  PersistentBase(Isolate* isolate,Local<T> value) { Reset(isolate,value); }
+  ~PersistentBase(){Reset();}
+  PersistentBase(const PersistentBase&)=delete;
+  PersistentBase& operator=(const PersistentBase&)=delete;
+  PersistentBase(PersistentBase&& other) noexcept
+    :local_(std::exchange(other.local_,{})),cell_(std::exchange(other.cell_,nullptr)){}
+  PersistentBase& operator=(PersistentBase&& other) noexcept {
+    if(this!=&other){Reset();local_=std::exchange(other.local_,{});cell_=std::exchange(other.cell_,nullptr);}return *this;
+  }
+  static constexpr bool HasCompatibleLayout(){
+    return std::is_standard_layout_v<PersistentBase<T>>&&offsetof(PersistentBase<T>,local_)==0&&
+      std::is_standard_layout_v<Local<T>>&&sizeof(Local<T>)==sizeof(T*);
+  }
+  bool IsEmpty() const { return PersistentCellIsEmpty(cell_); }
+  void Reset(Isolate* isolate,Local<T> value) {
+    if(value.IsEmpty()){Reset();return;}
+    auto* next=NewPersistentCell(isolate,value);Reset();cell_=next;
+    local_=Local<T>(static_cast<T*>(BorrowPersistentLocal(cell_)));
+  }
+  void Reset(){local_={};DeletePersistentCell(std::exchange(cell_,nullptr));}
+  void SetWeak(){WeakenPersistentCell(cell_,false);}
   template<class P> void SetWeak(P*,void(*)(const WeakCallbackInfo<P>&),WeakCallbackType);
-  void ClearWeak() { MakeGlobalStrong(isolate_,value_); }
-  void SetWeakTenured() { MakeGlobalWeakTenured(isolate_,value_); }
-  bool IsWeak()const{return GlobalRootIsWeak(value_);}
-  Local<T> Get(Isolate* isolate) const { return ReadGlobalRoot(isolate,value_).template As<T>(); }
-  JSObject* BorrowObject() const { return BorrowGlobalObject(value_); }
+  void ClearWeak(){StrengthenPersistentCell(cell_);local_=Local<T>(static_cast<T*>(BorrowPersistentLocal(cell_)));}
+  void SetWeakTenured(){WeakenPersistentCell(cell_,true);}
+  bool IsWeak()const{return PersistentCellIsWeak(cell_);}
+  Local<T> Get(Isolate* isolate)const{return ReadPersistentCell(isolate,cell_).template As<T>();}
+  JSObject* BorrowObject()const{return BorrowPersistentObject(cell_);}
 };
+static_assert(PersistentBase<Value>::HasCompatibleLayout());
+template<class T> class Global:public PersistentBase<T> {
+ public:using PersistentBase<T>::PersistentBase;
+};
+template<class T> Local<T> Local<T>::New(Isolate* isolate,const PersistentBase<T>& value){return value.Get(isolate);}
 class Object : public Value {
  public:
   using Value::Value;

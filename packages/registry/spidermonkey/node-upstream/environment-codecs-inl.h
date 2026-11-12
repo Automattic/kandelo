@@ -9,6 +9,9 @@
 namespace kandelo_node_codec_api {
 struct GlobalRoot {
   std::weak_ptr<State> state;
+  // The C++ wrapper remains stable across weak/strong transitions. Only its
+  // PersistentRootedValue registration changes, so borrowing the native Local
+  // never exposes a moving JS pointer or accidentally keeps a weak target alive.
   std::unique_ptr<Value> strong;
   JS::Heap<JSObject*> weak{nullptr};
   bool weakMode=false;
@@ -22,18 +25,18 @@ Local<Value> ReadGlobalRoot(Isolate* isolate,const std::shared_ptr<GlobalRoot>& 
   CHECK(root->state.lock()==frame.state);frame.state->environment.AssertForeground();
   JS::RootedValue value(frame.cx);
   if(root->weakMode){if(!root->weak)return {};value.setObject(*root->weak);}
-  else {CHECK(root->strong);value=root->strong->cell().value;}
-  if(!JS_WrapValue(frame.cx,&value))return {};return frame.OwnValue(value);
+  else {if(!root->strong||!root->strong->cell().value.initialized())return {};value=root->strong->cell().value;}
+  if(!JS_WrapValue(frame.cx,&value))return {};return frame.OwnClone(*root->strong,value);
 }
 bool GlobalRootIsEmpty(const std::shared_ptr<GlobalRoot>& root) {
   if(!root)return true;
   if(auto state=root->state.lock())state->environment.AssertForeground();
-  return root->weakMode?!root->weak:!root->strong;
+  return root->weakMode?!root->weak:!root->strong||!root->strong->cell().value.initialized();
 }
 JSObject* BorrowGlobalObject(const std::shared_ptr<GlobalRoot>& root) {
   if(!root)return nullptr;
   if(root->weakMode)return root->weak;
-  if(!root->strong)return nullptr;
+  if(!root->strong||!root->strong->cell().value.initialized())return nullptr;
   const auto value=root->strong->cell().value.get();CHECK(value.isObject());return &value.toObject();
 }
 void MakeGlobalWeak(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root) {
@@ -49,7 +52,7 @@ void MakeGlobalWeak(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root) {
   }
   // The registry retains only native records. These edges are deliberately
   // weak and are updated by the engine's weak-zone callback, never traced.
-  frame.state->weakGlobals.push_back(root);root->weak=object;root->weakMode=true;root->strong.reset();
+  frame.state->weakGlobals.push_back(root);root->weak=object;root->weakMode=true;root->strong->cell().value.reset();
 }
 inline thread_local std::vector<std::shared_ptr<State>> environmentOwners;
 void UpdateEnvironmentWeakEdges(JSTracer* tracer,void* raw) {
@@ -282,7 +285,7 @@ void Environment::Shutdown(JSContext* cx) {
   data_->processEmitWarningSync.Reset();
   state->aliasedControls.clear();
   if(data_->weakRegistered){JS_RemoveWeakPointerZonesCallback(cx,api::UpdateEnvironmentWeakEdges);data_->weakRegistered=false;}
-  for(auto& root:state->weakGlobals){CHECK(!root->strong);root->weak=nullptr;}
+  for(auto& root:state->weakGlobals){CHECK(root->strong&&!root->strong->cell().value.initialized());root->weak=nullptr;}
   state->weakGlobals.clear();data_->weakControls.clear();data_->probes.clear();
   data_->arguments=nullptr;data_->execArguments=nullptr;data_->processInvocationReady=false;
   data_->ownsProcessState=false;data_->executablePath.clear();data_->runtime.reset();

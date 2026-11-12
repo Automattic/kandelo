@@ -18,16 +18,33 @@ void MakeGlobalStrong(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root){
   // Remove weak tracking before publishing a strong edge. Otherwise stale
   // tracking records can become an unintended strong owner after retirement.
   std::erase(state->weakGlobals,root);
-  root->strong=root->weak?std::make_unique<Value>(std::make_unique<Cell>(cx,value)):nullptr;
+  CHECK(root->strong&&!root->strong->cell().value.initialized());
+  if(root->weak)root->strong->cell().value.init(cx,value);
   root->weak=nullptr;root->weakMode=false;
 }
 void MakeGlobalWeakTenured(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root){
-  if(!root||root->weakMode||!root->strong)return;
+  if(!root||root->weakMode||!root->strong||!root->strong->cell().value.initialized())return;
   auto state=root->state.lock();CHECK(state && &state->isolate==isolate);state->environment.AssertForeground();
   auto value=root->strong->cell().value.get();CHECK(value.isObject());
   JSObject* object=&value.toObject();CHECK(!js::gc::IsInsideNursery(object));
-  state->weakGlobals.push_back(root);root->weak=object;root->weakMode=true;root->strong.reset();
+  state->weakGlobals.push_back(root);root->weak=object;root->weakMode=true;root->strong->cell().value.reset();
 }
+struct PersistentCell {
+  Isolate* isolate;
+  std::shared_ptr<GlobalRoot> root;
+};
+PersistentCell* NewPersistentCell(Isolate* isolate,Local<Value> value){return new PersistentCell{isolate,NewGlobalRoot(isolate,value)};}
+void DeletePersistentCell(PersistentCell* cell){delete cell;}
+Value* BorrowPersistentLocal(const PersistentCell* cell){return PersistentCellIsEmpty(cell)?nullptr:cell->root->strong.get();}
+Local<Value> ReadPersistentCell(Isolate* isolate,const PersistentCell* cell){return cell?ReadGlobalRoot(isolate,cell->root):Local<Value>();}
+bool PersistentCellIsEmpty(const PersistentCell* cell){return !cell||GlobalRootIsEmpty(cell->root);}
+bool PersistentCellIsWeak(const PersistentCell* cell){return cell&&GlobalRootIsWeak(cell->root);}
+void WeakenPersistentCell(PersistentCell* cell,bool tenured){
+  if(!cell)return;
+  if(tenured)MakeGlobalWeakTenured(cell->isolate,cell->root);else MakeGlobalWeak(cell->isolate,cell->root);
+}
+void StrengthenPersistentCell(PersistentCell* cell){if(cell)MakeGlobalStrong(cell->isolate,cell->root);}
+JSObject* BorrowPersistentObject(const PersistentCell* cell){return cell?BorrowGlobalObject(cell->root):nullptr;}
 
 Isolate* Isolate::GetCurrent(){CHECK(Frame::current);return &Frame::current->state->isolate;}
 Local<Value> Undefined(Isolate* isolate){auto& f=Current(isolate);JS::RootedValue value(f.cx,JS::UndefinedValue());return f.OwnValue(value);}

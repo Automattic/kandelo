@@ -1,4 +1,5 @@
 import {errorPolicyCases,errorPolicyFixtureFiles} from './error-policy-controls';
+import {persistentHandleCases} from './persistent-handle-controls';
 import {scopedCatchCases} from './scoped-catch-controls';
 import {readFileSync} from 'node:fs';
 import {asyncResourcePrimitiveCases} from './async-resource-primitives-controls';
@@ -7,7 +8,7 @@ import {bufferCases,verifyBufferResult} from './buffer-controls';
 import {aliasedCases,verifyAliasedResult} from './aliased-controls';
 import {environmentCases,verifyEnvironmentResult} from './environment-controls';
 export const nativeOwnerFixture='tests/nodejs/upstream/native-owner-engine-controls.js';
-export const nativeOwnerSourceFiles=[...errorPolicyFixtureFiles,'tests/nodejs/upstream/scoped-catch-controls.ts','tests/nodejs/upstream/async-resource-primitives-controls.ts',nativeOwnerFixture,'tests/nodejs/upstream/native-owner-controls.ts',
+export const nativeOwnerSourceFiles=[...errorPolicyFixtureFiles,'tests/nodejs/upstream/persistent-handle-controls.ts','tests/nodejs/upstream/scoped-catch-controls.ts','tests/nodejs/upstream/async-resource-primitives-controls.ts',nativeOwnerFixture,'tests/nodejs/upstream/native-owner-controls.ts',
  'tests/nodejs/upstream/diagnostics-controls.ts','tests/nodejs/upstream/diagnostics-engine-controls.js','tests/nodejs/upstream/diagnostics-shared-controls.js','tests/nodejs/upstream/diagnostics-native-reference.json',
  'tests/nodejs/upstream/buffer-controls.ts','tests/nodejs/upstream/buffer-engine-controls.js','tests/nodejs/upstream/buffer-shared-controls.js','tests/nodejs/upstream/buffer-native-reference.json',
  'tests/nodejs/upstream/aliased-controls.ts','tests/nodejs/upstream/aliased-engine-controls.js',
@@ -15,6 +16,7 @@ export const nativeOwnerSourceFiles=[...errorPolicyFixtureFiles,'tests/nodejs/up
 const source=readFileSync(nativeOwnerFixture,'utf8');
 const setup=`const api=__kandeloUpstreamTest;api.initializeContext();const realm=api.initializeRealm();const op=(name,...args)=>api.nativeOwners(name,...args);`;
 export const nativeOwnerCases=[
+ ...persistentHandleCases,
  ...errorPolicyCases,
  ...scopedCatchCases,
  ...asyncResourcePrimitiveCases,

@@ -87,7 +87,9 @@
     "scopedCatchPartialCatalog": "scoped-catch-contracts.json",
     "scopedCatchEngineEvidence": "scoped-catch-engine-check.json",
     "errorPolicyPartialCatalog": "error-policy-contracts.json",
-    "errorPolicyEngineEvidence": "error-policy-engine-check.json"
+    "errorPolicyEngineEvidence": "error-policy-engine-check.json",
+    "persistentHandlePartialCatalog": "persistent-handle-contracts.json",
+    "persistentHandleEngineEvidence": "persistent-handle-engine-check.json"
   },
   "implementation": [
     {
@@ -355,6 +357,12 @@
       "sourceStatus": "Complete unchanged node_errors.h classes/templates compiled;13provisional helpers and extracted error metadata removed. Actual Error/TypeError/RangeError/SyntaxError intrinsics back97coded templates and49predefined messages;4new+24prior drivers pass perhost in an explicit private profile.",
       "evidence": "error-policy-engine-check.json",
       "remaining": "Normal link57; Message/stack/source/report/scheduling and original resource owners remain incomplete. Existing ToUpper ASCII helper is an unresolved source-policy utility gap; whole util.h/util-inl.h integration and audit required."
+    },
+    {
+      "area": "native persistent-handle layout and actual typed roots",
+      "status": "four-host private diagnostic prerequisite; complete upstream utility integration pending",
+      "evidence": "persistent-handle-engine-check.json",
+      "remaining": "Compile complete util.h/util-inl.h and execute original PersistentToLocal fast path; actual Message/stack/report/lifecycle/scheduling and startup remain incomplete"
     }
   ],
   "runtimeConformance": {
@@ -1133,6 +1141,11 @@
       "fullNativeProducerConformance": false,
       "upstreamStartup": false,
       "next": "process_methods"
+    },
+    "persistentHandleLayout": {
+      "status": "real SpiderMonkey rooted-handle prerequisite implemented and diagnosed on four hosts",
+      "evidence": "persistent-handle-engine-check.json",
+      "originalUtilityIntegrationComplete": false
     }
   },
   "nativeDifferentialControls": {
@@ -1637,7 +1650,7 @@
     }
   },
   "nextWork": [
-    "Resolve complete native utility/source-policy closure (existing ToUpper ASCII helper must be replaced through whole util.h/util-inl.h integration), then genuine Message/SavedFrame/source metadata and full error/report/scheduling closure. Normal link57; original policy header constructor now resolves. Continue actual native resource producers as startup requires; no broader roadmap before review.",
+    "Complete whole original util.h/util-inl.h/util.cc integration and audit provisional helpers. PersistentBase/Global now have stable typed native wrappers and actual root/weak transitions, but original PersistentToLocal fast path is not yet executed. Existing ToUpper ASCII helper remains a source-policy gap. Then genuine Message/SavedFrame/source metadata, report/lifecycle/scheduling and startup. Normal link still57; no broader roadmap before review.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1646,17 +1659,17 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 59,
+    "packageRevision": 60,
     "status": "failed final link",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
     "undefinedSymbols": 57,
-    "evidence": "error-policy-engine-check.json",
+    "evidence": "persistent-handle-engine-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
-    "buildCacheKey": "3c24472a8ccc127acf73c1948efebe64711ebaf34427b6400eb8c475228386d9",
+    "buildCacheKey": "72d18a4d30fae87a8a3f7c8066c704fd2f58fbc07a70d91adec61de3940ecdee",
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-error-header-normal-clean-1112-110340-90c4",
+    "buildJob": "node-persistent-normal-1112-114924-0e46",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1686,7 +1699,9 @@
     "wholeOriginalErrorPolicyHeaderCompiles": true,
     "resolvedSinceRevision58": [
       "kandelo_node_codec_impl::errors::TryCatchScope::TryCatchScope(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::errors::TryCatchScope::CatchMode)"
-    ]
+    ],
+    "persistentHandleLayoutPrerequisitesCompile": true,
+    "wholeOriginalUtilitiesCompile": false
   },
   "currentLibuvExecutablePath": {
     "packageRevision": 5,
@@ -1704,11 +1719,11 @@
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   },
   "currentNativeOwnerDiagnostic": {
-    "evidence": "error-policy-engine-check.json",
-    "packageRevision": 59,
+    "evidence": "persistent-handle-engine-check.json",
+    "packageRevision": 60,
     "normalPackageArtifact": false,
     "controlsPerHost": 12,
-    "driversPerHost": 28,
+    "driversPerHost": 32,
     "hosts": [
       "node",
       "chromium",
@@ -1730,6 +1745,8 @@
     "newScopedCatchDriversPerHost": 13,
     "newErrorPolicyDriversPerHost": 4,
     "originalErrorCodeTemplates": 97,
-    "originalPredefinedStaticMessages": 49
+    "originalPredefinedStaticMessages": 49,
+    "newPersistentHandleDriversPerHost": 4,
+    "originalPersistentToLocalFastPathExecuted": false
   }
 }

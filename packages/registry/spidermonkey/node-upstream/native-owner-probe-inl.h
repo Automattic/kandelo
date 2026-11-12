@@ -5,6 +5,7 @@ namespace kandelo_node_codec_api {
 struct NativeOwnerProbeState {
   std::set<native::BaseObject*> objects;
   std::map<uint64_t,native::BaseObjectPtr<native::BaseObject>> references;
+  std::map<uint64_t,Global<Value>> persistents;
   uint64_t next=1,created=0,destroyed=0,closeRequests=0,closed=0,retired=0,callbacks=0;
 };
 }
@@ -63,6 +64,39 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"persistentCreate")) {
+    const auto token=counters->next++;
+    counters->persistents.emplace(token,api::Global<api::Value>(&state->isolate,frame.OwnValue(args.get(1))));
+    args.rval().setNumber(double(token));return true;
+  }
+  if(!std::strncmp(operation.get(),"persistent",10)) {
+    const double token=args.get(1).isNumber()?args[1].toNumber():0;
+    if(!std::isfinite(token)||token<1||token>9007199254740991.0||std::floor(token)!=token) {
+      JS_ReportErrorASCII(cx,"Invalid persistent control token");return false;
+    }
+    auto it=counters->persistents.find(uint64_t(token));
+    if(it==counters->persistents.end()){JS_ReportErrorASCII(cx,"Unknown persistent control token");return false;}
+    auto& root=it->second;
+    if(!std::strcmp(operation.get(),"persistentDrop")){counters->persistents.erase(it);return true;}
+    if(!std::strcmp(operation.get(),"persistentMove")) {
+      api::Global<api::Value> moved(std::move(root));CHECK(root.IsEmpty());
+      root=std::move(moved);CHECK(moved.IsEmpty());root=std::move(root);return true;
+    }
+    if(!std::strcmp(operation.get(),"persistentWeak")){root.SetWeak();return true;}
+    if(!std::strcmp(operation.get(),"persistentStrong")){root.ClearWeak();return true;}
+    if(!std::strcmp(operation.get(),"persistentEmpty")){args.rval().setBoolean(root.IsEmpty());return true;}
+    auto value=api::Local<api::Value>::New(&state->isolate,root);
+    if(!std::strcmp(operation.get(),"persistentGet")) {
+      if(!value.IsEmpty())args.rval().set(api::Input(value));return true;
+    }
+    if(!std::strcmp(operation.get(),"persistentCall")) {
+      if(value.IsEmpty()||!value->IsFunction()){JS_ReportErrorASCII(cx,"Persistent control target is not callable");return false;}
+      auto result=value.As<api::Function>()->Call(state->isolate.GetCurrentContext(),api::Undefined(&state->isolate),0,nullptr);
+      api::Local<api::Value> output;if(!result.ToLocal(&output))return false;
+      args.rval().set(api::Input(output));return true;
+    }
+    JS_ReportErrorASCII(cx,"Unknown persistent control operation");return false;
+  }
   if(!std::strcmp(operation.get(),"errorFactory")) {
     if(!args.get(1).isString()||!args.get(2).isString()) {
       JS_ReportErrorASCII(cx,"Native error control requires action and code");return false;
