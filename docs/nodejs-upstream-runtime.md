@@ -1936,3 +1936,69 @@ acceptance remain unfinished. Normal node mode still uses the legacy bootstrap.
 Only focused empty-filesystem fixtures ran. Full products/images, successor ABI
 builds and overall suites remain deferred; broader backend implementation still
 requires the startup/catalog review gate.
+
+## Live native data-property prerequisite (revision 49)
+
+`process_methods` requires the complete process object unit, whose `title`,
+`ppid` and `debugPort` fields use live native data callbacks. They remain data
+properties in JavaScript descriptors, with no exposed getter/setter Functions.
+The earlier lazy property primitive caches a value once and cannot implement
+these fields. The owning SpiderMonkey property layer now supports live reads,
+optional native writes, traced callback data and the actual read receiver.
+Inherited writes create ordinary receiver properties. Own writes invoke the
+native setter when present; setterless writes become ordinary data properties.
+
+Descriptor value definitions preserve a native setter, applying new attributes
+before calling it. A throwing or reentrant setter keeps its actual effects:
+deleted/replaced properties are not resurrected. Attribute-only definitions,
+seal and freeze retain live callbacks and enforce data-property attributes.
+Frozen redundant definitions do not call a setter. Existing lazy records
+retain their previous materialization behavior. Hidden record/data roots keep
+callbacks and payloads alive across moving GC and reentrant deletion.
+
+The production change is an engine primitive. Privileged test thunks exercise
+it; the native process callback adapter and `process_methods` binding are not
+implemented by those thunks. Proxy targets are explicitly rejected. Full V8
+property/template/interceptor/security/side-effect semantics, arbitrary getter
+reentrant descriptor recursion, complete lifecycle and allocation-failure
+coverage remain unproved. No Node.js algorithms or JavaScript were rewritten.
+
+The normal revision-49 package build passed. Twenty-six property controls and
+five guest drivers pass per host on Node, Chromium, Firefox and WebKit, using
+identical engine/kernel artifacts and empty guest filesystems. Twelve bounded
+observable groups match separate authenticated native Node children. Selected
+diagnostics, messaging, configuration, lazy, snapshot and Buffer four-host
+regressions, plus Environment/options/process configuration/realm/ICU/trace
+Node regressions pass: 284 guest processes and 91 expected assertion traps.
+The engine is 59,293,549 bytes, SHA-256
+`d08a545cbf6fc0bb9ee1bddc0d1b92b80308061d403a7393b9728b29fac671b2`.
+See [native-data-engine-check.json](../tests/nodejs/upstream/native-data-engine-check.json).
+
+The first native comparison incorrectly assumed that a throwing conversion left
+`process.debugPort` unchanged. A fresh probe found that its original native
+setter stores zero while the conversion exception remains pending. The shared
+attribute-ordering check now compares attributes independently of payload
+changes, which belong to the binding. The failed comparison and probe are
+retained; no guest assertion was relaxed. Native process behavior will need
+its own implementation and validation. Browser cleanup permission warnings and
+Vite notices remain in the reports; no cleanup/quiescence guarantee is made.
+
+The partial [process contract inventory](../tests/nodejs/upstream/process-methods-contracts.json)
+records all 29 syntactically registered methods and nine literal JavaScript
+binding sites. Alias-based consumers, full signatures and exceptional paths
+still need reconciliation. It separates real native prerequisites from missing
+platform behavior: current `sys_getrusage` returns a zero-filled structure and
+`sys_sysinfo` supplies fixed uptime/memory/process values. These are Kandelo
+implementation gaps, not accepted measurements or proven browser boundaries.
+Missing libuv memory symbols and process-title support are also cataloged.
+No kernel, libc, libuv, ABI or host adapter change was made in this step.
+
+The 561 imported records, including all 443 JavaScript sources and 10,993,403
+JavaScript bytes, are unchanged. Source analysis passes 29 controls, canonical
+regeneration and same-count altered-edge rejection. Genuine principal startup
+still fails on `process_methods` at `internal/process/per_thread:68`, via
+bootstrap:152. This prerequisite does not advance that startup result. Normal
+`node` mode remains legacy; empty/simple execution, separate CJS/ESM entrypaths,
+complete catalog and ordered roadmap remain unfinished. Full products/images,
+successor-ABI builds and overall suites remain deferred. Broader backend
+implementation still requires the startup/catalog user review gate.

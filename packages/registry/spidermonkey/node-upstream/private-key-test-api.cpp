@@ -14,6 +14,7 @@
 #include "js/friend/WindowProxy.h"
 #include "js/GlobalObject.h"
 #include "js/Modules.h"
+#include "js/Object.h"
 #include "js/PropertyAndElement.h"
 #include "js/Realm.h"
 #include "js/RootingAPI.h"
@@ -94,6 +95,67 @@ bool DefineNativeLazyForTesting(JSContext* cx,unsigned argc,JS::Value* vp) {
     JS::ObjectOpResult result;
     if(!js::DefineKandeloLazyDataProperty(cx,target,id,NativeLazyProducer,producer,JSPROP_ENUMERATE,result)||!result.checkStrict(cx,target,id))return false;}
   args.rval().setUndefined();return true;
+}
+
+// Test-only callback functions are traced through the native data record.
+// Property descriptors never expose these as JavaScript accessors.
+const JSClass nativeDataTestClass = {
+    "KandeloNativeDataTest", JSCLASS_HAS_RESERVED_SLOTS(2)};
+bool NativeDataReadForTesting(JSContext* cx, JS::HandleObject holder,
+                              JS::HandleValue receiver, JS::HandleId id,
+                              JS::HandleValue data,
+                              JS::MutableHandleValue result) {
+  JS::RootedValue getter(cx, JS::GetReservedSlot(&data.toObject(), 0));
+  JS::RootedValueArray<2> arguments(cx);
+  arguments[0].setObject(*holder);
+  if (!JS_IdToValue(cx, id, arguments[1])) return false;
+  return JS::Call(cx, receiver, getter, arguments, result);
+}
+bool NativeDataWriteForTesting(JSContext* cx, JS::HandleObject holder,
+                               JS::HandleId id, JS::HandleValue data,
+                               JS::HandleValue input,
+                               JS::ObjectOpResult& result) {
+  JS::RootedValue setter(cx, JS::GetReservedSlot(&data.toObject(), 1));
+  JS::RootedValue receiver(cx, JS::ObjectValue(*holder)), ignored(cx);
+  JS::RootedValueArray<3> arguments(cx);
+  arguments[0].setObject(*holder);
+  if (!JS_IdToValue(cx, id, arguments[1])) return false;
+  arguments[2].set(input);
+  if (!JS::Call(cx, receiver, setter, arguments, &ignored)) return false;
+  return result.succeed();
+}
+bool DefineNativeDataForTesting(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  if (argc != 4 || !args[0].isObject() ||
+      (!args[1].isString() && !args[1].isSymbol()) ||
+      !args[2].isObject() || !JS::IsCallable(&args[2].toObject()) ||
+      (!args[3].isUndefined() &&
+       (!args[3].isObject() || !JS::IsCallable(&args[3].toObject())))) {
+    JS_ReportErrorASCII(cx, "Native data control requires target, key, getter and optional setter");
+    return false;
+  }
+  JS::RootedObject target(cx, js::CheckedUnwrapDynamic(&args[0].toObject(), cx, false));
+  if (!target) return false;
+  JS::RootedId id(cx);
+  if (!JS_ValueToId(cx, args[1], &id)) return false;
+  JS::RootedValue getter(cx, args[2]), setter(cx, args[3]);
+  {
+    JSAutoRealm home(cx, target);
+    if (!JS_WrapValue(cx, &getter) || !JS_WrapValue(cx, &setter)) return false;
+    JS::RootedObject data(cx, JS_NewObject(cx, &nativeDataTestClass));
+    if (!data) return false;
+    JS::SetReservedSlot(data, 0, getter);
+    JS::SetReservedSlot(data, 1, setter);
+    JS::RootedValue value(cx, JS::ObjectValue(*data));
+    JS::ObjectOpResult result;
+    if (!js::DefineKandeloNativeDataProperty(
+            cx, target, id, NativeDataReadForTesting,
+            setter.isUndefined() ? nullptr : NativeDataWriteForTesting,
+            value, JSPROP_ENUMERATE, result) ||
+        !result.checkStrict(cx, target, id)) return false;
+  }
+  args.rval().setUndefined();
+  return true;
 }
 bool CompileFunctionBodyForTesting(JSContext* cx, unsigned argc, JS::Value* vp) {
   auto args = JS::CallArgsFromVp(argc, vp);
@@ -425,6 +487,7 @@ bool DefinePrivateKeyTestAPI(JSContext* cx) {
   static const JSFunctionSpec functions[] = {
       JS_FN("messagingNative", MessagingNativeForTesting, 2, 0),
       JS_FN("defineNativeLazy", DefineNativeLazyForTesting, 3, 0),
+      JS_FN("defineNativeData", DefineNativeDataForTesting, 4, 0),
       JS_FN("compileFunctionBody", CompileFunctionBodyForTesting, 3, 0),
       JS_FN("newPrivateKey", NewPrivateKey, 0, 0),
       JS_FN("newExternal", NewExternal, 0, 0),

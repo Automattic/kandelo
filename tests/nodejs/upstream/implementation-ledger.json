@@ -65,7 +65,9 @@
     "messagingPartialCatalog": "messaging-contracts.json",
     "messagingEngineEvidence": "messaging-engine-check.json",
     "diagnosticsPartialCatalog": "diagnostics-contracts.json",
-    "diagnosticsEngineEvidence": "diagnostics-engine-check.json"
+    "diagnosticsEngineEvidence": "diagnostics-engine-check.json",
+    "processMethodsPartialCatalog": "process-methods-contracts.json",
+    "nativeDataEngineEvidence": "native-data-engine-check.json"
   },
   "implementation": [
     {
@@ -301,7 +303,7 @@
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "diagnostics-engine-check.json"
+      "latestArtifactEvidence": "native-data-engine-check.json"
     },
     "Chromium": {
       "upstreamStartup": "Original principal body completes original diagnostics setup, then fails on process_methods at internal/process/per_thread:68 via internal/bootstrap/node:152; startup not achieved",
@@ -310,7 +312,7 @@
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "diagnostics-engine-check.json"
+      "latestArtifactEvidence": "native-data-engine-check.json"
     },
     "Firefox": {
       "upstreamStartup": "Original principal body completes original diagnostics setup, then fails on process_methods at internal/process/per_thread:68 via internal/bootstrap/node:152; startup not achieved",
@@ -319,7 +321,7 @@
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "diagnostics-engine-check.json"
+      "latestArtifactEvidence": "native-data-engine-check.json"
     },
     "WebKit": {
       "upstreamStartup": "Original principal body completes original diagnostics setup, then fails on process_methods at internal/process/per_thread:68 via internal/bootstrap/node:152; startup not achieved",
@@ -328,7 +330,7 @@
       "commonJsEntry": "not run",
       "esmEntry": "not run",
       "completeCoreCompatibility": "not established",
-      "latestArtifactEvidence": "diagnostics-engine-check.json"
+      "latestArtifactEvidence": "native-data-engine-check.json"
     },
     "libuvStandaloneLoop": {
       "hosts": [
@@ -474,6 +476,25 @@
       "nativeChannelStorageLinkingAndPublishExercised": true,
       "fullNativeProducerAndLifecycleConformance": false,
       "upstreamStartup": false
+    },
+    "liveNativeDataPrerequisite": {
+      "evidence": "native-data-engine-check.json",
+      "hosts": [
+        "Node",
+        "Chromium",
+        "Firefox",
+        "WebKit"
+      ],
+      "controlsPerHost": 26,
+      "driversPerHost": 5,
+      "exactNativeGroups": 12,
+      "enginePropertyPrimitiveImplemented": true,
+      "nativeProcessCallbackAdapterImplemented": false,
+      "processMethodsBindingImplemented": false,
+      "sourceJavascriptChanged": false,
+      "upstreamStartup": false,
+      "completePropertyInterfaceConformance": false,
+      "next": "native process callback adapter and whole process object/methods units with genuine prerequisites"
     }
   },
   "validationLimits": {
@@ -1211,6 +1232,13 @@
       "report": "diagnostics-native-reference.json",
       "exactGroups": 12,
       "fullNativeProducerDifferential": false
+    },
+    "liveNativeData": {
+      "report": "native-data-native-reference.json",
+      "exactGroups": 12,
+      "nativeChildren": 12,
+      "payloadMutationOnConversionExceptionCompared": false,
+      "fullNativeInterfaceDifferential": false
     }
   },
   "focusedGuestEngineControls": {
