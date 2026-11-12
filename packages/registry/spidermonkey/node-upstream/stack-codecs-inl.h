@@ -9,12 +9,13 @@ JSObject* SavedFrameObject(Frame& frame,const Data& data){
 }
 int NativeStackNumber(uint32_t value){CHECK_LE(value,uint32_t(INT_MAX));return int(value);}
 }
-const int Message::kNoScriptIdInfo=-1;
+const int Message::kNoScriptIdInfo=0;
+const int Message::kNoColumnInfo=0;
+const int Message::kNoLineNumberInfo=0;
 bool Isolate::InContext(){return JS::CurrentGlobalOrNull(Current(this).cx)!=nullptr;}
-Local<StackTrace> StackTrace::CurrentStackTrace(Isolate* isolate,int count,StackTraceOptions options){
-  auto& frame=Current(isolate);CHECK_GE(count,0);CHECK_EQ(int(options)&~int(kDetailed|kExposeFramesAcrossSecurityOrigins),0);
-  JS::RootedObject cursor(frame.cx);JS::RootedValueVector values(frame.cx);
-  if(count&&!JS::CaptureCurrentStack(frame.cx,&cursor,JS::StackCapture(JS::MaxFrames(uint32_t(count)))))return {};
+namespace {
+Local<StackTrace> NativeSavedStack(Frame& frame,JS::HandleObject input,int count){
+  JS::RootedObject cursor(frame.cx,input);JS::RootedValueVector values(frame.cx);
   while(cursor&&values.length()<size_t(count)){
     cursor=js::CheckedUnwrapDynamic(cursor,frame.cx,false);CHECK(cursor&&cursor->is<js::SavedFrame>());
     auto& saved=cursor->as<js::SavedFrame>();
@@ -30,6 +31,13 @@ Local<StackTrace> StackTrace::CurrentStackTrace(Isolate* isolate,int count,Stack
   }
   JS::RootedObject array(frame.cx,JS::NewArrayObject(frame.cx,JS::HandleValueArray(values)));if(!array)return {};
   JS::RootedValue value(frame.cx,JS::ObjectValue(*array));return frame.Own<StackTrace>(value);
+}
+}
+Local<StackTrace> StackTrace::CurrentStackTrace(Isolate* isolate,int count,StackTraceOptions options){
+  auto& frame=Current(isolate);CHECK_GE(count,0);CHECK_EQ(int(options)&~int(kDetailed|kExposeFramesAcrossSecurityOrigins),0);
+  JS::RootedObject stack(frame.cx);
+  if(count&&!JS::CaptureCurrentStack(frame.cx,&stack,JS::StackCapture(JS::MaxFrames(uint32_t(count)))))return {};
+  return NativeSavedStack(frame,stack,count);
 }
 int StackTrace::GetFrameCount(){
   auto& frame=*Frame::current;JS::RootedObject array(frame.cx,UnwrapObject(frame.cx,cell().value));uint32_t count;

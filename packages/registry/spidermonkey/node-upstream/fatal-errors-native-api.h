@@ -7,12 +7,15 @@
 #include "shell/node-upstream/process-errors-native-api.h"
 namespace kandelo_node_codec_api {
 class ScriptOrigin {
+ Local<Message> message_;
  public:
+ explicit ScriptOrigin(Local<Message> message):message_(message){}
  Local<Value> SourceMapUrl();Local<Value> ResourceName();int LineOffset();int ColumnOffset();
 };
-class Message:public Value {
+class Message:public Data {
  public:
- using Value::Value;static const int kNoScriptIdInfo;
+ using Data::Data;bool IsValue()const override{return false;}bool IsPrivate()const override{return false;}
+ static const int kNoScriptIdInfo,kNoColumnInfo,kNoLineNumberInfo;
  Local<Value> GetScriptResourceName();Maybe<int> GetLineNumber(Local<Context>);
  int GetStartColumn();int GetEndColumn();ScriptOrigin GetScriptOrigin();
  MaybeLocal<String> GetSourceLine(Local<Context>);Local<StackTrace> GetStackTrace();

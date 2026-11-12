@@ -97,7 +97,9 @@
     "nativeTemplatePartialCatalog": "native-template-contracts.json",
     "nativeTemplateCompileEvidence": "native-template-compile-check.json",
     "nativeStackPartialCatalog": "native-stack-contracts.json",
-    "nativeStackEngineEvidence": "native-stack-engine-check.json"
+    "nativeStackEngineEvidence": "native-stack-engine-check.json",
+    "nativeMessagePartialCatalog": "native-message-contracts.json",
+    "nativeMessageEngineEvidence": "native-message-engine-check.json"
   },
   "implementation": [
     {
@@ -395,6 +397,12 @@
       "status": "Complete original debug_utils.cc compiles unchanged; actual VM stack data and original capture/printing execute in four-host private controls",
       "evidence": "native-stack-engine-check.json",
       "remaining": "Normal48 Message/source/report/process/lifecycle dependencies, unavailable environment-aware SafeGetenv, native symbolication and reconstructed/Wasm stack gaps; genuine startup and full catalog remain incomplete"
+    },
+    {
+      "area": "native Message/ScriptOrigin and retained actual source ownership",
+      "status": "Real source/report/throw-versus-creation snapshots and non-Value Data roots validated in selected private four-host controls; no inferred source ranges or compilation origins",
+      "evidence": "native-message-engine-check.json",
+      "remaining": "Normal36 process/fatal/report/resource/accounting/permission/loading prerequisites; compiler-origin and end-range capture, full text/options/lifetime conformance and Buffer source-policy closure"
     }
   ],
   "runtimeConformance": {
@@ -1180,8 +1188,8 @@
       "originalUtilityIntegrationComplete": false
     },
     "nativeUtilities": {
-      "status": "Whole original utilities/debugging units and real stack/template prerequisites validated by selected private controls on four hosts; normal48 remains unlinked",
-      "evidence": "native-stack-engine-check.json",
+      "status": "Whole original utility/debugging units plus native source/Message/stack/template prerequisites validated in private45 controls/host; normal36 remains unlinked",
+      "evidence": "native-message-engine-check.json",
       "currentRuntimeValidated": true,
       "unmodifiedSourcePolicySatisfied": false
     }
@@ -1688,7 +1696,7 @@
     }
   },
   "nextWork": [
-    "Implement actual Message/source-line/origin/report and remaining normal process/lifecycle/resource/accounting/permission/loading prerequisites; normal48 remains unlinked. Retire Buffer ownership bridge through complete node_internals.h integration. Preserve explicit environment-aware SafeGetenv/reconstructed-frame/Wasm/symbolication gaps. Then genuine startup/CJS/ESM/full catalog/roadmap and review gate. Selected private40 controls per host do not establish startup or complete API conformance.",
+    "Implement normal36 real process/fatal/report/private-key/resource/accounting/permission/native-loading dependencies and retire Buffer ownership bridge through whole node_internals.h. Message compiler-origin/end-range capture and text/capture-options/security/lifetime semantics remain partial. Native no-info constants corrected to audited0 values. Then genuine startup/CJS/ESM/full catalog/ordered roadmap and explicit review gate; private45 four-host controls do not establish startup.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1697,17 +1705,17 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 64,
-    "status": "failed final link in targeted normal profile rebuild",
+    "packageRevision": 65,
+    "status": "failed final link in fresh unmodified normal recipe",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 48,
-    "evidence": "native-stack-engine-check.json",
+    "undefinedSymbols": 36,
+    "evidence": "native-message-engine-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
     "buildCacheKey": null,
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-backtraces-normal-profile-1112-173514-4239",
+    "buildJob": "node-message-normal-fresh-1112-180950-6a59",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1741,7 +1749,7 @@
     "persistentHandleLayoutPrerequisitesCompile": true,
     "wholeOriginalUtilitiesCompile": true,
     "sourceIdentityRecords": 581,
-    "previousCompileEvidence": "native-template-compile-check.json",
+    "previousCompileEvidence": "native-stack-engine-check.json",
     "removedSinceRevision62": [
       "kandelo_node_codec_api::FunctionTemplate::New(kandelo_node_codec_api::Isolate*, void (*)(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&), kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Signature>, int, kandelo_node_codec_api::ConstructorBehavior, kandelo_node_codec_api::SideEffectType, kandelo_node_codec_api::CFunction const*)",
       "kandelo_node_codec_api::FunctionTemplate::PrototypeTemplate()",
@@ -1764,7 +1772,23 @@
       "kandelo_node_codec_impl::DumpNativeBacktrace(_IO_FILE*)"
     ],
     "addedSinceRevision63": [],
-    "buildMethod": "Targeted normal-profile recipe rebuild from exact previously prepared patched source; no resolver cache entry or package installation"
+    "buildMethod": "Fresh unmodified package recipe with clean source extracted from authenticated Mozilla archive; normal patch/staging/build flow, no resolver publication",
+    "nativeMessagePrerequisitesCompile": true,
+    "removedSinceRevision64": [
+      "kandelo_node_codec_api::Exception::CreateMessage(kandelo_node_codec_api::Isolate*, kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>)",
+      "kandelo_node_codec_api::Message::GetEndColumn()",
+      "kandelo_node_codec_api::Message::GetLineNumber(kandelo_node_codec_api::Local<kandelo_node_codec_api::Context>)",
+      "kandelo_node_codec_api::Message::GetScriptOrigin()",
+      "kandelo_node_codec_api::Message::GetScriptResourceName()",
+      "kandelo_node_codec_api::Message::GetSourceLine(kandelo_node_codec_api::Local<kandelo_node_codec_api::Context>)",
+      "kandelo_node_codec_api::Message::GetStackTrace()",
+      "kandelo_node_codec_api::Message::GetStartColumn()",
+      "kandelo_node_codec_api::ScriptOrigin::ColumnOffset()",
+      "kandelo_node_codec_api::ScriptOrigin::LineOffset()",
+      "kandelo_node_codec_api::ScriptOrigin::SourceMapUrl()",
+      "kandelo_node_codec_api::TryCatch::Message() const"
+    ],
+    "addedSinceRevision64": []
   },
   "currentLibuvExecutablePath": {
     "packageRevision": 5,
@@ -1782,21 +1806,21 @@
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   },
   "currentNativeOwnerDiagnostic": {
-    "evidence": "native-stack-engine-check.json",
-    "packageRevision": 64,
+    "evidence": "native-message-engine-check.json",
+    "packageRevision": 65,
     "normalPackageArtifact": false,
     "startupAccepted": false,
     "normalEngineLinked": false,
     "privateProfileRejectsProcessMethods": true,
     "linked": true,
     "currentRuntimeValidated": true,
-    "currentDriversPerHost": 40,
+    "currentDriversPerHost": 45,
     "lastRuntimeValidatedRevision": 60,
     "historicalDriversPerHost": 32,
     "undefinedSymbols": 0,
     "historicalEvidence": "persistent-handle-engine-check.json",
-    "buildJob": "node-backtraces-private-recipe-space-1112-173252-d69d",
-    "intendedDriversPerHost": 40,
+    "buildJob": "node-message-private-booleans-1112-180051-f916",
+    "intendedDriversPerHost": 45,
     "newDriversNotExecuted": 0,
     "hosts": [
       "node",
@@ -1805,9 +1829,9 @@
       "webkit"
     ],
     "program": {
-      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-debug-backtraces/native-owner-probe.wasm",
-      "bytes": 59862270,
-      "sha256": "3890b1951317430a26cd1849f9917361c55b8ea90cea0bf82d4213d66a976ee5"
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-native-message/native-owner-probe.wasm",
+      "bytes": 59892350,
+      "sha256": "ee4c5607e1b02e6674c53efa5cecf10ec6b09f2db0cb06f3b3b1279d9a80e85a"
     },
     "kernel": {
       "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
@@ -1816,7 +1840,8 @@
     },
     "newStackDrivers": 4,
     "newTemplateDrivers": 4,
-    "previousDrivers": 32
+    "previousDrivers": 40,
+    "newMessageDrivers": 5
   },
   "historicalNativeOwnerDiagnostic": {
     "evidence": "persistent-handle-engine-check.json",

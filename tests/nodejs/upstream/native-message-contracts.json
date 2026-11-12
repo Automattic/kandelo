@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "scope": "Startup-required native Message/ScriptOrigin and retained actual VM source data; selected private diagnostics, not complete error reporting or startup",
+  "packageRevision": 65,
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "owningLayers": [
+    "SpiderMonkey SavedFrame/ScriptSource reference ownership",
+    "SpiderMonkey embedding native Message/ScriptOrigin and catch-state snapshots",
+    "complete unchanged original node_errors.cc consumers"
+  ],
+  "originalConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/src/node_errors.cc",
+      "bytes": 45641,
+      "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_errors.h",
+      "bytes": 23299,
+      "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/debug_utils.cc",
+      "bytes": 16324,
+      "sha256": "9f2904508a8443beb454dc789a07d60afb2f2ec7f9b2f56bc651d9c66edb0ea3"
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "Exception.CreateMessage/TryCatch.Message",
+      "contract": "Real rooted non-Value Message snapshots retain engine report text, source/position/origin fields and saved frames. CreateMessage reconstructs the actual Error creation stack or uses its documented current-stack fallback. TryCatch.Message uses the caught exception stack for the diagnostic location, separately preserving the Error creation stack for GetStackTrace. OOM/termination do not fabricate messages.",
+      "effects": "Engine ErrorReportBuilder uses NoSideEffects; no user coercion/getter/proxy traps are requested. Owned JS strings/fields replace borrowed transient report pointers."
+    },
+    {
+      "name": "SavedFrame retained ScriptSource",
+      "contract": "Live captures and async lookup copies retain an actual ref-counted ScriptSource. SavedFrame finalization releases it. Lookup RefPtr owns source through allocations/GC. Retaining source does not retain a JSScript, executable function, global or Node realm. Existing source identity/provenance distinguishes compilations.",
+      "limits": "Reconstructed/structured-cloned and Wasm frames lacking source ownership remain unavailable; no source registry is invented from filenames."
+    },
+    {
+      "name": "Message.GetSourceLine/GetScriptResourceName/GetLineNumber/GetStartColumn",
+      "contract": "Actual engine source is pinned/decoded through ScriptSource.substring and stable UTF16 chars. Line extraction respects LF, CRLF, CR, U+2028 and U+2029. Compiler-owned report line buffers are used directly when present. Saved frame points provide runtime line/column metadata; script origin offsets are converted to the native zero-based interface."
+    },
+    {
+      "name": "ScriptOrigin.ResourceName/SourceMapUrl/LineOffset/ColumnOffset",
+      "contract": "Original ScriptSource filename, actual source-map URL and original compiler start line/column remain distinct from SavedFrame display/sourceURL. UTF8 filenames are decoded as UTF8. Missing retained compilation origin fails explicitly."
+    },
+    {
+      "name": "Message.GetEndColumn and no-info constants",
+      "contract": "VM capture/report fields provide points, not end ranges. GetEndColumn returns the audited interface no-column sentinel 0; it does not claim a synthesized expression range. kNoLineNumberInfo/kNoColumnInfo/kNoScriptIdInfo are 0; the previous private -1 no-script-ID value is corrected.",
+      "limits": "End-range capture is an implementation gap. Original Node formatting may omit its underline; no full error-output parity claim."
+    }
+  ],
+  "implementationGaps": [
+    "Compiler diagnostics with a report line but no retained source owner still lack exact compilation origin and fail origin access explicitly.",
+    "Full expression/end-range capture is unimplemented; no-column sentinel is used.",
+    "Message text comes from the real SpiderMonkey report; complete V8 message formatting, capture options and security/async/native frame parity are unproven.",
+    "Complete lifetime/OOM/reentrant/context/shutdown and structured-cloned/reconstructed metadata conformance remain incomplete.",
+    "Normal process/fatal/report/resource/accounting/loading backends remain incomplete; source policy still requires whole node_internals.h integration for the Buffer ownership bridge."
+  ],
+  "validationObligations": [
+    "Distinct Error creation and throw sites; native-reference unhandled source locations retained separately from private API controls.",
+    "Source retention across function disappearance and real full GC; original/display/source-map names and offset conversion.",
+    "Exotic throw values without coercion; Unicode filenames/text and all JavaScript line terminators.",
+    "Existing40 private regressions plus5 Message drivers on Node/Chromium/Firefox/WebKit with exact same artifact/kernel.",
+    "Normal profile exact unresolved-symbol diff; strict source patch and actual prepared-source/input identities."
+  ],
+  "currentEvidence": "native-message-engine-check.json: private45 drivers/host on four hosts; fresh normal36 unresolved symbols, no startup",
+  "sourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false,
+  "currentRuntimeValidated": true
+}

@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 64 source connects the original process initializer,
+The current revision 65 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 48 symbols and has no normal runnable artifact.
+still fails final linking on 36 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -2751,3 +2751,20 @@ Capture stops at real asynchronous ancestry and skips self-hosted frames, so it 
 All 581 imported identities match; the 443 JavaScript files and 10,993,403 bytes remain unchanged. Source-index validation and runtime acceptance are separate. No full product/image/kernel/successor-ABI rebuild or overall suite ran; immutable ABI55 and current ABI56 are unchanged. Genuine startup, CJS/ESM, the complete backend catalog and ordered roadmap remain unfinished.
 
 See the [native stack contracts](../tests/nodejs/upstream/native-stack-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-stack-engine-check.json).
+
+
+## Native messages and retained VM source (revision 65)
+
+Native Message and ScriptOrigin now snapshot actual error/report, saved-frame and compiler source data. Message is a rooted non-Value Data kind. TryCatch.Message uses the actual throw stack for the diagnostic location while preserving the Error creation stack separately; CreateMessage reconstructs that creation stack or uses its documented current-stack fallback. Engine report construction requests NoSideEffects, and transient report data is copied into owned strings/fields. Source/display URL, original filename, source-map URL and compiler offsets remain distinct.
+
+SavedFrame captures retain a ref-counted ScriptSource, release it at finalization and preserve it through async lookup copies. Lookup holds its own reference across allocations/GC. The retained source is independent of the executable JSScript, function and realm. Source extraction uses the actual engine source text and stable UTF-16 units, including Unicode and JavaScript line separators. There is no filename-indexed source substitute. Reconstructed/structured-cloned and Wasm frames without source ownership remain unavailable.
+
+The native interface's no-info line/column/script-ID constants are 0; the previous private -1 no-script-ID constant is corrected. The VM currently supplies point positions, not end ranges. GetEndColumn therefore returns the audited no-column sentinel rather than inventing an expression extent; original Node formatting may omit its underline. Compiler report line buffers are used directly, but an absent retained compilation origin fails origin access explicitly. Full compiler-origin/end-range capture, message text/capture-option parity, OOM/security/async and lifetime behavior remain incomplete. This is a partial native prerequisite, not full error-reporting compatibility.
+
+The private artifact passes 45 process drivers on each of Node, Chromium, Firefox and WebKit, using identical program and unchanged ABI56 kernel hashes. Five new controls cover source retention after GC, distinct creation/throw locations, original/display/source-map names and offsets, exotic thrown values without coercion and Unicode/line splitting. The previous 40 regressions pass too. The artifact is 59,892,350 bytes, SHA-256 `ee4c5607e1b02e6674c53efa5cecf10ec6b09f2db0cb06f3b3b1279d9a80e85a`. It rejects process_methods and cannot be installed as the normal package. Browser storage-cleanup EACCES is retained separately from guest results.
+
+The fresh, unmodified normal package recipe compiles but fails linking on 36 symbols, down from 48 by 12 with no additions. Clean source came from the authenticated Mozilla archive; the recipe applied its normal patch/staging/build flow. The standard resolver attempt was intentionally cancelled during a slow download after the verified cache replacement was ready; it supplied no compile evidence. Private builds reused the separately verified prepared source. Initial UTF8 API/include-order failures, the diagnostic Boolean correction and the fixture's one-based shell-column correction are retained with their exact artifacts/reports. There is no normal resolver cache publication or new normal executable.
+
+All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. The Buffer bridge still requires whole node_internals.h integration. Genuine startup, separate CJS/ESM, the full backend catalog and roadmap remain unfinished; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [native Message contracts](../tests/nodejs/upstream/native-message-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-message-engine-check.json).

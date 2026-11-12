@@ -65,6 +65,37 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"message")){
+    auto* isolate=&state->isolate;api::Local<api::Message> message;
+    std::unique_ptr<api::TryCatch> catcher;
+    if(args.get(2).isTrue()){
+      if(!args.get(1).isObject()||!JS::IsCallable(&args[1].toObject())){JS_ReportErrorASCII(cx,"Native message catch control requires Function");return false;}
+      catcher=std::make_unique<api::TryCatch>(isolate);
+      auto callback=frame.Own<api::Function>(args[1]);
+      USE(callback->Call(isolate->GetCurrentContext(),api::Undefined(isolate),0,nullptr));
+      if(!catcher->HasCaught()){JS_ReportErrorASCII(cx,"Native message control did not catch an exception");return false;}
+      message=catcher->Message();
+    }else message=api::Exception::CreateMessage(isolate,frame.OwnValue(args.get(1)));
+    if(message.IsEmpty())return false;
+    CHECK(!message->IsValue()&&!message->IsPrivate());
+    JS::RootedObject output(cx,JS_NewPlainObject(cx));if(!output)return false;
+    auto put=[&](const char* key,api::Local<api::Value> input){JS::RootedValue value(cx,api::Input(input));return JS_DefineProperty(cx,output,key,value,JSPROP_ENUMERATE);};
+    api::Local<api::String> sourceLine;
+    const bool hasSource=message->GetSourceLine(isolate->GetCurrentContext()).ToLocal(&sourceLine);
+    JS::RootedValue hasSourceValue(cx,JS::BooleanValue(hasSource));
+    auto origin=message->GetScriptOrigin();
+    if(!put("text",message->Get())||!put("resource",message->GetScriptResourceName())||
+       !put("origin",origin.ResourceName())||!put("sourceMap",origin.SourceMapUrl())||
+       !JS_DefineProperty(cx,output,"line",message->GetLineNumber(isolate->GetCurrentContext()).FromJust(),JSPROP_ENUMERATE)||
+       !JS_DefineProperty(cx,output,"startColumn",message->GetStartColumn(),JSPROP_ENUMERATE)||
+       !JS_DefineProperty(cx,output,"endColumn",message->GetEndColumn(),JSPROP_ENUMERATE)||
+       !JS_DefineProperty(cx,output,"lineOffset",origin.LineOffset(),JSPROP_ENUMERATE)||
+       !JS_DefineProperty(cx,output,"columnOffset",origin.ColumnOffset(),JSPROP_ENUMERATE)||
+       !JS_DefineProperty(cx,output,"frames",message->GetStackTrace()->GetFrameCount(),JSPROP_ENUMERATE)||
+       !JS_DefineProperty(cx,output,"hasSource",hasSourceValue,JSPROP_ENUMERATE)||
+       (hasSource&&!put("source",sourceLine)))return false;
+    if(catcher)catcher->Reset();args.rval().setObject(*output);return true;
+  }
   if(!std::strcmp(operation.get(),"stackFrames")){
     const auto count=args.get(1);
     if(!count.isInt32()||count.toInt32()<0){JS_ReportErrorASCII(cx,"Native stack control requires nonnegative Int32 frame count");return false;}
@@ -75,11 +106,12 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
     for(int index=0;index<stack->GetFrameCount();++index){
       auto saved=stack->GetFrame(isolate,index);JS::RootedObject item(cx,JS_NewPlainObject(cx));if(!item)return false;
       JS::RootedValue name(cx,api::Input(saved->GetFunctionName())),source(cx,api::Input(saved->GetScriptName()));
+      JS::RootedValue isEval(cx,JS::BooleanValue(saved->IsEval()));
       if(!JS_DefineProperty(cx,item,"name",name,JSPROP_ENUMERATE)||
          !JS_DefineProperty(cx,item,"source",source,JSPROP_ENUMERATE)||
          !JS_DefineProperty(cx,item,"line",saved->GetLineNumber(),JSPROP_ENUMERATE)||
          !JS_DefineProperty(cx,item,"column",saved->GetColumn(),JSPROP_ENUMERATE)||
-         !JS_DefineProperty(cx,item,"eval",saved->IsEval(),JSPROP_ENUMERATE)||
+         !JS_DefineProperty(cx,item,"eval",isEval,JSPROP_ENUMERATE)||
          !JS_DefineProperty(cx,item,"scriptId",saved->GetScriptId(),JSPROP_ENUMERATE))return false;
       JS::RootedValue value(cx,JS::ObjectValue(*item));if(!JS_SetElement(cx,output,uint32_t(index),value))return false;
     }
