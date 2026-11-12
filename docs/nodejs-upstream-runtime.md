@@ -136,6 +136,15 @@ paths. For each requirement record:
 - Archived native reuse candidates, implementation status and validation
   obligations on each of the four hosts.
 
+The reconciled source graph now retains all 443 source identities and 3,342 original
+references, 37 lazy registrations, 18 transfer metadata sites and separate CJS/ESM
+loader roots. An authenticated archive scan records 160 native registration sites
+across 460 source/header files. Every one of the 72 literal binding names has initializer syntax;
+17 have current Kandelo dispatcher routes and 55 do not. Route presence is not full
+binding support. The survey links all 19 historical family reviews and 33 PR reuse
+records. See [the source graph and native survey](../tests/nodejs/upstream/backend-graph.md)
+for scope, reproduction, symbolic domains and remaining native API obligations.
+
 The syntax index is the start of this catalog, not its completion. Use the
 prior 19-family audit and PR reuse audit as historical evidence and native
 salvage indexes. Do not import the old assembled public frontend wholesale.

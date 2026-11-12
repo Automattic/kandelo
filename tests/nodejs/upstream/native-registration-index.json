@@ -1,0 +1,6376 @@
+{
+  "schema": 1,
+  "scope": "All src/**/*.cc and src/**/*.h registration syntax in the authenticated archive; macro definitions/comments/literals excluded; not compiled registry availability or API conformance",
+  "target": {
+    "version": "26.13.0",
+    "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+  },
+  "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+  "sourceManifestSha256": "bca37a1dff2dead5e0f9a6bd68c56e714c7f14634361bd53b613c2f3de3ca33f",
+  "sourceOffsetUnits": "Unicode code points; line numbers are one-based",
+  "counts": {
+    "nativeFilesScanned": 460,
+    "registrationSites": 160,
+    "bindingNames": 77,
+    "initializerNames": 73,
+    "roles": {
+      "context-initializer": 74,
+      "cpp-initializer": 0,
+      "isolate-initializer": 22,
+      "external-reference-registration": 64
+    }
+  },
+  "files": [
+    {
+      "path": "src/acorn_version.h",
+      "bytes": 223,
+      "sha256": "f02893921db2d8d896a7fedbcb00eb0975dcb768684de94a991ac135a1ee2989",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/aliased_buffer-inl.h",
+      "bytes": 8694,
+      "sha256": "056df681ed699aa07b06b4e9adec470d5dd12c6cfdb5f4dacf4edae3dea06769",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/aliased_buffer.h",
+      "bytes": 6468,
+      "sha256": "a374d00816da192d44e45b1566c986081b26ad0dbea73401405682fd2b4434ec",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/aliased_struct-inl.h",
+      "bytes": 4051,
+      "sha256": "c82a8fa6999d0ec821d88be9d461c468cfd4e1f942ac8356f1c54bb4b4945568",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/aliased_struct.h",
+      "bytes": 8662,
+      "sha256": "d395d40e4471e8344d8872b07d0ecad6297390aa07b7b6b57503d2cdcac5f32f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/amaro_version.h",
+      "bytes": 223,
+      "sha256": "d438323b74d838164d25f10625aaac5953049009c9eebddb1f7545abafe92ace",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/api/async_resource.cc",
+      "bytes": 2893,
+      "sha256": "5f0a797695d8892c4539ce3ebcba7ef3a78c2b00737e9358f2ef63f22722a416",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/api/callback.cc",
+      "bytes": 13742,
+      "sha256": "0488c28167ecd95e8406bfd86bf1d226acb17a5e6b547b573873de8777305c36",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/api/embed_helpers.cc",
+      "bytes": 11163,
+      "sha256": "e270d4a24a40a75a1d9abfc90fefdb519b34e3cfbd90fe9959bd6bcc82e11c5d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/api/encoding.cc",
+      "bytes": 5371,
+      "sha256": "83bdf541f5f835716291b01b4b31c51feea0a2d5a760e5be274ab95e4cc9c664",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/api/environment.cc",
+      "bytes": 41700,
+      "sha256": "9c80f4adda1ed6ee32d90818841aba2484e3fc366916dcbb6298289f484ce8dc",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/api/exceptions.cc",
+      "bytes": 8256,
+      "sha256": "36cd3250e4c7a957a32548d403b5e9e4c3014bc4a13adf17f69d5e30a9fa8ce5",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/api/hooks.cc",
+      "bytes": 11010,
+      "sha256": "224872c8b63496c4a35ea178f0a20a7b5028eb9c1dedbe696cb96fbbbfc3f3b5",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/api/utils.cc",
+      "bytes": 2210,
+      "sha256": "8abad3382588e9c9b0421e16a1162e464e2c498c4c6c47435b71c5bdbb786f5a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/async_context_frame.cc",
+      "bytes": 2750,
+      "sha256": "6de1a1e6c0eb2abf910628ffcb5722e5e33234d3725a2df27ce36349e091f9cc",
+      "registrations": 1,
+      "importedSource": true
+    },
+    {
+      "path": "src/async_context_frame.h",
+      "bytes": 903,
+      "sha256": "e2f173c35a8ea6b9afb670b1bbfb126890e29b8188108aa60c572bfe68345e92",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/async_wrap-inl.h",
+      "bytes": 4023,
+      "sha256": "ef01e968d801f04679043e57eb8be51c6fbc8c4748f05e74ed5d5e36711473ed",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/async_wrap.cc",
+      "bytes": 27422,
+      "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709",
+      "registrations": 3,
+      "importedSource": true
+    },
+    {
+      "path": "src/async_wrap.h",
+      "bytes": 12578,
+      "sha256": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/base_object-inl.h",
+      "bytes": 10097,
+      "sha256": "cf890bf4723cb7b9ecbeb2662e98344ae81af0937abd4b214413885f6450d6d2",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/base_object.cc",
+      "bytes": 5666,
+      "sha256": "48ca52d7d1e16d7cec5c08c77d4b348f83909c1a22a5a2cafe35b715480da804",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/base_object.h",
+      "bytes": 14837,
+      "sha256": "cb4dbc336992f12f915adc0064c29fa116d39f00f0f9a8e1789eead796ed2655",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/base_object_types.h",
+      "bytes": 3773,
+      "sha256": "f9627f9c8e8746aea08a761475a2124062453e0becf382d66df74636b870d2b1",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/blob_serializer_deserializer-inl.h",
+      "bytes": 11659,
+      "sha256": "cabe53830ffc0de7167bb5255e7840108ddb8e0b19112ac56fc61aff6eb8f682",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/blob_serializer_deserializer.h",
+      "bytes": 4380,
+      "sha256": "54802d00105b776a0902f5ffca40358398800a1dd17b967b0a75ae2805af2fa4",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/builtin_info.cc",
+      "bytes": 1447,
+      "sha256": "bf8336d85b92460242453232017f2c2dad94aa3b78ba7aecbba5af3e2c3ef1a0",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/builtin_info.h",
+      "bytes": 1899,
+      "sha256": "f81573ce5068e4d2d36a7b46b3ff58c0c86d2832814424b3216ef8ef89cdedc5",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/callback_queue-inl.h",
+      "bytes": 2648,
+      "sha256": "82561f32d5c5950751ab99c0fbafa66d7ef6f95d17b243849a471aa50d010bbc",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/callback_queue.h",
+      "bytes": 2027,
+      "sha256": "040c0242b120ac97f393442fcc83cdd4215906163d52f02fab88a264a73b4a2d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/cares_wrap.cc",
+      "bytes": 73425,
+      "sha256": "e0d762ed6161dd9f1e8ff732050f8886bdfff2d86a84cde377d6962cd69a1c63",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/cares_wrap.h",
+      "bytes": 14293,
+      "sha256": "8cc3c16b6609332963e4488de3286cc6f6eccead402630bd7aff82657007ebe6",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/cleanup_queue-inl.h",
+      "bytes": 899,
+      "sha256": "a5f2e94244461040185a11b658426b3244cca6b31677f2483cec041f6c25de4c",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/cleanup_queue.cc",
+      "bytes": 1664,
+      "sha256": "807497036cb4f5cbd81285037e68c73a5d07fdc8de91328cff7abcb234202df3",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/cleanup_queue.h",
+      "bytes": 2030,
+      "sha256": "a5eaea393dd49a7ca46002f92f90d91f5df60b50706dea653a2b055c5b133715",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/compile_cache.cc",
+      "bytes": 22875,
+      "sha256": "af57f40fa2a829dbb041040a693bb2a4b20c48a8ef28ee1f2ded2502db738996",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/compile_cache.h",
+      "bytes": 4378,
+      "sha256": "3fa5e84d3b1acb615395901ab821cace84e84794a802c9a5332419caf57531ae",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/connect_wrap.cc",
+      "bytes": 305,
+      "sha256": "52ff4d2d97ca0f4264a9654c241b24880a6ab0fc3650ba2433308854f6d8c3e7",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/connect_wrap.h",
+      "bytes": 584,
+      "sha256": "caf04cf0e4f2b8147335f86f65721dcc48699a203f68a94e9079cc518d01f4bc",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/connection_wrap.cc",
+      "bytes": 4507,
+      "sha256": "76a4492674dedda6d5e7699eab9c3903f11da4b46a9c991c628becadfa181cf0",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/connection_wrap.h",
+      "bytes": 686,
+      "sha256": "6295b3a25befe37283c93ad6f9b989f6d4baef53d7ab1609758cf1214826a668",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/cppgc_helpers-inl.h",
+      "bytes": 2533,
+      "sha256": "a9d10ea77477f8f7bda0452a33d31bf9ae19b5f64466920a9e8aaf70acf8597b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/cppgc_helpers.cc",
+      "bytes": 774,
+      "sha256": "fed5a7709885d517a9363ad67525369dab8f658e312d9a2fc7ade27c5fd165f0",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/cppgc_helpers.h",
+      "bytes": 6456,
+      "sha256": "690c4fba0ab4b0c58fc489a8abad56fd95c9dae1136ace593009d0ef7118d16f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_aes.cc",
+      "bytes": 20776,
+      "sha256": "a94d5e8b0f81ad372fe1275e9a953a85655b1abab972d6db37f4afca30394b0a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_aes.h",
+      "bytes": 4196,
+      "sha256": "0b794c5fab5f55344c6d0fd093627acd8272c1d85eb7b14e4d53ce35cfb8842e",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_argon2.cc",
+      "bytes": 5757,
+      "sha256": "dbd0b6905a9f2b1d797299b300ebf09ecd88041ef61f18ff46a281e33170e229",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_argon2.h",
+      "bytes": 2652,
+      "sha256": "053095421dc09ff072a960e116c82b2de9a6dd967ad1aa0005c0ac611bbd32af",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_bio.cc",
+      "bytes": 12016,
+      "sha256": "adcac010393ca541fd1024f6ef068a03383c007b72486d7736924c9a35452c5d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_bio.h",
+      "bytes": 6232,
+      "sha256": "b4933ab35fc55876b5e4ff363aef54458cd4664140f2633fc1564f7ef16198fe",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_chacha20_poly1305.cc",
+      "bytes": 10101,
+      "sha256": "ca971b386e0c1534f59c00b30b8620bb45464fdd52980da6c162441c95d7b8dc",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_chacha20_poly1305.h",
+      "bytes": 1968,
+      "sha256": "d67c5a456c6ac97f33fe4fa32b91e3e2b4e63b92718cdf07ad6975eec833d35e",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_cipher.cc",
+      "bytes": 33620,
+      "sha256": "d3d9e716d8398244bb4782f030c3bebfc35e640807669034ee5a243616d55b32",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_cipher.h",
+      "bytes": 9498,
+      "sha256": "fea20b0deaba4881677f37e8fe94c228cb470946f77edddf713a40916e629f39",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_client_hello.cc",
+      "bytes": 4740,
+      "sha256": "de36692ad344f098cec60a35d43f6eb744ae3ed673325b64a75645d23ad6aedb",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_client_hello.h",
+      "bytes": 4467,
+      "sha256": "dfc25e4a90ae0064aa1c3187a84a5137534f985f5570f1731b4120c3e05aab2f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_common.cc",
+      "bytes": 11056,
+      "sha256": "7ba47367625b9d3c96bdfec2a968f1161e3785212c1d1a375183b8bc7f54eadc",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_common.h",
+      "bytes": 1647,
+      "sha256": "c847b4492853a6ab5d3e9c961d373a62416501126830c119a6bbc33f4509c7c4",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_context.cc",
+      "bytes": 102005,
+      "sha256": "a21a5d88feba3ce99c0723acdd076c2a373b19dc4bb36cc97a77ca9a141dc606",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_context.h",
+      "bytes": 8673,
+      "sha256": "0309e42d91dc01d91c06a8f98d5487924a71c1b14edaef8b9316ce0208d224a0",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_dh.cc",
+      "bytes": 19060,
+      "sha256": "af3a25e8b8c4fc061973097d4bf5cbf56c370ed1f40301503fe789d1462d4dc4",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_dh.h",
+      "bytes": 3225,
+      "sha256": "9fad6240c0571ab40575e1d387bdb83f052ed81d66eaa6f3dac280f28d87b5d6",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_dsa.cc",
+      "bytes": 3076,
+      "sha256": "1ba023d816a9567b6bf696ce84382aa8031deaaa1da7b76824af55b508b179cf",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_dsa.h",
+      "bytes": 1507,
+      "sha256": "43ec9d85697ccf7c9e1abcda6faadf5e156a83300ba5a5523b67d8d73a51d1ae",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_ec.cc",
+      "bytes": 19598,
+      "sha256": "526b35c048d2d82ac07b761c65d4b4a8c4079351c1bdf4815b48d81cef176123",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_ec.h",
+      "bytes": 3367,
+      "sha256": "478769d0abb82fece81ba84a0ee7e7e0009812929f31a1d26498c12823a9190d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_hash.cc",
+      "bytes": 28538,
+      "sha256": "69b047e9d45fe8fb266a8df8f7f14caffa926772a3e887605fa4e08ef2527d22",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_hash.h",
+      "bytes": 2952,
+      "sha256": "6f7e52456df2b644376a0cb2824202324158066854d9786fddd4d9dd1bb0415c",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_hkdf.cc",
+      "bytes": 5057,
+      "sha256": "a55f95827bea6ccc5d0c32cebb1df618ac8aabba37efca847175eefc9056ef73",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_hkdf.h",
+      "bytes": 1761,
+      "sha256": "811f9592f716da3b59cac4d8933517f1d5deaeaa691f88b1e0b077ffa625b479",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_hmac.cc",
+      "bytes": 7941,
+      "sha256": "795d65a13eb7cabd6bfbff1b756fd31da111eb0aae1a2034e884c765d123b9b1",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_hmac.h",
+      "bytes": 2758,
+      "sha256": "b25dd7a5076455964e712a6ba0c39e01214b5997504196a35fbfe3ebf4ce4dad",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_kem.cc",
+      "bytes": 8597,
+      "sha256": "3035b4317f5cc08f85103f6685afb9644c143d5f9d57d4c933345dd5f673ee8b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_kem.h",
+      "bytes": 3979,
+      "sha256": "716ed65ede8aa56cfe421573510e80ddd065e6e4be7f8b9f3fa1c102d94a3017",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_keygen.cc",
+      "bytes": 3893,
+      "sha256": "63dd29db755b0770b1bb928e56911345fde2643a132e971e4081692b0a175c9f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_keygen.h",
+      "bytes": 13633,
+      "sha256": "24355e2a2ad286f253fbaaa219c71c07b583d78bdc78305aa74ea1ad4c78d42e",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_keys.cc",
+      "bytes": 78558,
+      "sha256": "0810e7ce7e506806e79dddfd779f72cf9e34c6700c9a405a022efae99a189c8a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_keys.h",
+      "bytes": 14107,
+      "sha256": "b295605d6b1415e20008b05268bd19c95dfe5abdbb6ec4f199c7c48fac25f029",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_kmac.cc",
+      "bytes": 6690,
+      "sha256": "c8734b3017b6f21f51f2553e79915c564891d2bdcf950d699818203afddef76a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_kmac.h",
+      "bytes": 2310,
+      "sha256": "71cf5b679f5329f1dfbe4bbd52aa970ca097f7d875dcc291e2fe77b12a191ba4",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_mac.cc",
+      "bytes": 21155,
+      "sha256": "14367ebc13307436693216e233818e5fbcb0ebb70de1cd7ddeec377c99ba9f74",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_mac.h",
+      "bytes": 1517,
+      "sha256": "3e1d7376a726a04602f78947646473c2a7fb67c4d92029af2788953dbe21b23a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_pbkdf2.cc",
+      "bytes": 4697,
+      "sha256": "b061a30470de1e76e4caa9637369903bc7fc93d734e8606a51eea14197c2cae5",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_pbkdf2.h",
+      "bytes": 2255,
+      "sha256": "a81c7a792ee242a970c0f96b9a1a678ca9c4c2f0423b736988878720dab872eb",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_pkcs12.cc",
+      "bytes": 6426,
+      "sha256": "c0dcd9403131bbf05bd0f71daa60b57e5f153d5a04624c198dab889b5f01fbb0",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_pkcs12.h",
+      "bytes": 1779,
+      "sha256": "807ada9642d6d0f7731435db686a323314fa5f36031798584bfc3d20a58e7c16",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_random.cc",
+      "bytes": 8932,
+      "sha256": "03d441e91c8656235de3ec2da735fb92dcb88b0baa4e3a1d97497090b37df9b8",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_random.h",
+      "bytes": 4234,
+      "sha256": "095bf83904bb55698eade620a80f3460d18ebb733251b37be7d50c57795201d6",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_rsa.cc",
+      "bytes": 20251,
+      "sha256": "6fb9229a1dfffab09dd3dfbfa805309fea5e2a2960d2462b89e8ff9b85756c2c",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_rsa.h",
+      "bytes": 3288,
+      "sha256": "78209001efaf631ed6e9b22a227c680cb59b42ac77eaa8543ef29f42ba366843",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_scrypt.cc",
+      "bytes": 4311,
+      "sha256": "1b75a785583aa168187b9fc69df621a980e5eecd362cb5b86f59e197bde39222",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_scrypt.h",
+      "bytes": 2448,
+      "sha256": "0bb35c0c311849fc4838e36a5115f4bd3d8d6bd386be561e16503355775f91da",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_sig.cc",
+      "bytes": 28830,
+      "sha256": "4419bf054a4d8c400ee8af6a41f88fbcd8edf9e76261ab5f4dca1a595cb172a4",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_sig.h",
+      "bytes": 4785,
+      "sha256": "a03c4e7560b3e2dfcec2d3ecb3f77e1ada04d117bae030c8b47c5291b6423a27",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_spkac.cc",
+      "bytes": 2763,
+      "sha256": "969afd5e9cbb9abc2800abb0db9e705d0f5567e87b64bb674c5f5d596e568aa3",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_spkac.h",
+      "bytes": 538,
+      "sha256": "d51d15401c09fcb3e2d7c3d28fe7e4e01b12a88a9f672b1823268ba94d38f736",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_timing.cc",
+      "bytes": 3389,
+      "sha256": "a822d9710003135cd5167f5829be9ad3d27cfec060d4aeb86ed9901b5ce558bf",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_timing.h",
+      "bytes": 525,
+      "sha256": "22d863fb92b90004a60b902d7f5ae40b5401f0c3ea38e85b6aeb2e1c41edee12",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_tls.cc",
+      "bytes": 80026,
+      "sha256": "e92c9f7221b8f17fc200416a05945b31dcf570d67da43e367103a155e3da1662",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_tls.h",
+      "bytes": 15051,
+      "sha256": "676849849b92899fd8346c0394232a8c96f7ef4e42c193298e5d877c2ff89d3c",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_tls_certificates.cc",
+      "bytes": 3825,
+      "sha256": "8fb7576f93ac8c3e2e88e68228232b6c93a3ed966a4dff03d1f77d6746d38b71",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_tls_certificates.h",
+      "bytes": 2066,
+      "sha256": "0b4d244ef985f2a7a54bdacaafdbd25bbc883c3dbfac6d992d499cf2739eda91",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_turboshake.cc",
+      "bytes": 21718,
+      "sha256": "e070e0ef2c910e671d69099d1e5841ee42b3575ab8f9c5a09812f6e86608039f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_turboshake.h",
+      "bytes": 3507,
+      "sha256": "b6a70eb4b936b0291e3a4b91b76be4ba94cd855774951ac9322698c459551596",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_util.cc",
+      "bytes": 41913,
+      "sha256": "78f87b6979b666fb49d74698333e79c40aef549dfa362e3a040caeebf8edde3c",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_util.h",
+      "bytes": 27445,
+      "sha256": "17ef1d34245c0c4eac4b4b9a154e3350dcb3ad8fcbbfb2673a43472afde6a78f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_x509.cc",
+      "bytes": 40167,
+      "sha256": "9ee4a24d1b467e77ce247ec6f6b664f0a81357f47b751df81b99c4ca15fcac15",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/crypto/crypto_x509.h",
+      "bytes": 5219,
+      "sha256": "3a88ec8cf679c6f483e6d13b426bc3b9f5c06f8284049add006926bdd022fcba",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/dataqueue/queue.cc",
+      "bytes": 42913,
+      "sha256": "551dff219431d9f0760ad8cc18b605b214862fc60de8d44ee9bed8c16bf75c1f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/dataqueue/queue.h",
+      "bytes": 13570,
+      "sha256": "8395522a2af705d0f3aede9d65644cf4add25c518753ff336820ed5c69b09407",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/debug_utils-inl.h",
+      "bytes": 9757,
+      "sha256": "98e67d4365e66ac0345cba12f238905b2c349c76d1fe918ce975bb542f722aad",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/debug_utils.cc",
+      "bytes": 16324,
+      "sha256": "9f2904508a8443beb454dc789a07d60afb2f2ec7f9b2f56bc651d9c66edb0ea3",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/debug_utils.h",
+      "bytes": 7892,
+      "sha256": "040b8d03509d8908cb5521f038ba9d95dab01f022b06070401e548d731596cb5",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/diagnosticfilename-inl.h",
+      "bytes": 768,
+      "sha256": "35e6be4458858db29a20c5d169f62469f5767e60d51466f49d8d60b182e1d10a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/dtls/dtls.cc",
+      "bytes": 3539,
+      "sha256": "50f7c5a7f00eedca4d2dfb9b8c60a81c16ff16e659fb56db441a4beced2ad70c",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/dtls/dtls.h",
+      "bytes": 4552,
+      "sha256": "ec562ab16313015cef8d251e4ae8b206b689c420a4f9556446914af98baef4a9",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/dtls/dtls_context.cc",
+      "bytes": 44033,
+      "sha256": "58407aa3c1e239dbb059e8d41b1664f381d9da9d64b0943ee6774ddd9b2ae266",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/dtls/dtls_context.h",
+      "bytes": 7700,
+      "sha256": "e23b052b103312b280fae84f7d9037154677520459e71472d921e39a6eda5c51",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/dtls/dtls_endpoint.cc",
+      "bytes": 33024,
+      "sha256": "5fa879a801f3a39bd449f6c1ba63b45c761f02665ce10bf08bcb54e29d1d1931",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/dtls/dtls_endpoint.h",
+      "bytes": 8295,
+      "sha256": "22d7d473401c6511f010c53503d45a8b4ac58e44c5a106b054645fb15a4ce6f0",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/dtls/dtls_session.cc",
+      "bytes": 47896,
+      "sha256": "f024a43f32db68d4643682ef43e118eb7c0bdea8d8c500249fd56302f404442b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/dtls/dtls_session.h",
+      "bytes": 12092,
+      "sha256": "8906f50d0a2d96dc97799212b800bc959d77e37f6c1e67bc01e3190bc9af76c9",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/embedded_data.cc",
+      "bytes": 1096,
+      "sha256": "cc8321b75b6bc9063bbe4f3706a9274f98062c8789872a110c90e08db0898897",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/embedded_data.h",
+      "bytes": 426,
+      "sha256": "f6df2be367162d8ec838b7c276395f968c9a7699cca80431df180413f1f0b499",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/encoding_binding.cc",
+      "bytes": 19970,
+      "sha256": "98ff679373c2cdb4b594bc5be38f037ffe236b4c43a02930fb36cb83fa5a4cf6",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/encoding_binding.h",
+      "bytes": 2025,
+      "sha256": "a3367da0f258452022823a05d8220da1e691474daca64c5e44fabd37059f91af",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/env-inl.h",
+      "bytes": 31879,
+      "sha256": "f1849fd70267de7467ad49f06b67fb63bddd29f01cfc208e01c9776b54be8f41",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/env.cc",
+      "bytes": 99205,
+      "sha256": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/env.h",
+      "bytes": 53128,
+      "sha256": "2727db70801cd3d154790795f52aac30909279cfbbec5beab1c0b463a4aa55b8",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/env_properties.h",
+      "bytes": 42469,
+      "sha256": "891cb90ba1164eecc1ae5eef69ef3102369eeebc7630dccda2ca5737a2a097ad",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/ffi/data.cc",
+      "bytes": 23683,
+      "sha256": "f1a7782f92fa08eadff0e4e26dc7bc90e290c39b6ac0017fbeb79fed8bfe5618",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/data.h",
+      "bytes": 1074,
+      "sha256": "c3b741af14a53d8846e52e73fd6f137a0a64cbbec8d90d90de381c186d0c6424",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/fast.cc",
+      "bytes": 16490,
+      "sha256": "4a28f7e67fbd62361856935f12eaf16f671ccbd4be031e842c83606ac85e6cbb",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/fast.h",
+      "bytes": 2728,
+      "sha256": "2bb6ddd6b0cb64b1fbf48441c1be7ad4a5b1f54fca9e54bada9a6d1c342f4eec",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/jit_memory.cc",
+      "bytes": 4760,
+      "sha256": "55466ae76b46e1918062bc624a5f7ec8162667d14c1b272f8e6ee89963e72fd0",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/jit_memory.h",
+      "bytes": 1051,
+      "sha256": "a7b17816764d86d29f3614ec1dbfc13d302bd3d678c626b58200d520dd294340",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/platforms/arm64.cc",
+      "bytes": 16611,
+      "sha256": "b3965ee99e064900db272526e7d5b3bf9ce0b45ecb10b2480067f27f6feb7de9",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/platforms/loong64.cc",
+      "bytes": 4108,
+      "sha256": "d2dad22d11dc0b90a6508db1aa0200668e2a59c9e4d33ddb7691bbf760b4117f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/platforms/ppc64.cc",
+      "bytes": 5554,
+      "sha256": "1acd9cac1723bb62a3f75389931937265c1ef3f72f9161134e416f50cc953218",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/platforms/riscv64.cc",
+      "bytes": 4168,
+      "sha256": "db751dce3c08b6b593ac665012a270700f6a50183b60142ca7c70af19ed3ba13",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/platforms/s390x.cc",
+      "bytes": 4066,
+      "sha256": "4803304c169f3805b39700cddce975e284a45b0f62265a79544f347770399e56",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/platforms/x64.cc",
+      "bytes": 27415,
+      "sha256": "284e0cca8aa3b5530835a49b1ed0942382da168975c23a6e7c22c8f00aae1845",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/types.cc",
+      "bytes": 34821,
+      "sha256": "cd6b278e70fb51682ed1808151c8f88f8750a20daadf2870bcedf7a5f655b10f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/ffi/types.h",
+      "bytes": 3873,
+      "sha256": "94b47726c9b9c1be1fc8da1e7730f4c1258cf41fb80b12970ef6cbff7550936f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/fs_event_wrap.cc",
+      "bytes": 8343,
+      "sha256": "2589e91baa440efdee9b491611365dd8f123c7ede8640d25166a1f662167ceae",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/handle_wrap.cc",
+      "bytes": 5823,
+      "sha256": "20f94b3dc1569f2b90116500dc6c7546b0b92b38f1398281f7b90d5b37f6751b",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/handle_wrap.h",
+      "bytes": 4355,
+      "sha256": "9f3a9838da4e752d277582e4c750bed44f9a8a1aa765a7f0d9bae6ab7c969dd9",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/heap_utils.cc",
+      "bytes": 16130,
+      "sha256": "7de51631ccb0540b5014d2a4caee439e322b4d4c07cc90fce26c6f4b0f6f2c66",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/histogram-inl.h",
+      "bytes": 6212,
+      "sha256": "841742646b64b0171e903e1af5dd414c6f1d1bf01668524a217c8f98150a4841",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/histogram.cc",
+      "bytes": 122975,
+      "sha256": "e79ac3b14457338718b8d15f0b338a78e534d3f0a3fca06a71c3a403ce067038",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/histogram.h",
+      "bytes": 22023,
+      "sha256": "66bee7d06bf4a2423f67860c3dd94490a87ba098bb02fddda9ea945f6a8a04a8",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/dom_storage_agent.cc",
+      "bytes": 13001,
+      "sha256": "659ffafa26916d74c38f23ddc3b44923afd81bea638ac4927e1a768422f3b0c4",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/dom_storage_agent.h",
+      "bytes": 2549,
+      "sha256": "5b80d48b10758c03fff7441f3850fbe508a894427c2225dbafb17023a377cb25",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/inspector_object_utils.cc",
+      "bytes": 3437,
+      "sha256": "b0c5665fedab76c548a062a4abaff59959d353790596daf7bfd7ee4965a15de0",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/inspector_object_utils.h",
+      "bytes": 1359,
+      "sha256": "cc357355398ffa7f73c94de73dd50d24e60829098a812bc23f6e5ba28eb44399",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/io_agent.cc",
+      "bytes": 1669,
+      "sha256": "586ccaf1b30f9de66dd66b6bc1605ac02d713a657983270be28c9f951945dbb3",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/io_agent.h",
+      "bytes": 1071,
+      "sha256": "a423809257fb96493263eb403301af37931240be68e8d89bfa5c36a1f53a197a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/main_thread_interface.cc",
+      "bytes": 10509,
+      "sha256": "ec14b0138b040d4952adc9cf941c2b96978eaf9366c1c141fbe32fc3670ba8c7",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/main_thread_interface.h",
+      "bytes": 3396,
+      "sha256": "5e6bad0573ed7e16cad114318365adf48b55b06c25a9dda9b7e08e5e924e40d3",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/network_agent.cc",
+      "bytes": 24237,
+      "sha256": "8f4df0c2ad6bde10acd7e8592f20d96f909a680323ead126fdb0cd27058ca35c",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/network_agent.h",
+      "bytes": 4022,
+      "sha256": "288747175f436d883cc5ff62edb3156599ac87b75439e66a56dc48859fc2bac5",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/network_inspector.cc",
+      "bytes": 1494,
+      "sha256": "7abce952635d12e99c7d9ae5b989d0ac15714b0ae55d5b1eb593a60c47147176",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/network_inspector.h",
+      "bytes": 1134,
+      "sha256": "32cb7bc1503af220a9163aa43ab6d7915ba33147eb7f3caabf8d9e660e8fe2d7",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/network_requests_buffer.h",
+      "bytes": 5913,
+      "sha256": "f74ed1ec9a8c14973c83c00090bfcdfd10d79860bc1c4ce632fea70ae0c21b6a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/network_resource_manager.cc",
+      "bytes": 731,
+      "sha256": "6bd4f365e8c9332ea285f36e2ab2bcaa3c1d2c6af4416f048b176ac81fcf2a77",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/network_resource_manager.h",
+      "bytes": 716,
+      "sha256": "8e1c6c1add5ee6a13a00fabd18e7c74947a8c4464bcc1c6db533ef6854e9231e",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/node_json.cc",
+      "bytes": 5844,
+      "sha256": "4ee504a5a9d0302889a569a5ddde40f0040980fc56c0eb4b126cfad0a29c6447",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/node_json.h",
+      "bytes": 763,
+      "sha256": "f73dc1353d4edc0f8f613efe9b8c63fb30970c28750fbda7685f07bae771cabc",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/node_string.cc",
+      "bytes": 6015,
+      "sha256": "25cf3dfd8a6476654ec7820a9628412e1bd846474c1326a8154668dd44ac620e",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/node_string.h",
+      "bytes": 3238,
+      "sha256": "653421bae9d1206a2499353429c1279e209e64e0b01f7cffe8d1b69b7e664d66",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/notification_emitter.cc",
+      "bytes": 745,
+      "sha256": "9fd7c3cace78000bf6890c692b152fb0afb793de21c1b195f47b5643187f5887",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/notification_emitter.h",
+      "bytes": 1045,
+      "sha256": "0f88b71468adeb62dbfff25564e7d506493a29c265949ef49ff5645b4bf0ef81",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/protocol_helper.h",
+      "bytes": 902,
+      "sha256": "7efb4c9d237e8a1dd578f79aa1c7d58b1d7b889984440b023d42de6cb3395996",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/runtime_agent.cc",
+      "bytes": 1392,
+      "sha256": "fdc8ab23e14a89f993eba54163e7204b43ea235fa9b6a8fdb4146e06423abe50",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/runtime_agent.h",
+      "bytes": 881,
+      "sha256": "a6b30fc4de09ea7b4df63444fc3e160653e4171f84278d9a942d622b2347ccdc",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/storage_agent.cc",
+      "bytes": 1379,
+      "sha256": "b459682099eb0de0a06fec3fad48d44750174018e6155c03b536008543398049",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/storage_agent.h",
+      "bytes": 1002,
+      "sha256": "15bc982f4310d37e7351e2cdbf6aae705b750f326e3d59bf3c70a83b5ff79d8c",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/target_agent.cc",
+      "bytes": 4926,
+      "sha256": "d93e90f4165f4632511fea12b495add27038dcc7a265dd0ef4d7fb78869687bc",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/target_agent.h",
+      "bytes": 1941,
+      "sha256": "b821e860c54e55d297f09abac07fce69ecc2df2dc00028664df50b23b46aa0bf",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/target_manager.cc",
+      "bytes": 1990,
+      "sha256": "7ab1a229df9c43f465b1b21db5f543f53921b4178da93ca7d84b455ffcdf1751",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/target_manager.h",
+      "bytes": 2019,
+      "sha256": "b4af83a81d07b76d9614ec1d51ee67f65a62566a754399902a2bfa220b871c8b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/tracing_agent.cc",
+      "bytes": 7061,
+      "sha256": "6394329a4ec49888392cc02ccad2d75c31ea928815d2d299e19485e528c3a064",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/tracing_agent.h",
+      "bytes": 1060,
+      "sha256": "645a24760e0d0941d56a87d29562d976e0918b1d179cc0c8b9a81daf5146ad9a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/worker_agent.cc",
+      "bytes": 5285,
+      "sha256": "1108837d94d7a97831bba3fbe0d9cbc4ef35d5b34521a6b1c8025945801ee9d5",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/worker_agent.h",
+      "bytes": 1099,
+      "sha256": "837aa587de1fe89770d86193fc205b7cbe45c8e7ffb2ee755df0b6ad32e0276b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/worker_inspector.cc",
+      "bytes": 4482,
+      "sha256": "a091bca922d6f831075877c7e27f6ffa4342e1650abb700d99fec5e52f83186b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector/worker_inspector.h",
+      "bytes": 4037,
+      "sha256": "87a78bdd70c9bd605f4de04ca6054f4e06ee602e46bdbc5471388b5f90a7f84b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector_agent.cc",
+      "bytes": 45396,
+      "sha256": "ca869dbd36ac8830251cb919f8e06bbd98e6c97bde111205ab0194e52d53b66e",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector_agent.h",
+      "bytes": 6356,
+      "sha256": "6452e1aa3aeef16909f9f74989aee9d4844324ef9d254694afc9f0ad2ca9571f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector_io.cc",
+      "bytes": 13936,
+      "sha256": "1e9abceae6d5ef259bda41f1aadf46a455107b3f162667f8f819062023a3b812",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector_io.h",
+      "bytes": 2246,
+      "sha256": "260543bce09c5384c88c0de52a0445f23c0aff32531ccdf8589ba003405f622e",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector_js_api.cc",
+      "bytes": 15824,
+      "sha256": "b5de7ed99efbf4c14b263b50240ab2b98dde9f38c2883362adf192a040cd2714",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector_profiler.cc",
+      "bytes": 20742,
+      "sha256": "93232caf9af863da93da4da9c7f1b56355fa287d7e0d7f3be7516cd96f0cdfd2",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector_profiler.h",
+      "bytes": 4506,
+      "sha256": "661ac79c950b4b8beb10e44022a44ccfe0f5305bf1512d5790ae6f25315ef8d0",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector_socket.cc",
+      "bytes": 26596,
+      "sha256": "b24add0f63ac74579820b0e8bd6525a13f8219a1b99a65765d8a8887604e6a9d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector_socket.h",
+      "bytes": 1566,
+      "sha256": "ea8f4a0d17b98eef6d0a2347c6b4ab8c18793671ba4ab57f19dfd78952ed29a5",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector_socket_server.cc",
+      "bytes": 18147,
+      "sha256": "4cf9df916208283fe5193e827c6e79763e3e83b00274edbcba8e98735818031d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/inspector_socket_server.h",
+      "bytes": 3586,
+      "sha256": "8b8229c156f489a407eaff2622d005f0da6d68d6a501e3235c995fb0c87b96a9",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/internal_only_v8.cc",
+      "bytes": 2600,
+      "sha256": "393ed51e3c8ad2be7d72f075d7a2bbf90111a5303f4c0d97c5c9c7fabeac7216",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/js_native_api.h",
+      "bytes": 33170,
+      "sha256": "82d3708ce120f8000ec34d72e1aa70b0d7d8a43027986293681374a71b2cb840",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/js_native_api_types.h",
+      "bytes": 8335,
+      "sha256": "c12406a8c0036aefdb66b98065fc88e2e7a053c1f274deef33af6c26c099b933",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/js_native_api_v8.cc",
+      "bytes": 132369,
+      "sha256": "819f996bf10d5227b91094cdc53893609bd7de2c45526232f46a2bb33d78345f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/js_native_api_v8.h",
+      "bytes": 18472,
+      "sha256": "1263a615234e5b8ac61b59480520051c8df276e5d9ed9d4d68fb7fa09f821163",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/js_native_api_v8_internals.h",
+      "bytes": 1603,
+      "sha256": "dca2f8297b9370d9deaef9cc70f860e7fdfe70fc1b864cd42ddcc7cf9ab72298",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/js_stream.cc",
+      "bytes": 6253,
+      "sha256": "6f780c41e544e35092a51512ca5f9f10db5856857d985c01b911a0a1fe0286d0",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/js_stream.h",
+      "bytes": 1572,
+      "sha256": "5965f50303e3d1885c2170fd1e804e0acc0ef16384d2af1708f5f3c10c85de20",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/json_utils.cc",
+      "bytes": 1912,
+      "sha256": "699ae5e92fedf9a077ed4b2d9d53af0ca1cbdcc496d6b13ca3ab4795bb6887a9",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/json_utils.h",
+      "bytes": 3789,
+      "sha256": "bb5e265a8ad9026f98194f731410f9701c1f2035a0b7d258c708b2df0429a4fe",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/lru_cache-inl.h",
+      "bytes": 1804,
+      "sha256": "1536e1ac02b47e7dd8dc20955b389c852277c2df06fd92c122b50add3823f3b3",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/memory_tracker-inl.h",
+      "bytes": 16013,
+      "sha256": "0d59b326b6f9ca98557bc2ce89d00ce7f709ff23bc7819ec4fda2e01ae57efe1",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/memory_tracker.h",
+      "bytes": 13899,
+      "sha256": "3ccc18f3645233391bf08ae343a8dae2e10f2453e4f2c0cc0379d3619711b531",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/module_wrap.cc",
+      "bytes": 59918,
+      "sha256": "ef6d3f20a46aaa844d9471b32e489bf60b7539681d6d9e3f7e230e1abddcb051",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/module_wrap.h",
+      "bytes": 8318,
+      "sha256": "4206d52a828c9cb2efff385821354ae968e2b6d059828ebd6656c25cc379f07f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node.cc",
+      "bytes": 63148,
+      "sha256": "5c04920541a06ef404d98eb0089f7947cbb72ab44ab612b207e735f9daa9f6ef",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node.h",
+      "bytes": 76346,
+      "sha256": "83185475268b1b2d9f5ffdbec1bb2062ebe70674869dde96fe6cd526dc9b2a79",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_api.cc",
+      "bytes": 49438,
+      "sha256": "48c402e7a76c0616db1bf74c6669435405053828d5a292fbbea0b36e48b60e94",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_api.h",
+      "bytes": 10370,
+      "sha256": "2d4560831e525b47b060ec8a0864ab73993df9e20215ce9f0fe7b24cd31af32a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_api_internals.h",
+      "bytes": 1466,
+      "sha256": "3f428e738e3afa007aec1dfe3c2314aef465983082014cf952cf3eb56b8b6b44",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_api_types.h",
+      "bytes": 1930,
+      "sha256": "a25356630d3058f0a0c8937d9f297e9471e037fda58c2696d8a505c2bd99cb00",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_binding.cc",
+      "bytes": 39660,
+      "sha256": "921f6c1d198a9921101fa45d2bcb9cd36509883758a3abb5a77f2f20857bd410",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_binding.h",
+      "bytes": 9483,
+      "sha256": "f57b6edbc2eb06da020d9141d1bbb327be2df3dc3b67faa5bec04232e7607744",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_blob.cc",
+      "bytes": 21463,
+      "sha256": "d93ef602bfc3ff73a163d301f4ec4ca65a44bba799e6c6c4b01f29c6a09ba091",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_blob.h",
+      "bytes": 5087,
+      "sha256": "1c731965572f8de5ad12e62c867fb46147883ed8dddd1c9a3e0877def5eea155",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_bob-inl.h",
+      "bytes": 653,
+      "sha256": "72eaf69f1e9cc86f9bf192c35a79038e65367f253d4f839cf949d5eedba720af",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_bob.h",
+      "bytes": 2771,
+      "sha256": "80f37f1fe6ec89203de364f45d15cf06a56bb1fadf9f953a710667eda70347ac",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_buffer.cc",
+      "bytes": 76513,
+      "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2",
+      "registrations": 2,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_buffer.h",
+      "bytes": 3843,
+      "sha256": "42db024cf1ae62db1a9a23477ee9927e9b7ed04999bd4498371b144962a31525",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_builtins.cc",
+      "bytes": 37013,
+      "sha256": "e96508e01765d9f89cefb8e6508d87025e6ded4dc8bafc4a8c46a6e5c02305d2",
+      "registrations": 3,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_builtins.h",
+      "bytes": 9798,
+      "sha256": "7e283d85d6c10f44e9165e44b6db08db4abed119fa321892cf5e0d2679d4f4f5",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_cjs_lexer.cc",
+      "bytes": 3679,
+      "sha256": "f13494d341b745a3155a6153f7287b4362dad61e8e7bf353e4c626566651d14a",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_concepts.h",
+      "bytes": 1544,
+      "sha256": "f0b176fcf52d09e4f2fee7f3caabd29b93a12e1d7f96d499898148998702a396",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_config.cc",
+      "bytes": 3257,
+      "sha256": "642279f8e5dfa487d84637992158eec193d8fe9f86484ffd2bfe5565c13d8193",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_config_file.cc",
+      "bytes": 20186,
+      "sha256": "8bb21aa3b24c55727caf3baa9982d1d568b711b1301c0b4131027f2379eab28b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_config_file.h",
+      "bytes": 2704,
+      "sha256": "2b33d7dd3454d884b96f8a752a2b6afca53b5848dba64448a77bf07b97f1dee0",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_constants.cc",
+      "bytes": 32398,
+      "sha256": "9e22dc6f106498895367e01bc02e00b3cedb8beef004b8b11f62f4a961a6891c",
+      "registrations": 1,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_constants.h",
+      "bytes": 3729,
+      "sha256": "2d6ad6acdba0376bf8286eb3ebd03fd3706bd7fd78f799527fa4ecaca216cec8",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_context_data.h",
+      "bytes": 7498,
+      "sha256": "50115fd0a719880adfd15bebc4a446135a5204038a34c23c939bfb480f1e3271",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_contextify.cc",
+      "bytes": 72731,
+      "sha256": "f053ef316b1b1d6d1e3f42cb431f9742c00cf1a71a381fb6bdab079e48cfb145",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_contextify.h",
+      "bytes": 11865,
+      "sha256": "5739ab8c3ffbfd21e48e5a4c0d6013e1b112a289729c835687f6224b87342329",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_credentials.cc",
+      "bytes": 14858,
+      "sha256": "5ec321f31a9b55dad9c21c1840de4541864d2402353311852dbc48a1060ca457",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_crypto.cc",
+      "bytes": 5338,
+      "sha256": "c3123eb1fe0141cff3731113323a96bc311a5c7e5c10f7440dfea4f75baaee67",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_crypto.h",
+      "bytes": 2627,
+      "sha256": "49148a0d20ac0df0bfd72de09818819d7b332f2fafb8c7889fdb92d0cca3a3da",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_debug.cc",
+      "bytes": 3740,
+      "sha256": "194b5a83e1ddf95dd47ee7fcfc5eff16340255b120f84d4843930038ff7f25cf",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_debug.h",
+      "bytes": 795,
+      "sha256": "0dd0cc61f8393574ce2647940eaa2162a0341c9b0ea16d78890ab8513a78e35d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_diagnostics_channel.cc",
+      "bytes": 10920,
+      "sha256": "b28f81fec9a23b759640ac464609bd9f4384acdae0d85a2ecf99c3ad7ad7a4ca",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_diagnostics_channel.h",
+      "bytes": 3645,
+      "sha256": "88af9b33b6eee82430a0ba6923f50aefb5a2de850e1e7b993c85ab0d9745a6ee",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_dir.cc",
+      "bytes": 15339,
+      "sha256": "5faf2ee79ff224548801e2ff8bc11a96a5757bdcf00e580b813b913513f9469c",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_dir.h",
+      "bytes": 1341,
+      "sha256": "fb73ab6dd4b0ff6f5c157506280d2721d163fc717452c332588ce310957ef277",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_dotenv.cc",
+      "bytes": 11522,
+      "sha256": "750bcdf4300a8a2ba1d4d572c7f8a51b10f50694262acf23d90409200465da4d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_dotenv.h",
+      "bytes": 1130,
+      "sha256": "a88e46ee815d45c7f58188655f117f526a34811e6db536f5b404c5d5a2050180",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_env_var.cc",
+      "bytes": 23835,
+      "sha256": "9b3bfe0143640e9e8ce00ff982385162c288e1361742d250384a515b88958b66",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_errors.cc",
+      "bytes": 45641,
+      "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_errors.h",
+      "bytes": 23299,
+      "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_exit_code.h",
+      "bytes": 3271,
+      "sha256": "7f1429f80db6bf171f1b17133268a141b4dcef7cc4dcb33483fa9e3f24f7957d",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_external_reference.cc",
+      "bytes": 710,
+      "sha256": "f6ed0db51c576cabe40904914f80067d9eb3f06c9b29791956753d08eecdb178",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_external_reference.h",
+      "bytes": 9208,
+      "sha256": "95e13fa3c9c4a64ee262de89a8d0a7b9fa92ea51f1dd5f3784c8df60d9f055e8",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_ffi.cc",
+      "bytes": 51094,
+      "sha256": "0471b7f61da97c36a2e8a1b4fa91640d81d9edc6e15c052d6e25940abe2de8f3",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_ffi.h",
+      "bytes": 7720,
+      "sha256": "e568a290abd534555f65b7d4037b118b8036abccd90bb8ba8e4e4b7d251842e9",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_file-inl.h",
+      "bytes": 15276,
+      "sha256": "f481906bac9594e0526231c34dfef708d177615dff21134056fe6867d5e49eac",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_file.cc",
+      "bytes": 199159,
+      "sha256": "33e4be5acc25b44ba4f532564220a721b645416da4e9fa26d58e14011c66a450",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_file.h",
+      "bytes": 18372,
+      "sha256": "58c17ec44048e89ae6faa72ea3bd5342609a4eb1ff6d192e16448df5736f88dc",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_file_utils.cc",
+      "bytes": 7173,
+      "sha256": "af522d138fda6cbeacc2d9c27b709fc513a50e34f7a72f79460ed46682eaebcd",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_file_utils.h",
+      "bytes": 1156,
+      "sha256": "68d948f74f4befb7700a901cf7c2bded5cefb60789d2615b68e8a4e0d82e78ac",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_hash.h",
+      "bytes": 7344,
+      "sha256": "4a65e0400ba78c8cbae0f0025263f930f58691e7e38973a744779d897c2a2dc8",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_http2.cc",
+      "bytes": 134750,
+      "sha256": "10c3fa807b6dcb84374687104615a356ad6dbffb02858822cba4899fe307d459",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_http2.h",
+      "bytes": 41999,
+      "sha256": "658e9a1f19a5cce09a31fa2101029fb48973ee0474358a541aed23167699f4d9",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_http2_state.h",
+      "bytes": 5472,
+      "sha256": "6ba0dca6a3a1accea2b7c0f0272e9ca3927067cca3e2df832ab28777274691ab",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_http_common-inl.h",
+      "bytes": 5618,
+      "sha256": "879450f090b2bd1af7bec9ced72f0b947f989c02c639fcd9995728f008c7b0fe",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_http_common.h",
+      "bytes": 25247,
+      "sha256": "2a0bb5311862578415a9c631cbec7845ef77d6c7fae98ad5faf0991392f6e3a9",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_http_parser.cc",
+      "bytes": 46838,
+      "sha256": "ea44194feb93cd94da8b1ff8faa76d32d90f00561a9ad1cffd93ebf79411f4ea",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_i18n.cc",
+      "bytes": 24681,
+      "sha256": "92609fad1107071d39f8211ccac9536257a63752db95e1160ae345d6618f76ff",
+      "registrations": 3,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_i18n.h",
+      "bytes": 3925,
+      "sha256": "d12a93e25f89fd6e59cc75257553db262a874e32e44add7e5ecd8b88b7a12a3b",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_internals.h",
+      "bytes": 18334,
+      "sha256": "3674f02a2b459ee579815761816bc450349aef9ff231349f39bca7b6c19ae0c7",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_ipc_serdes.cc",
+      "bytes": 13233,
+      "sha256": "63130363d67cdf0b971d1ff4eb44fb31e2b1f4eefc13659c7bbacb3a37cab67b",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_locks.cc",
+      "bytes": 30874,
+      "sha256": "28f2a9cbffb561a4535031331025bcab15a9065ca1432800c2d8f9b5875c4666",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_locks.h",
+      "bytes": 5610,
+      "sha256": "2039fed85f34a3ac3eba928499fb1f32e66532fdd0c7ddf06fb5263b15876690",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_main.cc",
+      "bytes": 3913,
+      "sha256": "c946687691d86754f5d53560b54a70d17cfed62bf23158ac457497b8b912d740",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_main_instance.cc",
+      "bytes": 5167,
+      "sha256": "03ac0a896d652f01acf6a71a0dff589652ec44282a0981723b2e08eafaa750de",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_main_instance.h",
+      "bytes": 2165,
+      "sha256": "744acb24b5ce6002c99b18a516c203d10c068a015ec5ff34da70fb6620b209d8",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_mem-inl.h",
+      "bytes": 3838,
+      "sha256": "c074684ea9dcc347484cf29e586f94f7836a136f5e0c954deb95f73bd012cb0e",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_mem.h",
+      "bytes": 1296,
+      "sha256": "1864c8158be84bad665498b1cf274ce404bb39e7c94c125a14fa6016e0470497",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_messaging.cc",
+      "bytes": 62006,
+      "sha256": "49d5cf1e5d5319a932a2bf378b53a7f2c584d960383043b75c199726598d3697",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_messaging.h",
+      "bytes": 15283,
+      "sha256": "ea3cb5c12fae90b87b0f01f33371d6747c9300c94611231c74f58af91587967f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_metadata.cc",
+      "bytes": 5771,
+      "sha256": "f1539327f72ff6a47a5bfb8692d49e5ba5d8b1c739be50aa6995073af52191d7",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_metadata.h",
+      "bytes": 5563,
+      "sha256": "fc100c3c02ccde5d2a5775628501ceae8bc55bfe288ad1526da2f32adfc1393a",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_modules.cc",
+      "bytes": 27793,
+      "sha256": "28ce0d4e8763193cc5c4e65a9e0cd4d021d2701b345c846e906bd7a4fa243953",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_modules.h",
+      "bytes": 3952,
+      "sha256": "23c735f16f27818493f6fd6632d516c0fd306c75377758ee6dfe1233a48e08b1",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_mutex.h",
+      "bytes": 8585,
+      "sha256": "13208fe79bf345733d992eb7e1c598817fdab79ab859a2b81cec92b0e1763572",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_object_wrap.h",
+      "bytes": 4301,
+      "sha256": "388ec1ec65215ccfd90d5a48ca50e5cdc88a37f9614b7d6e7ad5fd26cca850ed",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_options-inl.h",
+      "bytes": 19877,
+      "sha256": "1d3b7cd2dc488d09ad583f3df71cdbe40f71bcaa104191e7abe3b9a4fdbfb516",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_options.cc",
+      "bytes": 99186,
+      "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279",
+      "registrations": 2,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_options.h",
+      "bytes": 30788,
+      "sha256": "4241ccbfddad1f227888204f998427fa79e8c8332e9ea3f19b93b7a433ea3046",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_os.cc",
+      "bytes": 15914,
+      "sha256": "3f4646a849ab27dfb3463d1c3a004bc5c9b30da660453873a284a1a6f8608c01",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_perf.cc",
+      "bytes": 18593,
+      "sha256": "1102c1c7a2d734c523e23cf8ceb3cb039cada5d76dfc1f2b2bcf7e54c92c9d27",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_perf.h",
+      "bytes": 4932,
+      "sha256": "d74ad0f571ca2db95047ef74fdbe87e70543e94de01985f9182b65bec4c8c301",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_perf_common.h",
+      "bytes": 4023,
+      "sha256": "f0c650bf57e40877a551ab3f69ea0b9dad1e70724e422db30cfc5ab43702a51d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_platform.cc",
+      "bytes": 29261,
+      "sha256": "cee5e96f99e2e1491b02a18d0af40deafb74e1f04f7661505f31afc8442b20e4",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_platform.h",
+      "bytes": 9998,
+      "sha256": "94e687c7c914d04684461625bb987f5c720964c3fa05333b5bcff4d626feb0d2",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_postmortem_metadata.cc",
+      "bytes": 3618,
+      "sha256": "7cb6e711e22ac449cce38856a1304be35ca63a93f4b2c666105a9af6c465c243",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_process-inl.h",
+      "bytes": 737,
+      "sha256": "22ad1b25a496672fa61429c06cb6848c25d50c5c81618e20ea8b83c35d0e5987",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_process.h",
+      "bytes": 3909,
+      "sha256": "92d60126064d1f132ec7179d957a7baee2aa4cb5d47cf8f4505a2ec29c0308d6",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_process_events.cc",
+      "bytes": 4130,
+      "sha256": "3538ce9ebe5f803adaeeadf70fc0c7395b053a5d2e670964d340f5b639a58830",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_process_methods.cc",
+      "bytes": 29912,
+      "sha256": "909b412cc5fa20de7eb1a0de081849edd98dbe4a239ae412e48551eb2deb0b39",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_process_object.cc",
+      "bytes": 8595,
+      "sha256": "301c1819a6cd59a48bd28f4c2252298137b6631cc33dda0ddb55dd8067d48957",
+      "registrations": 1,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_profiling.cc",
+      "bytes": 3500,
+      "sha256": "09301db73e5c2e68ced68d19133faff8045063aabca65a07a7d3604d29b49f36",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_profiling.h",
+      "bytes": 939,
+      "sha256": "ca51a7e4c4eee1cfe4ce7a2a317a8a12f4fa84768cdf0672a415ea171cc2d42c",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_realm-inl.h",
+      "bytes": 4537,
+      "sha256": "756b6de214ee58ca5df5bd0961fcf00eb5bee7cb67548b05dd42914ff5b2b223",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_realm.cc",
+      "bytes": 14435,
+      "sha256": "f3c7636f85409e09cc2c1a34781f51e7144aec04d1dd71e2512f01b2b1f48fda",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_realm.h",
+      "bytes": 7461,
+      "sha256": "6f69832d201a93647cae0889091556c14015d50a23a8a7022d56746c78daa319",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_report.cc",
+      "bytes": 36468,
+      "sha256": "aeb54bf627954e6878d7de2cea05409c2b62f2ac610d88034c6f154b303614e3",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_report.h",
+      "bytes": 1059,
+      "sha256": "688c87a17d04e4aacee87195543015d4281f141559fc99089a3865a599ea6dd9",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_report_module.cc",
+      "bytes": 9313,
+      "sha256": "ce4281d807a761d15062451d76d84a24f3d6defdda619c63a0e34e5548ec3b5a",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_report_utils.cc",
+      "bytes": 9116,
+      "sha256": "8c24eade9428961c61f2daf5c6ef848e64b15cedc55a542d8f0bd30c7866c1fd",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_revert.h",
+      "bytes": 2129,
+      "sha256": "281e00e8265720a12ce69e88267dfabf33c57c16a91795c49ee4d5cf7c63cbcb",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_root_certs.h",
+      "bytes": 193077,
+      "sha256": "a7763e3c80a7fa68f7b49174a39213359005f8b8c2320d7baeb59d076bb50745",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_sea.cc",
+      "bytes": 37299,
+      "sha256": "3be5c49ea362f5c2f09015368d7bbffbef999e464a2299c070a5138bf146097e",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_sea.h",
+      "bytes": 3441,
+      "sha256": "27d561dec3dfeb535b3cc0ae2f8d7c5da4c21a162615afeecf30de3f7cf7a9b2",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_sea_bin.cc",
+      "bytes": 19202,
+      "sha256": "4579ca57162a30218f78ad981d901ed36e0f01b7051357bd83ad0b7acdb07054",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_serdes.cc",
+      "bytes": 18173,
+      "sha256": "958660fbdc217fbd669cae85074c4ec1f8b6db2c8f5daf6eeb383a9fb9a3c0f8",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_shadow_realm.cc",
+      "bytes": 6551,
+      "sha256": "a1a463706382171a0912d57e15491bedb880960414b9bc7cead1f059ba841247",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_shadow_realm.h",
+      "bytes": 1216,
+      "sha256": "94e828fd4fd247a40a1424dc978708b3add5919ee00ed20ce3ca1cb070ed8944",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_snapshot_builder.h",
+      "bytes": 1905,
+      "sha256": "1c8f6cfd2ef11ae6d33acace893168da1ae34f0d80140d052d25d251c6cdb8dc",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_snapshot_stub.cc",
+      "bytes": 327,
+      "sha256": "f54cd587e6a47e3d37cac2a64c03812d30bde217ba76ae30b864180ff25c3e89",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_snapshotable.cc",
+      "bytes": 63084,
+      "sha256": "8cf7a64854d3b55c0eb6413c4205779db1e4043c3bf63b1161825430985e99c0",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_snapshotable.h",
+      "bytes": 6326,
+      "sha256": "ac7868b171bd9449318b25b30f05c47a6d38df21e5878d6b26cfe11cb265af6d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_sockaddr-inl.h",
+      "bytes": 6922,
+      "sha256": "22cd385cc5401843d12bd57236fdc690c8f75cbde2d9f096c2220142fe0f446b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_sockaddr.cc",
+      "bytes": 45525,
+      "sha256": "a798d7d6bc77b448adade53af85b4d523fdd1c754a838dded7361cf5c0301cea",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_sockaddr.h",
+      "bytes": 17493,
+      "sha256": "cde7f23e267367409efcd4fa89d86789d8095b5bb21308c77f03fbc1fb1bcf51",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_sqlite.cc",
+      "bytes": 184688,
+      "sha256": "04842a02b6a6d10d14d56549e992a6f8bf9658fc5be66345b2ee0dd9fe4df327",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_sqlite.h",
+      "bytes": 27455,
+      "sha256": "0557fe1f3bffe92091b77515c15098119d5a7bff71b5e221cb92f38ff3880ad4",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_stat_watcher.cc",
+      "bytes": 4631,
+      "sha256": "58d48a36f5773de273b65c248a77077853123fe9bdce25cd8df6470456c5a8f7",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_stat_watcher.h",
+      "bytes": 2485,
+      "sha256": "51a9654ba2d99edc79e2f1a3aa9ff6dda9b687c0a3649e3450b2eb571b764af5",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_symbols.cc",
+      "bytes": 991,
+      "sha256": "6989872c8ca1426cd63b85e26ba8c0d5ea87a7bd8c96c0dfad28767e7e55d2b0",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_task_queue.cc",
+      "bytes": 6692,
+      "sha256": "f4f00a90ad1f4e0520b86b19c9f13538c25d3badb9d342d8792b5cd5e4aca951",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_task_runner.cc",
+      "bytes": 14466,
+      "sha256": "f913c85033d20601c5743fe98cb907882e6be3cf6d6d6da2367c098517f06583",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_task_runner.h",
+      "bytes": 3250,
+      "sha256": "a081497268cd4e79bc05e7b802d4d88240f2b45493d6bb0b0cd008a62907745f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_threadsafe_cow-inl.h",
+      "bytes": 1311,
+      "sha256": "f4146862af9ff5d8a75c33eb47c4540450f8e91956ebcdaef61add5a2de8f21e",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_threadsafe_cow.h",
+      "bytes": 2848,
+      "sha256": "2f753b4443397563bf83c61cb79ab6e99b003e4aa28c8be2b81fadd7e01c08aa",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_trace_events.cc",
+      "bytes": 8004,
+      "sha256": "d49d2ee967961a72bc879fb4eb228f2670b58559a03619800fad6650b6efdc5e",
+      "registrations": 2,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_types.cc",
+      "bytes": 5643,
+      "sha256": "ec187d3a5bf4a1bf3e5f9842fedce3cacdd485850cdf8a9905aa2a7ac34a1438",
+      "registrations": 2,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_union_bytes.h",
+      "bytes": 2790,
+      "sha256": "3131c977c70f925931ba9df71d994adcaa7905e3b5fdf69969e9d0df90235ba4",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_url.cc",
+      "bytes": 24837,
+      "sha256": "88b595e84ae9ebf1ad084a5d7065ba55cd432dcd76958be207229af61a99269a",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_url.h",
+      "bytes": 3275,
+      "sha256": "ce6f176fb3fa59201858e2fdbec38479c5c17fcec1f5ece3f69e85e2f59a6aea",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_url_pattern.cc",
+      "bytes": 26613,
+      "sha256": "94ec4e5c41a86148604d33991e5541b09017e039899bcf5fc472f0c31dfcaf66",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_url_pattern.h",
+      "bytes": 4452,
+      "sha256": "9f062453caa08df89a9a4541473afc0303d6662dabb0ed9b161a04bb50e6d8a7",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_util.cc",
+      "bytes": 22384,
+      "sha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_v8.cc",
+      "bytes": 34971,
+      "sha256": "6b0e6f3b7f1cb0fcc47dd73086f20755e52e1a6b0f095ebf79b2c24d5f23f03d",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_v8.h",
+      "bytes": 2038,
+      "sha256": "5aa17ad2562cd95cc530b662382a90a3845fb0fbcd24a75c21317fccedf74d48",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_v8_embedder.h",
+      "bytes": 715,
+      "sha256": "9535b4b755c3d38c29c8825ac9d3f23ba90ac4f8edb6362d612a5e3de7391abb",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_v8_platform-inl.h",
+      "bytes": 2704,
+      "sha256": "eb1cac908344af6e3721c8a708a546dec40c29dc5aa6abb06437d1341e361feb",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_version.h",
+      "bytes": 4637,
+      "sha256": "94a454d9b6f16efa15ee55d3c0c130a6c69425b5bea358888a9735ddc7d62b8f",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/node_wasi.cc",
+      "bytes": 45690,
+      "sha256": "8d7b319186e7bc86ecfc91f3e57304cca4c997fd44cb301747b6c39037ba5d12",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_wasi.h",
+      "bytes": 7283,
+      "sha256": "6071af5342b137459367df1a40a27f54bd39f1fb63b49997a2e52acb75696f11",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_wasm_web_api.cc",
+      "bytes": 7335,
+      "sha256": "2098159f83c434dbfc981379c06c9e86caddb5d6143e10619b6f4eb4ba6b2343",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_wasm_web_api.h",
+      "bytes": 1819,
+      "sha256": "00fc11c57a8a64cd7a8a39559d0b23c97d994a99c8e65589e9982a92d41ce186",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_watchdog.cc",
+      "bytes": 30476,
+      "sha256": "96e0f250e6deaa33288b064605c325742f4fe7d2747e7fa6eb43dae9b780f7a1",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_watchdog.h",
+      "bytes": 7287,
+      "sha256": "85e7fd00c7383d859fedeed8cb0b3025e21311f70784eb54fcd448c25c41c967",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_webstorage.cc",
+      "bytes": 28241,
+      "sha256": "867ec31bfaea3fe28ff5057a4f0beda45b5954200fe6e7c34c1c70dc60d86220",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_webstorage.h",
+      "bytes": 2096,
+      "sha256": "91c7f6ef12773ac64821c2d0572e00afe801d67b25f59db4c73ea988ee6a3977",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_worker.cc",
+      "bytes": 60273,
+      "sha256": "947f09b9626c3657fb9e1c314a5d2ba17404f29cba36da08d9c19ba439f9c042",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_worker.h",
+      "bytes": 5937,
+      "sha256": "61deaeef7bf7a5ef0ba37beba652b71d3777a460eb902f6b1af7fcb4bab8ed68",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/node_zlib.cc",
+      "bytes": 79780,
+      "sha256": "aa23343f3d6740eade97d6ddae8988b030bfd0ef82e6597da172c7234c5dc96e",
+      "registrations": 2,
+      "importedSource": true
+    },
+    {
+      "path": "src/path.cc",
+      "bytes": 11600,
+      "sha256": "b87accff213c9b1302b831b8f93e3d75e1a019eadf48429da3e976e5f23ee54c",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/path.h",
+      "bytes": 1049,
+      "sha256": "fd447905dae3570d308fc6746ab7ffef9571d79b7c3aa67805f0f564d767549a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/permission/boolean_permission.h",
+      "bytes": 1353,
+      "sha256": "e90875ccc2d958adfd3f96e95f297b0772d90806ee40a8ed07358086d29b5374",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/permission/fs_permission.cc",
+      "bytes": 9670,
+      "sha256": "46ec3038ea549b213e9a39fde15c368a46037c928b63fad5eb303b0081253a9f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/permission/fs_permission.h",
+      "bytes": 5894,
+      "sha256": "f8dbb7460ed39a81e4cd5703aecbadb4437e5fd63ddba5b4b593c42b6d36903a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/permission/permission.cc",
+      "bytes": 14232,
+      "sha256": "51807a26057db8dde6ac8f5d152d6cdca7c415885a6ae1fca58a6307af75ff9c",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/permission/permission.h",
+      "bytes": 7542,
+      "sha256": "d7a3bd7a1d41f8933022410bc757bcf76b66a40ec233132452a7cee5a701153b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/permission/permission_base.h",
+      "bytes": 3099,
+      "sha256": "db98ec7e2de879cdc644aa72d307f9f42572044bf8ff460cacb3d05af37b0e8d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/pipe_wrap.cc",
+      "bytes": 9614,
+      "sha256": "e46590ec6d56628629b880ecbdf43f1219e595a465cb802fee1df3390a20d619",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/pipe_wrap.h",
+      "bytes": 2851,
+      "sha256": "7905a4166b9787eeb33f0a2a59562ca4241a8adcb400a8794a0f03b6276e7e91",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/process_wrap.cc",
+      "bytes": 13744,
+      "sha256": "58f83bfee42569184975982841666dc6e5dfae1bb96dbe957b56f072c56e4da2",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/application.cc",
+      "bytes": 16934,
+      "sha256": "2d1d947b1bd7dc2c99b1c1ed329a286481349b561e820a537d867f7e5bac1ea7",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/application.h",
+      "bytes": 11397,
+      "sha256": "a5b8dfd6a08f0189ea2f867eab8b515a54610c88c99c695336146ef28b7fcd86",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/arena.h",
+      "bytes": 11321,
+      "sha256": "a2832e92145b08229d2fe46259fe717015f27ba872cf9ca749a19fafb4da37dd",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/bindingdata.cc",
+      "bytes": 18216,
+      "sha256": "58565f81d06a512236a7a77d38659f28bf89fe9f3e5023c0726cfc6254e08bc6",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/bindingdata.h",
+      "bytes": 21817,
+      "sha256": "895699aba089a4ac0f6f12f8adb6f305b40c3aadc57703ee4b058866676cef72",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/cid.cc",
+      "bytes": 3980,
+      "sha256": "f1a7d124768de5aa43988d07da6ddb255773e62eba492510986aa39796545636",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/cid.h",
+      "bytes": 4440,
+      "sha256": "c9c6e392ed945e2856ddf6ab671c4fef79ebe2f44246ccd226137897c71baaa6",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/data.cc",
+      "bytes": 17282,
+      "sha256": "a704d6af014eb5a9c010a7f0ec0f76d76ad0328b43df5d38d5a4540b3278e4de",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/data.h",
+      "bytes": 15628,
+      "sha256": "905798b9d78cec33b65db26297277511873479503943c54abdbec231c83cca7d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/defs.h",
+      "bytes": 15669,
+      "sha256": "7ce825f149eaf187410d92e334fc13d2922eb232f2643c35f2d8c13c4f99f517",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/endpoint.cc",
+      "bytes": 81077,
+      "sha256": "c1abb0b1344da30f79742c321bc6bd5bead88645b8b2fb2eff8be5ad8ef49fa8",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/endpoint.h",
+      "bytes": 21938,
+      "sha256": "df67f232e7817a0721e9548a199a2fcdf65ff5121992fd1b104ed9d8c8ec12a1",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/guard.h",
+      "bytes": 83,
+      "sha256": "678ed1d8a58647c6ba17aedaf6a9ff51cffb4d949981f40f699661c712962693",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/quic/http3.cc",
+      "bytes": 56597,
+      "sha256": "4f5d88a6f51ce11a8ab71786c04a047d9c2f596720a748f249c71122d1b06a53",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/http3.h",
+      "bytes": 576,
+      "sha256": "c79825c661db6ea710e3e0080b53f933bcb35edd15f1ed7291627cd8469e8475",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/packet.cc",
+      "bytes": 8060,
+      "sha256": "5b9682368c2a5a158a78bfa6cd52da9fdc911d7647044f6fde8ea88cd5a09ebb",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/packet.h",
+      "bytes": 5074,
+      "sha256": "8b2ae2607ceb286d2f5e585812effbc4d702928af0db79b29614cac5e84e833d",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/preferredaddress.cc",
+      "bytes": 4765,
+      "sha256": "6ba36b2569bfa236c0f291b7ab2aee773c176413d89fbcf7b876b9a6b2cf2ab3",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/preferredaddress.h",
+      "bytes": 2188,
+      "sha256": "3538baf756e818fac0b5149d368399ff62bd7d9e76e6bfd7aa81b8680025569a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/quic.cc",
+      "bytes": 1965,
+      "sha256": "3aa04ea1304cc7387e1ee923e82e73d859f3cf2a3014b31d7030d6691258f076",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/session.cc",
+      "bytes": 165996,
+      "sha256": "4dd2a46242f48ce7ed9ae0252e82921642907a1b2827d69499d9c554848bfd17",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/session.h",
+      "bytes": 31828,
+      "sha256": "2e784d327606fca8daa9b0641f7e2b09ee1d1e0f7e550f0e9d82d200931d6c7c",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/session_manager.cc",
+      "bytes": 4570,
+      "sha256": "32bafcf087a377549c5f56eecae0a1c31b4e31649f20d7f6d8f110470adb06e4",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/session_manager.h",
+      "bytes": 4351,
+      "sha256": "3da4611d48f4696605aaefbdfb20dc4d2ff63aceac986e8ea6e998e8ae2c70e7",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/sessionticket.cc",
+      "bytes": 5813,
+      "sha256": "8cc0e46fc8c2a04541cc3229144753a61bf632cd7c83a3bb808c257bf8c84199",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/sessionticket.h",
+      "bytes": 3912,
+      "sha256": "393bdf2fd3ba5629ffdb2ab4ef5d02ff69355f0ecae67a0143698806a310afa4",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/streams.cc",
+      "bytes": 71984,
+      "sha256": "786b2df27513acdce6720902d8708b884b9a25640f153a4d85c537464edefd70",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/streams.h",
+      "bytes": 21286,
+      "sha256": "f45baa813c8235b47e26fa90689805acf08d0c6d3a99c5299b0604599cbe63c1",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/tlscontext.cc",
+      "bytes": 39396,
+      "sha256": "9747a7475278f644eccd145fcc636574216a9fa6d6e2b8fa976f15285a06ad97",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/tlscontext.h",
+      "bytes": 16672,
+      "sha256": "7b09be019f1c97e52c6d7faa3e4c3217033548a6c2ab0508f00a69b1917666e5",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/tokens.cc",
+      "bytes": 10952,
+      "sha256": "5dd767f854f284dc6c18306ea628b137ce26fd7d34165de3730d14a56f9fd450",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/tokens.h",
+      "bytes": 10118,
+      "sha256": "4e7ece06e8ee5e354392555fc29b566cd687f68414fadcb952b8eedc9bfe40cb",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/transportparams.cc",
+      "bytes": 19547,
+      "sha256": "b762cb01408edbb63f54d070e28fbc99e0ba65b0af565c3f7b0d7d0d1757be1c",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/quic/transportparams.h",
+      "bytes": 7633,
+      "sha256": "9780f121b36e8a527f3984478b37c4612becce4f482fbd6ebb0c5fe834222447",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/req_wrap-inl.h",
+      "bytes": 5621,
+      "sha256": "ede34e6a3f999856a62284d1045deb2a6a2a578a321faf402c432a8605df75b1",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/req_wrap.h",
+      "bytes": 2315,
+      "sha256": "571212e6b7000aad7256fc3ad81398d3e75cb69c036bf87f4a6965b226bac5de",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/signal_wrap.cc",
+      "bytes": 5887,
+      "sha256": "d7dd9888ebb0fddb0fc5e350c36ea02c018eb71cb410a01c6fecbf5a3a7b5bbe",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/spawn_sync.cc",
+      "bytes": 34304,
+      "sha256": "f5e6c41925dd2848df352e4d9295cf039b66ae805776af40532ad3854bafac03",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/spawn_sync.h",
+      "bytes": 7297,
+      "sha256": "9655e8371d0dfd3d246967297286bc8b929bfe34950b0c01146c72a19f2d4e6b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/stream_base-inl.h",
+      "bytes": 5373,
+      "sha256": "5b25202a2b4eac9b374add0f1c2e4422ee1b16a836e983b144b40ff1d7959387",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/stream_base.cc",
+      "bytes": 31490,
+      "sha256": "01fec064aec0edb72ee9577ac10c7351b56e0e6159a7a456635d0330dcff6704",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/stream_base.h",
+      "bytes": 19288,
+      "sha256": "8ad6ff436056bff357c1eef42c8214eeac6cda52f442142f3753f6af690fc039",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/stream_pipe.cc",
+      "bytes": 11076,
+      "sha256": "10ffea0f4e23f04e4c1e4bc199055678a860eff344595bb24445266b56139e80",
+      "registrations": 1,
+      "importedSource": false
+    },
+    {
+      "path": "src/stream_pipe.h",
+      "bytes": 2443,
+      "sha256": "b3c1aadef8ff48c6c5d2ab0ede4159149b43daffb1039d109b707c268bb5058b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/stream_wrap.cc",
+      "bytes": 16194,
+      "sha256": "78cd88f8de6d6b8b238fea051f0bd285aab77cab1f84b86f0dda62de9fdd241c",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/stream_wrap.h",
+      "bytes": 5021,
+      "sha256": "7857273ee791ed6a0e2962114ddd2804e8d7b3221c86292d6081a5ae1e415758",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/string_bytes.cc",
+      "bytes": 29594,
+      "sha256": "5a3e7233e6c457e406647926571e76e3f68a8655a1940d90a0b29e6a00bd174d",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/string_bytes.h",
+      "bytes": 4614,
+      "sha256": "5e0b0f184d2e7b0556b5afb67bfaa28b3aa92c960a2dccff40006e1a1c1b86f2",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/string_decoder-inl.h",
+      "bytes": 701,
+      "sha256": "b6a7c217f30939eb36454e6931098de164aeaa24c236f936071b7f7d9eac1437",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/string_decoder.cc",
+      "bytes": 12319,
+      "sha256": "34bedf8a3d3b455c89b59fdda5fa622f4c2c9e6eceeb72c7cbfee17e7f62fced",
+      "registrations": 2,
+      "importedSource": true
+    },
+    {
+      "path": "src/string_decoder.h",
+      "bytes": 1480,
+      "sha256": "3aa815d829ebc12ae1e02e3aaaa38808629c247f1a46a049978e9025ce55d76c",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tcp_wrap.cc",
+      "bytes": 24110,
+      "sha256": "a91fcb66061e14752073c93065458444e73fca5e373eb4bf549762acdb9ff727",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/tcp_wrap.h",
+      "bytes": 5328,
+      "sha256": "f7d138f1811cd06b6d26f399947fb518925f8d68207298ee695cff105881e05b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/threadpoolwork-inl.h",
+      "bytes": 2646,
+      "sha256": "4924f6a548a029f6924005ba20d3f95a23ef795aa5ae8668973bf07e81ccdca1",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/timer_wrap-inl.h",
+      "bytes": 755,
+      "sha256": "5423997c97ebdea7428e2ffb0e1a40aa6fa1f39603e7ff5a6d407d93c5832bbb",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/timer_wrap.cc",
+      "bytes": 1894,
+      "sha256": "81a7c6ef271c5e0b724181aba401b0a0112a05a37a7a293d2d301917ae76b32e",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/timer_wrap.h",
+      "bytes": 1897,
+      "sha256": "dafb373f8a9e456d6306c44bc7abf81aae40545e035e762080c18f3941a06f36",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/timers.cc",
+      "bytes": 6813,
+      "sha256": "108606716f5518d8c5ed96c552eb67f05215979b3daafc84b99fe72c6b2095b0",
+      "registrations": 3,
+      "importedSource": false
+    },
+    {
+      "path": "src/timers.h",
+      "bytes": 2414,
+      "sha256": "129548c4b4871b8b4fdfd28c569d320787b8c2b9e52facb48cf0be7fbc6b1b3f",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/tracing/agent.cc",
+      "bytes": 892,
+      "sha256": "b44ad5be81bb0d7ee977e48ec564cccab6f933e9e70a0b31fbc5386ed2436b13",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/agent.h",
+      "bytes": 3493,
+      "sha256": "f3641f429fb4f84615f81b6bcf72972dfd2342a08ade4f555b72789331e34f1a",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/agent_legacy.cc",
+      "bytes": 10547,
+      "sha256": "a8c6b9b1c22e75069695157f9b91522d751e66e233530685d0aa507ae7c71422",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/agent_legacy.h",
+      "bytes": 4283,
+      "sha256": "e3b06518a9aa499d73bf63e49183cabf6e97a3d54b911427c056ab0aaab8bffd",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/agent_perfetto.cc",
+      "bytes": 15000,
+      "sha256": "1552e319c9d674618e775dee561312e26476be7bf168df38b3fd2972ccfc31b6",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/tracing/agent_perfetto.h",
+      "bytes": 4947,
+      "sha256": "9de0494f21cf43a3b562a3c2eaae7e2ae4440dcc0404b8ab58ce94236ab1f87b",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/tracing/node_trace_buffer.cc",
+      "bytes": 6729,
+      "sha256": "c77c172a032b4b021448df06802d2839daa4e9435d5510a7ef9402cb200db62a",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/node_trace_buffer.h",
+      "bytes": 2583,
+      "sha256": "4929ba7396e3ded365fcf51a4e2d9684573a36dc1947ee8c09b37028035cf8fc",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/node_trace_writer.cc",
+      "bytes": 7173,
+      "sha256": "ca8879fd79d9fad8c506de88ca30601ae8d3624c67634e7fdda2914e956d3b55",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/node_trace_writer.h",
+      "bytes": 2402,
+      "sha256": "e2f01c16f6d727476702537de5451eb2c2deb2ed0c4bc354302dfb4683ad6d15",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/trace_event.h",
+      "bytes": 893,
+      "sha256": "0586cb1b18c5a3242f7605c32e0bba8552df66b3e564b191266a7b11f22dd42f",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/trace_event_helper.cc",
+      "bytes": 1422,
+      "sha256": "8115b429ed3c22d4db2ee7de0d48fca85cccfb50963986e1f8a53d90179a2fde",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/trace_event_helper.h",
+      "bytes": 1098,
+      "sha256": "707181ab1d4e6e42d5c83263aa100f549fa1b0280eeb9e4cf8a2036e76d27674",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/trace_event_legacy.h",
+      "bytes": 67693,
+      "sha256": "aa836d5ae233057253903fed0bc69044df3220ffdccbabb2d2af671f8532b48a",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/trace_event_legacy_inl.h",
+      "bytes": 33060,
+      "sha256": "3469b74e408c59de854372afd0c33faa7c91ada45126a163db66f2f2b8992272",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/trace_event_perfetto.cc",
+      "bytes": 135,
+      "sha256": "2b4b47c17938a8c29a9af3001c3a664b667b7e514f50db0da67b17e735bdcf2a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/tracing/trace_event_perfetto.h",
+      "bytes": 1671,
+      "sha256": "5ed28dbe73a0d4bee9b2b8ac87c80eda60c95a1f1e1c933d6330ed7abd63596a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/tracing/traced_value.cc",
+      "bytes": 7486,
+      "sha256": "acbee56fb6c7093904797e0d07c3eb37cfe27780b067f0f9bf624aee2db08cc4",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tracing/traced_value.h",
+      "bytes": 4672,
+      "sha256": "0ad60c64d85b9cc76c2293575f21c07bbbacdc7f20517aab70e0b171f4c7224f",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/tty_wrap.cc",
+      "bytes": 5998,
+      "sha256": "09de3d949b5ad557e3ca1167a2e87a0a4f4fa4dd20c049d53eba9a1026764428",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/tty_wrap.h",
+      "bytes": 2320,
+      "sha256": "9dc4246fefbcc474baa787d3de78169916e80bdd409c921d6ebd133fd3c63431",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/udp_wrap.cc",
+      "bytes": 27325,
+      "sha256": "270de282c7855996c43865f34727208216d894ce20359241433ad870ecc03200",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/udp_wrap.h",
+      "bytes": 8936,
+      "sha256": "79d54ba724a83d2f70c873a99e7d83e04faafc3cad626b2b62c037402b844a6a",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/undici_version.h",
+      "bytes": 228,
+      "sha256": "8e9bb211bbd54185c2fb7d63c4369bccefb2621a3d6d4e5ef7354795fc9ef3de",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/util-inl.h",
+      "bytes": 27698,
+      "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/util.cc",
+      "bytes": 32624,
+      "sha256": "d5ff5ddf59fea718016f5028ec54661ea8f92e37070d82c7dae2e39ab1e91172",
+      "registrations": 0,
+      "importedSource": false
+    },
+    {
+      "path": "src/util.h",
+      "bytes": 43448,
+      "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b",
+      "registrations": 0,
+      "importedSource": true
+    },
+    {
+      "path": "src/uv.cc",
+      "bytes": 5261,
+      "sha256": "6b94aa57a608384df2e563a5f841cb29c7553abe5a3008ab9ddbc4a70876d989",
+      "registrations": 2,
+      "importedSource": false
+    },
+    {
+      "path": "src/zlib_version.h",
+      "bytes": 234,
+      "sha256": "6d4963cc15770335d6cdf5e03ec3ce52f5fc0a70b54a7d590c6340e71e3b1985",
+      "registrations": 0,
+      "importedSource": false
+    }
+  ],
+  "bindings": [
+    {
+      "name": "async_context_frame",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        0
+      ]
+    },
+    {
+      "name": "async_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "name": "binding",
+      "hasInitializerSyntax": false,
+      "registrationIndexes": [
+        4
+      ]
+    },
+    {
+      "name": "blob",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "block_list",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        8
+      ]
+    },
+    {
+      "name": "buffer",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        9,
+        10
+      ]
+    },
+    {
+      "name": "builtins",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        11,
+        12,
+        13
+      ]
+    },
+    {
+      "name": "cares_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        14,
+        15
+      ]
+    },
+    {
+      "name": "cjs_lexer",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        16,
+        17
+      ]
+    },
+    {
+      "name": "config",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        18,
+        19
+      ]
+    },
+    {
+      "name": "constants",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        20
+      ]
+    },
+    {
+      "name": "contextify",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        21,
+        22,
+        23
+      ]
+    },
+    {
+      "name": "credentials",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        24,
+        25
+      ]
+    },
+    {
+      "name": "crypto",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        26,
+        27
+      ]
+    },
+    {
+      "name": "debug",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        28
+      ]
+    },
+    {
+      "name": "diagnostics_channel",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        29,
+        30,
+        31
+      ]
+    },
+    {
+      "name": "dtls",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        32,
+        33,
+        34
+      ]
+    },
+    {
+      "name": "encoding_binding",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        35,
+        36,
+        37
+      ]
+    },
+    {
+      "name": "env_var",
+      "hasInitializerSyntax": false,
+      "registrationIndexes": [
+        38
+      ]
+    },
+    {
+      "name": "errors",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        39,
+        40
+      ]
+    },
+    {
+      "name": "ffi",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        41
+      ]
+    },
+    {
+      "name": "fs",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        42,
+        43,
+        44
+      ]
+    },
+    {
+      "name": "fs_dir",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        45,
+        46,
+        47
+      ]
+    },
+    {
+      "name": "fs_event_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        48,
+        49
+      ]
+    },
+    {
+      "name": "handle_wrap",
+      "hasInitializerSyntax": false,
+      "registrationIndexes": [
+        50
+      ]
+    },
+    {
+      "name": "heap_utils",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        51,
+        52
+      ]
+    },
+    {
+      "name": "http2",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        53
+      ]
+    },
+    {
+      "name": "http_parser",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        54,
+        55,
+        56
+      ]
+    },
+    {
+      "name": "icu",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        57,
+        58,
+        59
+      ]
+    },
+    {
+      "name": "inspector",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        60,
+        61,
+        62
+      ]
+    },
+    {
+      "name": "internal_only_v8",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        63,
+        64
+      ]
+    },
+    {
+      "name": "ipc_serdes",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        65,
+        66
+      ]
+    },
+    {
+      "name": "js_stream",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        67
+      ]
+    },
+    {
+      "name": "locks",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        68,
+        69,
+        70
+      ]
+    },
+    {
+      "name": "messaging",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        71,
+        72,
+        73
+      ]
+    },
+    {
+      "name": "mksnapshot",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        74,
+        75,
+        76
+      ]
+    },
+    {
+      "name": "module_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        77,
+        78,
+        79
+      ]
+    },
+    {
+      "name": "modules",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        80,
+        81,
+        82
+      ]
+    },
+    {
+      "name": "options",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        83,
+        84
+      ]
+    },
+    {
+      "name": "os",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        85,
+        86
+      ]
+    },
+    {
+      "name": "performance",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        87,
+        88,
+        89
+      ]
+    },
+    {
+      "name": "permission",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        90,
+        91
+      ]
+    },
+    {
+      "name": "pipe_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        92,
+        93
+      ]
+    },
+    {
+      "name": "process_methods",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        94,
+        95,
+        96
+      ]
+    },
+    {
+      "name": "process_object",
+      "hasInitializerSyntax": false,
+      "registrationIndexes": [
+        97
+      ]
+    },
+    {
+      "name": "process_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        98,
+        99
+      ]
+    },
+    {
+      "name": "profiler",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        100,
+        101
+      ]
+    },
+    {
+      "name": "quic",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        102,
+        103,
+        104
+      ]
+    },
+    {
+      "name": "report",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        105,
+        106
+      ]
+    },
+    {
+      "name": "sea",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        107,
+        108
+      ]
+    },
+    {
+      "name": "serdes",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        109,
+        110
+      ]
+    },
+    {
+      "name": "signal_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        111,
+        112
+      ]
+    },
+    {
+      "name": "spawn_sync",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        113,
+        114
+      ]
+    },
+    {
+      "name": "sqlite",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        115
+      ]
+    },
+    {
+      "name": "stream_pipe",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        116
+      ]
+    },
+    {
+      "name": "stream_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        117,
+        118
+      ]
+    },
+    {
+      "name": "string_decoder",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        119,
+        120
+      ]
+    },
+    {
+      "name": "symbols",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        121
+      ]
+    },
+    {
+      "name": "task_queue",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        122,
+        123
+      ]
+    },
+    {
+      "name": "tcp_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        124,
+        125
+      ]
+    },
+    {
+      "name": "timers",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        126,
+        127,
+        128
+      ]
+    },
+    {
+      "name": "tls_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        129,
+        130
+      ]
+    },
+    {
+      "name": "trace_events",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        131,
+        132
+      ]
+    },
+    {
+      "name": "tty_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        133,
+        134
+      ]
+    },
+    {
+      "name": "types",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        135,
+        136
+      ]
+    },
+    {
+      "name": "udp_wrap",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        137,
+        138
+      ]
+    },
+    {
+      "name": "url",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        139,
+        140,
+        141
+      ]
+    },
+    {
+      "name": "url_pattern",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        142,
+        143
+      ]
+    },
+    {
+      "name": "util",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        144,
+        145
+      ]
+    },
+    {
+      "name": "uv",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        146,
+        147
+      ]
+    },
+    {
+      "name": "v8",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        148,
+        149
+      ]
+    },
+    {
+      "name": "wasi",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        150
+      ]
+    },
+    {
+      "name": "wasm_web_api",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        151,
+        152
+      ]
+    },
+    {
+      "name": "watchdog",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        153
+      ]
+    },
+    {
+      "name": "webstorage",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        154
+      ]
+    },
+    {
+      "name": "worker",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        155,
+        156,
+        157
+      ]
+    },
+    {
+      "name": "zlib",
+      "hasInitializerSyntax": true,
+      "registrationIndexes": [
+        158,
+        159
+      ]
+    }
+  ],
+  "registrations": [
+    {
+      "name": "async_context_frame",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 95,
+      "start": 2633,
+      "end": 2749,
+      "initializerExpression": "node::async_context_frame::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/async_context_frame.cc",
+        "bytes": 2750,
+        "sha256": "6de1a1e6c0eb2abf910628ffcb5722e5e33234d3725a2df27ce36349e091f9cc"
+      }
+    },
+    {
+      "name": "async_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 730,
+      "start": 27055,
+      "end": 27183,
+      "initializerExpression": "node::AsyncWrap::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/async_wrap.cc",
+        "bytes": 27422,
+        "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709"
+      }
+    },
+    {
+      "name": "async_wrap",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 732,
+      "start": 27184,
+      "end": 27300,
+      "initializerExpression": "node::AsyncWrap::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/async_wrap.cc",
+        "bytes": 27422,
+        "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709"
+      }
+    },
+    {
+      "name": "async_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 734,
+      "start": 27301,
+      "end": 27421,
+      "initializerExpression": "node::AsyncWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/async_wrap.cc",
+        "bytes": 27422,
+        "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709"
+      }
+    },
+    {
+      "name": "binding",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 1090,
+      "start": 39544,
+      "end": 39659,
+      "initializerExpression": "node::binding::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_binding.cc",
+        "bytes": 39660,
+        "sha256": "921f6c1d198a9921101fa45d2bcb9cd36509883758a3abb5a77f2f20857bd410"
+      }
+    },
+    {
+      "name": "blob",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 618,
+      "start": 21191,
+      "end": 21308,
+      "initializerExpression": "node::Blob::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_blob.cc",
+        "bytes": 21463,
+        "sha256": "d93ef602bfc3ff73a163d301f4ec4ca65a44bba799e6c6c4b01f29c6a09ba091"
+      }
+    },
+    {
+      "name": "blob",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 620,
+      "start": 21309,
+      "end": 21384,
+      "initializerExpression": "node::Blob::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_blob.cc",
+        "bytes": 21463,
+        "sha256": "d93ef602bfc3ff73a163d301f4ec4ca65a44bba799e6c6c4b01f29c6a09ba091"
+      }
+    },
+    {
+      "name": "blob",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 621,
+      "start": 21385,
+      "end": 21462,
+      "initializerExpression": "node::Blob::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_blob.cc",
+        "bytes": 21463,
+        "sha256": "d93ef602bfc3ff73a163d301f4ec4ca65a44bba799e6c6c4b01f29c6a09ba091"
+      }
+    },
+    {
+      "name": "block_list",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1326,
+      "start": 45410,
+      "end": 45508,
+      "initializerExpression": "node::SocketAddressBlockListWrap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_sockaddr.cc",
+        "bytes": 45525,
+        "sha256": "a798d7d6bc77b448adade53af85b4d523fdd1c754a838dded7361cf5c0301cea"
+      }
+    },
+    {
+      "name": "buffer",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 2192,
+      "start": 76327,
+      "end": 76396,
+      "initializerExpression": "node::Buffer::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_buffer.cc",
+        "bytes": 76513,
+        "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2"
+      }
+    },
+    {
+      "name": "buffer",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 2193,
+      "start": 76397,
+      "end": 76510,
+      "initializerExpression": "node::Buffer::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_buffer.cc",
+        "bytes": 76513,
+        "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2"
+      }
+    },
+    {
+      "name": "builtins",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 1008,
+      "start": 36693,
+      "end": 36796,
+      "initializerExpression": "node::builtins::BuiltinLoader::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_builtins.cc",
+        "bytes": 37013,
+        "sha256": "e96508e01765d9f89cefb8e6508d87025e6ded4dc8bafc4a8c46a6e5c02305d2"
+      }
+    },
+    {
+      "name": "builtins",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1010,
+      "start": 36797,
+      "end": 36906,
+      "initializerExpression": "node::builtins::BuiltinLoader::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_builtins.cc",
+        "bytes": 37013,
+        "sha256": "e96508e01765d9f89cefb8e6508d87025e6ded4dc8bafc4a8c46a6e5c02305d2"
+      }
+    },
+    {
+      "name": "builtins",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 1012,
+      "start": 36907,
+      "end": 37012,
+      "initializerExpression": "node::builtins::BuiltinLoader::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_builtins.cc",
+        "bytes": 37013,
+        "sha256": "e96508e01765d9f89cefb8e6508d87025e6ded4dc8bafc4a8c46a6e5c02305d2"
+      }
+    },
+    {
+      "name": "cares_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 2393,
+      "start": 73225,
+      "end": 73302,
+      "initializerExpression": "node::cares_wrap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/cares_wrap.cc",
+        "bytes": 73425,
+        "sha256": "e0d762ed6161dd9f1e8ff732050f8886bdfff2d86a84cde377d6962cd69a1c63"
+      }
+    },
+    {
+      "name": "cares_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 2394,
+      "start": 73303,
+      "end": 73424,
+      "initializerExpression": "node::cares_wrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/cares_wrap.cc",
+        "bytes": 73425,
+        "sha256": "e0d762ed6161dd9f1e8ff732050f8886bdfff2d86a84cde377d6962cd69a1c63"
+      }
+    },
+    {
+      "name": "cjs_lexer",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 113,
+      "start": 3483,
+      "end": 3558,
+      "initializerExpression": "node::cjs_lexer::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_cjs_lexer.cc",
+        "bytes": 3679,
+        "sha256": "f13494d341b745a3155a6153f7287b4362dad61e8e7bf353e4c626566651d14a"
+      }
+    },
+    {
+      "name": "cjs_lexer",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 114,
+      "start": 3559,
+      "end": 3678,
+      "initializerExpression": "node::cjs_lexer::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_cjs_lexer.cc",
+        "bytes": 3679,
+        "sha256": "f13494d341b745a3155a6153f7287b4362dad61e8e7bf353e4c626566651d14a"
+      }
+    },
+    {
+      "name": "config",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 111,
+      "start": 3115,
+      "end": 3176,
+      "initializerExpression": "node::InitConfig",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_config.cc",
+        "bytes": 3257,
+        "sha256": "642279f8e5dfa487d84637992158eec193d8fe9f86484ffd2bfe5565c13d8193"
+      }
+    },
+    {
+      "name": "config",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 112,
+      "start": 3177,
+      "end": 3256,
+      "initializerExpression": "node::RegisterConfigExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_config.cc",
+        "bytes": 3257,
+        "sha256": "642279f8e5dfa487d84637992158eec193d8fe9f86484ffd2bfe5565c13d8193"
+      }
+    },
+    {
+      "name": "constants",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1441,
+      "start": 32270,
+      "end": 32397,
+      "initializerExpression": "node::constants::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_constants.cc",
+        "bytes": 32398,
+        "sha256": "9e22dc6f106498895367e01bc02e00b3cedb8beef004b8b11f62f4a961a6891c"
+      }
+    },
+    {
+      "name": "contextify",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 2088,
+      "start": 72391,
+      "end": 72489,
+      "initializerExpression": "node::contextify::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_contextify.cc",
+        "bytes": 72731,
+        "sha256": "f053ef316b1b1d6d1e3f42cb431f9742c00cf1a71a381fb6bdab079e48cfb145"
+      }
+    },
+    {
+      "name": "contextify",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 2090,
+      "start": 72490,
+      "end": 72607,
+      "initializerExpression": "node::contextify::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_contextify.cc",
+        "bytes": 72731,
+        "sha256": "f053ef316b1b1d6d1e3f42cb431f9742c00cf1a71a381fb6bdab079e48cfb145"
+      }
+    },
+    {
+      "name": "contextify",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 2092,
+      "start": 72608,
+      "end": 72729,
+      "initializerExpression": "node::contextify::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_contextify.cc",
+        "bytes": 72731,
+        "sha256": "f053ef316b1b1d6d1e3f42cb431f9742c00cf1a71a381fb6bdab079e48cfb145"
+      }
+    },
+    {
+      "name": "credentials",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 529,
+      "start": 14654,
+      "end": 14733,
+      "initializerExpression": "node::credentials::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_credentials.cc",
+        "bytes": 14858,
+        "sha256": "5ec321f31a9b55dad9c21c1840de4541864d2402353311852dbc48a1060ca457"
+      }
+    },
+    {
+      "name": "credentials",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 530,
+      "start": 14734,
+      "end": 14857,
+      "initializerExpression": "node::credentials::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_credentials.cc",
+        "bytes": 14858,
+        "sha256": "5ec321f31a9b55dad9c21c1840de4541864d2402353311852dbc48a1060ca457"
+      }
+    },
+    {
+      "name": "crypto",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 123,
+      "start": 5154,
+      "end": 5223,
+      "initializerExpression": "node::crypto::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_crypto.cc",
+        "bytes": 5338,
+        "sha256": "c3123eb1fe0141cff3731113323a96bc311a5c7e5c10f7440dfea4f75baaee67"
+      }
+    },
+    {
+      "name": "crypto",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 124,
+      "start": 5224,
+      "end": 5337,
+      "initializerExpression": "node::crypto::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_crypto.cc",
+        "bytes": 5338,
+        "sha256": "c3123eb1fe0141cff3731113323a96bc311a5c7e5c10f7440dfea4f75baaee67"
+      }
+    },
+    {
+      "name": "debug",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 125,
+      "start": 3655,
+      "end": 3722,
+      "initializerExpression": "node::debug::Initialize",
+      "preprocessorGuards": [
+        {
+          "opening": "#ifdef DEBUG",
+          "openingLine": 124,
+          "arm": "#ifdef DEBUG",
+          "armLine": 124,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/node_debug.cc",
+        "bytes": 3740,
+        "sha256": "194b5a83e1ddf95dd47ee7fcfc5eff16340255b120f84d4843930038ff7f25cf"
+      }
+    },
+    {
+      "name": "diagnostics_channel",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 314,
+      "start": 10526,
+      "end": 10659,
+      "initializerExpression": "node::diagnostics_channel::BindingData::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_diagnostics_channel.cc",
+        "bytes": 10920,
+        "sha256": "b28f81fec9a23b759640ac464609bd9f4384acdae0d85a2ecf99c3ad7ad7a4ca"
+      }
+    },
+    {
+      "name": "diagnostics_channel",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 317,
+      "start": 10660,
+      "end": 10787,
+      "initializerExpression": "node::diagnostics_channel::BindingData::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_diagnostics_channel.cc",
+        "bytes": 10920,
+        "sha256": "b28f81fec9a23b759640ac464609bd9f4384acdae0d85a2ecf99c3ad7ad7a4ca"
+      }
+    },
+    {
+      "name": "diagnostics_channel",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 320,
+      "start": 10788,
+      "end": 10917,
+      "initializerExpression": "node::diagnostics_channel::BindingData::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_diagnostics_channel.cc",
+        "bytes": 10920,
+        "sha256": "b28f81fec9a23b759640ac464609bd9f4384acdae0d85a2ecf99c3ad7ad7a4ca"
+      }
+    },
+    {
+      "name": "dtls",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 94,
+      "start": 3229,
+      "end": 3346,
+      "initializerExpression": "node::dtls::CreatePerContextProperties",
+      "preprocessorGuards": [
+        {
+          "opening": "#if HAVE_OPENSSL && HAVE_DTLS",
+          "openingLine": 3,
+          "arm": "#if HAVE_OPENSSL && HAVE_DTLS",
+          "armLine": 3,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/dtls/dtls.cc",
+        "bytes": 3539,
+        "sha256": "50f7c5a7f00eedca4d2dfb9b8c60a81c16ff16e659fb56db441a4beced2ad70c"
+      }
+    },
+    {
+      "name": "dtls",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 96,
+      "start": 3347,
+      "end": 3422,
+      "initializerExpression": "node::dtls::CreatePerIsolateProperties",
+      "preprocessorGuards": [
+        {
+          "opening": "#if HAVE_OPENSSL && HAVE_DTLS",
+          "openingLine": 3,
+          "arm": "#if HAVE_OPENSSL && HAVE_DTLS",
+          "armLine": 3,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/dtls/dtls.cc",
+        "bytes": 3539,
+        "sha256": "50f7c5a7f00eedca4d2dfb9b8c60a81c16ff16e659fb56db441a4beced2ad70c"
+      }
+    },
+    {
+      "name": "dtls",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 97,
+      "start": 3423,
+      "end": 3500,
+      "initializerExpression": "node::dtls::RegisterExternalReferences",
+      "preprocessorGuards": [
+        {
+          "opening": "#if HAVE_OPENSSL && HAVE_DTLS",
+          "openingLine": 3,
+          "arm": "#if HAVE_OPENSSL && HAVE_DTLS",
+          "armLine": 3,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/dtls/dtls.cc",
+        "bytes": 3539,
+        "sha256": "50f7c5a7f00eedca4d2dfb9b8c60a81c16ff16e659fb56db441a4beced2ad70c"
+      }
+    },
+    {
+      "name": "encoding_binding",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 548,
+      "start": 19591,
+      "end": 19718,
+      "initializerExpression": "node::encoding_binding::BindingData::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/encoding_binding.cc",
+        "bytes": 19970,
+        "sha256": "98ff679373c2cdb4b594bc5be38f037ffe236b4c43a02930fb36cb83fa5a4cf6"
+      }
+    },
+    {
+      "name": "encoding_binding",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 551,
+      "start": 19719,
+      "end": 19840,
+      "initializerExpression": "node::encoding_binding::BindingData::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/encoding_binding.cc",
+        "bytes": 19970,
+        "sha256": "98ff679373c2cdb4b594bc5be38f037ffe236b4c43a02930fb36cb83fa5a4cf6"
+      }
+    },
+    {
+      "name": "encoding_binding",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 554,
+      "start": 19841,
+      "end": 19969,
+      "initializerExpression": "node::encoding_binding::BindingData::RegisterTimerExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/encoding_binding.cc",
+        "bytes": 19970,
+        "sha256": "98ff679373c2cdb4b594bc5be38f037ffe236b4c43a02930fb36cb83fa5a4cf6"
+      }
+    },
+    {
+      "name": "env_var",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 722,
+      "start": 23754,
+      "end": 23834,
+      "initializerExpression": "node::RegisterEnvVarExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_env_var.cc",
+        "bytes": 23835,
+        "sha256": "9b3bfe0143640e9e8ce00ff982385162c288e1361742d250384a515b88958b66"
+      }
+    },
+    {
+      "name": "errors",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1465,
+      "start": 45455,
+      "end": 45524,
+      "initializerExpression": "node::errors::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_errors.cc",
+        "bytes": 45641,
+        "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d"
+      }
+    },
+    {
+      "name": "errors",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 1466,
+      "start": 45525,
+      "end": 45638,
+      "initializerExpression": "node::errors::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_errors.cc",
+        "bytes": 45641,
+        "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d"
+      }
+    },
+    {
+      "name": "ffi",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1491,
+      "start": 51009,
+      "end": 51072,
+      "initializerExpression": "node::ffi::Initialize",
+      "preprocessorGuards": [
+        {
+          "opening": "#if HAVE_FFI",
+          "openingLine": 1,
+          "arm": "#if HAVE_FFI",
+          "armLine": 1,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/node_ffi.cc",
+        "bytes": 51094,
+        "sha256": "0471b7f61da97c36a2e8a1b4fa91640d81d9edc6e15c052d6e25940abe2de8f3"
+      }
+    },
+    {
+      "name": "fs",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 5857,
+      "start": 198929,
+      "end": 199006,
+      "initializerExpression": "node::fs::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_file.cc",
+        "bytes": 199159,
+        "sha256": "33e4be5acc25b44ba4f532564220a721b645416da4e9fa26d58e14011c66a450"
+      }
+    },
+    {
+      "name": "fs",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 5858,
+      "start": 199007,
+      "end": 199078,
+      "initializerExpression": "node::fs::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_file.cc",
+        "bytes": 199159,
+        "sha256": "33e4be5acc25b44ba4f532564220a721b645416da4e9fa26d58e14011c66a450"
+      }
+    },
+    {
+      "name": "fs",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 5859,
+      "start": 199079,
+      "end": 199152,
+      "initializerExpression": "node::fs::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_file.cc",
+        "bytes": 199159,
+        "sha256": "33e4be5acc25b44ba4f532564220a721b645416da4e9fa26d58e14011c66a450"
+      }
+    },
+    {
+      "name": "fs_dir",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 460,
+      "start": 15023,
+      "end": 15144,
+      "initializerExpression": "node::fs_dir::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_dir.cc",
+        "bytes": 15339,
+        "sha256": "5faf2ee79ff224548801e2ff8bc11a96a5757bdcf00e580b813b913513f9469c"
+      }
+    },
+    {
+      "name": "fs_dir",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 462,
+      "start": 15145,
+      "end": 15224,
+      "initializerExpression": "node::fs_dir::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_dir.cc",
+        "bytes": 15339,
+        "sha256": "5faf2ee79ff224548801e2ff8bc11a96a5757bdcf00e580b813b913513f9469c"
+      }
+    },
+    {
+      "name": "fs_dir",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 463,
+      "start": 15225,
+      "end": 15338,
+      "initializerExpression": "node::fs_dir::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_dir.cc",
+        "bytes": 15339,
+        "sha256": "5faf2ee79ff224548801e2ff8bc11a96a5757bdcf00e580b813b913513f9469c"
+      }
+    },
+    {
+      "name": "fs_event_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 245,
+      "start": 8099,
+      "end": 8216,
+      "initializerExpression": "node::FSEventWrap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/fs_event_wrap.cc",
+        "bytes": 8343,
+        "sha256": "2589e91baa440efdee9b491611365dd8f123c7ede8640d25166a1f662167ceae"
+      }
+    },
+    {
+      "name": "fs_event_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 247,
+      "start": 8217,
+      "end": 8342,
+      "initializerExpression": "node::FSEventWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/fs_event_wrap.cc",
+        "bytes": 8343,
+        "sha256": "2589e91baa440efdee9b491611365dd8f123c7ede8640d25166a1f662167ceae"
+      }
+    },
+    {
+      "name": "handle_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 190,
+      "start": 5700,
+      "end": 5822,
+      "initializerExpression": "node::HandleWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/handle_wrap.cc",
+        "bytes": 5823,
+        "sha256": "20f94b3dc1569f2b90116500dc6c7546b0b92b38f1398281f7b90d5b37f6751b"
+      }
+    },
+    {
+      "name": "heap_utils",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 504,
+      "start": 15942,
+      "end": 16013,
+      "initializerExpression": "node::heap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/heap_utils.cc",
+        "bytes": 16130,
+        "sha256": "7de51631ccb0540b5014d2a4caee439e322b4d4c07cc90fce26c6f4b0f6f2c66"
+      }
+    },
+    {
+      "name": "heap_utils",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 505,
+      "start": 16014,
+      "end": 16129,
+      "initializerExpression": "node::heap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/heap_utils.cc",
+        "bytes": 16130,
+        "sha256": "7de51631ccb0540b5014d2a4caee439e322b4d4c07cc90fce26c6f4b0f6f2c66"
+      }
+    },
+    {
+      "name": "http2",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 3747,
+      "start": 134682,
+      "end": 134749,
+      "initializerExpression": "node::http2::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_http2.cc",
+        "bytes": 134750,
+        "sha256": "10c3fa807b6dcb84374687104615a356ad6dbffb02858822cba4899fe307d459"
+      }
+    },
+    {
+      "name": "http_parser",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1534,
+      "start": 46488,
+      "end": 46588,
+      "initializerExpression": "node::http_parser::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_http_parser.cc",
+        "bytes": 46838,
+        "sha256": "ea44194feb93cd94da8b1ff8faa76d32d90f00561a9ad1cffd93ebf79411f4ea"
+      }
+    },
+    {
+      "name": "http_parser",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 1536,
+      "start": 46589,
+      "end": 46708,
+      "initializerExpression": "node::http_parser::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_http_parser.cc",
+        "bytes": 46838,
+        "sha256": "ea44194feb93cd94da8b1ff8faa76d32d90f00561a9ad1cffd93ebf79411f4ea"
+      }
+    },
+    {
+      "name": "http_parser",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 1538,
+      "start": 46709,
+      "end": 46832,
+      "initializerExpression": "node::http_parser::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_http_parser.cc",
+        "bytes": 46838,
+        "sha256": "ea44194feb93cd94da8b1ff8faa76d32d90f00561a9ad1cffd93ebf79411f4ea"
+      }
+    },
+    {
+      "name": "icu",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 730,
+      "start": 24413,
+      "end": 24493,
+      "initializerExpression": "node::i18n::CreatePerContextProperties",
+      "preprocessorGuards": [
+        {
+          "opening": "#if defined(NODE_HAVE_I18N_SUPPORT)",
+          "openingLine": 47,
+          "arm": "#if defined(NODE_HAVE_I18N_SUPPORT)",
+          "armLine": 47,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/node_i18n.cc",
+        "bytes": 24681,
+        "sha256": "92609fad1107071d39f8211ccac9536257a63752db95e1160ae345d6618f76ff"
+      }
+    },
+    {
+      "name": "icu",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 731,
+      "start": 24494,
+      "end": 24568,
+      "initializerExpression": "node::i18n::CreatePerIsolateProperties",
+      "preprocessorGuards": [
+        {
+          "opening": "#if defined(NODE_HAVE_I18N_SUPPORT)",
+          "openingLine": 47,
+          "arm": "#if defined(NODE_HAVE_I18N_SUPPORT)",
+          "armLine": 47,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/node_i18n.cc",
+        "bytes": 24681,
+        "sha256": "92609fad1107071d39f8211ccac9536257a63752db95e1160ae345d6618f76ff"
+      }
+    },
+    {
+      "name": "icu",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 732,
+      "start": 24569,
+      "end": 24645,
+      "initializerExpression": "node::i18n::RegisterExternalReferences",
+      "preprocessorGuards": [
+        {
+          "opening": "#if defined(NODE_HAVE_I18N_SUPPORT)",
+          "openingLine": 47,
+          "arm": "#if defined(NODE_HAVE_I18N_SUPPORT)",
+          "armLine": 47,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/node_i18n.cc",
+        "bytes": 24681,
+        "sha256": "92609fad1107071d39f8211ccac9536257a63752db95e1160ae345d6618f76ff"
+      }
+    },
+    {
+      "name": "inspector",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 450,
+      "start": 15628,
+      "end": 15703,
+      "initializerExpression": "node::inspector::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/inspector_js_api.cc",
+        "bytes": 15824,
+        "sha256": "b5de7ed99efbf4c14b263b50240ab2b98dde9f38c2883362adf192a040cd2714"
+      }
+    },
+    {
+      "name": "inspector",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 451,
+      "start": 15704,
+      "end": 15823,
+      "initializerExpression": "node::inspector::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/inspector_js_api.cc",
+        "bytes": 15824,
+        "sha256": "b5de7ed99efbf4c14b263b50240ab2b98dde9f38c2883362adf192a040cd2714"
+      }
+    },
+    {
+      "name": "inspector",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1758,
+      "start": 63062,
+      "end": 63120,
+      "initializerExpression": "Initialize",
+      "preprocessorGuards": [
+        {
+          "opening": "#if !HAVE_INSPECTOR",
+          "openingLine": 1755,
+          "arm": "#if !HAVE_INSPECTOR",
+          "armLine": 1755,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/node.cc",
+        "bytes": 63148,
+        "sha256": "5c04920541a06ef404d98eb0089f7947cbb72ab44ab612b207e735f9daa9f6ef"
+      }
+    },
+    {
+      "name": "internal_only_v8",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 83,
+      "start": 2367,
+      "end": 2492,
+      "initializerExpression": "node::internal_only_v8::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/internal_only_v8.cc",
+        "bytes": 2600,
+        "sha256": "393ed51e3c8ad2be7d72f075d7a2bbf90111a5303f4c0d97c5c9c7fabeac7216"
+      }
+    },
+    {
+      "name": "internal_only_v8",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 85,
+      "start": 2493,
+      "end": 2599,
+      "initializerExpression": "node::internal_only_v8::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/internal_only_v8.cc",
+        "bytes": 2600,
+        "sha256": "393ed51e3c8ad2be7d72f075d7a2bbf90111a5303f4c0d97c5c9c7fabeac7216"
+      }
+    },
+    {
+      "name": "ipc_serdes",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 383,
+      "start": 13033,
+      "end": 13110,
+      "initializerExpression": "node::ipc_serdes::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_ipc_serdes.cc",
+        "bytes": 13233,
+        "sha256": "63130363d67cdf0b971d1ff4eb44fb31e2b1f4eefc13659c7bbacb3a37cab67b"
+      }
+    },
+    {
+      "name": "ipc_serdes",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 384,
+      "start": 13111,
+      "end": 13232,
+      "initializerExpression": "node::ipc_serdes::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_ipc_serdes.cc",
+        "bytes": 13233,
+        "sha256": "63130363d67cdf0b971d1ff4eb44fb31e2b1f4eefc13659c7bbacb3a37cab67b"
+      }
+    },
+    {
+      "name": "js_stream",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 223,
+      "start": 6178,
+      "end": 6252,
+      "initializerExpression": "node::JSStream::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/js_stream.cc",
+        "bytes": 6253,
+        "sha256": "6f780c41e544e35092a51512ca5f9f10db5856857d985c01b911a0a1fe0286d0"
+      }
+    },
+    {
+      "name": "locks",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 885,
+      "start": 30523,
+      "end": 30619,
+      "initializerExpression": "node::worker::locks::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_locks.cc",
+        "bytes": 30874,
+        "sha256": "28f2a9cbffb561a4535031331025bcab15a9065ca1432800c2d8f9b5875c4666"
+      }
+    },
+    {
+      "name": "locks",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 887,
+      "start": 30620,
+      "end": 30735,
+      "initializerExpression": "node::worker::locks::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_locks.cc",
+        "bytes": 30874,
+        "sha256": "28f2a9cbffb561a4535031331025bcab15a9065ca1432800c2d8f9b5875c4666"
+      }
+    },
+    {
+      "name": "locks",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 889,
+      "start": 30736,
+      "end": 30855,
+      "initializerExpression": "node::worker::locks::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_locks.cc",
+        "bytes": 30874,
+        "sha256": "28f2a9cbffb561a4535031331025bcab15a9065ca1432800c2d8f9b5875c4666"
+      }
+    },
+    {
+      "name": "messaging",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1809,
+      "start": 61645,
+      "end": 61769,
+      "initializerExpression": "node::worker::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_messaging.cc",
+        "bytes": 62006,
+        "sha256": "49d5cf1e5d5319a932a2bf378b53a7f2c584d960383043b75c199726598d3697"
+      }
+    },
+    {
+      "name": "messaging",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 1811,
+      "start": 61770,
+      "end": 61882,
+      "initializerExpression": "node::worker::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_messaging.cc",
+        "bytes": 62006,
+        "sha256": "49d5cf1e5d5319a932a2bf378b53a7f2c584d960383043b75c199726598d3697"
+      }
+    },
+    {
+      "name": "messaging",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 1813,
+      "start": 61883,
+      "end": 61999,
+      "initializerExpression": "node::worker::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_messaging.cc",
+        "bytes": 62006,
+        "sha256": "49d5cf1e5d5319a932a2bf378b53a7f2c584d960383043b75c199726598d3697"
+      }
+    },
+    {
+      "name": "mksnapshot",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1762,
+      "start": 62745,
+      "end": 62843,
+      "initializerExpression": "node::mksnapshot::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_snapshotable.cc",
+        "bytes": 63084,
+        "sha256": "8cf7a64854d3b55c0eb6413c4205779db1e4043c3bf63b1161825430985e99c0"
+      }
+    },
+    {
+      "name": "mksnapshot",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 1764,
+      "start": 62844,
+      "end": 62961,
+      "initializerExpression": "node::mksnapshot::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_snapshotable.cc",
+        "bytes": 63084,
+        "sha256": "8cf7a64854d3b55c0eb6413c4205779db1e4043c3bf63b1161825430985e99c0"
+      }
+    },
+    {
+      "name": "mksnapshot",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 1766,
+      "start": 62962,
+      "end": 63083,
+      "initializerExpression": "node::mksnapshot::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_snapshotable.cc",
+        "bytes": 63084,
+        "sha256": "8cf7a64854d3b55c0eb6413c4205779db1e4043c3bf63b1161825430985e99c0"
+      }
+    },
+    {
+      "name": "module_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1706,
+      "start": 59604,
+      "end": 59711,
+      "initializerExpression": "node::loader::ModuleWrap::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/module_wrap.cc",
+        "bytes": 59918,
+        "sha256": "ef6d3f20a46aaa844d9471b32e489bf60b7539681d6d9e3f7e230e1abddcb051"
+      }
+    },
+    {
+      "name": "module_wrap",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 1708,
+      "start": 59712,
+      "end": 59813,
+      "initializerExpression": "node::loader::ModuleWrap::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/module_wrap.cc",
+        "bytes": 59918,
+        "sha256": "ef6d3f20a46aaa844d9471b32e489bf60b7539681d6d9e3f7e230e1abddcb051"
+      }
+    },
+    {
+      "name": "module_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 1710,
+      "start": 59814,
+      "end": 59917,
+      "initializerExpression": "node::loader::ModuleWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/module_wrap.cc",
+        "bytes": 59918,
+        "sha256": "ef6d3f20a46aaa844d9471b32e489bf60b7539681d6d9e3f7e230e1abddcb051"
+      }
+    },
+    {
+      "name": "modules",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 784,
+      "start": 27485,
+      "end": 27590,
+      "initializerExpression": "node::modules::BindingData::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_modules.cc",
+        "bytes": 27793,
+        "sha256": "28ce0d4e8763193cc5c4e65a9e0cd4d021d2701b345c846e906bd7a4fa243953"
+      }
+    },
+    {
+      "name": "modules",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 786,
+      "start": 27591,
+      "end": 27690,
+      "initializerExpression": "node::modules::BindingData::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_modules.cc",
+        "bytes": 27793,
+        "sha256": "28ce0d4e8763193cc5c4e65a9e0cd4d021d2701b345c846e906bd7a4fa243953"
+      }
+    },
+    {
+      "name": "modules",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 788,
+      "start": 27691,
+      "end": 27792,
+      "initializerExpression": "node::modules::BindingData::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_modules.cc",
+        "bytes": 27793,
+        "sha256": "28ce0d4e8763193cc5c4e65a9e0cd4d021d2701b345c846e906bd7a4fa243953"
+      }
+    },
+    {
+      "name": "options",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 2590,
+      "start": 99011,
+      "end": 99089,
+      "initializerExpression": "node::options_parser::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_options.cc",
+        "bytes": 99186,
+        "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279"
+      }
+    },
+    {
+      "name": "options",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 2591,
+      "start": 99090,
+      "end": 99185,
+      "initializerExpression": "node::options_parser::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_options.cc",
+        "bytes": 99186,
+        "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279"
+      }
+    },
+    {
+      "name": "os",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 478,
+      "start": 15774,
+      "end": 15835,
+      "initializerExpression": "node::os::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_os.cc",
+        "bytes": 15914,
+        "sha256": "3f4646a849ab27dfb3463d1c3a004bc5c9b30da660453873a284a1a6f8608c01"
+      }
+    },
+    {
+      "name": "os",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 479,
+      "start": 15836,
+      "end": 15909,
+      "initializerExpression": "node::os::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_os.cc",
+        "bytes": 15914,
+        "sha256": "3f4646a849ab27dfb3463d1c3a004bc5c9b30da660453873a284a1a6f8608c01"
+      }
+    },
+    {
+      "name": "performance",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 495,
+      "start": 18248,
+      "end": 18348,
+      "initializerExpression": "node::performance::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_perf.cc",
+        "bytes": 18593,
+        "sha256": "1102c1c7a2d734c523e23cf8ceb3cb039cada5d76dfc1f2b2bcf7e54c92c9d27"
+      }
+    },
+    {
+      "name": "performance",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 497,
+      "start": 18349,
+      "end": 18468,
+      "initializerExpression": "node::performance::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_perf.cc",
+        "bytes": 18593,
+        "sha256": "1102c1c7a2d734c523e23cf8ceb3cb039cada5d76dfc1f2b2bcf7e54c92c9d27"
+      }
+    },
+    {
+      "name": "performance",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 499,
+      "start": 18469,
+      "end": 18592,
+      "initializerExpression": "node::performance::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_perf.cc",
+        "bytes": 18593,
+        "sha256": "1102c1c7a2d734c523e23cf8ceb3cb039cada5d76dfc1f2b2bcf7e54c92c9d27"
+      }
+    },
+    {
+      "name": "permission",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 426,
+      "start": 14032,
+      "end": 14109,
+      "initializerExpression": "node::permission::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/permission/permission.cc",
+        "bytes": 14232,
+        "sha256": "51807a26057db8dde6ac8f5d152d6cdca7c415885a6ae1fca58a6307af75ff9c"
+      }
+    },
+    {
+      "name": "permission",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 427,
+      "start": 14110,
+      "end": 14231,
+      "initializerExpression": "node::permission::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/permission/permission.cc",
+        "bytes": 14232,
+        "sha256": "51807a26057db8dde6ac8f5d152d6cdca7c415885a6ae1fca58a6307af75ff9c"
+      }
+    },
+    {
+      "name": "pipe_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 276,
+      "start": 9420,
+      "end": 9494,
+      "initializerExpression": "node::PipeWrap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/pipe_wrap.cc",
+        "bytes": 9614,
+        "sha256": "e46590ec6d56628629b880ecbdf43f1219e595a465cb802fee1df3390a20d619"
+      }
+    },
+    {
+      "name": "pipe_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 277,
+      "start": 9495,
+      "end": 9613,
+      "initializerExpression": "node::PipeWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/pipe_wrap.cc",
+        "bytes": 9614,
+        "sha256": "e46590ec6d56628629b880ecbdf43f1219e595a465cb802fee1df3390a20d619"
+      }
+    },
+    {
+      "name": "process_methods",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 875,
+      "start": 29536,
+      "end": 29667,
+      "initializerExpression": "node::process::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_process_methods.cc",
+        "bytes": 29912,
+        "sha256": "909b412cc5fa20de7eb1a0de081849edd98dbe4a239ae412e48551eb2deb0b39"
+      }
+    },
+    {
+      "name": "process_methods",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 877,
+      "start": 29668,
+      "end": 29787,
+      "initializerExpression": "node::process::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_process_methods.cc",
+        "bytes": 29912,
+        "sha256": "909b412cc5fa20de7eb1a0de081849edd98dbe4a239ae412e48551eb2deb0b39"
+      }
+    },
+    {
+      "name": "process_methods",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 879,
+      "start": 29788,
+      "end": 29911,
+      "initializerExpression": "node::process::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_process_methods.cc",
+        "bytes": 29912,
+        "sha256": "909b412cc5fa20de7eb1a0de081849edd98dbe4a239ae412e48551eb2deb0b39"
+      }
+    },
+    {
+      "name": "process_object",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 257,
+      "start": 8474,
+      "end": 8594,
+      "initializerExpression": "node::RegisterProcessExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_process_object.cc",
+        "bytes": 8595,
+        "sha256": "301c1819a6cd59a48bd28f4c2252298137b6631cc33dda0ddb55dd8067d48957"
+      }
+    },
+    {
+      "name": "process_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 404,
+      "start": 13538,
+      "end": 13618,
+      "initializerExpression": "node::ProcessWrap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/process_wrap.cc",
+        "bytes": 13744,
+        "sha256": "58f83bfee42569184975982841666dc6e5dfae1bb96dbe957b56f072c56e4da2"
+      }
+    },
+    {
+      "name": "process_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 405,
+      "start": 13619,
+      "end": 13743,
+      "initializerExpression": "node::ProcessWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/process_wrap.cc",
+        "bytes": 13744,
+        "sha256": "58f83bfee42569184975982841666dc6e5dfae1bb96dbe957b56f072c56e4da2"
+      }
+    },
+    {
+      "name": "profiler",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 630,
+      "start": 20550,
+      "end": 20623,
+      "initializerExpression": "node::profiler::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/inspector_profiler.cc",
+        "bytes": 20742,
+        "sha256": "93232caf9af863da93da4da9c7f1b56355fa287d7e0d7f3be7516cd96f0cdfd2"
+      }
+    },
+    {
+      "name": "profiler",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 631,
+      "start": 20624,
+      "end": 20741,
+      "initializerExpression": "node::profiler::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/inspector_profiler.cc",
+        "bytes": 20742,
+        "sha256": "93232caf9af863da93da4da9c7f1b56355fa287d7e0d7f3be7516cd96f0cdfd2"
+      }
+    },
+    {
+      "name": "quic",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 63,
+      "start": 1665,
+      "end": 1782,
+      "initializerExpression": "node::quic::CreatePerContextProperties",
+      "preprocessorGuards": [
+        {
+          "opening": "#ifndef OPENSSL_NO_QUIC",
+          "openingLine": 2,
+          "arm": "#ifndef OPENSSL_NO_QUIC",
+          "armLine": 2,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/quic/quic.cc",
+        "bytes": 1965,
+        "sha256": "3aa04ea1304cc7387e1ee923e82e73d859f3cf2a3014b31d7030d6691258f076"
+      }
+    },
+    {
+      "name": "quic",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 65,
+      "start": 1783,
+      "end": 1858,
+      "initializerExpression": "node::quic::CreatePerIsolateProperties",
+      "preprocessorGuards": [
+        {
+          "opening": "#ifndef OPENSSL_NO_QUIC",
+          "openingLine": 2,
+          "arm": "#ifndef OPENSSL_NO_QUIC",
+          "armLine": 2,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/quic/quic.cc",
+        "bytes": 1965,
+        "sha256": "3aa04ea1304cc7387e1ee923e82e73d859f3cf2a3014b31d7030d6691258f076"
+      }
+    },
+    {
+      "name": "quic",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 66,
+      "start": 1859,
+      "end": 1936,
+      "initializerExpression": "node::quic::RegisterExternalReferences",
+      "preprocessorGuards": [
+        {
+          "opening": "#ifndef OPENSSL_NO_QUIC",
+          "openingLine": 2,
+          "arm": "#ifndef OPENSSL_NO_QUIC",
+          "armLine": 2,
+          "previousArms": []
+        }
+      ],
+      "source": {
+        "path": "src/quic/quic.cc",
+        "bytes": 1965,
+        "sha256": "3aa04ea1304cc7387e1ee923e82e73d859f3cf2a3014b31d7030d6691258f076"
+      }
+    },
+    {
+      "name": "report",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 257,
+      "start": 9129,
+      "end": 9198,
+      "initializerExpression": "node::report::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_report_module.cc",
+        "bytes": 9313,
+        "sha256": "ce4281d807a761d15062451d76d84a24f3d6defdda619c63a0e34e5548ec3b5a"
+      }
+    },
+    {
+      "name": "report",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 258,
+      "start": 9199,
+      "end": 9312,
+      "initializerExpression": "node::report::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_report_module.cc",
+        "bytes": 9313,
+        "sha256": "ce4281d807a761d15062451d76d84a24f3d6defdda619c63a0e34e5548ec3b5a"
+      }
+    },
+    {
+      "name": "sea",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1065,
+      "start": 37159,
+      "end": 37222,
+      "initializerExpression": "node::sea::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_sea.cc",
+        "bytes": 37299,
+        "sha256": "3be5c49ea362f5c2f09015368d7bbffbef999e464a2299c070a5138bf146097e"
+      }
+    },
+    {
+      "name": "sea",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 1066,
+      "start": 37223,
+      "end": 37298,
+      "initializerExpression": "node::sea::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_sea.cc",
+        "bytes": 37299,
+        "sha256": "3be5c49ea362f5c2f09015368d7bbffbef999e464a2299c070a5138bf146097e"
+      }
+    },
+    {
+      "name": "serdes",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 552,
+      "start": 17989,
+      "end": 18058,
+      "initializerExpression": "node::serdes::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_serdes.cc",
+        "bytes": 18173,
+        "sha256": "958660fbdc217fbd669cae85074c4ec1f8b6db2c8f5daf6eeb383a9fb9a3c0f8"
+      }
+    },
+    {
+      "name": "serdes",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 553,
+      "start": 18059,
+      "end": 18172,
+      "initializerExpression": "node::serdes::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_serdes.cc",
+        "bytes": 18173,
+        "sha256": "958660fbdc217fbd669cae85074c4ec1f8b6db2c8f5daf6eeb383a9fb9a3c0f8"
+      }
+    },
+    {
+      "name": "signal_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 177,
+      "start": 5685,
+      "end": 5763,
+      "initializerExpression": "node::SignalWrap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/signal_wrap.cc",
+        "bytes": 5887,
+        "sha256": "d7dd9888ebb0fddb0fc5e350c36ea02c018eb71cb410a01c6fecbf5a3a7b5bbe"
+      }
+    },
+    {
+      "name": "signal_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 178,
+      "start": 5764,
+      "end": 5886,
+      "initializerExpression": "node::SignalWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/signal_wrap.cc",
+        "bytes": 5887,
+        "sha256": "d7dd9888ebb0fddb0fc5e350c36ea02c018eb71cb410a01c6fecbf5a3a7b5bbe"
+      }
+    },
+    {
+      "name": "spawn_sync",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1237,
+      "start": 34081,
+      "end": 34201,
+      "initializerExpression": "node::SyncProcessRunner::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/spawn_sync.cc",
+        "bytes": 34304,
+        "sha256": "f5e6c41925dd2848df352e4d9295cf039b66ae805776af40532ad3854bafac03"
+      }
+    },
+    {
+      "name": "spawn_sync",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 1239,
+      "start": 34202,
+      "end": 34303,
+      "initializerExpression": "node::SyncProcessRunner::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/spawn_sync.cc",
+        "bytes": 34304,
+        "sha256": "f5e6c41925dd2848df352e4d9295cf039b66ae805776af40532ad3854bafac03"
+      }
+    },
+    {
+      "name": "sqlite",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 5430,
+      "start": 184618,
+      "end": 184687,
+      "initializerExpression": "node::sqlite::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_sqlite.cc",
+        "bytes": 184688,
+        "sha256": "04842a02b6a6d10d14d56549e992a6f8bf9658fc5be66345b2ee0dd9fe4df327"
+      }
+    },
+    {
+      "name": "stream_pipe",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 337,
+      "start": 10993,
+      "end": 11069,
+      "initializerExpression": "node::InitializeStreamPipe",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/stream_pipe.cc",
+        "bytes": 11076,
+        "sha256": "10ffea0f4e23f04e4c1e4bc199055678a860eff344595bb24445266b56139e80"
+      }
+    },
+    {
+      "name": "stream_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 503,
+      "start": 15973,
+      "end": 16092,
+      "initializerExpression": "node::LibuvStreamWrap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/stream_wrap.cc",
+        "bytes": 16194,
+        "sha256": "78cd88f8de6d6b8b238fea051f0bd285aab77cab1f84b86f0dda62de9fdd241c"
+      }
+    },
+    {
+      "name": "stream_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 505,
+      "start": 16093,
+      "end": 16193,
+      "initializerExpression": "node::LibuvStreamWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/stream_wrap.cc",
+        "bytes": 16194,
+        "sha256": "78cd88f8de6d6b8b238fea051f0bd285aab77cab1f84b86f0dda62de9fdd241c"
+      }
+    },
+    {
+      "name": "string_decoder",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 338,
+      "start": 12073,
+      "end": 12191,
+      "initializerExpression": "node::InitializeStringDecoder",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/string_decoder.cc",
+        "bytes": 12319,
+        "sha256": "34bedf8a3d3b455c89b59fdda5fa622f4c2c9e6eceeb72c7cbfee17e7f62fced"
+      }
+    },
+    {
+      "name": "string_decoder",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 340,
+      "start": 12192,
+      "end": 12318,
+      "initializerExpression": "node::RegisterStringDecoderExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/string_decoder.cc",
+        "bytes": 12319,
+        "sha256": "34bedf8a3d3b455c89b59fdda5fa622f4c2c9e6eceeb72c7cbfee17e7f62fced"
+      }
+    },
+    {
+      "name": "symbols",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 32,
+      "start": 919,
+      "end": 990,
+      "initializerExpression": "node::symbols::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_symbols.cc",
+        "bytes": 991,
+        "sha256": "6989872c8ca1426cd63b85e26ba8c0d5ea87a7bd8c96c0dfad28767e7e55d2b0"
+      }
+    },
+    {
+      "name": "task_queue",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 194,
+      "start": 6492,
+      "end": 6569,
+      "initializerExpression": "node::task_queue::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_task_queue.cc",
+        "bytes": 6692,
+        "sha256": "f4f00a90ad1f4e0520b86b19c9f13538c25d3badb9d342d8792b5cd5e4aca951"
+      }
+    },
+    {
+      "name": "task_queue",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 195,
+      "start": 6570,
+      "end": 6691,
+      "initializerExpression": "node::task_queue::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_task_queue.cc",
+        "bytes": 6692,
+        "sha256": "f4f00a90ad1f4e0520b86b19c9f13538c25d3badb9d342d8792b5cd5e4aca951"
+      }
+    },
+    {
+      "name": "tcp_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 717,
+      "start": 23920,
+      "end": 23992,
+      "initializerExpression": "node::TCPWrap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/tcp_wrap.cc",
+        "bytes": 24110,
+        "sha256": "a91fcb66061e14752073c93065458444e73fca5e373eb4bf549762acdb9ff727"
+      }
+    },
+    {
+      "name": "tcp_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 718,
+      "start": 23993,
+      "end": 24109,
+      "initializerExpression": "node::TCPWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/tcp_wrap.cc",
+        "bytes": 24110,
+        "sha256": "a91fcb66061e14752073c93065458444e73fca5e373eb4bf549762acdb9ff727"
+      }
+    },
+    {
+      "name": "timers",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 201,
+      "start": 6506,
+      "end": 6609,
+      "initializerExpression": "node::timers::BindingData::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/timers.cc",
+        "bytes": 6813,
+        "sha256": "108606716f5518d8c5ed96c552eb67f05215979b3daafc84b99fe72c6b2095b0"
+      }
+    },
+    {
+      "name": "timers",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 203,
+      "start": 6610,
+      "end": 6707,
+      "initializerExpression": "node::timers::BindingData::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/timers.cc",
+        "bytes": 6813,
+        "sha256": "108606716f5518d8c5ed96c552eb67f05215979b3daafc84b99fe72c6b2095b0"
+      }
+    },
+    {
+      "name": "timers",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 205,
+      "start": 6708,
+      "end": 6812,
+      "initializerExpression": "node::timers::BindingData::RegisterTimerExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/timers.cc",
+        "bytes": 6813,
+        "sha256": "108606716f5518d8c5ed96c552eb67f05215979b3daafc84b99fe72c6b2095b0"
+      }
+    },
+    {
+      "name": "tls_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 2465,
+      "start": 79845,
+      "end": 79925,
+      "initializerExpression": "node::crypto::TLSWrap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/crypto/crypto_tls.cc",
+        "bytes": 80026,
+        "sha256": "e92c9f7221b8f17fc200416a05945b31dcf570d67da43e367103a155e3da1662"
+      }
+    },
+    {
+      "name": "tls_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 2466,
+      "start": 79926,
+      "end": 80023,
+      "initializerExpression": "node::crypto::TLSWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/crypto/crypto_tls.cc",
+        "bytes": 80026,
+        "sha256": "e92c9f7221b8f17fc200416a05945b31dcf570d67da43e367103a155e3da1662"
+      }
+    },
+    {
+      "name": "trace_events",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 222,
+      "start": 7781,
+      "end": 7901,
+      "initializerExpression": "node::NodeCategorySet::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_trace_events.cc",
+        "bytes": 8004,
+        "sha256": "d49d2ee967961a72bc879fb4eb228f2670b58559a03619800fad6650b6efdc5e"
+      }
+    },
+    {
+      "name": "trace_events",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 224,
+      "start": 7902,
+      "end": 8003,
+      "initializerExpression": "node::NodeCategorySet::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_trace_events.cc",
+        "bytes": 8004,
+        "sha256": "d49d2ee967961a72bc879fb4eb228f2670b58559a03619800fad6650b6efdc5e"
+      }
+    },
+    {
+      "name": "tty_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 177,
+      "start": 5808,
+      "end": 5880,
+      "initializerExpression": "node::TTYWrap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/tty_wrap.cc",
+        "bytes": 5998,
+        "sha256": "09de3d949b5ad557e3ca1167a2e87a0a4f4fa4dd20c049d53eba9a1026764428"
+      }
+    },
+    {
+      "name": "tty_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 178,
+      "start": 5881,
+      "end": 5997,
+      "initializerExpression": "node::TTYWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/tty_wrap.cc",
+        "bytes": 5998,
+        "sha256": "09de3d949b5ad557e3ca1167a2e87a0a4f4fa4dd20c049d53eba9a1026764428"
+      }
+    },
+    {
+      "name": "types",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 127,
+      "start": 5499,
+      "end": 5564,
+      "initializerExpression": "node::InitializeTypes",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_types.cc",
+        "bytes": 5643,
+        "sha256": "ec187d3a5bf4a1bf3e5f9842fedce3cacdd485850cdf8a9905aa2a7ac34a1438"
+      }
+    },
+    {
+      "name": "types",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 128,
+      "start": 5565,
+      "end": 5642,
+      "initializerExpression": "node::RegisterTypesExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_types.cc",
+        "bytes": 5643,
+        "sha256": "ec187d3a5bf4a1bf3e5f9842fedce3cacdd485850cdf8a9905aa2a7ac34a1438"
+      }
+    },
+    {
+      "name": "udp_wrap",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 874,
+      "start": 27135,
+      "end": 27207,
+      "initializerExpression": "node::UDPWrap::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/udp_wrap.cc",
+        "bytes": 27325,
+        "sha256": "270de282c7855996c43865f34727208216d894ce20359241433ad870ecc03200"
+      }
+    },
+    {
+      "name": "udp_wrap",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 875,
+      "start": 27208,
+      "end": 27324,
+      "initializerExpression": "node::UDPWrap::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/udp_wrap.cc",
+        "bytes": 27325,
+        "sha256": "270de282c7855996c43865f34727208216d894ce20359241433ad870ecc03200"
+      }
+    },
+    {
+      "name": "url",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 774,
+      "start": 24553,
+      "end": 24650,
+      "initializerExpression": "node::url::BindingData::CreatePerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_url.cc",
+        "bytes": 24837,
+        "sha256": "88b595e84ae9ebf1ad084a5d7065ba55cd432dcd76958be207229af61a99269a"
+      }
+    },
+    {
+      "name": "url",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 776,
+      "start": 24651,
+      "end": 24742,
+      "initializerExpression": "node::url::BindingData::CreatePerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_url.cc",
+        "bytes": 24837,
+        "sha256": "88b595e84ae9ebf1ad084a5d7065ba55cd432dcd76958be207229af61a99269a"
+      }
+    },
+    {
+      "name": "url",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 778,
+      "start": 24743,
+      "end": 24836,
+      "initializerExpression": "node::url::BindingData::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_url.cc",
+        "bytes": 24837,
+        "sha256": "88b595e84ae9ebf1ad084a5d7065ba55cd432dcd76958be207229af61a99269a"
+      }
+    },
+    {
+      "name": "url_pattern",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 729,
+      "start": 26409,
+      "end": 26488,
+      "initializerExpression": "node::url_pattern::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_url_pattern.cc",
+        "bytes": 26613,
+        "sha256": "94ec4e5c41a86148604d33991e5541b09017e039899bcf5fc472f0c31dfcaf66"
+      }
+    },
+    {
+      "name": "url_pattern",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 730,
+      "start": 26489,
+      "end": 26612,
+      "initializerExpression": "node::url_pattern::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_url_pattern.cc",
+        "bytes": 26613,
+        "sha256": "94ec4e5c41a86148604d33991e5541b09017e039899bcf5fc472f0c31dfcaf66"
+      }
+    },
+    {
+      "name": "util",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 658,
+      "start": 22240,
+      "end": 22305,
+      "initializerExpression": "node::util::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_util.cc",
+        "bytes": 22384,
+        "sha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae"
+      }
+    },
+    {
+      "name": "util",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 659,
+      "start": 22306,
+      "end": 22383,
+      "initializerExpression": "node::util::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_util.cc",
+        "bytes": 22384,
+        "sha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae"
+      }
+    },
+    {
+      "name": "uv",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 150,
+      "start": 5125,
+      "end": 5186,
+      "initializerExpression": "node::uv::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/uv.cc",
+        "bytes": 5261,
+        "sha256": "6b94aa57a608384df2e563a5f841cb29c7553abe5a3008ab9ddbc4a70876d989"
+      }
+    },
+    {
+      "name": "uv",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 151,
+      "start": 5187,
+      "end": 5260,
+      "initializerExpression": "node::uv::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/uv.cc",
+        "bytes": 5261,
+        "sha256": "6b94aa57a608384df2e563a5f841cb29c7553abe5a3008ab9ddbc4a70876d989"
+      }
+    },
+    {
+      "name": "v8",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 880,
+      "start": 34823,
+      "end": 34890,
+      "initializerExpression": "node::v8_utils::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_v8.cc",
+        "bytes": 34971,
+        "sha256": "6b0e6f3b7f1cb0fcc47dd73086f20755e52e1a6b0f095ebf79b2c24d5f23f03d"
+      }
+    },
+    {
+      "name": "v8",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 881,
+      "start": 34891,
+      "end": 34970,
+      "initializerExpression": "node::v8_utils::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_v8.cc",
+        "bytes": 34971,
+        "sha256": "6b0e6f3b7f1cb0fcc47dd73086f20755e52e1a6b0f095ebf79b2c24d5f23f03d"
+      }
+    },
+    {
+      "name": "wasi",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1364,
+      "start": 45616,
+      "end": 45689,
+      "initializerExpression": "node::wasi::InitializePreview1",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_wasi.cc",
+        "bytes": 45690,
+        "sha256": "8d7b319186e7bc86ecfc91f3e57304cca4c997fd44cb301747b6c39037ba5d12"
+      }
+    },
+    {
+      "name": "wasm_web_api",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 211,
+      "start": 7091,
+      "end": 7208,
+      "initializerExpression": "node::wasm_web_api::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_wasm_web_api.cc",
+        "bytes": 7335,
+        "sha256": "2098159f83c434dbfc981379c06c9e86caddb5d6143e10619b6f4eb4ba6b2343"
+      }
+    },
+    {
+      "name": "wasm_web_api",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 213,
+      "start": 7209,
+      "end": 7334,
+      "initializerExpression": "node::wasm_web_api::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_wasm_web_api.cc",
+        "bytes": 7335,
+        "sha256": "2098159f83c434dbfc981379c06c9e86caddb5d6143e10619b6f4eb4ba6b2343"
+      }
+    },
+    {
+      "name": "watchdog",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 924,
+      "start": 30402,
+      "end": 30475,
+      "initializerExpression": "node::watchdog::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_watchdog.cc",
+        "bytes": 30476,
+        "sha256": "96e0f250e6deaa33288b064605c325742f4fe7d2747e7fa6eb43dae9b780f7a1"
+      }
+    },
+    {
+      "name": "webstorage",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 819,
+      "start": 28163,
+      "end": 28240,
+      "initializerExpression": "node::webstorage::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_webstorage.cc",
+        "bytes": 28241,
+        "sha256": "867ec31bfaea3fe28ff5057a4f0beda45b5954200fe6e7c34c1c70dc60d86220"
+      }
+    },
+    {
+      "name": "worker",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 1658,
+      "start": 59946,
+      "end": 60042,
+      "initializerExpression": "node::worker::CreateWorkerPerContextProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_worker.cc",
+        "bytes": 60273,
+        "sha256": "947f09b9626c3657fb9e1c314a5d2ba17404f29cba36da08d9c19ba439f9c042"
+      }
+    },
+    {
+      "name": "worker",
+      "macro": "NODE_BINDING_PER_ISOLATE_INIT",
+      "role": "isolate-initializer",
+      "line": 1660,
+      "start": 60043,
+      "end": 60158,
+      "initializerExpression": "node::worker::CreateWorkerPerIsolateProperties",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_worker.cc",
+        "bytes": 60273,
+        "sha256": "947f09b9626c3657fb9e1c314a5d2ba17404f29cba36da08d9c19ba439f9c042"
+      }
+    },
+    {
+      "name": "worker",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 1662,
+      "start": 60159,
+      "end": 60272,
+      "initializerExpression": "node::worker::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_worker.cc",
+        "bytes": 60273,
+        "sha256": "947f09b9626c3657fb9e1c314a5d2ba17404f29cba36da08d9c19ba439f9c042"
+      }
+    },
+    {
+      "name": "zlib",
+      "macro": "NODE_BINDING_CONTEXT_AWARE_INTERNAL",
+      "role": "context-initializer",
+      "line": 2349,
+      "start": 79648,
+      "end": 79707,
+      "initializerExpression": "node::Initialize",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_zlib.cc",
+        "bytes": 79780,
+        "sha256": "aa23343f3d6740eade97d6ddae8988b030bfd0ef82e6597da172c7234c5dc96e"
+      }
+    },
+    {
+      "name": "zlib",
+      "macro": "NODE_BINDING_EXTERNAL_REFERENCE",
+      "role": "external-reference-registration",
+      "line": 2350,
+      "start": 79708,
+      "end": 79779,
+      "initializerExpression": "node::RegisterExternalReferences",
+      "preprocessorGuards": [],
+      "source": {
+        "path": "src/node_zlib.cc",
+        "bytes": 79780,
+        "sha256": "aa23343f3d6740eade97d6ddae8988b030bfd0ef82e6597da172c7234c5dc96e"
+      }
+    }
+  ],
+  "limits": [
+    "Preprocessor arms are recorded, never evaluated or used as exclusions",
+    "GYP/configuration/build-file selection is not evaluated; a site does not mean the binding is built or usable",
+    "Only the four named registration macros in src C++ source/header files are recognized; custom/generated registration mechanisms need separate review",
+    "External addon and embedder-linked binding domains remain open",
+    "Initializer bodies, exported classes/members/signatures/errors/ownership and scheduling remain separate audit obligations"
+  ],
+  "nativeContractCatalogComplete": false,
+  "runtimeEvidenceAdded": false
+}

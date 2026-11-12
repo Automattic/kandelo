@@ -1,0 +1,5506 @@
+{
+  "schema": 1,
+  "scope": "Reconciled source-level survey. Runtime startup, complete native API contracts and dependency-ordered implementation/validation roadmap remain unfinished.",
+  "target": {
+    "version": "26.13.0",
+    "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+  },
+  "inputs": [
+    {
+      "path": "tests/nodejs/upstream/dependency-graph.json",
+      "bytes": 3006060,
+      "sha256": "f8b025a1dfdffc42753cdaf966cf13ddba06bc9b553997fc26f43c05576d69ad"
+    },
+    {
+      "path": "tests/nodejs/upstream/native-registration-index.json",
+      "bytes": 188970,
+      "sha256": "bb812c3eac4012da9238f3e20111d400134af9aa753b559d05c4d30db5170f66"
+    },
+    {
+      "path": "tests/nodejs/upstream/backend-binding-reviews.json",
+      "bytes": 15881,
+      "sha256": "982d08dec4dd0d27ca3d66922339dfed81e8f404f17a49d8b4e5544b42b12cf2"
+    },
+    {
+      "path": "tests/nodejs/upstream/dependency-dynamic-reviews.json",
+      "bytes": 7292,
+      "sha256": "9006c3f796a5472996cb74c98375cfa3f0e061b56296ffbf1cc080c70e417e8c"
+    },
+    {
+      "path": "tests/nodejs/upstream/binding-index.json",
+      "bytes": 1536646,
+      "sha256": "777049a123e7c4ce4fc3c658eb8adb0753b528736762dc6d8287d41ad770f628"
+    },
+    {
+      "path": "third_party/nodejs/sources.json",
+      "bytes": 130353,
+      "sha256": "bca37a1dff2dead5e0f9a6bd68c56e714c7f14634361bd53b613c2f3de3ca33f"
+    }
+  ],
+  "counts": {
+    "registeredSources": 443,
+    "originalPrimaryReferencesReconciled": 3342,
+    "lazyRegistrations": 37,
+    "transferMetadataSites": 18,
+    "literalBindingNames": 72,
+    "sourceRegistrationNames": 77,
+    "literalBindingsWithInitializerSyntax": 72,
+    "literalBindingsWithKandeloRoute": 17,
+    "literalBindingsWithoutKandeloRoute": 55,
+    "sourceOnlyInitializerNames": [
+      "debug"
+    ],
+    "externalReferenceOnlyNames": [
+      "binding",
+      "env_var",
+      "handle_wrap",
+      "process_object"
+    ],
+    "historicalFamiliesLinked": 19,
+    "historicalPRsLinked": 33
+  },
+  "dispatcher": {
+    "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
+    "sha256": "35d69de09ea191c667e3224859feed657c803881ba12b39b26a87858b58d3af1",
+    "functionStart": "bool InternalBinding(",
+    "functionEnd": "bool LinkedBinding(",
+    "reviewedRouteNames": [
+      "async_context_frame",
+      "async_wrap",
+      "buffer",
+      "builtins",
+      "config",
+      "constants",
+      "errors",
+      "icu",
+      "module_wrap",
+      "options",
+      "string_decoder",
+      "symbols",
+      "task_queue",
+      "timers",
+      "trace_events",
+      "types",
+      "util"
+    ],
+    "routePresenceIsCompleteBindingSupport": false,
+    "unmatchedBehavior": "ERR_KANDELO_NOT_IMPLEMENTED; actual Native Node binding missing error",
+    "matchesPriorTestedArtifactInput": true,
+    "priorRuntimeReceipt": "aliased-engine-check.json",
+    "artifact": {
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev42-wasm32-abi56-00be21bb50a5d42177935176b7b2fc2bca08a8e2fd90ad9c32d9fcc69c6faa32/js.wasm",
+      "bytes": 59112813,
+      "sha256": "2f23617272eba14ef27415c014559ebdafb09a3cd721c7d2093b961f2437a2d9"
+    }
+  },
+  "bindings": [
+    {
+      "name": "async_context_frame",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/async_context_frame.js:144:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "getContinuationPreservedEmbedderData"
+        ],
+        [
+          "setContinuationPreservedEmbedderData"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        0
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "async",
+      "boundedContractInventory": "continuation-contracts.json",
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "async_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/async_hooks.js:265:internalBinding",
+        "lib/internal/bootstrap/node.js:7841:internalBinding",
+        "lib/internal/promise_hooks.js:188:internalBinding",
+        "lib/internal/trace_events_async_hooks.js:241:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "setPromiseHooks"
+        ],
+        [
+          "setupHooks"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        1,
+        2,
+        3
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "async",
+      "boundedContractInventory": "async-wrap-contracts.json",
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "binding",
+      "hasLiteralJSConsumer": false,
+      "consumerSiteIds": [],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        4
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "external-reference-record-not-a-loadable-binding",
+      "reviewRoutingFamily": "loading",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "blob",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/blob.js:495:internalBinding",
+        "lib/internal/url.js:37508:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "concat"
+        ],
+        [
+          "createBlob"
+        ],
+        [
+          "createBlobFromFilePath"
+        ],
+        [
+          "getDataObject"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        5,
+        6,
+        7
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "values",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "block_list",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/blocklist.js:340:internalBinding",
+        "lib/internal/socketaddress.js:143:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "AF_INET"
+        ],
+        [
+          "AF_INET6"
+        ],
+        [
+          "BlockList"
+        ],
+        [
+          "SocketAddress"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        8
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "network",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "buffer",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/buffer.js:2458:internalBinding",
+        "lib/http.js:1745:internalBinding",
+        "lib/internal/blob.js:546:internalBinding",
+        "lib/internal/bootstrap/node.js:15757:internalBinding",
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/buffer.js:669:internalBinding",
+        "lib/internal/util/comparisons.js:1004:internalBinding",
+        "lib/internal/webstreams/util.js:629:internalBinding",
+        "lib/internal/zip/dos.js:440:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "arrayBufferAlignedOffset"
+        ],
+        [
+          "asciiSlice"
+        ],
+        [
+          "asciiWriteStatic"
+        ],
+        [
+          "atob"
+        ],
+        [
+          "base64Slice"
+        ],
+        [
+          "base64Write"
+        ],
+        [
+          "base64urlSlice"
+        ],
+        [
+          "base64urlWrite"
+        ],
+        [
+          "btoa"
+        ],
+        [
+          "byteLengthUtf8"
+        ],
+        [
+          "compare"
+        ],
+        [
+          "compareOffset"
+        ],
+        [
+          "copy"
+        ],
+        [
+          "copyArrayBuffer"
+        ],
+        [
+          "createUnsafeArrayBuffer"
+        ],
+        [
+          "fill"
+        ],
+        [
+          "hexSlice"
+        ],
+        [
+          "hexWrite"
+        ],
+        [
+          "indexOfBuffer"
+        ],
+        [
+          "indexOfNumber"
+        ],
+        [
+          "indexOfString"
+        ],
+        [
+          "isAscii"
+        ],
+        [
+          "isLatin1"
+        ],
+        [
+          "isUtf8"
+        ],
+        [
+          "kMaxLength"
+        ],
+        [
+          "kStringMaxLength"
+        ],
+        [
+          "latin1Slice"
+        ],
+        [
+          "latin1WriteStatic"
+        ],
+        [
+          "mask"
+        ],
+        [
+          "setDetachKey"
+        ],
+        [
+          "stringLengthUtf8"
+        ],
+        [
+          "swap16"
+        ],
+        [
+          "swap32"
+        ],
+        [
+          "swap64"
+        ],
+        [
+          "ucs2Slice"
+        ],
+        [
+          "ucs2Write"
+        ],
+        [
+          "utf8Slice"
+        ],
+        [
+          "utf8WriteStatic"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        9,
+        10
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "values",
+      "boundedContractInventory": "buffer-contracts.json",
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "builtins",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/node.js:4680:internalBinding",
+        "lib/internal/bootstrap/realm.js:6024:internalBinding",
+        "lib/internal/debugger/inspect_repl.js:4069:internalBinding",
+        "lib/internal/legacy/processbinding.js:869:internalBinding",
+        "lib/internal/main/prof_process.js:632:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "builtinIds"
+        ],
+        [
+          "compileFunction"
+        ],
+        [
+          "configs"
+        ],
+        [
+          "importBuiltinSourceTextModule"
+        ],
+        [
+          "natives"
+        ],
+        [
+          "setInternalLoaders"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        11,
+        12,
+        13
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "loading",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "cares_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/dns.js:1249:internalBinding",
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/dns/callback_resolver.js:417:internalBinding",
+        "lib/internal/dns/promises.js:1055:internalBinding",
+        "lib/internal/dns/utils.js:691:internalBinding",
+        "lib/net.js:2154:internalBinding",
+        "lib/tls.js:2326:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "DNS_ORDER_IPV4_FIRST"
+        ],
+        [
+          "DNS_ORDER_IPV6_FIRST"
+        ],
+        [
+          "DNS_ORDER_VERBATIM"
+        ],
+        [
+          "GetAddrInfoReqWrap"
+        ],
+        [
+          "GetNameInfoReqWrap"
+        ],
+        [
+          "QueryReqWrap"
+        ],
+        [
+          "canonicalizeIP"
+        ],
+        [
+          "convertIpv6StringToBuffer"
+        ],
+        [
+          "getaddrinfo"
+        ],
+        [
+          "getnameinfo"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        14,
+        15
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "network",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "cjs_lexer",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/modules/esm/translators.js:1874:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "parse"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        16,
+        17
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "loading",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "config",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/buffer.js:42472:internalBinding",
+        "lib/inspector.js:457:internalBinding",
+        "lib/internal/bootstrap/node.js:3210:internalBinding",
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/bootstrap/switches/is_main_thread.js:8971:internalBinding",
+        "lib/internal/bootstrap/web/exposed-wildcard.js:346:internalBinding",
+        "lib/internal/bootstrap/web/exposed-window-or-worker.js:3947:internalBinding",
+        "lib/internal/console/constructor.js:21276:internalBinding",
+        "lib/internal/encoding.js:1388:internalBinding",
+        "lib/internal/inspector_async_hook.js:178:internalBinding",
+        "lib/internal/main/eval_string.js:1444:internalBinding",
+        "lib/internal/main/print_help.js:971:internalBinding",
+        "lib/internal/navigator.js:545:internalBinding",
+        "lib/internal/process/pre_execution.js:20092:internalBinding",
+        "lib/internal/process/pre_execution.js:20343:internalBinding",
+        "lib/internal/process/pre_execution.js:22039:internalBinding",
+        "lib/internal/util/inspect.js:98201:internalBinding",
+        "lib/internal/util/inspector.js:1605:internalBinding",
+        "lib/internal/webstorage.js:90:internalBinding",
+        "lib/internal/webworker.js:1571:internalBinding",
+        "lib/trace_events.js:97:internalBinding",
+        "lib/v8.js:1559:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "getDefaultLocale"
+        ],
+        [
+          "hasInspector"
+        ],
+        [
+          "hasIntl"
+        ],
+        [
+          "hasNodeOptions"
+        ],
+        [
+          "hasOpenSSL"
+        ],
+        [
+          "hasSmallICU"
+        ],
+        [
+          "hasTracing"
+        ],
+        [
+          "noBrowserGlobals"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        18,
+        19
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "processes",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "constants",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/constants.js:1441:internalBinding",
+        "lib/crypto.js:1551:internalBinding",
+        "lib/dgram.js:2571:internalBinding",
+        "lib/fs.js:1718:internalBinding",
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/crypto/cipher.js:412:internalBinding",
+        "lib/internal/crypto/diffiehellman.js:1524:internalBinding",
+        "lib/internal/crypto/ec.js:482:internalBinding",
+        "lib/internal/crypto/kem_hybrids.js:914:internalBinding",
+        "lib/internal/crypto/keys.js:1077:internalBinding",
+        "lib/internal/crypto/sig.js:872:internalBinding",
+        "lib/internal/crypto/util.js:1554:internalBinding",
+        "lib/internal/fs/cp/cp-sync.js:410:internalBinding",
+        "lib/internal/fs/cp/cp.js:675:internalBinding",
+        "lib/internal/fs/promises.js:466:internalBinding",
+        "lib/internal/fs/streams.js:1149:internalBinding",
+        "lib/internal/fs/utils.js:2380:internalBinding",
+        "lib/internal/modules/esm/get_format.js:342:internalBinding",
+        "lib/internal/process/per_thread.js:1364:internalBinding",
+        "lib/internal/process/signal.js:156:internalBinding",
+        "lib/internal/streams/iter/transform.js:1452:internalBinding",
+        "lib/internal/tls/common.js:1495:internalBinding",
+        "lib/internal/tls/secure-context.js:713:internalBinding",
+        "lib/internal/util.js:1295:internalBinding",
+        "lib/internal/validators.js:1108:internalBinding",
+        "lib/internal/vfs/file_handle.js:783:internalBinding",
+        "lib/internal/vfs/provider.js:258:internalBinding",
+        "lib/internal/vfs/providers/composable.js:695:internalBinding",
+        "lib/internal/vfs/providers/memory.js:1119:internalBinding",
+        "lib/internal/vfs/providers/sea.js:923:internalBinding",
+        "lib/internal/vfs/providers/ziparchive.js:874:internalBinding",
+        "lib/internal/vfs/root.js:606:internalBinding",
+        "lib/internal/vfs/setup.js:31844:internalBinding",
+        "lib/internal/vfs/stats.js:184:internalBinding",
+        "lib/internal/webstreams/adapters.js:1939:internalBinding",
+        "lib/os.js:1373:internalBinding",
+        "lib/zlib.js:2645:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "crypto",
+          "ENGINE_METHOD_ALL"
+        ],
+        [
+          "crypto",
+          "POINT_CONVERSION_COMPRESSED"
+        ],
+        [
+          "crypto",
+          "POINT_CONVERSION_HYBRID"
+        ],
+        [
+          "crypto",
+          "POINT_CONVERSION_UNCOMPRESSED"
+        ],
+        [
+          "crypto",
+          "RSA_PKCS1_OAEP_PADDING"
+        ],
+        [
+          "crypto",
+          "RSA_PKCS1_PADDING"
+        ],
+        [
+          "crypto",
+          "SSL_OP_CIPHER_SERVER_PREFERENCE"
+        ],
+        [
+          "crypto",
+          "TLS1_1_VERSION"
+        ],
+        [
+          "crypto",
+          "TLS1_2_VERSION"
+        ],
+        [
+          "crypto",
+          "TLS1_3_VERSION"
+        ],
+        [
+          "crypto",
+          "TLS1_VERSION"
+        ],
+        [
+          "crypto"
+        ],
+        [
+          "fs",
+          "COPYFILE_EXCL"
+        ],
+        [
+          "fs",
+          "COPYFILE_FICLONE"
+        ],
+        [
+          "fs",
+          "COPYFILE_FICLONE_FORCE"
+        ],
+        [
+          "fs",
+          "F_OK"
+        ],
+        [
+          "fs",
+          "O_APPEND"
+        ],
+        [
+          "fs",
+          "O_CREAT"
+        ],
+        [
+          "fs",
+          "O_EXCL"
+        ],
+        [
+          "fs",
+          "O_RDONLY"
+        ],
+        [
+          "fs",
+          "O_RDWR"
+        ],
+        [
+          "fs",
+          "O_SYNC"
+        ],
+        [
+          "fs",
+          "O_TRUNC"
+        ],
+        [
+          "fs",
+          "O_WRONLY"
+        ],
+        [
+          "fs",
+          "R_OK"
+        ],
+        [
+          "fs",
+          "S_IFBLK"
+        ],
+        [
+          "fs",
+          "S_IFCHR"
+        ],
+        [
+          "fs",
+          "S_IFDIR"
+        ],
+        [
+          "fs",
+          "S_IFIFO"
+        ],
+        [
+          "fs",
+          "S_IFLNK"
+        ],
+        [
+          "fs",
+          "S_IFMT"
+        ],
+        [
+          "fs",
+          "S_IFREG"
+        ],
+        [
+          "fs",
+          "S_IFSOCK"
+        ],
+        [
+          "fs",
+          "UV_DIRENT_BLOCK"
+        ],
+        [
+          "fs",
+          "UV_DIRENT_CHAR"
+        ],
+        [
+          "fs",
+          "UV_DIRENT_DIR"
+        ],
+        [
+          "fs",
+          "UV_DIRENT_FIFO"
+        ],
+        [
+          "fs",
+          "UV_DIRENT_FILE"
+        ],
+        [
+          "fs",
+          "UV_DIRENT_LINK"
+        ],
+        [
+          "fs",
+          "UV_DIRENT_SOCKET"
+        ],
+        [
+          "fs",
+          "UV_DIRENT_UNKNOWN"
+        ],
+        [
+          "fs",
+          "UV_FS_SYMLINK_DIR"
+        ],
+        [
+          "fs",
+          "UV_FS_SYMLINK_JUNCTION"
+        ],
+        [
+          "fs",
+          "W_OK"
+        ],
+        [
+          "fs",
+          "X_OK"
+        ],
+        [
+          "fs"
+        ],
+        [
+          "internal"
+        ],
+        [
+          "os",
+          "errno",
+          "EEXIST"
+        ],
+        [
+          "os",
+          "errno",
+          "EINVAL"
+        ],
+        [
+          "os",
+          "errno",
+          "EISDIR"
+        ],
+        [
+          "os",
+          "errno",
+          "ENOTDIR"
+        ],
+        [
+          "os",
+          "errno"
+        ],
+        [
+          "os"
+        ],
+        [
+          "zlib"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        20
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "values",
+      "boundedContractInventory": "constants-contracts.json",
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "contextify",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/main/check_syntax.js:2380:internalBinding",
+        "lib/internal/main/embedding.js:918:internalBinding",
+        "lib/internal/modules/cjs/loader.js:4515:internalBinding",
+        "lib/internal/modules/esm/get_format.js:2123:internalBinding",
+        "lib/internal/modules/esm/translators.js:353:internalBinding",
+        "lib/internal/process/execution.js:988:internalBinding",
+        "lib/internal/vm.js:127:internalBinding",
+        "lib/repl.js:4774:internalBinding",
+        "lib/vm.js:1371:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "ContextifyScript"
+        ],
+        [
+          "compileFunction"
+        ],
+        [
+          "compileFunctionForCJSLoader"
+        ],
+        [
+          "constants"
+        ],
+        [
+          "containsModuleSyntax"
+        ],
+        [
+          "makeContext"
+        ],
+        [
+          "measureMemory"
+        ],
+        [
+          "startSigintWatchdog"
+        ],
+        [
+          "stopSigintWatchdog"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        21,
+        22,
+        23
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "loading",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "credentials",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/node.js:7217:internalBinding",
+        "lib/internal/bootstrap/switches/does_not_own_process_state.js:35:internalBinding",
+        "lib/internal/bootstrap/switches/does_own_process_state.js:35:internalBinding",
+        "lib/internal/modules/cjs/loader.js:4643:internalBinding",
+        "lib/os.js:1323:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "getTempDir"
+        ],
+        [
+          "safeGetenv"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        24,
+        25
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "processes",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "crypto",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/crypto.js:1709:internalBinding",
+        "lib/internal/crypto/aes.js:472:internalBinding",
+        "lib/internal/crypto/argon2.js:264:internalBinding",
+        "lib/internal/crypto/certificate.js:92:internalBinding",
+        "lib/internal/crypto/cfrg.js:352:internalBinding",
+        "lib/internal/crypto/chacha20_poly1305.js:98:internalBinding",
+        "lib/internal/crypto/cipher.js:304:internalBinding",
+        "lib/internal/crypto/diffiehellman.js:420:internalBinding",
+        "lib/internal/crypto/ec.js:390:internalBinding",
+        "lib/internal/crypto/hash.js:318:internalBinding",
+        "lib/internal/crypto/hkdf.js:232:internalBinding",
+        "lib/internal/crypto/kem.js:313:internalBinding",
+        "lib/internal/crypto/kem_hybrids.js:822:internalBinding",
+        "lib/internal/crypto/keygen.js:389:internalBinding",
+        "lib/internal/crypto/keys.js:952:internalBinding",
+        "lib/internal/crypto/mac.js:187:internalBinding",
+        "lib/internal/crypto/ml_dsa.js:409:internalBinding",
+        "lib/internal/crypto/ml_kem.js:398:internalBinding",
+        "lib/internal/crypto/pbkdf2.js:223:internalBinding",
+        "lib/internal/crypto/provider_mac.js:182:internalBinding",
+        "lib/internal/crypto/random.js:824:internalBinding",
+        "lib/internal/crypto/rsa.js:477:internalBinding",
+        "lib/internal/crypto/scrypt.js:167:internalBinding",
+        "lib/internal/crypto/sig.js:503:internalBinding",
+        "lib/internal/crypto/util.js:1191:internalBinding",
+        "lib/internal/crypto/webcrypto.js:585:internalBinding",
+        "lib/internal/crypto/webcrypto_util.js:240:internalBinding",
+        "lib/internal/crypto/x509.js:452:internalBinding",
+        "lib/internal/process/pre_execution.js:24266:internalBinding",
+        "lib/internal/tls/common.js:2053:internalBinding",
+        "lib/internal/tls/wrap.js:2265:internalBinding",
+        "lib/tls.js:1764:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "AESCipherJob"
+        ],
+        [
+          "Argon2Job"
+        ],
+        [
+          "ChaCha20Poly1305CipherJob"
+        ],
+        [
+          "CheckPrimeJob"
+        ],
+        [
+          "CipherBase"
+        ],
+        [
+          "DHBitsJob"
+        ],
+        [
+          "DhKeyPairGenJob"
+        ],
+        [
+          "DiffieHellman"
+        ],
+        [
+          "DiffieHellmanGroup"
+        ],
+        [
+          "DsaKeyPairGenJob"
+        ],
+        [
+          "ECDH"
+        ],
+        [
+          "ECDHConvertKey"
+        ],
+        [
+          "EcKeyPairGenJob"
+        ],
+        [
+          "HKDFJob"
+        ],
+        [
+          "Hash"
+        ],
+        [
+          "HashJob"
+        ],
+        [
+          "Hmac"
+        ],
+        [
+          "HmacJob"
+        ],
+        [
+          "KEMDecapsulateJob"
+        ],
+        [
+          "KEMEncapsulateJob"
+        ],
+        [
+          "KangarooTwelveJob"
+        ],
+        [
+          "KeyObjectHandle"
+        ],
+        [
+          "KmacJob"
+        ],
+        [
+          "Mac"
+        ],
+        [
+          "NamedKeyPairGenJob"
+        ],
+        [
+          "OPENSSL_EC_EXPLICIT_CURVE"
+        ],
+        [
+          "OPENSSL_EC_NAMED_CURVE"
+        ],
+        [
+          "PBKDF2Job"
+        ],
+        [
+          "RSACipherJob"
+        ],
+        [
+          "RSA_PKCS1_PSS_PADDING"
+        ],
+        [
+          "RandomBytesJob"
+        ],
+        [
+          "RandomPrimeJob"
+        ],
+        [
+          "RsaKeyPairGenJob"
+        ],
+        [
+          "ScryptJob"
+        ],
+        [
+          "SecretKeyGenJob"
+        ],
+        [
+          "SecureContext"
+        ],
+        [
+          "Sign"
+        ],
+        [
+          "SignJob"
+        ],
+        [
+          "TurboShakeJob"
+        ],
+        [
+          "Verify"
+        ],
+        [
+          "X509_CHECK_FLAG_ALWAYS_CHECK_SUBJECT"
+        ],
+        [
+          "X509_CHECK_FLAG_MULTI_LABEL_WILDCARDS"
+        ],
+        [
+          "X509_CHECK_FLAG_NEVER_CHECK_SUBJECT"
+        ],
+        [
+          "X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS"
+        ],
+        [
+          "X509_CHECK_FLAG_NO_WILDCARDS"
+        ],
+        [
+          "X509_CHECK_FLAG_SINGLE_LABEL_SUBDOMAINS"
+        ],
+        [
+          "certExportChallenge"
+        ],
+        [
+          "certExportPublicKey"
+        ],
+        [
+          "certVerifySpkac"
+        ],
+        [
+          "createCryptoKeyClass"
+        ],
+        [
+          "createNativeKeyObjectClass"
+        ],
+        [
+          "createX509CertificateClass"
+        ],
+        [
+          "getBundledRootCertificates"
+        ],
+        [
+          "getCachedAliases"
+        ],
+        [
+          "getCachedMacAliases"
+        ],
+        [
+          "getCertificateCompressionAlgorithms"
+        ],
+        [
+          "getCipherInfo"
+        ],
+        [
+          "getCiphers"
+        ],
+        [
+          "getCryptoKeySlots"
+        ],
+        [
+          "getCurves"
+        ],
+        [
+          "getExtraCACertificates"
+        ],
+        [
+          "getFipsCrypto"
+        ],
+        [
+          "getFipsCryptoGeneration"
+        ],
+        [
+          "getHashes"
+        ],
+        [
+          "getKeyObjectSlots"
+        ],
+        [
+          "getMacs"
+        ],
+        [
+          "getOpenSSLSecLevelCrypto"
+        ],
+        [
+          "getSSLCiphers"
+        ],
+        [
+          "getSystemCACertificates"
+        ],
+        [
+          "getUserRootCertificates"
+        ],
+        [
+          "isCryptoKey"
+        ],
+        [
+          "isKeyAlgorithmAvailable"
+        ],
+        [
+          "isKeyObject"
+        ],
+        [
+          "isX509Certificate"
+        ],
+        [
+          "kCryptoJobAsync"
+        ],
+        [
+          "kCryptoJobSync"
+        ],
+        [
+          "kCryptoJobWebCrypto"
+        ],
+        [
+          "kKeyEncodingPKCS1"
+        ],
+        [
+          "kKeyEncodingPKCS8"
+        ],
+        [
+          "kKeyEncodingSEC1"
+        ],
+        [
+          "kKeyEncodingSPKI"
+        ],
+        [
+          "kKeyFormatDER"
+        ],
+        [
+          "kKeyFormatJWK"
+        ],
+        [
+          "kKeyFormatPEM"
+        ],
+        [
+          "kKeyFormatRawPrivate"
+        ],
+        [
+          "kKeyFormatRawPublic"
+        ],
+        [
+          "kKeyFormatRawSeed"
+        ],
+        [
+          "kKeyFormatStore"
+        ],
+        [
+          "kKeyTypePrivate"
+        ],
+        [
+          "kKeyTypePublic"
+        ],
+        [
+          "kKeyTypeSecret"
+        ],
+        [
+          "kKeyVariantAES_CBC_128"
+        ],
+        [
+          "kKeyVariantAES_CBC_192"
+        ],
+        [
+          "kKeyVariantAES_CBC_256"
+        ],
+        [
+          "kKeyVariantAES_CTR_128"
+        ],
+        [
+          "kKeyVariantAES_CTR_192"
+        ],
+        [
+          "kKeyVariantAES_CTR_256"
+        ],
+        [
+          "kKeyVariantAES_GCM_128"
+        ],
+        [
+          "kKeyVariantAES_GCM_192"
+        ],
+        [
+          "kKeyVariantAES_GCM_256"
+        ],
+        [
+          "kKeyVariantAES_KW_128"
+        ],
+        [
+          "kKeyVariantAES_KW_192"
+        ],
+        [
+          "kKeyVariantAES_KW_256"
+        ],
+        [
+          "kKeyVariantAES_OCB_128"
+        ],
+        [
+          "kKeyVariantAES_OCB_192"
+        ],
+        [
+          "kKeyVariantAES_OCB_256"
+        ],
+        [
+          "kKeyVariantRSA_OAEP"
+        ],
+        [
+          "kKeyVariantRSA_PSS"
+        ],
+        [
+          "kKeyVariantRSA_SSA_PKCS1_v1_5"
+        ],
+        [
+          "kSigEncDER"
+        ],
+        [
+          "kSigEncP1363"
+        ],
+        [
+          "kSignJobModeSign"
+        ],
+        [
+          "kSignJobModeVerify"
+        ],
+        [
+          "kTypeArgon2d"
+        ],
+        [
+          "kTypeArgon2i"
+        ],
+        [
+          "kTypeArgon2id"
+        ],
+        [
+          "kWebCryptoCipherDecrypt"
+        ],
+        [
+          "kWebCryptoCipherEncrypt"
+        ],
+        [
+          "kWebCryptoKeyFormatPKCS8"
+        ],
+        [
+          "kWebCryptoKeyFormatRaw"
+        ],
+        [
+          "kWebCryptoKeyFormatSPKI"
+        ],
+        [
+          "oneShotDigest"
+        ],
+        [
+          "parsePKCS12"
+        ],
+        [
+          "privateDecrypt"
+        ],
+        [
+          "privateEncrypt"
+        ],
+        [
+          "publicDecrypt"
+        ],
+        [
+          "publicEncrypt"
+        ],
+        [
+          "randomFillSync"
+        ],
+        [
+          "resetRootCertStore"
+        ],
+        [
+          "secureBuffer"
+        ],
+        [
+          "secureHeapUsed"
+        ],
+        [
+          "setEngine"
+        ],
+        [
+          "setFipsCrypto"
+        ],
+        [
+          "setupFipsIndicatorChannel"
+        ],
+        [
+          "startLoadingCertificatesOffThread"
+        ],
+        [
+          "timingSafeEqual"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        26,
+        27
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "crypto",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "debug",
+      "hasLiteralJSConsumer": false,
+      "consumerSiteIds": [],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        28
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "observability",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "diagnostics_channel",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/diagnostics_channel.js:788:internalBinding",
+        "lib/internal/process/pre_execution.js:23836:internalBinding"
+      ],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        29,
+        30,
+        31
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "async",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "dtls",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/dtls/dtls.js:1816:internalBinding",
+        "lib/internal/dtls/state.js:1028:internalBinding",
+        "lib/internal/dtls/stats.js:1661:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "DTLSContext"
+        ],
+        [
+          "DTLSEndpoint"
+        ],
+        [
+          "IDX_ENDPOINT_STATE_BOUND"
+        ],
+        [
+          "IDX_ENDPOINT_STATE_BUSY"
+        ],
+        [
+          "IDX_ENDPOINT_STATE_CLOSING"
+        ],
+        [
+          "IDX_ENDPOINT_STATE_DESTROYED"
+        ],
+        [
+          "IDX_ENDPOINT_STATE_LISTENING"
+        ],
+        [
+          "IDX_ENDPOINT_STATE_SESSION_COUNT"
+        ],
+        [
+          "IDX_SESSION_STATE_CLOSING"
+        ],
+        [
+          "IDX_SESSION_STATE_DESTROYED"
+        ],
+        [
+          "IDX_SESSION_STATE_HANDSHAKING"
+        ],
+        [
+          "IDX_SESSION_STATE_HAS_KEYLOG_LISTENER"
+        ],
+        [
+          "IDX_SESSION_STATE_HAS_MESSAGE_LISTENER"
+        ],
+        [
+          "IDX_SESSION_STATE_OPEN"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_BYTES_RECEIVED"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_BYTES_SENT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_CLIENT_SESSIONS"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_CREATED_AT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_DESTROYED_AT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_PACKETS_RECEIVED"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_PACKETS_SENT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_SERVER_BUSY_COUNT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_SERVER_REFUSED_COUNT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_SERVER_REJECTED_COUNT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_SERVER_SESSIONS"
+        ],
+        [
+          "IDX_STATS_SESSION_BYTES_RECEIVED"
+        ],
+        [
+          "IDX_STATS_SESSION_BYTES_SENT"
+        ],
+        [
+          "IDX_STATS_SESSION_CLOSING_AT"
+        ],
+        [
+          "IDX_STATS_SESSION_CREATED_AT"
+        ],
+        [
+          "IDX_STATS_SESSION_DESTROYED_AT"
+        ],
+        [
+          "IDX_STATS_SESSION_HANDSHAKE_COMPLETED_AT"
+        ],
+        [
+          "IDX_STATS_SESSION_MESSAGES_RECEIVED"
+        ],
+        [
+          "IDX_STATS_SESSION_MESSAGES_SENT"
+        ],
+        [
+          "IDX_STATS_SESSION_RETRANSMIT_COUNT"
+        ],
+        [
+          "SSL_VERIFY_FAIL_IF_NO_PEER_CERT_VALUE"
+        ],
+        [
+          "SSL_VERIFY_NONE_VALUE"
+        ],
+        [
+          "SSL_VERIFY_PEER_VALUE"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        32,
+        33,
+        34
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "secure-network",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "encoding_binding",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/crypto/webcrypto.js:659:internalBinding",
+        "lib/internal/encoding.js:1431:internalBinding",
+        "lib/url.js:1477:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "decodeUTF8"
+        ],
+        [
+          "encodeUtf8String"
+        ],
+        [
+          "toASCII"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        35,
+        36,
+        37
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "values",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "env_var",
+      "hasLiteralJSConsumer": false,
+      "consumerSiteIds": [],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        38
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "external-reference-record-not-a-loadable-binding",
+      "reviewRoutingFamily": "processes",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "errors",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/diagnostics_channel.js:597:internalBinding",
+        "lib/internal/async_hooks.js:218:internalBinding",
+        "lib/internal/bench_runner/harness.js:467:internalBinding",
+        "lib/internal/bootstrap/node.js:13608:internalBinding",
+        "lib/internal/bootstrap/realm.js:16044:internalBinding",
+        "lib/internal/cluster/child.js:499:internalBinding",
+        "lib/internal/debugger/inspect.js:986:internalBinding",
+        "lib/internal/debugger/inspect_helpers.js:756:internalBinding",
+        "lib/internal/debugger/inspect_probe.js:1033:internalBinding",
+        "lib/internal/errors/error_source.js:129:internalBinding",
+        "lib/internal/main/bench_runner.js:339:internalBinding",
+        "lib/internal/main/prof_process.js:698:internalBinding",
+        "lib/internal/main/repl.js:477:internalBinding",
+        "lib/internal/main/test_runner.js:412:internalBinding",
+        "lib/internal/main/watch_mode.js:494:internalBinding",
+        "lib/internal/main/worker_thread.js:1431:internalBinding",
+        "lib/internal/modules/esm/worker.js:11803:internalBinding",
+        "lib/internal/modules/run_main.js:628:internalBinding",
+        "lib/internal/process/execution.js:509:internalBinding",
+        "lib/internal/process/per_thread.js:1580:internalBinding",
+        "lib/internal/process/promises.js:447:internalBinding",
+        "lib/internal/promise_hooks.js:256:internalBinding",
+        "lib/internal/source_map/prepare_stack_trace.js:604:internalBinding",
+        "lib/internal/source_map/source_map_cache.js:663:internalBinding",
+        "lib/internal/test_runner/harness.js:489:internalBinding",
+        "lib/internal/test_runner/runner.js:2920:internalBinding",
+        "lib/internal/test_runner/test.js:853:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "exitCodes",
+          "kGenericUserError"
+        ],
+        [
+          "exitCodes",
+          "kInvalidCommandLineArgument"
+        ],
+        [
+          "exitCodes",
+          "kNoFailure"
+        ],
+        [
+          "exitCodes"
+        ],
+        [
+          "getErrorSourcePositions"
+        ],
+        [
+          "noSideEffectsToString"
+        ],
+        [
+          "setEnhanceStackForFatalException"
+        ],
+        [
+          "setGetSourceMapErrorSource"
+        ],
+        [
+          "setMaybeCacheGeneratedSourceMap"
+        ],
+        [
+          "setPrepareStackTraceCallback"
+        ],
+        [
+          "setSourceMapsEnabled"
+        ],
+        [
+          "triggerUncaughtException"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        39,
+        40
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "loading",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "ffi",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/ffi.js:1312:internalBinding",
+        "lib/internal/ffi-shared-buffer.js:913:internalBinding",
+        "lib/internal/ffi/fast-api.js:548:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "DynamicLibrary"
+        ],
+        [
+          "charIsSigned"
+        ],
+        [
+          "exportBytes"
+        ],
+        [
+          "getCurrentEventLoop"
+        ],
+        [
+          "getFloat32"
+        ],
+        [
+          "getFloat64"
+        ],
+        [
+          "getInt16"
+        ],
+        [
+          "getInt32"
+        ],
+        [
+          "getInt64"
+        ],
+        [
+          "getInt8"
+        ],
+        [
+          "getRawPointer"
+        ],
+        [
+          "getUint16"
+        ],
+        [
+          "getUint32"
+        ],
+        [
+          "getUint64"
+        ],
+        [
+          "getUint8"
+        ],
+        [
+          "kFastArguments"
+        ],
+        [
+          "kFastBufferInvoke"
+        ],
+        [
+          "kSbArguments"
+        ],
+        [
+          "kSbInvokeSlow"
+        ],
+        [
+          "kSbReturn"
+        ],
+        [
+          "kSbSharedBuffer"
+        ],
+        [
+          "setFloat32"
+        ],
+        [
+          "setFloat64"
+        ],
+        [
+          "setInt16"
+        ],
+        [
+          "setInt32"
+        ],
+        [
+          "setInt64"
+        ],
+        [
+          "setInt8"
+        ],
+        [
+          "setUint16"
+        ],
+        [
+          "setUint32"
+        ],
+        [
+          "setUint64"
+        ],
+        [
+          "setUint8"
+        ],
+        [
+          "toArrayBuffer"
+        ],
+        [
+          "toBuffer"
+        ],
+        [
+          "toString"
+        ],
+        [
+          "uintptrMax"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        41
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "native-integration",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "fs",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/fs.js:1975:internalBinding",
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/fs/cp/cp-sync.js:104:internalBinding",
+        "lib/internal/fs/cp/cp.js:949:internalBinding",
+        "lib/internal/fs/dir.js:268:internalBinding",
+        "lib/internal/fs/promises.js:590:internalBinding",
+        "lib/internal/fs/read/context.js:394:internalBinding",
+        "lib/internal/fs/streams.js:1095:internalBinding",
+        "lib/internal/fs/utils.js:1333:internalBinding",
+        "lib/internal/fs/watchers.js:542:internalBinding",
+        "lib/internal/http2/core.js:4322:internalBinding",
+        "lib/internal/modules/helpers.js:1390:internalBinding",
+        "lib/internal/net.js:175:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "FSReqCallback"
+        ],
+        [
+          "FileHandle"
+        ],
+        [
+          "StatWatcher"
+        ],
+        [
+          "close"
+        ],
+        [
+          "kFsStatsFieldsNumber"
+        ],
+        [
+          "read"
+        ],
+        [
+          "writeBuffer"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        42,
+        43,
+        44
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "filesystem",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "fs_dir",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/fs/dir.js:310:internalBinding"
+      ],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        45,
+        46,
+        47
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "filesystem",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "fs_event_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/fs/watchers.js:586:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "FSEvent"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        48,
+        49
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "filesystem",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "handle_wrap",
+      "hasLiteralJSConsumer": false,
+      "consumerSiteIds": [],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        50
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "external-reference-record-not-a-loadable-binding",
+      "reviewRoutingFamily": "streams",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "heap_utils",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/v8.js:1916:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "createHeapSnapshotStream"
+        ],
+        [
+          "triggerHeapSnapshot"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        51,
+        52
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "observability",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "http2",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/http2/compat.js:599:internalBinding",
+        "lib/internal/http2/core.js:4361:internalBinding",
+        "lib/internal/http2/util.js:278:internalBinding",
+        "lib/internal/inspector/network_http2.js:552:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "constants",
+          "HTTP2_HEADER_AUTHORITY"
+        ],
+        [
+          "constants",
+          "HTTP2_HEADER_CONNECTION"
+        ],
+        [
+          "constants",
+          "HTTP2_HEADER_METHOD"
+        ],
+        [
+          "constants",
+          "HTTP2_HEADER_PATH"
+        ],
+        [
+          "constants",
+          "HTTP2_HEADER_SCHEME"
+        ],
+        [
+          "constants",
+          "HTTP2_HEADER_STATUS"
+        ],
+        [
+          "constants",
+          "HTTP_STATUS_CONTINUE"
+        ],
+        [
+          "constants",
+          "HTTP_STATUS_EARLY_HINTS"
+        ],
+        [
+          "constants",
+          "HTTP_STATUS_EXPECTATION_FAILED"
+        ],
+        [
+          "constants",
+          "HTTP_STATUS_METHOD_NOT_ALLOWED"
+        ],
+        [
+          "constants",
+          "HTTP_STATUS_OK"
+        ],
+        [
+          "constants"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        53
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "http",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "http_parser",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/_http_common.js:1298:internalBinding",
+        "lib/_http_server.js:1735:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "ConnectionsList"
+        ],
+        [
+          "HTTPParser"
+        ],
+        [
+          "allMethods"
+        ],
+        [
+          "methods"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        54,
+        55,
+        56
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "http",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "icu",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/buffer.js:42568:internalBinding",
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/encoding.js:11566:internalBinding",
+        "lib/internal/util/inspect.js:98252:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "icuErrName"
+        ],
+        [
+          "transcode"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        57,
+        58,
+        59
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "values",
+      "boundedContractInventory": "icu-contracts.json",
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "inspector",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/inspector.js:1143:internalBinding",
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/bootstrap/web/exposed-wildcard.js:2103:internalBinding",
+        "lib/internal/console/constructor.js:21396:internalBinding",
+        "lib/internal/inspector/network_resources.js:161:internalBinding",
+        "lib/internal/inspector_async_hook.js:88:internalBinding",
+        "lib/internal/modules/cjs/loader.js:66947:internalBinding",
+        "lib/internal/modules/esm/module_job.js:16590:internalBinding",
+        "lib/internal/process/pre_execution.js:20229:internalBinding",
+        "lib/internal/process/pre_execution.js:20541:internalBinding",
+        "lib/internal/util/inspector.js:3093:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "Connection"
+        ],
+        [
+          "MainThreadConnection"
+        ],
+        [
+          "callAndPauseOnStart"
+        ],
+        [
+          "console"
+        ],
+        [
+          "consoleCall"
+        ],
+        [
+          "emitProtocolEvent"
+        ],
+        [
+          "isEnabled"
+        ],
+        [
+          "open"
+        ],
+        [
+          "putNetworkResource"
+        ],
+        [
+          "registerAsyncHook"
+        ],
+        [
+          "setConsoleExtensionInstaller"
+        ],
+        [
+          "setupNetworkTracking"
+        ],
+        [
+          "url"
+        ],
+        [
+          "waitForDebugger"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        60,
+        61,
+        62
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "observability",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "internal_only_v8",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/heap_utils.js:578:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "queryObjects"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        63,
+        64
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "observability",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "ipc_serdes",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/child_process/serialization.js:283:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "deserialize"
+        ],
+        [
+          "serialize"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        65,
+        66
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "workers",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "js_stream",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/js_stream_socket.js:194:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "JSStream"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        67
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "streams",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "locks",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/locks.js:666:internalBinding"
+      ],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        68,
+        69,
+        70
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "workers",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "messaging",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/abort_controller.js:1187:internalBinding",
+        "lib/internal/bootstrap/web/exposed-wildcard.js:416:internalBinding",
+        "lib/internal/crypto/random.js:10321:internalBinding",
+        "lib/internal/util.js:19024:internalBinding",
+        "lib/internal/util.js:19161:internalBinding",
+        "lib/internal/webstreams/readablestream.js:900:internalBinding",
+        "lib/internal/webstreams/transfer.js:192:internalBinding",
+        "lib/internal/webstreams/transformstream.js:416:internalBinding",
+        "lib/internal/webstreams/writablestream.js:478:internalBinding",
+        "lib/internal/worker/clone_dom_exception.js:107:internalBinding",
+        "lib/internal/worker/io.js:911:internalBinding",
+        "lib/internal/worker/js_transferable.js:447:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "DOMException"
+        ],
+        [
+          "MessageChannel"
+        ],
+        [
+          "MessagePort"
+        ],
+        [
+          "QuotaExceededError"
+        ],
+        [
+          "broadcastChannel"
+        ],
+        [
+          "drainMessagePort"
+        ],
+        [
+          "exposeLazyDOMExceptionProperty"
+        ],
+        [
+          "moveMessagePortToContext"
+        ],
+        [
+          "receiveMessageOnPort"
+        ],
+        [
+          "setDeserializerCreateObjectFunction"
+        ],
+        [
+          "stopMessagePort"
+        ],
+        [
+          "structuredClone"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        71,
+        72,
+        73
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "workers",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "mksnapshot",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/main/mksnapshot.js:311:internalBinding",
+        "lib/internal/process/pre_execution.js:27641:internalBinding",
+        "lib/internal/v8/startup_snapshot.js:401:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "anonymousMainPath"
+        ],
+        [
+          "compileSerializeMain"
+        ],
+        [
+          "isBuildingSnapshotBuffer"
+        ],
+        [
+          "runEmbedderPreload"
+        ],
+        [
+          "setDeserializeCallback"
+        ],
+        [
+          "setDeserializeMainFunction"
+        ],
+        [
+          "setSerializeCallback"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        74,
+        75,
+        76
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "engine",
+      "boundedContractInventory": "mksnapshot-contracts.json",
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "module_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/realm.js:6077:internalBinding",
+        "lib/internal/bootstrap/switches/is_main_thread.js:7822:internalBinding",
+        "lib/internal/main/check_syntax.js:2553:internalBinding",
+        "lib/internal/modules/cjs/loader.js:2386:internalBinding",
+        "lib/internal/modules/esm/loader.js:1667:internalBinding",
+        "lib/internal/modules/esm/module_job.js:757:internalBinding",
+        "lib/internal/modules/esm/translators.js:1695:internalBinding",
+        "lib/internal/modules/esm/utils.js:602:internalBinding",
+        "lib/internal/process/execution.js:584:internalBinding",
+        "lib/internal/vm/module.js:1229:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "ModuleWrap"
+        ],
+        [
+          "createRequiredModuleFacade"
+        ],
+        [
+          "kDeferPhase"
+        ],
+        [
+          "kErrored"
+        ],
+        [
+          "kEvaluated"
+        ],
+        [
+          "kEvaluating"
+        ],
+        [
+          "kEvaluationPhase"
+        ],
+        [
+          "kInstantiated"
+        ],
+        [
+          "kSourcePhase"
+        ],
+        [
+          "kUninstantiated"
+        ],
+        [
+          "setImportMetaResolveInitializer"
+        ],
+        [
+          "setImportModuleDynamicallyCallback"
+        ],
+        [
+          "setInitializeImportMetaObjectCallback"
+        ],
+        [
+          "throwIfPromiseRejected"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        77,
+        78,
+        79
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "loading",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "modules",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/main/embedding.js:1298:internalBinding",
+        "lib/internal/modules/helpers.js:1494:internalBinding",
+        "lib/internal/modules/typescript.js:636:internalBinding",
+        "lib/internal/vfs/setup.js:1324:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "cachedCodeTypes",
+          "kStrippedTypeScript"
+        ],
+        [
+          "cachedCodeTypes"
+        ],
+        [
+          "getCompileCacheEntry"
+        ],
+        [
+          "moduleFormats"
+        ],
+        [
+          "saveCompileCacheEntry"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        80,
+        81,
+        82
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "loading",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "options",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/debugger/inspect_helpers.js:851:internalBinding",
+        "lib/internal/main/print_help.js:316:internalBinding",
+        "lib/internal/options.js:376:internalBinding",
+        "lib/internal/process/per_thread.js:11354:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "envSettings",
+          "kAllowedInEnvvar"
+        ],
+        [
+          "envSettings"
+        ],
+        [
+          "getCLIOptionsInfo"
+        ],
+        [
+          "getCLIOptionsValues"
+        ],
+        [
+          "getEmbedderOptions"
+        ],
+        [
+          "getEnvOptionsInputType"
+        ],
+        [
+          "getNamespaceOptionsInputType"
+        ],
+        [
+          "getOptionsAsFlags"
+        ],
+        [
+          "parseNodeOptionsEnvVar"
+        ],
+        [
+          "types",
+          "kBoolean"
+        ],
+        [
+          "types",
+          "kNoOp"
+        ],
+        [
+          "types",
+          "kV8Option"
+        ],
+        [
+          "types"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        83,
+        84
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "loading",
+      "boundedContractInventory": "options-contracts.json",
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "os",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/errors.js:25831:internalBinding",
+        "lib/internal/navigator.js:348:internalBinding",
+        "lib/internal/quic/state.js:652:internalBinding",
+        "lib/os.js:2019:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "getAvailableParallelism"
+        ],
+        [
+          "getCPUs"
+        ],
+        [
+          "getFreeMem"
+        ],
+        [
+          "getHomeDirectory"
+        ],
+        [
+          "getHostname"
+        ],
+        [
+          "getInterfaceAddresses"
+        ],
+        [
+          "getLoadAvg"
+        ],
+        [
+          "getOSInformation"
+        ],
+        [
+          "getPriority"
+        ],
+        [
+          "getTotalMem"
+        ],
+        [
+          "getUptime"
+        ],
+        [
+          "getUserInfo"
+        ],
+        [
+          "isBigEndian"
+        ],
+        [
+          "setPriority"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        85,
+        86
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "processes",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "performance",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/histogram.js:257:internalBinding",
+        "lib/internal/perf/event_loop_delay.js:219:internalBinding",
+        "lib/internal/perf/event_loop_utilization.js:120:internalBinding",
+        "lib/internal/perf/nodetiming.js:725:internalBinding",
+        "lib/internal/perf/observe.js:672:internalBinding",
+        "lib/internal/perf/utils.js:166:internalBinding",
+        "lib/internal/process/pre_execution.js:28099:internalBinding",
+        "lib/perf_hooks.js:90:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "Histogram"
+        ],
+        [
+          "SlidingWindowHistogram"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_ENTRY_TYPE_DNS"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_ENTRY_TYPE_GC"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_ENTRY_TYPE_HTTP"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_ENTRY_TYPE_HTTP2"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_ENTRY_TYPE_NET"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_ENTRY_TYPE_QUIC"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_MILESTONE_BOOTSTRAP_COMPLETE"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_MILESTONE_ENVIRONMENT"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_MILESTONE_LOOP_EXIT"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_MILESTONE_LOOP_START"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_MILESTONE_NODE_START"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_MILESTONE_TIME_ORIGIN"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_MILESTONE_TIME_ORIGIN_TIMESTAMP"
+        ],
+        [
+          "constants",
+          "NODE_PERFORMANCE_MILESTONE_V8_START"
+        ],
+        [
+          "constants"
+        ],
+        [
+          "createELDHistogram"
+        ],
+        [
+          "loopIdleTime"
+        ],
+        [
+          "markBootstrapComplete"
+        ],
+        [
+          "milestones"
+        ],
+        [
+          "now"
+        ],
+        [
+          "observerCounts"
+        ],
+        [
+          "setupObservers"
+        ],
+        [
+          "updateGarbageCollectionTracking"
+        ],
+        [
+          "uvMetricsBigIntBuffer"
+        ],
+        [
+          "uvMetricsBuffer"
+        ],
+        [
+          "uvMetricsInfo"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        87,
+        88,
+        89
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "observability",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "permission",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/process/permission.js:127:internalBinding"
+      ],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        90,
+        91
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "filesystem",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "pipe_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/child_process.js:2079:internalBinding",
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/child_process.js:1169:internalBinding",
+        "lib/internal/tls/wrap.js:2060:internalBinding",
+        "lib/net.js:2441:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "Pipe"
+        ],
+        [
+          "PipeConnectWrap"
+        ],
+        [
+          "constants"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        92,
+        93
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "streams",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "process_methods",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/inspector.js:909:internalBinding",
+        "lib/internal/bootstrap/node.js:5368:internalBinding",
+        "lib/internal/bootstrap/node.js:12207:internalBinding",
+        "lib/internal/bootstrap/switches/does_not_own_process_state.js:86:internalBinding",
+        "lib/internal/bootstrap/switches/does_own_process_state.js:86:internalBinding",
+        "lib/internal/bootstrap/switches/is_main_thread.js:84:internalBinding",
+        "lib/internal/process/per_thread.js:1624:internalBinding",
+        "lib/internal/process/pre_execution.js:11785:internalBinding",
+        "lib/internal/vfs/setup.js:38666:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "_debugEnd"
+        ],
+        [
+          "dlopenBinary"
+        ],
+        [
+          "setEmitWarningSync"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        94,
+        95,
+        96
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "processes",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "process_object",
+      "hasLiteralJSConsumer": false,
+      "consumerSiteIds": [],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        97
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "external-reference-record-not-a-loadable-binding",
+      "reviewRoutingFamily": "processes",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "process_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/child_process.js:2836:internalBinding",
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/child_process.js:952:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "Process"
+        ],
+        [
+          "constants"
+        ],
+        [
+          "getEnvPairs"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        98,
+        99
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "processes",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "profiler",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/test_runner/coverage.js:6164:internalBinding",
+        "lib/internal/test_runner/coverage.js:10999:internalBinding",
+        "lib/internal/test_runner/coverage.js:21973:internalBinding",
+        "lib/internal/util.js:22549:internalBinding",
+        "lib/internal/util.js:22622:internalBinding",
+        "lib/v8.js:1614:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "endCoverage"
+        ],
+        [
+          "setCoverageDirectory"
+        ],
+        [
+          "setSourceMapCacheGetter"
+        ],
+        [
+          "startCoverage"
+        ],
+        [
+          "takeCoverage"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        100,
+        101
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "observability",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "quic",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/quic/quic.js:2356:internalBinding",
+        "lib/internal/quic/state.js:3196:internalBinding",
+        "lib/internal/quic/stats.js:3748:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "CC_ALGO_BBR_STR"
+        ],
+        [
+          "CC_ALGO_CUBIC_STR"
+        ],
+        [
+          "CC_ALGO_RENO_STR"
+        ],
+        [
+          "CLOSECONTEXT_BIND_FAILURE"
+        ],
+        [
+          "CLOSECONTEXT_CLOSE"
+        ],
+        [
+          "CLOSECONTEXT_LISTEN_FAILURE"
+        ],
+        [
+          "CLOSECONTEXT_RECEIVE_FAILURE"
+        ],
+        [
+          "CLOSECONTEXT_SEND_FAILURE"
+        ],
+        [
+          "CLOSECONTEXT_START_FAILURE"
+        ],
+        [
+          "DEFAULT_CIPHERS"
+        ],
+        [
+          "DEFAULT_GROUPS"
+        ],
+        [
+          "DEFAULT_PREFERRED_ADDRESS_POLICY"
+        ],
+        [
+          "Endpoint"
+        ],
+        [
+          "IDX_STATE_ENDPOINT_BOUND"
+        ],
+        [
+          "IDX_STATE_ENDPOINT_BUSY"
+        ],
+        [
+          "IDX_STATE_ENDPOINT_CLOSING"
+        ],
+        [
+          "IDX_STATE_ENDPOINT_LISTENING"
+        ],
+        [
+          "IDX_STATE_ENDPOINT_MAX_CONNECTIONS_PER_HOST"
+        ],
+        [
+          "IDX_STATE_ENDPOINT_MAX_CONNECTIONS_TOTAL"
+        ],
+        [
+          "IDX_STATE_ENDPOINT_PENDING_CALLBACKS"
+        ],
+        [
+          "IDX_STATE_ENDPOINT_RECEIVING"
+        ],
+        [
+          "IDX_STATE_SESSION_APPLICATION_TYPE"
+        ],
+        [
+          "IDX_STATE_SESSION_CLOSING"
+        ],
+        [
+          "IDX_STATE_SESSION_GRACEFUL_CLOSE"
+        ],
+        [
+          "IDX_STATE_SESSION_HANDSHAKE_COMPLETED"
+        ],
+        [
+          "IDX_STATE_SESSION_HANDSHAKE_CONFIRMED"
+        ],
+        [
+          "IDX_STATE_SESSION_HEADERS_SUPPORTED"
+        ],
+        [
+          "IDX_STATE_SESSION_INTERNAL_ERROR_CODE"
+        ],
+        [
+          "IDX_STATE_SESSION_LAST_DATAGRAM_ID"
+        ],
+        [
+          "IDX_STATE_SESSION_LISTENER_FLAGS"
+        ],
+        [
+          "IDX_STATE_SESSION_MAX_DATAGRAM_SIZE"
+        ],
+        [
+          "IDX_STATE_SESSION_MAX_PENDING_DATAGRAMS"
+        ],
+        [
+          "IDX_STATE_SESSION_NO_ERROR_CODE"
+        ],
+        [
+          "IDX_STATE_SESSION_PRIORITY_SUPPORTED"
+        ],
+        [
+          "IDX_STATE_SESSION_REQUEST_REJECTED_CODE"
+        ],
+        [
+          "IDX_STATE_SESSION_SILENT_CLOSE"
+        ],
+        [
+          "IDX_STATE_SESSION_STATELESS_RESET"
+        ],
+        [
+          "IDX_STATE_SESSION_STREAM_CALLBACKS_SUPPORTED"
+        ],
+        [
+          "IDX_STATE_SESSION_STREAM_OPEN_ALLOWED"
+        ],
+        [
+          "IDX_STATE_SESSION_WRAPPED"
+        ],
+        [
+          "IDX_STATE_STREAM_BUDGET"
+        ],
+        [
+          "IDX_STATE_STREAM_FIN_RECEIVED"
+        ],
+        [
+          "IDX_STATE_STREAM_FIN_SENT"
+        ],
+        [
+          "IDX_STATE_STREAM_HAS_OUTBOUND"
+        ],
+        [
+          "IDX_STATE_STREAM_HAS_READER"
+        ],
+        [
+          "IDX_STATE_STREAM_ID"
+        ],
+        [
+          "IDX_STATE_STREAM_PENDING"
+        ],
+        [
+          "IDX_STATE_STREAM_READ_ENDED"
+        ],
+        [
+          "IDX_STATE_STREAM_RECEIVED_EARLY_DATA"
+        ],
+        [
+          "IDX_STATE_STREAM_RESET"
+        ],
+        [
+          "IDX_STATE_STREAM_RESET_CODE"
+        ],
+        [
+          "IDX_STATE_STREAM_SIZE"
+        ],
+        [
+          "IDX_STATE_STREAM_WANTS_BLOCK"
+        ],
+        [
+          "IDX_STATE_STREAM_WANTS_RESET"
+        ],
+        [
+          "IDX_STATE_STREAM_WANTS_STOP_SENDING"
+        ],
+        [
+          "IDX_STATE_STREAM_WRITE_DESIRED_SIZE"
+        ],
+        [
+          "IDX_STATE_STREAM_WRITE_ENDED"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_BYTES_RECEIVED"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_BYTES_SENT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_CLIENT_SESSIONS"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_CREATED_AT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_DESTROYED_AT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_IMMEDIATE_CLOSE_COUNT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_IMMEDIATE_CLOSE_RATE_LIMITED"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_PACKETS_BLOCKED"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_PACKETS_RECEIVED"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_PACKETS_SENT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_RETRY_COUNT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_RETRY_RATE_LIMITED"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_SERVER_BUSY_COUNT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_SERVER_SESSIONS"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_SESSION_CREATION_RATE_LIMITED"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_STATELESS_RESET_COUNT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_STATELESS_RESET_RATE_LIMITED"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_VERSION_NEGOTIATION_COUNT"
+        ],
+        [
+          "IDX_STATS_ENDPOINT_VERSION_NEGOTIATION_RATE_LIMITED"
+        ],
+        [
+          "IDX_STATS_SESSION_BIDI_IN_STREAM_COUNT"
+        ],
+        [
+          "IDX_STATS_SESSION_BIDI_OUT_STREAM_COUNT"
+        ],
+        [
+          "IDX_STATS_SESSION_BLOCK_COUNT"
+        ],
+        [
+          "IDX_STATS_SESSION_BYTES_IN_FLIGHT"
+        ],
+        [
+          "IDX_STATS_SESSION_BYTES_LOST"
+        ],
+        [
+          "IDX_STATS_SESSION_BYTES_RECEIVED"
+        ],
+        [
+          "IDX_STATS_SESSION_BYTES_RECV"
+        ],
+        [
+          "IDX_STATS_SESSION_BYTES_SENT"
+        ],
+        [
+          "IDX_STATS_SESSION_CLOSING_AT"
+        ],
+        [
+          "IDX_STATS_SESSION_COUNT"
+        ],
+        [
+          "IDX_STATS_SESSION_CREATED_AT"
+        ],
+        [
+          "IDX_STATS_SESSION_CWND"
+        ],
+        [
+          "IDX_STATS_SESSION_DATAGRAMS_ACKNOWLEDGED"
+        ],
+        [
+          "IDX_STATS_SESSION_DATAGRAMS_LOST"
+        ],
+        [
+          "IDX_STATS_SESSION_DATAGRAMS_RECEIVED"
+        ],
+        [
+          "IDX_STATS_SESSION_DATAGRAMS_SENT"
+        ],
+        [
+          "IDX_STATS_SESSION_DESTROYED_AT"
+        ],
+        [
+          "IDX_STATS_SESSION_HANDSHAKE_COMPLETED_AT"
+        ],
+        [
+          "IDX_STATS_SESSION_HANDSHAKE_CONFIRMED_AT"
+        ],
+        [
+          "IDX_STATS_SESSION_LATEST_RTT"
+        ],
+        [
+          "IDX_STATS_SESSION_MAX_BYTES_IN_FLIGHT"
+        ],
+        [
+          "IDX_STATS_SESSION_MIN_RTT"
+        ],
+        [
+          "IDX_STATS_SESSION_PING_RECV"
+        ],
+        [
+          "IDX_STATS_SESSION_PKT_DISCARDED"
+        ],
+        [
+          "IDX_STATS_SESSION_PKT_LOST"
+        ],
+        [
+          "IDX_STATS_SESSION_PKT_RECV"
+        ],
+        [
+          "IDX_STATS_SESSION_PKT_SENT"
+        ],
+        [
+          "IDX_STATS_SESSION_RTTVAR"
+        ],
+        [
+          "IDX_STATS_SESSION_SMOOTHED_RTT"
+        ],
+        [
+          "IDX_STATS_SESSION_SSTHRESH"
+        ],
+        [
+          "IDX_STATS_SESSION_STREAMS_IDLE_TIMED_OUT"
+        ],
+        [
+          "IDX_STATS_SESSION_UNI_IN_STREAM_COUNT"
+        ],
+        [
+          "IDX_STATS_SESSION_UNI_OUT_STREAM_COUNT"
+        ],
+        [
+          "IDX_STATS_STREAM_ACKED_AT"
+        ],
+        [
+          "IDX_STATS_STREAM_BYTES_ACCUMULATED"
+        ],
+        [
+          "IDX_STATS_STREAM_BYTES_RECEIVED"
+        ],
+        [
+          "IDX_STATS_STREAM_BYTES_SENT"
+        ],
+        [
+          "IDX_STATS_STREAM_COUNT"
+        ],
+        [
+          "IDX_STATS_STREAM_CREATED_AT"
+        ],
+        [
+          "IDX_STATS_STREAM_DESTROYED_AT"
+        ],
+        [
+          "IDX_STATS_STREAM_FINAL_SIZE"
+        ],
+        [
+          "IDX_STATS_STREAM_MAX_BYTES_ACCUMULATED"
+        ],
+        [
+          "IDX_STATS_STREAM_MAX_OFFSET"
+        ],
+        [
+          "IDX_STATS_STREAM_MAX_OFFSET_ACK"
+        ],
+        [
+          "IDX_STATS_STREAM_MAX_OFFSET_RECV"
+        ],
+        [
+          "IDX_STATS_STREAM_OPENED_AT"
+        ],
+        [
+          "IDX_STATS_STREAM_RECEIVED_AT"
+        ],
+        [
+          "PREFERRED_ADDRESS_IGNORE"
+        ],
+        [
+          "PREFERRED_ADDRESS_USE"
+        ],
+        [
+          "QUIC_STREAM_HEADERS_FLAGS_NONE"
+        ],
+        [
+          "QUIC_STREAM_HEADERS_FLAGS_TERMINAL"
+        ],
+        [
+          "QUIC_STREAM_HEADERS_KIND_HINTS"
+        ],
+        [
+          "QUIC_STREAM_HEADERS_KIND_INITIAL"
+        ],
+        [
+          "QUIC_STREAM_HEADERS_KIND_TRAILING"
+        ],
+        [
+          "STREAM_DIRECTION_BIDIRECTIONAL"
+        ],
+        [
+          "STREAM_DIRECTION_UNIDIRECTIONAL"
+        ],
+        [
+          "sendHeaders"
+        ],
+        [
+          "setCallbacks"
+        ],
+        [
+          "setHeadersInterest"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        102,
+        103,
+        104
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "secure-network",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "report",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/process/report.js:421:internalBinding"
+      ],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        105,
+        106
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "observability",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "sea",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/main/embedding.js:652:internalBinding",
+        "lib/internal/main/mksnapshot.js:386:internalBinding",
+        "lib/internal/modules/helpers.js:9178:internalBinding",
+        "lib/internal/vfs/providers/sea.js:1881:internalBinding",
+        "lib/internal/vfs/sea.js:127:internalBinding",
+        "lib/sea.js:151:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "getAsset"
+        ],
+        [
+          "getAssetKeys"
+        ],
+        [
+          "isExperimentalSeaWarningNeeded"
+        ],
+        [
+          "isSea"
+        ],
+        [
+          "isVfsArchiveEnabled"
+        ],
+        [
+          "isVfsEnabled"
+        ],
+        [
+          "mainCodePath"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        107,
+        108
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "native-integration",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "serdes",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/v8.js:1266:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "Deserializer"
+        ],
+        [
+          "Serializer"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        109,
+        110
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "engine",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "signal_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/process/signal.js:533:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "Signal"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        111,
+        112
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "processes",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "spawn_sync",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/child_process.js:1677:internalBinding"
+      ],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        113,
+        114
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "processes",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "sqlite",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/sqlite.js:77:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "Database"
+        ],
+        [
+          "Session"
+        ],
+        [
+          "Statement"
+        ],
+        [
+          "backup"
+        ],
+        [
+          "constants"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        115
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "native-integration",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "stream_pipe",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/http2/core.js:4553:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "StreamPipe"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        116
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "streams",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "stream_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/_http_agent.js:1911:internalBinding",
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/child_process.js:1094:internalBinding",
+        "lib/internal/child_process/serialization.js:362:internalBinding",
+        "lib/internal/http2/core.js:4455:internalBinding",
+        "lib/internal/stream_base_commons.js:257:internalBinding",
+        "lib/internal/webstreams/adapters.js:1795:internalBinding",
+        "lib/net.js:2249:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "ShutdownWrap"
+        ],
+        [
+          "WriteWrap"
+        ],
+        [
+          "kArrayBufferOffset"
+        ],
+        [
+          "kBytesWritten"
+        ],
+        [
+          "kLastWriteErr"
+        ],
+        [
+          "kLastWriteWasAsync"
+        ],
+        [
+          "kReadBytesOrError"
+        ],
+        [
+          "streamBaseState"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        117,
+        118
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "streams",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "string_decoder",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/util.js:1746:internalBinding",
+        "lib/string_decoder.js:1452:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "decode"
+        ],
+        [
+          "encodings"
+        ],
+        [
+          "flush"
+        ],
+        [
+          "kBufferedBytes"
+        ],
+        [
+          "kEncodingField"
+        ],
+        [
+          "kIncompleteCharactersEnd"
+        ],
+        [
+          "kIncompleteCharactersStart"
+        ],
+        [
+          "kMissingBytes"
+        ],
+        [
+          "kSize"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        119,
+        120
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "values",
+      "boundedContractInventory": "string-decoder-contracts.json",
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "symbols",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/async_hooks.js:3913:internalBinding",
+        "lib/internal/async_hooks.js:4436:internalBinding",
+        "lib/internal/blocklist.js:760:internalBinding",
+        "lib/internal/modules/cjs/loader.js:5624:internalBinding",
+        "lib/internal/modules/esm/loader.js:629:internalBinding",
+        "lib/internal/modules/esm/utils.js:468:internalBinding",
+        "lib/internal/process/pre_execution.js:2324:internalBinding",
+        "lib/internal/tls/wrap.js:2879:internalBinding",
+        "lib/internal/vm.js:373:internalBinding",
+        "lib/internal/webworker.js:1516:internalBinding",
+        "lib/internal/worker/io.js:556:internalBinding",
+        "lib/internal/worker/js_transferable.js:326:internalBinding",
+        "lib/vm.js:2112:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "async_id_symbol"
+        ],
+        [
+          "embedder_module_hdo"
+        ],
+        [
+          "handle_onclose"
+        ],
+        [
+          "imported_cjs_symbol"
+        ],
+        [
+          "messaging_clone_symbol"
+        ],
+        [
+          "messaging_deserialize_symbol"
+        ],
+        [
+          "messaging_transfer_list_symbol"
+        ],
+        [
+          "messaging_transfer_symbol"
+        ],
+        [
+          "no_message_symbol"
+        ],
+        [
+          "oninit"
+        ],
+        [
+          "onpskexchange"
+        ],
+        [
+          "owner_symbol"
+        ],
+        [
+          "resource_symbol"
+        ],
+        [
+          "source_text_module_default_hdo"
+        ],
+        [
+          "trigger_async_id_symbol"
+        ],
+        [
+          "vm_context_no_contextify"
+        ],
+        [
+          "vm_dynamic_import_default_internal"
+        ],
+        [
+          "vm_dynamic_import_main_context_default"
+        ],
+        [
+          "vm_dynamic_import_missing_flag"
+        ],
+        [
+          "vm_dynamic_import_no_callback"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        121
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "values",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "task_queue",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/async_hooks.js:3840:internalBinding",
+        "lib/internal/process/promises.js:314:internalBinding",
+        "lib/internal/process/task_queues.js:315:internalBinding",
+        "lib/internal/timers.js:3663:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "enqueueMicrotask"
+        ],
+        [
+          "promiseRejectEvents",
+          "kPromiseHandlerAddedAfterReject"
+        ],
+        [
+          "promiseRejectEvents",
+          "kPromiseRejectWithNoHandler"
+        ],
+        [
+          "promiseRejectEvents"
+        ],
+        [
+          "runMicrotasks"
+        ],
+        [
+          "setPromiseRejectCallback"
+        ],
+        [
+          "setTickCallback"
+        ],
+        [
+          "tickInfo"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        122,
+        123
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "async",
+      "boundedContractInventory": "task-queue-contracts.json",
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "tcp_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/child_process.js:1215:internalBinding",
+        "lib/internal/cluster/round_robin_handle.js:310:internalBinding",
+        "lib/internal/tls/wrap.js:1942:internalBinding",
+        "lib/net.js:2345:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "TCP"
+        ],
+        [
+          "TCPConnectWrap"
+        ],
+        [
+          "constants"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        124,
+        125
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "network",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "timers",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/node.js:12917:internalBinding",
+        "lib/internal/timers.js:3551:internalBinding",
+        "lib/internal/util/throttle.js:714:internalBinding",
+        "lib/timers.js:1292:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "setupTimers"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        126,
+        127,
+        128
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "async",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "tls_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/tls/wrap.js:1988:internalBinding"
+      ],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        129,
+        130
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "secure-network",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "trace_events",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/node.js:8444:internalBinding",
+        "lib/internal/process/pre_execution.js:19530:internalBinding",
+        "lib/internal/trace_events.js:105:internalBinding",
+        "lib/trace_events.js:392:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "CategorySet"
+        ],
+        [
+          "getCategoryEnabledBuffer"
+        ],
+        [
+          "getEnabledCategories"
+        ],
+        [
+          "hasAgent"
+        ],
+        [
+          "isTraceCategoryEnabled"
+        ],
+        [
+          "setTraceCategoryStateUpdateHandler"
+        ],
+        [
+          "trace"
+        ],
+        [
+          "usePerfetto"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        131,
+        132
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "observability",
+      "boundedContractInventory": "trace-events-contracts.json",
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "tty_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/child_process.js:1260:internalBinding",
+        "lib/tty.js:1336:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "TTY"
+        ],
+        [
+          "UV_TTY_MODE_IO"
+        ],
+        [
+          "UV_TTY_MODE_NORMAL"
+        ],
+        [
+          "UV_TTY_MODE_RAW_VT"
+        ],
+        [
+          "isTTY"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        133,
+        134
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "terminal",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "types",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/test_runner/reporter/tap.js:5562:internalBinding",
+        "lib/internal/util.js:1599:internalBinding",
+        "lib/internal/util/types.js:1729:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "isDate"
+        ],
+        [
+          "isNativeError"
+        ],
+        [
+          "isPromise"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        135,
+        136
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "values",
+      "boundedContractInventory": "types-contracts.json",
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "udp_wrap",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/dgram.js:2688:internalBinding",
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/child_process.js:1305:internalBinding",
+        "lib/internal/dgram.js:208:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "SendWrap"
+        ],
+        [
+          "UDP"
+        ],
+        [
+          "constants",
+          "UV_UDP_IPV6ONLY"
+        ],
+        [
+          "constants",
+          "UV_UDP_REUSEPORT"
+        ],
+        [
+          "constants"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        137,
+        138
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "network",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "url",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/modules/esm/hooks.js:682:internalBinding",
+        "lib/internal/modules/esm/resolve.js:990:internalBinding",
+        "lib/internal/modules/helpers.js:1447:internalBinding",
+        "lib/internal/modules/package_json_reader.js:327:internalBinding",
+        "lib/internal/url.js:2090:internalBinding",
+        "lib/url.js:2347:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "canParse"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        139,
+        140,
+        141
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "values",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "url_pattern",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/url.js:730:internalBinding",
+        "lib/url.js:1425:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "URLPattern"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        142,
+        143
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "values",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "util",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/buffer.js:2609:internalBinding",
+        "lib/internal/bench_runner/harness.js:397:internalBinding",
+        "lib/internal/bootstrap/node.js:3539:internalBinding",
+        "lib/internal/buffer.js:776:internalBinding",
+        "lib/internal/console/constructor.js:1136:internalBinding",
+        "lib/internal/errors.js:26593:internalBinding",
+        "lib/internal/modules/cjs/loader.js:2309:internalBinding",
+        "lib/internal/modules/esm/module_job.js:935:internalBinding",
+        "lib/internal/modules/esm/utils.js:227:internalBinding",
+        "lib/internal/modules/helpers.js:1257:internalBinding",
+        "lib/internal/modules/run_main.js:732:internalBinding",
+        "lib/internal/process/execution.js:1284:internalBinding",
+        "lib/internal/process/pre_execution.js:2243:internalBinding",
+        "lib/internal/process/pre_execution.js:21065:internalBinding",
+        "lib/internal/quic/quic.js:2737:internalBinding",
+        "lib/internal/repl/completion.js:1260:internalBinding",
+        "lib/internal/source_map/source_map_cache_map.js:226:internalBinding",
+        "lib/internal/streams/iter/broadcast.js:736:internalBinding",
+        "lib/internal/streams/iter/consumers.js:1044:internalBinding",
+        "lib/internal/streams/iter/from.js:751:internalBinding",
+        "lib/internal/streams/iter/pull.js:1389:internalBinding",
+        "lib/internal/streams/iter/share.js:1329:internalBinding",
+        "lib/internal/streams/iter/transform.js:1409:internalBinding",
+        "lib/internal/streams/iter/utils.js:513:internalBinding",
+        "lib/internal/test_runner/harness.js:233:internalBinding",
+        "lib/internal/test_runner/test.js:783:internalBinding",
+        "lib/internal/util.js:1537:internalBinding",
+        "lib/internal/util/comparisons.js:2281:internalBinding",
+        "lib/internal/util/debounce.js:607:internalBinding",
+        "lib/internal/util/inspect.js:3028:internalBinding",
+        "lib/internal/util/throttle.js:774:internalBinding",
+        "lib/internal/vm.js:601:internalBinding",
+        "lib/internal/webidl.js:795:internalBinding",
+        "lib/internal/webstreams/util.js:765:internalBinding",
+        "lib/internal/worker/io.js:691:internalBinding",
+        "lib/internal/worker/js_transferable.js:634:internalBinding",
+        "lib/punycode.js:49:internalBinding",
+        "lib/url.js:1998:internalBinding",
+        "lib/util.js:2552:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "constants",
+          "ALL_PROPERTIES"
+        ],
+        [
+          "constants",
+          "ONLY_ENUMERABLE"
+        ],
+        [
+          "constants",
+          "SKIP_SYMBOLS"
+        ],
+        [
+          "constants",
+          "kCloneable"
+        ],
+        [
+          "constants",
+          "kDisallowCloneAndTransfer"
+        ],
+        [
+          "constants",
+          "kExitCode"
+        ],
+        [
+          "constants",
+          "kExiting"
+        ],
+        [
+          "constants",
+          "kHasExitCode"
+        ],
+        [
+          "constants",
+          "kPending"
+        ],
+        [
+          "constants",
+          "kRejected"
+        ],
+        [
+          "constants",
+          "kTransferable"
+        ],
+        [
+          "constants"
+        ],
+        [
+          "constructSharedArrayBuffer"
+        ],
+        [
+          "defineLazyProperties"
+        ],
+        [
+          "getCallerLocation"
+        ],
+        [
+          "getConstructorName"
+        ],
+        [
+          "getExternalValue"
+        ],
+        [
+          "getOwnNonIndexProperties"
+        ],
+        [
+          "getPromiseDetails"
+        ],
+        [
+          "getProxyDetails"
+        ],
+        [
+          "getSharedArrayBufferGrowable"
+        ],
+        [
+          "guessHandleType"
+        ],
+        [
+          "isInsideNodeModules"
+        ],
+        [
+          "markPromiseAsHandled"
+        ],
+        [
+          "previewEntries"
+        ],
+        [
+          "privateSymbols",
+          "arrow_message_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "contextify_context_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "decorated_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "entry_point_module_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "entry_point_promise_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "exit_info_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "host_defined_option_symbol"
+        ],
+        [
+          "privateSymbols",
+          "module_circular_visited_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "module_export_names_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "module_export_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "module_first_parent_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "module_last_parent_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "module_source_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "source_map_data_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "transfer_mode_private_symbol"
+        ],
+        [
+          "privateSymbols",
+          "untransferable_object_private_symbol"
+        ],
+        [
+          "privateSymbols"
+        ],
+        [
+          "shouldAbortOnUncaughtToggle"
+        ],
+        [
+          "sleep"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        144,
+        145
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": true,
+      "implementationSurveyState": "route-present-contract-incomplete",
+      "reviewRoutingFamily": "values",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "uv",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/child_process.js:2044:internalBinding",
+        "lib/internal/dgram.js:388:internalBinding",
+        "lib/internal/errors.js:17367:internalBinding",
+        "lib/internal/fs/watchers.js:653:internalBinding",
+        "lib/internal/http2/core.js:4506:internalBinding",
+        "lib/internal/js_stream_socket.js:235:internalBinding",
+        "lib/internal/stream_base_commons.js:308:internalBinding",
+        "lib/internal/util.js:2146:internalBinding",
+        "lib/internal/vfs/errors.js:290:internalBinding",
+        "lib/internal/vfs/providers/composable.js:886:internalBinding",
+        "lib/internal/vfs/setup.js:1374:internalBinding",
+        "lib/internal/webstreams/adapters.js:1988:internalBinding",
+        "lib/net.js:2093:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "UV_DIRENT_BLOCK"
+        ],
+        [
+          "UV_DIRENT_CHAR"
+        ],
+        [
+          "UV_DIRENT_DIR"
+        ],
+        [
+          "UV_DIRENT_FIFO"
+        ],
+        [
+          "UV_DIRENT_FILE"
+        ],
+        [
+          "UV_DIRENT_LINK"
+        ],
+        [
+          "UV_DIRENT_SOCKET"
+        ],
+        [
+          "UV_DIRENT_UNKNOWN"
+        ],
+        [
+          "UV_EACCES"
+        ],
+        [
+          "UV_EADDRINUSE"
+        ],
+        [
+          "UV_EAGAIN"
+        ],
+        [
+          "UV_EBADF"
+        ],
+        [
+          "UV_EBUSY"
+        ],
+        [
+          "UV_ECANCELED"
+        ],
+        [
+          "UV_EEXIST"
+        ],
+        [
+          "UV_EINVAL"
+        ],
+        [
+          "UV_EISDIR"
+        ],
+        [
+          "UV_ELOOP"
+        ],
+        [
+          "UV_EMFILE"
+        ],
+        [
+          "UV_ENFILE"
+        ],
+        [
+          "UV_ENOENT"
+        ],
+        [
+          "UV_ENOSPC"
+        ],
+        [
+          "UV_ENOSYS"
+        ],
+        [
+          "UV_ENOTCONN"
+        ],
+        [
+          "UV_ENOTDIR"
+        ],
+        [
+          "UV_ENOTEMPTY"
+        ],
+        [
+          "UV_EOF"
+        ],
+        [
+          "UV_EROFS"
+        ],
+        [
+          "UV_ESRCH"
+        ],
+        [
+          "UV_ETIMEDOUT"
+        ],
+        [
+          "UV_EXDEV"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        146,
+        147
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "async",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "v8",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/v8/heap_profile.js:326:internalBinding",
+        "lib/v8.js:3210:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "kSamplingForceGC"
+        ],
+        [
+          "kSamplingIncludeObjectsCollectedByMajorGC"
+        ],
+        [
+          "kSamplingIncludeObjectsCollectedByMinorGC"
+        ],
+        [
+          "kSamplingNoFlags"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        148,
+        149
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "observability",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "wasi",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/wasi.js:1006:internalBinding",
+        "lib/wasi.js:1143:internalBinding"
+      ],
+      "directRequestedExportPaths": [],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        150
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "native-integration",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "wasm_web_api",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/switches/is_main_thread.js:9104:internalBinding",
+        "lib/internal/bootstrap/web/exposed-window-or-worker.js:3766:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "setImplementation"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        151,
+        152
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "native-integration",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "watchdog",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/watchdog.js:50:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "TraceSigintWatchdog"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        153
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "observability",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "webstorage",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/inspector/webstorage.js:35:internalBinding",
+        "lib/internal/webstorage.js:210:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "Storage"
+        ],
+        [
+          "kConstructorKey"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer"
+      ],
+      "registrationIndexes": [
+        154
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "web",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "worker",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/switches/is_main_thread.js:9186:internalBinding",
+        "lib/internal/main/worker_thread.js:483:internalBinding",
+        "lib/internal/modules/cjs/loader.js:10615:internalBinding",
+        "lib/internal/modules/esm/loader.js:21335:internalBinding",
+        "lib/internal/process/pre_execution.js:4132:internalBinding",
+        "lib/internal/process/pre_execution.js:5014:internalBinding",
+        "lib/internal/process/pre_execution.js:28982:internalBinding",
+        "lib/internal/worker.js:1872:internalBinding",
+        "lib/internal/worker.js:9673:internalBinding",
+        "lib/internal/worker/io.js:974:internalBinding",
+        "lib/internal/worker/messaging.js:176:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "Worker"
+        ],
+        [
+          "getEnvMessagePort"
+        ],
+        [
+          "isInternalThread"
+        ],
+        [
+          "isMainThread"
+        ],
+        [
+          "kCodeRangeSizeMb"
+        ],
+        [
+          "kMaxOldGenerationSizeMb"
+        ],
+        [
+          "kMaxYoungGenerationSizeMb"
+        ],
+        [
+          "kStackSizeMb"
+        ],
+        [
+          "kTotalResourceLimitCount"
+        ],
+        [
+          "ownsProcessState"
+        ],
+        [
+          "resourceLimits"
+        ],
+        [
+          "threadId"
+        ],
+        [
+          "threadName"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration",
+        "isolate-initializer"
+      ],
+      "registrationIndexes": [
+        155,
+        156,
+        157
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "workers",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    },
+    {
+      "name": "zlib",
+      "hasLiteralJSConsumer": true,
+      "consumerSiteIds": [
+        "lib/internal/bootstrap/realm.js:5030:internalBinding",
+        "lib/internal/streams/iter/transform.js:1351:internalBinding",
+        "lib/internal/zip/compression.js:593:internalBinding",
+        "lib/internal/zip/dos.js:396:internalBinding",
+        "lib/internal/zip/entry.js:1056:internalBinding",
+        "lib/zlib.js:1942:internalBinding"
+      ],
+      "directRequestedExportPaths": [
+        [
+          "crc32"
+        ]
+      ],
+      "sourceRegistrationRoles": [
+        "context-initializer",
+        "external-reference-registration"
+      ],
+      "registrationIndexes": [
+        158,
+        159
+      ],
+      "registrationBuildSelectionEvaluated": false,
+      "kandeloSourceRoute": false,
+      "implementationSurveyState": "no-kandelo-dispatch-route",
+      "reviewRoutingFamily": "compression",
+      "boundedContractInventory": null,
+      "apiContractComplete": false,
+      "fourHostConformance": "not established by this source survey"
+    }
+  ],
+  "unreviewedDimensionsForEachBinding": [
+    "exported classes/methods/symbols/shared fields and exact signatures",
+    "errors/assertions and exceptional/reentrant paths",
+    "scheduling/native callback scopes/async context/Promise lifecycle",
+    "rooting/GC/backing allocation and memory pressure",
+    "resource ownership/cancellation/ref-unref/close and shutdown",
+    "owning guest engine/libuv/libc/runtime-core/kernel/host boundary",
+    "worker/fork/transfer/security/OOM/snapshot variants",
+    "identified-artifact validation obligations on all four hosts"
+  ],
+  "historicalAudit": {
+    "completionRecord": {
+      "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+      "path": "tests/nodejs/audit/audit-completion.json",
+      "gitBlob": "f4c3e0c50ca530299ed4bf8c506255416c37b963",
+      "bytes": 23632,
+      "sha256": "cdb7d388836ae8a9b444bea1e8846b2b954131b8aa3edfc129436fc69eb6de71"
+    },
+    "families": [
+      {
+        "family": "values",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/values-contracts.md",
+          "gitBlob": "c5131a7dab7317b9b8328ab3a83d5ac7ccb07cca",
+          "bytes": 25130,
+          "sha256": "accb7225fa336e74d789ecfc1defe666edadb6661bc9fa038c1763143f27c334"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "async",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/async.md",
+          "gitBlob": "4c46ee8ab862deaba14ca9c3a708f718e1828908",
+          "bytes": 11953,
+          "sha256": "30022b48ed8591f15f0d38d77b2f1161a7fc165076e7a73363a92930a816df72"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "streams",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/streams-contracts.md",
+          "gitBlob": "9bc3662474f10eb974de358c63aa673542312e05",
+          "bytes": 17592,
+          "sha256": "a25643b7194a335edf67d4ebf0f2a8bbe7d222c02f0375e15dff4f28b1f9a887"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "filesystem",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/filesystem-contracts.md",
+          "gitBlob": "768b2a76b800b411514d2dae571d3f9cf3d4b7f2",
+          "bytes": 24568,
+          "sha256": "4f7102e2c4abc17521c8fd06a8cfc0ae0abc676b2e4946d57da898fbc7b3a93c"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "processes",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/process-contracts.md",
+          "gitBlob": "44257b92b27d52326f31e5d82644280916d2680d",
+          "bytes": 20756,
+          "sha256": "06a1e78aa49a7120d435c737f1bf87b3d3ab3a98f17f83bad5b4d4255618fe29"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "network",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/network-contracts.md",
+          "gitBlob": "774b9cc3cc097f87895023f829824a3c08e2494f",
+          "bytes": 21963,
+          "sha256": "5d7e77dec63a36c51eb590e3f301877ca7f3831ac2a91e6d10d9ac306ce49c79"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "http",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/http-contracts.md",
+          "gitBlob": "7346b54ecf4c3ed83f46bb409f9f97601747bea7",
+          "bytes": 18771,
+          "sha256": "daf944ac74a53a205438448eb179f1686d6eef81ee9feada519e033e1d1f96bf"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "secure-network",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/secure-network-contracts.md",
+          "gitBlob": "42e023f6ddcea34331841930a6bbf795459ccd57",
+          "bytes": 20743,
+          "sha256": "bae703c2e8c7a8ec933eb0f6739bc1912e75edb5df185dbe426162fb07f45aa8"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "crypto",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/crypto-contracts.md",
+          "gitBlob": "32b8a3482387960ec42de91c5753a1fa0f1b0ad9",
+          "bytes": 24101,
+          "sha256": "de319bc4da9f82229e7627e3293d854c68d1bcd4e7c1ab32f585aac588dc7d3e"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "web",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/web-contracts.md",
+          "gitBlob": "8e4bb98354d6e5b27f6c068c9f3a0033f491947f",
+          "bytes": 19844,
+          "sha256": "733d889cdeaf94d6f6c38aaef9765f57727cf2ccd178772f8719b065397fda33"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "loading",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/loading-contracts.md",
+          "gitBlob": "2b28e05414e8fdd2d97e7cee8805d68a6e5c5774",
+          "bytes": 16629,
+          "sha256": "ca0c92a99b1e56b92dbded52e75bd68e8f0005e45a2f0ba03d4b8390f7c0b562"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "terminal",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/terminal.md",
+          "gitBlob": "fb9b6273382a2c01c489ed138164f5332e754d5b",
+          "bytes": 11753,
+          "sha256": "b1eea9bd9616fa86cd318352f8a5433acd4fdee1baabf2de069e3739d3d16f11"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "workers",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/worker-contracts.md",
+          "gitBlob": "048d4083a1517feee069b062a00f3ba8e17bd46f",
+          "bytes": 19978,
+          "sha256": "7df16ec7d2cd734c34066f19f746d0df07ff1a806401235856cf7c8a332a9e68"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "compression",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/compression-contracts.md",
+          "gitBlob": "c57eb088ef055308c326a8e27dce18ef73d5138e",
+          "bytes": 20430,
+          "sha256": "a90a37ce4729beb074c729cea33e6c2c851d8a828d5d8a2a453e948312cc786b"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "observability",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/observability.md",
+          "gitBlob": "551d8b7f6181d6c8bb27f43f20a9d80fb135b06d",
+          "bytes": 8348,
+          "sha256": "7310487397f56d8c3e676dc821e45fa40f917c68b348d36209583e59a32a67ac"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "engine",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/engine-contracts.md",
+          "gitBlob": "4f4093ca3bcaf5503f5b7af584d4c59fead134d4",
+          "bytes": 17158,
+          "sha256": "e259def41a0e23870a437718b0e19a5467f8e8023b9233b9018f9cfeca3b4849"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "testing",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/testing-public-contracts.md",
+          "gitBlob": "b5fcd638e1353de6b81e7abf7607f6a8662f62c9",
+          "bytes": 16296,
+          "sha256": "c3323e52816f690ae9497ce36a3fcf49209f6ad3ea1bd13ff19886b1f344f363"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "native-integration",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/native-integration.md",
+          "gitBlob": "1d387b99c369c3627e8aab0282c7f9c346088508",
+          "bytes": 8943,
+          "sha256": "450545d4d2def928c49994e7fc7dd2bb9a323a1eaa34e0ad408f84933cfe3a4c"
+        },
+        "currentNativeContractAuditComplete": false
+      },
+      {
+        "family": "documentation",
+        "historicalSourceReview": {
+          "commit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+          "path": "tests/nodejs/audit/documentation-contracts.md",
+          "gitBlob": "e91ac89b192f2445e242ae31d166e93fa27fffa1",
+          "bytes": 12656,
+          "sha256": "ac1773c72b575ffe137c64407ac53ab333b8951d77050c4d35242abbf6abad9e"
+        },
+        "currentNativeContractAuditComplete": false
+      }
+    ],
+    "oldObservationCountsAreNotCurrentCoverage": true,
+    "oldPublicFrontendsAreNotReuseCandidates": true
+  },
+  "historicalPRReuseAudit": {
+    "source": {
+      "commit": "5674a1b00dbe5a53fd3b8e61bfeb3f8adbf8a898",
+      "path": "docs/nodejs-upstream-reuse-audit.json",
+      "gitBlob": "ae850484d3f4f4823d0f6c18b0709066f06c2389",
+      "bytes": 122840,
+      "sha256": "fab19873571b0bc2cb1d9d88afc98e116419f1e3496e313398e8890d97622cd8"
+    },
+    "prs": [
+      {
+        "number": 1595,
+        "title": "Node: Fix core filesystem, process, and web API behavior",
+        "head": "b4845ff854a6d8b082d776157dc4550edb5ef257",
+        "historicalBackendAssessment": "Real guest libc chmod/fsync operations; fd-read nonblocking admission, cancellation by exact pending Promise, independent loop reference state. JS fixes negative errno/partial writes, child PATH/cwd and EOF but those public policies are not native binding implementations.",
+        "historicalDisposition": [
+          "Extract/adapt genuine native owners behind the new fs/stream bindings, considering later ownership-corrected descendants.",
+          "Retain file/write/stdin/PATH/exit/URL/Buffer regressions.",
+          "Replace handmade public APIs and alternative public URL/WebStreams libraries with whole Node modules/dependencies. Do not transplant the entire bootstrap/bundle."
+        ],
+        "sourceAnchorCount": 6
+      },
+      {
+        "number": 1604,
+        "title": "Node: Pin LTS target and restore upstream suite",
+        "head": "1a99195b017167ff4c51d612195582c73778abd6",
+        "historicalBackendAssessment": "Conformance/build infrastructure: coherent target manifest feeds CLI and process identity; source hashes and native/browser/guest runners retain real flags, environment, timeouts, artifact identities and unsupported/error statuses. Removes false Linux/V8/libuv/module-ABI metadata.",
+        "historicalDisposition": [
+          "Reuse archive pin/coherence, native reference and honest per-host result accounting, including later1611 integrity corrections.",
+          "Verify the target/source/native reference against official sources separately; this audit does not validate the release designation.",
+          "Replace monolithic import-stripping bootstrap assembly with the new shared module environment as needed."
+        ],
+        "sourceAnchorCount": 6
+      },
+      {
+        "number": 1605,
+        "title": "Node: Correct text codec boundaries and EOF",
+        "head": "90180c605b92bfc45aa565c627b1197ee35987f3",
+        "historicalBackendAssessment": "No new native primitive. Uses existing native decodeUtf8 only for validated complete non-shared spans, with JS state machines, intrinsic byte-view access, surrogate replacement and stdin EOF flush.",
+        "historicalDisposition": [
+          "Keep malformed/split UTF8/UTF16, BOM/fatal, encodeInto, view brands and stdin EOF tests.",
+          "Execute upstream encoding/StringDecoder modules and implement their native transcoder/buffer state needs.",
+          "Do not retain these handwritten public classes as the new module implementation."
+        ],
+        "sourceAnchorCount": 5
+      },
+      {
+        "number": 1606,
+        "title": "Node: Restore assertion matchers and deep comparisons",
+        "head": "977351ed76181a247864c5b67800b99538de3722",
+        "historicalBackendAssessment": "Native Promise brand uses CheckedUnwrapStatic and JS::IsPromiseObject without calling then/getters. Existing genuine native Error/Proxy brands are forwarded. Byte comparisons/non-index property filtering supply internal services in JS; they are not one coherent shared Node environment yet.",
+        "historicalDisposition": [
+          "Reuse pinned original modules and tests through the new shared builtin loader.",
+          "Carry engine brand/byte/property primitives only after their actual realm/security/GC contracts fit.",
+          "Replace local AssertionError/errors/validators/primordials/inspection substitutes with their upstream modules and genuine backend; disclose/remove diagnostic source adaptation rather than count it as full parity."
+        ],
+        "sourceAnchorCount": 7
+      },
+      {
+        "number": 1607,
+        "title": "Node: Finalize eval shutdown and uncaught main failures",
+        "head": "39d6e685ccb0568697a8f294b908d22b8c4166ea",
+        "historicalBackendAssessment": "Real SpiderMonkey shell hook after job/timer/I/O draining and rejection reporting calls a private JS finalizer and returns process status. Explicit failure flag preserves primitive thrown values.",
+        "historicalDisposition": [
+          "Adapt shell completion/fatal result handling to the actual upstream process/bootstrap contract.",
+          "Retain eval/CJS/ESM, unset/cleared exitCode, pending work and primitive-throw cases.",
+          "Consider later1616/1619 lifecycle successors before extracting this early hook."
+        ],
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1608,
+        "title": "Node: Preserve descriptor cursors for positioned I/O",
+        "head": "74f638fc6d8729bd007bce2f67a432c275773d0b",
+        "historicalBackendAssessment": "Real libc pread/pwrite binding with exact signed64 BigInt/safe-number offsets, bounds checking and no OFD cursor mutation. Count/-errno seam is not itself Node fs internalBinding request/wrapper/error/async contract.",
+        "historicalDisposition": [
+          "Adapt positioned I/O backend behind whole upstream fs modules; retain64-bit offset and cursor/pipe error tests.",
+          "Replace public overload/error/callback implementations.",
+          "Review later backing/borrowing/GC ownership corrections; old ArrayBuffer-only seam is not full current shared/growable buffer support."
+        ],
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1609,
+        "title": "Node: Track Response consumption and clone body streams",
+        "head": "26c78f2d95c3622d4eceacfda1ab561800587fdb",
+        "historicalBackendAssessment": "Exposes genuine SpiderMonkey serialize/deserialize graph cloning as cloneValue for independent stream chunk graphs. Actual tee/cancel state comes from third-party streams. Remaining changes are public/middle-layer JS semantics rather than a new transport backend.",
+        "historicalDisposition": [
+          "Keep repeated-consumption, lock/disturbance, independent clone bytes, snapshots and cancellation tests.",
+          "Use Node Blob and the pinned Node bundled Fetch/WebStreams graph with genuine backend support.",
+          "Do not transplant the alternate stream private-slot adapter; review later clone/transfer/GC ownership work before backend extraction."
+        ],
+        "sourceAnchorCount": 5
+      },
+      {
+        "number": 1610,
+        "title": "POSIX: Preserve wide offsets in resident filesystems",
+        "head": "bd11508e1c0d373bbdae0d60a6a8b0e679645a20",
+        "historicalBackendAssessment": "Reads compare wide offsets before narrowing to wasm32 usize; writes reject unrepresentable offsets/EFBIG; export reader avoids wrapping. Independent of Node. Current-main rootfs has equivalent checked conversions after refactoring, while tmpfs still retains the old cast-before-bound-check source pattern.",
+        "historicalDisposition": [
+          "Retain wide-offset/EOF/no-corruption/cursor regressions for both backends.",
+          "Do not transplant old rootfs source or duplicate its now-present fixes.",
+          "Inspect/adapt the remaining tmpfs change in current code, preserving current quota refund and set-ID semantics; owning ABI review still applies."
+        ],
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1611,
+        "title": "Tests: Preserve complete Node upstream source inputs",
+        "head": "f84ff24293d7b917b17feb258e74acad07a0dcf2",
+        "historicalBackendAssessment": "Conformance infrastructure only: typed entry hashes include directories/modes/links; VFS copies all source entries and preflight probes them. Browser immutable image input is cached as plain bytes and copied independently per guest.",
+        "historicalDisposition": [
+          "Carry all-entry source integrity and full fixture preservation into the new importer/harness, adapted to current VFS/browser quiet policy.",
+          "Keep exact artifact manifests and failure/unsupported accounting.",
+          "Do not count copied lib sources in a test image or historical5147case baseline as current module implementation/conformance."
+        ],
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1612,
+        "title": "Node: Apply connection defaults to real socket attempts",
+        "head": "60c3ce9b540b73723fccdf15318f94b2df1e7b93",
+        "historicalBackendAssessment": "Real getaddrinfo/inet_ntop lookup, IPv4/IPv6 nonblocking connect/local bind, SO_ERROR outcome, getsockname/getpeername and owned-fd cleanup. Promise identifies pending connect cancellation. Guest kernel/runtime fixes IPv6 wildcard source address while preserving bound port. Interfaces are private Promise/fd records, not Node TCPWrap/GetAddrInfoReqWrap bindings.",
+        "historicalDisposition": [
+          "Adapt genuine operations/owners to upstream Node wrappers/request objects/callback timing, using later ownership-corrected code.",
+          "Keep native-peer multi-address/bind/timeout/abort/error/cleanup tests.",
+          "Replace handmade public net/dns option/result/attempt policy with whole upstream modules. Remaining fabricated dns.resolve records in the old bootstrap are not fixed by this PR and must not be carried as support."
+        ],
+        "sourceAnchorCount": 6
+      },
+      {
+        "number": 1613,
+        "title": "Node: Separate public globals from embedding utilities",
+        "head": "8181022ff8206ac54d964ad9f2caaffdb6ac7d01",
+        "historicalBackendAssessment": "JavaScript engine-adapter boundary captures real shell utilities before removing shell globals; prepareGlobalScope deletes non-ECMA/nonpublic shell names while closures retain I/O/worker/shutdown functions. No new native C++/kernel operation.",
+        "historicalDisposition": "Keep safe capture/removal mechanism after loader design review. Replace/manual descriptor policy with upstream bootstrap mechanisms where applicable. Do not use non-enumerability as the privacy mechanism for privileged internal bindings.",
+        "sourceAnchorCount": 3
+      },
+      {
+        "number": 1614,
+        "title": "Node: Load file entrypoints through the native module graph",
+        "head": "f0eaf9086765e269dd7257c327e7e11e2a03c5af",
+        "historicalBackendAssessment": "SpiderMonkey ScriptPrivate origin registration for compiled CJS wrappers; real native import() submission, engine parse/link/cycles/TLA; resolve-only metadata hook avoids executing CJS during import.meta.resolve; file entry returns to owning jobs/I/O/timers loop and exits unresolved graph with status13.",
+        "historicalDisposition": "Salvage compiled-script identity, native module graph and host event-loop handoff behind Node ModuleWrap/contextify-style bindings. Replace custom public resolution/cache/synthetic namespace policy with upstream Node loader/internal modules. Do not import the old loader wholesale.",
+        "sourceAnchorCount": 3
+      },
+      {
+        "number": 1615,
+        "title": "Node: Capture call sites from engine saved frames",
+        "head": "3dff86662e9b3e33df1df60065a08c5012ebbb54",
+        "historicalBackendAssessment": "Actual saveStack source IDs/function names/coordinates; C++ compile-options first-line support for wrapped CJS and ESM public sourceURL without changing native registry keys.",
+        "historicalDisposition": "Retain actual saved-frame/source-origin capabilities behind upstream internalBinding(util).getCallSites; replace public wrapper with whole upstream util. Preserve actual engine identity and recorded source-map limits; do not hardcode a two-frame skip into a different wrapper architecture.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1616,
+        "title": "Node: Stop fatal exits before draining live work",
+        "head": "e667d0953d34bd61ba557c5aad092f58e6736843",
+        "historicalBackendAssessment": "Engine preserves thrown timer/ESM failures, checks pending rejections at actual microtask checkpoints, stops draining native I/O/timers after fatal failure and reaches one finalizer instead of waiting forever on live handles.",
+        "historicalDisposition": "Carry actual pending-exception/checkpoint/fatal-loop-stop capabilities; put policy and hook dispatch in upstream process modules. Reconcile later callback/uncaught recovery owners before reusing early hardcoded report/exit branches.",
+        "sourceAnchorCount": 3
+      },
+      {
+        "number": 1617,
+        "title": "Node: Back TCP listeners and half-close with real sockets",
+        "head": "0945a0f1378038068c347b5df538471d1325210a",
+        "historicalBackendAssessment": "Real POSIX nonblocking socket/bind/listen/accept; FD_CLOEXEC and close-on-error ownership; asynchronous Accept watches; SHUT_WR; per-operation referenced state by actual promise/fd.",
+        "historicalDisposition": "Retain socket semantics through a reviewed current native owner, expose Node tcp_wrap/stream_wrap request/handle contracts, and execute whole upstream net/stream logic. Replace the handwritten public Server/Socket and do not transplant bare-fd Promise API as the final binding interface.",
+        "sourceAnchorCount": 3
+      },
+      {
+        "number": 1619,
+        "title": "Node: Preserve exit-listener status and fatal diagnostics",
+        "head": "3a36145e0375b0f2d901d5a85091840d14054402",
+        "historicalBackendAssessment": "C++ saves/restores the actual pending exception around a status query, reports original diagnostic and preserves validated Node status including explicit zero rather than letting standalone-shell reporter override it.",
+        "historicalDisposition": "Carry exception preservation and final native status/teardown mechanism. Move public exit emission/fatal policy into upstream process/bootstrap modules. Adapt the native query to a genuine process-owned status contract rather than retain an arbitrary public JS finalizer protocol.",
+        "sourceAnchorCount": 3
+      },
+      {
+        "number": 1620,
+        "title": "Node: Enforce TCP server connection limits",
+        "head": "d2fb64061ea9f9b50e756a9622595e46b2209b79",
+        "historicalBackendAssessment": "No new native binding. Existing accept/address/close primitives are used to account live accepted connections, emit endpoint records and close excess descriptors in finally.",
+        "historicalDisposition": "Keep unchanged upstream connection-limit/drop cases, actual endpoint/descriptor assertions and C-peer fixtures. Let upstream net.js own maxConnections/drop policy; supply accurate accept/endpoints/close and resource accounting beneath it.",
+        "sourceAnchorCount": 3
+      },
+      {
+        "number": 1621,
+        "title": "Node: Preserve timer lifetime, cancellation and refresh",
+        "head": "d005cc6a1be679f6ecaa7ec26311c39f4cc137b5",
+        "historicalBackendAssessment": "Native monotonicTime from SpiderMonkey TimeStamp and event-loop referenced-work check; JS scheduler separates deadlines from reference state, queues cancellable callbacks and permits microtask checkpoints between entered callbacks.",
+        "historicalDisposition": "Keep real clock and backend liveness/wakeup capabilities. Execute whole upstream timers and internal/timers and implement their timers/task_queue bindings. Replace custom Timeout/Immediate/Promise timers, warnings/promisify and duplicate deadline heap policy; avoid two schedulers owning the same public lifecycle.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1622,
+        "title": "Node: Run synchronous child processes through POSIX pipes",
+        "head": "9254e99aab3c7aba2ed4ae96e20e2f0a2a752d9c",
+        "historicalBackendAssessment": "Real synchronous POSIX child controller interleaves pipe I/O with wait/reap without pumping parent JS, monotonic timeout/maxBuffer/signals, RAII pipe/child cleanup, only parent endpoint nonblocking, close-on-exec and stdio-fd alias avoidance; real credentials/setsid; correct -e argv binding.",
+        "historicalDisposition": "Retain native child/pipe/credential/CLI mechanisms after reviewing successor ownership fixes. Implement upstream spawn_sync.spawn(options)/process_wrap/pipe_wrap contracts and use whole child_process modules for public validation/options/errors. Replace custom JS normalization and Linux-numbered errno map with authoritative guest error binding.",
+        "sourceAnchorCount": 3
+      },
+      {
+        "number": 1623,
+        "title": "Node: Enforce socket inactivity deadlines",
+        "head": "bde15b2302d1127b8452692eaeeb3f14fde5fcd2",
+        "historicalBackendAssessment": "Genuine pending-write byte count from each native Write watch buffer.size()-offset. JS metadata is tied to one captured descriptor state and retired on close rather than reading a reused fd; real read/write activity refreshes unreferenced deadlines.",
+        "historicalDisposition": "Reuse actual write-progress accounting behind Node-compatible StreamBase/TCP handle properties and callbacks. Let upstream net.js/internal stream helpers implement timeout policy and constructors. Keep private owner/generation authority, not a mutable public _handle metadata object, as the source of truth.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1653,
+        "title": "Node: Add native SQLite, FIPS and TTY foundations",
+        "head": "d210a21f8fe580bb8926bd052abf5d2328103708",
+        "historicalBackendAssessment": "Real ncrypto FIPS state/generation; native constructible TTY and init-before-fd admission; SQLite statement LRU/GC/connection ownership.",
+        "historicalDisposition": "High backend value. Reuse native owners after contract review; replace public SQLite/crypto wrappers with upstream modules/native binding exports.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1655,
+        "title": "Node: Extend Promise, DNS, TCP and crypto compatibility",
+        "head": "5bd3bd32938986aa40e0b03a36b0c429b3de4d81",
+        "historicalBackendAssessment": "OpenSSL provider MAC names; c-ares resolver fallback reconfiguration; accepted TCP capabilities/listener admission; engine Promise identity/observer channels and private microtasks.",
+        "historicalDisposition": "High shared-backend value. Carry final coherent DNS/TCP/Promise owners, including1662 listener restoration; replace helper splicing/private lifecycle dispatch with full upstream internal consumers.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1656,
+        "title": "Node: Extend spawn, Fetch, Worker and benchmark foundations",
+        "head": "3087652d4f98f679b06c988fa49a01e2883f9f0d",
+        "historicalBackendAssessment": "Real Worker warning CLI/execArgv/env parsing reaches child bootstrap; actual histogram/clock/clone/V8 dependencies. Timeout/cancel paths consume real timers/processes/streams but are higher-level JS orchestration.",
+        "historicalDisposition": "Keep full internal sources and reusable Worker startup/CLI owners. Replace custom child_process/Worker/Undici public algorithms as full upstream modules activate; retain their error/order/cancellation obligations.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1658,
+        "title": "Node: Extend native stream and TLS certificate handling",
+        "head": "952a3f4b85a271bb15eef02c9d039d03c9b9c4ee",
+        "historicalBackendAssessment": "Actual TCP/TTY native string writes, TTY ShutdownWrap and OpenSSL peer-certificate/legacy material conversion with owned bytes.",
+        "historicalDisposition": "High StreamBase/TTY/X509 backend value. Reconcile native shapes/lifetimes with upstream bindings; replace custom TLSSocket methods and selected dispatch helpers.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1659,
+        "title": "Node: Own source-map caches and backing snapshots",
+        "head": "05087555fd0b1456ed1a3160e7408c64394d6e73",
+        "historicalBackendAssessment": "Rooted CJS sourceURL/sourceMappingURL capture before execution; real current-runtime ArrayBuffer allocation census and allocator byte sizes, not process.memoryUsage/RSS/V8 heap support.",
+        "historicalDisposition": "Reuse compiler metadata and needed observation capabilities. Replace local source-map dependency maps/private-symbol substitutions with full upstream modules and correct shared bindings.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1660,
+        "title": "Node: Own assertion sources and parser retirement",
+        "head": "853f7702bd806603e2d416fdfcc2f9c967c9f772",
+        "historicalBackendAssessment": "Actual SpiderMonkey caller script/PC/source capture; llhttp Reset/Release with deferred Free/Close preserving active frame/input, list membership and publication rollback.",
+        "historicalDisposition": "High parser lifecycle value; source capture useful but diagnostic parity partial. Carry real native mechanics with later UTF8/AsyncReset fixes; replace selected assertion/parser orchestration with upstream internals.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1661,
+        "title": "Node: Connect FIPS state and diagnostic consumers",
+        "head": "4ff3fb09a49bb0faf195d1b416986da9108080bd",
+        "historicalBackendAssessment": "Real ncrypto FIPS mutation/generation, process/Worker ownership gate and locked error queue; ScriptSource UTF8 offset decoding.",
+        "historicalDisposition": "Reuse native FIPS/error and source decoding; keep full reporters. Replace handwritten crypto public installer; forced startup/config/provider admission and serializer remain prerequisites.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1662,
+        "title": "Restore Node listener and public TTY foundations",
+        "head": "cceda903aa26a4968fe8fd683c5a688734ed0667",
+        "historicalBackendAssessment": "Restores missing matching listener engine dispatcher/binding, successful-listen read registration, accepted-fd rollback and callback scope; unwraps actual TTY shutdown request packet.",
+        "historicalDisposition": "Strong recent example of desired whole-module direction. Reuse tty_wrap/StreamBase/listener owners behind shared bindings; carry with1655 and subsequent fixes, not isolated cherry-pick.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1663,
+        "title": "Preserve Node Promise and queued socket ownership",
+        "head": "c17c1ee7180194cbb70562b32f7bc0d7f6c10ddd",
+        "historicalBackendAssessment": "Real rooted engine Promise-parent channel; TCP connect/read/write registration, ordered queued/zero-byte writes, failed-connect cancellation and callback retirement; DEBUG-only nursery release-build correction.",
+        "historicalDisposition": "High Promise/TCP foundation value. Reconcile final owner interfaces with upstream async_hooks/net; public Promise registry remains missing. Replace Fetch facade; retain ordering/identity failures.",
+        "sourceAnchorCount": 3
+      },
+      {
+        "number": 1664,
+        "title": "Node: Connect SQLite extensions and core resource policies",
+        "head": "b17352a6c379ca67dc7cd20ee8e97c586a97a393",
+        "historicalBackendAssessment": "Actual SQLite connection extension permission/enable/load lifetime; native Brotli/Zstd init errors; real legacy watcher event interest/retirement; own-field env descriptor semantics.",
+        "historicalDisposition": "High backend correctness/security value. Expose proper native SQLite/env bindings; retain side-module format/ABI/permission and throwing error-setter obligations rather than carrying bespoke public JS wholesale.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1665,
+        "title": "Node: Preserve HTTP and TLS resource lifetimes",
+        "head": "4ef78a500868092e2e026d56cd87a9e570329280",
+        "historicalBackendAssessment": "HTTP native AsyncReset/resource/frame/provider ownership and per-callback task checkpoints; deferred parser retirement; TLS real SSL read/write interest and input/output progress.",
+        "historicalDisposition": "High HTTP/TLS/AsyncWrap value. Carry real lifecycle/event-interest mechanisms; use complete upstream HTTP/bootstrap orchestration and normal binding contracts. Preserve early stdio/Socket ordering constraint.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1666,
+        "title": "Node: Connect source maps and core metadata owners",
+        "head": "6e14e85198334c371c74ad55ed664dca78cea5df",
+        "historicalBackendAssessment": "Actual ncrypto curve enumeration; five separate engine Promise observations/AsyncWrap identity admission and settled-once state; real private source-map cache for explicit call-site mapping.",
+        "historicalDisposition": "High engine/provider value. Wire complete shared Promise-hook registry and upstream crypto/util/Undici modules. Retain real identity/cancellation/source-position requirements; replace helper assembly.",
+        "sourceAnchorCount": 4
+      },
+      {
+        "number": 1667,
+        "title": "Node: Connect filesystem checks, HTTP timing and guest groups",
+        "head": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+        "historicalBackendAssessment": "Real supplementary-group syscall snapshots/effective-GID inclusion and native error/array publication; existing FS access queue and actual HTTP clock/observer events consumed.",
+        "historicalDisposition": "Narrow credentials backend useful. fs/HTTP sections should become redundant under whole upstream modules. Keep API-absence and timing-order obligations; expose GetGroups through upstream credentials binding.",
+        "sourceAnchorCount": 4
+      }
+    ],
+    "use": "Native mechanisms and tests only after matching original binding contracts; historical assessments are not current implementation or conformance proof"
+  },
+  "salvageIndex": {
+    "path": ".context/davao-handoff/BACKEND-SALVAGE.md",
+    "frozenCommit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+    "mechanisms": [
+      "native callback recovery/scopes",
+      "retained backing allocations",
+      "worker startup/transfer publication",
+      "real socket/request ownership",
+      "reentrant SQLite native disposal",
+      "zero-ID deferred callback scope",
+      "actual nested Wasm/WASI memory and ABI contracts"
+    ],
+    "adoption": "Candidate mechanisms only; adapt behind original source contracts, never old public JS shims or excerpt generators"
+  },
+  "runtimeEvidenceAdded": false,
+  "completeNativeContractCatalog": false,
+  "startupAccepted": false,
+  "commonJsStartupAccepted": false,
+  "esmStartupAccepted": false,
+  "broaderRoadmapExecutionAuthorized": false,
+  "next": [
+    "Resolve pending mksnapshot native-source architecture choice, preserving original JavaScript and no-excerpt/no-rewritten-algorithm constraint",
+    "Continue genuine startup and keep CJS/ESM identified-artifact evidence separate",
+    "Audit exports/classes/methods/signatures/errors/ownership/lifecycle across all 77 source registration roles, including four external-reference-only owners",
+    "Reconcile symbolic loader/transfer domains, native/generated registration mechanisms, alias flows and build selection",
+    "After startup, complete per-host catalog and dependency-ordered implementation/validation roadmap; review gate before broader implementation",
+    "Implement nested guest Wasm last unless genuine startup requires it"
+  ]
+}

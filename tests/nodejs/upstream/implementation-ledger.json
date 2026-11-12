@@ -37,7 +37,22 @@
     "bufferEngineEvidence": "buffer-engine-check.json",
     "aliasedPartialCatalog": "aliased-contracts.json",
     "aliasedEngineEvidence": "aliased-engine-check.json",
-    "mksnapshotPartialCatalog": "mksnapshot-contracts.json"
+    "mksnapshotPartialCatalog": "mksnapshot-contracts.json",
+    "dependencyGraph": "dependency-graph.json",
+    "computedDispatchReviews": "dependency-dynamic-reviews.json",
+    "nativeRegistrationIndex": "native-registration-index.json",
+    "backendBindingSurvey": "backend-binding-survey.json",
+    "backendGraphEvidence": "backend-graph-check.json",
+    "primaryReferencesReconciled": 3342,
+    "lazyRegistrationsIndexed": 37,
+    "transferMetadataSitesIndexed": 18,
+    "nativeSourceRegistrationNames": 77,
+    "literalBindingsWithDispatcherRoute": 17,
+    "literalBindingsWithoutDispatcherRoute": 55,
+    "historicalFamilyReviewsLinked": 19,
+    "historicalPRReuseRecordsLinked": 33,
+    "commonJsLoaderSourceIndexed": true,
+    "esmLoaderSourceIndexed": true
   },
   "implementation": [
     {
@@ -114,8 +129,9 @@
     },
     {
       "area": "complete backend catalog and roadmap",
-      "sourceStatus": "partial syntax index and bounded source reviews",
-      "remaining": "all members/signatures/errors/lifecycles/ownership, lazy/conditional/worker/platform paths, archived reuse map and per-host validation obligations"
+      "sourceStatus": "All443source identities/3342original references reconciled, plus lazy/transfer/context/Wasmsites and77native registration roles; actual API contract audit remains partial",
+      "remaining": "full native members/signatures/errors/ownership/scheduling/lifecycle, symbolic/generated/alias/build domains, actual owning-layer/prerequisite/per-host validation mapping and dependency-ordered roadmap; no broader roadmap execution",
+      "evidence": "backend-graph-check.json"
     },
     {
       "area": "native initial process prototype/constructor, shared exit-info and config",
@@ -1242,6 +1258,7 @@
   },
   "nextWork": [
     "Resolve the pending mksnapshot native-source architecture choice; preserve original JavaScript and original native algorithms without excerpts. Independent whole AliasedBuffer prerequisites are integrated.",
+    "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review while mksnapshot architecture choice is pending; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Implement real mksnapshot source-mode/callback ownership; preserve explicit V8 serialization boundary",
     "Continue startup-required original Buffer/process/native closure and callback/Promise lifecycle/frame contracts",

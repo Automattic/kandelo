@@ -1,0 +1,508 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Reviewed survey routing and dispatcher snapshot. Family names organize further review, not API/owning-layer or native-contract completion.",
+  "dispatcher": {
+    "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
+    "sha256": "35d69de09ea191c667e3224859feed657c803881ba12b39b26a87858b58d3af1",
+    "functionStart": "bool InternalBinding(",
+    "functionEnd": "bool LinkedBinding(",
+    "reviewedRouteNames": [
+      "async_context_frame",
+      "async_wrap",
+      "buffer",
+      "builtins",
+      "config",
+      "constants",
+      "errors",
+      "icu",
+      "module_wrap",
+      "options",
+      "string_decoder",
+      "symbols",
+      "task_queue",
+      "timers",
+      "trace_events",
+      "types",
+      "util"
+    ],
+    "routePresenceIsCompleteBindingSupport": false,
+    "unmatchedBehavior": "ERR_KANDELO_NOT_IMPLEMENTED; actual Native Node binding missing error"
+  },
+  "bindings": [
+    {
+      "name": "async_context_frame",
+      "reviewRoutingFamily": "async",
+      "contractInventory": "continuation-contracts.json",
+      "contractReview": "existing bounded review; not a complete API audit"
+    },
+    {
+      "name": "async_wrap",
+      "reviewRoutingFamily": "async",
+      "contractInventory": "async-wrap-contracts.json",
+      "contractReview": "existing bounded review; not a complete API audit"
+    },
+    {
+      "name": "binding",
+      "reviewRoutingFamily": "loading",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "blob",
+      "reviewRoutingFamily": "values",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "block_list",
+      "reviewRoutingFamily": "network",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "buffer",
+      "reviewRoutingFamily": "values",
+      "contractInventory": "buffer-contracts.json",
+      "contractReview": "existing bounded review; not a complete API audit"
+    },
+    {
+      "name": "builtins",
+      "reviewRoutingFamily": "loading",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "cares_wrap",
+      "reviewRoutingFamily": "network",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "cjs_lexer",
+      "reviewRoutingFamily": "loading",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "config",
+      "reviewRoutingFamily": "processes",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "constants",
+      "reviewRoutingFamily": "values",
+      "contractInventory": "constants-contracts.json",
+      "contractReview": "existing bounded review; not a complete API audit"
+    },
+    {
+      "name": "contextify",
+      "reviewRoutingFamily": "loading",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "credentials",
+      "reviewRoutingFamily": "processes",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "crypto",
+      "reviewRoutingFamily": "crypto",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "debug",
+      "reviewRoutingFamily": "observability",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "diagnostics_channel",
+      "reviewRoutingFamily": "async",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "dtls",
+      "reviewRoutingFamily": "secure-network",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "encoding_binding",
+      "reviewRoutingFamily": "values",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "env_var",
+      "reviewRoutingFamily": "processes",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "errors",
+      "reviewRoutingFamily": "loading",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "ffi",
+      "reviewRoutingFamily": "native-integration",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "fs",
+      "reviewRoutingFamily": "filesystem",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "fs_dir",
+      "reviewRoutingFamily": "filesystem",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "fs_event_wrap",
+      "reviewRoutingFamily": "filesystem",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "handle_wrap",
+      "reviewRoutingFamily": "streams",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "heap_utils",
+      "reviewRoutingFamily": "observability",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "http2",
+      "reviewRoutingFamily": "http",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "http_parser",
+      "reviewRoutingFamily": "http",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "icu",
+      "reviewRoutingFamily": "values",
+      "contractInventory": "icu-contracts.json",
+      "contractReview": "existing bounded review; not a complete API audit"
+    },
+    {
+      "name": "inspector",
+      "reviewRoutingFamily": "observability",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "internal_only_v8",
+      "reviewRoutingFamily": "observability",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "ipc_serdes",
+      "reviewRoutingFamily": "workers",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "js_stream",
+      "reviewRoutingFamily": "streams",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "locks",
+      "reviewRoutingFamily": "workers",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "messaging",
+      "reviewRoutingFamily": "workers",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "mksnapshot",
+      "reviewRoutingFamily": "engine",
+      "contractInventory": "mksnapshot-contracts.json",
+      "contractReview": "existing bounded review; not a complete API audit"
+    },
+    {
+      "name": "module_wrap",
+      "reviewRoutingFamily": "loading",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "modules",
+      "reviewRoutingFamily": "loading",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "options",
+      "reviewRoutingFamily": "loading",
+      "contractInventory": "options-contracts.json",
+      "contractReview": "existing bounded review; not a complete API audit"
+    },
+    {
+      "name": "os",
+      "reviewRoutingFamily": "processes",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "performance",
+      "reviewRoutingFamily": "observability",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "permission",
+      "reviewRoutingFamily": "filesystem",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "pipe_wrap",
+      "reviewRoutingFamily": "streams",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "process_methods",
+      "reviewRoutingFamily": "processes",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "process_object",
+      "reviewRoutingFamily": "processes",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "process_wrap",
+      "reviewRoutingFamily": "processes",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "profiler",
+      "reviewRoutingFamily": "observability",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "quic",
+      "reviewRoutingFamily": "secure-network",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "report",
+      "reviewRoutingFamily": "observability",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "sea",
+      "reviewRoutingFamily": "native-integration",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "serdes",
+      "reviewRoutingFamily": "engine",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "signal_wrap",
+      "reviewRoutingFamily": "processes",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "spawn_sync",
+      "reviewRoutingFamily": "processes",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "sqlite",
+      "reviewRoutingFamily": "native-integration",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "stream_pipe",
+      "reviewRoutingFamily": "streams",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "stream_wrap",
+      "reviewRoutingFamily": "streams",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "string_decoder",
+      "reviewRoutingFamily": "values",
+      "contractInventory": "string-decoder-contracts.json",
+      "contractReview": "existing bounded review; not a complete API audit"
+    },
+    {
+      "name": "symbols",
+      "reviewRoutingFamily": "values",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "task_queue",
+      "reviewRoutingFamily": "async",
+      "contractInventory": "task-queue-contracts.json",
+      "contractReview": "existing bounded review; not a complete API audit"
+    },
+    {
+      "name": "tcp_wrap",
+      "reviewRoutingFamily": "network",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "timers",
+      "reviewRoutingFamily": "async",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "tls_wrap",
+      "reviewRoutingFamily": "secure-network",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "trace_events",
+      "reviewRoutingFamily": "observability",
+      "contractInventory": "trace-events-contracts.json",
+      "contractReview": "existing bounded review; not a complete API audit"
+    },
+    {
+      "name": "tty_wrap",
+      "reviewRoutingFamily": "terminal",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "types",
+      "reviewRoutingFamily": "values",
+      "contractInventory": "types-contracts.json",
+      "contractReview": "existing bounded review; not a complete API audit"
+    },
+    {
+      "name": "udp_wrap",
+      "reviewRoutingFamily": "network",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "url",
+      "reviewRoutingFamily": "values",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "url_pattern",
+      "reviewRoutingFamily": "values",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "util",
+      "reviewRoutingFamily": "values",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "uv",
+      "reviewRoutingFamily": "async",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "v8",
+      "reviewRoutingFamily": "observability",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "wasi",
+      "reviewRoutingFamily": "native-integration",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "wasm_web_api",
+      "reviewRoutingFamily": "native-integration",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "watchdog",
+      "reviewRoutingFamily": "observability",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "webstorage",
+      "reviewRoutingFamily": "web",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "worker",
+      "reviewRoutingFamily": "workers",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    },
+    {
+      "name": "zlib",
+      "reviewRoutingFamily": "compression",
+      "contractInventory": null,
+      "contractReview": "full binding contract audit outstanding"
+    }
+  ],
+  "undispatchedOwnershipDimensions": [
+    "exported classes/methods/symbols/shared fields and exact signatures",
+    "errors/assertions and exceptional/reentrant paths",
+    "scheduling/native callback scopes/async context/Promise lifecycle",
+    "rooting/GC/backing allocation and memory pressure",
+    "resource ownership/cancellation/ref-unref/close and shutdown",
+    "owning guest engine/libuv/libc/runtime-core/kernel/host boundary",
+    "worker/fork/transfer/security/OOM/snapshot variants",
+    "identified-artifact validation obligations on all four hosts"
+  ],
+  "nativeContractCatalogComplete": false,
+  "roadmapExecutionAuthorized": false
+}

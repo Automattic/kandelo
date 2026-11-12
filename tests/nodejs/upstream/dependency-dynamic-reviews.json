@@ -1,0 +1,213 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Source dispositions for computed loader/binding sites plus lazy forwarding; not implementation, activation or full contract audit",
+  "records": [
+    {
+      "path": "lib/cluster.js",
+      "line": 29,
+      "kind": "require",
+      "expression": "`internal/cluster/${childOrPrimary}`",
+      "resolution": "finite-targets",
+      "reason": "The const selector is child or primary based on actual NODE_UNIQUE_ID membership; neither branch is excluded.",
+      "targets": [
+        "internal/cluster/child",
+        "internal/cluster/primary"
+      ],
+      "sourceLines": [
+        28,
+        29
+      ]
+    },
+    {
+      "path": "lib/internal/bench_runner/cli.js",
+      "line": 284,
+      "kind": "require",
+      "expression": "builtin",
+      "resolution": "collection-values",
+      "reason": "Reporter name selects a value from the literal SafeMap; missing names go to the separate user ESM loader route.",
+      "collection": "kBuiltinReporters",
+      "sourceLines": [
+        95,
+        98,
+        280,
+        302
+      ]
+    },
+    {
+      "path": "lib/internal/bootstrap/realm.js",
+      "line": 140,
+      "kind": "internalBinding",
+      "expression": "module",
+      "resolution": "collection-values",
+      "reason": "Runtime-deprecated process.binding fallback is guarded by a source SafeSet, currently empty. Retain the site and empty source domain; this says nothing about backend implementation.",
+      "collection": "runtimeDeprecatedList",
+      "sourceLines": [
+        112,
+        140
+      ]
+    },
+    {
+      "path": "lib/internal/bootstrap/realm.js",
+      "line": 146,
+      "kind": "internalBinding",
+      "expression": "module",
+      "resolution": "collection-values",
+      "reason": "Original process.binding allow-list branch. Legacy natives/util wrappers take a separate JS route; the allow-list is not the complete native registry.",
+      "collection": "processBindingAllowList",
+      "sourceLines": [
+        88,
+        110,
+        142,
+        146
+      ]
+    },
+    {
+      "path": "lib/internal/bootstrap/realm.js",
+      "line": 156,
+      "kind": "getLinkedBinding",
+      "expression": "module",
+      "resolution": "symbolic",
+      "reason": "Embedder-added linked bindings are an open native domain; do not invent sources or handles.",
+      "domain": "embedder-linked-native-binding",
+      "sourceLines": [
+        152,
+        157
+      ]
+    },
+    {
+      "path": "lib/internal/bootstrap/realm.js",
+      "line": 172,
+      "kind": "getInternalBinding",
+      "expression": "module",
+      "resolution": "symbolic",
+      "reason": "Shared original internalBinding dispatches an actual requested native registry name. Literal consumer inventory cannot close all possible registered names.",
+      "domain": "native-registry-dispatch",
+      "sourceLines": [
+        163,
+        175
+      ]
+    },
+    {
+      "path": "lib/internal/bootstrap/realm.js",
+      "line": 482,
+      "kind": "requireBuiltin",
+      "expression": "request",
+      "resolution": "symbolic",
+      "reason": "Generic dependency loader strips node: or prefixes internal/deps for a missing ID, then dispatches through the shared BuiltinModule registry. Do not expand this to an unconditional edge to every source.",
+      "domain": "registered-builtin-with-dependency-fallback",
+      "sourceLines": [
+        476,
+        482
+      ]
+    },
+    {
+      "path": "lib/internal/main/mksnapshot.js",
+      "line": 129,
+      "kind": "require",
+      "expression": "normalizedId",
+      "resolution": "symbolic",
+      "reason": "The normalized built-in ID is required after validation. supportedModules only controls a warning; it does not filter unsupported modules out of the graph.",
+      "domain": "normalized-requirable-builtin",
+      "sourceLines": [
+        104,
+        129
+      ]
+    },
+    {
+      "path": "lib/internal/modules/esm/hooks.js",
+      "line": 176,
+      "kind": "require",
+      "expression": "urlOrSpecifier",
+      "resolution": "symbolic",
+      "reason": "Internal custom-loader registration uses a caller-supplied specifier; the noninternal branch uses the cascaded ESM loader. Keep both domains and the source isInternal condition.",
+      "domain": "internal-loader-registration-specifier",
+      "sourceLines": [
+        173,
+        181
+      ]
+    },
+    {
+      "path": "lib/internal/modules/helpers.js",
+      "line": 531,
+      "kind": "require",
+      "expression": "normalizedId",
+      "resolution": "symbolic",
+      "reason": "getBuiltinModule validates the input and normalizes it through BuiltinModule policy; it is a generic public built-in dispatch entrypoint.",
+      "domain": "normalized-requirable-builtin",
+      "sourceLines": [
+        528,
+        531
+      ]
+    },
+    {
+      "path": "lib/internal/test_runner/utils.js",
+      "line": 175,
+      "kind": "require",
+      "expression": "builtinPath",
+      "resolution": "collection-values",
+      "reason": "Reporter SafeMap values include a later conditional v8-serializer .set; collect all literal writes, not just initial entries.",
+      "collection": "kBuiltinReporters",
+      "sourceLines": [
+        134,
+        140,
+        168,
+        175,
+        279
+      ]
+    },
+    {
+      "path": "lib/internal/test/binding.js",
+      "line": 25,
+      "kind": "internalBinding",
+      "expression": "id",
+      "resolution": "symbolic",
+      "reason": "Testing wrapper rejects internal_only prefix then forwards the remaining caller-supplied name. It does not mean every forwarded binding exists.",
+      "domain": "native-registry-excluding-internal-only-prefix",
+      "sourceLines": [
+        13,
+        25
+      ]
+    },
+    {
+      "path": "lib/internal/util.js",
+      "line": 645,
+      "kind": "require",
+      "expression": "id",
+      "resolution": "symbolic",
+      "reason": "Accessor receives its module ID from defineReplaceableLazyAttribute registration; explicit helper registration sites are indexed independently. Constructor/alias/dataflow coverage is not inferred from callee names.",
+      "domain": "lazy-property-registration-module-argument",
+      "sourceLines": [
+        631,
+        647
+      ]
+    },
+    {
+      "path": "lib/internal/worker/js_transferable.js",
+      "line": 39,
+      "kind": "require",
+      "expression": "module",
+      "resolution": "symbolic",
+      "reason": "Receiver deserializer splits module:Constructor then requires the module and validates constructor/deserialization hook. Known producer metadata is indexed separately; native/user supplied producers keep this domain open.",
+      "domain": "transfer-deserialization-module",
+      "sourceLines": [
+        33,
+        48
+      ]
+    },
+    {
+      "path": "lib/internal/util.js",
+      "line": 675,
+      "kind": "defineLazyProperties",
+      "expression": "id",
+      "resolution": "symbolic",
+      "reason": "exposeLazyInterfaces forwards its module argument to the native lazy-property helper. Concrete registrations are retained with source guards.",
+      "domain": "forwarded-lazy-property-registration-module-argument",
+      "sourceLines": [
+        674,
+        675
+      ]
+    }
+  ],
+  "nativeContractCatalogComplete": false
+}

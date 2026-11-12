@@ -1,0 +1,286 @@
+{
+  "schema": 1,
+  "verifiedAt": "2026-11-12T01:15:03.668347+00:00",
+  "scope": "Authenticated source graph/native registration/dispatcher survey only; no new guest runtime, package build, startup or conformance evidence",
+  "sourceHeadAtVerification": "6f1f913f74b28d7ff213a1ac731b3d148a925142",
+  "testedInputsWereUncommitted": true,
+  "work": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-backend-survey._a1arvs9",
+  "inputs": [
+    {
+      "path": "scripts/index-nodejs-bindings.mjs",
+      "bytes": 6246,
+      "sha256": "bb6e0a6ab62104a51d99b8cffa28ea540d840154994a6b7fa12bcb41b45caac5"
+    },
+    {
+      "path": "scripts/index-nodejs-dependency-graph.mjs",
+      "bytes": 17885,
+      "sha256": "baad09020bf681b74e47eb70cc95419e3a4267138b4fdd3a969e01306abee6aa"
+    },
+    {
+      "path": "scripts/index-nodejs-native-registrations.py",
+      "bytes": 9201,
+      "sha256": "fcf6e3824e5e3d6fae905d401a07027edca8afd07ec42b91c9ba4fada336a965"
+    },
+    {
+      "path": "scripts/reconcile-nodejs-backend-survey.py",
+      "bytes": 10172,
+      "sha256": "f0e842722cd17129a0374944551f93a71cf95f72ea55342aa178f7236c51ee66"
+    },
+    {
+      "path": "scripts/test-nodejs-dependency-graph.mjs",
+      "bytes": 8470,
+      "sha256": "ceceea3ada9c3f9f7872355d0fec9a5b7fee80d31aa5aee69be2493fd4da922a"
+    },
+    {
+      "path": "scripts/test-nodejs-native-registrations.py",
+      "bytes": 4729,
+      "sha256": "44c4251a829f889b96455e8fae64b60f126107d969d20f338dee17b69a39c141"
+    },
+    {
+      "path": "scripts/verify-nodejs-backend-survey.py",
+      "bytes": 8083,
+      "sha256": "1399b936af8ff9995034dab8289a1ccc7659b1c05446ffc9e4daa401e0f9e2b6"
+    },
+    {
+      "path": "third_party/nodejs/sources.json",
+      "bytes": 130353,
+      "sha256": "bca37a1dff2dead5e0f9a6bd68c56e714c7f14634361bd53b613c2f3de3ca33f"
+    },
+    {
+      "path": "third_party/nodejs/target.json",
+      "bytes": 1187,
+      "sha256": "89102b1877ac810caf73b3e1fa2fe1e165434286528fc409a5fd63549e18a4d7"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
+      "bytes": 29279,
+      "sha256": "35d69de09ea191c667e3224859feed657c803881ba12b39b26a87858b58d3af1"
+    },
+    {
+      "path": "docs/nodejs-upstream-runtime.md",
+      "bytes": 101207,
+      "sha256": "053cc34fd4dab3ec1b06e793fcfaabb932c1d55e3406a101e8a55b081719b459"
+    },
+    {
+      "path": "package.json",
+      "bytes": 1196,
+      "sha256": "e0e607bce1766f42ce73545a6aa172b41f68f272e15a6767a2ecdac296e4559e"
+    },
+    {
+      "path": "package-lock.json",
+      "bytes": 129117,
+      "sha256": "bb4e6c916399bbe87d27f7421c9ea4e89b2b5247ce9553e428d61d9ac012db9f"
+    },
+    {
+      "path": "flake.nix",
+      "bytes": 25537,
+      "sha256": "4b54321974155a0f92dc2820ace3046aab4d465f5ceac22e5a0ef60ca218246f"
+    },
+    {
+      "path": "flake.lock",
+      "bytes": 2035,
+      "sha256": "2df2e3397a8c75ecf4fb6c897959650c76f27f65721bf3ea5a08304b480ad6d8"
+    },
+    {
+      "path": "tests/nodejs/upstream/binding-index.json",
+      "bytes": 1536646,
+      "sha256": "777049a123e7c4ce4fc3c658eb8adb0753b528736762dc6d8287d41ad770f628"
+    },
+    {
+      "path": "tests/nodejs/upstream/backend-binding-reviews.json",
+      "bytes": 15881,
+      "sha256": "982d08dec4dd0d27ca3d66922339dfed81e8f404f17a49d8b4e5544b42b12cf2"
+    },
+    {
+      "path": "tests/nodejs/upstream/dependency-dynamic-reviews.json",
+      "bytes": 7292,
+      "sha256": "9006c3f796a5472996cb74c98375cfa3f0e061b56296ffbf1cc080c70e417e8c"
+    },
+    {
+      "path": "tests/nodejs/upstream/dependency-graph.json",
+      "bytes": 3006060,
+      "sha256": "f8b025a1dfdffc42753cdaf966cf13ddba06bc9b553997fc26f43c05576d69ad"
+    },
+    {
+      "path": "tests/nodejs/upstream/native-registration-index.json",
+      "bytes": 188970,
+      "sha256": "bb812c3eac4012da9238f3e20111d400134af9aa753b559d05c4d30db5170f66"
+    },
+    {
+      "path": "tests/nodejs/upstream/backend-binding-survey.json",
+      "bytes": 166492,
+      "sha256": "d7ff04e9424210914265f399dce5aaf5fbb84471a8c1859abb39102f5c8357e9"
+    },
+    {
+      "path": "tests/nodejs/upstream/backend-graph.md",
+      "bytes": 6699,
+      "sha256": "ebc22e5c875b302a13cda44f6f4f488b6a12a818b9b107de11eeb7a8512273d1"
+    },
+    {
+      "path": "tests/nodejs/upstream/implementation-ledger.json",
+      "bytes": 62439,
+      "sha256": "bcc9879d2c118e9ed0a3c6f74b73d827ce20e8775abcbfae585b3165dcc8b823"
+    },
+    {
+      "path": "tests/nodejs/upstream/aliased-engine-check.json",
+      "bytes": 77704,
+      "sha256": "e4bc8f6717ee9cfd63f3beb678e515e47a8504c25677da4c3e15cbc6a000ffb4"
+    }
+  ],
+  "runs": [
+    {
+      "argv": [
+        "node",
+        "scripts/test-nodejs-dependency-graph.mjs",
+        "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-backend-survey._a1arvs9/javascript-controls.json"
+      ],
+      "exitCode": 0,
+      "stdout": "{\"controls\":15,\"failures\":0}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/nix/store/h3l9h1vmbzvgs4x1ffl0pqbmzhlk89yl-python3-3.13.12/bin/python3",
+        "scripts/test-nodejs-native-registrations.py",
+        "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-backend-survey._a1arvs9/native-controls.json"
+      ],
+      "exitCode": 0,
+      "stdout": "{\"controls\": 14, \"failures\": 0}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "node",
+        "scripts/index-nodejs-dependency-graph.mjs",
+        "third_party/nodejs/sources.json",
+        "tests/nodejs/upstream/dependency-dynamic-reviews.json",
+        "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-backend-survey._a1arvs9/dependency-graph.json"
+      ],
+      "exitCode": 0,
+      "stdout": "{\"registeredSources\":443,\"parsedSources\":443,\"parseErrors\":0,\"primaryReferences\":3342,\"primaryComputedReferences\":14,\"lazyRegistrations\":37,\"transferMetadataSites\":18,\"transferLiteralEdges\":18,\"allReferences\":3397,\"literalNativeBindings\":72,\"contexts\":921,\"wasmOperations\":12,\"distinctModuleEdges\":2739,\"unreviewedComputedReferences\":0,\"unregisteredLiteralReferences\":0}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/nix/store/h3l9h1vmbzvgs4x1ffl0pqbmzhlk89yl-python3-3.13.12/bin/python3",
+        "scripts/index-nodejs-native-registrations.py",
+        "/Users/brandon/kandelo-preservation/davao-20261109T062614Z/node-upstream-restart/reference-archives/node-v26.13.0.tar.gz",
+        "third_party/nodejs/sources.json",
+        "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-backend-survey._a1arvs9/native-registration-index.json"
+      ],
+      "exitCode": 0,
+      "stdout": "{\"nativeFilesScanned\": 460, \"registrationSites\": 160, \"bindingNames\": 77, \"initializerNames\": 73, \"roles\": {\"context-initializer\": 74, \"cpp-initializer\": 0, \"isolate-initializer\": 22, \"external-reference-registration\": 64}}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/nix/store/h3l9h1vmbzvgs4x1ffl0pqbmzhlk89yl-python3-3.13.12/bin/python3",
+        "scripts/reconcile-nodejs-backend-survey.py",
+        "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-backend-survey._a1arvs9/backend-binding-survey.json"
+      ],
+      "exitCode": 0,
+      "stdout": "{\"registeredSources\": 443, \"originalPrimaryReferencesReconciled\": 3342, \"lazyRegistrations\": 37, \"transferMetadataSites\": 18, \"literalBindingNames\": 72, \"sourceRegistrationNames\": 77, \"literalBindingsWithInitializerSyntax\": 72, \"literalBindingsWithKandeloRoute\": 17, \"literalBindingsWithoutKandeloRoute\": 55, \"sourceOnlyInitializerNames\": [\"debug\"], \"externalReferenceOnlyNames\": [\"binding\", \"env_var\", \"handle_wrap\", \"process_object\"], \"historicalFamiliesLinked\": 19, \"historicalPRsLinked\": 33}\n",
+      "stderr": ""
+    }
+  ],
+  "controlGroups": 29,
+  "controlFailures": 0,
+  "sameCountMutationControl": {
+    "status": "pass",
+    "siteId": "deps/amaro/dist/index.js:1791:require",
+    "originalTarget": "util",
+    "primaryReferenceCountUnchanged": true,
+    "reason": "same-count altered dependency rejected by reference-identity multiset"
+  },
+  "failures": [],
+  "canonicalOutputsByteIdentical": true,
+  "sourceIdentity": {
+    "importedFiles": 557,
+    "javascriptFiles": 443,
+    "javascriptBytes": 10993403,
+    "mismatches": []
+  },
+  "sourceGraphCounts": {
+    "registeredSources": 443,
+    "parsedSources": 443,
+    "parseErrors": 0,
+    "primaryReferences": 3342,
+    "primaryComputedReferences": 14,
+    "lazyRegistrations": 37,
+    "transferMetadataSites": 18,
+    "transferLiteralEdges": 18,
+    "allReferences": 3397,
+    "literalNativeBindings": 72,
+    "contexts": 921,
+    "wasmOperations": 12,
+    "distinctModuleEdges": 2739,
+    "unreviewedComputedReferences": 0,
+    "unregisteredLiteralReferences": 0
+  },
+  "nativeRegistrationCounts": {
+    "nativeFilesScanned": 460,
+    "registrationSites": 160,
+    "bindingNames": 77,
+    "initializerNames": 73,
+    "roles": {
+      "context-initializer": 74,
+      "cpp-initializer": 0,
+      "isolate-initializer": 22,
+      "external-reference-registration": 64
+    }
+  },
+  "surveyCounts": {
+    "registeredSources": 443,
+    "originalPrimaryReferencesReconciled": 3342,
+    "lazyRegistrations": 37,
+    "transferMetadataSites": 18,
+    "literalBindingNames": 72,
+    "sourceRegistrationNames": 77,
+    "literalBindingsWithInitializerSyntax": 72,
+    "literalBindingsWithKandeloRoute": 17,
+    "literalBindingsWithoutKandeloRoute": 55,
+    "sourceOnlyInitializerNames": [
+      "debug"
+    ],
+    "externalReferenceOnlyNames": [
+      "binding",
+      "env_var",
+      "handle_wrap",
+      "process_object"
+    ],
+    "historicalFamiliesLinked": 19,
+    "historicalPRsLinked": 33
+  },
+  "initialFailuresRetained": [
+    {
+      "kind": "indexer syntax error",
+      "input": ".context/node-backend-graph/index-first-syntax-error.mjs",
+      "resolution": "corrected return-object grouping before first generated graph"
+    },
+    {
+      "kind": "historical audit record schema mismatch",
+      "input": ".context/node-backend-graph/reconcile-first-schema-error.py",
+      "log": ".context/node-backend-graph/reconcile-first.log",
+      "resolution": "normalize both head and headSha; all33actual identities remain required"
+    }
+  ],
+  "runtimeCodeChanged": false,
+  "runtimeEvidenceAdded": false,
+  "startupAccepted": false,
+  "completeNativeContractCatalog": false,
+  "broaderRoadmapExecutionAuthorized": false,
+  "pendingArchitectureChoice": "mksnapshot full native unit combines live APIs and V8 serialization; preserve pending user choice and original-source constraint",
+  "remaining": [
+    "genuine startup, empty/simple output/errors/jobs/exit and separate CJS/ESM on four hosts",
+    "full native export/class/member/signature/error/scheduling/ownership/lifecycle/owning-layer catalog",
+    "symbolic/alias/generated/build/native-transfer domains and per-host validation obligations",
+    "complete dependency-ordered implementation/validation roadmap, then explicit user review"
+  ],
+  "notRun": [
+    "guest runtime tests this source-only phase",
+    "package builds",
+    "full products/images",
+    "successor ABI builds",
+    "overall conformance suites"
+  ]
+}
