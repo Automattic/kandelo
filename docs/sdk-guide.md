@@ -797,6 +797,50 @@ invalid.
 See [`docs/fork-instrumentation.md`](fork-instrumentation.md) for the
 exported ABI, save-buffer format, and the dispatch-scheme decisions.
 
+## Inspecting build output
+
+SDK output is WebAssembly, not ELF. The Kandelo shell carries two sets of
+tools for reading it: LLVM's binary tools (`objdump`, `nm`, `ar`, `size`,
+`strip`, `llvm-readobj`, ..., from the `clang` package) and `wasm-tools`.
+On the build machine the dev shell provides the same LLVM tools as
+`llvm-objdump`, `llvm-nm` and so on; `wasm-tools` is only in the Kandelo
+shell. Which to use depends on the file:
+
+| Task | Use | Notes |
+|---|---|---|
+| Symbols and relocations of a `cc -c` object | `objdump -t`, `objdump -r`, `nm` | `wasm-tools dump` decodes the same linking records, but as raw entries |
+| Members of an archive | `ar t`, `nm` | |
+| Section list | `objdump -h` or `wasm-tools objdump` | Both list every custom section, including `kandelo.*` |
+| Disassembly of a program that was not fork-instrumented | `objdump -d` or `wasm-tools print -p` | |
+| Disassembly of a fork-instrumented program | `wasm-tools print -p` | See below |
+| A side module's `dylink.0` (memory and table sizes and its other entries) | `wasm-tools dump` | The LLVM tools name the section but do not decode it |
+| Whether a module is valid | `wasm-tools validate` | |
+| Remove debug information | `strip` | See below |
+
+**`objdump -d` is incomplete on fork-instrumented programs.** LLVM's Wasm
+disassembler knows only the instructions LLVM generates. Fork
+instrumentation runs after the link and adds valid instructions LLVM never
+emits, such as `ref.null noexn`, `ref.as_non_null`, `table.init` and
+`elem.drop`; `objdump -d` prints each as `<unknown>` and continues.
+`bash.wasm`, for example, has 160 of them. The program is valid and runs;
+only the listing is incomplete. `wasm-tools print -p` decodes every
+instruction and prints each one's byte offset as a comment, so the same
+offsets can be compared with `objdump` output. Object files from `cc -c`
+are not instrumented, so `objdump` reads them completely.
+
+**Stripping.** `strip` (`llvm-objcopy` in strip mode) removes debug, `name`
+and `producers` sections and keeps the `kandelo.*` sections, including the
+`kandelo.abi.contract` stamp; a stripped program loads as before.
+`wasm-tools strip` removes every custom section except `name` by default,
+including the ABI stamp and the fork-instrumentation metadata. The kernel
+then runs the program as an unstamped legacy binary, with a warning. Use
+`strip` unless you mean to remove Kandelo's sections.
+
+There is no plain `readelf`. On Wasm, `llvm-readobj` answers ELF questions
+such as `readelf -d` (`NEEDED`, `SONAME`) with empty output and exit 0, so a
+script that runs `readelf` would conclude a program has no dependencies.
+`llvm-readobj` and `llvm-readelf` are installed for explicit use.
+
 ## Environment Variables
 
 | Variable | Purpose |
