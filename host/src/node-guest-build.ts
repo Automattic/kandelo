@@ -48,6 +48,11 @@ export interface GuestBuildMount {
   mountPoint: string;
   hostPath: string;
   readonly: boolean;
+  /**
+   * Nothing on the host writes the mount while the command runs, so the
+   * host filesystem can report exact append outcomes (O_APPEND writes).
+   */
+  exclusiveNativeWriters?: boolean;
 }
 
 export interface GuestBuildPlan {
@@ -108,8 +113,19 @@ export function validateGuestBuildRequest(request: GuestBuildRequest): GuestBuil
     throw new Error(`timeoutMs must be a positive integer: ${request.timeoutMs}`);
   }
 
+  // WHY exclusive: the workspace is the caller's private copy (under the
+  // recipe's work directory), and the caller waits for the run to finish, so
+  // no host process writes it meanwhile. Without that guarantee the host
+  // filesystem refuses O_APPEND writes (EOPNOTSUPP), because it could not
+  // report where an append ended; `>>` in a shell, m4's --debugfile and every
+  // build log would fail on /build.
   const mounts: GuestBuildMount[] = [
-    { mountPoint: GUEST_BUILD_WORKSPACE, hostPath: request.workspace, readonly: false },
+    {
+      mountPoint: GUEST_BUILD_WORKSPACE,
+      hostPath: request.workspace,
+      readonly: false,
+      exclusiveNativeWriters: true,
+    },
   ];
   for (const input of request.inputs ?? []) {
     requireNormalizedGuestPath("input guestPath", input.guestPath);
