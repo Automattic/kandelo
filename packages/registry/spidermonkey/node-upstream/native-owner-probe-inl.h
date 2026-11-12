@@ -6,6 +6,7 @@ struct NativeOwnerProbeState {
   std::set<native::BaseObject*> objects;
   std::map<uint64_t,native::BaseObjectPtr<native::BaseObject>> references;
   std::map<uint64_t,Global<Value>> persistents;
+  std::map<uint64_t,Global<FunctionTemplate>> templates;
   uint64_t next=1,created=0,destroyed=0,closeRequests=0,closed=0,retired=0,callbacks=0;
 };
 }
@@ -64,6 +65,42 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"templateCreate")){
+    auto* isolate=&state->isolate;api::HandleScope scope(isolate);
+    auto construct=[](const api::FunctionCallbackInfo<api::Value>& input){
+      auto* isolate=input.GetIsolate();auto context=isolate->GetCurrentContext();
+      auto name=api::String::NewFromUtf8(isolate,"payload",api::NewStringType::kNormal,-1).ToLocalChecked();
+      if(!input.This()->Set(context,name,input.Data()).IsNothing())input.GetReturnValue().Set(input.This());
+    };
+    auto read=[](const api::FunctionCallbackInfo<api::Value>& input){
+      auto* isolate=input.GetIsolate();auto name=api::String::NewFromUtf8(isolate,"payload",api::NewStringType::kNormal,-1).ToLocalChecked();
+      api::Local<api::Value> value;if(input.This()->Get(isolate->GetCurrentContext(),name).ToLocal(&value))input.GetReturnValue().Set(value);
+    };
+    auto echo=[](const api::FunctionCallbackInfo<api::Value>& input){input.GetReturnValue().Set(input[0]);};
+    auto value=api::FunctionTemplate::New(isolate,construct,frame.OwnValue(args.get(1)),{},2);
+    value->SetClassName(api::String::NewFromUtf8(isolate,"NativeTemplateProbe",api::NewStringType::kNormal,-1).ToLocalChecked());
+    native::SetProtoMethod(isolate,value,"read",read);native::SetMethod(isolate,value,"echo",echo);
+    auto signature=api::Signature::New(isolate,value);CHECK(!value->IsValue()&&!signature->IsValue()&&!value->InstanceTemplate()->IsValue());
+    const auto token=counters->next++;counters->templates.emplace(token,api::Global<api::FunctionTemplate>(isolate,value));
+    args.rval().setNumber(double(token));return true;
+  }
+  if(!std::strncmp(operation.get(),"template",8)){
+    const double token=args.get(1).isNumber()?args[1].toNumber():0;
+    if(!std::isfinite(token)||token<1||token>9007199254740991.0||std::floor(token)!=token){JS_ReportErrorASCII(cx,"Invalid template control token");return false;}
+    auto it=counters->templates.find(uint64_t(token));if(it==counters->templates.end()){JS_ReportErrorASCII(cx,"Unknown template control token");return false;}
+    if(!std::strcmp(operation.get(),"templateDrop")){counters->templates.erase(it);return true;}
+    if(std::strcmp(operation.get(),"templateGet")){JS_ReportErrorASCII(cx,"Unknown template control operation");return false;}
+    auto value=native::PersistentToLocal::Strong(it->second);
+    CHECK(!value->IsValue()&&!value->IsPrivate());
+    auto context=state->isolate.GetCurrentContext();
+    if(args.get(2).isObject()){
+      JS::RootedObject global(cx,api::UnwrapObject(cx,args[2]));
+      if(!global||!JS_IsGlobalObject(global)){JS_ReportErrorASCII(cx,"Template context control requires a global");return false;}
+      context=frame.OwnContext(global);
+    }
+    api::Local<api::Function> function;if(!value->GetFunction(context).ToLocal(&function))return false;
+    args.rval().set(api::Input(function));return JS_WrapValue(cx,args.rval());
+  }
   if(!std::strcmp(operation.get(),"persistentCreate")) {
     const auto token=counters->next++;
     counters->persistents.emplace(token,api::Global<api::Value>(&state->isolate,frame.OwnValue(args.get(1))));

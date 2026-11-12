@@ -102,6 +102,7 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/trace-unicode-native-api.h" \
     "$node_consumer/trace-utf8-native.h" \
     "$node_consumer/trace-utf8-native.cpp" \
+    "$node_consumer/template-codecs-inl.h" \
     "$node_consumer/trace-codecs-inl.h" \
     "$node_consumer/trace-shutdown.h" \
     "$node_consumer/trace-agent-test-api.cpp" \

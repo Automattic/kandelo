@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 62 source connects the original process initializer,
+The current revision 63 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 63 symbols and has no normal runnable artifact.
+still fails final linking on 59 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -2666,3 +2666,73 @@ and [identified compilation evidence](../tests/nodejs/upstream/utility-primitive
 Startup, separate CJS/ESM, full backend catalog and ordered roadmap remain
 incomplete. Full products/images, kernel/successor-ABI rebuilds and overall
 suites remain deferred. ABI 56 and immutable ABI 55 are unchanged.
+
+
+## Native templates and typed Data roots (revision 63; no runnable artifact)
+
+Native FunctionTemplate.New/PrototypeTemplate, Signature.New and Template.Set
+now compile and resolve beneath the unchanged original Node installation
+helpers. Final normal/private builds have zero C++ errors and fail linking on
+59 and two symbols respectively, down from 63 and six. Neither produces an
+executable. The remaining private symbols are DumpNativeBacktrace and
+DumpJavaScriptBacktrace. The prior 57 normal process/metadata/report/lifecycle
+dependencies remain. There is no startup or current runtime acceptance.
+
+Template and Signature are real non-Value Data kinds. The shared Data base
+owns the actual root cell and concrete wrapper factory. Scope/global cloning
+preserves those kinds; ordinary JavaScript Value wrapping remains contextual.
+The original first-Local persistent layout and trivial Local layout remain
+intact. The compiled private probe consumes whole original PersistentToLocal,
+SetMethod and SetProtoMethod helpers; their bodies are not copied or rewritten.
+
+Opaque engine records hold native configuration and traced payload, signature,
+property, prototype, instance and cache edges. A private, debugger-invisible
+engine realm stores these records independently of Node contexts; it executes
+no Node module library. Persistent templates do not capture a Node realm or
+binding target. Only actual function invocation objects hold those edges.
+Per-context function caches use real WeakMaps, and the metadata realm's native
+root retires during environment shutdown. Generic roots canonicalize internal
+wrappers to avoid retaining a caller compartment accidentally. Explicit callback
+payloads retain their normal ownership.
+
+Native functions enforce constructor behavior, length, real names and receiver
+brands. Instances hold a traced, unforgeable template identity beyond their
+existing native fields. Cross-compartment instance/realm/payload edges are
+wrapped. Standalone binding templates apply their properties before the
+original per-context initializers. Native fast signatures and effect metadata
+are retained; original slow callbacks execute. No V8 implementation, heap data
+or serialization is generated.
+
+The interface remains incomplete. ObjectTemplate.New constructor association,
+FunctionTemplate.Inherit/inherited brands, recursive template instantiation,
+other native field layouts, generic Data weak handles, Private/Context kinds,
+fast JIT and inspector enforcement are unsupported or unvalidated. These are
+implementation gaps, not claimed engine/platform limits. Unsupported paths
+fail explicitly; no partially instantiated function is published as cached
+success. Full API, OOM, reentry, cross-realm and lifetime semantics need runtime
+validation.
+
+Four new controls cover original helper installation, scope/persistent roots,
+constructor/signature brands, per-context functions, explicit payload identity,
+getter reentry and thrown-value propagation. Their host-side syntax and
+registration pass; 36 drivers are registered. None executed against this revision.
+The 32-driver four-host results from revision 60 remain historical. One newly
+hashed native reference child records six ICU function names/lengths; tracing
+is unavailable through process.binding and is retained as unavailable. This
+is not a guest comparison or full native API reference result.
+
+All 580 imported identities and 443 JavaScript files/10,993,403 bytes remain
+unchanged. The final input snapshot and actual recipe-copied sources are
+recorded separately from runtime evidence. The first private attempt failed
+on an unavailable JS_WrapId helper; the corrected code uses real property-key
+values and destination-realm wrapping. All build/preflight results are retained.
+
+The backtrace functions and existing FWrite helper require whole original
+debug_utils.cc/header integration and real stack/report dependencies. The Buffer
+ownership bridge still requires complete node_internals.h integration. Source
+policy, startup, separate CJS/ESM, full catalog and roadmap remain incomplete.
+Full products/images, kernel/successor-ABI rebuilds and overall suites remain
+deferred; ABI 56 and immutable ABI 55 are unchanged.
+
+See the [native template contracts](../tests/nodejs/upstream/native-template-contracts.json)
+and [identified compile/link evidence](../tests/nodejs/upstream/native-template-compile-check.json).

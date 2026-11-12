@@ -25,7 +25,7 @@ void MakeGlobalStrong(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root){
 void MakeGlobalWeakTenured(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root){
   if(!root||root->weakMode||!root->strong||!root->strong->cell().value.initialized())return;
   auto state=root->state.lock();CHECK(state && &state->isolate==isolate);state->environment.AssertForeground();
-  auto value=root->strong->cell().value.get();CHECK(value.isObject());
+  auto value=root->strong->cell().value.get();CHECK(root->strong->IsValue()&&value.isObject());
   JSObject* object=&value.toObject();CHECK(!js::gc::IsInsideNursery(object));
   state->weakGlobals.push_back(root);root->weak=object;root->weakMode=true;root->strong->cell().value.reset();
 }
@@ -33,10 +33,10 @@ struct PersistentCell {
   Isolate* isolate;
   std::shared_ptr<GlobalRoot> root;
 };
-PersistentCell* NewPersistentCell(Isolate* isolate,Local<Value> value){return new PersistentCell{isolate,NewGlobalRoot(isolate,value)};}
+PersistentCell* NewPersistentCell(Isolate* isolate,Local<Data> value){return new PersistentCell{isolate,NewGlobalRoot(isolate,value)};}
 void DeletePersistentCell(PersistentCell* cell){delete cell;}
-Value* BorrowPersistentLocal(const PersistentCell* cell){return PersistentCellIsEmpty(cell)?nullptr:cell->root->strong.get();}
-Local<Value> ReadPersistentCell(Isolate* isolate,const PersistentCell* cell){return cell?ReadGlobalRoot(isolate,cell->root):Local<Value>();}
+Data* BorrowPersistentLocal(const PersistentCell* cell){return PersistentCellIsEmpty(cell)?nullptr:cell->root->strong.get();}
+Local<Data> ReadPersistentCell(Isolate* isolate,const PersistentCell* cell){return cell?ReadGlobalRoot(isolate,cell->root):Local<Data>();}
 bool PersistentCellIsEmpty(const PersistentCell* cell){return !cell||GlobalRootIsEmpty(cell->root);}
 bool PersistentCellIsWeak(const PersistentCell* cell){return cell&&GlobalRootIsWeak(cell->root);}
 void WeakenPersistentCell(PersistentCell* cell,bool tenured){
@@ -80,10 +80,6 @@ MaybeLocal<Object> Function::NewInstance(Local<Context> context) {
   if(!JS_WrapValue(f.cx,&constructor)||!JS::Construct(f.cx,constructor,JS::HandleValueArray::empty(),&object))return {};
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Object>(value);
 }
-MaybeLocal<Function> FunctionTemplate::GetFunction(Local<Context> context) {
-  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};Context::Scope home(context);if(JS_IsExceptionPending(f.cx))return {};JS::RootedValue value(f.cx,cell().value);
-  if(!JS_WrapValue(f.cx,&value))return {};CHECK(value.isObject()&&JS::IsCallable(&value.toObject()));return f.Own<Function>(value);
-}
 Local<Uint32> Uint32::New(Isolate* isolate,uint32_t value){return Integer::NewFromUnsigned(isolate,value).As<Uint32>();}
 uint32_t Uint32::Value()const{CHECK(IsUint32());return uint32_t(cell().value.toNumber());}
 Local<Integer> Integer::NewFromUnsigned(Isolate* isolate,uint32_t value) {
@@ -92,7 +88,7 @@ Local<Integer> Integer::NewFromUnsigned(Isolate* isolate,uint32_t value) {
 }
 namespace kandelo_node_codec_impl {
 const JSClass nativeBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
-const JSClass nativeChannelClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
+const JSClass nativeChannelClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount+1)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
 struct NativeRealmData {
   Isolate* isolate;
   Global<Object> owner;
@@ -222,20 +218,8 @@ BaseObject* UnwrapSnapshotable(Local<Object> input,EmbedderObjectType type) {
   return snapshotable->type()==type?object:nullptr;
 }
 SnapshotableObject::SnapshotableObject(Realm* realm,Local<Object> wrap,EmbedderObjectType type):BaseObject(realm,wrap),type_(type){}
-namespace {
-bool NativeObjectConstructor(JSContext* cx,unsigned argc,JS::Value* vp){
-  auto args=JS::CallArgsFromVp(argc,vp);CHECK(args.isConstructing());
-  JS::RootedObject object(cx,JS_NewObjectForConstructor(cx,&nativeChannelClass,args));if(!object)return false;
-  args.rval().setObject(*object);return true;
-}
-}
 Local<FunctionTemplate> BaseObject::MakeLazilyInitializedJSTemplate(Environment* environment,int internalFieldCount){
-  CHECK_EQ(internalFieldCount,kInternalFieldCount);
-  auto& f=Current(environment->isolate());JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,NativeObjectConstructor,0,JSFUN_CONSTRUCTOR,""));if(!function)return {};
-  JS::RootedObject object(f.cx,JS_GetFunctionObject(function)),prototype(f.cx,JS_NewPlainObject(f.cx));
-  if(!prototype||!JS_DefineProperty(f.cx,prototype,"constructor",object,0)||!JS_DefineProperty(f.cx,object,"prototype",prototype,JSPROP_PERMANENT))return {};
-  js::SetFunctionNativeReserved(object,0,JS::Int32Value(kInternalFieldCount));
-  JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<FunctionTemplate>(value);
+  return api::CreateNativeWrapperTemplate(environment->isolate(),internalFieldCount);
 }
 }
 namespace kandelo::node {
@@ -245,7 +229,9 @@ JSObject* CreateDiagnosticsBinding(JSContext* cx,JS::HandleObject realm){
   JS::RootedObject object(cx,JS_NewObject(cx,&native::nativeBindingClass));if(!object)return nullptr;frame.binding=object;
   JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
   native::IsolateData isolateData;
-  kandelo_diagnostics_adapter::isolate_initializer(&isolateData,frame.Own<api::ObjectTemplate>(value));
+  auto bindingTemplate=api::ObjectTemplate::New(&state->isolate,{});
+  kandelo_diagnostics_adapter::isolate_initializer(&isolateData,bindingTemplate);
+  if(!api::ApplyNativeTemplate(frame,bindingTemplate,object))return nullptr;
   if(JS_IsExceptionPending(cx))return nullptr;
   kandelo_diagnostics_adapter::initializer(frame.Own<api::Object>(value),frame.OwnValue(unused),state->isolate.GetCurrentContext(),nullptr);
   return JS_IsExceptionPending(cx)?nullptr:object.get();

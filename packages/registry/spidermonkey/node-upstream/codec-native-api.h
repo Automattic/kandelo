@@ -53,7 +53,8 @@ class HeapStatistics {
 };
 enum class EmbedderDataTag { kDefault };
 [[noreturn]] void Crash(const char*);
-bool SameLocal(Value*,Value*);
+class Data;
+bool SameLocal(Data*,Data*);
 bool SameLocal(Context*,Context*);
 template<class T> class PersistentBase;
 template<class T> class Local {
@@ -129,18 +130,23 @@ class SnapshotCreator {
     Crash("Native heap snapshot serialization is not implemented");
   }
 };
-class Data {public:virtual ~Data()=default;virtual bool IsValue()const=0;virtual bool IsPrivate()const=0;};
-class Value:public Data {
+class Data {
   std::unique_ptr<Cell> cell_;
  public:
-  using RootFactory=std::unique_ptr<Value>(*)(std::unique_ptr<Cell>);
+  using RootFactory=std::unique_ptr<Data>(*)(std::unique_ptr<Cell>);
  private:
   RootFactory rootFactory_;
  public:
-  explicit Value(std::unique_ptr<Cell>,RootFactory=nullptr);
-  virtual ~Value();
+  explicit Data(std::unique_ptr<Cell>,RootFactory);
+  virtual ~Data();
   Cell& cell() const;
-  std::unique_ptr<Value> CloneRoot(std::unique_ptr<Cell>) const;
+  std::unique_ptr<Data> CloneRoot(std::unique_ptr<Cell>) const;
+  virtual bool IsValue()const=0;virtual bool IsPrivate()const=0;
+};
+class Value:public Data {
+ public:
+  explicit Value(std::unique_ptr<Cell>,RootFactory=nullptr);
+  ~Value()override;
   bool IsObject() const;
   bool IsValue()const;bool IsPrivate()const;bool SameValue(Local<Value>)const;
   bool IsTypedArray() const;
@@ -177,14 +183,14 @@ enum PropertyAttribute { None=0, ReadOnly=1, DontEnum=2, DontDelete=4 };
 enum class SideEffectType { kHasSideEffect, kHasNoSideEffect, kHasSideEffectToReceiver };
 using AccessorNameGetterCallback=void(*)(Local<Name>,const PropertyCallbackInfo<Value>&);
 using AccessorNameSetterCallback=void(*)(Local<Name>,Local<Value>,const PropertyCallbackInfo<void>&);
-std::unique_ptr<Value> RetainRoot(Isolate*,Local<Value>);
+std::unique_ptr<Data> RetainRoot(Isolate*,Local<Data>);
 template<class T> std::unique_ptr<T> RetainTypedRoot(Isolate*,Local<T>);
 // Indirect locals reference actual cells owned by the active HandleScope.
 // This container owns its contiguous slots, not those cells: copying a Local
 // out survives vector relocation/retirement but cannot extend its handle scope.
 // Cross-scope ownership belongs to Global, not an off-stack Local copy.
 template<class T> class LocalVector {
-  static_assert(std::is_base_of_v<Value,T>);
+  static_assert(std::is_base_of_v<Data,T>);
   std::vector<Local<T>> values_;
  public:
   explicit LocalVector(Isolate*){}
@@ -217,8 +223,8 @@ static_assert(std::is_trivially_copyable_v<Local<Value>>);
 static_assert(std::is_standard_layout_v<Local<Value>>);
 
 struct GlobalRoot;
-std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate*,Local<Value>);
-Local<Value> ReadGlobalRoot(Isolate*,const std::shared_ptr<GlobalRoot>&);
+std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate*,Local<Data>);
+Local<Data> ReadGlobalRoot(Isolate*,const std::shared_ptr<GlobalRoot>&);
 void MakeGlobalWeak(Isolate*,const std::shared_ptr<GlobalRoot>&);
 void MakeGlobalStrong(Isolate*,const std::shared_ptr<GlobalRoot>&);
 void MakeGlobalWeakTenured(Isolate*,const std::shared_ptr<GlobalRoot>&);
@@ -226,10 +232,10 @@ bool GlobalRootIsWeak(const std::shared_ptr<GlobalRoot>&);
 bool GlobalRootIsEmpty(const std::shared_ptr<GlobalRoot>&);
 JSObject* BorrowGlobalObject(const std::shared_ptr<GlobalRoot>&);
 struct PersistentCell;
-PersistentCell* NewPersistentCell(Isolate*,Local<Value>);
+PersistentCell* NewPersistentCell(Isolate*,Local<Data>);
 void DeletePersistentCell(PersistentCell*);
-Value* BorrowPersistentLocal(const PersistentCell*);
-Local<Value> ReadPersistentCell(Isolate*,const PersistentCell*);
+Data* BorrowPersistentLocal(const PersistentCell*);
+Local<Data> ReadPersistentCell(Isolate*,const PersistentCell*);
 bool PersistentCellIsEmpty(const PersistentCell*);
 bool PersistentCellIsWeak(const PersistentCell*);
 void WeakenPersistentCell(PersistentCell*,bool);
@@ -374,7 +380,10 @@ class Signature;class CFunction;
 using FunctionCallback=void(*)(const FunctionCallbackInfo<Value>&);
 enum class ConstructorBehavior{kAllow,kThrow};
 template<class T> using MemorySpan=std::span<T>;
-class Template:public Object {public:using Object::Object;void Set(Local<Name>,Local<Data>);};
+class Template:public Data {
+ public:using Data::Data;bool IsValue()const override{return false;}bool IsPrivate()const override{return false;}
+  void Set(Local<Name>,Local<Data>);
+};
 class ObjectTemplate : public Template {
  public: using Template::Template;
   static Local<ObjectTemplate> New(Isolate*,Local<FunctionTemplate>);
@@ -394,7 +403,10 @@ class FunctionTemplate : public Template {
   void Inherit(Local<FunctionTemplate>);
 };
 enum class NewStringType { kNormal, kInternalized };
-class Signature:public Data {public:static Local<Signature> New(Isolate*,Local<FunctionTemplate>);};
+class Signature:public Data {
+ public:using Data::Data;bool IsValue()const override{return false;}bool IsPrivate()const override{return false;}
+  static Local<Signature> New(Isolate*,Local<FunctionTemplate>);
+};
 class Set:public Object {public:using Object::Object;static Local<Set> New(Isolate*);MaybeLocal<Set> Add(Local<Context>,Local<Value>);};
 class Map:public Object {public:using Object::Object;static Local<Map> New(Isolate*);MaybeLocal<Map> Set(Local<Context>,Local<Value>,Local<Value>);};
 class Boolean:public Value {public:using Value::Value;static Local<Boolean> New(Isolate*,bool);bool Value()const;};
@@ -474,6 +486,7 @@ class HandleScope {
   Frame* frame_;size_t previous_,previousContexts_;
  public:
   Local<Value> EscapeRoot(Local<Value>);
+  Local<Data> EscapeRoot(Local<Data>);
   Local<Context> EscapeRoot(Local<Context>);
  public: explicit HandleScope(Isolate*);~HandleScope();
 };
@@ -484,7 +497,7 @@ class EscapableHandleScope : public HandleScope {
   template<class T> Local<T> Escape(Local<T> value) {
     if(escaped_) Crash("Native handle scope escaped twice");escaped_=true;
     if constexpr(std::is_same_v<T,Context>)return EscapeRoot(Local<Context>(value));
-    else return EscapeRoot(Local<Value>(value)).template As<T>();
+    else return EscapeRoot(Local<Data>(value)).template As<T>();
   }
   template<class T> MaybeLocal<T> EscapeMaybe(MaybeLocal<T> value) {
     if(value.IsEmpty())return {};return Escape(value.ToLocalChecked());
@@ -517,6 +530,7 @@ int ArgumentCount(Isolate*);
 Local<Object> Receiver(Isolate*);
 Local<Object> PropertyHolder(Isolate*);
 Local<Value> PropertyData(Isolate*);
+Local<Value> CallbackData(Isolate*);
 void ReturnRaw(Isolate*, const JS::Value&);
 template<class T> class ReturnValue {
   Isolate* isolate_;
@@ -539,6 +553,7 @@ template<class T> class FunctionCallbackInfo {
   int Length() const { return ArgumentCount(isolate_); }
   Local<Value> operator[](int index) const { return Argument(isolate_,index); }
   Local<Object> This() const { return Receiver(isolate_); }
+  Local<Value> Data() const { return CallbackData(isolate_); }
   ReturnValue<T> GetReturnValue() const { return ReturnValue<T>(isolate_); }
 };
 // Consumed property callback interface. Interceptor-only operation/strictness

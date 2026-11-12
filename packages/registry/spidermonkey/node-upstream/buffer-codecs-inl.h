@@ -3,7 +3,7 @@
 // Native VM operations used by the complete original Buffer source. No Buffer
 // encoding, search, fill, mask, swap or public module algorithms live here.
 namespace kandelo_node_codec_api {
-bool SameLocal(Value* left,Value* right) {
+bool SameLocal(Data* left,Data* right) {
   if(!left||!right)return left==right;bool same;CHECK(JS::SameValue(Frame::current->cx,left->cell().value,right->cell().value,&same));return same;
 }
 bool Value::IsObject() const { return cell().value.isObject(); }
@@ -27,6 +27,12 @@ double Number::Value() const { CHECK(IsNumber());return cell().value.toNumber();
 Local<Value> HandleScope::EscapeRoot(Local<Value> input) {
   CHECK(!input.IsEmpty());JS::RootedValue value(frame_->cx,Input(input));
   auto output=frame_->OwnValue(value);auto owned=std::move(frame_->roots.back());frame_->roots.pop_back();
+  frame_->roots.insert(frame_->roots.begin()+previous_,std::move(owned));++previous_;
+  return output;
+}
+Local<Data> HandleScope::EscapeRoot(Local<Data> input) {
+  CHECK(!input.IsEmpty());JS::RootedValue value(frame_->cx,Input(input));
+  auto output=frame_->OwnClone(*input.get(),value);auto owned=std::move(frame_->roots.back());frame_->roots.pop_back();
   frame_->roots.insert(frame_->roots.begin()+previous_,std::move(owned));++previous_;
   return output;
 }

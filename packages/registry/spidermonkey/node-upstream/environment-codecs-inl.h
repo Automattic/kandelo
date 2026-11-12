@@ -12,21 +12,21 @@ struct GlobalRoot {
   // The C++ wrapper remains stable across weak/strong transitions. Only its
   // PersistentRootedValue registration changes, so borrowing the native Local
   // never exposes a moving JS pointer or accidentally keeps a weak target alive.
-  std::unique_ptr<Value> strong;
+  std::unique_ptr<Data> strong;
   JS::Heap<JSObject*> weak{nullptr};
   bool weakMode=false;
 };
-std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate* isolate,Local<Value> value) {
+std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate* isolate,Local<Data> value) {
   auto& frame=Current(isolate);CHECK(!value.IsEmpty());
   auto root=std::make_shared<GlobalRoot>();root->state=frame.state;root->strong=RetainRoot(isolate,value);return root;
 }
-Local<Value> ReadGlobalRoot(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root) {
+Local<Data> ReadGlobalRoot(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root) {
   auto& frame=Current(isolate);if(!root)return {};
   CHECK(root->state.lock()==frame.state);frame.state->environment.AssertForeground();
   JS::RootedValue value(frame.cx);
   if(root->weakMode){if(!root->weak)return {};value.setObject(*root->weak);}
   else {if(!root->strong||!root->strong->cell().value.initialized())return {};value=root->strong->cell().value;}
-  if(!JS_WrapValue(frame.cx,&value))return {};return frame.OwnClone(*root->strong,value);
+  if(root->strong->IsValue()&&!JS_WrapValue(frame.cx,&value))return {};return frame.OwnClone(*root->strong,value);
 }
 bool GlobalRootIsEmpty(const std::shared_ptr<GlobalRoot>& root) {
   if(!root)return true;
@@ -37,12 +37,12 @@ JSObject* BorrowGlobalObject(const std::shared_ptr<GlobalRoot>& root) {
   if(!root)return nullptr;
   if(root->weakMode)return root->weak;
   if(!root->strong||!root->strong->cell().value.initialized())return nullptr;
-  const auto value=root->strong->cell().value.get();CHECK(value.isObject());return &value.toObject();
+  const auto value=root->strong->cell().value.get();CHECK(root->strong->IsValue()&&value.isObject());return &value.toObject();
 }
 void MakeGlobalWeak(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root) {
   auto& frame=Current(isolate);CHECK(root&&root->state.lock()==frame.state&&!root->weakMode&&root->strong);
   frame.state->environment.AssertForeground();
-  JS::RootedObject object(frame.cx,UnwrapObject(frame.cx,root->strong->cell().value));CHECK(object);
+  CHECK(root->strong->IsValue());JS::RootedObject object(frame.cx,UnwrapObject(frame.cx,root->strong->cell().value));CHECK(object);
   // Weak-zone callbacks update tenured edges. Promote a nursery target while
   // its actual strong root is still installed, before publishing a weak edge.
   // This avoids treating a nursery post-barrier as a strong weak-handle root.
@@ -286,7 +286,7 @@ void Environment::Shutdown(JSContext* cx) {
   state->aliasedControls.clear();
   if(data_->weakRegistered){JS_RemoveWeakPointerZonesCallback(cx,api::UpdateEnvironmentWeakEdges);data_->weakRegistered=false;}
   for(auto& root:state->weakGlobals){CHECK(root->strong&&!root->strong->cell().value.initialized());root->weak=nullptr;}
-  state->weakGlobals.clear();data_->weakControls.clear();data_->probes.clear();
+  state->weakGlobals.clear();data_->weakControls.clear();data_->probes.clear();state->templateRealm.reset();
   data_->arguments=nullptr;data_->execArguments=nullptr;data_->processInvocationReady=false;
   data_->ownsProcessState=false;data_->executablePath.clear();data_->runtime.reset();
   preserve.restore();

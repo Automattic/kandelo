@@ -93,7 +93,9 @@
     "utilityPartialCatalog": "utilities-contracts.json",
     "utilityEngineEvidence": "utilities-engine-check.json",
     "utilityPrimitivesPartialCatalog": "utility-primitives-contracts.json",
-    "utilityPrimitivesCompileEvidence": "utility-primitives-compile-check.json"
+    "utilityPrimitivesCompileEvidence": "utility-primitives-compile-check.json",
+    "nativeTemplatePartialCatalog": "native-template-contracts.json",
+    "nativeTemplateCompileEvidence": "native-template-compile-check.json"
   },
   "implementation": [
     {
@@ -379,6 +381,12 @@
       "status": "Seven utility link contracts now compile and resolve using real engine operations; normal63/private6 remain unresolved, no executable/runtime acceptance",
       "evidence": "utility-primitives-compile-check.json",
       "remaining": "Native function/template/signature and whole original backtrace closure, node_internals source-policy closure, prior process/metadata/report/lifecycle dependencies, actual startup and complete catalog"
+    },
+    {
+      "area": "native function templates/signatures and concrete Data roots",
+      "status": "Real non-Value Template/Signature records, exact typed scope/persistent roots, native instantiation/brands/context caches and source helper probes compile; normal59/private2 still unlinked",
+      "evidence": "native-template-compile-check.json",
+      "remaining": "Whole backtrace source/dependencies and prior process/metadata/report/lifecycle closure; execute new4+prior32 controls on all4hosts after linking; constructor association/inheritance/recursive/generic-Data gaps remain"
     }
   ],
   "runtimeConformance": {
@@ -1164,8 +1172,8 @@
       "originalUtilityIntegrationComplete": false
     },
     "nativeUtilities": {
-      "status": "Whole original files compile; seven native contracts resolve, normal63/private6 symbols remain, no runtime artifact; node_internals source-policy closure still incomplete",
-      "evidence": "utility-primitives-compile-check.json",
+      "status": "Whole original utility bodies compile; native Template/Signature and typed Data root operations compile/resolve, normal59/private2 remain unlinked; source-policy and runtime proof incomplete",
+      "evidence": "native-template-compile-check.json",
       "currentRuntimeValidated": false,
       "unmodifiedSourcePolicySatisfied": false
     }
@@ -1672,7 +1680,7 @@
     }
   },
   "nextWork": [
-    "Implement genuine FunctionTemplate.New/PrototypeTemplate, Signature.New and Template.Set with rooted callback/realm ownership and receiver brands, plus complete original debug_utils backtrace source/dependency closure. Normal63/private6 symbols remain; neither profile has an executable. Replace the existing Buffer ownership bridge through complete node_internals.h integration and retire FWrite through complete debug_utils.cc integration. Then identified four-host original-utility/regression execution, prior Message/source/report/lifecycle dependencies, real startup and full catalog; broader roadmap requires user review.",
+    "Integrate complete original debug_utils.cc/header dependencies to replace missing native/JS backtrace bodies and existing FWrite adapter; implement actual Message/StackTrace/SavedFrame/source/report dependencies. Private2/normal59 symbols remain, no executable. Complete node_internals source-policy closure. After linking execute new4+prior32 native-owner/helper controls on all4hosts with exact artifacts. Constructor association, inherited brands, recursive templates and other generic Data kinds remain explicit implementation gaps. Then genuine startup/CJS/ESM/full catalog/roadmap and user review gate.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1681,17 +1689,17 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 62,
+    "packageRevision": 63,
     "status": "failed final link",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 63,
-    "evidence": "utility-primitives-compile-check.json",
+    "undefinedSymbols": 59,
+    "evidence": "native-template-compile-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
-    "buildCacheKey": "2b717b93b0d6edbceac46cd3d30db323fbfd6cf9423dcf5bc77aaa27a5bfbee1",
+    "buildCacheKey": "d7ee60eed78970279fab2793358b971f002e884050d168abc6d10dde91173372",
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-utility-primitives-final-normal-1112-135447-a97a",
+    "buildJob": "node-templates-normal-final-1112-143153-57ee",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1725,17 +1733,14 @@
     "persistentHandleLayoutPrerequisitesCompile": true,
     "wholeOriginalUtilitiesCompile": true,
     "sourceIdentityRecords": 580,
-    "removedSinceRevision61": [
-      "kandelo_node_codec_api::ArrayBufferView::CopyContents(void*, unsigned long)",
-      "kandelo_node_codec_api::ArrayBufferView::HasBuffer() const",
-      "kandelo_node_codec_api::Function::SetName(kandelo_node_codec_api::Local<kandelo_node_codec_api::String>)",
-      "kandelo_node_codec_api::Isolate::LowMemoryNotification()",
-      "kandelo_node_codec_api::Isolate::TryGetCurrent()",
-      "kandelo_node_codec_api::LocalVector<kandelo_node_codec_api::Value>::data()",
-      "kandelo_node_codec_impl::per_process::v8_initialized"
+    "previousCompileEvidence": "utility-primitives-compile-check.json",
+    "removedSinceRevision62": [
+      "kandelo_node_codec_api::FunctionTemplate::New(kandelo_node_codec_api::Isolate*, void (*)(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&), kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Signature>, int, kandelo_node_codec_api::ConstructorBehavior, kandelo_node_codec_api::SideEffectType, kandelo_node_codec_api::CFunction const*)",
+      "kandelo_node_codec_api::FunctionTemplate::PrototypeTemplate()",
+      "kandelo_node_codec_api::Signature::New(kandelo_node_codec_api::Isolate*, kandelo_node_codec_api::Local<kandelo_node_codec_api::FunctionTemplate>)",
+      "kandelo_node_codec_api::Template::Set(kandelo_node_codec_api::Local<kandelo_node_codec_api::Name>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Data>)"
     ],
-    "addedSinceRevision61": [],
-    "previousCompileEvidence": "utilities-engine-check.json"
+    "addedSinceRevision62": []
   },
   "currentLibuvExecutablePath": {
     "packageRevision": 5,
@@ -1753,8 +1758,8 @@
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   },
   "currentNativeOwnerDiagnostic": {
-    "evidence": "utility-primitives-compile-check.json",
-    "packageRevision": 62,
+    "evidence": "native-template-compile-check.json",
+    "packageRevision": 63,
     "normalPackageArtifact": false,
     "startupAccepted": false,
     "normalEngineLinked": false,
@@ -1764,9 +1769,11 @@
     "currentDriversPerHost": 0,
     "lastRuntimeValidatedRevision": 60,
     "historicalDriversPerHost": 32,
-    "undefinedSymbols": 6,
+    "undefinedSymbols": 2,
     "historicalEvidence": "persistent-handle-engine-check.json",
-    "buildJob": "node-utility-primitives-final-private-1112-135447-40a3"
+    "buildJob": "node-templates-private-final-1112-143153-01b5",
+    "intendedDriversPerHost": 36,
+    "newDriversNotExecuted": 4
   },
   "historicalNativeOwnerDiagnostic": {
     "evidence": "persistent-handle-engine-check.json",

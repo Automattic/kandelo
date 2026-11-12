@@ -1,6 +1,7 @@
 #include "shell/node-upstream/codecs.h"
 
 #include "mozilla/Assertions.h"
+#include "mozilla/ScopeExit.h"
 
 #include <atomic>
 #include <cmath>
@@ -38,12 +39,14 @@
 #include "js/Object.h"
 #include "js/PropertyAndElement.h"
 #include "js/Realm.h"
+#include "js/RealmOptions.h"
 #include "js/SharedArrayBuffer.h"
 #include "js/StableStringChars.h"
 #include "js/Stack.h"
 #include "js/String.h"
 #include "js/Symbol.h"
 #include "js/TracingAPI.h"
+#include "js/WeakMap.h"
 #include "js/Wrapper.h"
 #include "shell/jsshell.h"
 #include "shell/node-upstream/buffer-memory.h"
@@ -87,6 +90,7 @@ struct State {
   native::Environment environment{&isolate};
   std::vector<std::unique_ptr<native::AliasedControl>> aliasedControls;
   std::vector<std::shared_ptr<GlobalRoot>> weakGlobals;
+  std::unique_ptr<JS::PersistentRootedObject> templateRealm;
   std::vector<std::unique_ptr<native::Realm>> realms;
   std::atomic<size_t> externalBytes{0}, created{0}, released{0}, spans{0}, collections{0};
   std::atomic<size_t> bufferCreated{0},bufferFreed{0},bufferBytes{0};
@@ -104,7 +108,7 @@ struct Cell {
   JS::PersistentRootedValue value;
   Cell(JSContext* cx, JS::HandleValue input) : value(cx, input) {}
 };
-template<class T> std::unique_ptr<Value> CloneWrapper(std::unique_ptr<Cell> cell) {
+template<class T> std::unique_ptr<Data> CloneWrapper(std::unique_ptr<Cell> cell) {
   return std::make_unique<T>(std::move(cell),&CloneWrapper<T>);
 }
 struct Frame {
@@ -113,12 +117,12 @@ struct Frame {
   JS::RootedObject binding;
   JS::RootedValue receiver;
   JS::RootedObject propertyHolder;
-  JS::RootedValue propertyData, propertyReturn;
+  JS::RootedValue propertyData, propertyReturn, callbackData;
   std::shared_ptr<kandelo::node::TraceProcess> tracing;
   std::shared_ptr<State> state;
   JS::CallArgs* arguments;
   Domain domain;
-  std::vector<std::unique_ptr<Value>> roots;
+  std::vector<std::unique_ptr<Data>> roots;
   std::vector<std::unique_ptr<Context>> contexts;
   std::vector<std::unique_ptr<native::SpanOwner>> spans;
   std::vector<std::shared_ptr<void>> storage;
@@ -126,18 +130,23 @@ struct Frame {
   inline static thread_local Frame* current = nullptr;
   Frame(JSContext* cx, JS::HandleObject realm, std::shared_ptr<State> state,
         JS::CallArgs* arguments = nullptr, Domain domain = Domain::Decoder)
-      : cx(cx), realm(cx, realm), binding(cx), receiver(cx), propertyHolder(cx), propertyData(cx), propertyReturn(cx), state(std::move(state)), arguments(arguments), domain(domain),
+      : cx(cx), realm(cx, realm), binding(cx), receiver(cx), propertyHolder(cx), propertyData(cx), propertyReturn(cx), callbackData(cx), state(std::move(state)), arguments(arguments), domain(domain),
         previous(current) { current = this; }
   ~Frame();
   template<class T> Local<T> Own(JS::HandleValue value) {
-    auto item = CloneWrapper<T>(std::make_unique<Cell>(cx, value));
+    JS::RootedValue stored(cx,value);
+    if constexpr(!std::is_base_of_v<Value,T>){
+      MOZ_RELEASE_ASSERT(stored.isObject());
+      JS::RootedObject object(cx,js::CheckedUnwrapDynamic(&stored.toObject(),cx,false));MOZ_RELEASE_ASSERT(object);stored.setObject(*object);
+    }
+    auto item = CloneWrapper<T>(std::make_unique<Cell>(cx, stored));
     auto* pointer = static_cast<T*>(item.get()); roots.push_back(std::move(item));
     return Local<T>(pointer);
   }
   Local<Value> OwnValue(JS::HandleValue value);
-  Local<Value> OwnClone(const Value& source,JS::HandleValue value) {
+  Local<Data> OwnClone(const Data& source,JS::HandleValue value) {
     auto item=source.CloneRoot(std::make_unique<Cell>(cx,value));
-    auto* pointer=item.get();roots.push_back(std::move(item));return Local<Value>(pointer);
+    auto* pointer=item.get();roots.push_back(std::move(item));return Local<Data>(pointer);
   }
   Local<Context> OwnContext(JS::HandleObject global) {
     MOZ_RELEASE_ASSERT(JS_IsGlobalObject(global));
@@ -178,7 +187,7 @@ static void StressCollection(Frame& frame) {
   MOZ_RELEASE_ASSERT(after!=before);
   frame.state->collections.fetch_add(uint32_t(after-before));
 }
-static JS::HandleValue Input(Local<Value> value) {
+static JS::HandleValue Input(Local<Data> value) {
   MOZ_RELEASE_ASSERT(!value.IsEmpty()); return value->cell().value;
 }
 static JSObject* UnwrapView(JSContext* cx, JS::HandleValue input) {
@@ -197,11 +206,12 @@ static JSObject* UnwrapBytes(JSContext* cx, JS::HandleValue input) {
   return object && (JS_IsArrayBufferViewObject(object) || JS::IsArrayBufferObject(object) ||
                     JS::IsSharedArrayBufferObject(object)) ? object : nullptr;
 }
-Value::Value(std::unique_ptr<Cell> cell,RootFactory factory)
-    :cell_(std::move(cell)),rootFactory_(factory?factory:&CloneWrapper<Value>){}
-Value::~Value() = default;
-Cell& Value::cell() const { return *cell_; }
-std::unique_ptr<Value> Value::CloneRoot(std::unique_ptr<Cell> cell)const{return rootFactory_(std::move(cell));}
+Data::Data(std::unique_ptr<Cell> cell,RootFactory factory):cell_(std::move(cell)),rootFactory_(factory){MOZ_RELEASE_ASSERT(factory);}
+Data::~Data()=default;
+Cell& Data::cell()const{return *cell_;}
+std::unique_ptr<Data> Data::CloneRoot(std::unique_ptr<Cell> cell)const{return rootFactory_(std::move(cell));}
+Value::Value(std::unique_ptr<Cell> cell,RootFactory factory):Data(std::move(cell),factory?factory:&CloneWrapper<Value>){}
+Value::~Value()=default;
 Local<Value> Null(Isolate* isolate){auto& f=Current(isolate);JS::RootedValue value(f.cx,JS::NullValue());return f.OwnValue(value);}
 void Isolate::DateTimeConfigurationChangeNotification(TimeZoneDetection detection) {
   auto& f=Current(this);f.state->environment.AssertForeground();
@@ -721,7 +731,7 @@ std::shared_ptr<NativeEnvOptions> Environment::options(){
 Isolate* IsolateData::isolate() { return &Frame::current->state->isolate; }
 void IsolateData::set_i18n_converter_template(Local<ObjectTemplate> value) {
   auto& f=*Frame::current;CHECK(f.binding && JS::GetClass(f.binding)==&api::icuBindingClass);
-  JS::SetReservedSlot(f.binding,0,Input(value));
+  JS::RootedValue metadata(f.cx,Input(value));CHECK(JS_WrapValue(f.cx,&metadata));JS::SetReservedSlot(f.binding,0,metadata);
 }
 Local<ObjectTemplate> Environment::i18n_converter_template() {
   auto& f=*Frame::current;CHECK(f.binding && JS::GetClass(f.binding)==&api::icuBindingClass);
@@ -749,14 +759,14 @@ void FinalizeConverter(JS::GCContext*,JSObject* object) {
   }
 }
 const JSClassOps converterOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,FinalizeConverter};
-const JSClass converterClass={"Converter",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
+const JSClass converterClass={"Converter",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount+1)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
 BaseObject::BaseObject(Environment* environment,Local<Object> input) {
   auto& f=*Frame::current;JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
   CHECK(environment==&f.state->environment);
   CHECK(object && JS::GetClass(object)==(f.domain==api::Domain::Diagnostics?&nativeChannelClass:f.domain==api::Domain::Trace?&categoryClass:&converterClass) && JS::GetReservedSlot(object,0).isUndefined());
   owner_=std::make_unique<NativeObjectOwner>(f,object);
   // Keep ownership in the traced graph after MakeWeak drops the native root.
-  JS::SetReservedSlot(object,1,JS::ObjectValue(*f.realm));
+  {JSAutoRealm home(f.cx,object);JS::RootedObject realm(f.cx,f.realm);CHECK(JS_WrapObject(f.cx,&realm));JS::SetReservedSlot(object,1,JS::ObjectValue(*realm));}
   JS::SetReservedSlot(object,0,JS::PrivateValue(this));
   if(f.domain==api::Domain::Diagnostics){
     owner_->realm=environment->principal_realm();CHECK(owner_->realm);
@@ -779,8 +789,8 @@ BaseObject* BaseObject::Unwrap(Local<Object> input) {
   auto& f=*Frame::current;JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
   if (!object || JS::GetClass(object)!=(f.domain==api::Domain::Trace?&categoryClass:&converterClass)) return nullptr;
   auto value=JS::GetReservedSlot(object,0);if (value.isUndefined()) return nullptr;
-  JS::RootedObject realm(f.cx,&JS::GetReservedSlot(object,1).toObject());
-  if (!kandelo::node::CheckRealmLibraryActive(f.cx,realm)) return nullptr;
+  JS::RootedObject realm(f.cx,js::CheckedUnwrapDynamic(&JS::GetReservedSlot(object,1).toObject(),f.cx,false));
+  if (!realm||!kandelo::node::CheckRealmLibraryActive(f.cx,realm)) return nullptr;
   return static_cast<BaseObject*>(value.toPrivate());
 }
 void FWrite(FILE* stream,const std::string& bytes) {
@@ -798,50 +808,8 @@ native::SpanOwner& Frame::Borrow(Local<Value> input) {
   for (auto& span:spans) if (span->object==object) return *span;
   spans.push_back(std::make_unique<native::SpanOwner>(*this, object)); return *spans.back();
 }
-namespace {
-bool ConverterConstructor(JSContext* cx,unsigned argc,JS::Value* vp) {
-  auto args=JS::CallArgsFromVp(argc,vp);
-  if (!args.isConstructing()) {
-    JS::RootedObject receiver(cx,args.thisv().isNullOrUndefined()?JS::CurrentGlobalOrNull(cx):JS::ToObject(cx,args.thisv()));
-    if (!receiver) return false;args.rval().setObject(*receiver);return true;
-  }
-  JS::RootedObject object(cx,JS_NewObjectForConstructor(cx,&native::converterClass,args));
-  if (!object) return false;args.rval().setObject(*object);return true;
-}
-}
-Local<FunctionTemplate> CreateConverterTemplate(Isolate* isolate,std::nullptr_t) {
-  auto& f=Current(isolate);
-  JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,ConverterConstructor,0,JSFUN_CONSTRUCTOR,""));if (!function) return {};
-  JS::RootedObject object(f.cx,JS_GetFunctionObject(function));js::SetFunctionNativeReserved(object,0,JS::Int32Value(0));
-  JS::RootedObject prototype(f.cx,JS_NewPlainObject(f.cx));
-  if (!prototype || !JS_DefineProperty(f.cx,prototype,"constructor",object,0) ||
-      !JS_DefineProperty(f.cx,object,"prototype",prototype,JSPROP_PERMANENT)) return {};
-  JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<FunctionTemplate>(value);
-}
-Local<ObjectTemplate> FunctionTemplate::InstanceTemplate() {
-  auto& f=*Frame::current;JS::RootedValue value(f.cx,cell().value);return f.Own<ObjectTemplate>(value);
-}
-void FunctionTemplate::SetClassName(Local<String> name) {
-  auto& f=*Frame::current;JS::RootedFunction function(f.cx,&cell().value.toObject().as<JSFunction>());
-  JS::RootedString string(f.cx,name->cell().value.toString());
-  JS::Rooted<JSAtom*> atom(f.cx,js::AtomizeString(f.cx,string));CHECK_NOT_NULL(atom);function->setAtom(atom);
-}
-void ObjectTemplate::SetInternalFieldCount(int count) {
-  CHECK(count==native::BaseObject::kInternalFieldCount);
-  if (Frame::current->domain==Domain::Trace) {
-    SetTraceFieldCount(&cell().value.toObject(),count);
-  } else js::SetFunctionNativeReserved(&cell().value.toObject(),0,JS::Int32Value(count));
-}
-MaybeLocal<Object> ObjectTemplate::NewInstance(Local<Context> context) {
-  auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};if (JS_IsExceptionPending(f.cx)) return {};
-  Context::Scope home(context);
-  JS::RootedObject constructor(f.cx,&cell().value.toObject());
-  CHECK(js::GetFunctionNativeReserved(constructor,0).toInt32()==native::BaseObject::kInternalFieldCount);
-  if(!JS_WrapObject(f.cx,&constructor))return {};
-  JS::RootedValue callable(f.cx,JS::ObjectValue(*constructor));JS::RootedObject object(f.cx);
-  if (!JS::Construct(f.cx,callable,JS::HandleValueArray::empty(),&object)) return {};
-  JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Object>(value);
-}
+bool ApplyNativeTemplate(Frame&,Local<ObjectTemplate>,JS::HandleObject);
+Local<FunctionTemplate> CreateNativeWrapperTemplate(Isolate*,int);
 namespace {
 using Callback=void(*)(const FunctionCallbackInfo<Value>&);
 struct CallbackOwner { Callback callback;Domain domain;bool constructor=false,categoryReceiver=false;int fieldCount=0;std::shared_ptr<const CFunction::Signature> fast; };
@@ -943,7 +911,9 @@ JSObject* CreateProcessMethodsBinding(JSContext* cx,JS::HandleObject realm) {
   JS::RootedObject object(cx,JS_NewObject(cx,&native::nativeBindingClass));if(!object)return nullptr;
   frame.binding=object;JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
   native::IsolateData isolateData;
-  kandelo_process_methods_adapter::isolate_initializer(&isolateData,frame.Own<api::ObjectTemplate>(value));
+  auto bindingTemplate=api::ObjectTemplate::New(&state->isolate,{});
+  kandelo_process_methods_adapter::isolate_initializer(&isolateData,bindingTemplate);
+  if(!api::ApplyNativeTemplate(frame,bindingTemplate,object))return nullptr;
   if(JS_IsExceptionPending(cx))return nullptr;
   kandelo_process_methods_adapter::initializer(frame.Own<api::Object>(value),frame.OwnValue(unused),state->isolate.GetCurrentContext(),nullptr);
   return JS_IsExceptionPending(cx)?nullptr:object.get();
@@ -963,7 +933,9 @@ JSObject* CreateIcuBinding(JSContext* cx,JS::HandleObject realm) {
   JS::RootedObject object(cx,JS_NewObject(cx,&api::icuBindingClass));if (!object) return nullptr;frame.binding=object;
   JS::RootedValue value(cx,JS::ObjectValue(*object)),unused(cx,JS::UndefinedValue());
   native::IsolateData data;
-  kandelo_icu_adapter::initializer(&data,frame.Own<api::ObjectTemplate>(value));
+  auto bindingTemplate=api::ObjectTemplate::New(&state->isolate,{});
+  kandelo_icu_adapter::initializer(&data,bindingTemplate);
+  if(!api::ApplyNativeTemplate(frame,bindingTemplate,object))return nullptr;
   if (JS_IsExceptionPending(cx)) return nullptr;
   kandelo_icu_adapter::context_initializer(frame.Own<api::Object>(value),frame.OwnValue(unused),state->isolate.GetCurrentContext(),nullptr);
   if (JS_IsExceptionPending(cx)) return nullptr;return object;
@@ -994,4 +966,5 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 #include "shell/node-upstream/native-owner-probe-inl.h"
 #include "shell/node-upstream/property-codecs-inl.h"
 #include "shell/node-upstream/snapshot-codecs-inl.h"
+#include "shell/node-upstream/template-codecs-inl.h"
 #include "shell/node-upstream/trace-codecs-inl.h"

@@ -11,7 +11,7 @@ template<class T> std::unique_ptr<T> RetainTypedRoot(Isolate* isolate,Local<T> i
 }
 template std::unique_ptr<Value> RetainTypedRoot(Isolate*,Local<Value>);
 template std::unique_ptr<Name> RetainTypedRoot(Isolate*,Local<Name>);
-std::unique_ptr<Value> RetainRoot(Isolate* isolate,Local<Value> input) {
+std::unique_ptr<Data> RetainRoot(Isolate* isolate,Local<Data> input) {
   auto& frame=Current(isolate);CHECK(!input.IsEmpty());
   JS::RootedValue value(frame.cx,Input(input));
   return input->CloneRoot(std::make_unique<Cell>(frame.cx,value));
