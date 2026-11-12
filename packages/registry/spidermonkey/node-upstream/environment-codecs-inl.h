@@ -85,6 +85,7 @@ struct EnvironmentData {
   bool initialized=false,closed=false,stopping=false,draining=false;
   bool weakRegistered=false;
   bool ownsProcessState=false,processInvocationReady=false;
+  bool sourceMapsEnabled=false,printedError=false;
   const std::vector<std::string>* arguments=nullptr;
   const std::vector<std::string>* execArguments=nullptr;
   std::string executablePath;
@@ -95,6 +96,7 @@ struct EnvironmentData {
   std::vector<std::unique_ptr<EnvironmentCleanupProbe>> probes;
   std::vector<std::unique_ptr<api::Global<api::ArrayBuffer>>> weakControls;
   api::Global<api::Function> processEmitWarningSync;
+  api::Global<api::Function> sourceMapErrorSource,cacheGeneratedSourceMap;
   ProcessImmediateInfo immediate;
   ExclusiveAccess<HostPort> inspector;
   explicit EnvironmentData(Environment* environment):cleanables(environment),immediate(environment) {}
@@ -184,6 +186,14 @@ bool Environment::has_run_bootstrapping_code() const {
 void Environment::set_process_emit_warning_sync(Local<Function> callback) {
   AssertForeground();CHECK(!IsClosed());data_->processEmitWarningSync.Reset(isolate(),callback);
 }
+bool Environment::source_maps_enabled(){AssertForeground();return data_->sourceMapsEnabled;}
+void Environment::set_source_maps_enabled(bool enabled){AssertForeground();CHECK(!IsClosed());data_->sourceMapsEnabled=enabled;}
+bool Environment::printed_error(){AssertForeground();return data_->printedError;}
+void Environment::set_printed_error(bool printed){AssertForeground();CHECK(!IsClosed());data_->printedError=printed;}
+Local<Function> Environment::get_source_map_error_source(){AssertForeground();return data_->sourceMapErrorSource.Get(isolate());}
+void Environment::set_get_source_map_error_source(Local<Function> callback){AssertForeground();CHECK(!IsClosed());data_->sourceMapErrorSource.Reset(isolate(),callback);}
+Local<Function> Environment::maybe_cache_generated_source_map(){AssertForeground();return data_->cacheGeneratedSourceMap.Get(isolate());}
+void Environment::set_maybe_cache_generated_source_map(Local<Function> callback){AssertForeground();CHECK(!IsClosed());data_->cacheGeneratedSourceMap.Reset(isolate(),callback);}
 int HostPort::port() const { return kandelo::node::NativeInspectorPort(); }
 void HostPort::set_port(int port) { kandelo::node::SetNativeInspectorPort(uint16_t(port)); }
 ExclusiveAccess<HostPort>* Environment::inspector_host_port() { AssertForeground();return &data_->inspector; }
@@ -283,6 +293,7 @@ void Environment::Shutdown(JSContext* cx) {
   CHECK(kandelo::node::ClearSnapshotCallbacks(cx,runtime));
   CHECK(kandelo::node::ClearMessagingDeserializer(cx,runtime));data_->embedderPreload=nullptr;
   data_->processEmitWarningSync.Reset();
+  data_->sourceMapErrorSource.Reset();data_->cacheGeneratedSourceMap.Reset();data_->sourceMapsEnabled=false;
   state->aliasedControls.clear();
   if(data_->weakRegistered){JS_RemoveWeakPointerZonesCallback(cx,api::UpdateEnvironmentWeakEdges);data_->weakRegistered=false;}
   for(auto& root:state->weakGlobals){CHECK(root->strong&&!root->strong->cell().value.initialized());root->weak=nullptr;}

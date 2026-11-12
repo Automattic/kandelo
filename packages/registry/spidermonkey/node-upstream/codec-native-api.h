@@ -177,7 +177,10 @@ class Value:public Data {
 };
 class Name : public Value { public: using Value::Value; };
 class Symbol : public Name {public:using Name::Name;static Local<Symbol> GetDispose(Isolate*);static Local<Symbol> GetAsyncDispose(Isolate*);};
-class Private : public Value {public:using Value::Value;Local<Value> Name();};
+class Private : public Data {
+ public:using Data::Data;bool IsValue()const override{return false;}bool IsPrivate()const override{return true;}
+ Local<Value> Name()const;
+};
 class MicrotaskQueue {public:void EnqueueMicrotask(Isolate*,void(*)(void*),void*);};
 enum PropertyAttribute { None=0, ReadOnly=1, DontEnum=2, DontDelete=4 };
 enum class SideEffectType { kHasSideEffect, kHasNoSideEffect, kHasSideEffectToReceiver };
@@ -288,13 +291,13 @@ class Object : public Value {
   static Local<Object> New(Isolate*);
   static Local<Object> New(Isolate*,Local<Value>,Local<Name>*,Local<Value>*,size_t);
   MaybeLocal<Array> GetOwnPropertyNames(Local<Context>);
-  MaybeLocal<Value> GetPrivate(Local<Context>,Local<Value>);
+  MaybeLocal<Value> GetPrivate(Local<Context>,Local<Private>);
   Local<String> GetConstructorName();
   Maybe<bool> DefineOwnProperty(Local<Context>,Local<Name>,Local<Value>,PropertyAttribute=None);
   void* GetAlignedPointerFromInternalField(int,EmbedderDataTag);
-  Local<Value> GetInternalField(int);void SetInternalField(int,Local<Value>);
+  Local<Data> GetInternalField(int);void SetInternalField(int,Local<Data>);
   Maybe<bool> Set(Local<Context>,Local<Value>,Local<Value>);
-  Maybe<bool> SetPrivate(Local<Context>,Local<Value>,Local<Value>);
+  Maybe<bool> SetPrivate(Local<Context>,Local<Private>,Local<Value>);
   Maybe<bool> SetPrototypeV2(Local<Context>,Local<Value>);
   MaybeLocal<Value> Get(Local<Context>,Local<Value>);
   Maybe<bool> SetNativeDataProperty(
@@ -433,7 +436,10 @@ class String : public Name {
   };
   enum class WriteFlags { kReplaceInvalidUtf8 };
   static Local<String> Empty(Isolate*);
-  static Local<String> NewFromUtf8Literal(Isolate*,const char*);
+  template<size_t N> static Local<String> NewFromUtf8Literal(Isolate* isolate,const char(&text)[N]) {
+    static_assert(N>0&&N-1<=size_t(std::numeric_limits<int>::max()));
+    return NewFromUtf8(isolate,text,NewStringType::kNormal,int(N-1)).ToLocalChecked();
+  }
   static Local<String> Concat(Isolate*,Local<String>,Local<String>);
   static MaybeLocal<String> NewFromUtf8(Isolate*,const char*,NewStringType=NewStringType::kNormal,int=-1);
   static MaybeLocal<String> NewFromOneByte(Isolate*,const uint8_t*,NewStringType,int);
@@ -705,7 +711,7 @@ class Environment {
   Local<Function> get_source_map_error_source();void set_get_source_map_error_source(Local<Function>);
   Local<Function> maybe_cache_generated_source_map();void set_maybe_cache_generated_source_map(Local<Function>);
   Local<Function> enhance_fatal_stack_before_inspector();Local<Function> enhance_fatal_stack_after_inspector();
-  Local<Value> decorated_private_symbol();Local<Value> arrow_message_private_symbol();
+  Local<Private> decorated_private_symbol();Local<Private> arrow_message_private_symbol();
   bool printed_error();void set_printed_error(bool);bool abort_on_uncaught_exception();
   Local<Object> process_object();ExitCode exit_code(ExitCode);
   EnabledDebugList* enabled_debug_list();
@@ -721,12 +727,12 @@ class Environment {
 #define KANDELO_ENV_STRING_ACCESSOR(name, text) Local<String> name();
   PER_ISOLATE_STRING_PROPERTIES(KANDELO_ENV_STRING_ACCESSOR)
 #undef KANDELO_ENV_STRING_ACCESSOR
-  Local<Value> exit_info_private_symbol();
+  Local<Private> exit_info_private_symbol();
   struct ExitInfo {Local<Int32Array> GetJSArray();};
   ExitInfo exit_info();
   using EmbedderPreload=void(*)(Environment*,Local<Object>,Local<Function>);
   EmbedderPreload embedder_preload();void set_embedder_preload(EmbedderPreload);
-  Local<Object> buffer_prototype_object();Local<Value> untransferable_object_private_symbol();
+  Local<Object> buffer_prototype_object();Local<Private> untransferable_object_private_symbol();
   IsolateData* isolate_data();void ThrowRangeError(const char*);
   void set_trace_category_state_function(Local<Function>);
   bool async_context_frame_enabled() const;

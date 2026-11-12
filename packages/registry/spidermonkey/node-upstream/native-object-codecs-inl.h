@@ -132,6 +132,37 @@ Local<Symbol> ReadEnvironmentSymbol(Environment* environment,const char* name){
 }
 Local<Symbol> Environment::owner_symbol(){return ReadEnvironmentSymbol(this,"owner_symbol");}
 Local<Symbol> Environment::resource_symbol(){return ReadEnvironmentSymbol(this,"resource_symbol");}
+namespace {
+Local<Private> ReadEnvironmentPrivate(Environment* environment,const char* name){
+  auto& frame=Current(environment->isolate());environment->AssertForeground();
+  JS::RootedObject runtime(frame.cx,kandelo::node::GetRealmRuntime(frame.cx,frame.realm));if(!runtime)return {};
+  JS::RootedSymbol symbol(frame.cx,kandelo::node::GetRuntimeSymbol(frame.cx,runtime,name));if(!symbol)return {};
+  CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
+  JS::RootedValue value(frame.cx,JS::SymbolValue(symbol));return frame.Own<Private>(value);
+}
+Local<Function> ReadEnvironmentStackCallback(Environment* environment,kandelo::node::ErrorStackCallback callback){
+  auto& frame=Current(environment->isolate());environment->AssertForeground();auto context=environment->context();if(context.IsEmpty())return {};
+  JS::RootedValue value(frame.cx);
+  {Context::Scope home(context);JS::RootedObject runtime(frame.cx,kandelo::node::GetRealmRuntime(frame.cx,frame.realm));if(!runtime||!kandelo::node::GetCurrentErrorStackCallback(frame.cx,runtime,callback,&value))return {};}
+  if(value.isUndefined())return {};
+  if(!JS_WrapValue(frame.cx,&value))return {};CHECK(value.isObject()&&JS::IsCallable(&value.toObject()));return frame.Own<Function>(value);
+}
+void WriteRealmStackCallback(Realm* realm,kandelo::node::ErrorStackCallback callback,Local<Function> value){
+  auto& frame=Current(realm->isolate());realm->env()->AssertForeground();auto context=realm->context();CHECK(!context.IsEmpty());
+  Context::Scope home(context);JS::RootedObject runtime(frame.cx,kandelo::node::GetRealmRuntime(frame.cx,frame.realm));CHECK(runtime);
+  JS::RootedValue input(frame.cx,value.IsEmpty()?JS::UndefinedValue():Input(value).get());
+  CHECK(kandelo::node::SetCurrentErrorStackCallback(frame.cx,runtime,callback,input));
+}
+}
+Local<Private> Environment::arrow_message_private_symbol(){return ReadEnvironmentPrivate(this,"arrow_message_private_symbol");}
+Local<Private> Environment::decorated_private_symbol(){return ReadEnvironmentPrivate(this,"decorated_private_symbol");}
+Local<Private> Environment::exit_info_private_symbol(){return ReadEnvironmentPrivate(this,"exit_info_private_symbol");}
+Local<Private> Environment::empty_context_frame_sentinel_symbol(){return ReadEnvironmentPrivate(this,"empty_context_frame_sentinel_symbol");}
+Local<Function> Environment::enhance_fatal_stack_before_inspector(){return ReadEnvironmentStackCallback(this,kandelo::node::ErrorStackCallback::BeforeFatal);}
+Local<Function> Environment::enhance_fatal_stack_after_inspector(){return ReadEnvironmentStackCallback(this,kandelo::node::ErrorStackCallback::AfterFatal);}
+void Realm::set_prepare_stack_trace_callback(Local<Function> callback){WriteRealmStackCallback(this,kandelo::node::ErrorStackCallback::Prepare,callback);}
+void Realm::set_enhance_fatal_stack_before_inspector(Local<Function> callback){WriteRealmStackCallback(this,kandelo::node::ErrorStackCallback::BeforeFatal,callback);}
+void Realm::set_enhance_fatal_stack_after_inspector(Local<Function> callback){WriteRealmStackCallback(this,kandelo::node::ErrorStackCallback::AfterFatal,callback);}
 BaseObject* Realm::GetBindingRaw(size_t index){env()->AssertForeground();auto it=data_->bindings.find(index);return it==data_->bindings.end()?nullptr:it->second;}
 void Realm::InstallBindingRaw(size_t index,BaseObject* object){env()->AssertForeground();CHECK(!data_->bindings.contains(index)&&data_->objects.contains(object));data_->bindings.emplace(index,object);}
 void Realm::RegisterObject(BaseObject* object){env()->AssertForeground();CHECK(data_->objects.insert(object).second);}

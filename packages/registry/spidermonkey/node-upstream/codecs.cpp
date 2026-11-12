@@ -62,6 +62,7 @@
 #undef v8
 
 #include "shell/node-upstream/error-policy-native-api.h"
+#include "shell/node-upstream/error-stack.h"
 #include "shell/node-upstream/fatal-errors-native-api.h"
 #include "shell/node-upstream/options.h"
 #include "shell/node-upstream/per-context.h"
@@ -139,7 +140,10 @@ struct Frame {
   ~Frame();
   template<class T> Local<T> Own(JS::HandleValue value) {
     JS::RootedValue stored(cx,value);
-    if constexpr(!std::is_base_of_v<Value,T>){
+    if constexpr(std::is_same_v<T,Private>){
+      MOZ_RELEASE_ASSERT(stored.isSymbol());JS::RootedSymbol symbol(cx,stored.toSymbol());
+      MOZ_RELEASE_ASSERT(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
+    }else if constexpr(!std::is_base_of_v<Value,T>){
       MOZ_RELEASE_ASSERT(stored.isObject());
       JS::RootedObject object(cx,js::CheckedUnwrapDynamic(&stored.toObject(),cx,false));MOZ_RELEASE_ASSERT(object);stored.setObject(*object);
     }

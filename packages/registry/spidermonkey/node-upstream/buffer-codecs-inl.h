@@ -7,6 +7,15 @@ bool SameLocal(Data* left,Data* right) {
   if(!left||!right)return left==right;bool same;CHECK(JS::SameValue(Frame::current->cx,left->cell().value,right->cell().value,&same));return same;
 }
 bool Value::IsObject() const { return cell().value.isObject(); }
+bool Value::IsNativeError() const {
+  auto* object=UnwrapObject(Frame::current->cx,cell().value);return object&&object->is<js::ErrorObject>();
+}
+Local<Value> Private::Name()const {
+  auto& frame=*Frame::current;JS::RootedValue key(frame.cx,cell().value);CHECK(key.isSymbol());
+  JS::RootedSymbol symbol(frame.cx,key.toSymbol());CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
+  JS::RootedString description(frame.cx,JS::GetSymbolDescription(symbol));
+  JS::RootedValue value(frame.cx,description?JS::StringValue(description):JS::UndefinedValue());return frame.OwnValue(value);
+}
 bool Value::IsTypedArray() const { auto* object=UnwrapObject(Frame::current->cx,cell().value);return object && JS_IsTypedArrayObject(object); }
 static int64_t IntegerNumber(double number) {
   if(std::isnan(number))return 0;
@@ -49,13 +58,21 @@ Maybe<bool> Object::SetPrototypeV2(Local<Context> context,Local<Value> prototype
   JS::RootedObject proto(frame.cx,input.toObjectOrNull());
   if(!JS_WrapObject(frame.cx,&object)||!JS_WrapObject(frame.cx,&proto)||!JS_SetPrototype(frame.cx,object,proto))return {};return Just(true);
 }
-Maybe<bool> Object::SetPrivate(Local<Context> context,Local<Value> property,Local<Value> input) {
+Maybe<bool> Object::SetPrivate(Local<Context> context,Local<Private> property,Local<Value> input) {
   auto& frame=Current(context->isolate);NativeEntry nativeEntry(frame);if(nativeEntry.Terminated())return {};Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());
   JS::RootedValue key(frame.cx,Input(property)),value(frame.cx,Input(input));CHECK(key.isSymbol());
   JS::RootedSymbol symbol(frame.cx,key.toSymbol());
   CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
   JS::RootedId id(frame.cx,JS::PropertyKey::Symbol(key.toSymbol()));
   if(!JS_WrapObject(frame.cx,&object)||!JS_WrapValue(frame.cx,&value)||!JS_DefinePropertyById(frame.cx,object,id,value,0))return {};return Just(true);
+}
+MaybeLocal<Value> Object::GetPrivate(Local<Context> context,Local<Private> property) {
+  auto& frame=Current(context->isolate);NativeEntry nativeEntry(frame);if(nativeEntry.Terminated())return {};Context::Scope home(context);
+  JS::RootedObject object(frame.cx,&cell().value.toObject());JS::RootedValue key(frame.cx,Input(property)),value(frame.cx);
+  CHECK(key.isSymbol());JS::RootedSymbol symbol(frame.cx,key.toSymbol());CHECK(JS::GetSymbolCode(symbol)==JS::SymbolCode::EmbeddingPrivateSymbol);
+  JS::RootedId id(frame.cx,JS::PropertyKey::Symbol(symbol));
+  if(!JS_WrapObject(frame.cx,&object)||!JS_GetPropertyById(frame.cx,object,id,&value))return {};
+  return frame.OwnValue(value);
 }
 size_t ArrayBuffer::ByteLength() const {
   auto& frame=*Frame::current;JS::RootedObject buffer(frame.cx,UnwrapObject(frame.cx,cell().value));CHECK(buffer);
@@ -198,10 +215,10 @@ Local<Object> Environment::buffer_prototype_object() {
   JS::RootedObject object(frame.cx,kandelo::node::GetRealmBufferPrototype(frame.cx,principal));if(!object)return {};
   JS::RootedValue value(frame.cx,JS::ObjectValue(*object));return frame.Own<Object>(value);
 }
-Local<Value> Environment::untransferable_object_private_symbol() {
+Local<Private> Environment::untransferable_object_private_symbol() {
   auto& frame=Current(isolate());JS::RootedObject runtime(frame.cx,kandelo::node::GetRealmRuntime(frame.cx,frame.realm));CHECK(runtime);
   JS::RootedSymbol key(frame.cx,kandelo::node::GetRuntimeSymbol(frame.cx,runtime,"untransferable_object_private_symbol"));CHECK(key);
-  JS::RootedValue value(frame.cx,JS::SymbolValue(key));return frame.OwnValue(value);
+  JS::RootedValue value(frame.cx,JS::SymbolValue(key));return frame.Own<Private>(value);
 }
 IsolateData* Environment::isolate_data() { Current(isolate());static thread_local IsolateData data;return &data; }
 bool IsolateData::is_building_snapshot() const { return false; } // This embedding creates live realms; it has no snapshot builder.

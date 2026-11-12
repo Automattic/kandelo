@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 65 source connects the original process initializer,
+The current revision 66 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 36 symbols and has no normal runnable artifact.
+still fails final linking on 25 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -2768,3 +2768,20 @@ The fresh, unmodified normal package recipe compiles but fails linking on 36 sym
 All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. The Buffer bridge still requires whole node_internals.h integration. Genuine startup, separate CJS/ESM, the full backend catalog and roadmap remain unfinished; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
 
 See the [native Message contracts](../tests/nodejs/upstream/native-message-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-message-engine-check.json).
+
+
+## Native private handles and error state (revision 66)
+
+Private handles are now non-Value Data over actual embedding-private VM symbols. Scope and persistent roots preserve that kind and validate the underlying symbol; Name reads its actual description. Native Object.GetPrivate and SetPrivate use the VM's hidden own-only property operations, including cross-compartment wrapping and engine exceptions. Environment arrow, decorated, exit, untransferable and async-context sentinel keys share the existing runtime inventory. Internal-field declarations now accept Data as required by the original async-context sentinel consumer; storage and complete layouts remain unimplemented. Private.New/ForApi and generic weak Data remain unavailable.
+
+Value.IsNativeError inspects the actual unwrapped engine ErrorObject kind, including subclasses, without public prototype or instanceof heuristics. NewFromUtf8Literal derives its byte length from the native array bound, preserving embedded NUL and UTF8. General Object.GetConstructorName remains undefined: mutable public prototypes do not supply genuine construction metadata.
+
+Native realm prepare/fatal callback setters share the existing per-context error-stack slots with the JavaScript binding. Environment fatal getters read the principal context even while another realm is active. Missing callbacks remain empty. Source-map source/cache callbacks have independent strong native roots, preserve identity, reentry and thrown values, and reset at shutdown. Source-map enable and printed-error state are independent foreground-owned fields, initially false as in the original Environment. These prerequisites do not activate the full original fatal/source-map initializer or prove full reporting behavior.
+
+The identified private artifact passes 53 process drivers on each of Node, Chromium, Firefox and WebKit: eight new state/private/callback drivers and all 45 previous regressions, 212 guest processes total. Controls cover hidden own storage and GC, proxy/revoked-proxy and foreign-realm access, native Error classification, NUL/Unicode literals, shared callback identity, principal-versus-active context, callback reentry/exceptions, independent flags, job draining and registered-root retirement. The artifact is 59,920,419 bytes, SHA-256 `8db6913a0b2562ec924c7c6281c7581498f5c92c0b667c58c70eade6022a34dd`, using the unchanged ABI56 kernel. It rejects process_methods and cannot be installed as the normal package. Browser storage cleanup diagnostics remain separate from guest verdicts.
+
+The targeted normal build has no C++ compile errors but fails final linking on 25 symbols, down from 36 by 11 with no additions. Its original recipe operations use the exact previously verified prepared source in place of source acquisition/patch application; this run does not establish a fresh resolver-cache publication or produce a normal executable. Initial Data/internal-field declaration and Private rooting failures are retained. The latter was a real bridge bug: a generic non-Value root assumed an object, while Private owns an actual symbol; the corrected factory preserves other Data object-root behavior.
+
+All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. Full OOM/security/lifecycle conformance, complete internal-field layouts, Buffer whole node_internals.h source-policy closure and remaining Message/source/report contracts remain incomplete. Genuine startup, separate CJS/ESM, the complete backend catalog and roadmap remain unfinished. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [native state contracts](../tests/nodejs/upstream/native-state-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-state-engine-check.json).

@@ -362,6 +362,34 @@ bool SetEnhance(JSContext* cx, unsigned argc, JS::Value* vp) {
 
 }  // namespace
 
+namespace {
+StateSlot NativeCallbackSlot(ErrorStackCallback callback) {
+  switch(callback) {
+    case ErrorStackCallback::Prepare:return PrepareCallback;
+    case ErrorStackCallback::BeforeFatal:return BeforeFatal;
+    case ErrorStackCallback::AfterFatal:return AfterFatal;
+  }
+  MOZ_CRASH("Unknown native error-stack callback");
+}
+}
+bool GetCurrentErrorStackCallback(JSContext* cx,JS::HandleObject runtime,
+                                  ErrorStackCallback callback,JS::MutableHandleValue out) {
+  JS::RootedObject state(cx,GetCurrentContextErrorStackState(cx,runtime));
+  if(!state){if(!JS_IsExceptionPending(cx))JS_ReportErrorASCII(cx,"Native error-stack context is unavailable");return false;}
+  out.set(JS::GetReservedSlot(state,NativeCallbackSlot(callback)));
+  return JS_WrapValue(cx,out);
+}
+bool SetCurrentErrorStackCallback(JSContext* cx,JS::HandleObject runtime,
+                                  ErrorStackCallback callback,JS::HandleValue input) {
+  JS::RootedObject state(cx,GetCurrentContextErrorStackState(cx,runtime));if(!state)return false;
+  JS::RootedValue value(cx,input);
+  if(!JS_WrapValue(cx,&value))return false;
+  if(!value.isUndefined()&&(!value.isObject()||!JS::IsCallable(&value.toObject()))){
+    JS_ReportErrorASCII(cx,"Native error-stack callback must be callable or cleared");return false;
+  }
+  JS::SetReservedSlot(state,NativeCallbackSlot(callback),value);return true;
+}
+
 JSObject* CreateErrorStackState(JSContext* cx) {
   JS::RootedObject state(cx, JS_NewObject(cx, &kState));
   JS::RootedObject map(cx, JS::NewWeakMapObject(cx)), error(cx);

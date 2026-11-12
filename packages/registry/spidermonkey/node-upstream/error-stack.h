@@ -7,6 +7,9 @@ namespace kandelo::node {
 // Install before original primordials snapshot the realm's Error intrinsics.
 JSObject* CreateErrorStackState(JSContext* cx);
 JSObject* GetErrorStackBinding(JSContext* cx);
+enum class ErrorStackCallback { Prepare, BeforeFatal, AfterFatal };
+bool GetCurrentErrorStackCallback(JSContext*,JS::HandleObject,ErrorStackCallback,JS::MutableHandleValue);
+bool SetCurrentErrorStackCallback(JSContext*,JS::HandleObject,ErrorStackCallback,JS::HandleValue);
 bool EnhanceFatalExceptionStack(JSContext* cx, JS::HandleValue error,
                                bool afterInspector, JS::MutableHandleValue out);
 }  // namespace kandelo::node

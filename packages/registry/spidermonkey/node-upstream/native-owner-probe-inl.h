@@ -65,6 +65,74 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"errorKind")){
+    args.rval().setBoolean(frame.OwnValue(args.get(1))->IsNativeError());return true;
+  }
+  if(!std::strcmp(operation.get(),"nativeLiteral")){
+    auto value=api::String::NewFromUtf8Literal(&state->isolate,"a\0λ");
+    args.rval().set(api::Input(value));return true;
+  }
+  if(!std::strncmp(operation.get(),"private",7)){
+    auto* isolate=&state->isolate;auto* environment=&state->environment;
+    api::Local<api::Private> key=environment->arrow_message_private_symbol();
+    CHECK(key->IsPrivate()&&!key->IsValue());
+    if(!std::strcmp(operation.get(),"privateRoot")){
+      api::Global<api::Private> retained;
+      {api::HandleScope scope(isolate);retained.Reset(isolate,environment->decorated_private_symbol());}
+      isolate->LowMemoryNotification();auto local=retained.Get(isolate);CHECK(local->IsPrivate()&&!local->IsValue());
+      args.rval().set(api::Input(local->Name()));return true;
+    }
+    if(!args.get(1).isObject()){JS_ReportErrorASCII(cx,"Native private control requires Object");return false;}
+    auto object=frame.Own<api::Object>(args[1]);auto context=isolate->GetCurrentContext();
+    if(!std::strcmp(operation.get(),"privateSet")){
+      auto result=object->SetPrivate(context,key,frame.OwnValue(args.get(2)));if(result.IsNothing())return false;args.rval().setBoolean(result.FromJust());return true;
+    }
+    if(!std::strcmp(operation.get(),"privateGet")){
+      api::Local<api::Value> result;if(!object->GetPrivate(context,key).ToLocal(&result))return false;args.rval().set(api::Input(result));return true;
+    }
+    JS_ReportErrorASCII(cx,"Unknown native private operation");return false;
+  }
+  if(!std::strcmp(operation.get(),"fatalSet")){
+    auto* realm=state->environment.principal_realm();CHECK(realm);
+    api::Local<api::Function> before,after;
+    for(size_t index=1;index<=2;++index)if(!args.get(index).isUndefined()&&(!args[index].isObject()||!JS::IsCallable(&args[index].toObject()))){JS_ReportErrorASCII(cx,"Fatal callback control requires functions or undefined");return false;}
+    if(!args.get(1).isUndefined())before=frame.Own<api::Function>(args[1]);
+    if(!args.get(2).isUndefined())after=frame.Own<api::Function>(args[2]);
+    realm->set_enhance_fatal_stack_before_inspector(before);realm->set_enhance_fatal_stack_after_inspector(after);return true;
+  }
+  if(!std::strcmp(operation.get(),"fatalBefore")||!std::strcmp(operation.get(),"fatalAfter")){
+    JS::RootedObject target(cx,JS::CurrentGlobalOrNull(cx));
+    if(args.get(1).isObject()){target=api::UnwrapObject(cx,args[1]);if(!target||!JS_IsGlobalObject(target)){JS_ReportErrorASCII(cx,"Fatal callback context control requires global");return false;}}
+    JS::RootedValue result(cx);
+    {JSAutoRealm active(cx,target);auto callback=!std::strcmp(operation.get(),"fatalBefore")?state->environment.enhance_fatal_stack_before_inspector():state->environment.enhance_fatal_stack_after_inspector();if(!callback.IsEmpty())result.set(api::Input(callback));}
+    if(!JS_WrapValue(cx,&result))return false;args.rval().set(result);return true;
+  }
+  if(!std::strcmp(operation.get(),"sourceSet")||!std::strcmp(operation.get(),"sourceGet")||!std::strcmp(operation.get(),"sourceCall")){
+    const bool cache=args.get(1).isTrue();auto* environment=&state->environment;
+    if(!std::strcmp(operation.get(),"sourceSet")){
+      api::Local<api::Function> callback;
+      if(!args.get(2).isUndefined()){
+        if(!args.get(2).isObject()||!JS::IsCallable(&args[2].toObject())){JS_ReportErrorASCII(cx,"Source callback control requires Function or undefined");return false;}
+        callback=frame.Own<api::Function>(args[2]);
+      }
+      if(cache)environment->set_maybe_cache_generated_source_map(callback);else environment->set_get_source_map_error_source(callback);return true;
+    }
+    auto callback=cache?environment->maybe_cache_generated_source_map():environment->get_source_map_error_source();
+    if(!std::strcmp(operation.get(),"sourceGet")){if(!callback.IsEmpty())args.rval().set(api::Input(callback));return true;}
+    if(callback.IsEmpty()){JS_ReportErrorASCII(cx,"Native source callback is not registered");return false;}
+    api::Local<api::Value> input=frame.OwnValue(args.get(2)),output;
+    if(!callback->Call(environment->context(),api::Undefined(&state->isolate),1,&input).ToLocal(&output))return false;
+    args.rval().set(api::Input(output));return true;
+  }
+  if(!std::strcmp(operation.get(),"errorFlags")){
+    auto* environment=&state->environment;
+    if(args.get(1).isBoolean())environment->set_printed_error(args[1].toBoolean());
+    if(args.get(2).isBoolean())environment->set_source_maps_enabled(args[2].toBoolean());
+    JS::RootedObject output(cx,JS_NewPlainObject(cx));if(!output)return false;
+    JS::RootedValue printed(cx,JS::BooleanValue(environment->printed_error())),maps(cx,JS::BooleanValue(environment->source_maps_enabled()));
+    if(!JS_DefineProperty(cx,output,"printed",printed,JSPROP_ENUMERATE)||!JS_DefineProperty(cx,output,"sourceMaps",maps,JSPROP_ENUMERATE))return false;
+    args.rval().setObject(*output);return true;
+  }
   if(!std::strcmp(operation.get(),"message")){
     auto* isolate=&state->isolate;api::Local<api::Message> message;
     std::unique_ptr<api::TryCatch> catcher;
