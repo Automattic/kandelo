@@ -1927,7 +1927,11 @@ The contract:
   it imports, and `cargo:runtime-core`, as `coreutils-docs` does: the kernel and
   host runtime are part of the output's identity.
 - The workspace is mounted read-write at `/build` and must be a copy under
-  `WASM_POSIX_DEP_WORK_DIR`, never the checkout. `--input` mounts are
+  `WASM_POSIX_DEP_WORK_DIR`, never the checkout. Nothing on the host may
+  write it while the command runs: the runner declares the mount
+  exclusively owned, which is what lets the host filesystem perform
+  O_APPEND writes (`>>`, build logs, m4's `--debugfile`) with exact
+  results. `--input` mounts are
   read-only. Neither may sit under a path the in-kernel tmpfs owns (`/tmp`,
   `/var/tmp`, `/var/run`, `/home/maker`, `/root`, `/srv`); the
   runner refuses them.

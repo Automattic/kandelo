@@ -13,7 +13,9 @@ describe("validateGuestBuildRequest", () => {
   it("mounts the workspace read-write at /build and runs there", () => {
     const plan = validateGuestBuildRequest(base);
     expect(plan.mounts).toEqual([
-      { mountPoint: "/build", hostPath: "/abs/work", readonly: false },
+      // Exclusive: the caller's private copy, which nothing else writes during
+      // the run, so appends (O_APPEND) work there.
+      { mountPoint: "/build", hostPath: "/abs/work", readonly: false, exclusiveNativeWriters: true },
     ]);
     expect(plan.cwd).toBe("/build");
   });
