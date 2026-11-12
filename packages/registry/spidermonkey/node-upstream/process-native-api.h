@@ -51,9 +51,6 @@ void RunAtExit(Environment*);bool HasSignalJSHandler(int);
 bool CheckProcessPermission(Environment*,permission::PermissionScope,std::string_view);
 template<class T> concept NumericOrEnum=std::is_arithmetic_v<T>||std::is_enum_v<T>;
 std::string ToUpper(std::string_view);
-void THROW_ERR_MISSING_ARGS(Environment*,const char*);
-void THROW_ERR_INVALID_ARG_VALUE(Environment*,const char*);
-void THROW_ERR_INVALID_ARG_TYPE(Environment*,const char*,const std::string&);
 namespace binding {
 void DLOpen(const FunctionCallbackInfo<Value>&);
 void DLOpenBinary(const FunctionCallbackInfo<Value>&);

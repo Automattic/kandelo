@@ -194,14 +194,6 @@ std::unique_ptr<BackingStore> AdoptIntoBackingStore(Isolate* isolate,void* data,
   Current(isolate);return ArrayBuffer::NewBackingStore(data,size,deleter,hint);
 }
 Local<String> OneByteString(Isolate* isolate,const uint8_t* data,size_t length) { CHECK_LE(length,String::kMaxLength);return String::NewFromOneByte(isolate,data,NewStringType::kNormal,int(length)).ToLocalChecked(); }
-static void ThrowBufferError(Isolate* isolate,JSExnType kind,const char* code,const char* message) {
-  auto value=Error(isolate,kind,code,message);if(!value.IsEmpty())isolate->ThrowException(value);
-}
-void THROW_ERR_OUT_OF_RANGE(Environment* env,const char* text) { ThrowBufferError(env->isolate(),JSEXN_RANGEERR,"ERR_OUT_OF_RANGE",text); }
-void THROW_ERR_BUFFER_OUT_OF_BOUNDS(Environment* env,const char* text) { ThrowBufferError(env->isolate(),JSEXN_RANGEERR,"ERR_BUFFER_OUT_OF_BOUNDS",text); }
-void THROW_ERR_MEMORY_ALLOCATION_FAILED(Environment* env) { THROW_ERR_MEMORY_ALLOCATION_FAILED(env->isolate()); }
-void THROW_ERR_MEMORY_ALLOCATION_FAILED(Isolate* isolate) { isolate->ThrowException(ERR_MEMORY_ALLOCATION_FAILED(isolate)); }
-void THROW_ERR_BUFFER_CONTEXT_NOT_AVAILABLE(Isolate* isolate) { ThrowBufferError(isolate,JSEXN_ERR,"ERR_BUFFER_CONTEXT_NOT_AVAILABLE","Buffer is not available for the current Context"); }
 void SetMethodNoSideEffect(Local<Context> context,Local<Object> target,const char* name,Callback callback) {
   // The normal engine-native dispatcher is the execution path. V8 inspector
   // side-effect annotations are not represented as SpiderMonkey guarantees.

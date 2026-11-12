@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage complete verified decoder/StringBytes sources and declaration shims."""
+"""Stage complete verified Node native sources and declaration shims."""
 from pathlib import Path
 import argparse,hashlib,json,re
 def prepare(manifest,output):
@@ -56,18 +56,13 @@ enum encoding ParseEncoding(v8::Isolate*, v8::Local<v8::Value>, v8::Local<v8::Va
 '''
  (output/'node.h').write_bytes(b'#ifndef KANDELO_CODEC_NODE_METADATA_H\n#define KANDELO_CODEC_NODE_METADATA_H\n'+include+b'namespace node {\n'+enum[0]+b'\n'+declarations+b'}\n#endif\n')
  (output/'env-inl.h').write_text('#include "shell/node-upstream/codecs-upstream/node.h"\n')
- errors=verified('src/node_errors.h').decode();metadata=[]
- for code in ['ERR_INVALID_ARG_TYPE','ERR_ENCODING_INVALID_ENCODED_DATA','ERR_INVALID_ARG_VALUE','ERR_MISSING_ARGS']:
-  if not re.search(r'V\('+code+r',\s*TypeError\)',errors):raise ValueError('unreviewed native ICU error type: '+code)
- for code,kind in [('ERR_OUT_OF_RANGE','RangeError'),('ERR_BUFFER_OUT_OF_BOUNDS','RangeError'),('ERR_BUFFER_CONTEXT_NOT_AVAILABLE','Error')]:
-  if not re.search(r'V\('+code+r',\s*'+kind+r'\)',errors):raise ValueError('unreviewed native Buffer error type: '+code)
- for name,code,kind,text in [
-  ('StringTooLong','ERR_STRING_TOO_LONG','Error','Cannot create a string longer than 0x%x characters'),
-  ('BufferTooLarge','ERR_BUFFER_TOO_LARGE','Error','Cannot create a Buffer larger than 0x%zx bytes'),
-  ('AllocationFailed','ERR_MEMORY_ALLOCATION_FAILED','RangeError','Failed to allocate memory')]:
-  if not re.search(r'V\('+code+r',\s*'+kind+r'\)',errors) or json.dumps(text) not in errors:raise ValueError('unreviewed native error metadata: '+code)
-  metadata.append('inline constexpr Error '+name+'{'+json.dumps(code)+','+json.dumps(text)+','+str(kind=='RangeError').lower()+'};')
- (output/'errors.generated.h').write_text('namespace kandelo_codec_metadata {\nstruct Error { const char* code; const char* text; bool range; };\n'+'\n'.join(metadata)+'\n}\n')
- return {'completeNativeFiles':len(names)+8,'asyncProviderMetadataMacros':4,'fullEncodingEnumOnly':True,'functionBodiesExtracted':False,'javascriptGenerated':False}
+ policy=output.parent/'error-policy-upstream';policy.mkdir(parents=True,exist_ok=True)
+ (policy/'node_errors.h').write_bytes(verified('src/node_errors.h'))
+ (policy/'debug_utils-inl.h').write_text('#include "shell/node-upstream/process-native-api.h"\n')
+ for name in ['env.h','v8.h']:(policy/name).write_bytes(include)
+ (policy/'node_buffer.h').write_text('#include "shell/node-upstream/codecs-upstream/node_buffer.h"\n')
+ (output/'node_errors.h').write_text('#include "shell/node-upstream/error-policy-native-api.h"\n')
+ (output/'errors.generated.h').unlink(missing_ok=True)
+ return {'completeNativeFiles':len(names)+13,'wholeOriginalErrorPolicyHeader':True,'asyncProviderMetadataMacros':4,'fullEncodingEnumOnly':True,'functionBodiesExtracted':False,'javascriptGenerated':False}
 if __name__=='__main__':
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--manifest',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args();print(json.dumps(prepare(a.manifest,a.output)))

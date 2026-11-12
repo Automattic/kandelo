@@ -149,7 +149,7 @@
     {
       "surface": "InternalMakeCallback and original GetOwner TryCatchScope",
       "contract": "Original callback keeps provider/ID values before JS can delete this; restores callback frame/async context, jobs, exception policy. Owner walk ignores property-get exceptions under original normal catch scope.",
-      "gap": "Owning-engine caught-value/nesting/reset/rethrow/shell-termination primitives are implemented with bounded four-host private validation. Original catch-policy header constructors, Message/stack/source metadata, callback/error/report closure remain missing. See scoped-catch-contracts.json."
+      "gap": "Complete original policy header/constructors and scoped catch primitives now compile. Message/stack/source metadata, full callback/error/report/scheduling/resource closure remain incomplete. Native utility ToUpper source integration remains a known gap; see error-policy-contracts.json."
     },
     {
       "surface": "General BaseObject inspection",
@@ -196,5 +196,7 @@
   "compileEvidence": "async-resource-engine-check.json",
   "originalInitializerConnected": false,
   "scopedCatchPrerequisiteCatalog": "scoped-catch-contracts.json",
-  "scopedCatchPrerequisiteEvidence": "scoped-catch-engine-check.json"
+  "scopedCatchPrerequisiteEvidence": "scoped-catch-engine-check.json",
+  "errorPolicyCatalog": "error-policy-contracts.json",
+  "errorPolicyEvidence": "error-policy-engine-check.json"
 }

@@ -1,4 +1,5 @@
 // Execute the complete original native ICU source against the engine API.
+#include "shell/node-upstream/codec-agent-includes.h"
 #include "shell/node-upstream/codec-native-api.h"
 #define NODE_HAVE_I18N_SUPPORT 1
 #undef NODE_BINDING_CONTEXT_AWARE_INTERNAL

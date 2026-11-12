@@ -60,6 +60,7 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/process-errors-native-api.h" \
     "$node_consumer/fatal-errors-upstream.cpp" \
     "$node_consumer/fatal-errors-native-api.h" \
+    "$node_consumer/error-policy-native-api.h" \
     "$node_consumer/path-upstream.cpp" \
     "$node_consumer/native-object-api.h" \
     "$node_consumer/native-object-codecs-inl.h" \

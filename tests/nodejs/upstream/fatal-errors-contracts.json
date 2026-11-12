@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
-  "scope": "Complete original node_errors.cc compiles; errno-name dependency resolves. Fatal/uncaught/message/stack/report interfaces remain unavailable and initializer is not routed. No current engine artifact/runtime proof.",
+  "scope": "Complete original node_errors.cc and node_errors.h compile; original error templates replace provisional helpers and original TryCatchScope constructor resolves. Full fatal/uncaught/message/stack/report interfaces remain unavailable and initializer is not routed.",
   "completeBindingContract": false,
   "runtimeValidated": false,
   "startupAccepted": false,
@@ -25,12 +25,12 @@
   "noRuntimeSupportFromDeadStripping": true,
   "nativeInterfaceDeclarations": {
     "path": "packages/registry/spidermonkey/node-upstream/fatal-errors-native-api.h",
-    "bytes": 4007,
-    "sha256": "ecad4a8447f9137024d60a7e704a00aee32cd937ecb6dac5fe738e58d1fb91a4"
+    "bytes": 3249,
+    "sha256": "dbf60d9da04300620660cabc7fc8ae9f6f6215d5c33644df22012da9fbd61576"
   },
   "unimplementedContracts": [
     "actual engine Message/ScriptOrigin/StackFrame/StackTrace metadata and capture",
-    "Whole original TryCatchScope/PrinterTryCatch header and detailed Message/report ownership; scoped values/reset/rethrow and shell termination primitives have bounded private validation",
+    "Detailed Message/report ownership and full original policy execution; complete TryCatchScope/PrinterTryCatch header classes are now compiled unchanged",
     "private-key/error constructor identity and literal conversion operations",
     "source-map callback ownership and native Context embedder fields/index",
     "fatal callback/report/abort/backtrace and actual exit flow",
@@ -61,5 +61,8 @@
   "memoryPrerequisiteCatalog": "process-memory-contracts.json",
   "fullRoadmapImplementationAuthorized": false,
   "scopedCatchPrerequisiteCatalog": "scoped-catch-contracts.json",
-  "scopedCatchPrerequisiteEvidence": "scoped-catch-engine-check.json"
+  "scopedCatchPrerequisiteEvidence": "scoped-catch-engine-check.json",
+  "originalPolicyHeaderIntegrated": true,
+  "errorPolicyCatalog": "error-policy-contracts.json",
+  "errorPolicyEvidence": "error-policy-engine-check.json"
 }

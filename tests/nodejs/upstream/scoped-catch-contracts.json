@@ -116,7 +116,7 @@
   "entryBoundaryListIsFullAPICoverage": false,
   "unimplemented": [
     "TryCatch::Message and Exception::CreateMessage with genuine source/stack metadata; StackTrace/StackFrame/ScriptOrigin accessors",
-    "Whole original node_errors.h integration: retain inline TryCatchScope/PrinterTryCatch constructors and original error templates; no copied constructor excerpts",
+    "Original policy classes now come from complete unchanged node_errors.h; full Message/report/fatal/uncaught/lifecycle and native utility closure remains missing",
     "Verbose message reporting/listener ownership and uncaught/fatal/report/source-map callback/scheduling/lifecycle support",
     "Native Isolate termination/cancellation API outside actual shell quit/interrupt; debugger and nested guest Wasm termination contracts",
     "Full audit of all API entry boundaries, native error creation, allocation/OOM and exceptional cases; current explicit boundary coverage is bounded",
@@ -136,5 +136,8 @@
   ],
   "compileAndRuntimeEvidence": "scoped-catch-engine-check.json",
   "fullStartupAccepted": false,
-  "broaderRoadmapExecutionAuthorized": false
+  "broaderRoadmapExecutionAuthorized": false,
+  "originalPolicyHeaderIntegrated": true,
+  "errorPolicyCatalog": "error-policy-contracts.json",
+  "errorPolicyEvidence": "error-policy-engine-check.json"
 }

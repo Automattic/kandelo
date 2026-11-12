@@ -3,6 +3,7 @@
 // Consumed interfaces for complete node_errors.cc. Missing operations remain
 // declarations, so activating fatal/message/report paths requires real owners.
 #include <atomic>
+#include "shell/node-upstream/error-policy-native-api.h"
 #include "shell/node-upstream/process-errors-native-api.h"
 namespace kandelo_node_codec_api {
 class ScriptOrigin {
@@ -43,7 +44,6 @@ namespace per_process {
 }
 using AbortHandler=void(*)(const char*,const char*);
 struct AssertionInfo {const char* file_line;const char* message;const char* function;};
-enum ErrorHandlingMode{CONTEXTIFY_ERROR,FATAL_ERROR,MODULE_ERROR};
 enum class StackTracePrefix{kAt,kNumber};
 namespace ContextEmbedderIndex {extern const int kAllowCodeGenerationFromStrings;}
 struct FatalIsolateOptions {bool report_uncaught_exception;};
@@ -52,26 +52,9 @@ void ResetStdio();std::string GetHumanReadableProcessName();
 void DefineErrorConstant(Isolate*,Local<Object>,const char*,int);
 void TriggerNodeReport(Environment*,const std::string&,const char*,const char*,Local<Value>);
 void TriggerNodeReport(Isolate*,const char*,const char*,const char*,Local<Object>);
-void AppendExceptionLine(Environment*,Local<Value>,Local<Message>,ErrorHandlingMode);
 MaybeLocal<StackTrace> GetCurrentStackTrace(Isolate*,int=10);
 std::string FormatErrorMessage(Isolate*,Local<Context>,const std::string&,Local<Message>,bool);
 void PrintStackTrace(Isolate*,Local<StackTrace>,StackTracePrefix=StackTracePrefix::kAt);
-namespace errors {
-class TryCatchScope:public TryCatch {
- public:
- enum class CatchMode{kNormal,kFatal,kFatalRethrowStackOverflow};
- explicit TryCatchScope(Environment*,CatchMode=CatchMode::kNormal);~TryCatchScope();
- private:Environment* env_;CatchMode mode_;
-};
-class PrinterTryCatch:public TryCatch {
- public:
- enum PrintSourceLine{kPrintSourceLine,kDontPrintSourceLine};
- explicit PrinterTryCatch(Isolate*,PrintSourceLine);~PrinterTryCatch();
- private:Isolate* isolate_;PrintSourceLine print_source_line_;
-};
-void TriggerUncaughtException(Isolate*,Local<Value>,Local<Message>,bool=false);
-void DecorateErrorStack(Environment*,Local<Value>,Local<Message>);
-}
 }
 #define ABORT_NO_BACKTRACE() std::abort()
 #define ABORT_WITH_DETAILS(location,message) kandelo_node_codec_impl::AbortWithDetails(location,message)

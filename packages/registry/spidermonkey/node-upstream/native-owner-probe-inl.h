@@ -63,6 +63,47 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"errorFactory")) {
+    if(!args.get(1).isString()||!args.get(2).isString()) {
+      JS_ReportErrorASCII(cx,"Native error control requires action and code");return false;
+    }
+    auto* isolate=&state->isolate;
+    native::Utf8Value actionValue(isolate,frame.Own<api::String>(args[1])),codeValue(isolate,frame.Own<api::String>(args[2]));
+    auto action=actionValue.ToString(),code=codeValue.ToString();api::Local<api::Value> result;
+    if(action=="predefined") {
+#define KANDELO_PREDEFINED_ERROR(name,message) if(code==#name)result=native::name(isolate);
+      PREDEFINED_ERROR_MESSAGES(KANDELO_PREDEFINED_ERROR)
+#undef KANDELO_PREDEFINED_ERROR
+      if(code=="ERR_STRING_TOO_LONG")result=native::ERR_STRING_TOO_LONG(isolate);
+      if(code=="ERR_BUFFER_TOO_LARGE")result=native::ERR_BUFFER_TOO_LARGE(isolate);
+    } else {
+      if(!args.get(3).isString()){JS_ReportErrorASCII(cx,"Native error control requires actual message String");return false;}
+      auto message=frame.Own<api::String>(args[3]);
+      if(action=="intrinsic") {
+        if(code=="Error")result=api::Exception::Error(message);
+        if(code=="TypeError")result=api::Exception::TypeError(message);
+        if(code=="RangeError")result=api::Exception::RangeError(message);
+        if(code=="SyntaxError")result=api::Exception::SyntaxError(message);
+      } else {
+        native::Utf8Value textValue(isolate,message);auto text=textValue.ToString();
+        if(action=="create") {
+#define KANDELO_CREATE_ERROR(name,type) if(code==#name)result=native::name(isolate,text);
+          ERRORS_WITH_CODE(KANDELO_CREATE_ERROR)
+#undef KANDELO_CREATE_ERROR
+        } else if(action=="throw") {
+#define KANDELO_THROW_ERROR(name,type) if(code==#name){native::THROW_##name(isolate,text);return false;}
+          ERRORS_WITH_CODE(KANDELO_THROW_ERROR)
+#undef KANDELO_THROW_ERROR
+        } else if(action=="formatted") {
+          if(!args.get(4).isString()){JS_ReportErrorASCII(cx,"Native formatting control requires String argument");return false;}
+          native::Utf8Value argument(isolate,frame.Own<api::String>(args[4]));
+          result=native::ERR_OUT_OF_RANGE(isolate,text,argument.ToString(),26,26,9,true);
+        }
+      }
+    }
+    if(result.IsEmpty()){if(!JS_IsExceptionPending(cx))JS_ReportErrorASCII(cx,"Unknown native error control action/code");return false;}
+    args.rval().set(api::Input(result));return !JS_IsExceptionPending(cx);
+  }
   if(!std::strcmp(operation.get(),"catch")) {
     if(!args.get(1).isString()||!args.get(2).isObject()||!JS::IsCallable(&args[2].toObject())) {
       JS_ReportErrorASCII(cx,"Native catch control requires mode and Function");return false;

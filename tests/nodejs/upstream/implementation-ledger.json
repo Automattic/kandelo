@@ -85,7 +85,9 @@
     "asyncResourcePartialCatalog": "async-resource-contracts.json",
     "asyncResourceCompileAndPrimitiveEvidence": "async-resource-engine-check.json",
     "scopedCatchPartialCatalog": "scoped-catch-contracts.json",
-    "scopedCatchEngineEvidence": "scoped-catch-engine-check.json"
+    "scopedCatchEngineEvidence": "scoped-catch-engine-check.json",
+    "errorPolicyPartialCatalog": "error-policy-contracts.json",
+    "errorPolicyEngineEvidence": "error-policy-engine-check.json"
   },
   "implementation": [
     {
@@ -347,6 +349,12 @@
       "sourceStatus": "Actual SpiderMonkey pending exception and SavedFrame roots, API-depth ordering, nested reset/rethrow and real shell termination state;13new private drivers plus11prior drivers pass per host on Node/Chromium/Firefox/WebKit. No upstream bodies changed.",
       "evidence": "scoped-catch-engine-check.json",
       "remaining": "Normal engine unlinked58; whole original policy header constructors, Message/source/stack metadata, verbose/fatal/uncaught/report scheduling, full boundary/OOM audit and original resource producers remain incomplete."
+    },
+    {
+      "area": "whole original native error-policy header and coded error templates",
+      "sourceStatus": "Complete unchanged node_errors.h classes/templates compiled;13provisional helpers and extracted error metadata removed. Actual Error/TypeError/RangeError/SyntaxError intrinsics back97coded templates and49predefined messages;4new+24prior drivers pass perhost in an explicit private profile.",
+      "evidence": "error-policy-engine-check.json",
+      "remaining": "Normal link57; Message/stack/source/report/scheduling and original resource owners remain incomplete. Existing ToUpper ASCII helper is an unresolved source-policy utility gap; whole util.h/util-inl.h integration and audit required."
     }
   ],
   "runtimeConformance": {
@@ -1629,7 +1637,7 @@
     }
   },
   "nextWork": [
-    "Integrate complete original node_errors.h policy constructors/templates and genuine Message/SavedFrame/source metadata, then full error/report/uncaught/native scheduling closure. Current normal link58; scoped caught-value/nesting/reset/rethrow/shell-termination prerequisites have private4host evidence. Continue actual3slot/private/template/canonical AsyncHooks/resource producers as startup requires; no broader roadmap before review.",
+    "Resolve complete native utility/source-policy closure (existing ToUpper ASCII helper must be replaced through whole util.h/util-inl.h integration), then genuine Message/SavedFrame/source metadata and full error/report/scheduling closure. Normal link57; original policy header constructor now resolves. Continue actual native resource producers as startup requires; no broader roadmap before review.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1638,17 +1646,17 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 58,
+    "packageRevision": 59,
     "status": "failed final link",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 58,
-    "evidence": "scoped-catch-engine-check.json",
+    "undefinedSymbols": 57,
+    "evidence": "error-policy-engine-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
-    "buildCacheKey": "f15de1d9ce33c8f897ce17a907200e3c79f4f5088f796412f792a43436f991ff",
+    "buildCacheKey": "3c24472a8ccc127acf73c1948efebe64711ebaf34427b6400eb8c475228386d9",
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-scoped-catch-normal-1112-101456-7784",
+    "buildJob": "node-error-header-normal-clean-1112-110340-90c4",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1674,6 +1682,10 @@
       "kandelo_node_codec_api::TryCatch::HasTerminated() const",
       "kandelo_node_codec_api::TryCatch::ReThrow()",
       "kandelo_node_codec_api::TryCatch::Reset()"
+    ],
+    "wholeOriginalErrorPolicyHeaderCompiles": true,
+    "resolvedSinceRevision58": [
+      "kandelo_node_codec_impl::errors::TryCatchScope::TryCatchScope(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::errors::TryCatchScope::CatchMode)"
     ]
   },
   "currentLibuvExecutablePath": {
@@ -1692,11 +1704,11 @@
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   },
   "currentNativeOwnerDiagnostic": {
-    "evidence": "scoped-catch-engine-check.json",
-    "packageRevision": 58,
+    "evidence": "error-policy-engine-check.json",
+    "packageRevision": 59,
     "normalPackageArtifact": false,
     "controlsPerHost": 12,
-    "driversPerHost": 24,
+    "driversPerHost": 28,
     "hosts": [
       "node",
       "chromium",
@@ -1715,6 +1727,9 @@
     "newNumberControlsPerHost": 18,
     "newCanonicalSymbolControlsPerHost": 4,
     "wholeAsyncWrapClassRuntimeValidated": false,
-    "newScopedCatchDriversPerHost": 13
+    "newScopedCatchDriversPerHost": 13,
+    "newErrorPolicyDriversPerHost": 4,
+    "originalErrorCodeTemplates": 97,
+    "originalPredefinedStaticMessages": 49
   }
 }

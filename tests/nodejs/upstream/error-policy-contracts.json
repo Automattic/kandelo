@@ -1,0 +1,151 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Complete original native error-policy header and original error templates over actual intrinsic error primitives; bounded prerequisite integration, not full fatal/uncaught policy or startup acceptance",
+  "completeBindingContract": false,
+  "upstreamJavaScriptChanged": false,
+  "newUpstreamAlgorithmsRewritten": false,
+  "functionBodiesExtracted": false,
+  "wholeOriginalSources": [
+    {
+      "path": "src/node_errors.h",
+      "role": "provenance",
+      "bytes": 23299,
+      "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_errors.cc",
+      "role": "provenance",
+      "bytes": 45641,
+      "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d",
+      "builtinId": null
+    },
+    {
+      "path": "src/debug_utils.h",
+      "role": "provenance",
+      "bytes": 7892,
+      "sha256": "040b8d03509d8908cb5521f038ba9d95dab01f022b06070401e548d731596cb5",
+      "builtinId": null
+    },
+    {
+      "path": "src/debug_utils-inl.h",
+      "role": "provenance",
+      "bytes": 9757,
+      "sha256": "98e67d4365e66ac0345cba12f238905b2c349c76d1fe918ce975bb542f722aad",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_buffer.h",
+      "role": "provenance",
+      "bytes": 3843,
+      "sha256": "42db024cf1ae62db1a9a23477ee9927e9b7ed04999bd4498371b144962a31525",
+      "builtinId": null
+    }
+  ],
+  "nativeOwner": "SpiderMonkey rooted native value/context/stack bridge; actual per-realm Error intrinsics, not replaceable global constructors",
+  "sourceSelection": {
+    "errorCodes": 97,
+    "predefinedStaticMessages": 49,
+    "additionalOriginalSpecialMessages": [
+      "ERR_STRING_TOO_LONG",
+      "ERR_BUFFER_TOO_LARGE"
+    ],
+    "allOriginalCodeTemplatesCompiledInDiagnostic": true,
+    "originalHeaderPreviouslyImportedAsProvenance": true,
+    "newImportedFiles": 0
+  },
+  "originalPolicyClasses": [
+    {
+      "name": "errors::TryCatchScope",
+      "source": "src/node_errors.h + whole src/node_errors.cc",
+      "contract": "Original inline constructor initializes actual v8-compatible TryCatch, Environment and original CatchMode. Original deleted allocations/copy/move and complete destructor branches preserved",
+      "status": "Header compiled by normal build; full runtime policy still requires Message/report/exit dependencies"
+    },
+    {
+      "name": "errors::PrinterTryCatch",
+      "source": "src/node_errors.h + whole src/node_errors.cc",
+      "contract": "Original inline constructor initializes actual catch/isolate/source-line policy and original destructor prints/reporting flow",
+      "status": "Complete class compiled; printing/message/stack dependencies remain incomplete"
+    }
+  ],
+  "removedProvisionalImplementations": [
+    "13 handwritten coded-error/throw helper definitions in codecs.cpp and buffer-codecs-inl.h, plus conflicting declarations and Buffer/String throw macros",
+    "extracted errors.generated.h metadata table and its generator; original declarations/messages/algorithms now come from the complete header",
+    "provisional ErrorHandlingMode, TryCatchScope and PrinterTryCatch class declarations in fatal-errors-native-api.h"
+  ],
+  "owningPrimitives": [
+    {
+      "surface": "Exception::Error/TypeError/RangeError/SyntaxError",
+      "behavior": "Actual SpiderMonkey JS::CreateError with native JSEXN classification, original UTF16 message units, existing real capture-stack policy and rooted value ownership. NativeEntry preserves catch/termination ordering",
+      "validation": "All four intrinsic prototypes and message units, replaced global constructors, NUL/surrogate pairs/lone surrogates"
+    },
+    {
+      "surface": "String::kMaxLength type",
+      "behavior": "Interface int type, backed by actual JS::MaxStringLength with compile assertion that it fits int; original header formatting and Buffer bound constants remain original",
+      "validation": "Original special limit messages execute; no huge-allocation/maximum-boundary compatibility claim"
+    },
+    {
+      "surface": "code and message properties",
+      "behavior": "Complete original header uses actual String::NewFromUtf8/Value::ToObject/Object::Set operations. No copied code-property/formatter algorithm",
+      "validation": "97 original code/type declarations, property descriptors, literal percent/NUL/Unicode,49predefined messages and full existing formatter call"
+    },
+    {
+      "surface": "catch root lifetime",
+      "behavior": "Fresh original typed native error is thrown without an external JavaScript owner, then collected/reentered before the native catch exposes it",
+      "validation": "Dedicated sole-native-root GC control plus previous catch/ownership regressions"
+    }
+  ],
+  "upstreamConsumers": [
+    {
+      "source": "src/async_wrap.cc",
+      "surface": "Original normal/fatal/fatal-rethrow catch constructors and original complete error policy",
+      "status": "Whole unit compiled; binding still inactive and full policy unvalidated"
+    },
+    {
+      "source": "src/node_process_methods.cc + src/node_process_object.cc",
+      "surface": "Original Environment coded throws, dynamic formatting, range/argument validation",
+      "status": "Whole units compile; normal startup still unlinked"
+    },
+    {
+      "source": "src/node_env_var.cc",
+      "surface": "Original code/string-limit/property-definition throws",
+      "status": "Whole unit compiles; full process.env proxy backend still incomplete"
+    },
+    {
+      "source": "src/string_bytes.cc + src/string_decoder.cc + src/node_buffer.cc + src/node_i18n.cc",
+      "surface": "Original Buffer/string allocation/bounds/encoding typed errors",
+      "status": "Original helper selection replaces provisional overloads; selected positive fixtures repeated, full exceptional audit remains incomplete"
+    }
+  ],
+  "remainingProvisionalUtilityGap": {
+    "helper": "kandelo_node_codec_impl::ToUpper(std::string_view)",
+    "currentImplementation": "Existing own ASCII loop in codecs.cpp, introduced before this phase",
+    "originalSource": "Complete src/util.h + src/util-inl.h; original range template and classic-locale character conversion",
+    "unmodifiedSourcePolicySatisfied": false,
+    "requiredAction": "Replace via complete original utility integration; do not extract/rewrite the function or hide the dependency. Audit other provisional util declarations/implementations during that integration",
+    "selectedFormatterTestIsFullUtilityConformance": false
+  },
+  "unimplemented": [
+    "TryCatch::Message, Exception::CreateMessage and real ScriptOrigin/StackFrame/StackTrace/source-map metadata",
+    "Full original fatal/uncaught/report/abort/backtrace/exit/scheduling and worker ownership/ref/shutdown",
+    "Complete original util.h/util-inl.h integration, including ToUpper; remaining native utility algorithms must be audited before startup/source-policy acceptance",
+    "Value::ToDetailString for original formatter value arguments, native-error and Private APIs and real callback slots",
+    "Forced allocation/OOM failure, capture failure, debugger/native termination cancellation and full API boundary audit",
+    "Original AsyncWrap constructors/fields/providers/IDs/hooks, real HandleWrap/ReqWrap producers/queues and asynchronous cancellation/shutdown"
+  ],
+  "reuseEvidence": [
+    "Existing canonical Frame/State/Context/HandleScope and real SavedFrame capture",
+    "19-family/33-PR salvage indexes retained; source admission is separate from runtime compatibility"
+  ],
+  "prerequisiteOrder": [
+    "Finish complete native utility/source-policy closure",
+    "Implement genuine Message/SavedFrame/source metadata and error/report scheduling/lifecycle closure",
+    "Continue actual native resource producers required for startup",
+    "Verify unchanged-source empty/simple/output/errors/jobs/exit and separate CJS/ESM on4hosts",
+    "Complete full backend catalog/ordered roadmap and obtain explicit broader-roadmap review"
+  ],
+  "evidence": "error-policy-engine-check.json",
+  "fullStartupAccepted": false,
+  "broaderRoadmapExecutionAuthorized": false
+}

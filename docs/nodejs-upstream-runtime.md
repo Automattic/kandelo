@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 58 source connects the original process initializer,
+The current revision 59 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 58 symbols and has no normal runnable artifact.
+still fails final linking on 57 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -2461,3 +2461,51 @@ All 577 imports and 443 JavaScript files/10,993,403 bytes remain unchanged. The 
 startup/CJS/ESM milestone and complete backend inventory/roadmap remain unfinished.
 Full products/images, kernel/successor-ABI builds and overall suites remain
 explicitly deferred; the broader backend roadmap requires user review.
+
+
+## Complete native error-policy header (revision 59; startup incomplete)
+
+The complete unchanged node_errors.h header is now staged with its original
+TryCatchScope/PrinterTryCatch constructors, deleted operations, coded error
+templates and predefined messages. Its complete original formatter and Buffer
+header remain in use. Thirteen provisional coded-error/throw helper definitions,
+conflicting declarations and extracted error-message metadata are removed.
+Macro aliases are preserved across the dedicated include boundary; the recipe
+explicitly stages its adapter and declares the three additional tracing include
+paths. Original policy branches and upstream JavaScript remain unchanged.
+
+Error, TypeError, RangeError and SyntaxError construction use actual SpiderMonkey
+intrinsics, rooted UTF16 strings and the existing real stack-capture policy.
+The original templates call the native conversion/property operations to set
+code/message fields. String::kMaxLength now has the consumed int interface type,
+with an assertion that the actual SpiderMonkey limit fits; it does not copy a V8
+limit. The original special messages render actual engine limits.
+
+Four new private diagnostic drivers validate all 97 coded templates, 49 predefined
+static messages, two special limit messages, original formatting, property
+descriptors and intrinsic prototypes despite replaced global constructors.
+UTF16/NUL/surrogate fidelity and a freshly thrown error with only native catch
+ownership during GC are also checked. The four drivers and all 24 prior drivers
+pass on Node, Chromium, Firefox and WebKit using identical program/kernel bytes:
+28 drivers per host. The diagnostic still rejects process_methods and cannot be
+installed or accepted as normal startup evidence.
+
+The normal build has zero C++ errors and 57 unresolved symbols, down from 58 after
+the original TryCatchScope constructor resolves. Message/StackTrace/StackFrame/
+ScriptOrigin, source-map/fatal/uncaught/report/scheduling and resource-producer
+backends remain incomplete. Full startup, empty/simple/errors/jobs/exit and
+separate CommonJS/ESM paths have not passed.
+
+A remaining source-policy gap is explicit: the existing ToUpper(std::string_view)
+adapter in codecs.cpp uses an own ASCII loop, while upstream supplies the range
+utility in util-inl.h. It must be replaced through complete util.h/util-inl.h
+integration, together with an audit of other provisional utilities. The selected
+formatter check does not establish complete unchanged native utility support.
+No function excerpt or hidden guard is an acceptable replacement.
+
+See the [bounded error-policy catalog](../tests/nodejs/upstream/error-policy-contracts.json)
+and [source/build/runtime evidence](../tests/nodejs/upstream/error-policy-engine-check.json).
+All 577 imports and 443 JavaScript files/10,993,403 bytes remain unchanged. Full
+products/images, kernel/successor-ABI builds and overall suites remain deferred;
+the complete backend catalog/roadmap and its explicit user-review gate remain
+unfinished.

@@ -339,7 +339,7 @@ enum class NewStringType { kNormal };
 class String : public Name {
  public:
   using Name::Name;
-  static const size_t kMaxLength;
+  static const int kMaxLength;
   class ExternalOneByteStringResource {
    public: virtual ~ExternalOneByteStringResource()=default;
     virtual const char* data() const=0;virtual size_t length() const=0;
@@ -493,6 +493,8 @@ class TryCatch {
 };
 class Exception {
  public: static Local<Value> Error(Local<String>);
+ static Local<Value> RangeError(Local<String>);static Local<Value> TypeError(Local<String>);
+ static Local<Value> SyntaxError(Local<String>);
  static Local<Message> CreateMessage(Isolate*,Local<Value>);
 };
 }
@@ -786,8 +788,6 @@ void SetConstructorFunction(Local<Context>,Local<Object>,const char*,Local<Funct
 MaybeLocal<Value> ToV8Value(Local<Context>,const std::string&,Isolate*);
 MaybeLocal<Value> ToV8Value(Local<Context>,std::string_view);
 bool StringEqualNoCase(const char*,const char*);
-void THROW_ERR_INVALID_ARG_TYPE(Isolate*,const char*);
-void THROW_ERR_ENCODING_INVALID_ENCODED_DATA(Isolate*,const char*,const char*);
 namespace Buffer {
 MaybeLocal<Object> New(Environment*,size_t);
 MaybeLocal<Object> Copy(Environment*,const char*,size_t);
@@ -800,16 +800,8 @@ template<class T,size_t N> MaybeLocal<Object> New(Environment* env,MaybeStackBuf
 }
 }
 
-Local<Value> ERR_STRING_TOO_LONG(Isolate*);
-Local<Value> ERR_BUFFER_TOO_LARGE(Isolate*);
-Local<Value> ERR_MEMORY_ALLOCATION_FAILED(Isolate*);
 std::unique_ptr<BackingStore> AdoptIntoBackingStore(Isolate*,void*,size_t,BackingStore::DeleterCallback,void*);
 Local<String> OneByteString(Isolate*,const uint8_t*,size_t);
-void THROW_ERR_OUT_OF_RANGE(Environment*,const char*);
-void THROW_ERR_BUFFER_OUT_OF_BOUNDS(Environment*,const char*);
-void THROW_ERR_MEMORY_ALLOCATION_FAILED(Environment*);
-void THROW_ERR_MEMORY_ALLOCATION_FAILED(Isolate*);
-void THROW_ERR_BUFFER_CONTEXT_NOT_AVAILABLE(Isolate*);
 void SetMethodNoSideEffect(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&));
 void SetFastMethod(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&),const CFunction*);
 void SetFastMethodNoSideEffect(Local<Context>,Local<Object>,const char*,void(*)(const FunctionCallbackInfo<Value>&),const CFunction*);
@@ -911,10 +903,6 @@ extern Initializer initializer;
 #define SET_NO_MEMORY_INFO()
 #define SET_MEMORY_INFO_NAME(name)
 #define SET_SELF_SIZE(name)
-#define THROW_AND_RETURN_IF_NOT_BUFFER(env,value,name) \
-  do { if(!(value)->IsArrayBufferView()) return kandelo_node_codec_impl::THROW_ERR_INVALID_ARG_TYPE((env)->isolate(), name " must be a buffer"); } while(false)
-#define THROW_AND_RETURN_IF_NOT_STRING(env,value,name) \
-  do { if(!(value)->IsString()) return kandelo_node_codec_impl::THROW_ERR_INVALID_ARG_TYPE((env)->isolate(), name " must be a string"); } while(false)
 #define TRACK_V8_FAST_API_CALL(name) kandelo_node_codec_api::Crash("V8 fast JIT entry is unavailable in SpiderMonkey")
 #define SPREAD_BUFFER_ARG(value,name) \
   char* name##_data=kandelo_node_codec_impl::Buffer::Data(value); \

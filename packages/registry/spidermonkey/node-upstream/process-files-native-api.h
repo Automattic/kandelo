@@ -49,7 +49,6 @@ namespace per_process {
 }
 void DumpNativeBacktrace(FILE*);void DumpJavaScriptBacktrace(FILE*);
 Maybe<void> ProcessEmitDeprecationWarning(Environment*,const char*,const char*);
-void THROW_ERR_INVALID_OBJECT_DEFINE_PROPERTY(Environment*,const char*);
 Local<String> Uint32ToString(Local<Context>,uint32_t);
 namespace url {std::optional<std::string> FileURLToPath(Environment*,const ada::url_aggregator&);}
 // Value-mode native handle storage; uses the actual typed/rooted engine vector.

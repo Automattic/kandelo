@@ -49,7 +49,6 @@
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/codec-agent-includes.h"
 #include "shell/node-upstream/codec-native-api.h"
-#include "shell/node-upstream/codecs-upstream/errors.generated.h"
 #define v8 kandelo_node_codec_api
 #define node kandelo_node_codec_impl
 #include "shell/node-upstream/codecs-upstream/node_buffer.h"
@@ -57,6 +56,7 @@
 #undef node
 #undef v8
 
+#include "shell/node-upstream/error-policy-native-api.h"
 #include "shell/node-upstream/options.h"
 #include "shell/node-upstream/per-context.h"
 #include "shell/node-upstream/process-errors-native-api.h"
@@ -400,7 +400,8 @@ static Local<Value> Error(Isolate* isolate, JSExnType type, const char* code, st
   JS::RootedValue codeValue(f.cx,JS::StringValue(value)); CHECK(JS_SetProperty(f.cx,object,"code",codeValue));
   return f.OwnValue(error);
 }
-Local<Value> Exception::Error(Local<String> input) {
+static Local<Value> IntrinsicError(Local<String> input,JSExnType kind) {
+  NativeEntry nativeEntry(*Frame::current);if(nativeEntry.Terminated())return {};
   auto& f=*Frame::current;if(JS_IsExceptionPending(f.cx))return {};
   StressCollection(f);
   JS::RootedObject stack(f.cx);if(!js::CaptureStack(f.cx,&stack))return {};
@@ -409,9 +410,13 @@ Local<Value> Exception::Error(Local<String> input) {
   JS::RootedString filename(f.cx,JS_GetEmptyString(f.cx));
   JS::Rooted<mozilla::Maybe<JS::Value>> cause(f.cx,mozilla::Nothing());
   JS::RootedValue result(f.cx);
-  if(!JS::CreateError(f.cx,JSEXN_ERR,stack,filename,0,JS::ColumnNumberOneOrigin(1),nullptr,message,cause,&result))return {};
+  if(!JS::CreateError(f.cx,kind,stack,filename,0,JS::ColumnNumberOneOrigin(1),nullptr,message,cause,&result))return {};
   return f.OwnValue(result);
 }
+Local<Value> Exception::Error(Local<String> input) { return IntrinsicError(input,JSEXN_ERR); }
+Local<Value> Exception::RangeError(Local<String> input) { return IntrinsicError(input,JSEXN_RANGEERR); }
+Local<Value> Exception::TypeError(Local<String> input) { return IntrinsicError(input,JSEXN_TYPEERR); }
+Local<Value> Exception::SyntaxError(Local<String> input) { return IntrinsicError(input,JSEXN_SYNTAXERR); }
 MaybeLocal<Object> Value::ToObject(Local<Context> context) {
   auto& f=Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {};if(JS_IsExceptionPending(f.cx))return {};
   Context::Scope home(context);JS::RootedValue value(f.cx,cell().value);
@@ -505,7 +510,8 @@ Local<Integer> Integer::New(Isolate* isolate, int input) {
   auto& f = Current(isolate); JS::RootedValue value(f.cx, JS::Int32Value(input)); return f.Own<Integer>(value);
 }
 int64_t Integer::Value() const { CHECK(IsNumber());return IntegerNumber(cell().value.toNumber()); }
-const size_t String::kMaxLength = JS::MaxStringLength;
+static_assert(JS::MaxStringLength<=INT_MAX);
+const int String::kMaxLength = int(JS::MaxStringLength);
 const size_t Uint8Array::kMaxLength = js::ArrayBufferObject::ByteLengthLimit;
 Local<String> String::Empty(Isolate* isolate) {
   auto& f = Current(isolate); JS::RootedValue value(f.cx, JS::StringValue(JS_GetEmptyString(f.cx))); return f.Own<String>(value);
@@ -863,15 +869,6 @@ bool StringEqualNoCase(const char* a,const char* b) {
   locale_t ascii=newlocale(LC_CTYPE_MASK,"C",nullptr);CHECK_NOT_NULL(ascii);
   bool same=strcasecmp_l(a,b,ascii)==0;freelocale(ascii);return same;
 }
-void THROW_ERR_INVALID_ARG_TYPE(Isolate* isolate,const char* text) {
-  auto error=api::Error(isolate,JSEXN_TYPEERR,"ERR_INVALID_ARG_TYPE",text);
-  if (!error.IsEmpty()) isolate->ThrowException(error);
-}
-void THROW_ERR_INVALID_ARG_TYPE(Environment* env,const char* format,const std::string& argument) {
-  auto text=SPrintF(format,argument);
-  auto value=api::Error(env->isolate(),JSEXN_TYPEERR,"ERR_INVALID_ARG_TYPE",text);
-  if(!value.IsEmpty())env->isolate()->ThrowException(value);
-}
 void FWrite(FILE* stream,const std::string& bytes) {
   // The guest libc FILE owns buffering, descriptor writes and stream errors.
   // Byte length is explicit: embedded NULs are output, not terminators.
@@ -882,34 +879,6 @@ std::string ToUpper(std::string_view input) {
   for(char& character:result)
     if(character>='a'&&character<='z')character=char(character-'a'+'A');
   return result;
-}
-void THROW_ERR_INVALID_ARG_VALUE(Environment* env,const char* text) {
-  auto value=api::Error(env->isolate(),JSEXN_TYPEERR,"ERR_INVALID_ARG_VALUE",text);
-  if(!value.IsEmpty())env->isolate()->ThrowException(value);
-}
-void THROW_ERR_MISSING_ARGS(Environment* env,const char* text) {
-  auto value=api::Error(env->isolate(),JSEXN_TYPEERR,"ERR_MISSING_ARGS",text);
-  if(!value.IsEmpty())env->isolate()->ThrowException(value);
-}
-void THROW_ERR_ENCODING_INVALID_ENCODED_DATA(Isolate* isolate,const char* format,const char* encoding) {
-  int length=std::snprintf(nullptr,0,format,encoding);CHECK_GE(length,0);
-  std::vector<char> text(size_t(length)+1);std::snprintf(text.data(),text.size(),format,encoding);
-  auto error=api::Error(isolate,JSEXN_TYPEERR,"ERR_ENCODING_INVALID_ENCODED_DATA",text.data());
-  if (!error.IsEmpty()) isolate->ThrowException(error);
-}
-Local<Value> ERR_STRING_TOO_LONG(Isolate* isolate) {
-  const auto& metadata=kandelo_codec_metadata::StringTooLong;
-  char text[128]; std::snprintf(text,sizeof(text),metadata.text,unsigned(String::kMaxLength));
-  return Error(isolate,metadata.range?JSEXN_RANGEERR:JSEXN_ERR,metadata.code,text);
-}
-Local<Value> ERR_BUFFER_TOO_LARGE(Isolate* isolate) {
-  const auto& metadata=kandelo_codec_metadata::BufferTooLarge;
-  char text[128]; std::snprintf(text,sizeof(text),metadata.text,Buffer::kMaxLength);
-  return Error(isolate,metadata.range?JSEXN_RANGEERR:JSEXN_ERR,metadata.code,text);
-}
-Local<Value> ERR_MEMORY_ALLOCATION_FAILED(Isolate* isolate) {
-  const auto& metadata=kandelo_codec_metadata::AllocationFailed;
-  return Error(isolate,metadata.range?JSEXN_RANGEERR:JSEXN_ERR,metadata.code,metadata.text);
 }
 }  // namespace kandelo_node_codec_impl
 
