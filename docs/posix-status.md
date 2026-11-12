@@ -648,16 +648,12 @@ The shell image, every image built on it, and the build image replace its
 `ar`, `nm`, `strip` and `strings` with LLVM's (`llvm-ar`, `llvm-nm`,
 `llvm-objcopy` running as `strip`, `llvm-strings`, from the `clang`
 package) and add `ranlib`, `objdump`, `objcopy`, `llvm-readobj` (also
-`llvm-readelf`), `size`, `c++filt` and `addr2line`. There is no plain
-`readelf`: Kandelo programs are Wasm, and llvm-readobj answers ELF
-questions such as `readelf -d` (NEEDED, SONAME) on Wasm with empty output
-and exit 0, so a script that runs `readelf` would conclude a program has
-no dependencies. The shell also carries `wasm-tools`, which decodes Wasm
-directly, including `dylink.0` (`wasm-tools dump`) and the `kandelo.*`
-custom sections. Note that `wasm-tools strip` removes every custom section
-except `name` by default, including Kandelo's ABI stamp and fork metadata;
-`strip` keeps them. The rows below for those four describe images that
-carry only the base rootfs.
+`llvm-readelf`), `size`, `c++filt` and `addr2line`, but no plain
+`readelf`. The shell also carries `wasm-tools`. "Inspecting build output"
+in [the SDK guide](sdk-guide.md#inspecting-build-output) says which tool
+reads which file, why there is no `readelf`, and how the two `strip`
+commands differ. The rows below for those four describe images that carry
+only the base rootfs.
 
 | Utility | What it actually does |
 |---|---|
