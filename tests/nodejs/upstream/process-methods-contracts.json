@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
-  "scope": "Complete original process/dependency/API/fatal error units compile; revision55 fails linking on24symbols. No current runnable engine or startup validation.",
+  "scope": "Complete original process/dependency/API/fatal units compile; revision56 normal build fails linking on23symbols. Canonical native BaseObject ownership is separately validated using an explicit private diagnostic; normal startup remains unproven.",
   "completeBindingContract": false,
   "nativeSourceReview": {
     "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
@@ -1172,5 +1172,7 @@
     "evidence": "fatal-errors-compile-check.json",
     "runtimeValidated": false
   },
-  "memoryPrerequisites": "process-memory-contracts.json"
+  "memoryPrerequisites": "process-memory-contracts.json",
+  "nativeOwnerPrerequisiteCatalog": "native-owner-contracts.json",
+  "nativeOwnerPrerequisiteEvidence": "native-owner-engine-check.json"
 }

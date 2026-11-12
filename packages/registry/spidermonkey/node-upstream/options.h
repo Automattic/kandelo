@@ -1,7 +1,7 @@
 #ifndef KANDELO_NODE_OPTIONS_H
 #define KANDELO_NODE_OPTIONS_H
-#include <string>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "js/TypeDecls.h"

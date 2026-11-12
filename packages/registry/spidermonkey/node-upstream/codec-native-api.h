@@ -18,8 +18,8 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#include <vector>
 #include <uv.h>
+#include <vector>
 #include "js/TypeDecls.h"
 #ifndef NODE_WANT_INTERNALS
 #define NODE_WANT_INTERNALS 1
@@ -196,6 +196,9 @@ struct GlobalRoot;
 std::shared_ptr<GlobalRoot> NewGlobalRoot(Isolate*,Local<Value>);
 Local<Value> ReadGlobalRoot(Isolate*,const std::shared_ptr<GlobalRoot>&);
 void MakeGlobalWeak(Isolate*,const std::shared_ptr<GlobalRoot>&);
+void MakeGlobalStrong(Isolate*,const std::shared_ptr<GlobalRoot>&);
+void MakeGlobalWeakTenured(Isolate*,const std::shared_ptr<GlobalRoot>&);
+bool GlobalRootIsWeak(const std::shared_ptr<GlobalRoot>&);
 bool GlobalRootIsEmpty(const std::shared_ptr<GlobalRoot>&);
 JSObject* BorrowGlobalObject(const std::shared_ptr<GlobalRoot>&);
 template<class T> class Global {
@@ -210,6 +213,9 @@ template<class T> class Global {
   void Reset(Isolate* isolate,Local<T> value) { if(value.IsEmpty()){Reset();return;}isolate_=isolate;value_=NewGlobalRoot(isolate,value); }
   void Reset() { value_.reset();isolate_=nullptr; }
   void SetWeak() { MakeGlobalWeak(isolate_,value_); }
+  void ClearWeak() { MakeGlobalStrong(isolate_,value_); }
+  void SetWeakTenured() { MakeGlobalWeakTenured(isolate_,value_); }
+  bool IsWeak()const{return GlobalRootIsWeak(value_);}
   Local<T> Get(Isolate* isolate) const { return ReadGlobalRoot(isolate,value_).template As<T>(); }
   JSObject* BorrowObject() const { return BorrowGlobalObject(value_); }
 };
@@ -706,6 +712,13 @@ class BaseObject {
   void MakeWeak();static BaseObject* Unwrap(Local<Object>);
   static BaseObject* UnwrapNativeBinding(Local<Object>);
   void ClearWeak();Local<Object> object() const;Realm* realm() const;
+  Global<Object>& persistent();
+  std::shared_ptr<BaseObject> AcquireNativeReference();
+  bool HasNativeReference()const;bool IsWeakOrDetached()const;
+  void RetireWrapper();virtual void OnGCCollect();
+ private:
+  void ReleaseNativeReference();
+ public:
   void Detach();bool IsDetached() const;
   static Local<FunctionTemplate> MakeLazilyInitializedJSTemplate(Environment*);
   virtual bool is_snapshotable() const { return false; }

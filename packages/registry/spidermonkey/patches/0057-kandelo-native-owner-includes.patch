@@ -1,0 +1,13 @@
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -91,6 +91,10 @@
+         "shell/node-upstream/codecs-upstream/aliased_buffer-inl.h",
+         "shell/node-upstream/codecs-upstream/base_object_types.h",
+         "shell/node-upstream/codecs-upstream/node_snapshotable.h",
++        "shell/node-upstream/codecs-upstream/node_mutex.h",
++        "shell/node-upstream/codecs-upstream/permission/permission_base.h",
++        "shell/node-upstream/codecs-upstream/process-support/async-provider-metadata.h",
++        "shell/node-upstream/codecs-upstream/process-support/debug_utils-inl.h",
+         "shell/node-upstream/codecs-upstream/node_process_methods.cc",
+         "shell/node-upstream/codecs-upstream/node_process_object.cc",
+         "shell/node-upstream/codecs-upstream/node_process.h",

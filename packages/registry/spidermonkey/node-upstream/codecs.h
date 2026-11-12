@@ -20,6 +20,7 @@ bool SetCodecGcStress(JSContext* cx, JS::HandleObject runtime, bool enabled);
 void ShutdownRuntimeCodecs(JSContext* cx);
 bool DefineAliasedTestAPI(JSContext* cx, JS::HandleObject api);
 bool DefineDiagnosticsTestAPI(JSContext*,JS::HandleObject);
+bool DefineNativeOwnerTestAPI(JSContext*,JS::HandleObject);
 bool DefineBufferNativeTestAPI(JSContext* cx, JS::HandleObject api);
 bool DefineEnvironmentTestAPI(JSContext* cx, JS::HandleObject api);
 }

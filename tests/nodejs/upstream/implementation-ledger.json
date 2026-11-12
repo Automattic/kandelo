@@ -79,7 +79,9 @@
     "processErrorsCompileEvidence": "process-errors-compile-check.json",
     "fatalErrorsPartialCatalog": "fatal-errors-contracts.json",
     "fatalErrorsCompileEvidence": "fatal-errors-compile-check.json",
-    "processMemoryPartialCatalog": "process-memory-contracts.json"
+    "processMemoryPartialCatalog": "process-memory-contracts.json",
+    "nativeOwnerPartialCatalog": "native-owner-contracts.json",
+    "nativeOwnerDiagnosticEvidence": "native-owner-engine-check.json"
   },
   "implementation": [
     {
@@ -323,6 +325,12 @@
       "sourceStatus": "Complete unchanged node_errors.cc compiles in revision55; genuine guest errno-name algorithm now resolves. Full fatal initializer is not routed and consumed message/stack/report/policy/scheduling interfaces remain declarations. Final link fails on24symbols; no new runnable artifact.",
       "evidence": "fatal-errors-compile-check.json",
       "remaining": "All new runtime validation and remaining process backends. Memory ownership audit confirms missing complete buffer/external accounting; no unrelated counter/metric substitution made."
+    },
+    {
+      "area": "canonical existing-object native reference ownership",
+      "sourceStatus": "One canonical native reference cell, actual strong/weak wrapper ownership, virtual collection hooks and pre-destructor pointer retirement;12 focused controls and selected existing fixtures pass on all4hosts in an explicit private diagnostic.",
+      "evidence": "native-owner-engine-check.json",
+      "remaining": "Normal engine still unlinked; original AsyncWrap/HandleWrap/ReqWrap producers, real queues, full callback frames and asynchronous shutdown/cancellation remain incomplete."
     }
   ],
   "runtimeConformance": {
@@ -1605,7 +1613,7 @@
     }
   },
   "nextWork": [
-    "Close24 remaining startup-required native symbols: lifecycle/at-exit/signals, permissions, real resource-owner registries, heap/allocator accounting, native loading and3libuv memory APIs. Full original errno algorithm resolves; fatal/message/stack/report paths remain unavailable. process-memory-contracts.json records actual ownership gaps; do not alias narrow counters or fixed kernel values. No revision55 artifact/runtime proof.",
+    "Close23 remaining startup-required native symbols: real AsyncWrap/handle/request producers and queues, lifecycle/at-exit/signals, permissions, heap/allocator accounting, native loading and3libuv memory APIs. Canonical base ownership now has separate private four-host proof; it does not establish normal startup or complete resource-family support.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1614,23 +1622,26 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 55,
+    "packageRevision": 56,
     "status": "failed final link",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 24,
-    "evidence": "fatal-errors-compile-check.json",
+    "undefinedSymbols": 23,
+    "evidence": "native-owner-engine-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
-    "buildCacheKey": "acf3c39bc01fbf0f3cc53721f6f116495f647d21927da7a89d8bb8c4b7d4d955",
+    "buildCacheKey": "4f6d4edcf5f0974ec3fa94d6a80165ab8728af9d45eeb6d4a03e0a54919785a4",
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-fatal-errors-final-1112-074430-5a89",
+    "buildJob": "node-native-owner-normal-drain-1112-084533-0800",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
     "wholeOriginalFatalErrorUnitCompiles": true,
     "resolvedSinceRevision54": [
       "kandelo_node_codec_impl::errors::errno_string(int)"
+    ],
+    "resolvedSinceRevision55": [
+      "kandelo_node_codec_impl::AsyncWrap::persistent() now resolves through actual BaseObject::persistent()"
     ]
   },
   "currentLibuvExecutablePath": {
@@ -1647,5 +1658,27 @@
     "sameProgramAndKernel": true,
     "scope": "empty-filesystem native C/libuv controls including real child exec; not upstream Node startup",
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
+  },
+  "currentNativeOwnerDiagnostic": {
+    "evidence": "native-owner-engine-check.json",
+    "packageRevision": 56,
+    "normalPackageArtifact": false,
+    "controlsPerHost": 12,
+    "driversPerHost": 9,
+    "hosts": [
+      "node",
+      "chromium",
+      "firefox",
+      "webkit"
+    ],
+    "selectedExistingPositiveFixtures": [
+      "diagnostics27",
+      "Buffer44",
+      "AliasedBuffer21",
+      "environment14"
+    ],
+    "startupAccepted": false,
+    "normalEngineLinked": false,
+    "privateProfileRejectsProcessMethods": true
   }
 }

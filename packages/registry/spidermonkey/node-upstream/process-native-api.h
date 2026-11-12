@@ -3,16 +3,18 @@
 // Additional consumed contracts for the whole original process units. A declared
 // operation without a backend must fail to link when activated; no empty queues,
 // fabricated measurements or successful unsupported operations are supplied.
-#include "shell/node-upstream/codec-native-api.h"
 #include <climits>
 #include <cstdio>
 #include <pthread.h>
 #include <sys/resource.h>
 #include <termios.h>
 #include <unistd.h>
-#include "shell/node-upstream/codecs-upstream/node_mutex.h"
 #define node kandelo_node_codec_impl
 #include "node-exit-code.h"
+#undef node
+#include "shell/node-upstream/codec-native-api.h"
+#include "shell/node-upstream/codecs-upstream/node_mutex.h"
+#define node kandelo_node_codec_impl
 #include "shell/node-upstream/codecs-upstream/permission/permission_base.h"
 #undef node
 namespace kandelo_node_codec_impl {
@@ -42,9 +44,9 @@ class ProcessImmediateInfo {
   explicit ProcessImmediateInfo(Environment* environment):environment_(environment) {}
   uint32_t ref_count() const;
 };
-class AsyncWrap {
+class AsyncWrap : public BaseObject {
  public:
-  Global<Object>& persistent();Local<Value> GetOwner();const char* MemoryInfoName() const;
+  Local<Value> GetOwner();const char* MemoryInfoName() const;
   Environment* env();int provider_type() const;std::string diagnostic_name() const;
 };
 class ReqWrapBase {public:AsyncWrap* GetAsyncWrap();};

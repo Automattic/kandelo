@@ -7,6 +7,7 @@
 set -euo pipefail
 
 UPSTREAM_OBJECT_CHECK=0
+NATIVE_OWNER_CHECK=0
 if [ "$#" -eq 1 ] && [ "$1" = "--check-upstream-compiler" ]; then
     # A diagnostic must never satisfy a resolver request for a linked package.
     if [ -z "${WASM_POSIX_DEP_WORK_DIR:-}" ] || [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
@@ -14,8 +15,14 @@ if [ "$#" -eq 1 ] && [ "$1" = "--check-upstream-compiler" ]; then
         exit 2
     fi
     UPSTREAM_OBJECT_CHECK=1
+elif [ "$#" -eq 1 ] && [ "$1" = "--check-native-owners" ]; then
+    if [ -z "${WASM_POSIX_DEP_WORK_DIR:-}" ] || [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        echo "ERROR: --check-native-owners requires a private WASM_POSIX_DEP_WORK_DIR and no output directory." >&2
+        exit 2
+    fi
+    NATIVE_OWNER_CHECK=1
 elif [ "$#" -ne 0 ]; then
-    echo "usage: build-spidermonkey.sh [--check-upstream-compiler]" >&2
+    echo "usage: build-spidermonkey.sh [--check-upstream-compiler|--check-native-owners]" >&2
     exit 2
 fi
 
@@ -436,6 +443,12 @@ export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSS
 
 
 # Record this recipe's actual flags without executing a host layout probe.
+if [ "$NATIVE_OWNER_CHECK" -eq 1 ]; then
+    # This private diagnostic intentionally cannot initialize process_methods.
+    # It must never publish or satisfy a normal package resolver request.
+    export CXXFLAGS="$CXXFLAGS -DKANDELO_NATIVE_OWNER_PROBE=1"
+fi
+
 python3 "$REPO_ROOT/scripts/generate-nodejs-build-settings.py" \
     --mozconfig "$MOZCONFIG_PATH" \
     --path-map "$WORK_DIR=/usr/src/kandelo-build/spidermonkey" \
@@ -518,6 +531,13 @@ mv "$BIN_DIR/js.wasm.instr" "$BIN_DIR/js.wasm"
 
 JS_SIZE="$(wc -c < "$BIN_DIR/js.wasm" | tr -d ' ')"
 echo "==> SpiderMonkey built successfully: $BIN_DIR/js.wasm ($JS_SIZE bytes)"
+
+if [ "$NATIVE_OWNER_CHECK" -eq 1 ]; then
+    mv "$BIN_DIR/js.wasm" "$BIN_DIR/native-owner-probe.wasm"
+    echo "==> Private native-owner diagnostic only: $BIN_DIR/native-owner-probe.wasm"
+    echo "==> process_methods unavailable; no package, node alias or image installed."
+    exit 0
+fi
 
 cp "$BIN_DIR/js.wasm" "$BIN_DIR/node.wasm"
 NODE_SIZE="$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')"

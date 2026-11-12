@@ -9,6 +9,26 @@
 #undef v8
 
 namespace kandelo_node_codec_api {
+bool GlobalRootIsWeak(const std::shared_ptr<GlobalRoot>& root){return root&&root->weakMode;}
+void MakeGlobalStrong(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root){
+  if(!root)return;auto state=root->state.lock();CHECK(state && &state->isolate==isolate);state->environment.AssertForeground();
+  if(!root->weakMode)return;
+  JSContext* cx=state->environment.data().cx;CHECK(cx);
+  JS::RootedValue value(cx,JS::ObjectOrNullValue(root->weak));
+  // Remove weak tracking before publishing a strong edge. Otherwise stale
+  // tracking records can become an unintended strong owner after retirement.
+  std::erase(state->weakGlobals,root);
+  root->strong=root->weak?std::make_unique<Value>(std::make_unique<Cell>(cx,value)):nullptr;
+  root->weak=nullptr;root->weakMode=false;
+}
+void MakeGlobalWeakTenured(Isolate* isolate,const std::shared_ptr<GlobalRoot>& root){
+  if(!root||root->weakMode||!root->strong)return;
+  auto state=root->state.lock();CHECK(state && &state->isolate==isolate);state->environment.AssertForeground();
+  auto value=root->strong->cell().value.get();CHECK(value.isObject());
+  JSObject* object=&value.toObject();CHECK(!js::gc::IsInsideNursery(object));
+  state->weakGlobals.push_back(root);root->weak=object;root->weakMode=true;root->strong.reset();
+}
+
 Isolate* Isolate::GetCurrent(){CHECK(Frame::current);return &Frame::current->state->isolate;}
 Local<Value> Undefined(Isolate* isolate){auto& f=Current(isolate);JS::RootedValue value(f.cx,JS::UndefinedValue());return f.OwnValue(value);}
 MaybeLocal<Value> Function::Call(Local<Context> context,Local<Value> receiver,int argc,Local<Value>* argv) {
@@ -80,21 +100,22 @@ void Realm::RunCleanup(){
   env()->AssertForeground();
   // Bindings release their actual detached channel references before remaining
   // weak wrappers. Destructors unregister each pointer before another visit.
-  while(!data_->bindings.empty())delete data_->bindings.begin()->second;
+  while(!data_->bindings.empty()){auto* object=data_->bindings.begin()->second;CHECK(!object->HasNativeReference());object->RetireWrapper();delete object;}
   // A detached object still present here has an outstanding native owner.
   // Never free behind that owner's shared reference during retirement.
-  while(!data_->objects.empty()){auto* object=*data_->objects.begin();CHECK(!object->IsDetached());delete object;}
+  while(!data_->objects.empty()){auto* object=*data_->objects.begin();CHECK(!object->IsDetached()&&!object->HasNativeReference());object->RetireWrapper();delete object;}
 }
 BaseObject::BaseObject(Realm* realm,Local<Object> input){
   auto& f=Current(realm->isolate());JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
   CHECK(object&&JS::GetClass(object)==&nativeBindingClass&&JS::GetReservedSlot(object,0).isUndefined());
   owner_=std::make_unique<NativeObjectOwner>(f,object);owner_->realm=realm;
-  owner_->handle.Reset(realm->isolate(),input);owner_->root.reset();
+  JS::RootedValue actual(f.cx,JS::ObjectValue(*object));owner_->handle.Reset(realm->isolate(),f.Own<Object>(actual));owner_->root.reset();
   JS::RootedValue home(f.cx,Input(realm->owner()));
   {JSAutoRealm enter(f.cx,object);CHECK(JS_WrapValue(f.cx,&home));JS::SetReservedSlot(object,1,home);JS::SetReservedSlot(object,0,JS::PrivateValue(this));}
   realm->RegisterObject(this);
 }
 BaseObject::~BaseObject(){
+  CHECK(!HasNativeReference());
   if(owner_->realm){
     // A weak edge is updated by the engine even during a moving collection.
     auto& handle=owner_->handle;
@@ -105,10 +126,36 @@ BaseObject::~BaseObject(){
     owner_->realm->ForgetObject(this);
   }else (owner_->category?owner_->state->traceReleased:owner_->state->icuReleased).fetch_add(1);
 }
-void BaseObject::ClearWeak(){auto value=object();CHECK(!value.IsEmpty());owner_->handle.Reset(&owner_->state->isolate,value);}
+void BaseObject::ClearWeak(){owner_->state->environment.AssertForeground();owner_->wantsWeak=false;owner_->handle.ClearWeak();}
+Global<Object>& BaseObject::persistent(){CHECK(owner_->realm);return owner_->handle;}
+bool BaseObject::HasNativeReference()const{return !owner_->nativeReference.expired();}
+bool BaseObject::IsWeakOrDetached()const{return owner_->wantsWeak||owner_->detached||owner_->handle.IsWeak();}
+std::shared_ptr<BaseObject> BaseObject::AcquireNativeReference(){
+  owner_->state->environment.AssertForeground();CHECK(owner_->realm&&!owner_->state->environment.IsClosed());
+  if(Frame::current)CHECK(owner_->state==Frame::current->state);
+  if(auto existing=owner_->nativeReference.lock())return existing;
+  auto result=std::shared_ptr<BaseObject>(this,[](BaseObject* object){object->ReleaseNativeReference();});
+  owner_->nativeReference=result;owner_->handle.ClearWeak();return result;
+}
+void BaseObject::ReleaseNativeReference(){
+  owner_->state->environment.AssertForeground();CHECK(!HasNativeReference());
+  // The resource's collection hook may defer deletion until native close has
+  // completed. The default hook retires the wrapper before derived teardown.
+  if(owner_->detached){OnGCCollect();return;}
+  if(owner_->wantsWeak)owner_->handle.SetWeakTenured();
+}
+void BaseObject::RetireWrapper(){
+  owner_->state->environment.AssertForeground();if(!owner_->realm)return;
+  if(auto* object=owner_->handle.BorrowObject()){
+    auto value=JS::GetReservedSlot(object,0);
+    CHECK(value.isUndefined()||(value.isDouble()&&value.toPrivate()==this));
+    JS::SetReservedSlot(object,0,JS::UndefinedValue());
+  }
+}
+void BaseObject::OnGCCollect(){RetireWrapper();delete this;}
 Local<Object> BaseObject::object()const{CHECK(owner_->realm);return owner_->handle.Get(&owner_->state->isolate);}
 Realm* BaseObject::realm()const{CHECK(owner_->realm);return owner_->realm;}
-void BaseObject::Detach(){CHECK(owner_->realm&&!owner_->detached);owner_->detached=true;}
+void BaseObject::Detach(){CHECK(owner_->realm&&HasNativeReference());owner_->detached=true;}
 bool BaseObject::IsDetached()const{return owner_->detached;}
 BaseObject* BaseObject::UnwrapNativeBinding(Local<Object> input) {
   auto& f=*Frame::current;f.state->environment.AssertForeground();
@@ -116,14 +163,14 @@ BaseObject* BaseObject::UnwrapNativeBinding(Local<Object> input) {
   if(!object||JS::GetClass(object)!=&nativeBindingClass)return nullptr;
   auto pointer=JS::GetReservedSlot(object,0);if(pointer.isUndefined())return nullptr;
   auto* native=static_cast<BaseObject*>(pointer.toPrivate());
-  if(native->owner_->state!=f.state||!native->owner_->realm||native->owner_->detached)return nullptr;
+  if(native->owner_->state!=f.state||!native->owner_->realm)return nullptr;
   JS::RootedObject realm(f.cx,&JS::GetReservedSlot(object,1).toObject());
   if(!kandelo::node::CheckRealmLibraryActive(f.cx,realm))return nullptr;
   return native;
 }
 BaseObject* UnwrapSnapshotable(Local<Object> input,EmbedderObjectType type) {
   auto* object=BaseObject::UnwrapNativeBinding(input);
-  if(!object||!object->is_snapshotable())return nullptr;
+  if(!object||object->IsDetached()||!object->is_snapshotable())return nullptr;
   auto* snapshotable=static_cast<SnapshotableObject*>(object);
   return snapshotable->type()==type?object:nullptr;
 }

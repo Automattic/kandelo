@@ -18,18 +18,21 @@ template<class T> class BaseObjectPtr {
   template<class U> friend class BaseObjectPtr;
   template<class U,class... Args> friend BaseObjectPtr<U> MakeDetachedBaseObject(Args&&...);
   std::shared_ptr<T> value_;
-  explicit BaseObjectPtr(std::shared_ptr<T> value):value_(std::move(value)){}
  public:
   BaseObjectPtr()=default;
   BaseObjectPtr(const BaseObjectPtr&)=default;
   BaseObjectPtr(BaseObjectPtr&&)=default;
   BaseObjectPtr& operator=(const BaseObjectPtr&)=default;
   BaseObjectPtr& operator=(BaseObjectPtr&&)=default;
-  // Existing-object references need the full shared BaseObject pointer cell.
-  // Refuse that unavailable form instead of creating a second deleting owner.
-  BaseObjectPtr(T*)=delete;
+  // Alias the canonical native cell; raw acquisition never creates a second
+  // deleting owner and derived/base references share the same lifetime.
+  explicit BaseObjectPtr(T* value) {
+    if(value)value_=std::shared_ptr<T>(value->AcquireNativeReference(),value);
+  }
+  BaseObjectPtr(std::nullptr_t){}
   template<class U> requires std::is_convertible_v<U*,T*>
   BaseObjectPtr(const BaseObjectPtr<U>& other):value_(other.value_){}
+  void reset(T* value=nullptr){*this=BaseObjectPtr(value);}
   T* get()const{return value_.get();}
   T* operator->()const{return get();}
   T& operator*()const{return *get();}
@@ -38,8 +41,8 @@ template<class T> class BaseObjectPtr {
 template<class T,class... Args> BaseObjectPtr<T> MakeDetachedBaseObject(Args&&... args) {
   // A detached native reference owns the native object and its actual wrapper.
   // The last C++ reference clears the wrapper's native pointer on destruction.
-  auto result=std::make_shared<T>(std::forward<Args>(args)...);
-  result->ClearWeak();result->Detach();return BaseObjectPtr<T>(std::move(result));
+  BaseObjectPtr<T> result(new T(std::forward<Args>(args)...));
+  result->ClearWeak();result->Detach();return result;
 }
 template<class T,class... Args> T* Realm::AddBindingData(Local<Object> target,Args&&... args) {
   auto item=std::make_unique<T>(this,target,std::forward<Args>(args)...);

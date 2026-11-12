@@ -14,8 +14,8 @@
 #include <vector>
 
 #include "jsapi.h"
-#include "jsfriendapi.h"
 #include "jsexn.h"
+#include "jsfriendapi.h"
 
 #include "jit/AtomicOperations.h"
 #include "js/Array.h"
@@ -49,7 +49,6 @@
 #include "shell/node-upstream/builtin-compiler.h"
 #include "shell/node-upstream/codec-agent-includes.h"
 #include "shell/node-upstream/codec-native-api.h"
-#include "shell/node-upstream/process-errors-native-api.h"
 #include "shell/node-upstream/codecs-upstream/errors.generated.h"
 #define v8 kandelo_node_codec_api
 #define node kandelo_node_codec_impl
@@ -60,6 +59,7 @@
 
 #include "shell/node-upstream/options.h"
 #include "shell/node-upstream/per-context.h"
+#include "shell/node-upstream/process-errors-native-api.h"
 #include "shell/node-upstream/realm.h"
 #include "shell/node-upstream/trace-builtins-upstream/messages.generated.h"
 #include "shell/node-upstream/trace-native.h"
@@ -77,6 +77,7 @@ namespace api = kandelo_node_codec_api;
 namespace native = kandelo_node_codec_impl;
 namespace kandelo_node_codec_api {
 const JSClass icuBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
+struct NativeOwnerProbeState;
 struct State {
   Isolate isolate;
   native::Environment environment{&isolate};
@@ -86,6 +87,9 @@ struct State {
   std::atomic<size_t> externalBytes{0}, created{0}, released{0}, spans{0}, collections{0};
   std::atomic<size_t> bufferCreated{0},bufferFreed{0},bufferBytes{0};
   bool stressGc=false;
+#ifdef KANDELO_NATIVE_OWNER_PROBE
+  std::shared_ptr<NativeOwnerProbeState> ownerProbe;
+#endif
   std::atomic<size_t> traceCreated{0},traceReleased{0};
   std::atomic<size_t> icuCreated{0},icuReleased{0};
 };
@@ -694,7 +698,8 @@ struct NativeObjectOwner {
   std::unique_ptr<JS::PersistentRootedObject> root;
   Global<Object> handle;
   Realm* realm=nullptr;
-  bool detached=false;
+  bool detached=false,wantsWeak=false;
+  std::weak_ptr<BaseObject> nativeReference;
   NativeObjectOwner(Frame& frame,JS::HandleObject object):state(frame.state),
       root(std::make_unique<JS::PersistentRootedObject>(frame.cx,object)) { category=frame.domain==api::Domain::Trace; }
 };
@@ -703,7 +708,8 @@ void FinalizeConverter(JS::GCContext*,JSObject* object) {
   if (!value.isUndefined()) {
     // Retire the pointer before the native resource's destructor runs.
     JS::SetReservedSlot(object,0,JS::UndefinedValue());
-    delete static_cast<BaseObject*>(value.toPrivate());
+    auto* native=static_cast<BaseObject*>(value.toPrivate());
+    CHECK(!native->HasNativeReference());native->OnGCCollect();
   }
 }
 const JSClassOps converterOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,FinalizeConverter};
@@ -718,12 +724,19 @@ BaseObject::BaseObject(Environment* environment,Local<Object> input) {
   JS::SetReservedSlot(object,0,JS::PrivateValue(this));
   if(f.domain==api::Domain::Diagnostics){
     owner_->realm=environment->principal_realm();CHECK(owner_->realm);
-    owner_->handle.Reset(&f.state->isolate,input);owner_->root.reset();owner_->realm->RegisterObject(this);
+    JS::RootedValue actual(f.cx,JS::ObjectValue(*object));owner_->handle.Reset(&f.state->isolate,f.Own<Object>(actual));owner_->root.reset();owner_->realm->RegisterObject(this);
   }else (owner_->category?owner_->state->traceCreated:owner_->state->icuCreated).fetch_add(1);
 }
-Environment* BaseObject::env() { CHECK(owner_->state==Frame::current->state);return &owner_->state->environment; }
+Environment* BaseObject::env() { owner_->state->environment.AssertForeground();if(Frame::current)CHECK(owner_->state==Frame::current->state);return &owner_->state->environment; }
 void BaseObject::MakeWeak() {
-  if(owner_->realm){owner_->handle.SetWeak();return;}
+  if(owner_->realm){
+    owner_->wantsWeak=true;
+    if(!owner_->handle.IsEmpty()&&!owner_->handle.IsWeak())owner_->handle.SetWeak();
+    // Promotion occurs while a live callback Frame is available. The last
+    // native reference can subsequently restore this tenured weak edge even
+    // from a native callback with no JavaScript frame.
+    if(HasNativeReference())owner_->handle.ClearWeak();return;
+  }
   CHECK(owner_->root);owner_->root.reset();
 }
 BaseObject* BaseObject::Unwrap(Local<Object> input) {
@@ -985,6 +998,9 @@ JSObject* CreateCodecState(JSContext* cx) {
   JS::SetReservedSlot(object,0,JS::PrivateValue(new std::shared_ptr<api::State>(state))); return object;
 }
 JSObject* CreateProcessMethodsBinding(JSContext* cx,JS::HandleObject realm) {
+#ifdef KANDELO_NATIVE_OWNER_PROBE
+  JS_ReportErrorASCII(cx,"process_methods is unavailable in the private native-owner diagnostic build");return nullptr;
+#else
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm));if(!runtime)return nullptr;
   auto state=api::Data(cx,runtime);if(!state)return nullptr;
   api::Frame frame(cx,realm,state,nullptr,api::Domain::Diagnostics);
@@ -996,6 +1012,7 @@ JSObject* CreateProcessMethodsBinding(JSContext* cx,JS::HandleObject realm) {
   if(JS_IsExceptionPending(cx))return nullptr;
   kandelo_process_methods_adapter::initializer(frame.Own<api::Object>(value),frame.OwnValue(unused),state->isolate.GetCurrentContext(),nullptr);
   return JS_IsExceptionPending(cx)?nullptr:object.get();
+#endif
 }
 JSObject* CreateStringDecoderBinding(JSContext* cx,JS::HandleObject realm) {
   JS::RootedObject runtime(cx,GetRealmRuntime(cx,realm)); if (!runtime) return nullptr;
@@ -1039,6 +1056,7 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 #include "shell/node-upstream/continuation-codecs-inl.h"
 #include "shell/node-upstream/environment-codecs-inl.h"
 #include "shell/node-upstream/native-object-codecs-inl.h"
+#include "shell/node-upstream/native-owner-probe-inl.h"
 #include "shell/node-upstream/property-codecs-inl.h"
 #include "shell/node-upstream/snapshot-codecs-inl.h"
 #include "shell/node-upstream/trace-codecs-inl.h"

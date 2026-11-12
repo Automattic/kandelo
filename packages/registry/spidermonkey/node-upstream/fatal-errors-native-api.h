@@ -2,8 +2,8 @@
 #define KANDELO_NODE_FATAL_ERRORS_NATIVE_API_H
 // Consumed interfaces for complete node_errors.cc. Missing operations remain
 // declarations, so activating fatal/message/report paths requires real owners.
-#include "shell/node-upstream/process-errors-native-api.h"
 #include <atomic>
+#include "shell/node-upstream/process-errors-native-api.h"
 namespace kandelo_node_codec_api {
 class ScriptOrigin {
  public:

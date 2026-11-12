@@ -10,5 +10,8 @@ namespace kandelo_node_codec_impl { using ::node::arraysize; }
 #include "shell/node-upstream/codecs-upstream/aliased_buffer-inl.h"
 #include "shell/node-upstream/codecs-upstream/node_diagnostics_channel.cc"
 
-static_assert(!std::is_constructible_v<kandelo_node_codec_impl::BaseObjectPtr<kandelo_node_codec_impl::diagnostics_channel::Channel>,kandelo_node_codec_impl::diagnostics_channel::Channel*>);
+// Existing wrappers now acquire the canonical native reference cell. They
+// must never accept an independently deleting std::shared_ptr owner.
+static_assert(std::is_constructible_v<kandelo_node_codec_impl::BaseObjectPtr<kandelo_node_codec_impl::diagnostics_channel::Channel>,kandelo_node_codec_impl::diagnostics_channel::Channel*>);
+static_assert(!std::is_constructible_v<kandelo_node_codec_impl::BaseObjectPtr<kandelo_node_codec_impl::diagnostics_channel::Channel>,std::shared_ptr<kandelo_node_codec_impl::diagnostics_channel::Channel>>);
 static_assert(std::is_copy_constructible_v<kandelo_node_codec_impl::BaseObjectPtr<kandelo_node_codec_impl::diagnostics_channel::Channel>>);

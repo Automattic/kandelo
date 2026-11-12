@@ -18,10 +18,12 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 55 source connects the original process initializer,
+The current revision 56 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 24 symbols and has no runnable artifact. The original native tracing agent, binding,
+still fails final linking on 23 symbols and has no normal runnable artifact.
+Canonical native reference ownership has separate four-host diagnostic evidence;
+that private profile explicitly rejects process_methods and cannot install a package. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -2324,3 +2326,46 @@ Full startup, empty/simple/error/jobs/exit and CJS/ESM on four hosts, full catal
 and ordered roadmap remain unfinished. Full products/images,
 kernel/successor-ABI builds and overall suites remain deferred. Stop for explicit
 user review before implementing the broader backend roadmap.
+
+
+## Canonical native reference ownership (revision 56; normal link incomplete)
+
+Existing-object `BaseObjectPtr` acquisition now shares one canonical native
+reference cell. Derived/base acquisitions and copied references cannot install
+independent deleting owners. The cell strengthens the actual unwrapped
+SpiderMonkey wrapper while native references exist, then restores requested
+weak ownership after the last reference. Strengthening removes the weak registry
+record. `ClearWeak` persists across last release; repeated weakening/acquisition
+does not accumulate weak tracking records. `AsyncWrap` now inherits the real
+`BaseObject::persistent()` interface instead of declaring a second owner.
+
+Detach requires a native reference and is idempotent. The last detached release
+calls the virtual collection hook so a resource can finish actual `uv_close`
+before deletion. The default hook retires the JS native pointer before derived
+destruction, preserving reentry and real callback exceptions. Native callbacks
+can acquire/release owners without a JS marshalling Frame. This is a base
+ownership prerequisite, not full original AsyncWrap/HandleWrap/ReqWrap support.
+Those producers, async IDs/hooks, real intrusive queues, callback scopes and
+asynchronous resource shutdown/cancellation remain incomplete. Realm cleanup
+still rejects outstanding native owners rather than freeing behind them.
+
+An explicit `--check-native-owners` build requires a private work directory and
+refuses an install output directory. It compiles the same owning-engine code,
+explicitly rejects process_methods, and exits before package/alias/image
+installation. A dedicated browser fixture serves its exact private bytes without
+adding it to the resolver. Twelve ownership controls, four supporting drivers
+and the existing positive diagnostics, Buffer, AliasedBuffer and environment
+fixtures pass on Node, Chromium, Firefox and WebKit with one artifact/kernel.
+Actual uv_async_t resources use the canonical loop. Tests dispatch close through
+the real shell job drain, including a driver that leaves close pending at the end
+of evaluation. The removed direct uv_run test helper failed the timer dispatch
+assertion; that assertion remains intact. Initial construction/style/fixture
+failures and the preceding private-artifact preview are retained separately.
+
+The normal revision-56 build has zero C++ compiler errors but still fails linking
+on 23 native symbols. The private artifact is not a normal runnable package,
+startup success or module compatibility. All 576 imports and 443 JavaScript files
+remain unchanged. See [the bounded ownership catalog](../tests/nodejs/upstream/native-owner-contracts.json)
+and [identified evidence](../tests/nodejs/upstream/native-owner-engine-check.json).
+Full products/images, kernel/successor-ABI builds and overall suites remain
+deferred. The complete startup/CJS/ESM/catalog goal remains active.
