@@ -63,6 +63,18 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"number")){
+    auto value=frame.OwnValue(args.get(1))->NumberValue(state->isolate.GetCurrentContext());
+    if(value.IsNothing())return false;args.rval().setNumber(value.FromJust());return true;
+  }
+  if(!std::strcmp(operation.get(),"symbols")){
+    JS::RootedObject result(cx,JS_NewPlainObject(cx));if(!result)return false;
+    auto owner=state->environment.owner_symbol(),resource=state->environment.resource_symbol();
+    if(owner.IsEmpty()||resource.IsEmpty())return false;
+    JS::RootedValue ownerKey(cx,api::Input(owner)),resourceKey(cx,api::Input(resource));
+    if(!JS_DefineProperty(cx,result,"owner",ownerKey,JSPROP_ENUMERATE)||!JS_DefineProperty(cx,result,"resource",resourceKey,JSPROP_ENUMERATE))return false;
+    args.rval().setObject(*result);return true;
+  }
   if(!std::strcmp(operation.get(),"inspect")){
     JS::RootedObject result(cx,JS_NewPlainObject(cx));if(!result)return false;
     for(auto [key,value]:std::initializer_list<std::pair<const char*,uint64_t>>{

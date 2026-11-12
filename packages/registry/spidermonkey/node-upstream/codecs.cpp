@@ -221,6 +221,12 @@ Maybe<int32_t> Value::Int32Value(Local<Context> context) {
   if (!JS_WrapValue(f.cx,&input)||!JS::ToInt32(f.cx,input,&value)) return {};
   return Just(value);
 }
+Maybe<double> Value::NumberValue(Local<Context> context) {
+  auto& f=Current(context->isolate);Context::Scope home(context);double value;
+  JS::RootedValue input(f.cx,cell().value);
+  if(!JS_WrapValue(f.cx,&input)||!JS::ToNumber(f.cx,input,&value))return {};
+  return Just(value);
+}
 Local<Value> Frame::OwnValue(JS::HandleValue value) {
   // Source Local::As must refer to the actual C++ wrapper type as well as the
   // actual engine value. A string-tagged base object is not a String object.
@@ -727,7 +733,7 @@ BaseObject::BaseObject(Environment* environment,Local<Object> input) {
     JS::RootedValue actual(f.cx,JS::ObjectValue(*object));owner_->handle.Reset(&f.state->isolate,f.Own<Object>(actual));owner_->root.reset();owner_->realm->RegisterObject(this);
   }else (owner_->category?owner_->state->traceCreated:owner_->state->icuCreated).fetch_add(1);
 }
-Environment* BaseObject::env() { owner_->state->environment.AssertForeground();if(Frame::current)CHECK(owner_->state==Frame::current->state);return &owner_->state->environment; }
+Environment* BaseObject::env()const { owner_->state->environment.AssertForeground();if(Frame::current)CHECK(owner_->state==Frame::current->state);return &owner_->state->environment; }
 void BaseObject::MakeWeak() {
   if(owner_->realm){
     owner_->wantsWeak=true;

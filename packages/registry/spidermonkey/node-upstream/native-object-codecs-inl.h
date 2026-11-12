@@ -89,6 +89,16 @@ Realm* Realm::GetCurrent(Local<Context> context){
 }
 Realm* Environment::principal_realm(){auto context=this->context();return context.IsEmpty()?nullptr:Realm::GetCurrent(context);}
 bool Environment::can_call_into_js()const{return !data_->stopping&&!data_->closed;}
+namespace {
+Local<Symbol> ReadEnvironmentSymbol(Environment* environment,const char* name){
+  auto& frame=Current(environment->isolate());CHECK(&frame.state->environment==environment);
+  JS::RootedObject runtime(frame.cx,kandelo::node::GetRealmRuntime(frame.cx,frame.realm));if(!runtime)return {};
+  JS::RootedSymbol symbol(frame.cx,kandelo::node::GetRuntimeSymbol(frame.cx,runtime,name));if(!symbol)return {};
+  JS::RootedValue value(frame.cx,JS::SymbolValue(symbol));return frame.Own<Symbol>(value);
+}
+}
+Local<Symbol> Environment::owner_symbol(){return ReadEnvironmentSymbol(this,"owner_symbol");}
+Local<Symbol> Environment::resource_symbol(){return ReadEnvironmentSymbol(this,"resource_symbol");}
 BaseObject* Realm::GetBindingRaw(size_t index){env()->AssertForeground();auto it=data_->bindings.find(index);return it==data_->bindings.end()?nullptr:it->second;}
 void Realm::InstallBindingRaw(size_t index,BaseObject* object){env()->AssertForeground();CHECK(!data_->bindings.contains(index)&&data_->objects.contains(object));data_->bindings.emplace(index,object);}
 void Realm::RegisterObject(BaseObject* object){env()->AssertForeground();CHECK(data_->objects.insert(object).second);}
@@ -182,7 +192,8 @@ bool NativeObjectConstructor(JSContext* cx,unsigned argc,JS::Value* vp){
   args.rval().setObject(*object);return true;
 }
 }
-Local<FunctionTemplate> BaseObject::MakeLazilyInitializedJSTemplate(Environment* environment){
+Local<FunctionTemplate> BaseObject::MakeLazilyInitializedJSTemplate(Environment* environment,int internalFieldCount){
+  CHECK_EQ(internalFieldCount,kInternalFieldCount);
   auto& f=Current(environment->isolate());JS::RootedFunction function(f.cx,js::NewFunctionWithReserved(f.cx,NativeObjectConstructor,0,JSFUN_CONSTRUCTOR,""));if(!function)return {};
   JS::RootedObject object(f.cx,JS_GetFunctionObject(function)),prototype(f.cx,JS_NewPlainObject(f.cx));
   if(!prototype||!JS_DefineProperty(f.cx,prototype,"constructor",object,0)||!JS_DefineProperty(f.cx,object,"prototype",prototype,JSPROP_PERMANENT))return {};

@@ -416,5 +416,9 @@
   "currentConstantsIntegrationEvidence": "constants-engine-check.json",
   "currentBootstrapGap": "string_decoder through original buffer/util after complete original native options integration; prior gaps remain historical",
   "currentTypesIntegrationEvidence": "types-engine-check.json",
-  "currentOptionsIntegrationEvidence": "options-engine-check.json"
+  "currentOptionsIntegrationEvidence": "options-engine-check.json",
+  "wholeOriginalClassUnitCompiles": true,
+  "originalClassCompileEvidence": "async-resource-engine-check.json",
+  "originalClassInitializerConnected": false,
+  "originalClassRuntimeSupport": "Unavailable pending actual3slot wrapper/private/template, canonical AsyncHooks state, scoped catch/callback/error policy, weak destroy-hook and resource lifecycle backends. Existing partial binding remains active."
 }

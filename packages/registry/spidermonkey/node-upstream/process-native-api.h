@@ -17,6 +17,7 @@
 #define node kandelo_node_codec_impl
 #include "shell/node-upstream/codecs-upstream/permission/permission_base.h"
 #undef node
+#include "shell/node-upstream/resource-native-api.h"
 namespace kandelo_node_codec_impl {
 using ::node::GetProcessTitle;
 namespace tracing=::node::tracing;
@@ -43,11 +44,6 @@ class ProcessImmediateInfo {
  public:
   explicit ProcessImmediateInfo(Environment* environment):environment_(environment) {}
   uint32_t ref_count() const;
-};
-class AsyncWrap : public BaseObject {
- public:
-  Local<Value> GetOwner();const char* MemoryInfoName() const;
-  Environment* env();int provider_type() const;std::string diagnostic_name() const;
 };
 class ReqWrapBase {public:AsyncWrap* GetAsyncWrap();};
 class HandleWrap : public AsyncWrap {public:static bool HasRef(HandleWrap*);};

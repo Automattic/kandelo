@@ -10,7 +10,7 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 576,
+    "importedFiles": 577,
     "taskQueuePartialCatalog": "task-queue-contracts.json",
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
     "constantsPartialCatalog": "constants-contracts.json",
@@ -81,7 +81,9 @@
     "fatalErrorsCompileEvidence": "fatal-errors-compile-check.json",
     "processMemoryPartialCatalog": "process-memory-contracts.json",
     "nativeOwnerPartialCatalog": "native-owner-contracts.json",
-    "nativeOwnerDiagnosticEvidence": "native-owner-engine-check.json"
+    "nativeOwnerDiagnosticEvidence": "native-owner-engine-check.json",
+    "asyncResourcePartialCatalog": "async-resource-contracts.json",
+    "asyncResourceCompileAndPrimitiveEvidence": "async-resource-engine-check.json"
   },
   "implementation": [
     {
@@ -331,6 +333,12 @@
       "sourceStatus": "One canonical native reference cell, actual strong/weak wrapper ownership, virtual collection hooks and pre-destructor pointer retirement;12 focused controls and selected existing fixtures pass on all4hosts in an explicit private diagnostic.",
       "evidence": "native-owner-engine-check.json",
       "remaining": "Normal engine still unlinked; original AsyncWrap/HandleWrap/ReqWrap producers, real queues, full callback frames and asynchronous shutdown/cancellation remain incomplete."
+    },
+    {
+      "area": "whole original AsyncWrap class and contextual number/canonical symbol primitives",
+      "sourceStatus": "Complete original class/cc/inl compile without algorithms or excerpts. Number conversion uses actual SpiderMonkey ToNumber and symbols reuse canonical inventory;22newcontrols plus prior9drivers pass in a private profile on4hosts.",
+      "evidence": "async-resource-engine-check.json",
+      "remaining": "Initializer unconnected, normal link64 after original GetOwner exposes catch/error/report closure. Full3slot/native Private/template/AsyncHooks/callback/weak-destroy/resource producers remain unavailable."
     }
   ],
   "runtimeConformance": {
@@ -1613,7 +1621,7 @@
     }
   },
   "nextWork": [
-    "Close23 remaining startup-required native symbols: real AsyncWrap/handle/request producers and queues, lifecycle/at-exit/signals, permissions, heap/allocator accounting, native loading and3libuv memory APIs. Canonical base ownership now has separate private four-host proof; it does not establish normal startup or complete resource-family support.",
+    "Implement real scoped catch/exception/message and original error/report policy closure exposed by complete original AsyncWrap::GetOwner; current normal link64. Then actual3slot/private/template/canonical AsyncHooks state and original handle/request producers/queues. Private number/symbol controls are not class/startup proof.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1622,17 +1630,17 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 56,
+    "packageRevision": 57,
     "status": "failed final link",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 23,
-    "evidence": "native-owner-engine-check.json",
+    "undefinedSymbols": 64,
+    "evidence": "async-resource-engine-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
-    "buildCacheKey": "4f6d4edcf5f0974ec3fa94d6a80165ab8728af9d45eeb6d4a03e0a54919785a4",
+    "buildCacheKey": "71240bb70a92aa8ea0f06332937436d89b2c6814df57456a327f82dff8883432",
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-native-owner-normal-drain-1112-084533-0800",
+    "buildJob": "node-original-async-clean-1112-094854-eed7",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1642,7 +1650,15 @@
     ],
     "resolvedSinceRevision55": [
       "kandelo_node_codec_impl::AsyncWrap::persistent() now resolves through actual BaseObject::persistent()"
-    ]
+    ],
+    "wholeOriginalAsyncWrapUnitCompiles": true,
+    "originalAsyncWrapInitializerConnected": false,
+    "additionalSymbolsSinceRevision56": 43,
+    "removedDirectSymbolsSinceRevision56": [
+      "kandelo_node_codec_impl::AsyncWrap::GetOwner()",
+      "kandelo_node_codec_impl::AsyncWrap::MemoryInfoName() const"
+    ],
+    "linkExpansionReason": "Complete original AsyncWrap::GetOwner reaches original TryCatchScope destructor and fatal/exception/report dependency closure. Absence of a direct missing symbol is not full runtime support."
   },
   "currentLibuvExecutablePath": {
     "packageRevision": 5,
@@ -1660,11 +1676,11 @@
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   },
   "currentNativeOwnerDiagnostic": {
-    "evidence": "native-owner-engine-check.json",
-    "packageRevision": 56,
+    "evidence": "async-resource-engine-check.json",
+    "packageRevision": 57,
     "normalPackageArtifact": false,
     "controlsPerHost": 12,
-    "driversPerHost": 9,
+    "driversPerHost": 11,
     "hosts": [
       "node",
       "chromium",
@@ -1679,6 +1695,9 @@
     ],
     "startupAccepted": false,
     "normalEngineLinked": false,
-    "privateProfileRejectsProcessMethods": true
+    "privateProfileRejectsProcessMethods": true,
+    "newNumberControlsPerHost": 18,
+    "newCanonicalSymbolControlsPerHost": 4,
+    "wholeAsyncWrapClassRuntimeValidated": false
   }
 }

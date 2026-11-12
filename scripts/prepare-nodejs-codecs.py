@@ -14,6 +14,18 @@ def prepare(manifest,output):
   output.mkdir(parents=True,exist_ok=True);target=output/(name[4:] if name.startswith('src/permission/')else Path(name).name);target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(verified(name))
  for name in ['src/node_dotenv.cc','src/path.cc','src/node_env_var.cc','deps/ada/ada.h','src/api/exceptions.cc','src/node_errors.cc']:
   (output/Path(name).name).write_bytes(verified(name))
+ # Compile complete resource bodies in their own include directory. Their
+ # binding is not activated while consumed backends remain unavailable.
+ resource=output.parent/'resource-upstream';resource.mkdir(parents=True,exist_ok=True)
+ for name in ['async_wrap.cc','async_wrap.h','async_wrap-inl.h','async_context_frame.h']:
+  (resource/name).write_bytes(verified('src/'+name))
+ for name in ['base_object.h','base_object-inl.h','node_internals.h','v8.h']:
+  (resource/name).write_text('#include "shell/node-upstream/codec-native-api.h"\n')
+ for name in ['env-inl.h','node_external_reference.h','util-inl.h']:
+  (resource/name).write_text('#include "shell/node-upstream/resource-native-api.h"\n')
+ (resource/'node_errors.h').write_text('#include "shell/node-upstream/fatal-errors-native-api.h"\n')
+ (resource/'tracing').mkdir(exist_ok=True)
+ (resource/'tracing/traced_value.h').write_text('#include "shell/node-upstream/tracing-upstream/tracing/traced_value.h"\n')
  (output/'node_file.h').write_text('#include "shell/node-upstream/process-native-api.h"\n')
  (output/'node_url.h').write_text('#include "shell/node-upstream/process-native-api.h"\n')
  for name in ['node_report.h','node_v8_platform-inl.h']:

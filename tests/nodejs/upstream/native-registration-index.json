@@ -6,7 +6,7 @@
     "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
   },
   "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
-  "sourceManifestSha256": "bedff8462e432d4c43621f21ac49b355c7148b4f821a300760993887965ede16",
+  "sourceManifestSha256": "27535d4ac665b7e36a0852002e7503496495ae9c1abdbce864ba2e1fcd9e9190",
   "sourceOffsetUnits": "Unicode code points; line numbers are one-based",
   "counts": {
     "nativeFilesScanned": 460,
@@ -138,7 +138,7 @@
       "bytes": 4023,
       "sha256": "ef01e968d801f04679043e57eb8be51c6fbc8c4748f05e74ed5d5e36711473ed",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/async_wrap.cc",

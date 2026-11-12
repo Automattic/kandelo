@@ -50,7 +50,7 @@ def select_sources(members, prefix):
                        'src/node_realm.cc', 'src/node_realm.h',
                        'src/builtin_info.cc', 'src/builtin_info.h',
                        'src/env_properties.h', 'src/node_exit_code.h',
-                       'src/env.h', 'src/async_wrap.h', 'src/async_wrap.cc',
+                       'src/env.h', 'src/async_wrap.h', 'src/async_wrap-inl.h', 'src/async_wrap.cc',
                        'src/node_types.cc',
                        'src/string_decoder.cc', 'src/string_decoder.h',
                        'src/string_decoder-inl.h', 'src/string_bytes.cc',

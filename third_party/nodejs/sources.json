@@ -3572,6 +3572,13 @@
       "builtinId": null
     },
     {
+      "path": "src/async_wrap-inl.h",
+      "role": "provenance",
+      "bytes": 4023,
+      "sha256": "ef01e968d801f04679043e57eb8be51c6fbc8c4748f05e74ed5d5e36711473ed",
+      "builtinId": null
+    },
+    {
       "path": "src/async_wrap.cc",
       "role": "provenance",
       "bytes": 27422,

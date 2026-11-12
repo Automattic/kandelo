@@ -18,10 +18,12 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 56 source connects the original process initializer,
+The current revision 57 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 23 symbols and has no normal runnable artifact.
+still fails final linking on 64 symbols and has no normal runnable artifact.
+Complete original AsyncWrap owner traversal now exposes the original catch-scope
+and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
 that private profile explicitly rejects process_methods and cannot install a package. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
@@ -2369,3 +2371,49 @@ remain unchanged. See [the bounded ownership catalog](../tests/nodejs/upstream/n
 and [identified evidence](../tests/nodejs/upstream/native-owner-engine-check.json).
 Full products/images, kernel/successor-ABI builds and overall suites remain
 deferred. The complete startup/CJS/ESM/catalog goal remains active.
+
+
+## Whole original AsyncWrap unit (revision 57; normal link incomplete)
+
+The complete original AsyncWrap class, inline header and C++ unit now compile
+unchanged. The missing inline header is imported with its original path/license;
+all 576 previous records and all 443 JavaScript files remain byte-identical,
+with 577 total imports. The original provider enum and existing canonical JS
+inventory are checked under the actual shared OpenSSL build selection.
+The provisional AsyncWrap declaration is replaced by the original class,
+including its actual init/provider/ID fields, virtual methods and object owner
+return type. BaseObject::env is inherited, including foreground ownership checks.
+The original initializer has a distinct unused adapter identity; the existing
+partial async_wrap binding and four active original async-context guards remain.
+
+The owning engine now supplies contextual Value::NumberValue through the real
+SpiderMonkey ToNumber operation, including roots, cross-realm wrapping, moving
+GC, user coercion, negative zero and actual TypeError/throw behavior. Environment
+owner/resource symbol accessors read the existing canonical inventory rather
+than creating keys or reproducing the original owner-chain algorithm. Eighteen
+number controls and four symbol controls pass on Node, Chromium, Firefox and
+WebKit in an explicit private diagnostic. The existing nine ownership/regression
+drivers pass on the same artifact: eleven drivers per host. That profile still
+rejects process_methods and cannot install or satisfy normal package resolution.
+
+Original owner traversal reaches the original TryCatchScope destructor and its
+complete exception/reporting closure. The normal build has zero C++ errors and
+64 unresolved symbols, including 43 newly exposed dependencies and two removed
+direct missing symbols. This increase records the real closure; it is not startup
+advancement. Scoped catches, messages/stack frames/source maps, fatal report
+policy and other backends remain unavailable. No dummy catch constructor,
+always-false caught state, fake frames or omitted original branches were added.
+
+AsyncHooks state/accessor, weak callback parameters, ordinary immediate flags,
+interrupt/microtask, constructor/inheritance, Private data and internal-field
+interfaces are declarations. The underlying backend must share the actual
+current async arrays and hooks, retain real callback/ref/cancel state and provide
+a traced third context-frame field. The present BaseObject template rejects
+unsupported field counts. Generic native inspection fails loudly; original
+AsyncWrap overrides use its actual source fields when producers become usable.
+Original HandleWrap/ReqWrap producers, queues and asynchronous shutdown remain
+incomplete. See [the bounded resource catalog](../tests/nodejs/upstream/async-resource-contracts.json)
+and [exact source/build/primitive evidence](../tests/nodejs/upstream/async-resource-engine-check.json).
+Full normal startup, empty/simple/errors/jobs/exit, separate CJS/ESM and the full
+catalog/roadmap are still unfinished. Full products/images, kernel/successor ABI
+and overall suites remain deferred; explicit broader-roadmap review is required.

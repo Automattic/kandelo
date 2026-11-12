@@ -35,7 +35,11 @@ template<class T,class MutexT> class ExclusiveAccess;
 namespace kandelo_node_codec_api {
 class ArrayBuffer; class SharedArrayBuffer; class Value; class Name; class Object; class String; class Function; class Isolate; class ObjectTemplate; class FunctionTemplate;class Array;
 struct NamedPropertyHandlerConfiguration;struct IndexedPropertyHandlerConfiguration;
-class Message;class StackTrace;
+class Message;class StackTrace;class Symbol;class Private;class MicrotaskQueue;
+enum class WeakCallbackType {kParameter};
+template<class T> class WeakCallbackInfo {
+ public: Isolate* GetIsolate() const;T* GetParameter() const;
+};
 template<class T> class PropertyCallbackInfo;
 struct Cell; struct Frame; struct View; struct MemoryAccount; struct State; struct Context; struct ContextScopeData; struct StartupData;
 struct HeapStatisticsData;
@@ -108,6 +112,7 @@ struct Context {
   };
   Local<Object> Global();
   Local<Object> GetExtrasBindingObject();
+  MicrotaskQueue* GetMicrotaskQueue();
   int GetNumberOfEmbedderDataFields();Local<Value> GetEmbedderData(int);
   template<class T> MaybeLocal<T> GetDataFromSnapshotOnce(size_t) {
     Crash("Native heap snapshot deserialization is not implemented");
@@ -127,6 +132,7 @@ class Value {
   virtual ~Value();
   Cell& cell() const;
   bool IsObject() const;
+  bool IsValue()const;bool IsPrivate()const;bool SameValue(Local<Value>)const;
   bool IsTypedArray() const;
   bool IsString() const;
   bool IsSymbol() const;
@@ -136,6 +142,7 @@ class Value {
   bool IsUndefined() const;
   bool IsNullOrUndefined() const;
   static double NumberValue(Value*);
+  Maybe<double> NumberValue(Local<Context>);
   bool IsArrayBufferView() const;
   bool IsArrayBuffer() const;
   bool IsSharedArrayBuffer() const;
@@ -153,6 +160,9 @@ class Value {
   MaybeLocal<String> ToDetailString(Local<Context>);
 };
 class Name : public Value { public: using Value::Value; };
+class Symbol : public Name {public:using Name::Name;};
+class Private : public Value {public:using Value::Value;Local<Value> Name();};
+class MicrotaskQueue {public:void EnqueueMicrotask(Isolate*,void(*)(void*),void*);};
 enum PropertyAttribute { None=0, ReadOnly=1, DontEnum=2, DontDelete=4 };
 enum class SideEffectType { kHasSideEffect, kHasNoSideEffect, kHasSideEffectToReceiver };
 using AccessorNameGetterCallback=void(*)(Local<Name>,const PropertyCallbackInfo<Value>&);
@@ -213,6 +223,7 @@ template<class T> class Global {
   void Reset(Isolate* isolate,Local<T> value) { if(value.IsEmpty()){Reset();return;}isolate_=isolate;value_=NewGlobalRoot(isolate,value); }
   void Reset() { value_.reset();isolate_=nullptr; }
   void SetWeak() { MakeGlobalWeak(isolate_,value_); }
+  template<class P> void SetWeak(P*,void(*)(const WeakCallbackInfo<P>&),WeakCallbackType);
   void ClearWeak() { MakeGlobalStrong(isolate_,value_); }
   void SetWeakTenured() { MakeGlobalWeakTenured(isolate_,value_); }
   bool IsWeak()const{return GlobalRootIsWeak(value_);}
@@ -229,6 +240,7 @@ class Object : public Value {
   Local<String> GetConstructorName();
   Maybe<bool> DefineOwnProperty(Local<Context>,Local<Name>,Local<Value>,PropertyAttribute=None);
   void* GetAlignedPointerFromInternalField(int,EmbedderDataTag);
+  Local<Value> GetInternalField(int);void SetInternalField(int,Local<Value>);
   Maybe<bool> Set(Local<Context>,Local<Value>,Local<Value>);
   Maybe<bool> SetPrivate(Local<Context>,Local<Value>,Local<Value>);
   Maybe<bool> SetPrototypeV2(Local<Context>,Local<Object>);
@@ -321,6 +333,7 @@ class FunctionTemplate : public Object {
   Local<ObjectTemplate> InstanceTemplate();
   MaybeLocal<Function> GetFunction(Local<Context>);
   void SetClassName(Local<String>);
+  void Inherit(Local<FunctionTemplate>);
 };
 enum class NewStringType { kNormal };
 class String : public Name {
@@ -556,6 +569,13 @@ class Realm {
   void set_prepare_stack_trace_callback(Local<Function>);
   void set_enhance_fatal_stack_before_inspector(Local<Function>);
   void set_enhance_fatal_stack_after_inspector(Local<Function>);
+#define KANDELO_REALM_ASYNC_HOOK(name) void set_async_hooks_##name##_function(Local<Function>);
+  KANDELO_REALM_ASYNC_HOOK(init) KANDELO_REALM_ASYNC_HOOK(before)
+  KANDELO_REALM_ASYNC_HOOK(after) KANDELO_REALM_ASYNC_HOOK(destroy)
+  KANDELO_REALM_ASYNC_HOOK(promise_resolve)
+#undef KANDELO_REALM_ASYNC_HOOK
+  void set_async_hooks_callback_trampoline(Local<Function>);
+  void set_async_hooks_binding(Local<Object>);
 };
 class Cleanable;
 class CleanableQueue;
@@ -601,6 +621,8 @@ struct AliasedControl {
   virtual const void* Uint8Backing()const { return nullptr; }
 };
 struct EnvironmentData;
+class AsyncHooks;
+namespace CallbackFlags {enum Flags {kUnrefed=0,kRefed=1};}
 struct NativeImmediate {
   virtual ~NativeImmediate()=default;
   virtual void Run(Environment*)=0;
@@ -658,6 +680,20 @@ class Environment {
   IsolateData* isolate_data();void ThrowRangeError(const char*);
   void set_trace_category_state_function(Local<Function>);
   bool async_context_frame_enabled() const;
+  AsyncHooks* async_hooks();double new_async_id();double get_default_trigger_async_id();
+  double execution_async_id()const;uint64_t thread_id()const;
+  Local<Symbol> owner_symbol();Local<Symbol> resource_symbol();
+  Local<Private> empty_context_frame_sentinel_symbol();
+#define KANDELO_ENV_ASYNC_HOOK(name) Local<Function> async_hooks_##name##_function();void set_async_hooks_##name##_function(Local<Function>);
+  KANDELO_ENV_ASYNC_HOOK(init) KANDELO_ENV_ASYNC_HOOK(before)
+  KANDELO_ENV_ASYNC_HOOK(after) KANDELO_ENV_ASYNC_HOOK(destroy)
+  KANDELO_ENV_ASYNC_HOOK(promise_resolve)
+#undef KANDELO_ENV_ASYNC_HOOK
+  void set_async_hooks_callback_trampoline(Local<Function>);
+  void ResetPromiseHooks(Local<Function>,Local<Function>,Local<Function>,Local<Function>);
+  std::vector<double>* destroy_async_id_list();
+  void AddCleanupHook(void(*)(void*),void*);void RemoveCleanupHook(void(*)(void*),void*);
+  void RequestInterrupt(std::function<void(Environment*)>);
   CleanableQueue* cleanable_queue();
   ExternalMemoryAccounter* external_memory_accounter();
   JSObject* memory_owner(JSContext*);
@@ -673,6 +709,7 @@ class Environment {
   template<class Callback> void SetImmediate(Callback&& callback) {
     SetImmediateNative(std::function<void(Environment*)>(std::forward<Callback>(callback)));
   }
+  void SetImmediate(std::function<void(Environment*)>,CallbackFlags::Flags);
   template<class Callback> void SetImmediateThreadsafe(Callback&& callback) {
     using Stored=std::decay_t<Callback>;
     Post(std::make_unique<NativeImmediateCallback<Stored>>(std::forward<Callback>(callback)));
@@ -685,6 +722,8 @@ class IsolateData {
   std::shared_ptr<FatalIsolateOptions> options();
   Local<ObjectTemplate> env_proxy_template();void set_env_proxy_template(Local<ObjectTemplate>);
   void set_env_proxy_ctor_template(Local<FunctionTemplate>);
+  Local<FunctionTemplate> async_wrap_ctor_template();
+  void set_async_wrap_ctor_template(Local<FunctionTemplate>);
 };
 struct NativeObjectOwner;
 class MemoryTracker;
@@ -720,9 +759,13 @@ class BaseObject {
   void ReleaseNativeReference();
  public:
   void Detach();bool IsDetached() const;
-  static Local<FunctionTemplate> MakeLazilyInitializedJSTemplate(Environment*);
+  static Local<FunctionTemplate> MakeLazilyInitializedJSTemplate(Environment*,int=kInternalFieldCount);
   virtual bool is_snapshotable() const { return false; }
-  Environment* env();
+  Environment* env()const;
+  // General native inspection remains unavailable. AsyncWrap supplies the
+  // original provider-name and partial-construction implementations.
+  virtual const char* MemoryInfoName()const {Crash("Native general type inspection is unavailable");}
+  virtual bool IsDoneInitializing()const {Crash("Native general initialization inspection is unavailable");}
   virtual void MemoryInfo(MemoryTracker*) const { Crash("Native heap snapshot traversal is not implemented"); }
 };
 template<class T> bool Unwrap(T** output,Local<Object> object) {
@@ -847,6 +890,7 @@ extern Initializer initializer;
 #define DCHECK_LE(x,y) CHECK_LE(x,y)
 #define DCHECK_NULL(x) CHECK((x)==nullptr)
 #define DCHECK_NOT_NULL(x) CHECK_NOT_NULL(x)
+#define DCHECK_IMPLIES(x,y) CHECK_IMPLIES(x,y)
 #else
 #define DCHECK(x) ((void)0)
 #define DCHECK_EQ(x,y) ((void)0)
@@ -855,6 +899,7 @@ extern Initializer initializer;
 #define DCHECK_LE(x,y) ((void)0)
 #define DCHECK_NULL(x) ((void)0)
 #define DCHECK_NOT_NULL(x) ((void)0)
+#define DCHECK_IMPLIES(x,y) ((void)0)
 #endif
 #define UNREACHABLE(...) kandelo_node_codec_api::Crash("Unreachable original codec operation")
 #define FIXED_ONE_BYTE_STRING(isolate,text) kandelo_node_codec_api::String::NewFromOneByte(isolate,reinterpret_cast<const uint8_t*>(text),kandelo_node_codec_api::NewStringType::kNormal,sizeof(text)-1).ToLocalChecked()

@@ -147,7 +147,7 @@
     "evidence": "native-owner-engine-check.json"
   },
   "prerequisitesAndRemaining": [
-    "Original AsyncWrap constructors/providers/async IDs/owner chain and lifecycle; current API still has declaration-only env/GetOwner/MemoryInfoName. GetOwner currently declares Local<Value> instead of original Local<Object>; correct with whole-unit integration, not a copied owner-chain function.",
+    "Original AsyncWrap class/cc/inl now compile unchanged, with inherited BaseObject env and original Local<Object> GetOwner. Actual3-slot construction/provider IDs/init/destroy/hook/owner-chain exception backends and real producers remain unavailable; see async-resource-contracts.json.",
     "Original HandleWrap/ReqWrap producers, real intrusive queues and request/handle registration; no synthetic empty registry is supplied.",
     "Full original native callback Context/Frame/async-context and exception/fatal dispatch contracts.",
     "Asynchronous resource close/drain during shutdown and cancellation; Realm cleanup still rejects outstanding native owners. Probe handles are explicitly drained before shutdown.",
@@ -194,5 +194,7 @@
     ],
     "archivedCodeCopiedThisStep": false,
     "historicalEvidenceIsCurrentConformance": false
-  }
+  },
+  "currentSourceRevision": 57,
+  "currentPrivateEvidence": "async-resource-engine-check.json"
 }

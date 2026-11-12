@@ -40,6 +40,8 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/task-queue.cpp" \
     "$node_consumer/task-queue.h" \
     "$node_consumer/async-wrap.cpp" \
+    "$node_consumer/async-resource-upstream.cpp" \
+    "$node_consumer/resource-native-api.h" \
     "$node_consumer/async-wrap.h" \
     "$node_consumer/constants.cpp" \
     "$node_consumer/constants.h" \
