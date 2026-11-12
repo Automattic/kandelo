@@ -67,8 +67,8 @@ check('raw-structured-clone-transport-copies-without-invalidating-native-span',(
  assert(result==='aaaa'&&value.byteLength===0&&transferred.byteLength===4096&&new Uint8Array(transferred)[0]===0x7a);return true;
 });
 let bootstrapFailure;
-check('upstream-bootstrap-advances-to-next-real-backend-gap',()=>{
+check('principal-body-admission-rejects-secondary-realm',()=>{
  const global=newGlobal({newCompartment:true});api.initializeContext(global);api.initializeRealm(global);const error=outcome(()=>api.runNodeBootstrap(global));
- assert(error.error&&error.error.name==='TypeError'&&error.error.code===undefined&&error.error.message==='defineLazyProperties is not a function');bootstrapFailure={...error.error,compiledBuiltinIds:api.inspectRealm(global).compiledBuiltinIds};assert(!error.error.message.includes("binding 'buffer'"));return bootstrapFailure;
+ assert(error.error&&error.error.name==='Error'&&error.error.code===undefined&&error.error.message==='Native Node bootstrap requires the principal realm');bootstrapFailure={...error.error,compiledBuiltinIds:api.inspectRealm(global).compiledBuiltinIds};assert(!error.error.message.includes("binding 'buffer'"));return bootstrapFailure;
 });
 print(JSON.stringify({kind:'whole-original-native-buffer-controls',cases:observations.length,sharedCases,failures,observations,bootstrapFailure,native:api.bufferNative('inspect'),upstreamStartup:false}));if(failures)quit(1);

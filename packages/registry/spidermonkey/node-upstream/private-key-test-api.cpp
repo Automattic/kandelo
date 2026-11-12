@@ -29,11 +29,31 @@
 #include "shell/node-upstream/trace-agent-test-api.h"
 #include "shell/node-upstream/types.h"
 #include "shell/ShellModuleObjectWrapper.h"
+#include "vm/NativeObject.h"
 
 namespace kandelo::node {
 namespace {
 
 static int externalReferenceToken = 42;
+bool NativeLazyProducer(JSContext* cx,JS::HandleObject holder,JS::HandleId id,
+                         JS::HandleValue producer,JS::MutableHandleValue result) {
+  JS::RootedValueArray<2> arguments(cx);
+  arguments[0].setObject(*holder);if(!JS_IdToValue(cx,id,arguments[1]))return false;
+  return JS::Call(cx,JS::UndefinedHandleValue,producer,arguments,result);
+}
+bool DefineNativeLazyForTesting(JSContext* cx,unsigned argc,JS::Value* vp) {
+  auto args=JS::CallArgsFromVp(argc,vp);
+  if(argc!=3||!args[0].isObject()||(!args[1].isString()&&!args[1].isSymbol())||!args[2].isObject()||!JS::IsCallable(&args[2].toObject())){
+    JS_ReportErrorASCII(cx,"Native lazy control requires target, key and producer");return false;
+  }
+  JS::RootedObject target(cx,js::CheckedUnwrapDynamic(&args[0].toObject(),cx,false));if(!target)return false;
+  JS::RootedId id(cx);if(!JS_ValueToId(cx,args[1],&id))return false;
+  JS::RootedValue producer(cx,args[2]);
+  {JSAutoRealm home(cx,target);if(!JS_WrapValue(cx,&producer))return false;
+    JS::ObjectOpResult result;
+    if(!js::DefineKandeloLazyDataProperty(cx,target,id,NativeLazyProducer,producer,JSPROP_ENUMERATE,result)||!result.checkStrict(cx,target,id))return false;}
+  args.rval().setUndefined();return true;
+}
 bool CompileFunctionBodyForTesting(JSContext* cx, unsigned argc, JS::Value* vp) {
   auto args = JS::CallArgsFromVp(argc, vp);
   if (argc != 3 || !args[0].isObject() || !args[1].isString() ||
@@ -362,6 +382,7 @@ bool ModuleNamespaceForTesting(JSContext* cx, unsigned argc, JS::Value* vp) {
 
 bool DefinePrivateKeyTestAPI(JSContext* cx) {
   static const JSFunctionSpec functions[] = {
+      JS_FN("defineNativeLazy", DefineNativeLazyForTesting, 3, 0),
       JS_FN("compileFunctionBody", CompileFunctionBodyForTesting, 3, 0),
       JS_FN("newPrivateKey", NewPrivateKey, 0, 0),
       JS_FN("newExternal", NewExternal, 0, 0),

@@ -487,6 +487,13 @@ bool RunCurrentNodeBootstrap(JSContext* cx, JS::HandleObject runtime) {
   return RunNodeBootstrap(cx, state);
 }
 
+bool RequireCurrentRealmBuiltin(JSContext* cx,JS::HandleObject runtime,JS::HandleValue id,JS::MutableHandleValue result) {
+  JS::RootedObject context(cx,ReadyContext(cx,runtime));if(!context)return false;
+  JS::Value value=JS::GetReservedSlot(context,RealmLibrary);
+  if(!value.isObject())return Report(cx,"Node realm has not been initialized");
+  JS::RootedObject state(cx,&value.toObject());return RequireRealmBuiltin(cx,state,id,result);
+}
+
 JSObject* GetCurrentContextModuleWrapBinding(JSContext* cx, JS::HandleObject runtime) {
   JS::RootedObject state(cx, ReadyContext(cx, runtime));
   if (!state) return nullptr;

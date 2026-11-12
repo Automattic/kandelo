@@ -55,9 +55,9 @@ check('actual-hook-and-trampoline-owners-survive-moving-gc',()=>{
   binding.setupHooks(internalHooks.nativeHooks);internalHooks.enableHooks();gc('shrinking');assertEq(api.inspectAsync().hooksRegistered,true);assertEq(api.inspectAsync().trampolineRegistered,true);
   binding.setCallbackTrampoline(false);assertEq(api.inspectAsync().trampolineRegistered,false);binding.setCallbackTrampoline(()=>{});gc('shrinking');assertEq(api.inspectAsync().trampolineRegistered,true);internalHooks.disableHooks();
 });
-check('whole-bootstrap-preserves-next-real-backend-failure',()=>{
+check('principal-body-rejects-secondary-realm-and-retires-binding',()=>{
   const target=newGlobal({newCompartment:true});api.initializeContext(target);const other=api.initializeRealm(target),b=other.internalBinding('async_wrap');
-  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'TypeError');assertEq(error.code,undefined);assertEq(error.message,"defineLazyProperties is not a function");bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
+  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'Error');assertEq(error.code,undefined);assertEq(error.message,"Native Node bootstrap requires the principal realm");bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
   assertEq(thrown(()=>b.pushAsyncContext(3,2)).message.includes('Previous Node realm initialization failed'),true);
 });
 binding.clearAsyncIdStack();queue.runMicrotasks();

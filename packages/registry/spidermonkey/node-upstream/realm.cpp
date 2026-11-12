@@ -43,6 +43,7 @@
 #include "shell/node-upstream/task-queue.h"
 #include "shell/node-upstream/timers.h"
 #include "shell/node-upstream/types.h"
+#include "vm/NativeObject.h"
 
 namespace kandelo::node {
 namespace {
@@ -139,6 +140,42 @@ bool SetLoaders(JSContext* cx, unsigned argc, JS::Value* vp) {
                      JS::GetReservedSlot(state, BuiltinRequire).isUndefined(), "Node internal loaders registration invariant");
   JS::SetReservedSlot(state, InternalLoader, args[0]);
   JS::SetReservedSlot(state, BuiltinRequire, args[1]); args.rval().setUndefined(); return true;
+}
+bool LazyBuiltinValue(JSContext* cx,JS::HandleObject holder,JS::HandleId id,
+                      JS::HandleValue module,JS::MutableHandleValue result) {
+  JS::RootedValue value(cx);
+  {
+    // Native lazy data callbacks have no JS Function creation realm. The
+    // holder's actual creation realm owns the protected original loader.
+    JSAutoRealm home(cx,holder);
+    JS::RootedObject runtime(cx,Runtime(cx));JS::RootedValue exports(cx);
+    if(!RequireCurrentRealmBuiltin(cx,runtime,module,&exports))return false;
+    MOZ_RELEASE_ASSERT(exports.isObject(),"Builtin exports must be objects");
+    JS::RootedObject object(cx,&exports.toObject());
+    if(!JS_GetPropertyById(cx,object,id,&value))return false;
+  }
+  if(!JS_WrapValue(cx,&value))return false;result.set(value);return true;
+}
+bool DefineLazyProperties(JSContext* cx,unsigned argc,JS::Value* vp) {
+  auto args=JS::CallArgsFromVp(argc,vp);JS::RootedObject owner(cx,Owner(cx,args));if(!owner)return false;
+  MOZ_RELEASE_ASSERT(argc>=3,"Lazy property argument count");
+  MOZ_RELEASE_ASSERT(args[0].isObject(),"Lazy property target Object");
+  MOZ_RELEASE_ASSERT(args[1].isString(),"Lazy property module String");
+  bool array;if(!JS::IsArrayObject(cx,args[2],&array))return false;
+  MOZ_RELEASE_ASSERT(array,"Lazy property keys Array");
+  MOZ_RELEASE_ASSERT(argc==3||args[3].isBoolean(),"Lazy property enumerability Boolean");
+  JS::RootedObject keys(cx,&args[2].toObject());uint32_t length;if(!JS::GetArrayLength(cx,keys,&length))return false;
+  const unsigned attributes=argc==3||args[3].toBoolean()?JSPROP_ENUMERATE:0;
+  for(uint32_t index=0;index<length;++index){
+    JS::RootedValue key(cx);if(!JS_GetElement(cx,keys,index,&key))return false;
+    MOZ_RELEASE_ASSERT(key.isString(),"Lazy property key String");
+    JS::RootedId id(cx);if(!JS_ValueToId(cx,key,&id))return false;
+    JS::RootedObject target(cx,js::CheckedUnwrapDynamic(&args[0].toObject(),cx,false));if(!target)return false;
+    JSAutoRealm home(cx,target);JS::RootedValue module(cx,args[1]);if(!JS_WrapValue(cx,&module))return false;
+    JS::ObjectOpResult result;
+    if(!js::DefineKandeloLazyDataProperty(cx,target,id,LazyBuiltinValue,module,attributes,result)||!result.checkStrict(cx,target,id))return false;
+  }
+  args.rval().setUndefined();return true;
 }
 bool Ids(JSContext* cx, unsigned argc, JS::Value* vp) {
   auto args = JS::CallArgsFromVp(argc, vp);
@@ -336,6 +373,8 @@ bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
       for (const auto& entry : {std::pair{"kExiting", kExiting}, std::pair{"kExitCode", kExitCode},
                                std::pair{"kHasExitCode", kHasExitCode}})
         if (!JS_DefineProperty(cx, constants, entry.first, int32_t(entry.second), JSPROP_ENUMERATE)) return false;
+      JS::RootedObject lazy(cx,Function(cx,state,DefineLazyProperties,0,"defineLazyProperties"));
+      if(!lazy||!JS_DefineProperty(cx,binding,"defineLazyProperties",lazy,JSPROP_ENUMERATE))return false;
       JS::SetReservedSlot(state, Util, JS::ObjectValue(*binding));
     }
   } else {
@@ -496,6 +535,12 @@ bool RunNodeBootstrap(JSContext* cx, JS::HandleObject state) {
     return Report(cx, "Node realm library is not ready");
   JS::SetReservedSlot(state, NodeStatus, JS::Int32Value(NodeRunning));
   auto run = [&]() -> bool {
+    JS::RootedObject runtime(cx,Runtime(cx));
+    JS::RootedObject principal(cx,GetRuntimePrincipalRealm(cx,runtime));if(!principal)return false;
+    principal=js::CheckedUnwrapDynamic(principal,cx,false);if(!principal)return false;
+    // Only PrincipalRealm runs internal/bootstrap/node upstream. A secondary
+    // realm cannot install the process Buffer prototype or own this body.
+    if(principal!=state)return Report(cx,"Native Node bootstrap requires the principal realm");
     JS::RootedFunction function(cx, CompileBuiltinFunction(cx, "internal/bootstrap/node"));
     if (!function) return false;
     JS::RootedObject records(cx, &JS::GetReservedSlot(state, CompiledIds).toObject());
@@ -557,6 +602,13 @@ JSObject* RealmLibrarySnapshot(JSContext* cx, JS::HandleObject state, bool inspe
 }  // namespace kandelo::node
 
 namespace kandelo::node {
+bool RequireRealmBuiltin(JSContext* cx,JS::HandleObject state,JS::HandleValue id,JS::MutableHandleValue result) {
+  if(!CheckRealmLibraryActive(cx,state))return false;
+  JS::RootedValue require(cx,JS::GetReservedSlot(state,BuiltinRequire));
+  MOZ_RELEASE_ASSERT(require.isObject()&&JS::IsCallable(&require.toObject()),"Original builtin require is unavailable");
+  JS::RootedValueArray<1> arguments(cx);arguments[0].set(id);
+  return JS::Call(cx,JS::NullHandleValue,require,arguments,result);
+}
 unsigned SnapshotCallbackSlot(SnapshotCallback kind) {
   switch(kind){case SnapshotCallback::Serialize:return SerializeCallback;case SnapshotCallback::Deserialize:return DeserializeCallback;case SnapshotCallback::Main:return DeserializeMain;}
   MOZ_CRASH("Invalid snapshot callback kind");

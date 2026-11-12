@@ -27,9 +27,9 @@ check('original-method-registration-uses-set-before-naming-with-actual-setter-gc
   const b=other.internalBinding('options');assertEq(Object.hasOwn(b,'getCLIOptionsValues'),false);assertEq(target.captured.name,'getCLIOptionsValues');assertEq(target.captured.length,0);
   assertEq(thrown(()=>target.captured()).code,'ERR_OPTIONS_BEFORE_BOOTSTRAPPING');
 });
-check('whole-original-bootstrap-passes-options-and-preserves-next-failure',()=>{
+check('principal-body-rejects-secondary-realm-and-retires-options',()=>{
   const target=newGlobal({newCompartment:true});api.initializeContext(target);const other=api.initializeRealm(target),b=other.internalBinding('options');
-  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'TypeError');assertEq(error.code,undefined);assertEq(error.message,"defineLazyProperties is not a function");bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
+  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'Error');assertEq(error.code,undefined);assertEq(error.message,"Native Node bootstrap requires the principal realm");bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
   assertEq(thrown(()=>b.parseNodeOptionsEnvVar('--not-reusable')).message.includes('Previous Node realm initialization failed'),true);
 });
 check('actual-cpp-profile-parser-applies-env-before-cli-without-marking-bootstrap-complete',()=>{

@@ -37,9 +37,9 @@ check('real-module-namespace-classification-survives-moving-gc',()=>{
 check('native-predicate-inspection-ignores-poisoned-public-constructor-properties',()=>{
   const value=new Map();Object.defineProperties(value,{constructor:{get(){throw new Error('CONSTRUCTOR_GETTER')}},[Symbol.toStringTag]:{get(){throw new Error('TAG_GETTER')}}});Object.setPrototypeOf(value,null);record('poisoned-real-map',value,['isMap']);
 });
-check('whole-original-bootstrap-passes-types-and-invalidates-failed-realm-functions',()=>{
+check('principal-body-rejects-secondary-realm-and-invalidates-owned-functions',()=>{
   const target=newGlobal({newCompartment:true});api.initializeContext(target);const other=api.initializeRealm(target),b=other.internalBinding('types'),predicate=b.isMap;
-  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'TypeError');assertEq(error.code,undefined);assertEq(error.message,"defineLazyProperties is not a function");
+  const error=thrown(()=>api.runNodeBootstrap(target));assertEq(error.name,'Error');assertEq(error.code,undefined);assertEq(error.message,"Native Node bootstrap requires the principal realm");
   bootstrapFailure={name:error.name,code:error.code,message:error.message,compiledBuiltinIds:api.inspectRealm(target).compiledBuiltinIds};
   assertEq(thrown(()=>predicate(new Map())).message.includes('Previous Node realm initialization failed'),true);assertEq(thrown(()=>predicate()).message.includes('Previous Node realm initialization failed'),true);assertEq(types.isMap(new Map()),true);
 });

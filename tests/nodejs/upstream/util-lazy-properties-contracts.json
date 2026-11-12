@@ -147,13 +147,6 @@
     ],
     "coverage": "Direct callee-name syntax in dependency-graph.json; aliases and generic forwarder domains remain open."
   },
-  "currentFailure": {
-    "name": "TypeError",
-    "message": "defineLazyProperties is not a function",
-    "location": "node:buffer:1572",
-    "evidence": "mksnapshot-engine-check.json",
-    "startupAccepted": false
-  },
   "owningLayers": {
     "engine": "Native lazy data-property identity/materialization, descriptor, attributes, assignment/deletion/freeze, GC and exception/reentrancy state",
     "embedding": "Actual holder creation Realm and protected builtin require closure; no second loader/cache",
@@ -167,20 +160,47 @@
     "root module ID/target/values across GC, errors, reentrancy and teardown"
   ],
   "nativeReference": {
-    "report": "util-lazy-properties-native-reference.json",
-    "fixture": "util-lazy-properties-native-controls.cjs",
-    "controls": 7,
-    "scope": "Authenticated native Node only; does not implement or prove a Kandelo getter"
+    "report": "lazy-data-native-reference.json",
+    "sharedFixture": "lazy-data-shared-controls.js",
+    "controls": 19,
+    "scope": "Authenticated native fresh Node reference; exact selected observations on all four Kandelo hosts",
+    "priorNativeOnlyReport": "util-lazy-properties-native-reference.json",
+    "priorControls": 7
   },
   "validationRemaining": [
-    "four-host registration without module evaluation",
-    "descriptor materialization and actual data descriptors without exposed getter Functions",
-    "write/delete/freeze without eager require and correct attributes",
-    "real holder-creation context across prototypes, child/vm contexts and receivers",
-    "cache behavior, repeated errors, retries, loader cycles, reentrant redefine/delete and exceptions",
-    "GC, cancellation/retirement, invalid holder/context and independently owned runtime isolation",
-    "full util exports/classes/signatures/errors and graph reconciliation"
+    "Proxy targets and non-Node creation realm invocation/error contract",
+    "Full security/OOM/worker/concurrent/cancellation/loader-cycle and specialized native-class contracts",
+    "Native reference write/delete assertion boundary and recursive redefinition are retained, not exact differential agreement",
+    "Full util exports/classes/signatures/errors and complete graph reconciliation"
   ],
-  "implemented": false,
-  "fullContractCatalogComplete": false
+  "implemented": true,
+  "fullContractCatalogComplete": false,
+  "historicalFailure": {
+    "name": "TypeError",
+    "message": "defineLazyProperties is not a function",
+    "location": "node:buffer:1572",
+    "evidence": "mksnapshot-engine-check.json",
+    "startupAccepted": false
+  },
+  "currentFailure": {
+    "binding": "builtins.config",
+    "name": "Error",
+    "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+    "message": "Requested native builtin metadata/cache/source-text backend is not implemented",
+    "location": "node:internal/bootstrap/node:135",
+    "evidence": "lazy-data-engine-check.json",
+    "startupAccepted": false
+  },
+  "implementationEvidence": "lazy-data-engine-check.json",
+  "engineControlsPerHost": 29,
+  "driversPerHost": 12,
+  "fullNativeInterfaceConformanceEstablished": false,
+  "implementation": {
+    "engine": "Actual traced slotful native lazy data records; property shape prevents raw-slot read exposure; no JS getter Function",
+    "realm": "Actual holder creation realm and protected original BuiltinRequire/cache; no substitute loader",
+    "descriptor": "Reads and descriptor queries materialize; assignment/delete/freeze can avoid loading; throws remain retryable",
+    "reentrancy": "Cache only if the identical record still owns the property; retain current attributes and writes/deletions/replacements",
+    "principalEntry": "Actual principal-only admission before original body compilation; failed secondary owner is retired",
+    "review": "lazy-data-contracts.md"
+  }
 }

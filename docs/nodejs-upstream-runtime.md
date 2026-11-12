@@ -13,8 +13,9 @@ realm closure uses the real ModuleWrap/Error owners and shared private symbols.
 
 The native principal-body entry calls complete `internal/bootstrap/node` with
 protected state. It now executes the original internal tracing helper and
-passes the live `mksnapshot` binding and currently stops at the missing native
-`util.defineLazyProperties` export in original `buffer.js`. The original native tracing agent, binding,
+passes the live `mksnapshot` binding and native lazy data-property setup in
+original `buffer.js`. It currently stops at the unavailable `builtins.config`
+metadata read in `internal/bootstrap/node:135`. The original native tracing agent, binding,
 V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
 Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
 four hosts. Continuation-preserved engine data and the complete original
@@ -1732,3 +1733,49 @@ can avoid loading. The getter must use the actual holder creation realm and
 its protected original builtin loader. This evidence guides the required engine
 and embedding support; it does not implement the missing export or justify an
 observable JavaScript accessor substitute.
+
+
+## Native lazy data-property integration (revision 45)
+
+The startup-required `util.defineLazyProperties` export now uses actual
+SpiderMonkey native property records. Descriptor queries materialize real data
+values without exposing JavaScript getter Functions. Assignment, deletion and
+freezing can avoid module loading. GC traces the actual callback data from its
+property slot. Computations cache only while their original record still owns
+the property, preserving reentrant mutations and current attributes.
+
+The callback enters the holder's creation realm and calls its protected original
+BuiltinRequire closure. Original Node JavaScript continues to own loader caching
+and exceptions. Principal-body admission now rejects secondary realms before
+compilation and retires their owned bindings. Older secondary-realm fixtures now
+test that actual admission contract; separate principal controls still execute
+the original body. The original Buffer principal-context assertion is unchanged.
+
+Twenty-nine controls and twelve process drivers pass on Node, Chromium, Firefox
+and WebKit with identical revision-45 engine/kernel bytes. Nineteen groups match
+the authenticated native Node reference exactly. Six fatal argument drivers per
+host preserve original assertion order. Selected prior regressions also pass;
+combined reports cover 326 guest processes and 96 expected assertion traps.
+All 557 imported identities, including 443 JavaScript files/10,993,403 bytes,
+remain unchanged. Normal resolution reuses the exact tested engine artifact.
+
+The native reference aborts for reentrant writes/deletions and recurses for
+redefinition of the currently computed property. Those retained cases are not
+included in exact differential agreement. The first expanded fixture also
+recursively redefined its own unresolved property; the corrected replacement
+control deletes before defining a new record. Initial build/fixture failures
+remain retained. Proxy targets fail explicitly. Full native interface
+conformance and wider exceptional/worker/cancellation coverage remain open.
+See [lazy-data-contracts.md](../tests/nodejs/upstream/lazy-data-contracts.md) and
+[lazy-data-engine-check.json](../tests/nodejs/upstream/lazy-data-engine-check.json).
+
+Original principal startup now stops at `JSONParse(binding.config)` in
+`internal/bootstrap/node:135` with the actual
+`ERR_KANDELO_NOT_IMPLEMENTED` metadata error. Its interface is serialized build
+configuration for frozen `process.config`; the next prerequisite must derive
+from Kandelo/SpiderMonkey build facts. No V8 binding generation, V8 configuration
+copy, empty metadata placeholder or upstream source rewrite is added.
+Empty/simple startup, output/errors/jobs/exit, separate CJS/ESM and the complete
+backend catalog/ordered roadmap remain unfinished. Normal node mode remains the
+legacy bootstrap. Full products/images, successor ABI builds and overall suites
+remain deferred; this phase used focused empty-filesystem guest fixtures.

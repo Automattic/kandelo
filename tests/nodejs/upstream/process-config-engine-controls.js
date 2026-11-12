@@ -72,17 +72,17 @@ check('native-node-stage-requires-existing-context-and-realm-ownership',()=>{
   api.initializeContext(target);assertEq(thrown(()=>api.runNodeBootstrap(target)).message.includes('realm has not been initialized'),true);
   api.initializeRealm(target);assertEq(api.inspectRealm(target).nodeBootstrapPhase,0);
 });
-check('native-node-stage-uses-protected-state-and-preserves-actual-missing-backend',()=>{
+check('principal-body-admission-rejects-secondary-realm-before-compilation',()=>{
   failed=context();failed.builtins=failed.realm.internalBinding('builtins');const exports=api.getContextExports(failed.global),descriptor=Object.getOwnPropertyDescriptor(exports,'primordials');let reads=0;
   Object.defineProperty(exports,'primordials',{get(){reads++;throw new Error('diagnostic container used')},configurable:true});
   let error;try{error=thrown(()=>api.runNodeBootstrap(failed.global))}finally{Object.defineProperty(exports,'primordials',descriptor)}
-  assertEq(reads,0);assertEq(error.name,'TypeError');assertEq(error.code,undefined);assertEq(error.message,"defineLazyProperties is not a function");
-  assertEq(error.stack.includes('node:buffer:'),true);
+  assertEq(reads,0);assertEq(error.name,'Error');assertEq(error.code,undefined);assertEq(error.message,"Native Node bootstrap requires the principal realm");
+  assertEq(error.stack.includes('node:buffer:'),false);
   failed.error=error;
 });
-check('failed-node-body-is-terminal-and-diagnostics-do-not-expose-partial-loaders',()=>{
+check('failed-principal-body-admission-is-terminal-without-exposing-loaders',()=>{
   const snapshot=api.inspectRealm(failed.global);assertEq(snapshot.phase,3);assertEq(snapshot.nodeBootstrapPhase,3);
-  assertEq(snapshot.compiledBuiltinIds.includes('internal/bootstrap/node'),true);assertEq(snapshot.compiledBuiltinIds.includes('internal/timers'),true);
+  assertEq(snapshot.compiledBuiltinIds.includes('internal/bootstrap/node'),false);assertEq(snapshot.compiledBuiltinIds.includes('internal/timers'),false);
   assertEq('process' in snapshot,false);assertEq('require' in snapshot,false);
   assertEq(thrown(()=>api.runNodeBootstrap(failed.global)).message.includes('Previous Node bootstrap failed'),true);
   assertEq(failed.realm.internalBinding('builtins'),failed.builtins);
