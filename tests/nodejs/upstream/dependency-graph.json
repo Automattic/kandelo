@@ -4,7 +4,7 @@
   "version": "26.13.0",
   "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
 },
-  "sourceManifestSha256": "137b9d6b596eadcb0a0cb8cca91bc5cc9a3199305ec06b092f63cbcaba0e4338",
+  "sourceManifestSha256": "717e5bd66db7aba6126467e44356a9384c919abd3040b81c7c529b1245cc5431",
   "method": "Authenticated Babel source graph with syntactic execution contexts, reviewed computed dispatch, lazy registrations and transfer metadata; never executes upstream code",
   "counts": {
   "registeredSources": 443,

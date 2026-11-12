@@ -76,7 +76,14 @@ enum encoding ParseEncoding(v8::Isolate*, v8::Local<v8::Value>, v8::Local<v8::Va
  for name in ['node_buffer.h','string_bytes.h']:
   (utility/name).write_text('#include "shell/node-upstream/codecs-upstream/'+name+'"\n')
  (utility/'node_errors.h').write_text('#include "shell/node-upstream/error-policy-native-api.h"\n')
+ debug=output.parent/'debugging-upstream';debug.mkdir(parents=True,exist_ok=True)
+ for name in ['debug_utils.cc','debug_utils.h','debug_utils-inl.h']:
+  (debug/name).write_bytes(verified('src/'+name))
+ for name in ['async_wrap.h','env.h','util.h','util-inl.h']:
+  (debug/name).write_bytes(include)
+ for name in ['env-inl.h','node_internals.h']:
+  (debug/name).write_text('#include "shell/node-upstream/debugging-native-api.h"\n')
  (output/'errors.generated.h').unlink(missing_ok=True)
- return {'completeNativeFiles':len(names)+20,'wholeOriginalUtilities':True,'wholeOriginalErrorPolicyHeader':True,'asyncProviderMetadataMacros':4,'fullEncodingEnumOnly':True,'functionBodiesExtracted':False,'javascriptGenerated':False}
+ return {'completeNativeFiles':len(names)+23,'wholeOriginalDebugUtilities':True,'wholeOriginalUtilities':True,'wholeOriginalErrorPolicyHeader':True,'asyncProviderMetadataMacros':4,'fullEncodingEnumOnly':True,'functionBodiesExtracted':False,'javascriptGenerated':False}
 if __name__=='__main__':
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--manifest',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args();print(json.dumps(prepare(a.manifest,a.output)))

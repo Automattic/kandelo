@@ -1,0 +1,38 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -38,6 +38,7 @@
+     "node-upstream/constants-upstream/node_constants.cc",
+     "node-upstream/constants.cpp",
+     "node-upstream/continuation-upstream.cpp",
++    "node-upstream/debugging-upstream.cpp",
+     "node-upstream/decoder-upstream.cpp",
+     "node-upstream/diagnostics-upstream.cpp",
+     "node-upstream/dotenv-upstream.cpp",
+@@ -128,6 +129,7 @@
+ # Complete original native codecs and their engine API use C++20.
+ SOURCES["node-upstream/codecs.cpp"].flags += ["-std=c++20"]
+ SOURCES["node-upstream/utility-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
++SOURCES["node-upstream/debugging-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+ SOURCES["node-upstream/decoder-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+ SOURCES["node-upstream/string-bytes-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+ SOURCES["node-upstream/process-versions.cpp"].flags += ["-std=c++20"]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -43,6 +43,7 @@
+ # We don't bother checking files in these directories, because they're (a) auxiliary or (b)
+ # imported code that doesn't follow our coding style.
+ ignored_js_src_dirs = [
++    "js/src/shell/node-upstream/debugging-upstream/",  # complete original Node diagnostics
+     "js/src/shell/node-upstream/utilities-upstream/",  # complete original Node utilities
+     "js/src/shell/node-upstream/error-policy-upstream/",  # complete original Node header
+     "js/src/shell/node-upstream/resource-upstream/",  # complete original Node resources
+@@ -68,6 +69,9 @@
+ included_inclnames_to_ignore = set(
+     [
+         "shell/node-upstream/error-policy-upstream/node_errors.h",
++        "shell/node-upstream/debugging-upstream/debug_utils.h",
++        "shell/node-upstream/debugging-upstream/debug_utils-inl.h",
++        "shell/node-upstream/debugging-upstream/debug_utils.cc",
+         "shell/node-upstream/utilities-upstream/util.h",
+         "shell/node-upstream/utilities-upstream/util-inl.h",
+         "shell/node-upstream/utilities-upstream/util.cc",

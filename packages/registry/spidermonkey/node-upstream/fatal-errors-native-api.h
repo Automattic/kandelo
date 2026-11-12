@@ -18,14 +18,15 @@ class Message:public Value {
  MaybeLocal<String> GetSourceLine(Local<Context>);Local<StackTrace> GetStackTrace();
  int ErrorLevel();Local<String> Get();
 };
-class StackFrame:public Value {
+class StackFrame:public Data {
  public:
- using Value::Value;Local<String> GetFunctionName();Local<String> GetScriptName();
+ using Data::Data;bool IsValue()const override{return false;}bool IsPrivate()const override{return false;}
+ Local<String> GetFunctionName();Local<String> GetScriptName();
  int GetLineNumber();int GetColumn();bool IsEval();int GetScriptId();
 };
-class StackTrace:public Value {
+class StackTrace:public Data {
  public:
- using Value::Value;
+ using Data::Data;bool IsValue()const override{return false;}bool IsPrivate()const override{return false;}
  // Private bridge flags; no V8 data/layout or stack metadata is synthesized.
  enum StackTraceOptions{kDetailed=1,kExposeFramesAcrossSecurityOrigins=2};
  static Local<StackTrace> CurrentStackTrace(Isolate*,int,StackTraceOptions);

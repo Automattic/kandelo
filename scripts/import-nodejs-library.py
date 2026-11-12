@@ -64,7 +64,7 @@ def select_sources(members, prefix):
                        'src/node_revert.h',
                        'src/node_dotenv.cc', 'src/path.cc', 'src/node_env_var.cc',
                        'deps/ada/ada.h',
-                       'src/debug_utils.h',
+                       'src/debug_utils.h', 'src/debug_utils.cc',
                        'src/debug_utils-inl.h',
                        'src/node_errors.h', 'src/node_errors.cc',
                        'src/node_i18n.cc', 'src/node_i18n.h',

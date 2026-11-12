@@ -60,6 +60,8 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/process-errors-native-api.h" \
     "$node_consumer/fatal-errors-upstream.cpp" \
     "$node_consumer/fatal-errors-native-api.h" \
+    "$node_consumer/debugging-native-api.h" \
+    "$node_consumer/debugging-upstream.cpp" \
     "$node_consumer/error-policy-native-api.h" \
     "$node_consumer/utility-native-api.h" \
     "$node_consumer/utility-support-native-api.h" \
@@ -102,6 +104,7 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/trace-unicode-native-api.h" \
     "$node_consumer/trace-utf8-native.h" \
     "$node_consumer/trace-utf8-native.cpp" \
+    "$node_consumer/stack-codecs-inl.h" \
     "$node_consumer/template-codecs-inl.h" \
     "$node_consumer/trace-codecs-inl.h" \
     "$node_consumer/trace-shutdown.h" \

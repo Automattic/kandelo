@@ -40,6 +40,7 @@
 #include "js/PropertyAndElement.h"
 #include "js/Realm.h"
 #include "js/RealmOptions.h"
+#include "js/SavedFrameAPI.h"
 #include "js/SharedArrayBuffer.h"
 #include "js/StableStringChars.h"
 #include "js/Stack.h"
@@ -61,6 +62,7 @@
 #undef v8
 
 #include "shell/node-upstream/error-policy-native-api.h"
+#include "shell/node-upstream/fatal-errors-native-api.h"
 #include "shell/node-upstream/options.h"
 #include "shell/node-upstream/per-context.h"
 #include "shell/node-upstream/process-errors-native-api.h"
@@ -75,6 +77,7 @@
 #include "vm/JSAtomUtils.h"
 #include "vm/JSFunction.h"
 #include "vm/NativeObject.h"
+#include "vm/SavedFrame.h"
 #include "vm/StringType.h"
 
 namespace kandelo_node_codec_impl { extern const JSClass categoryClass,nativeBindingClass,nativeChannelClass; }
@@ -793,11 +796,7 @@ BaseObject* BaseObject::Unwrap(Local<Object> input) {
   if (!realm||!kandelo::node::CheckRealmLibraryActive(f.cx,realm)) return nullptr;
   return static_cast<BaseObject*>(value.toPrivate());
 }
-void FWrite(FILE* stream,const std::string& bytes) {
-  // The guest libc FILE owns buffering, descriptor writes and stream errors.
-  // Byte length is explicit: embedded NULs are output, not terminators.
-  std::fwrite(bytes.data(),1,bytes.size(),stream);
-}
+
 }  // namespace kandelo_node_codec_impl
 
 namespace kandelo_node_codec_api {
@@ -966,5 +965,6 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 #include "shell/node-upstream/native-owner-probe-inl.h"
 #include "shell/node-upstream/property-codecs-inl.h"
 #include "shell/node-upstream/snapshot-codecs-inl.h"
+#include "shell/node-upstream/stack-codecs-inl.h"
 #include "shell/node-upstream/template-codecs-inl.h"
 #include "shell/node-upstream/trace-codecs-inl.h"

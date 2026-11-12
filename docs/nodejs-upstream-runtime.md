@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 63 source connects the original process initializer,
+The current revision 64 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 59 symbols and has no normal runnable artifact.
+still fails final linking on 48 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -92,7 +92,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 576 files after complete native source/header additions; every
+manifest has 581 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -2736,3 +2736,18 @@ deferred; ABI 56 and immutable ABI 55 are unchanged.
 
 See the [native template contracts](../tests/nodejs/upstream/native-template-contracts.json)
 and [identified compile/link evidence](../tests/nodejs/upstream/native-template-compile-check.json).
+
+
+## Whole original debugging utilities and VM stacks (revision 64)
+
+The complete unchanged `debug_utils.cc` now owns diagnostic output and backtrace bodies; the provisional FWrite implementation has been removed. Native StackTrace and StackFrame are rooted non-Value Data kinds. The original GetCurrentStackTrace and PrintStackTrace bodies execute over actual SpiderMonkey SavedFrames. Names, source, line, UTF-16 column and source IDs come from the VM. Capture records actual eval/Function compiler provenance, and frame interning preserves distinct compilation identities. Filenames do not determine eval classification. No Node JavaScript or native algorithm body was rewritten.
+
+The private artifact links and passes 40 process drivers on each of Node, Chromium, Firefox and WebKit, using identical program and ABI56 kernel hashes. These include four new stack controls, four previously unexecuted template controls and 32 prior regressions. They cover source positions, eval/Function provenance, equal-filename compilation identity, capture limits, original printing, roots/GC, receiver brands, context identity and callback reentry. The program is 59,862,270 bytes, SHA-256 `3890b1951317430a26cd1849f9917361c55b8ea90cea0bf82d4213d66a976ee5`. It deliberately rejects process_methods and cannot satisfy normal package installation or startup. Selected native Error.CallSite observations support the position/eval expectations; they do not prove the complete native stack API.
+
+The targeted normal profile compiles but fails linking on 48 symbols, down from 59 with no additions. It has no current executable or renewed startup evidence. Both profiles reused the independently verified prepared Mozilla tree through the package recipe's dependency, toolchain, staging and build operations; clean staging/patch application were replaced by exact prepared-file verification. This targeted rebuild has no normal resolver cache key and is not a canonical product build. Initial C++/configuration/storage failures, intentional download cancellation and the exact transformation are retained in `.context/node-debug-backtraces/`.
+
+Capture stops at real asynchronous ancestry and skips self-hosted frames, so it may return fewer than the requested bound. Reconstructed or structured-cloned frames without captured provenance remain Unknown and fail IsEval explicitly. Wasm position conversion is unavailable; nested guest Wasm remains deferred. Native symbol lookup uses the complete original musl/Wasm unavailable-execinfo branch; no native host stack is substituted. Environment-aware credentials::SafeGetenv is declared but unimplemented. Full Message/source-line/origin/report, OOM/security/async/native-frame parity and lifetime conformance remain incomplete. The Buffer ownership bridge still requires whole node_internals.h integration, so overall source policy remains unsatisfied.
+
+All 581 imported identities match; the 443 JavaScript files and 10,993,403 bytes remain unchanged. Source-index validation and runtime acceptance are separate. No full product/image/kernel/successor-ABI rebuild or overall suite ran; immutable ABI55 and current ABI56 are unchanged. Genuine startup, CJS/ESM, the complete backend catalog and ordered roadmap remain unfinished.
+
+See the [native stack contracts](../tests/nodejs/upstream/native-stack-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-stack-engine-check.json).

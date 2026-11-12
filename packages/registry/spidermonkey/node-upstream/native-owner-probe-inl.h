@@ -65,6 +65,26 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"stackFrames")){
+    const auto count=args.get(1);
+    if(!count.isInt32()||count.toInt32()<0){JS_ReportErrorASCII(cx,"Native stack control requires nonnegative Int32 frame count");return false;}
+    auto* isolate=&state->isolate;api::Local<api::StackTrace> stack;
+    if(!native::GetCurrentStackTrace(isolate,count.toInt32()).ToLocal(&stack))return false;
+    if(args.get(2).isTrue())native::PrintStackTrace(isolate,stack);
+    JS::RootedObject output(cx,JS::NewArrayObject(cx,0));if(!output)return false;
+    for(int index=0;index<stack->GetFrameCount();++index){
+      auto saved=stack->GetFrame(isolate,index);JS::RootedObject item(cx,JS_NewPlainObject(cx));if(!item)return false;
+      JS::RootedValue name(cx,api::Input(saved->GetFunctionName())),source(cx,api::Input(saved->GetScriptName()));
+      if(!JS_DefineProperty(cx,item,"name",name,JSPROP_ENUMERATE)||
+         !JS_DefineProperty(cx,item,"source",source,JSPROP_ENUMERATE)||
+         !JS_DefineProperty(cx,item,"line",saved->GetLineNumber(),JSPROP_ENUMERATE)||
+         !JS_DefineProperty(cx,item,"column",saved->GetColumn(),JSPROP_ENUMERATE)||
+         !JS_DefineProperty(cx,item,"eval",saved->IsEval(),JSPROP_ENUMERATE)||
+         !JS_DefineProperty(cx,item,"scriptId",saved->GetScriptId(),JSPROP_ENUMERATE))return false;
+      JS::RootedValue value(cx,JS::ObjectValue(*item));if(!JS_SetElement(cx,output,uint32_t(index),value))return false;
+    }
+    args.rval().setObject(*output);return true;
+  }
   if(!std::strcmp(operation.get(),"templateCreate")){
     auto* isolate=&state->isolate;api::HandleScope scope(isolate);
     auto construct=[](const api::FunctionCallbackInfo<api::Value>& input){
