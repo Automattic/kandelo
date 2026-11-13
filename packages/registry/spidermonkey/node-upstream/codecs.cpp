@@ -103,6 +103,7 @@ struct State {
   std::vector<std::unique_ptr<native::AliasedControl>> aliasedControls;
   std::vector<std::shared_ptr<GlobalRoot>> weakGlobals;
   std::unique_ptr<JS::PersistentRootedObject> templateRealm;
+  Global<FunctionTemplate> asyncWrapTemplate,handleWrapTemplate;
   std::vector<std::unique_ptr<native::Realm>> realms;
   std::atomic<size_t> externalBytes{0}, created{0}, released{0}, spans{0}, collections{0};
   std::atomic<size_t> bufferCreated{0},bufferFreed{0},bufferBytes{0};
@@ -510,6 +511,13 @@ Maybe<bool> Object::Set(Local<Context> context, Local<Value> property, Local<Val
       !JS_ValueToId(f.cx, name, &id) || !JS_SetPropertyById(f.cx, object, id, value)) return {};
   return Just(true);
 }
+Maybe<bool> Object::Has(Local<Context> context,Local<Value> property) {
+  auto& frame=Current(context->isolate);NativeEntry entry(frame);if(entry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
+  Context::Scope home(context);JS::RootedObject object(frame.cx,&cell().value.toObject());
+  JS::RootedValue name(frame.cx,Input(property));JS::RootedId key(frame.cx);bool found;
+  if(!JS_WrapObject(frame.cx,&object)||!JS_WrapValue(frame.cx,&name)||!JS_ValueToId(frame.cx,name,&key)||!JS_HasPropertyById(frame.cx,object,key,&found))return {};
+  return Just(found);
+}
 Local<Array> Array::New(Isolate* isolate) {
   auto& f = Current(isolate); JS::RootedObject object(f.cx, JS::NewArrayObject(f.cx, 0)); if (!object) return {};
   JS::RootedValue value(f.cx, JS::ObjectValue(*object)); return f.Own<Array>(value);
@@ -791,6 +799,18 @@ std::shared_ptr<NativeEnvOptions> Environment::options(){
 IsolateData::IsolateData():IsolateData(Isolate::GetCurrent()){}
 IsolateData::IsolateData(Isolate* isolate):isolate_(isolate){CHECK(isolate_);}
 Isolate* IsolateData::isolate() {auto& frame=Current(isolate_);frame.state->environment.AssertForeground();return isolate_;}
+Local<FunctionTemplate> IsolateData::async_wrap_ctor_template(){
+  auto& frame=Current(isolate());CHECK(!frame.state->environment.IsClosed());return frame.state->asyncWrapTemplate.Get(isolate());
+}
+void IsolateData::set_async_wrap_ctor_template(Local<FunctionTemplate> value){
+  auto& frame=Current(isolate());CHECK(!frame.state->environment.IsClosed());frame.state->asyncWrapTemplate.Reset(isolate(),value);
+}
+Local<FunctionTemplate> IsolateData::handle_wrap_ctor_template(){
+  auto& frame=Current(isolate());CHECK(!frame.state->environment.IsClosed());return frame.state->handleWrapTemplate.Get(isolate());
+}
+void IsolateData::set_handle_wrap_ctor_template(Local<FunctionTemplate> value){
+  auto& frame=Current(isolate());CHECK(!frame.state->environment.IsClosed());frame.state->handleWrapTemplate.Reset(isolate(),value);
+}
 std::shared_ptr<FatalIsolateOptions> IsolateData::options(){
   auto& f=Current(isolate());auto owner=f.state->environment.context();CHECK(!owner.IsEmpty());
   Context::Scope home(owner);JS::RootedObject realm(f.cx,PrincipalOptionsRealm(f));if(!realm)return {};

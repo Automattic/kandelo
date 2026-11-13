@@ -300,6 +300,7 @@ class Object : public Value {
   void* GetAlignedPointerFromInternalField(int,EmbedderDataTag);
   Local<Data> GetInternalField(int);void SetInternalField(int,Local<Data>);
   Maybe<bool> Set(Local<Context>,Local<Value>,Local<Value>);
+  Maybe<bool> Has(Local<Context>,Local<Value>);
   Maybe<bool> SetPrivate(Local<Context>,Local<Private>,Local<Value>);
   Maybe<bool> SetPrototypeV2(Local<Context>,Local<Value>);
   MaybeLocal<Value> Get(Local<Context>,Local<Value>);
@@ -734,7 +735,8 @@ class Environment {
   struct RequestQueue;
   RequestQueue* req_wrap_queue();
   void IncreaseWaitingRequestCounter();void DecreaseWaitingRequestCounter();
-  std::list<HandleWrap*>* handle_wrap_queue();
+  struct HandleQueue;
+  HandleQueue* handle_wrap_queue();
   const int32_t* timeout_info();ProcessImmediateInfo* immediate_info();
   void Exit(ExitCode);void set_process_emit_warning_sync(Local<Function>);
   const std::vector<std::string>& argv();const std::vector<std::string>& exec_argv();
@@ -753,7 +755,7 @@ class Environment {
   bool async_context_frame_enabled() const;
   AsyncHooks* async_hooks();double new_async_id();double get_default_trigger_async_id();
   double execution_async_id()const;uint64_t thread_id()const;
-  Local<Symbol> owner_symbol();Local<Symbol> resource_symbol();
+  Local<Symbol> owner_symbol();Local<Symbol> resource_symbol();Local<Symbol> handle_onclose_symbol();
   Local<Private> empty_context_frame_sentinel_symbol();
 #define KANDELO_ENV_ASYNC_HOOK(name) Local<Function> async_hooks_##name##_function();void set_async_hooks_##name##_function(Local<Function>);
   KANDELO_ENV_ASYNC_HOOK(init) KANDELO_ENV_ASYNC_HOOK(before)
@@ -799,6 +801,8 @@ class IsolateData {
   void set_env_proxy_ctor_template(Local<FunctionTemplate>);
   Local<FunctionTemplate> async_wrap_ctor_template();
   void set_async_wrap_ctor_template(Local<FunctionTemplate>);
+  Local<FunctionTemplate> handle_wrap_ctor_template();
+  void set_handle_wrap_ctor_template(Local<FunctionTemplate>);
 };
 struct NativeObjectOwner;
 class MemoryTracker;
@@ -841,6 +845,7 @@ class BaseObject {
   // original provider-name and partial-construction implementations.
   virtual const char* MemoryInfoName()const {Crash("Native general type inspection is unavailable");}
   virtual bool IsDoneInitializing()const {Crash("Native general initialization inspection is unavailable");}
+  virtual bool IsNotIndicativeOfMemoryLeakAtExit()const {Crash("Native general exit leak classification is unavailable");}
   virtual void MemoryInfo(MemoryTracker*) const { Crash("Native heap snapshot traversal is not implemented"); }
 };
 template<class T> bool Unwrap(T** output,Local<Object> object) {

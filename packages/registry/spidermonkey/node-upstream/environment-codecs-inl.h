@@ -91,6 +91,7 @@ struct EnvironmentData {
   std::string executablePath;
   CleanableQueue cleanables;
   Environment::RequestQueue requests;
+  Environment::HandleQueue handles;
   api::ExternalMemoryAccounter external{false};
   std::atomic<size_t> posted{0},executed{0},ownerChecks{0},payloadBytes{0};
   size_t probesCreated=0,probesCleaned=0,probeBytes=0,weakThreadReleases=0;
@@ -126,6 +127,9 @@ void CleanableQueue::CleanAll() {
 CleanableQueue* Environment::cleanable_queue() { AssertForeground();return &data_->cleanables; }
 Environment::RequestQueue* Environment::req_wrap_queue() {
   AssertForeground();CHECK(data_->initialized&&!data_->closed);return &data_->requests;
+}
+Environment::HandleQueue* Environment::handle_wrap_queue() {
+  AssertForeground();CHECK(data_->initialized&&!data_->closed);return &data_->handles;
 }
 ExternalMemoryAccounter* Environment::external_memory_accounter() { AssertForeground();return &data_->external; }
 JSObject* Environment::memory_owner(JSContext* cx) {
@@ -278,6 +282,7 @@ void Environment::Shutdown(JSContext* cx) {
   // Request cancellation/completion must retire every intrusive node before
   // the owning environment closes. Full request shutdown remains unavailable.
   CHECK(data_->requests.IsEmpty());
+  CHECK(data_->handles.IsEmpty());
   auto state=isolate_->owner.lock();CHECK(state);
   JS::RootedObject runtime(cx,*data_->runtime);
   JSAutoRealm runtimeHome(cx,runtime);
@@ -304,7 +309,8 @@ void Environment::Shutdown(JSContext* cx) {
   state->aliasedControls.clear();
   if(data_->weakRegistered){JS_RemoveWeakPointerZonesCallback(cx,api::UpdateEnvironmentWeakEdges);data_->weakRegistered=false;}
   for(auto& root:state->weakGlobals){CHECK(root->strong&&!root->strong->cell().value.initialized());root->weak=nullptr;}
-  state->weakGlobals.clear();data_->weakControls.clear();data_->probes.clear();state->templateRealm.reset();
+  state->weakGlobals.clear();data_->weakControls.clear();data_->probes.clear();
+  state->asyncWrapTemplate.Reset();state->handleWrapTemplate.Reset();state->templateRealm.reset();
   data_->arguments=nullptr;data_->execArguments=nullptr;data_->processInvocationReady=false;
   data_->ownsProcessState=false;data_->executablePath.clear();data_->runtime.reset();
   preserve.restore();

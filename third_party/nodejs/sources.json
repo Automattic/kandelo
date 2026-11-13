@@ -3649,6 +3649,20 @@
       "builtinId": null
     },
     {
+      "path": "src/handle_wrap.cc",
+      "role": "provenance",
+      "bytes": 5823,
+      "sha256": "20f94b3dc1569f2b90116500dc6c7546b0b92b38f1398281f7b90d5b37f6751b",
+      "builtinId": null
+    },
+    {
+      "path": "src/handle_wrap.h",
+      "role": "provenance",
+      "bytes": 4355,
+      "sha256": "9f3a9838da4e752d277582e4c750bed44f9a8a1aa765a7f0d9bae6ab7c969dd9",
+      "builtinId": null
+    },
+    {
       "path": "src/node.h",
       "role": "provenance",
       "bytes": 76346,

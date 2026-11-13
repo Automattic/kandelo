@@ -52,6 +52,7 @@ def select_sources(members, prefix):
                        'src/env_properties.h', 'src/node_exit_code.h',
                        'src/env.h', 'src/async_wrap.h', 'src/async_wrap-inl.h', 'src/async_wrap.cc',
                        'src/req_wrap.h', 'src/req_wrap-inl.h',
+                       'src/handle_wrap.h', 'src/handle_wrap.cc',
                        'src/node_types.cc',
                        'src/string_decoder.cc', 'src/string_decoder.h',
                        'src/string_decoder-inl.h', 'src/string_bytes.cc',

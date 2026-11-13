@@ -67,6 +67,38 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"objectHas")){
+    if(!args.get(1).isObject()){JS_ReportErrorASCII(cx,"Native property existence control requires Object");return false;}
+    auto object=frame.Own<api::Object>(args[1]);bool found;
+    if(!object->Has(state->isolate.GetCurrentContext(),frame.OwnValue(args.get(2))).To(&found))return false;
+    args.rval().setBoolean(found);return true;
+  }
+  if(!std::strcmp(operation.get(),"handleNullRef")){
+    args.rval().setBoolean(native::HandleWrap::HasRef(static_cast<const native::HandleWrap*>(nullptr)));return true;
+  }
+  if(!std::strcmp(operation.get(),"classCacheSet")||!std::strcmp(operation.get(),"classCacheGet")){
+    if(!args.get(1).isString()){JS_ReportErrorASCII(cx,"Class cache control requires a cache name");return false;}
+    JS::RootedString key(cx,args[1].toString());bool handle;
+    if(!JS_StringEqualsAscii(cx,key,"handle",&handle))return false;
+    if(!handle){bool async;if(!JS_StringEqualsAscii(cx,key,"async",&async))return false;if(!async){JS_ReportErrorASCII(cx,"Unknown class cache control");return false;}}
+    auto* data=state->environment.isolate_data();api::Local<api::FunctionTemplate> value;
+    if(!std::strcmp(operation.get(),"classCacheSet")){
+      if(!args.get(2).isUndefined()){
+        const double token=args[2].isNumber()?args[2].toNumber():0;
+        if(!std::isfinite(token)||token<1||token>9007199254740991.0||std::floor(token)!=token){JS_ReportErrorASCII(cx,"Invalid cache template token");return false;}
+        auto it=counters->templates.find(uint64_t(token));if(it==counters->templates.end()){JS_ReportErrorASCII(cx,"Unknown cache template token");return false;}
+        value=it->second.Get(&state->isolate);
+      }
+      if(handle)data->set_handle_wrap_ctor_template(value);else data->set_async_wrap_ctor_template(value);return true;
+    }
+    value=handle?data->handle_wrap_ctor_template():data->async_wrap_ctor_template();if(value.IsEmpty())return true;
+    auto context=state->isolate.GetCurrentContext();
+    if(args.get(2).isObject()){
+      JS::RootedObject global(cx,api::UnwrapObject(cx,args[2]));if(!global||!JS_IsGlobalObject(global)){JS_ReportErrorASCII(cx,"Cache context control requires a global");return false;}context=frame.OwnContext(global);
+    }
+    api::Local<api::Function> function;if(!value->GetFunction(context).ToLocal(&function))return false;
+    args.rval().set(api::Input(function));return JS_WrapValue(cx,args.rval());
+  }
   if(!std::strncmp(operation.get(),"value",5)){
     auto value=frame.OwnValue(args.get(1));api::Local<api::String> result;
     if(!std::strcmp(operation.get(),"valueType"))result=value->TypeOf(&state->isolate);

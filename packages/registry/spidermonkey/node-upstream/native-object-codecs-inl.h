@@ -132,6 +132,7 @@ Local<Symbol> ReadEnvironmentSymbol(Environment* environment,const char* name){
 }
 Local<Symbol> Environment::owner_symbol(){return ReadEnvironmentSymbol(this,"owner_symbol");}
 Local<Symbol> Environment::resource_symbol(){return ReadEnvironmentSymbol(this,"resource_symbol");}
+Local<Symbol> Environment::handle_onclose_symbol(){return ReadEnvironmentSymbol(this,"handle_onclose_symbol");}
 namespace {
 Local<Private> ReadEnvironmentPrivate(Environment* environment,const char* name){
   auto& frame=Current(environment->isolate());environment->AssertForeground();

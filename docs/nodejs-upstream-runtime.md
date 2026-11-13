@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 71 source connects the original process initializer,
+The current revision 72 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 20 symbols and has no normal runnable artifact.
+still fails final linking on 18 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -92,7 +92,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 583 files after complete native source/header additions; every
+manifest has 585 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -2867,3 +2867,18 @@ The identified private artifact passes all 79 previous drivers on each of Node, 
 All 581 previously imported identities are unchanged. The two complete authenticated request headers bring the total to 583; all 443 JavaScript files/10,993,403 bytes remain unchanged. Canonical source inventories are regenerated for the new manifest identity. The first command failed because my recipe-preparation check used the wrong spacing for build.toml and left the recipe absent; that harness failure is retained. The first actual build compiled/linked but failed Mozilla include checks; inline definitions now enter through a separate owned inline adapter, and a strict patch recognizes exactly the two new generated upstream header paths under the existing source classification. No upstream Node source is patched or excerpted. Full startup/CJS/ESM/catalog/roadmap and full source-policy acceptance remain incomplete. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
 
 See the [request-owner contracts](../tests/nodejs/upstream/request-owners-contracts.json) and [build/regression receipt](../tests/nodejs/upstream/request-owners-engine-check.json).
+
+
+## Original handle unit and embedding prerequisites (revision 72)
+
+The complete original handle_wrap.h and handle_wrap.cc now compile in the resource translation unit beside the original AsyncWrap unit. The original ref/unref/close/collection/state/queue/callback bodies remain unchanged. Native EnvironmentData owns the original intrusive handle head, and process consumers use the original inline HasRef(const HandleWrap*) predicate over real initialization/closed state and libuv reference state. Original constructor bootstrap assertions remain intact. Outstanding actual request or handle heads reject unsupported shutdown before owner retirement; full pending-resource cleanup remains unfinished.
+
+The embedding now supplies actual Object.Has through SpiderMonkey property-key conversion and JS_HasPropertyById, with real proxy traps, exceptions, GC reentry, symbol identity and inherited-property behavior. It also owns independent traced per-isolate FunctionTemplate caches for AsyncWrap and HandleWrap, with typed metadata roots, foreground/closed-owner checks and explicit clearing before private metadata realm retirement. The original handle_onclose symbol comes from the existing canonical symbol inventory. General BaseObject exit-leak classification explicitly remains unavailable; the original HandleWrap override is compiled rather than replaced with a default success.
+
+The identified private artifact passes 83 drivers on each of Node, Chromium, Firefox and WebKit, 332 guest runs. Four new controls validate property-existence and generic native-template cache primitives; all 79 previous driver sources are unchanged. Cache controls prove identity, independent clearing, retained payloads, completed-scope root retirement and foreign-context materialization. They use generic native fixture templates; the original full HandleWrap constructor factory and callback graph are not runtime-validated. FunctionTemplate.Inherit and InternalMakeCallback remain undefined on activation and expose further prerequisites. Positive actual handle construction/ref/close/cancellation/GC lifecycle remains gated on genuine bootstrap and missing callback/async-context backends. These results do not establish that lifecycle or normal startup.
+
+The normal targeted build has zero C++ compile errors and 18 unresolved symbols, removing only the handle queue and declaration-only HasRef references from the previous 20. It still cannot produce a normal startup executable. The first private build succeeded. Initial Node82of83 and all three browsers then exposed an overstrong collection assertion in the same active allocation/invocation frame. Isolated diagnostic variants show retained payloads collect after clearing once that setup frame completes; the corrected fixture preserves the retirement and independent-cache assertions. Final results rerun the same identified C++ artifact; no upstream assertions or source algorithms are changed. The initial reports and exact83driver sources remain retained separately.
+
+All 583 previous imported identities remain unchanged. Two complete authenticated handle files bring the total to 585; all 443 JavaScript files/10,993,403 bytes remain unchanged, and canonical selection/bytes match the pinned archive. Source inventories are regenerated for the new manifest identity. A strict generated-source-path patch recognizes only the two new upstream include paths under the existing classification. Overall source-policy/startup/CJS/ESM/catalog/roadmap acceptance remains incomplete; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [handle-owner contracts](../tests/nodejs/upstream/handle-owners-contracts.json) and [identified build/primitive/regression receipt](../tests/nodejs/upstream/handle-owners-engine-check.json).

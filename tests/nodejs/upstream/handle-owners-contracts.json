@@ -1,0 +1,128 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Complete original HandleWrap class/unit and actual intrusive head compile; engine HasProperty and traced class-template cache primitives have focused four-host runtime proof. Positive HandleWrap construction/ref/close/callback lifecycle remains unvalidated.",
+  "completeBindingContract": false,
+  "evidence": "handle-owners-engine-check.json",
+  "wholeOriginalFiles": [
+    {
+      "path": "src/handle_wrap.cc",
+      "role": "provenance",
+      "bytes": 5823,
+      "sha256": "20f94b3dc1569f2b90116500dc6c7546b0b92b38f1398281f7b90d5b37f6751b",
+      "builtinId": null
+    },
+    {
+      "path": "src/handle_wrap.h",
+      "role": "provenance",
+      "bytes": 4355,
+      "sha256": "9f3a9838da4e752d277582e4c750bed44f9a8a1aa765a7f0d9bae6ab7c969dd9",
+      "builtinId": null
+    }
+  ],
+  "nativeConsumers": [
+    {
+      "path": "src/node_process_methods.cc",
+      "entry": "GetActiveHandles/GetActiveResourcesInfo",
+      "contract": "Original walk of actual native handle head and original inline HandleWrap.HasRef(const HandleWrap*) over real initialized/closed state and uv_has_ref."
+    },
+    {
+      "path": "src/handle_wrap.cc",
+      "entry": "Ref/Unref/HasRef/Close/OnGCCollect/OnClose/MarkAsInitialized/MarkAsUninitialized/GetConstructorTemplate",
+      "contract": "Whole unchanged upstream bodies compiled, including original bootstrap assertion, real uv_ref/unref/close, canonical BaseObjectPtr acquisition, detach, close-state transition, queue retirement and original callback routing."
+    },
+    {
+      "path": "src/async_wrap.cc",
+      "entry": "GetConstructorTemplate",
+      "contract": "Original AsyncWrap template getter uses the same actual per-isolate traced cache interfaces; full factory/callback activation not proven."
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "Environment.handle_wrap_queue()",
+      "owner": "Embedding foreground EnvironmentData storage",
+      "contract": "One original intrusive ListHead keyed by original private HandleWrap ListNode; nested Environment friend type permits original layout access. No separate std::list snapshot.",
+      "errors": "Foreground, initialized and not-closed checks; actual outstanding handle head rejects unsupported shutdown before roots retire."
+    },
+    {
+      "name": "HandleWrap.HasRef(const HandleWrap*)",
+      "owner": "Complete original header and actual libuv handle",
+      "contract": "Original null/partial-initialization/closed-state policy then real uv_has_ref. Normal process callers now compile against original const-pointer inline signature.",
+      "runtimeEvidence": "Null-pointer boundary only; positive actual handle ref/unref not validated before genuine bootstrap."
+    },
+    {
+      "name": "Object.Has(Context,Value)",
+      "owner": "SpiderMonkey HasProperty API",
+      "contract": "Actual context wrap, property-key conversion and JS_HasPropertyById; own/inherited/string/number/symbol checks, proxy has traps, exact exceptions and reentrant GC use actual VM operations. Values/accessors are not read."
+    },
+    {
+      "name": "IsolateData async_wrap_ctor_template/handle_wrap_ctor_template getters and setters",
+      "owner": "Canonical per-isolate codec State Global<FunctionTemplate> roots",
+      "contract": "Independent typed non-Value roots, foreground/closed-owner checks, generic metadata materialization per context and explicit reset before private template realm retirement.",
+      "runtimeEvidence": "Generic native fixture templates exercise storage, identity, retained payloads, clearing, GC and foreign-context materialization. Original full HandleWrap.GetConstructorTemplate and its inherited callbacks remain unactivated."
+    },
+    {
+      "name": "Environment.handle_onclose_symbol()",
+      "owner": "Existing canonical native symbol inventory",
+      "contract": "Read actual inventory symbol by original name; no substitute symbol or per-binding duplicate."
+    },
+    {
+      "name": "BaseObject.IsNotIndicativeOfMemoryLeakAtExit()",
+      "owner": "Embedding general native object contract",
+      "contract": "General base operation explicitly fails as unavailable. Original HandleWrap override is compiled and uses real weak/detached/ref/active state; no fabricated leak-free classification is returned."
+    }
+  ],
+  "ownershipAndScheduling": {
+    "handle": "Original constructor registers its actual initialized uv_handle with data=this and environment queue; original close completion acquires canonical native ownership before detach/virtual OnClose and queue removal. Positive producer execution not validated.",
+    "cache": "Actual native Global typed metadata roots retain templates/payloads while cached; clear and completed-scope tests prove payload collection while the independent cache remains live. Environment teardown clears both roots before metadata realm retirement.",
+    "callback": "Original callback dispatch reaches original AsyncWrap.MakeCallback; complete InternalMakeCallback/async context/fatal/report lifecycle still missing on activation. No successful callback stub supplied.",
+    "shutdown": "Actual head must be empty; full outstanding-handle cancellation/close/wait retirement remains missing.",
+    "bootstrap": "Original has_run_bootstrapping_code assertion remains; private diagnostic profile rejects process_methods and cannot fabricate completed startup."
+  },
+  "initialFailure": "Initial Node82of83 pass and all3browser runs fail the cache-retirement test in an active allocation/invocation frame. Five repeated collections still retain it there. Four isolated setup variants retain while cached and collect on first post-clear GC after setup frame completes. Fixture moves allocation/invocation into completed scope without changing retirement/independent-cache assertions; C++ artifact is unchanged. Exact initial sources/reports retained.",
+  "runtime": {
+    "driversPerHost": 83,
+    "newPrimitiveDriversPerHost": 4,
+    "previousDriversPerHost": 79,
+    "previousSourcesByteIdentical": true,
+    "hosts": [
+      "node",
+      "chromium",
+      "firefox",
+      "webkit"
+    ],
+    "totalGuestDrivers": 332,
+    "program": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-handle-owners/native-owner-probe.wasm",
+      "bytes": 59991791,
+      "sha256": "25884dd27aa630aea8934fb21d35e5b483c15d1b5bf644e46c060c0875ca7a0e"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "scope": "New embedding primitive proof and prior regressions only; no positive handle/request lifecycle or normal startup evidence"
+  },
+  "remaining": [
+    "Positive original HandleWrap construction/ref/unref/active/close/GC ownership and callback execution after genuine bootstrap",
+    "FunctionTemplate.Inherit and original full constructor-template factories; InternalMakeCallback/async-context activation exposes further native prerequisites",
+    "Request waiting counters, dispatch/completion/cancellation and full environment request/handle shutdown",
+    "General BaseObject leak classification, native snapshot/memory traversal and other missing native contracts",
+    "Remaining18 normal interfaces, genuine startup/CJS/ESM/fourhosts, full catalog/dependency-ordered roadmap and explicit review"
+  ],
+  "wholeHandleUnitCompiles": true,
+  "handleQueueStorageImplemented": true,
+  "propertyHasRuntimeValidated": true,
+  "classCachePrimitivesRuntimeValidated": true,
+  "positiveHandleLifecycleValidated": false,
+  "originalConstructorFactoryRuntimeValidated": false,
+  "generalBaseLeakClassificationImplemented": false,
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamNodeAlgorithmsRewritten": false,
+  "functionExcerptsImported": false,
+  "sourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false
+}

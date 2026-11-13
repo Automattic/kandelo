@@ -6,7 +6,7 @@
     "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
   },
   "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
-  "sourceManifestSha256": "a4cf878c34e8a253769c7b7bd990064665ff7dd611c4e2150007fc2acd996234",
+  "sourceManifestSha256": "cd13fb4dc5df784e3c9db3d670398432f6f29b78a7e90bab898fbb053d3d6649",
   "sourceOffsetUnits": "Unicode code points; line numbers are one-based",
   "counts": {
     "nativeFilesScanned": 460,
@@ -1034,14 +1034,14 @@
       "bytes": 5823,
       "sha256": "20f94b3dc1569f2b90116500dc6c7546b0b92b38f1398281f7b90d5b37f6751b",
       "registrations": 1,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/handle_wrap.h",
       "bytes": 4355,
       "sha256": "9f3a9838da4e752d277582e4c750bed44f9a8a1aa765a7f0d9bae6ab7c969dd9",
       "registrations": 0,
-      "importedSource": false
+      "importedSource": true
     },
     {
       "path": "src/heap_utils.cc",

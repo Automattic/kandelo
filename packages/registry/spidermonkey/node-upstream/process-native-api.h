@@ -44,7 +44,6 @@ class ProcessImmediateInfo {
   explicit ProcessImmediateInfo(Environment* environment):environment_(environment) {}
   uint32_t ref_count() const;
 };
-class HandleWrap : public AsyncWrap {public:static bool HasRef(HandleWrap*);};
 void RunAtExit(Environment*);bool HasSignalJSHandler(int);
 bool CheckProcessPermission(Environment*,permission::PermissionScope,std::string_view);
 namespace binding {

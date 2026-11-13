@@ -114,5 +114,11 @@
   "functionExcerptsImported": false,
   "sourcePolicySatisfied": false,
   "startupAccepted": false,
-  "wholeGoalComplete": false
+  "wholeGoalComplete": false,
+  "handleUnitFollowup": {
+    "packageRevision": 72,
+    "catalog": "handle-owners-contracts.json",
+    "evidence": "handle-owners-engine-check.json",
+    "scope": "Whole original HandleWrap class/unit and actual intrusive storage compile; HasProperty and generic class-cache primitives tested on four hosts. Positive original handle/request lifecycle and complete template factory/callback paths still incomplete."
+  }
 }

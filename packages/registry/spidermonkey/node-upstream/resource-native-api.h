@@ -12,9 +12,12 @@
 #define v8 kandelo_node_codec_api
 #include "shell/node-upstream/codecs-upstream/aliased_buffer.h"
 #include "shell/node-upstream/resource-upstream/async_wrap.h"
+#include "shell/node-upstream/resource-upstream/handle_wrap.h"
 #undef v8
 #undef node
 namespace kandelo_node_codec_impl {
+struct Environment::HandleQueue
+    : ListHead<HandleWrap, &HandleWrap::handle_wrap_queue_> {};
 // The original provider enum and existing canonical JS inventory must use the
 // same actual OpenSSL selection, despite their distinct preprocessor guards.
 static_assert(size_t(AsyncWrap::PROVIDERS_LENGTH)==
