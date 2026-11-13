@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "scope": "Complete original node_internals.h source-policy integration and genuine Buffer helper ownership; selected native prerequisites, no startup acceptance",
+  "packageRevision": 67,
+  "sourceIdentity": {
+    "path": "third_party/nodejs/upstream/src/node_internals.h",
+    "bytes": 18334,
+    "sha256": "3674f02a2b459ee579815761816bc450349aef9ff231349f39bca7b6c19ae0c7"
+  },
+  "interfaces": [
+    {
+      "name": "Original Buffer.New(Environment,MaybeStackBuffer)",
+      "owner": "Complete original node_internals.h over native engine allocation/backing-store/copy primitives",
+      "contract": "Original body alone decides copy versus ownership transfer, invalidated empty result, byte length and source Release ordering. Handwritten helper removed.",
+      "validation": "Two new private process drivers plus all prior53 pass on Node, Chromium, Firefox and WebKit with identical program/kernel hashes"
+    },
+    {
+      "name": "Original NodeArrayBufferAllocator declaration/inline account",
+      "owner": "Complete original node_internals.h",
+      "contract": "Original class and atomic RegisterPointer/UnregisterPointer/total_mem_usage bodies compile; duplicate declaration removed.",
+      "limits": "Original out-of-line allocation/free bodies, selected allocator instance and process accounting remain unimplemented/unlinked; no allocator memory-usage runtime claim."
+    },
+    {
+      "name": "Original helper/initialization/scheduling/diagnostic declarations",
+      "owner": "Complete original node_internals.h with native declaration routing",
+      "contract": "Actual original header owns these declarations and inline bodies. Native settings/serialization/isolate/heap interfaces remain unavailable; declarations supply no successful behavior.",
+      "limits": "IsolateSettings constructor, native isolate creation/default allocator, InternalCallbackScope execution guard, ThreadPoolWork bodies and heap snapshot interfaces are unimplemented. No V8 heap or serialization generated."
+    }
+  ],
+  "sourcePolicyGapClosed": "Handwritten Buffer stack-storage helper replaced with the complete original header",
+  "sourcePolicySatisfied": false,
+  "javascriptChanged": false,
+  "sourcePinChanged": false,
+  "algorithmsRewritten": false,
+  "functionExcerptsImported": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false,
+  "currentEvidence": "native-internals-engine-check.json: private55 drivers/host pass on four hosts; targeted normal24 unresolved, no startup",
+  "currentRuntimeValidated": true,
+  "normalLinkRemainder": [
+    "kandelo_node_codec_api::HeapStatistics::HeapStatistics()",
+    "kandelo_node_codec_api::HeapStatistics::external_memory() const",
+    "kandelo_node_codec_api::HeapStatistics::total_heap_size() const",
+    "kandelo_node_codec_api::HeapStatistics::used_heap_size() const",
+    "kandelo_node_codec_api::HeapStatistics::~HeapStatistics()",
+    "kandelo_node_codec_api::Isolate::GetHeapStatistics(kandelo_node_codec_api::HeapStatistics*)",
+    "kandelo_node_codec_api::Object::GetConstructorName()",
+    "kandelo_node_codec_impl::CheckProcessPermission(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::permission::PermissionScope, std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
+    "kandelo_node_codec_impl::Environment::Exit(kandelo_node_codec_impl::ExitCode)",
+    "kandelo_node_codec_impl::Environment::handle_wrap_queue()",
+    "kandelo_node_codec_impl::Environment::req_wrap_queue()",
+    "kandelo_node_codec_impl::HandleWrap::HasRef(kandelo_node_codec_impl::HandleWrap*)",
+    "kandelo_node_codec_impl::HasSignalJSHandler(int)",
+    "kandelo_node_codec_impl::IsolateData::node_allocator()",
+    "kandelo_node_codec_impl::IsolateData::options()",
+    "kandelo_node_codec_impl::ReqWrapBase::GetAsyncWrap()",
+    "kandelo_node_codec_impl::ResetStdio()",
+    "kandelo_node_codec_impl::RunAtExit(kandelo_node_codec_impl::Environment*)",
+    "kandelo_node_codec_impl::TriggerNodeReport(kandelo_node_codec_impl::Environment*, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&, char const*, char const*, kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>)",
+    "kandelo_node_codec_impl::binding::DLOpen(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+    "kandelo_node_codec_impl::binding::DLOpenBinary(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+    "uv_get_available_memory",
+    "uv_get_constrained_memory",
+    "uv_resident_set_memory"
+  ]
+}

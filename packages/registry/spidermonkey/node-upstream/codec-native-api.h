@@ -26,6 +26,7 @@
 #define NODE_WANT_INTERNALS 1
 #endif
 #include "node-env-properties.h"
+#include "shell/node-upstream/tracing-upstream/node_mutex.h"
 
 namespace kandelo::node { struct TraceProcess; }
 namespace node {
@@ -343,7 +344,10 @@ struct BackingStore {
 };
 class ArrayBuffer : public Object {
  public:
-  class Allocator {public:virtual ~Allocator()=default;static Allocator* NewDefaultAllocator();}; using Object::Object;
+  class Allocator {
+   public:virtual ~Allocator()=default;static Allocator* NewDefaultAllocator();
+    virtual void* Allocate(size_t)=0;virtual void* AllocateUninitialized(size_t)=0;virtual void Free(void*,size_t)=0;
+  }; using Object::Object;
   static std::unique_ptr<BackingStore> NewBackingStore(void*,size_t,void(*)(void*,size_t,void*),void*);
   static std::unique_ptr<BackingStore> NewBackingStore(Isolate*,size_t,BackingStoreInitializationMode,BackingStoreOnFailureMode);
   static Local<ArrayBuffer> New(Isolate*,std::unique_ptr<BackingStore>);
@@ -468,6 +472,10 @@ class CppHeap {public:static std::unique_ptr<CppHeap> Create(Platform*,const Cpp
 struct IsolateScopeData;
 class Isolate {
  public:
+  class AllowJavascriptExecutionScope {
+    struct State;std::unique_ptr<State> state_;
+   public:explicit AllowJavascriptExecutionScope(Isolate*);~AllowJavascriptExecutionScope();
+  };
   class Scope {std::unique_ptr<IsolateScopeData> data_;public:explicit Scope(Isolate*);~Scope();};
   struct CreateParams {ArrayBuffer::Allocator* array_buffer_allocator=nullptr;CppHeap* cpp_heap=nullptr;};
   static Isolate* Allocate();static void Initialize(Isolate*,const CreateParams&);void LowMemoryNotification();
@@ -832,11 +840,6 @@ MaybeLocal<Object> New(Environment*,size_t);
 MaybeLocal<Object> Copy(Environment*,const char*,size_t);
 MaybeLocal<Object> New(Environment*,char*,size_t);
 MaybeLocal<Object> New(Environment*,char*,size_t,void(*)(char*,void*),void*);
-template<class T,size_t N> MaybeLocal<Object> New(Environment* env,MaybeStackBuffer<T,N>* value) {
-  size_t bytes=value->length()*sizeof(T);auto* data=reinterpret_cast<char*>(value->out());
-  if(!value->IsAllocated())return Copy(env,data,bytes);
-  value->Release();return New(env,data,bytes);
-}
 }
 
 namespace per_process {
@@ -886,7 +889,7 @@ extern Initializer initializer;
 #define NODE_EXTERN
 #define NODE_BINDING_CONTEXT_AWARE_INTERNAL(name,callback) namespace kandelo_codec_adapter { Initializer initializer=::callback; }
 #define NODE_BINDING_EXTERNAL_REFERENCE(name,callback)
-#define ASSIGN_OR_RETURN_UNWRAP(output,object) do { if(!kandelo_node_codec_impl::Unwrap(output,object)) return; } while(false)
+#define ASSIGN_OR_RETURN_UNWRAP(output,object,...) do { if(!kandelo_node_codec_impl::Unwrap(output,object)){ __VA_OPT__(__VA_ARGS__;) return; } } while(false)
 #define SET_NO_MEMORY_INFO()
 #define SET_MEMORY_INFO_NAME(name)
 #define SET_SELF_SIZE(name)

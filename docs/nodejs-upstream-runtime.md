@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 66 source connects the original process initializer,
+The current revision 67 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 25 symbols and has no normal runnable artifact.
+still fails final linking on 24 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -2785,3 +2785,16 @@ The targeted normal build has no C++ compile errors but fails final linking on 2
 All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. Full OOM/security/lifecycle conformance, complete internal-field layouts, Buffer whole node_internals.h source-policy closure and remaining Message/source/report contracts remain incomplete. Genuine startup, separate CJS/ESM, the complete backend catalog and roadmap remain unfinished. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
 
 See the [native state contracts](../tests/nodejs/upstream/native-state-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-state-engine-check.json).
+
+
+## Complete native internals header (revision 67)
+
+The complete unchanged node_internals.h now owns the original Buffer stack-storage helper, allocator class and native helper declarations. The handwritten Buffer helper and duplicate allocator declaration are removed. The original body alone decides whether to copy stack bytes, transfer heap storage, preserve an invalidated empty result and release source ownership after the adoption call. Native engine allocation, backing-store and copy primitives remain the actual implementation below it.
+
+Two new process drivers cover stack-copy independence, heap pointer identity and transfer, invalidated and zero-length inputs, UTF16 byte length, source reuse/destruction and retention through repeated GC. All 53 prior driver source strings are unchanged and pass too: 55 drivers on each of Node, Chromium, Firefox and WebKit, 220 guest processes total. The identified private artifact is 59,927,676 bytes, SHA-256 `e52a7a4892ed3e9bf52c130e011b298555348d129a162f71b24a4d3ff66b55da`, using the unchanged ABI56 kernel. It rejects process_methods and is not a normal package or startup artifact. Host storage diagnostics remain separate from guest verdicts.
+
+The targeted normal build has no C++ compile errors but still fails final linking on 24 symbols, down from 25 with no additions. The original inline allocator total_mem_usage body now resolves; this does not establish an active Node allocator or correct process memory accounting. The selected allocator instance and its original out-of-line allocation/free bodies remain unavailable, as do complete isolate settings, callback/scheduling and heap/serialization interfaces. These unactivated interfaces have declarations without successful implementations. No V8 heap or serialization data is generated.
+
+Initial encoding-declaration, include/macro-order and style failures are retained. Bridge include cycles were removed. The new style patch exempts only the unchanged imported header and its generated declaration routing from Mozilla include conventions; bridge headers remain checked, and the final build passes the style, MacroAssembler and opcode checks. All previous patches are unchanged; no VM algorithm changed in this revision. Build operations reuse exactly verified prepared source in place of acquisition/patch application; there is no resolver-cache publication or new normal executable.
+
+All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. This closes the recorded handwritten Buffer-helper source-policy gap, while overall source-policy and conformance acceptance remain incomplete. Genuine startup, separate CJS/ESM and the complete backend catalog/roadmap remain unfinished; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred. See the [native internals contracts](../tests/nodejs/upstream/native-internals-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-internals-engine-check.json).

@@ -101,7 +101,9 @@
     "nativeMessagePartialCatalog": "native-message-contracts.json",
     "nativeMessageEngineEvidence": "native-message-engine-check.json",
     "nativeStatePartialCatalog": "native-state-contracts.json",
-    "nativeStateEngineEvidence": "native-state-engine-check.json"
+    "nativeStateEngineEvidence": "native-state-engine-check.json",
+    "nativeInternalsPartialCatalog": "native-internals-contracts.json",
+    "nativeInternalsEngineEvidence": "native-internals-engine-check.json"
   },
   "implementation": [
     {
@@ -411,6 +413,12 @@
       "status": "Actual embedding-private symbols with typed roots, native hidden get/set and native ErrorObject classification; fatal callbacks share per-context owner and Environment getters use principal context; source/cache callbacks have independent strong roots retired at shutdown. Selected private53 controls pass on four hosts.",
       "evidence": "native-state-engine-check.json",
       "remaining": "Normal25 process/fatal/report/resource/accounting/permission/loading contracts; full internal-field storage, Private factories, constructor metadata and source-policy/lifetime closure"
+    },
+    {
+      "area": "complete original node_internals.h and Buffer stack-storage ownership",
+      "status": "Complete original header compiles; handwritten Buffer helper and duplicate allocator declaration removed. Original Buffer copy/transfer/invalidation/zero-length/byte-count behavior passes selected private55 controls on four hosts. Original allocator inline accounting compiles but its actual instance/out-of-line allocation bodies remain unimplemented.",
+      "evidence": "native-internals-engine-check.json",
+      "remaining": "Normal24 native contracts; actual allocator selection/allocation bodies, complete isolate settings/callback/scheduling/heap/serialization interfaces, full source-policy review and startup"
     }
   ],
   "runtimeConformance": {
@@ -1196,8 +1204,8 @@
       "originalUtilityIntegrationComplete": false
     },
     "nativeUtilities": {
-      "status": "Whole original utility/debugging units plus native source/Message/stack/template/private/callback prerequisites validated in private53 controls/host; normal25 remains unlinked",
-      "evidence": "native-state-engine-check.json",
+      "status": "Whole original node_internals, utilities/debugging and native prerequisites validated in private55 controls/host; normal24 unlinked",
+      "evidence": "native-internals-engine-check.json",
       "currentRuntimeValidated": true,
       "unmodifiedSourcePolicySatisfied": false
     }
@@ -1704,7 +1712,7 @@
     }
   },
   "nextWork": [
-    "Implement normal25 real process/fatal/report/resource/accounting/permission/native-loading dependencies and retire Buffer ownership bridge through whole node_internals.h. Full Private factories/internal-field storage/constructor metadata and Message compiler-origin/end-range/text/options/security/lifetime semantics remain partial. Then genuine startup/CJS/ESM/full catalog/ordered roadmap and explicit review gate; private53 four-host controls do not establish startup.",
+    "Implement normal24 real process/fatal/report/resource/accounting/permission/native-loading contracts. Complete original node_internals.h now owns the Buffer stack-storage helper; selected allocator instance/out-of-line bodies and full isolate settings/callback/scheduling/heap interfaces remain unavailable. Private factories/internal fields/construction metadata and Message compiler-origin/end-range/text/options/security/lifetime remain partial. Then genuine startup/CJS/ESM/full catalog/ordered roadmap and explicit review gate; private55 four-host controls do not establish startup.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1713,17 +1721,17 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 66,
+    "packageRevision": 67,
     "status": "failed final link in targeted original recipe operations over verified prepared source",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 25,
-    "evidence": "native-state-engine-check.json",
+    "undefinedSymbols": 24,
+    "evidence": "native-internals-engine-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
     "buildCacheKey": null,
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-state-normal-final-1112-185012-1cbe",
+    "buildJob": "node-internals-normal-final-1112-195856-4cd3",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1757,7 +1765,7 @@
     "persistentHandleLayoutPrerequisitesCompile": true,
     "wholeOriginalUtilitiesCompile": true,
     "sourceIdentityRecords": 581,
-    "previousCompileEvidence": "native-message-engine-check.json",
+    "previousCompileEvidence": "native-state-engine-check.json",
     "removedSinceRevision62": [
       "kandelo_node_codec_api::FunctionTemplate::New(kandelo_node_codec_api::Isolate*, void (*)(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&), kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Signature>, int, kandelo_node_codec_api::ConstructorBehavior, kandelo_node_codec_api::SideEffectType, kandelo_node_codec_api::CFunction const*)",
       "kandelo_node_codec_api::FunctionTemplate::PrototypeTemplate()",
@@ -1811,7 +1819,13 @@
       "kandelo_node_codec_impl::Environment::set_printed_error(bool)",
       "kandelo_node_codec_impl::Environment::source_maps_enabled()"
     ],
-    "addedSinceRevision65": []
+    "addedSinceRevision65": [],
+    "wholeOriginalNodeInternalsCompiles": true,
+    "bufferStackStorageHelperIsOriginal": true,
+    "removedSinceRevision66": [
+      "kandelo_node_codec_impl::NodeArrayBufferAllocator::total_mem_usage() const"
+    ],
+    "addedSinceRevision66": []
   },
   "currentLibuvExecutablePath": {
     "packageRevision": 5,
@@ -1829,21 +1843,21 @@
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   },
   "currentNativeOwnerDiagnostic": {
-    "evidence": "native-state-engine-check.json",
-    "packageRevision": 66,
+    "evidence": "native-internals-engine-check.json",
+    "packageRevision": 67,
     "normalPackageArtifact": false,
     "startupAccepted": false,
     "normalEngineLinked": false,
     "privateProfileRejectsProcessMethods": true,
     "linked": true,
     "currentRuntimeValidated": true,
-    "currentDriversPerHost": 53,
-    "lastRuntimeValidatedRevision": 66,
+    "currentDriversPerHost": 55,
+    "lastRuntimeValidatedRevision": 67,
     "historicalDriversPerHost": 32,
     "undefinedSymbols": 0,
     "historicalEvidence": "persistent-handle-engine-check.json",
-    "buildJob": "node-state-private-context-1112-184622-5d1e",
-    "intendedDriversPerHost": 53,
+    "buildJob": "node-internals-private-final-1112-195736-757f",
+    "intendedDriversPerHost": 55,
     "newDriversNotExecuted": 0,
     "hosts": [
       "node",
@@ -1852,9 +1866,9 @@
       "webkit"
     ],
     "program": {
-      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-native-state/native-owner-probe-final.wasm",
-      "bytes": 59920419,
-      "sha256": "8db6913a0b2562ec924c7c6281c7581498f5c92c0b667c58c70eade6022a34dd"
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-native-internals/native-owner-probe.wasm",
+      "bytes": 59927676,
+      "sha256": "e52a7a4892ed3e9bf52c130e011b298555348d129a162f71b24a4d3ff66b55da"
     },
     "kernel": {
       "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
@@ -1863,9 +1877,10 @@
     },
     "newStackDrivers": 4,
     "newTemplateDrivers": 4,
-    "previousDrivers": 45,
+    "previousDrivers": 53,
     "newMessageDrivers": 5,
-    "newStateDrivers": 8
+    "newStateDrivers": 8,
+    "newInternalsDrivers": 2
   },
   "historicalNativeOwnerDiagnostic": {
     "evidence": "persistent-handle-engine-check.json",

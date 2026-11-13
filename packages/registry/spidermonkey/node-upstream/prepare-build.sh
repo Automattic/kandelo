@@ -53,6 +53,7 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/process-methods-upstream.cpp" \
     "$node_consumer/process-object-upstream.cpp" \
     "$node_consumer/process-native-api.h" \
+    "$node_consumer/internals-native-api.h" \
     "$node_consumer/process-files-native-api.h" \
     "$node_consumer/dotenv-upstream.cpp" \
     "$node_consumer/env-var-upstream.cpp" \

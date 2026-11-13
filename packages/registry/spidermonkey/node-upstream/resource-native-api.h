@@ -21,6 +21,7 @@ static_assert(size_t(AsyncWrap::PROVIDERS_LENGTH)==
               sizeof(kandelo::node::asyncmeta::kProviders)/sizeof(kandelo::node::asyncmeta::kProviders[0]));
 class AsyncHooks {
  public:
+  struct SerializeInfo;
   using Fields=kandelo::node::asyncmeta::Field;
 #define KANDELO_ASYNC_FIELD(name) static constexpr Fields name=kandelo::node::asyncmeta::name;
   KANDELO_ASYNC_FIELD(kInit) KANDELO_ASYNC_FIELD(kBefore)

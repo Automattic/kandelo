@@ -65,6 +65,40 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"internalsBuffer")){
+    if(!args.get(1).isInt32()||args[1].toInt32()<0||args[1].toInt32()>4){JS_ReportErrorASCII(cx,"Original internals buffer control requires mode 0..4");return false;}
+    int mode=args[1].toInt32();
+    auto check=[&]<class T>(){
+      native::MaybeStackBuffer<T> source;
+      size_t length=mode==1?4097:(mode==3?0:(mode==4?2:7));
+      if(mode==2)source.Invalidate();
+      else {
+        source.AllocateSufficientStorage(length);source.SetLength(length);
+        for(size_t i=0;i<length;++i)source.out()[i]=T((i*17+3)%256);
+        if(mode==0){const unsigned char bytes[]={97,0,98,255,99,10,100};for(size_t i=0;i<length;++i)source.out()[i]=T(bytes[i]);}
+        if(mode==4){source.out()[0]=T(0x3bb);source.out()[1]=T(0);}
+      }
+      const void* original=source.out();api::Local<api::Object> buffer;
+      bool hasBuffer=native::Buffer::New(&state->environment,&source).ToLocal(&buffer);
+      if(JS_IsExceptionPending(cx))return false;
+      bool same=false;
+      if(hasBuffer){
+        JS::RootedObject view(cx,&api::Input(buffer).toObject());
+        JS::AutoCheckCannotGC nogc;bool shared;
+        same=JS_GetArrayBufferViewData(view,&shared,nogc)==original;
+      }
+      JS::RootedObject result(cx,JS_NewPlainObject(cx));if(!result)return false;
+      JS::RootedValue value(cx,hasBuffer?api::Input(buffer).get():JS::UndefinedValue());
+      if(!JS_DefineProperty(cx,result,"buffer",value,JSPROP_ENUMERATE))return false;
+      value.setBoolean(same);if(!JS_DefineProperty(cx,result,"samePointer",value,JSPROP_ENUMERATE))return false;
+      value.setBoolean(source.IsAllocated());if(!JS_DefineProperty(cx,result,"sourceAllocated",value,JSPROP_ENUMERATE))return false;
+      value.setBoolean(source.IsInvalidated());if(!JS_DefineProperty(cx,result,"sourceInvalidated",value,JSPROP_ENUMERATE))return false;
+      value.setNumber(double(source.length()));if(!JS_DefineProperty(cx,result,"sourceLength",value,JSPROP_ENUMERATE))return false;
+      if(!source.IsInvalidated())source.out()[0]=T(0xee);
+      args.rval().setObject(*result);return true;
+    };
+    return mode==4?check.template operator()<char16_t>():check.template operator()<char>();
+  }
   if(!std::strcmp(operation.get(),"errorKind")){
     args.rval().setBoolean(frame.OwnValue(args.get(1))->IsNativeError());return true;
   }

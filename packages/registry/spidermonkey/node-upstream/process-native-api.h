@@ -17,7 +17,7 @@
 #define node kandelo_node_codec_impl
 #include "shell/node-upstream/codecs-upstream/permission/permission_base.h"
 #undef node
-#include "shell/node-upstream/resource-native-api.h"
+#include "shell/node-upstream/internals-native-api.h"
 namespace kandelo_node_codec_impl {
 std::string GetProcessTitle(const char*);
 namespace tracing=::node::tracing;
@@ -37,7 +37,6 @@ namespace per_process {
 inline const ProcessMetadataView metadata;
 extern uint64_t node_start_time;
 }
-class NodeArrayBufferAllocator {public:size_t total_mem_usage() const;};
 class ProcessImmediateInfo {
   Environment* environment_;
  public:

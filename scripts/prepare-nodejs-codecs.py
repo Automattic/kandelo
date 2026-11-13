@@ -49,6 +49,14 @@ def prepare(manifest,output):
  enum=re.search(rb'enum encoding \{.*?\n\};',verified('src/node.h'),re.S)
  if not enum or re.sub(rb'\s+',b' ',enum[0])!=b'enum encoding { ASCII, UTF8, BASE64, UCS2, BINARY, HEX, BUFFER, BASE64URL, LATIN1 = BINARY };':raise ValueError('unreviewed original codec enum')
  include=b'#include "shell/node-upstream/codec-native-api.h"\n'
+ internals=output.parent/'internals-upstream';internals.mkdir(parents=True,exist_ok=True)
+ (internals/'node_internals.h').write_bytes(verified('src/node_internals.h'))
+ for name in ['env.h','node_binding.h','node_file_utils.h','util.h','v8.h']:
+  (internals/name).write_bytes(include)
+ (internals/'node.h').write_text('#include "shell/node-upstream/codecs-upstream/node.h"\n')
+ (internals/'node_mutex.h').write_text('#include "shell/node-upstream/tracing-upstream/node_mutex.h"\n')
+ (internals/'tracing').mkdir(exist_ok=True)
+ (internals/'tracing/trace_event.h').write_text('#include "shell/node-upstream/trace-native.h"\n')
  for name in ['memory_tracker.h','memory_tracker-inl.h','node_blob.h','node_debug.h','v8-fast-api-calls.h','node_errors.h','node_external_reference.h','util.h','v8.h','v8-external-memory-accounter.h','base_object.h','base_object-inl.h','env.h','node_internals.h','util-inl.h','async_wrap-inl.h','debug_utils-inl.h','node_metadata.h','node_options-inl.h','node_realm-inl.h']:(output/name).write_bytes(include)
  declarations=b'''enum encoding ParseEncoding(const char*, enum encoding);
 enum encoding ParseEncoding(v8::Isolate*, v8::Local<v8::Value>, enum encoding);
@@ -62,6 +70,7 @@ enum encoding ParseEncoding(v8::Isolate*, v8::Local<v8::Value>, v8::Local<v8::Va
  for name in ['env.h','v8.h']:(policy/name).write_bytes(include)
  (policy/'node_buffer.h').write_text('#include "shell/node-upstream/codecs-upstream/node_buffer.h"\n')
  (output/'node_errors.h').write_text('#include "shell/node-upstream/error-policy-native-api.h"\n')
+ (output/'node_internals.h').write_text('#include "shell/node-upstream/internals-native-api.h"\n')
  engine_include=output.parent/'utility-engine-includes';engine_include.mkdir(parents=True,exist_ok=True)
  (engine_include/'v8.h').write_bytes(include)
  utility=output.parent/'utilities-upstream';utility.mkdir(parents=True,exist_ok=True)
@@ -84,6 +93,6 @@ enum encoding ParseEncoding(v8::Isolate*, v8::Local<v8::Value>, v8::Local<v8::Va
  for name in ['env-inl.h','node_internals.h']:
   (debug/name).write_text('#include "shell/node-upstream/debugging-native-api.h"\n')
  (output/'errors.generated.h').unlink(missing_ok=True)
- return {'completeNativeFiles':len(names)+23,'wholeOriginalDebugUtilities':True,'wholeOriginalUtilities':True,'wholeOriginalErrorPolicyHeader':True,'asyncProviderMetadataMacros':4,'fullEncodingEnumOnly':True,'functionBodiesExtracted':False,'javascriptGenerated':False}
+ return {'completeNativeFiles':len(names)+24,'wholeOriginalNodeInternals':True,'wholeOriginalDebugUtilities':True,'wholeOriginalUtilities':True,'wholeOriginalErrorPolicyHeader':True,'asyncProviderMetadataMacros':4,'fullEncodingEnumOnly':True,'functionBodiesExtracted':False,'javascriptGenerated':False}
 if __name__=='__main__':
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--manifest',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args();print(json.dumps(prepare(a.manifest,a.output)))

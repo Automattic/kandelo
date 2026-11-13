@@ -12,10 +12,5 @@ namespace kandelo_node_codec_impl {
 class SnapshotBuilder {public:static void InitializeIsolateParams(const SnapshotData*,Isolate::CreateParams*);};
 class UtilityPlatformAccess {public:kandelo_node_codec_api::Platform* Platform();};
 namespace per_process {extern UtilityPlatformAccess v8_platform;}
-using TIME_TYPE=std::tm;
-class DiagnosticFilename {
- public:static void LocalTime(TIME_TYPE*);
- private:static std::string MakeFilename(uint64_t,const char*,const char*);
-};
 }
 #endif

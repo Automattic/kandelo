@@ -1,0 +1,26 @@
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -43,6 +43,7 @@
+ # We don't bother checking files in these directories, because they're (a) auxiliary or (b)
+ # imported code that doesn't follow our coding style.
+ ignored_js_src_dirs = [
++    "js/src/shell/node-upstream/internals-upstream/",  # complete original Node header
+     "js/src/shell/node-upstream/debugging-upstream/",  # complete original Node diagnostics
+     "js/src/shell/node-upstream/utilities-upstream/",  # complete original Node utilities
+     "js/src/shell/node-upstream/error-policy-upstream/",  # complete original Node header
+@@ -69,6 +70,15 @@
+ included_inclnames_to_ignore = set(
+     [
+         "shell/node-upstream/error-policy-upstream/node_errors.h",
++        "shell/node-upstream/internals-upstream/node_internals.h",
++        "shell/node-upstream/internals-upstream/env.h",
++        "shell/node-upstream/internals-upstream/node.h",
++        "shell/node-upstream/internals-upstream/node_binding.h",
++        "shell/node-upstream/internals-upstream/node_file_utils.h",
++        "shell/node-upstream/internals-upstream/util.h",
++        "shell/node-upstream/internals-upstream/v8.h",
++        "shell/node-upstream/internals-upstream/node_mutex.h",
++        "shell/node-upstream/internals-upstream/tracing/trace_event.h",
+         "shell/node-upstream/debugging-upstream/debug_utils.h",
+         "shell/node-upstream/debugging-upstream/debug_utils-inl.h",
+         "shell/node-upstream/debugging-upstream/debug_utils.cc",

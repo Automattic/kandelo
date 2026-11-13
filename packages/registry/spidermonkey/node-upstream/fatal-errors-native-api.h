@@ -45,7 +45,6 @@ namespace per_process {
  extern Mutex cli_options_mutex;
  extern FatalProcessOptionsAccess fatal_cli_options;
 }
-enum class StackTracePrefix{kAt,kNumber};
 namespace ContextEmbedderIndex {extern const int kAllowCodeGenerationFromStrings;}
 struct FatalIsolateOptions {bool report_uncaught_exception;};
 [[noreturn]] void AbortWithDetails(const char*,const char*);
@@ -53,9 +52,6 @@ void ResetStdio();std::string GetHumanReadableProcessName();
 void DefineErrorConstant(Isolate*,Local<Object>,const char*,int);
 void TriggerNodeReport(Environment*,const std::string&,const char*,const char*,Local<Value>);
 void TriggerNodeReport(Isolate*,const char*,const char*,const char*,Local<Object>);
-MaybeLocal<StackTrace> GetCurrentStackTrace(Isolate*,int=10);
-std::string FormatErrorMessage(Isolate*,Local<Context>,const std::string&,Local<Message>,bool);
-void PrintStackTrace(Isolate*,Local<StackTrace>,StackTracePrefix=StackTracePrefix::kAt);
 }
 #define NODE_DEFINE_CONSTANT(target,name) kandelo_node_codec_impl::DefineErrorConstant(isolate,target,#name,name)
 #endif
