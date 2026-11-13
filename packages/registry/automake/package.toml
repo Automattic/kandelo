@@ -1,0 +1,24 @@
+kind = "program"
+name = "automake"
+version = "1.20"
+kernel_abi = 56
+depends_on = []
+
+# GNU Automake: generates Makefile.in from Makefile.am. Perl scripts and their m4 and auxiliary files, installed as a ZIP mounted at /usr.
+[source]
+url = "https://ftpmirror.gnu.org/automake/automake-1.20.tar.xz"
+sha256 = "f6f34dad4cbe395715762b0710f7c511e39bd5cf777e6b95818ccbecf7714248"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/automake.git/tree/COPYING?h=v1.20"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/automake/build-automake.sh"
+
+[[outputs]]
+name = "automake"
+wasm = "automake.zip"
+fork_instrumentation = "disabled"

@@ -1,0 +1,21 @@
+# Recognize a native build inside Kandelo, whose uname reports
+# wasm32/wasm-posix/kandelo, as wasm32-unknown-linux-musl: the identity
+# the Kandelo SDK already uses for cross builds. Without it, configure in a
+# Kandelo shell stops with "unable to guess system type".
+--- a/lib/config.guess
++++ b/lib/config.guess
+@@ -199,6 +199,14 @@
+ # Note: order is significant - the case branches are not exclusive.
+ 
+ case $UNAME_MACHINE:$UNAME_SYSTEM:$UNAME_RELEASE:$UNAME_VERSION in
++    wasm32:wasm-posix:*:kandelo | wasm64:wasm-posix:*:kandelo)
++	# Kandelo, a POSIX environment for WebAssembly whose libc is musl.
++	# GNU build systems identify its userland as *-unknown-linux-musl,
++	# the identity the Kandelo SDK's configure wrapper passes for cross
++	# builds; config.sub accepts musl only with a Linux kernel component.
++	# This does not claim a Linux kernel.
++	GUESS=$UNAME_MACHINE-unknown-linux-musl
++	;;
+     *:NetBSD:*:*)
+ 	# NetBSD (nbsd) targets should (where applicable) match one or
+ 	# more of the tuples: *-*-netbsdelf*, *-*-netbsdaout*,
