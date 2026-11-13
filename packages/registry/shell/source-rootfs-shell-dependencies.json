@@ -542,6 +542,11 @@
       "role": "lazy-archive"
     },
     {
+      "name": "toybox-docs",
+      "version": "0.8.15",
+      "role": "lazy-archive"
+    },
+    {
       "name": "espeak-ng-docs",
       "version": "1.52.0",
       "role": "lazy-archive"

@@ -401,17 +401,14 @@ reference time; `fbdoom-docs` is a typical example.
 The [lazy-archive contract](#shipping-runtime-files-the-lazy-archive-pattern)
 below applies to these docs bundles too, even for a single small man page.
 
-### Shell commands without man pages
+### Commands without man pages
 
-These commands are in the shell image but have no page yet. `man` reports
-`No entry for <name> in the manual` for them, which is the truthful answer.
-
-| Commands | Why there is no page yet |
-|---|---|
-| `git-remote-http` (also installed as `git-remote-https`, `git-remote-ftp`, `git-remote-ftps`) | Upstream has no page for it, and it is a helper git runs, with no `--help`; `gitremote-helpers(7)` documents remote helpers |
-| `egrep`, `fgrep` | Upstream ships no page: they are scripts that run `grep -E` and `grep -F`, and `grep(1)` does not describe them |
-| `dmesg`, `logger` | Toybox has no pages, and help2man cannot lay out its help: options start at column 0 with tab-separated descriptions, so they run together |
-| `posix-utils-lite` commands (`cal`, `ed`, `pax`, `ps` and the rest) | Most are placeholders being replaced by upstream implementations, whose pages come with them |
+Some commands in an image have no page: no upstream page exists, and no
+generator or `--help` output can produce a faithful one. `man` then reports
+`No entry for <name> in the manual`, which is the truthful answer. Say why
+in a `README.md` in the package that installs the command
+(`packages/registry/<name>/README.md`), so the reason stays with the package
+and goes away with it.
 
 ### The man-page index
 

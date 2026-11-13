@@ -119,7 +119,8 @@ When upstream provides man pages (including its normally generated pages),
 aim to include lazy references for them where possible. The shell's existing
 pattern is a separate `<program>-docs` ZIP package mounted at `/usr/`, with
 pages under `/usr/share/man`; an existing lazy runtime bundle can also carry
-them. Software without man pages needs none invented for now. Follow
+them. Software without man pages needs none invented for now; say why a
+command has no page in a `README.md` in the package that installs it. Follow
 [Shipping man pages](../porting-guide.md#shipping-man-pages) for the package,
 image registration and validation details.
 

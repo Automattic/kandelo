@@ -271,6 +271,7 @@ describe.skipIf(!available)(
         // ar is llvm-ar, so its page is a link to llvm-ar(1).
         ["1 ar", /LLVM\s+archiver/],
         ["1 wasm-tools", /Validate\s+a\s+WebAssembly\s+binary/],
+        ["1 dmesg", /Print\s+or\s+control\s+the\s+kernel\s+ring\s+buffer/],
         ["1 cc", /Kandelo\s+SDK\s+driver/],
         // An alias page: retro-nes is fceumm under a shorter name.
         ["1 retro-nes", /FCEUmm\s+libretro\s+core/],

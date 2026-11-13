@@ -114,6 +114,7 @@ depends_on = [
   "rust-coverage-tools-docs@22.1.2",
   "clang-docs@21.1.7",
   "wasm-tools-docs@1.263.0",
+  "toybox-docs@0.8.15",
   "espeak-ng-docs@1.52.0",
   "man-index@1.14.6",
   "attr-docs@2.5.2",
