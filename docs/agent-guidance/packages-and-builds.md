@@ -113,6 +113,30 @@ test it against a scratch `KANDELO_SOURCE_CACHE_ROOT`, and set
 `KANDELO_CACHE_GC_AUTO=0` when a build must not collect. See
 [Cache garbage collection](../package-management.md#cache-garbage-collection).
 
+## Upstream submission candidates
+
+Mark a package patch that may be suitable for upstream review with this
+standalone line in its leading explanatory text, before the first diff header:
+
+```text
+# @suggest-upstream
+```
+
+Keep the marker outside the diff hunks so it changes no patched source. Explain
+why the change belongs upstream in the preamble or package README, with the
+reproduction/evidence, any review limits, and the condition for dropping it.
+The marker means "review this candidate", not approval or permission to submit.
+
+Find candidates for a batch review with:
+
+```sh
+rg -l '^# @suggest-upstream$' packages/registry -g '*.patch' -g '*.diff'
+```
+
+After submission, record the upstream URL in the package README or patch
+preamble and remove the marker from the review queue. Keep the carried patch
+until the packaged upstream release includes the fix.
+
 ## Man pages for ports
 
 When upstream provides man pages (including its normally generated pages),
