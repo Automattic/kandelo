@@ -131,6 +131,26 @@ name = "wasm-tools-docs"
 class = "browser-product"
 
 [[packages]]
+name = "autoconf"
+class = "user-software"
+
+[[packages]]
+name = "automake"
+class = "user-software"
+
+[[packages]]
+name = "libtool"
+class = "user-software"
+
+[[packages]]
+name = "autoconf-archive"
+class = "user-software"
+
+[[packages]]
+name = "help2man"
+class = "user-software"
+
+[[packages]]
 name = "binaryen"
 class = "platform"
 

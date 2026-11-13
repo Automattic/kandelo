@@ -1,0 +1,25 @@
+# Tell libtool that Kandelo has no dynamic linker. Kandelo identifies as
+# wasm32-unknown-linux-musl, so libtool assumed ELF shared libraries: it
+# built libfoo.so and linked programs against it, which fails ("attempted
+# static link of dynamic object") because Kandelo executables are linked
+# statically. With dynamic_linker=no libtool builds static libraries only,
+# whatever LT_INIT asks for. dlopen side modules are built with the
+# compiler directly (docs/sdk-guide.md).
+--- a/m4/libtool.m4
++++ b/m4/libtool.m4
+@@ -3342,6 +3342,15 @@
+   dynamic_linker=no
+   ;;
+ esac
++case $host_cpu-$host_os in
++wasm32-linux-musl* | wasm64-linux-musl*)
++  # Kandelo, a POSIX environment for WebAssembly whose GNU identity is
++  # *-unknown-linux-musl: executables are linked statically and cannot link
++  # against shared libraries, so there is no dynamic linker for libtool to
++  # use. (dlopen side modules are built with the compiler directly.)
++  dynamic_linker=no
++  ;;
++esac
+ AC_MSG_RESULT([$dynamic_linker])
+ test no = "$dynamic_linker" && can_build_shared=no
+ 
