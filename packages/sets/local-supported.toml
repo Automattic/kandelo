@@ -17,10 +17,6 @@ dependency_only = [
   "sqlite-amalgamation-source",
   "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
-  "asciidoc-source",
-  "docbook-xml-source",
-  "docbook-xsl-source",
-  "scdoc-source",
 ]
 registry_non_roots = []
 
@@ -131,12 +127,24 @@ name = "wasm-tools"
 class = "user-software"
 
 [[packages]]
+name = "wasm-tools-docs"
+class = "browser-product"
+
+[[packages]]
 name = "binaryen"
 class = "platform"
 
 [[packages]]
+name = "binaryen-docs"
+class = "browser-product"
+
+[[packages]]
 name = "wasm-fork-instrument"
 class = "platform"
+
+[[packages]]
+name = "wasm-fork-instrument-docs"
+class = "browser-product"
 
 [[packages]]
 name = "bzip2"
@@ -161,6 +169,10 @@ class = "platform"
 [[packages]]
 name = "clang"
 class = "platform"
+
+[[packages]]
+name = "clang-docs"
+class = "browser-product"
 
 [[packages]]
 name = "cli11"
@@ -193,6 +205,10 @@ class = "browser-product"
 [[packages]]
 name = "kandelo-cc"
 class = "platform"
+
+[[packages]]
+name = "kandelo-cc-docs"
+class = "browser-product"
 
 [[packages]]
 name = "python-browser-bundle"
@@ -231,6 +247,10 @@ name = "dosbox-pure"
 class = "user-software"
 
 [[packages]]
+name = "dosbox-pure-docs"
+class = "browser-product"
+
+[[packages]]
 name = "dinit"
 class = "user-software"
 
@@ -247,12 +267,20 @@ name = "espeak-ng"
 class = "user-software"
 
 [[packages]]
+name = "espeak-ng-docs"
+class = "browser-product"
+
+[[packages]]
 name = "expat"
 class = "platform"
 
 [[packages]]
 name = "fbdoom"
 class = "user-software"
+
+[[packages]]
+name = "fbdoom-docs"
+class = "browser-product"
 
 [[packages]]
 name = "fcft"
@@ -309,6 +337,10 @@ class = "platform"
 [[packages]]
 name = "game-import"
 class = "user-software"
+
+[[packages]]
+name = "game-import-docs"
+class = "browser-product"
 
 [[packages]]
 name = "gawk"
@@ -379,6 +411,10 @@ name = "harper"
 class = "user-software"
 
 [[packages]]
+name = "harper-docs"
+class = "browser-product"
+
+[[packages]]
 name = "harper-browser-bundle"
 class = "user-software"
 
@@ -409,6 +445,10 @@ class = "platform"
 [[packages]]
 name = "kandelo-exchange"
 class = "platform"
+
+[[packages]]
+name = "kandelo-exchange-docs"
+class = "browser-product"
 
 [[packages]]
 name = "kandelo-sdk"
@@ -579,6 +619,10 @@ name = "login"
 class = "platform"
 
 [[packages]]
+name = "login-docs"
+class = "browser-product"
+
+[[packages]]
 name = "lsof"
 class = "user-software"
 
@@ -637,6 +681,10 @@ class = "test-support"
 [[packages]]
 name = "modeset"
 class = "user-software"
+
+[[packages]]
+name = "modeset-docs"
+class = "browser-product"
 
 [[packages]]
 name = "msmtpd"
@@ -775,6 +823,10 @@ name = "qtgallery"
 class = "user-software"
 
 [[packages]]
+name = "qtgallery-docs"
+class = "browser-product"
+
+[[packages]]
 name = "qtshadertools"
 class = "platform"
 
@@ -787,6 +839,10 @@ name = "quickshell"
 class = "user-software"
 
 [[packages]]
+name = "quickshell-docs"
+class = "browser-product"
+
+[[packages]]
 name = "redis"
 class = "user-software"
 
@@ -797,6 +853,10 @@ class = "browser-product"
 [[packages]]
 name = "retro-emulators"
 class = "user-software"
+
+[[packages]]
+name = "retro-emulators-docs"
+class = "browser-product"
 
 [[packages]]
 name = "rootfs"
@@ -847,6 +907,10 @@ name = "freeciv-browser-bundle"
 class = "browser-product"
 
 [[packages]]
+name = "freeciv-play-docs"
+class = "browser-product"
+
+[[packages]]
 name = "sdl2-image"
 class = "platform"
 
@@ -867,8 +931,16 @@ name = "sdl2-demo"
 class = "user-software"
 
 [[packages]]
+name = "sdl2-demo-docs"
+class = "browser-product"
+
+[[packages]]
 name = "wayland-demo"
 class = "user-software"
+
+[[packages]]
+name = "wayland-demo-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sdl2-mixer"
@@ -899,6 +971,10 @@ name = "sway"
 class = "user-software"
 
 [[packages]]
+name = "swaybar-docs"
+class = "browser-product"
+
+[[packages]]
 name = "sway-docs"
 class = "browser-product"
 
@@ -913,6 +989,10 @@ class = "browser-product"
 [[packages]]
 name = "sfwbar"
 class = "user-software"
+
+[[packages]]
+name = "kandelo-desktop-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sfwbar-docs"
@@ -983,8 +1063,16 @@ name = "sudo-lite"
 class = "platform"
 
 [[packages]]
+name = "sudo-lite-docs"
+class = "browser-product"
+
+[[packages]]
 name = "sysklogd"
 class = "platform"
+
+[[packages]]
+name = "sysklogd-docs"
+class = "browser-product"
 
 [[packages]]
 name = "tar"
@@ -1025,6 +1113,10 @@ class = "platform"
 [[packages]]
 name = "tyrquake"
 class = "user-software"
+
+[[packages]]
+name = "tyrquake-docs"
+class = "browser-product"
 
 [[packages]]
 name = "unzip"
@@ -1161,6 +1253,10 @@ name = "rustc"
 class = "user-software"
 
 [[packages]]
+name = "rust-tools-docs"
+class = "browser-product"
+
+[[packages]]
 name = "rust-llvm"
 class = "platform"
 
@@ -1175,6 +1271,10 @@ class = "browser-product"
 [[packages]]
 name = "rust-coverage-tools"
 class = "user-software"
+
+[[packages]]
+name = "rust-coverage-tools-docs"
+class = "browser-product"
 
 [[packages]]
 name = "rust-docs"

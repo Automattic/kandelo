@@ -2,6 +2,27 @@
 # Package-owned preparation: inputs were size/hash checked by the invitation
 # flow. Keep the upstream license and credits alongside extracted free data.
 # The downloaded input can be read-only; prepare a separate guest-owned WAD.
+case "${1:-}" in
+    --help)
+        cat <<'EOF'
+Usage: doom-activity SOURCE [DOOM-OPTION]...
+
+Prepare the game data of a networked DOOM game, and run DOOM with it.
+
+A DOOM game session downloads its game data to /tmp/kandelo-doom-data.bin
+and runs this command. SOURCE names the data: shareware or file (a WAD,
+used as is), or freedoom1, freedoom2 or freedm (a Freedoom release archive,
+from which the WAD and its license and credits files are extracted). The
+prepared WAD is /tmp/kandelo-doom.wad; the remaining arguments are passed to
+fbdoom(1).
+
+      --help     display this help and exit
+      --version  output version information and exit
+EOF
+        exit 0
+        ;;
+    --version) echo 'doom-activity (Kandelo fbdoom) 0.1.0'; exit 0 ;;
+esac
 set -eu
 source_id="$1"
 shift

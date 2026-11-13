@@ -307,17 +307,18 @@ script is a page list on top of `scripts/install-package-man-pages.sh`
   separate documentation toolchain is not a substitution; see the next
   item.
 - A page upstream generates during its own build comes from upstream's
-  generator, run over the pinned source. `kandelo_man_pages_build_scdoc`
-  and `kandelo_man_pages_scdoc` render scdoc pages (`sway-docs`);
-  `scripts/xmlto-man.sh` stands in for `xmlto man` over DocBook
-  (`dbus-docs`, and `git-docs` through git's own `Documentation/Makefile`),
-  running the `xsltproc` that `flake.nix` declares.
-  Generators that are not part of the dev shell (scdoc, AsciiDoc, DocBook
-  XSL, the DocBook DTD) are pinned `kind = "source"` packages the docs
-  package depends on. A host tool that only reaches the dev shell through
-  another package's dependencies is not declared: `./run.sh setup`,
-  `local-build` and `partial` leave it off a package build's `PATH`. A
-  generator that stamps a date gets the release's date from
+  generator, run over the pinned source. The generators come from the dev
+  shell (`flake.nix`): scdoc (`kandelo_man_pages_scdoc`, as in
+  `sway-docs`), asciidoc and xmlto with DocBook (`dbus-docs`, and
+  `git-docs` through git's own `Documentation/Makefile`), Sphinx over
+  LLVM's command guide (`clang-docs` and `rust-coverage-tools-docs`, both
+  through `scripts/llvm-command-guide-man-pages.sh`) and ronn
+  (`espeak-ng-docs`). A docs recipe declares each one as a `[[host_tools]]`
+  entry. Add a missing generator to the dev shell rather than vendoring
+  it. A tool that only reaches the dev shell through another package's
+  dependencies is not declared: `./run.sh setup`, `local-build` and
+  `partial` leave it off a package build's `PATH`. A generator that
+  stamps a date gets the release's date from
   `kandelo_man_pages_release_date`, because the dev shell pins the build
   clock to 1980.
 - When configure decides what a page says (paths, defaults, enabled
@@ -351,6 +352,17 @@ interpreter is named too (`composer-docs` names bash for its `#!/bin/sh`
 launcher). `redis-docs` is a typical example. `lsof-docs` is a special
 case: lsof is Kandelo's own implementation, and its page is written for
 it.
+
+Kandelo's own commands get their pages the same way, from `--help` that
+Kandelo writes for them. Each answers `--help` on standard output with a
+`Usage:` line, a blank line, a one-line summary (the page's NAME line), a
+blank line, then the description and GNU-style options; and `--version`
+with exactly `NAME (Kandelo PACKAGE) VERSION`, the package that installs
+it and that package's version. Both are checked before the command does
+anything else, so a daemon or display client can answer them without a
+display. `kandelo_man_pages_own_commands` captures a list of such
+commands, checks those formats, and dates their pages with Kandelo's
+reference time; `fbdoom-docs` is a typical example.
 
 - Stage pages as `share/man/man<section>/<name>.<section>` inside the
   archive, and mount it at `/usr/`, yielding
@@ -396,8 +408,10 @@ These commands are in the shell image but have no page yet. `man` reports
 
 | Commands | Why there is no page yet |
 |---|---|
-| `swaybar`, `git-remote-http` (also installed as `git-remote-https`, `git-remote-ftp`, `git-remote-ftps`) | Upstream has no page for them: `sway-bar(5)` and `swaybar-protocol(7)` document swaybar, and `gitremote-helpers(7)` documents remote helpers |
-| `posix-utils-lite` commands, `kandelo-exchange`, `kandelo-publish`, `login`, `sudo-lite`, `dos-play` and other Kandelo wrappers | Kandelo is upstream and has not written pages for them |
+| `git-remote-http` (also installed as `git-remote-https`, `git-remote-ftp`, `git-remote-ftps`) | Upstream has no page for it, and it is a helper git runs, with no `--help`; `gitremote-helpers(7)` documents remote helpers |
+| `egrep`, `fgrep` | Upstream ships no page: they are scripts that run `grep -E` and `grep -F`, and `grep(1)` does not describe them |
+| `dmesg`, `logger` | Toybox has no pages, and help2man cannot lay out its help: options start at column 0 with tab-separated descriptions, so they run together |
+| `posix-utils-lite` commands (`cal`, `ed`, `pax`, `ps` and the rest) | Most are placeholders being replaced by upstream implementations, whose pages come with them |
 
 ### The man-page index
 

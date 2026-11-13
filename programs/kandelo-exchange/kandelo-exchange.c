@@ -43,6 +43,65 @@ static int usage(void)
 	return 64;
 }
 
+static const char help_text[] =
+	"Usage: kandelo-exchange run [--] COMMAND [ARGUMENT]...\n"
+	"  or:  kandelo-exchange ack ID\n"
+	"  or:  kandelo-exchange handler list\n"
+	"  or:  kandelo-exchange handler add NAME [OPTION]... --run PROGRAM [ARG]...\n"
+	"  or:  kandelo-exchange handler remove NAME\n"
+	"  or:  kandelo-exchange handler mask NAME\n"
+	"\n"
+	"Run commands in exchange work sessions and manage exchange handlers.\n"
+	"\n"
+	"Kandelo exchange moves files between the host and the machine through\n"
+	"the filesystem mounted at " KX_MOUNT ".\n"
+	"\n"
+	"run opens a work session, a directory under " KX_WORK "/\n"
+	"that exists until kandelo-exchange exits, runs COMMAND (found through\n"
+	"PATH) with KANDELO_WORK set to that directory, and waits for it. Files the\n"
+	"command leaves unpublished in the session are removed with it; see\n"
+	"kandelo-publish(1). The exit status is COMMAND's, 128 plus the signal\n"
+	"number if it was killed, or 127 if it could not be started.\n"
+	"\n"
+	"ack removes the batch directory " KX_INBOX "/ID,\n"
+	"which settles the batch. ID is the batch's lowercase UUID.\n"
+	"\n"
+	"handler manages the rules the exchange agent uses to choose a program\n"
+	"for each incoming batch. Rules are NAME.handler files in\n"
+	KX_RULES_ETC ", which take precedence over files of\n"
+	"the same name in " KX_RULES_VENDOR ".\n"
+	"list prints every rule with its source directory and settings, marking\n"
+	"rules that are masked or ignored for unsafe ownership or permissions\n"
+	"(judged for the calling user) or invalid syntax. add writes a new rule,\n"
+	"replacing one of the same name; the batch directory is given to PROGRAM\n"
+	"as its first argument, before ARG. remove deletes a rule from\n"
+	KX_RULES_ETC ", and mask writes an empty rule there,\n"
+	"which disables the rule of that name. Changes apply from the next\n"
+	"batch.\n"
+	"\n"
+	"Exit status is 64 for invalid arguments and 1 for other failures.\n"
+	"\n"
+	"Options for handler add:\n"
+	"      --extension .X   match entries whose names end in .X, ignoring\n"
+	"                       case\n"
+	"      --mime TYPE      match entries of MIME type TYPE; TYPE/* matches\n"
+	"                       every subtype\n"
+	"      --kind KIND      accept regular files (file, the default), streamed\n"
+	"                       inputs (stream) or both (any)\n"
+	"      --max-bytes N    accept regular files of at most N bytes\n"
+	"      --run PROGRAM [ARG]...\n"
+	"                       the program to run; it takes the rest of the\n"
+	"                       command line\n"
+	"\n"
+	"--extension and --mime may be repeated; an entry matches when any of\n"
+	"them matches, and a rule with neither matches every entry. The agent\n"
+	"uses the first rule, in file-name order, that matches every top-level\n"
+	"entry of the batch.\n"
+	"\n"
+	"Options:\n"
+	"      --help     display this help and exit\n"
+	"      --version  output version information and exit\n";
+
 static int exit_status_of(int status)
 {
 	if (WIFEXITED(status)) return WEXITSTATUS(status);
@@ -205,6 +264,14 @@ static int cmd_handler(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+	if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+		fputs(help_text, stdout);
+		return 0;
+	}
+	if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+		fputs("kandelo-exchange (Kandelo kandelo-exchange) 0.1.0\n", stdout);
+		return 0;
+	}
 	if (argc < 2) return usage();
 	if (strcmp(argv[1], "run") == 0) return cmd_run(argc - 2, argv + 2);
 	if (strcmp(argv[1], "ack") == 0) return cmd_ack(argc - 2, argv + 2);

@@ -207,7 +207,9 @@ describe.skipIf(!available)(
           `${page.name}(${page.section}) is an alias of ${page.target}`,
         ).toBe(rendered.get(`${page.section} ${page.target}`));
       }
-    }, 900_000);
+      // About a second per page inside Kandelo, for every page of every
+      // docs archive (around a thousand).
+    }, 1_800_000);
 
     it("renders the text of the program's own manual", async () => {
       const pages = new Set(imagePages(imageBytes()).map((p) => `${p.section} ${p.name}`));
@@ -252,6 +254,26 @@ describe.skipIf(!available)(
         ["6 freeciv-server", /The\s+server\s+for\s+the\s+Freeciv\s+game/],
         // A `.so` stub for freeciv-client(6).
         ["6 freeciv-sdl2", /The\s+clients\s+for\s+the\s+Freeciv\s+game/],
+        ["8 syslogd", /log\s+systems\s+messages/],
+        ["1 test", /Exit\s+with\s+the\s+status\s+determined\s+by\s+EXPRESSION/],
+        ["1 rustfmt", /Format\s+Rust\s+code/],
+        ["1 harper-cli", /debugging\s+tool\s+for\s+the\s+Harper/],
+        ["1 swaybar", /swaybar\s+will\s+be\s+automatically\s+started/],
+        // Kandelo's own commands, from the --help Kandelo writes for them.
+        ["1 fbdoom", /Run\s+fbDOOM,\s+the\s+DOOM\s+engine/],
+        ["1 quake", /Run\s+Quake\s+with\s+the\s+machine's\s+game\s+data/],
+        ["1 wlterm", /terminal\s+emulator\s+window\s+on\s+Wayland/],
+        ["1 login", /Authenticate\s+a\s+user/],
+        ["8 sudo-lite", /checking\s+the\s+caller's\s+password/],
+        ["1 kandelo-publish", /Publish\s+a\s+file\s+or\s+a\s+command's\s+output/],
+        ["1 llvm-cov", /emit\s+coverage\s+information/],
+        ["1 espeak-ng", /multi-lingual\s+software\s+speech\s+synthesizer/],
+        // ar is llvm-ar, so its page is a link to llvm-ar(1).
+        ["1 ar", /LLVM\s+archiver/],
+        ["1 wasm-tools", /Validate\s+a\s+WebAssembly\s+binary/],
+        ["1 cc", /Kandelo\s+SDK\s+driver/],
+        // An alias page: retro-nes is fceumm under a shorter name.
+        ["1 retro-nes", /FCEUmm\s+libretro\s+core/],
       ];
       const present = probes.filter(([page]) => pages.has(page));
       expect(present.length).toBeGreaterThan(0);

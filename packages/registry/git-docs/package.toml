@@ -2,7 +2,17 @@ kind = "program"
 name = "git-docs"
 version = "2.47.1"
 kernel_abi = 56
-depends_on = ["asciidoc-source@10.2.1", "docbook-xsl-source@1.79.2"]
+depends_on = []
+
+[[host_tools]]
+name = "asciidoc"
+version_constraint = ">=10.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.asciidoc); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.asciidoc); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "xmlto"
+version_constraint = ">=0.0.28"
+install_hints = { darwin = "provided by flake.nix (pkgs.xmlto); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.xmlto); enter scripts/dev-shell.sh" }
 
 # Upstream manual pages for the `git` package (git, its built-in commands and its guides).
 # The source, SHA-256 and version are the `git` package's own, so the

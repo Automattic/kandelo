@@ -2,7 +2,13 @@ kind = "program"
 name = "sway-docs"
 version = "1.12"
 kernel_abi = 56
-depends_on = ["scdoc-source@1.11.3"]
+depends_on = []
+
+[[host_tools]]
+name = "scdoc"
+version_constraint = ">=1.11"
+probe = { args = ["-v"], version_regex = "scdoc (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh" }
 
 # Upstream manual pages for the `sway` package (sway, swaymsg, swaynag and their configuration and IPC).
 # The source, SHA-256 and version are the `sway` package's own, so the

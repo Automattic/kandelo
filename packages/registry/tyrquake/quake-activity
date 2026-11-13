@@ -1,4 +1,29 @@
 #!/bin/sh
+case "${1:-}" in
+    --help)
+        cat <<'EOF'
+Usage: quake-activity SOURCE [QUAKE-OPTION]...
+
+Prepare a networked Quake game's data, and run Quake with it.
+
+A Quake game session downloads its game data to /tmp/kandelo-quake-data.bin
+and runs this command. SOURCE names the data: shareware (id's shareware
+quake106.zip), librequake (a LibreQuake lite release archive), openquartz
+(an OpenQuartz PAK archive) or file (a pak0.pak, used as is). The directory
+/tmp/kandelo-quake is removed, and quake-data(1) prepares the data in it
+again. OpenQuartz's quake.rc does not run launch arguments such as +map,
+so for openquartz a quake.rc that does is written to
+/tmp/kandelo-quake/activity and selected with -game activity; the original
+PAK files are not changed. The remaining arguments are passed to the
+engine, /usr/libexec/quake, which runs with -basedir /tmp/kandelo-quake.
+
+      --help     display this help and exit
+      --version  output version information and exit
+EOF
+        exit 0
+        ;;
+    --version) echo 'quake-activity (Kandelo tyrquake) 0.71.0'; exit 0 ;;
+esac
 set -eu
 source_id="$1"
 shift

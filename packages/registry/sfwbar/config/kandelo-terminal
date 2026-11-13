@@ -1,5 +1,24 @@
 #!/bin/sh
 # Select the terminal configuration belonging to the actual Wayland session.
+case "${1:-}" in
+    --help)
+        cat <<'EOF'
+Usage: kandelo-terminal [FOOT-OPTION]...
+
+Open a foot terminal configured for the running Wayland desktop.
+
+In a Sway session, where SWAYSOCK is set, run foot(1) with the
+configuration file /usr/share/kandelo/sway/foot.ini; otherwise, as in the
+labwc desktop, run it with /etc/xdg/labwc/foot.ini. Arguments are passed to
+foot(1). The desktop's Terminal launcher runs this command.
+
+      --help     display this help and exit
+      --version  output version information and exit
+EOF
+        exit 0
+        ;;
+    --version) echo 'kandelo-terminal (Kandelo sfwbar) 1.0_beta17'; exit 0 ;;
+esac
 if [ -n "${SWAYSOCK:-}" ]; then
     exec /usr/bin/foot --config=/usr/share/kandelo/sway/foot.ini "$@"
 fi

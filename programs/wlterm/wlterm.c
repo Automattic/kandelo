@@ -125,7 +125,45 @@ static void watch_report(struct vt100 *t) {
     }
 }
 
+static const char help_text[] =
+    "Usage: wlterm [--watch TEXT]... [COMMAND [ARGUMENT]...]\n"
+    "\n"
+    "Run a command in a terminal emulator window on Wayland.\n"
+    "\n"
+    "wlterm opens a 960x540 xdg-shell window on the Wayland compositor and\n"
+    "runs COMMAND, found through PATH, on a new pseudo-terminal sized to the\n"
+    "window's character grid; without COMMAND it runs sh. The command's\n"
+    "environment has TERM=vt100, the terminal type wlterm implements. Keys\n"
+    "typed in the window go to the pseudo-terminal and its output is drawn\n"
+    "in the window. When the compositor resizes the window, wlterm resizes\n"
+    "the grid and the pseudo-terminal and sends the command SIGWINCH.\n"
+    "\n"
+    "wlterm ends when the command closes the pseudo-terminal or the window is\n"
+    "closed; on a close it sends the command SIGHUP and waits for it. It\n"
+    "writes WLTERM_READY, WLTERM_RESIZE cols=COLS rows=ROWS, and finally\n"
+    "WLTERM_EXIT code=STATUS or WLTERM_EXIT signal=NUMBER for the command, on\n"
+    "its standard output. wlterm exits with status 0 once the command has\n"
+    "been reaped, whatever the command's status, and 1 when the window,\n"
+    "font or pseudo-terminal cannot be set up. If COMMAND cannot be executed\n"
+    "the command's status is 127.\n"
+    "\n"
+    "Options:\n"
+    "      --watch TEXT  write WLTERM_GRID \"TEXT\" on standard output the\n"
+    "                    first time TEXT is visible in the terminal; may be\n"
+    "                    given up to eight times, before COMMAND\n"
+    "      --help        display this help and exit\n"
+    "      --version     output version information and exit\n";
+
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("wlterm (Kandelo wayland-demo) 0.1.0\n", stdout);
+        return 0;
+    }
+
     /* A closed shell peer must not kill us via SIGPIPE. */
     signal(SIGPIPE, SIG_IGN);
 

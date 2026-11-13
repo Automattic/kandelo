@@ -2,7 +2,13 @@ kind = "program"
 name = "cage-docs"
 version = "0.3.1"
 kernel_abi = 56
-depends_on = ["scdoc-source@1.11.3"]
+depends_on = []
+
+[[host_tools]]
+name = "scdoc"
+version_constraint = ">=1.11"
+probe = { args = ["-v"], version_regex = "scdoc (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh" }
 
 # Upstream manual page for the `cage` package.
 # The source, SHA-256 and version are the `cage` package's own, so the

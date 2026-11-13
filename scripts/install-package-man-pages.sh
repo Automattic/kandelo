@@ -30,14 +30,10 @@
 #       Print the date's Unix time (midnight UTC), the SOURCE_DATE_EPOCH a
 #       generator reads to date a page (scdoc, help2man).
 #
-#   kandelo_man_pages_build_scdoc
-#       Build scdoc for the build machine from the declared scdoc-source
-#       dependency and set KANDELO_SCDOC to it. scdoc is the page
-#       generator of the wlroots-family projects (sway, foot, labwc, ...).
-#
 #   kandelo_man_pages_scdoc <release-date> <in.scd> <out>
-#       Render one page with scdoc, dated <release-date>, the way
-#       upstream meson builds do (`scdoc < in > out`).
+#       Render one page with the dev shell's scdoc, dated <release-date>,
+#       the way upstream meson builds do (`scdoc < in > out`). scdoc is the
+#       page generator of the wlroots-family projects (sway, foot, labwc).
 #
 #   kandelo_man_pages_capture_help <spec.json> <capture-dir>
 #       For programs with no upstream manual: boot the declared kernel
@@ -50,6 +46,17 @@
 #       Format one captured command with help2man. help2man runs a replay
 #       wrapper that prints the captured bytes, so it only lays out text
 #       the program printed inside Kandelo.
+#
+#   kandelo_man_pages_own_commands <docs-pkg> <owner-pkg> <version>
+#           <name.section>=<host-file>... [<alias.section>=><name.section>]...
+#       Pages for Kandelo's own commands, which Kandelo writes --help for:
+#       capture each command installed at /usr/bin/<name> (with bash as
+#       /bin/sh, so scripts run), require its --version to read
+#       "<name> (Kandelo <owner-pkg>) <version>", take the NAME line from
+#       the summary line after its usage line, date the page with Kandelo's
+#       reference time, and install the pages as <docs-pkg>.zip, with each
+#       alias=>page as a link. The docs package depends on the owner, bash,
+#       coreutils, kernel and rootfs.
 #
 #   install_package_man_pages <docs-pkg> <tree-dir> <spec>...
 #       Stage the named pages and install them as the package's declared
@@ -173,23 +180,6 @@ kandelo_man_pages_date_epoch() {
     ' "$1"
 }
 
-kandelo_man_pages_build_scdoc() {
-    local work="${KANDELO_PACKAGE_WORK_DIR:-${WASM_POSIX_DEP_WORK_DIR:-}}"
-    if [ -z "$work" ]; then
-        echo "kandelo_man_pages_build_scdoc: requires KANDELO_PACKAGE_WORK_DIR" >&2
-        return 2
-    fi
-    local src="$work/scdoc-src"
-    kandelo_package_stage_source_dependency scdoc-source "$src" "$work" || return
-    # Upstream's Makefile links statically, which macOS cannot do; scdoc
-    # only runs here, so link it the build machine's default way.
-    make -C "$src" CC=cc LDFLAGS= scdoc > "$work/scdoc-build.log" 2>&1 || {
-        tail -40 "$work/scdoc-build.log" >&2
-        return 1
-    }
-    KANDELO_SCDOC="$src/scdoc"
-}
-
 kandelo_man_pages_scdoc() {
     local date="${1:-}" in="${2:-}" out="${3:-}" epoch
     if [ "$#" -ne 3 ] || [ -z "$date" ] || [ -z "$in" ] || [ -z "$out" ]; then
@@ -197,14 +187,10 @@ kandelo_man_pages_scdoc() {
             "kandelo_man_pages_scdoc <release-date> <in.scd> <out>" >&2
         return 2
     fi
-    if [ -z "${KANDELO_SCDOC:-}" ]; then
-        echo "kandelo_man_pages_scdoc: run kandelo_man_pages_build_scdoc first" >&2
-        return 2
-    fi
     # scdoc prints SOURCE_DATE_EPOCH as a UTC date.
     epoch="$(kandelo_man_pages_date_epoch "$date")" || return
     mkdir -p "$(dirname "$out")"
-    SOURCE_DATE_EPOCH="$epoch" "$KANDELO_SCDOC" < "$in" > "$out"
+    SOURCE_DATE_EPOCH="$epoch" scdoc < "$in" > "$out"
 }
 
 kandelo_man_pages_capture_help() {
@@ -257,6 +243,78 @@ kandelo_man_pages_help2man() {
         return 1
     fi
     rm -rf -- "$wrap"
+}
+
+kandelo_man_pages_own_commands() {
+    local pkg="${1:-}" owner="${2:-}" version="${3:-}"
+    if [ "$#" -lt 4 ] || [ -z "$pkg" ] || [ -z "$owner" ] || [ -z "$version" ]; then
+        echo "kandelo_man_pages_own_commands: usage:" \
+            "kandelo_man_pages_own_commands <docs-pkg> <owner-pkg> <version>" \
+            "<name.section>=<host-file>..." >&2
+        return 2
+    fi
+    shift 3
+    local work="${KANDELO_PACKAGE_WORK_DIR:-${WASM_POSIX_DEP_WORK_DIR:-}}"
+    local repo_root epoch spec cap pages entry page name file files="" commands="" sep=""
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    # Kandelo's own tools have no release dates; Kandelo's one fixed
+    # reference time dates their pages.
+    epoch="$(sed -nE 's/^pub const KANDELO_REFERENCE_EPOCH_SECONDS: u64 = ([0-9_]+);$/\1/p' \
+        "$repo_root/crates/shared/src/lib.rs" | tr -d _)"
+    [ -n "$epoch" ] || { echo "kandelo_man_pages_own_commands: no reference epoch" >&2; return 1; }
+    # Scripts run under /bin/sh and use coreutils (cat, ...), which the base
+    # rootfs keeps as lazy files the capture cannot fetch.
+    files="{\"from\": \"${WASM_POSIX_DEP_BASH_DIR:?bash dependency dir required}/bash.wasm\", \"to\": \"/bin/bash\"}"
+    files="$files, {\"from\": \"${WASM_POSIX_DEP_COREUTILS_DIR:?coreutils dependency dir required}/coreutils.wasm\", \"to\": \"/bin/coreutils\"}"
+    local aliases=()
+    for entry in "$@"; do
+        case "$entry" in
+            *=\>*) aliases+=("${entry%%=>*}=${entry#*=>}"); continue ;;
+        esac
+        page="${entry%%=*}"
+        file="${entry#*=}"
+        name="${page%.*}"
+        [ -f "$file" ] || { echo "kandelo_man_pages_own_commands: no $file" >&2; return 1; }
+        files="$files, {\"from\": \"$file\", \"to\": \"/usr/bin/$name\"}"
+        commands="$commands$sep{\"name\": \"$name\", \"path\": \"/usr/bin/$name\"}"
+        sep=", "
+    done
+    spec="$work/help-capture.json"
+    cap="$work/help-capture"
+    printf '{"files": [%s],\n "env": ["PATH=/usr/bin:/bin", "HOME=/tmp"],\n "commands": [%s]}\n' \
+        "$files" "$commands" > "$spec"
+    kandelo_man_pages_capture_help "$spec" "$cap" || return
+    pages="$work/pages"
+    rm -rf "$pages"
+    local specs=() expected summary
+    for entry in "$@"; do
+        case "$entry" in *=\>*) continue ;; esac
+        page="${entry%%=*}"
+        name="${page%.*}"
+        # Each tool's --version names its package and that package's version.
+        expected="$name (Kandelo $owner) $version"
+        if [ "$(head -n 1 "$cap/$name.version")" != "$expected" ]; then
+            echo "kandelo_man_pages_own_commands: $name --version is not '$expected':" \
+                "$(head -n 1 "$cap/$name.version")" >&2
+            return 1
+        fi
+        # The summary is the one-line paragraph after the usage line's; the
+        # NAME line takes it without its closing period.
+        summary="$(awk 'seen == 1 && NF { line = $0; seen = 2; next }
+            seen == 2 { if (NF) bad = 1; exit }
+            !NF { seen = 1 }
+            END { if (!bad) print line }' "$cap/$name.help")"
+        summary="${summary%.}"
+        [ -n "$summary" ] || {
+            echo "kandelo_man_pages_own_commands: $name --help has no one-line summary" \
+                "after its usage line" >&2
+            return 1
+        }
+        SOURCE_DATE_EPOCH="$epoch" kandelo_man_pages_help2man "$cap" "$name" "$pages/$page" \
+            --section="${page##*.}" --source=Kandelo --name="$summary" || return
+        specs+=("$page")
+    done
+    install_package_man_pages "$pkg" "$pages" "${specs[@]}" ${aliases[@]+"${aliases[@]}"}
 }
 
 install_package_man_pages() {

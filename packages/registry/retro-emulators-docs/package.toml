@@ -1,0 +1,25 @@
+kind = "program"
+name = "retro-emulators-docs"
+version = "0.1.0"
+kernel_abi = 56
+depends_on = ["retro-emulators@0.1.0", "bash@5.2.37", "coreutils@9.6", "kernel@0.1.0", "rootfs@0.1.0"]
+
+# Manual pages for Kandelo's retro-run launcher and its emulators (fceumm, snes9x, genesis-plus-gx), generated from what each prints for --help and
+# --version while running inside Kandelo. Kandelo writes these commands,
+# so the source is the in-repository sentinel, as for coreutils-docs.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/retro-emulators-docs/build-retro-emulators-docs.sh"
+
+[[outputs]]
+name = "retro-emulators-docs"
+wasm = "retro-emulators-docs.zip"
+fork_instrumentation = "disabled"

@@ -1,0 +1,11 @@
+script_path = "packages/registry/rust-coverage-tools-docs/build-rust-coverage-tools-docs.sh"
+inputs = [
+  "packages/registry/rust-coverage-tools-docs/build-rust-coverage-tools-docs.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/install-package-man-pages.sh",
+  "scripts/llvm-command-guide-man-pages.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

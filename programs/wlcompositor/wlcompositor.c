@@ -6564,7 +6564,67 @@ static int setup_socket(void) {
     return 0;
 }
 
-int main(void) {
+static const char help_text[] =
+    "Usage: wlcompositor\n"
+    "\n"
+    "Run the Kandelo Wayland compositor on the display.\n"
+    "\n"
+    "wlcompositor is a Wayland compositor with floating and tiling window\n"
+    "layouts. It opens /dev/dri/card0 as the DRM master, takes keyboard and\n"
+    "pointer input from /dev/input/event0 and /dev/input/event1 through\n"
+    "libinput, and composites client windows with OpenGL ES 2 when an EGL\n"
+    "renderer is available, otherwise on the CPU. Clients connect to the\n"
+    "socket " WL_SOCKET_PATH ". Its globals include xdg-shell, wlr layer shell,\n"
+    "linux-dmabuf, wl_data_device_manager, the wlr and ext data-control\n"
+    "protocols, ext-session-lock, ext-idle-notify and Hyprland global\n"
+    "shortcuts.\n"
+    "\n"
+    "Control commands and an event stream are served on " KWLCTL_SOCKET_PATH "\n"
+    "and, in the formats of Hyprland's IPC, on\n"
+    HYPR_SOCKET1_PATH " and\n"
+    HYPR_SOCKET2_PATH ". Commands started by key\n"
+    "bindings or by \"dispatch exec\" inherit\n"
+    "HYPRLAND_INSTANCE_SIGNATURE=" HYPR_INSTANCE_SIG " and, if it was unset,\n"
+    "XDG_RUNTIME_DIR=/tmp.\n"
+    "\n"
+    "Key bindings, window rules, the starting theme and a theme-change\n"
+    "notifier are read from " WLC_CONFIG_PATH ", a subset of\n"
+    "hyprland.conf: \"bind = MODS, KEY, DISPATCHER[, ARGS]\" with the\n"
+    "dispatchers exec, workspace, movetoworkspace, killactive, cyclenext,\n"
+    "cycleprev, theme, swapwindow, sendshortcut, kandelo:sendshortcutiftag and\n"
+    "global; \"windowrule = tag +NAME, class:REGEX\"; \"theme = NAME\"; and\n"
+    "\"notify = COMMAND\", which is run as \"COMMAND Theme NAME\" when the\n"
+    "theme changes. Without the file the bindings are SUPER+Return to run\n"
+    "wlterm(1), SUPER+W to close the focused window, SUPER+J and SUPER+K to\n"
+    "cycle focus, SUPER+1 to SUPER+9 to change workspace and SUPER+SHIFT+1 to\n"
+    "SUPER+SHIFT+9 to move the window there. Themes are the directories\n"
+    "under " THEME_DIR " that hold a theme.conf.\n"
+    "\n"
+    "wlcompositor writes status lines such as COMPOSITOR_UP and\n"
+    "CLIENT_CONNECTED on standard output. It exits with status 0 when the\n"
+    "last connected client disconnects, and with status 1 when setup fails.\n"
+    "\n"
+    "Environment:\n"
+    "  WLC_CONFIG     read this configuration file instead\n"
+    "  WLC_LAYOUT     dwindle selects the tiling layout; the default floats\n"
+    "  WLC_SCALE      output scale from 1 to 3; by default it is derived from\n"
+    "                 the display's physical size\n"
+    "  WLC_THEME_DIR  read themes from this directory instead\n"
+    "  WLC_NO_GPU     when set, always composite on the CPU\n"
+    "\n"
+    "Options:\n"
+    "      --help     display this help and exit\n"
+    "      --version  output version information and exit\n";
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("wlcompositor (Kandelo wayland-demo) 0.1.0\n", stdout);
+        return 0;
+    }
     g.display = wl_display_create();
     if (!g.display) { fprintf(stderr, "wl_display_create\n"); return 1; }
     wl_list_init(&g.keyboards);

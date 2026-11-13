@@ -1,6 +1,43 @@
 #!/bin/sh
 # Reused by the ordinary Quake demo and the network activity. The original
 # shareware distribution is supplied intact; extraction runs inside the guest.
+case "${1:-}" in
+    --help)
+        cat <<'EOF'
+Usage: quake-data SOURCE ARCHIVE BASEDIR
+
+Prepare Quake game data from an archive in a Quake base directory.
+
+Create BASEDIR/id1 and put the game's pak0.pak in it, prepared from ARCHIVE
+as SOURCE says:
+
+  shareware   ARCHIVE is id's shareware quake106.zip. Extract it in
+              BASEDIR, then extract its resource.1 with lha(1), and copy
+              the first pak0.pak found (in any letter case) to
+              BASEDIR/id1/pak0.pak. The extracted files stay in BASEDIR.
+  librequake  ARCHIVE is a LibreQuake lite release. Extract all of it,
+              documentation and notices included, in BASEDIR, and move its
+              lite/id1 directory to BASEDIR/id1, which must not yet hold
+              any files.
+  openquartz  ARCHIVE is an OpenQuartz PAK archive. Extract it in
+              BASEDIR/id1.
+  file        ARCHIVE is a pak0.pak. Copy it to BASEDIR/id1/pak0.pak.
+
+Give ARCHIVE and BASEDIR as absolute paths: the shareware step works from
+within BASEDIR, and announces itself on standard error. quake(1) runs this
+command to prepare its shareware data on first launch, and
+quake-activity(1) to prepare a networked game's data.
+
+The exit status is 0 when BASEDIR/id1/pak0.pak exists and is not empty
+afterwards, 2 for an unknown SOURCE, and nonzero for any other failure.
+
+      --help     display this help and exit
+      --version  output version information and exit
+EOF
+        exit 0
+        ;;
+    --version) echo 'quake-data (Kandelo tyrquake) 0.71.0'; exit 0 ;;
+esac
 set -eu
 source_id="$1"
 archive="$2"

@@ -145,6 +145,45 @@ static void usage(const char *argv0) {
     fprintf(stderr, "usage: %s [-p] [-f username] [-c username] [username]\n", argv0);
 }
 
+static const char help_text[] =
+    "Usage: login [-p] [USERNAME]\n"
+    "  or:  login [-p] -f USERNAME\n"
+    "  or:  login -c USERNAME\n"
+    "\n"
+    "Authenticate a user and start that user's login shell.\n"
+    "\n"
+    "Without USERNAME, login prompts \"login: \" for one on standard input. It\n"
+    "then prompts \"Password: \", with terminal echo turned off when standard\n"
+    "input is a terminal, and checks the password with crypt(3) against the\n"
+    "account's hash in /etc/shadow, or in /etc/passwd when the account has no\n"
+    "shadow entry. An empty or locked hash (one starting with ! or *) never\n"
+    "matches. After a failed attempt login waits one second, prints \"Login\n"
+    "incorrect\" and exits with status 1.\n"
+    "\n"
+    "On success login sets the account's supplementary groups, group ID and\n"
+    "user ID, then replaces the environment with HOME, SHELL, USER, LOGNAME,\n"
+    "PATH=/usr/local/bin:/usr/bin:/bin and the caller's TERM. It changes to\n"
+    "the home directory, prints /etc/motd, and executes the account's shell\n"
+    "(/bin/sh when none is set) as a login shell, with \"-\" before its name\n"
+    "in argv[0].\n"
+    "\n"
+    "login is installed set-user-ID root. -f and -p are honored only when the\n"
+    "real user ID of the caller is 0.\n"
+    "\n"
+    "Exit status is 2 for invalid arguments and 1 when authentication, the\n"
+    "credential change or the shell's execution fails.\n"
+    "\n"
+    "Options:\n"
+    "  -c USERNAME    read one password line from standard input, without a\n"
+    "                 prompt, and exit with status 0 if it is USERNAME's\n"
+    "                 password or 1 if it is not; no session is started\n"
+    "  -f USERNAME    start USERNAME's session without asking for a password,\n"
+    "                 and also print /etc/motd.autologin after /etc/motd\n"
+    "  -p             keep the caller's environment, setting only HOME, SHELL,\n"
+    "                 USER and LOGNAME, and PATH if it is unset\n"
+    "      --help     display this help and exit\n"
+    "      --version  output version information and exit\n";
+
 int main(int argc, char **argv) {
     char username[128];
     char password[512] = {0};
@@ -154,6 +193,15 @@ int main(int argc, char **argv) {
     int preserve_environment = 0;
     int check_only = 0;
     int opt;
+
+    if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+        fputs(help_text, stdout);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        fputs("login (Kandelo login) 0.1.0\n", stdout);
+        return 0;
+    }
 
     /* -c is the check hyprlock puts to PAM. */
     while ((opt = getopt(argc, argv, "c:f:p")) != -1) {

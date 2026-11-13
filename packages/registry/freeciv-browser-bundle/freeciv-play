@@ -1,5 +1,42 @@
 #!/bin/sh
 # Product launcher: ordinary Freeciv processes and TCP connections.
+case "${1:-}" in
+    --help)
+        cat <<'EOF'
+Usage: freeciv-play [local [FREECIV-OPTION]...]
+  or:  freeciv-play host [--name NAME] [FREECIV-OPTION]...
+  or:  freeciv-play join [--name NAME] [FREECIV-OPTION]...
+
+Play Freeciv on this machine, or host or join a game on the network.
+
+freeciv-play creates $HOME/.freeciv/saves and runs Freeciv in
+$HOME/.freeciv. The first argument chooses the mode:
+
+  local  run the Freeciv client, freeciv(6), with the remaining arguments;
+         start or load a game from its menus. This is the default.
+  host   start freeciv-server(6) listening on port 5556 of every address,
+         with the settings in /usr/share/freeciv-kandelo/host.serv (the
+         first player to connect controls game setup) and its saved games
+         in $HOME/.freeciv/saves, and connect the client to it.
+  join   connect the client to port 5556 of the machine named host: in a
+         network session, the hosting machine.
+
+In host and join modes the client connects automatically (Freeciv retries
+the connection while a server starts) as the player NAME given by --name,
+which must follow the mode, or else $FREECIV_PLAYER, or else Player- and 8
+random hex digits. The remaining arguments are passed to the client. When
+the client exits, a server started by host mode is stopped too, and
+freeciv-play exits with the client's status; SIGINT, SIGTERM or SIGHUP
+stops both and exits with status 130. An unknown mode is an error, with
+exit status 2.
+
+      --help     display this help and exit
+      --version  output version information and exit
+EOF
+        exit 0
+        ;;
+    --version) echo 'freeciv-play (Kandelo freeciv-browser-bundle) 3.2.6'; exit 0 ;;
+esac
 set -eu
 mode="${1:-local}"
 [ "$#" -eq 0 ] || shift

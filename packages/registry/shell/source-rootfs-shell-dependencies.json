@@ -417,6 +417,136 @@
       "role": "lazy-archive"
     },
     {
+      "name": "sysklogd-docs",
+      "version": "2.8.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "fbdoom-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "tyrquake-docs",
+      "version": "0.71.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "retro-emulators-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "dosbox-pure-docs",
+      "version": "1.0-preview8",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "game-import-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "freeciv-play-docs",
+      "version": "3.2.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "kandelo-desktop-docs",
+      "version": "1.0_beta17",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "login-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "sudo-lite-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "modeset-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "wayland-demo-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "sdl2-demo-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "kandelo-exchange-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "qtgallery-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "wasm-fork-instrument-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "rust-tools-docs",
+      "version": "1.97.0-nightly-2026-04-27",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "harper-docs",
+      "version": "3.0.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "binaryen-docs",
+      "version": "126",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "quickshell-docs",
+      "version": "0.3.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "swaybar-docs",
+      "version": "1.12",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "kandelo-cc-docs",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "rust-coverage-tools-docs",
+      "version": "22.1.2",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "clang-docs",
+      "version": "21.1.7",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "wasm-tools-docs",
+      "version": "1.263.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "espeak-ng-docs",
+      "version": "1.52.0",
+      "role": "lazy-archive"
+    },
+    {
       "name": "man-index",
       "version": "1.14.6",
       "role": "lazy-file"
