@@ -1,0 +1,12 @@
+script_path = "packages/registry/jetbrains-mono-nerd-font/build-jetbrains-mono-nerd-font.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
+
+inputs = [
+  "packages/registry/jetbrains-mono-nerd-font/build-jetbrains-mono-nerd-font.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/wasm-artifact-guards.sh",
+]

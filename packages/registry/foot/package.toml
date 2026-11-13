@@ -4,10 +4,14 @@
 kind = "program"
 
 name = "foot"
-version = "1.17.2"
+version = "1.28.0"
 kernel_abi = 17
 depends_on = [
-  "fcft@3.1.9",
+  "fcft@3.3.3",
+  "harfbuzz@10.1.0",
+  "glib@2.84.4",
+  "pcre2@10.44",
+  "libcxx@21.1.7",
   "fontconfig@2.15.0",
   "freetype@2.13.3",
   "pixman@0.46.4",
@@ -23,7 +27,7 @@ depends_on = [
 ]
 
 [[host_tools]]
-# Generates the client glue for the eleven protocol XMLs foot compiles
+# Generates the client glue for the seventeen protocol XMLs foot compiles
 # against (runtime degrades per-global when the compositor lacks one).
 name = "wayland-scanner"
 version_constraint = ">=1.24"
@@ -31,13 +35,13 @@ probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:
 install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); or apt install wayland-utils" }
 
 [source]
-url = "https://codeberg.org/dnkl/foot/releases/download/1.17.2/foot-1.17.2.tar.gz"
-sha256 = "de901e5fba00aded452df989a968906309f14221ed606c78c1caff3026c7f541"
+url = "https://codeberg.org/dnkl/foot/releases/download/1.28.0/foot-1.28.0.tar.gz"
+sha256 = "ee73c292a4b457004b38c2df178eac025ab0b849fdd9e13253c1f8b5cf110710"
 provider = "archive"
 
 [license]
 spdx = "MIT"
-url = "https://codeberg.org/dnkl/foot/src/tag/1.17.2/LICENSE"
+url = "https://codeberg.org/dnkl/foot/src/tag/1.28.0/LICENSE"
 
 [build]
 script_path = "packages/registry/foot/build-foot.sh"

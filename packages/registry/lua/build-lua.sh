@@ -28,7 +28,7 @@ mapfile -t LUA_SOURCES < <(
 OBJS=()
 for src in "${LUA_SOURCES[@]}"; do
     obj="$BUILD_DIR/${src%.c}.o"
-    wasm32posix-cc -O2 -DLUA_COMPAT_ALL -I"$SRC_DIR/src" -c "$SRC_DIR/src/$src" -o "$obj"
+    wasm32posix-cc -O2 -DLUA_COMPAT_ALL -DLUA_USE_POSIX -I"$SRC_DIR/src" -c "$SRC_DIR/src/$src" -o "$obj"
     OBJS+=("$obj")
 done
 

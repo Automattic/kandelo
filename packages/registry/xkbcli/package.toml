@@ -1,0 +1,55 @@
+kind = "program"
+
+# xkbcli, libxkbcommon's command-line front end, and its compile-keymap
+# subcommand, which prints the keymap libxkbcommon compiles from RMLVO
+# names. Omarchy's keybindings menu reads that keymap.
+#
+# Built through upstream's meson build from the same source pin as the
+# libxkbcommon package, with the tools enabled: each tool links its own
+# copy of the library, so the libxkbcommon package stays unchanged.
+# xkbcli runs `xkbcli <command>` by exec of
+# /usr/libexec/xkbcommon/xkbcli-<command>; only compile-keymap is
+# installed, so the other subcommands fail to execute.
+name = "xkbcli"
+version = "1.13.2"
+kernel_abi = 55
+depends_on = []
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.4.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+# meson runs bison to generate src/xkbcomp/parser.c from parser.y.
+name = "bison"
+version_constraint = ">=3.6"
+probe = { args = ["--version"], version_regex = "bison \\(GNU Bison\\) (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.bison); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.bison); or apt install bison" }
+
+[source]
+url = "https://github.com/xkbcommon/libxkbcommon/archive/refs/tags/xkbcommon-1.13.2.tar.gz"
+sha256 = "acc4d5f7c3cbba5f9f8d08d8bdbeede84ecede46792f47929aa9321873385528"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/xkbcommon/libxkbcommon/blob/xkbcommon-1.13.2/LICENSE"
+
+[build]
+script_path = "packages/registry/xkbcli/build-xkbcli.sh"
+
+[[outputs]]
+name = "xkbcli"
+wasm = "xkbcli.wasm"
+fork_instrumentation = "disabled"
+
+[[outputs]]
+name = "xkbcli-compile-keymap"
+wasm = "xkbcli-compile-keymap.wasm"
+fork_instrumentation = "disabled"
