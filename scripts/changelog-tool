@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Install exact, locked Rust CLI releases into this checkout, not the user's bin.
+set -euo pipefail
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+tool="${1:?usage: scripts/changelog-tool <changelog-builder|git-cliff> [args...]}"
+shift
+case "$tool" in
+  changelog-builder) version=0.10.1 ;;
+  git-cliff) version=2.14.0 ;;
+  *) echo "unknown changelog tool: $tool" >&2; exit 2 ;;
+esac
+install_root="$repo_root/.context/changelog-tools/$tool-$version"
+if [[ ! -x "$install_root/bin/$tool" ]]; then
+  cargo install --locked --version "=$version" --root "$install_root" "$tool" >&2
+fi
+exec "$install_root/bin/$tool" "$@"
