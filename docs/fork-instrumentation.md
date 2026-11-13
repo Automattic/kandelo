@@ -1470,7 +1470,8 @@ wasm64 before alignment.
 Scalars are grouped by type, widest first (`v128`, `i64`, `f64`, `i32`,
 `f32`), which also aligns each one naturally after the 16-byte header. In
 scratch-spill mode only the user locals are grouped, because the spill region
-must stay contiguous for its single `memory.copy`. The payload is private to
+must stay contiguous for its single `memory.copy`; the saved scratch base is
+grouped with them. The payload is private to
 the module that wrote it: only the function's own generated code and its
 resume thunk read the scalars, and the host reads only the header. Frames with
 the same scalar types therefore share one generated
@@ -1576,21 +1577,43 @@ of declaring locals:
 - The scratch layout mirrors the frame-node payload's spill region
   byte-for-byte (`scratch_off = node_off - spill_region_start`, offsets
   from `assign_local_offsets`). The postamble publishes the region into
-  the reserved node with one `memory.copy` before commit, and the
-  rewind/abort preamble refills the freshly reserved scratch from the
-  selected node with one `memory.copy` after `frame_next`. Node payload
-  bytes are identical to the local-based shape, so the save-buffer format,
-  exports, imports, and host contract are unchanged — no ABI bump.
+  the reserved node with one `memory.copy` before commit. `base` itself is
+  a saved scalar, grouped with the user locals ahead of the spill region.
+  The rewind/abort preamble restores it instead of reserving, then refills
+  the original region from the selected node with one `memory.copy`.
+  Node payloads are one pointer larger than the local-based shape; the
+  payload stays private to the module (the host reads only the header and
+  the node size), so the save-buffer format, exports, imports and host
+  contract are unchanged.
 - Below-threshold functions keep the historical local-based shape;
   reference-typed spills always remain locals (recipe-vector path); the
   per-seq body-input-param locals are unaffected (re-set on every entry).
 
 `__stack_pointer` is a mutable scalar global, so the existing
 `wpk_fork_unwind_begin`/`wpk_fork_rewind_begin` global snapshot already
-captures and restores it; replayed prologues re-reserve fresh scratch
-below the restored fork-time SP exactly as LLVM's own SP-bumping frames
-do during replay, and reloads are base-relative into the refilled fresh
-region. A module without a locatable mutable `__stack_pointer` global of
+captures and restores it at its fork-time value. Replay must leave it
+there: LLVM's own frames do not re-run their prologues during replay, they
+get their frame pointer back from the restored locals, and scratch
+behaves the same way. Replay therefore neither reserves scratch nor
+reseeds the stack pointer (reseeding runs only while the state is below
+`REWINDING`); when the function later returns, it releases to
+`base + scratch_size`, the stack pointer its caller had. A borrowed vfork
+child therefore replays into the parked parent's own scratch regions, as
+its ordinary loads and stores already address the parent's stack; the
+parent's later replay refills every region from its unchanged node.
+
+An earlier version re-reserved a fresh region below the restored fork-time
+stack pointer on every replayed entry, in the parent as well as in the
+child. The replayed spills then sat in stack that the resumed code
+reuses, and the function returned with the stack pointer lowered by the
+stack in use at the fork, so a loop that forked below such a function lost
+shadow stack on every iteration. bash optimized with `wasm-opt -O2` before
+instrumentation has `execute_command_internal` in scratch mode and crashed
+in musl's allocator after several hundred `( : )` subshells.
+`tests/scratch_spill_node.rs` checks the stack pointer at the replayed fork
+call and after the replayed caller returns.
+
+A module without a locatable mutable `__stack_pointer` global of
 the module pointer width falls back to the local-based shape.
 
 Measured on the CPython stdlib import chain (2026-09-22,

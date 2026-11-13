@@ -35,7 +35,14 @@ const INPUT_BASE: usize = 0x1000;
 /// Where the fixture publishes its final result (clear of the inputs).
 const RESULT_ADDR: usize = 512;
 
-fn scratch_fixture() -> String {
+/// Bytes the callee's LLVM-style frame takes from the shadow stack. The
+/// callee is still active at the fork, so the fork-time stack pointer lies
+/// below the caller's scratch base, as it does in compiled C.
+const CALLEE_FRAME: usize = 64;
+
+/// `caught` places the scratch-heavy call after a modern catch landing, so
+/// replay enters it through the catch capture tail instead of directly.
+fn scratch_fixture(caught: bool) -> String {
     let mut params = String::new();
     let mut gets = String::new();
     let mut adds = String::new();
@@ -58,16 +65,24 @@ fn scratch_fixture() -> String {
 (module
   (import "kernel" "kernel_fork" (func $fork (result i32)))
   (memory (export "memory") 8)
-  (global (export "__stack_pointer") (mut i32) (i32.const 32768))
+  (global $sp (export "__stack_pointer") (mut i32) (i32.const 32768))
+  (tag $caught (param i32))
 
-  ;; Below-threshold fork-path callee: stays in the local-based shape.
-  (func $work{params} (result i64)
+  ;; Below-threshold fork-path callee: stays in the local-based shape. Its
+  ;; prologue and epilogue move the stack pointer like compiled C.
+  (func $work{params} (result i64) (local $fp i32) (local $sum i64)
+    (global.set $sp
+      (local.tee $fp (i32.sub (global.get $sp) (i32.const {callee_frame}))))
 {gets}{adds}
     call $fork
     i64.extend_i32_s
-    i64.add)
+    i64.add
+    local.set $sum
+    (global.set $sp (i32.add (local.get $fp) (i32.const {callee_frame})))
+    local.get $sum)
 
   (func (export "run") (result i64)
+{landing}
     ;; i64 carryover pushed before the call and consumed after it.
     (i64.load (i32.const {carry_addr}))
 {args}    call $work
@@ -78,6 +93,15 @@ fn scratch_fixture() -> String {
 "#,
         carry_addr = INPUT_BASE + 8 * N_ARGS,
         result_addr = RESULT_ADDR,
+        callee_frame = CALLEE_FRAME,
+        landing = if caught {
+            "    (block $landing (result i32)\n      \
+             (try_table (catch $caught $landing)\n        \
+             (throw $caught (i32.const 5)))\n      \
+             unreachable)\n    drop"
+        } else {
+            ""
+        },
     )
     .replace(
         "(func (export \"run\") (result i64)",
@@ -135,7 +159,18 @@ fn declared_locals_of_run(bytes: &[u8]) -> u32 {
 
 #[test]
 fn scratch_spill_caller_roundtrips_capture_and_replay() {
-    let input = wat::parse_str(scratch_fixture()).expect("parse scratch fixture");
+    roundtrip(false);
+}
+
+/// Replay rethrows the caught exception through the catch capture tail,
+/// whose scratch reseed must not move the restored fork-time stack pointer.
+#[test]
+fn scratch_spill_caller_after_catch_landing_roundtrips_capture_and_replay() {
+    roundtrip(true);
+}
+
+fn roundtrip(caught: bool) {
+    let input = wat::parse_str(scratch_fixture(caught)).expect("parse scratch fixture");
     let output = instrument(&input, &Options::default()).expect("instrument scratch fixture");
 
     // The lever itself: without scratch storage the caller redeclares one
@@ -154,7 +189,7 @@ fn scratch_spill_caller_roundtrips_capture_and_replay() {
         .expect("clock")
         .as_nanos();
     let directory = std::env::temp_dir().join(format!(
-        "kandelo-fork-scratch-spill-{}-{nonce}",
+        "kandelo-fork-scratch-spill-{}-{caught}-{nonce}",
         std::process::id(),
     ));
     fs::create_dir(&directory).expect("create scratch fixture directory");
@@ -168,6 +203,7 @@ import {{ readFileSync }} from "node:fs";
 const N_ARGS = {N_ARGS};
 const INPUT_BASE = {INPUT_BASE};
 const RESULT_ADDR = {RESULT_ADDR};
+const CAUGHT = {caught};
 const ROOT = 0x10000;
 const SP_INIT = 32768n;
 
@@ -271,6 +307,7 @@ function spValue(instance) {{
 const frames = [];
 let nextPayload = 0x30000;
 let parent;
+let forkSp;
 const parentRole = {{
   call(descriptor, args) {{
     if (descriptor.name === "__wpk_fork_frame_reserve") {{
@@ -284,6 +321,7 @@ const parentRole = {{
       throw new Error("parent capture must not enter replay");
     }}
     if (descriptor.module === "kernel" && descriptor.name === "kernel_fork") {{
+      forkSp = spValue(parent);
       parent.exports.wpk_fork_unwind_begin(ROOT);
       return 0;
     }}
@@ -306,11 +344,11 @@ if (frames.length !== 2) {{
 // frames[0] is the callee (leaf commits first); frames[1] is the caller.
 const callerFrame = frames[1];
 const view = new DataView(parent.exports.memory.buffer);
-// Caller payload: 16-byte header, one 8-byte user scalar ($total), then
-// the arg spills in call order, then the carryover — the same offsets
-// assign_local_offsets gives the local-based shape.
-for (let i = 0; i <= N_ARGS; i++) {{
-  const got = view.getBigUint64(callerFrame.payload + 24 + 8 * i, true);
+// Caller payload: 16-byte header, one 8-byte user scalar ($total), the
+// 4-byte scratch base, then the arg spills in call order, then the
+// carryover.
+for (let i = 0; !CAUGHT && i <= N_ARGS; i++) {{
+  const got = view.getBigUint64(callerFrame.payload + 28 + 8 * i, true);
   const want = view.getBigUint64(INPUT_BASE + 8 * i, true);
   if (got !== want) {{
     throw new Error(
@@ -344,6 +382,11 @@ const childRole = {{
       if (child.exports.wpk_fork_state() !== 2) {{
         throw new Error("child did not reach fork while replaying");
       }}
+      // Replay reuses the caller's saved reservation instead of carving a
+      // new one below the restored fork-time stack pointer.
+      if (spValue(child) !== forkSp) {{
+        throw new Error(`replay moved the fork-time SP: ${{spValue(child)}}, expected ${{forkSp}}`);
+      }}
       child.exports.wpk_fork_rewind_end();
       return 7;
     }}
@@ -366,6 +409,10 @@ const stored = new DataView(child.exports.memory.buffer)
   .getBigUint64(RESULT_ADDR, true);
 if (stored !== BigInt.asUintN(64, expectedReplay)) {{
   throw new Error(`replay stored ${{stored}} at RESULT_ADDR, expected ${{expectedReplay}}`);
+}}
+// The caller returns its saved reservation, not one carved during replay.
+if (spValue(child) !== SP_INIT) {{
+  throw new Error(`shadow stack drifted after replay: SP=${{spValue(child)}}, expected ${{SP_INIT}}`);
 }}
 console.log("scratch spill roundtrip ok");
 "#,

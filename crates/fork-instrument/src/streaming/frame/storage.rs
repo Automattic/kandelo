@@ -123,10 +123,24 @@ impl FrameLayout {
         }
         bounded(body, limit)
     }
-    pub fn emit_scratch_reseed(&self, body: &mut Function, limit: usize) -> Result<()> {
+    /// Reclaim scratch leaked by exception propagation: the activation is the
+    /// innermost live one, so its reservation is the stack top. Replay
+    /// (`state >= REWINDING`) skips this: inner activations still own the
+    /// stack below the restored base until the fork returns.
+    pub fn emit_scratch_reseed(
+        &self,
+        state_global: u32,
+        body: &mut Function,
+        limit: usize,
+    ) -> Result<()> {
         if let Some(scratch) = &self.scratch {
+            body.instruction(&Instruction::GlobalGet(state_global));
+            body.instruction(&Instruction::I32Const(crate::runtime::STATE_REWINDING));
+            body.instruction(&Instruction::I32LtU);
+            body.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
             body.instruction(&Instruction::LocalGet(self.local_index(scratch.base)?));
             body.instruction(&Instruction::GlobalSet(scratch.stack_pointer));
+            body.instruction(&Instruction::End);
         }
         bounded(body, limit)
     }

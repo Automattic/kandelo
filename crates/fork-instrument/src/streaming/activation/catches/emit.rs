@@ -141,7 +141,7 @@ impl NativeCatchPlan {
         region: RegionId,
         handler_depths: &[u32],
         layout: &FrameLayout,
-        unwind_tag: u32,
+        runtime: NativeRuntimeIndices,
         output: &mut Function,
         limit: usize,
     ) -> Result<()> {
@@ -153,7 +153,7 @@ impl NativeCatchPlan {
         output.instruction(&Instruction::Br(u32::try_from(region.arms.len() + 1)?));
         for (closed, (arm, &depth)) in region.arms.iter().zip(handler_depths).rev().enumerate() {
             output.instruction(&Instruction::End);
-            layout.emit_scratch_reseed(output, limit)?;
+            layout.emit_scratch_reseed(runtime.state_global, output, limit)?;
             self.emit_capture_tail(arm, layout, output, limit)?;
             let depth = depth
                 .checked_sub(u32::try_from(closed + 1)?)
@@ -162,7 +162,7 @@ impl NativeCatchPlan {
             check(output, limit)?;
         }
         output.instruction(&Instruction::End); // private shield landing
-        output.instruction(&Instruction::Throw(unwind_tag));
+        output.instruction(&Instruction::Throw(runtime.unwind_tag));
         output.instruction(&Instruction::End); // normal result exit
         check(output, limit)
     }

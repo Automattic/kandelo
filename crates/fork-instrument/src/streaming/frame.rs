@@ -344,7 +344,7 @@ impl FrameBuilder {
             .filter(|v| v.role != Role::Temporary && !matches!(v.ty, ValType::Ref(_)))
             .map(|v| (v.key, v.ty))
             .collect();
-        let user_count = scalars
+        let mut user_count = scalars
             .iter()
             .take_while(|(k, _)| self.local(*k).unwrap().role == Role::User)
             .count();
@@ -355,6 +355,19 @@ impl FrameBuilder {
         let scratch = spill_bytes >= SCRATCH_SPILL_THRESHOLD
             && self.environment.memory.is_some()
             && self.environment.stack_pointer.is_some();
+        // WHY the scratch base is saved: replay must give the activation back
+        // the region it reserved before the fork. A base re-reserved below the
+        // restored fork-time stack pointer lies in stack the resumed callees
+        // reuse, and releasing it lowers the caller's stack pointer on every
+        // fork. It stays a wasm local, outside the contiguous spill region.
+        let base = if scratch {
+            let base = self.saved(self.environment.pointer)?;
+            scalars.insert(user_count, (base, self.environment.pointer));
+            user_count += 1;
+            Some(base)
+        } else {
+            None
+        };
         let sorted = if scratch {
             &mut scalars[..user_count]
         } else {
@@ -369,9 +382,8 @@ impl FrameBuilder {
                 .checked_add(scalar_size(ty))
                 .context("activation frame size overflow")?;
         }
-        let scratch = if scratch {
+        let scratch = if let Some(base) = base {
             let node_spill_start = fields[user_count].offset;
-            let base = self.temporary(self.environment.pointer)?;
             let size = spill_bytes
                 .checked_add(15)
                 .context("scratch alignment overflow")?
