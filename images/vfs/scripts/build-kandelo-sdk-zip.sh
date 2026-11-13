@@ -177,6 +177,27 @@ done
 for name in cc c89 c99 c++; do
     ln -s kandelo-cc "$STAGING/bin/$name"
 done
+# ld is WebAssembly's linker, wasm-ld. Native configure scripts look for an
+# ld on PATH (libtool's LT_PATH_LD, gnulib's lib-ld.m4 behind gettext and
+# AC_LIB_LINKFLAGS) and stop without one. They use it only for relocatable
+# links (`ld -r`) and to classify the linker. Programs still link through
+# cc, which adds the glue, ABI stamp and instrumentation a raw `ld` link
+# lacks (docs/sdk-guide.md, "GNU build tools"). The script itself says why
+# it is a script and not a symlink.
+cat > "$STAGING/bin/ld" <<'LD'
+#!/bin/sh
+# ld for configure scripts: WebAssembly's linker is wasm-ld. Link programs
+# with cc, which adds the Kandelo glue a direct ld link lacks.
+#
+# This is a script, not a symlink, because lld chooses which linker to be
+# from the name it runs as: "wasm-ld" selects the WebAssembly linker, while
+# "ld" selects the ELF one. Kandelo's lld is built with only the WebAssembly
+# linker (packages/registry/clang/patches/0003-wasm-only-lld-driver.patch),
+# so run as "ld" it has no linker to run and exits 1 without a message.
+# exec keeps the name wasm-ld.
+exec /usr/lib/llvm/bin/wasm-ld "$@"
+LD
+chmod 755 "$STAGING/bin/ld"
 
 # --- lib/kandelo/wasm32posix/config.site — autoconf cross-compilation cache ---
 cp "$REPO_ROOT/sdk/config.site" "$STAGING/lib/kandelo/wasm32posix/config.site"
