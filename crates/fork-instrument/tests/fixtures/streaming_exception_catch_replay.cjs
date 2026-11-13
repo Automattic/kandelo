@@ -189,9 +189,11 @@ for (const input of inputs) {
   assert.equal(fresh.forks(), 1);
   assert.equal(fresh.consumed(), 1);
   assert.equal(fresh.exports.wpk_fork_state(), 0);
-  // Replayed prologues reserve below the restored fork-time SP, as the
-  // existing snapshot ABI specifies. Release this replay activation's range.
-  assertReleased(fresh, input, replayStackPointer, 65536 - captured.forkStackPointer());
+  // Replay restores the saved scratch base without reserving or reseeding:
+  // the replayed fork sees the captured stack pointer, and the replayed
+  // activation releases to the stack pointer its caller had.
+  assert.equal(fresh.forkStackPointer(), captured.forkStackPointer());
+  assertReleased(fresh, input, 65536, 65536 - captured.forkStackPointer());
   fresh.host.assertIdle();
 
   const vectorsBeforeAbort = vectors.size;

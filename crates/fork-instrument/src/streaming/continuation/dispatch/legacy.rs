@@ -71,9 +71,11 @@ where
             }
             LegacyTask::Capture(id) => {
                 self.legacy_close(Label::LegacyCapture(id))?;
-                self.plan
-                    .frame
-                    .emit_scratch_reseed(self.output, self.limits.output_bytes)?;
+                self.plan.frame.emit_scratch_reseed(
+                    self.environment.state_global,
+                    self.output,
+                    self.limits.output_bytes,
+                )?;
                 self.plan.frame.emit_set(
                     legacy.handlers[id.0].exception.unwrap(),
                     self.output,
