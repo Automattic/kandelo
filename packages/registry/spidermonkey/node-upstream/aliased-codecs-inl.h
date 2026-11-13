@@ -18,6 +18,7 @@ Local<Name> Name::New(Local<ArrayBuffer> buffer,size_t offset,size_t length) { \
   auto& frame=*Frame::current;if(JS_IsExceptionPending(frame.cx))return {}; \
   JS::RootedObject backing(frame.cx,&buffer->cell().value.toObject()); \
   JS::RootedObject object(frame.cx,JS_New##Name##WithBuffer(frame.cx,backing,offset,length));if(!object)return {}; \
+  if(!RecordApiViewConstruction(frame,object))return {}; \
   JS::RootedValue value(frame.cx,JS::ObjectValue(*object));return frame.Own<Name>(value); \
 }
 KANDELO_NATIVE_TYPED_ARRAYS(KANDELO_DEFINE_TYPED_ARRAY)

@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 69 source connects the original process initializer,
+The current revision 70 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 23 symbols and has no normal runnable artifact.
+still fails final linking on 22 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -2839,3 +2839,18 @@ The identified private artifact passes 72 drivers on each of Node, Chromium, Fir
 Initial failures are retained. The first link lacked the engine inline definition header in the embedding. Initial native-template identity tests then exposed reading CallArgs.callee after setting rval, which aliases the callee slot; the bridge now uses its actual callee rooted at function entry. All other new controls and prior Node regressions passed that initial run; final identified-artifact results are separate. No upstream Node JavaScript or C++ algorithm is changed or excerpted. All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
 
 See the [construction-identity contracts](../tests/nodejs/upstream/construction-identity-contracts.json) and [build/runtime receipt](../tests/nodejs/upstream/construction-identity-engine-check.json).
+
+
+## Native constructor naming and utility values (revision 70)
+
+Object.GetConstructorName now uses real SpiderMonkey construction provenance and pure native data lookup. The engine records actual direct constructor functions and distinguishes prototype-based births for different newTarget and native typed-array API allocation. Native-call scopes preserve receiver ownership through nested calls and script reentry; actual native and array allocation paths consume the pending class record. Dynamic functions and selected alternate native receiver paths are recorded where the receiver actually exists. The independent ephemeron table retains the existing GC, retirement and memory-reporting hooks.
+
+Name selection uses actual retained or protected intrinsic constructor ownership, the real prototype-role flag, data function names and internal explicit/inferred debug atoms. Fallback traverses data-only tags and prototype constructor slots, checks compartment access and stops at user proxies. It does not invoke getters or proxy traps. The native typed-array API marks prototype-based births, allowing the complete original Buffer native implementation to install its actual Buffer prototype; no Buffer naming special case is added.
+
+Value.TypeOf uses the engine operation. JSON.Stringify uses actual JS::ToJSON and a native string builder, preserves getter exceptions/cycle errors and ignores replacement of the public JSON function. Value.ToDetailString implements primitives and symbol descriptions; object formatting explicitly fails ERR_KANDELO_NOT_IMPLEMENTED without user conversions. General no-side-effects object detail formatting remains unfinished.
+
+The identified private artifact passes 79 drivers on each of Node, Chromium, Firefox and WebKit, 316 guest runs total. Seven new drivers cover the 40-case/80-observation naming reference, 57 built-in/newTarget/subclass observations, Buffer factories, actual primitive utility consumers, hot allocation sites, reentrant construction, foreign prototypes and native templates. All 72 previous driver sources are byte-identical. Complete original util.cc and node_errors.cc compile, and the original DetermineSpecificErrorType consumer is exercised. The full node_util.cc native binding wrapper has not been imported/activated; these controls do not prove the complete internal util binding or public module compatibility.
+
+The normal targeted build has zero C++ compile errors and 22 unresolved native symbols, removing only Object.GetConstructorName from the previous 23. It has no normal runnable artifact. Initial compile/link/style failures and runtime Array mismatches are retained separately; Array allocation bypassed the generic native-object hook and now records its actual receiver path. The final identified artifact is independently rerun. Broader construction classes/API paths, other JIT configurations, workers/fork, security, fault-injected OOM, full exceptional shutdown and compaction-specific proof remain incomplete. All 581 imported identities and 443 JavaScript files/10,993,403 bytes are unchanged. Genuine startup, CJS/ESM, the complete backend catalog and ordered roadmap remain unfinished; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [constructor-name engine contracts](../tests/nodejs/upstream/constructor-name-engine-contracts.json) and [identified-artifact receipt](../tests/nodejs/upstream/constructor-name-engine-check.json).

@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "scope": "Object.GetConstructorName prerequisite: authenticated native contract and construction-path audit only; engine interface remains unimplemented",
+  "scope": "Object.GetConstructorName real engine implementation with focused four-host evidence; complete util binding/native construction coverage remains incomplete",
   "interface": "kandelo_node_codec_api::Object::GetConstructorName() -> Local<String>",
   "completeBindingContract": false,
-  "runtimeValidated": false,
+  "runtimeValidated": true,
   "nativeReferenceValidated": true,
   "nativeConsumers": [
     {
@@ -255,10 +255,10 @@
     "treat reference-only native tests as Kandelo runtime compatibility"
   ],
   "remaining": [
-    "Implement complete owning-engine construction identity and data-only lookup; preserve source algorithms in whole original Node units.",
-    "Reconcile native built-ins/subclasses, Reflect.construct/newTarget, returned objects, bound/proxy constructors, native template class names, optimized/prototype-role transitions.",
-    "Validate roots/ephemeron lifetime/collection/compaction/constructor replacement, cross-realm security, workers and shutdown/OOM/reentrant construction.",
-    "Run original consumers and equivalent identified-artifact controls on all four Kandelo hosts; native-reference result is only an oracle."
+    "Full native util binding unit and export, complete public/internal consumer compatibility",
+    "No-side-effects object detail formatting",
+    "Other JIT configurations/inline allocation paths, unusual native/API construction classes, workers/fork/security/OOM injection/full exceptional shutdown and compaction-specific proof",
+    "All22 normal startup dependencies, genuine startup/CJS/ESM/four-host acceptance, complete catalog/ordered roadmap and user review gate"
   ],
   "upstreamJavaScriptChanged": false,
   "sourcePinChanged": false,
@@ -268,10 +268,10 @@
   "constructionIdentityPrerequisite": {
     "evidence": "construction-identity-engine-check.json",
     "catalog": "construction-identity-contracts.json",
-    "status": "Actual base-scripted and native-template allocation identity validated; full GetConstructorName lookup and built-in creation coverage remain unimplemented"
+    "status": "Actual constructor ownership extended with native built-in/newTarget/API provenance and pure data-only naming; focused four-host controls pass"
   },
   "nativeBuiltinFollowup": {
-    "scope": "Native-only exploratory evidence for next implementation; no Kandelo built-in construction support",
+    "scope": "Native reference oracle now exercised on all four Kandelo hosts; selected cases only",
     "observations": [
       {
         "key": "before-Object",
@@ -507,5 +507,8 @@
       "Different newTarget and built-in subclass prototype constructor replacement yield prototype data name, not fixed engine class string",
       "Need intrinsic constructor ownership and actual creation/newTarget path distinctions before completing native name lookup"
     ]
-  }
+  },
+  "constructorNameImplemented": true,
+  "engineEvidence": "constructor-name-engine-check.json",
+  "engineCatalog": "constructor-name-engine-contracts.json"
 }

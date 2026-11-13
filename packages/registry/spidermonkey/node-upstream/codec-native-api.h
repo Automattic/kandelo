@@ -107,6 +107,7 @@ template<> class Maybe<void> {
 template<class T> Maybe<T> Just(T value) { return Maybe<T>(value); }
 template<class T> Maybe<T> Nothing() { return {}; }
 inline Maybe<void> JustVoid() { return Maybe<void>(true); }
+class JSON {public:static MaybeLocal<String> Stringify(Local<Context>,Local<Value>);};
 struct Context {
   Isolate* isolate;
   std::unique_ptr<Cell> global;
@@ -175,7 +176,7 @@ class Value:public Data {
   Maybe<uint32_t> Uint32Value(Local<Context>);
   MaybeLocal<String> ToString(Local<Context>);
   MaybeLocal<Object> ToObject(Local<Context>);
-  MaybeLocal<String> ToDetailString(Local<Context>);
+  MaybeLocal<String> ToDetailString(Local<Context>)const;
 };
 class Name : public Value { public: using Value::Value; };
 class Symbol : public Name {public:using Name::Name;static Local<Symbol> GetDispose(Isolate*);static Local<Symbol> GetAsyncDispose(Isolate*);};

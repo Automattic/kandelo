@@ -67,6 +67,25 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strncmp(operation.get(),"value",5)){
+    auto value=frame.OwnValue(args.get(1));api::Local<api::String> result;
+    if(!std::strcmp(operation.get(),"valueType"))result=value->TypeOf(&state->isolate);
+    else if(!std::strcmp(operation.get(),"valueDetail")){if(!value->ToDetailString(state->isolate.GetCurrentContext()).ToLocal(&result))return false;}
+    else if(!std::strcmp(operation.get(),"valueJSON")){if(!api::JSON::Stringify(state->isolate.GetCurrentContext(),value).ToLocal(&result))return false;}
+    else {JS_ReportErrorASCII(cx,"Unknown native value control");return false;}
+    if(result.IsEmpty()||JS_IsExceptionPending(cx))return false;args.rval().set(api::Input(result));return true;
+  }
+  if(!std::strcmp(operation.get(),"constructorName")||!std::strcmp(operation.get(),"constructorDescription")){
+    if(!std::strcmp(operation.get(),"constructorDescription")){
+      auto text=native::DetermineSpecificErrorType(&state->environment,frame.OwnValue(args.get(1)));if(JS_IsExceptionPending(cx))return false;
+      auto name=api::String::NewFromUtf8(&state->isolate,text.data(),api::NewStringType::kNormal,int(text.size()));
+      api::Local<api::String> result;if(!name.ToLocal(&result))return false;args.rval().set(api::Input(result));return true;
+    }
+    if(!args.get(1).isObject()){JS_ReportErrorASCII(cx,"Native constructor-name control requires Object");return false;}
+    auto object=frame.Own<api::Object>(args[1]);
+    auto name=object->GetConstructorName();if(name.IsEmpty()||JS_IsExceptionPending(cx))return false;
+    args.rval().set(api::Input(name));return true;
+  }
   if(!std::strcmp(operation.get(),"constructionIdentity")){
     JS::RootedObject object(cx,api::UnwrapObject(cx,args.get(1)));if(!object)return false;
     JS::RootedObject constructor(cx,js::ObjectRealm::get(object).getConstructorIdentity(object));

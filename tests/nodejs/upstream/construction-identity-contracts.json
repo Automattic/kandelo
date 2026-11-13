@@ -64,5 +64,11 @@
   "nativeV8HeapUsed": false,
   "sourcePolicySatisfied": false,
   "startupAccepted": false,
-  "wholeGoalComplete": false
+  "wholeGoalComplete": false,
+  "followup": {
+    "packageRevision": 70,
+    "catalog": "constructor-name-engine-contracts.json",
+    "evidence": "constructor-name-engine-check.json",
+    "scope": "Later engine implementation extends map to ObjectValueWeakMap with explicit prototype-based birth and native-call provenance; revision69 receipt remains historical"
+  }
 }

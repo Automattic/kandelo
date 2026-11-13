@@ -72,6 +72,7 @@
 #include "shell/node-upstream/trace-native.h"
 #include "shell/node-upstream/trace-utf8-native.h"
 #include "shell/node-upstream/tracing-upstream/tracing/agent.h"
+#include "util/StringBuilder.h"
 #include "vm/ArrayBufferObject.h"
 #include "vm/ArrayBufferViewObject.h"
 #include "vm/ArrayObject.h"
@@ -82,7 +83,9 @@
 #include "vm/Realm.h"
 #include "vm/SavedFrame.h"
 #include "vm/StringType.h"
+#include "vm/SymbolType.h"
 
+#include "vm/JSAtomUtils-inl.h"
 #include "vm/Realm-inl.h"
 
 namespace kandelo_node_codec_impl { extern const JSClass categoryClass,nativeBindingClass,nativeChannelClass; }
@@ -472,6 +475,32 @@ MaybeLocal<String> Value::ToString(Local<Context> context) {
   JS::RootedString string(f.cx, JS::ToString(f.cx, input)); if (!string) return {};
   JS::RootedValue value(f.cx, JS::StringValue(string)); return f.Own<String>(value);
 }
+Local<String> Value::TypeOf(Isolate* isolate) {
+  auto& frame=Current(isolate);NativeEntry entry(frame);if(entry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
+  JS::RootedValue value(frame.cx,cell().value);if(!JS_WrapValue(frame.cx,&value))return {};
+  JS::RootedValue text(frame.cx,JS::StringValue(js::TypeName(JS_TypeOfValue(frame.cx,value),frame.cx->names())));return frame.Own<String>(text);
+}
+MaybeLocal<String> Value::ToDetailString(Local<Context> context) const {
+  auto& frame=Current(context->isolate);NativeEntry entry(frame);if(entry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
+  Context::Scope home(context);JS::RootedValue input(frame.cx,cell().value);if(!JS_WrapValue(frame.cx,&input))return {};
+  if(input.isObject()){
+    frame.state->isolate.ThrowException(Error(&frame.state->isolate,JSEXN_ERR,"ERR_KANDELO_NOT_IMPLEMENTED","Native object detail formatting without JavaScript effects is not implemented"));return {};
+  }
+  JS::RootedString text(frame.cx);
+  if(input.isSymbol()){
+    JS::RootedValue output(frame.cx);if(!js::SymbolDescriptiveString(frame.cx,input.toSymbol(),&output))return {};text=output.toString();
+  }else text=JS::ToString(frame.cx,input);
+  if(!text)return {};JS::RootedValue result(frame.cx,JS::StringValue(text));return frame.Own<String>(result);
+}
+MaybeLocal<String> JSON::Stringify(Local<Context> context,Local<Value> input) {
+  auto& frame=Current(context->isolate);NativeEntry entry(frame);if(entry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
+  Context::Scope home(context);JS::RootedValue value(frame.cx,Input(input));if(!JS_WrapValue(frame.cx,&value))return {};
+  js::JSStringBuilder buffer(frame.cx);JS::RootedObject replacer(frame.cx,nullptr);
+  auto append=[](const char16_t* chars,uint32_t count,void* state){return static_cast<js::StringBuilder*>(state)->append(chars,count);};
+  if(!JS::ToJSON(frame.cx,value,replacer,JS::UndefinedHandleValue,append,&buffer))return {};
+  JS::RootedString text(frame.cx,buffer.empty()?JS::ToString(frame.cx,JS::UndefinedHandleValue):buffer.finishString());
+  if(!text)return {};JS::RootedValue result(frame.cx,JS::StringValue(text));return frame.Own<String>(result);
+}
 Maybe<bool> Object::Set(Local<Context> context, Local<Value> property, Local<Value> input) {
   auto& f = Current(context->isolate);NativeEntry nativeEntry(f);if(nativeEntry.Terminated())return {}; if (JS_IsExceptionPending(f.cx)) return {};
   Context::Scope home(context);
@@ -497,6 +526,20 @@ Local<Array> Array::New(Isolate* isolate,const Local<Value>* entries,size_t coun
 Local<Object> Object::New(Isolate* isolate) {
   auto& f=Current(isolate);JS::RootedObject object(f.cx,JS_NewPlainObject(f.cx));if(!object)return {};
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Object>(value);
+}
+Local<String> Object::GetConstructorName() {
+  auto& frame=*Frame::current;NativeEntry entry(frame);if(entry.Terminated()||JS_IsExceptionPending(frame.cx))return {};
+  JS::RootedObject object(frame.cx,UnwrapObject(frame.cx,cell().value));if(!object)return {};
+  JS::RootedString name(frame.cx,js::GetConstructorName(frame.cx,object));if(!name)return {};
+  JS::RootedValue value(frame.cx,JS::StringValue(name));if(!JS_WrapValue(frame.cx,&value))return {};
+  return frame.Own<String>(value);
+}
+// The native typed-array allocation API has no JavaScript constructor call.
+// Its prototype supplies the construction name, including after prototype
+// installation by complete original native consumers such as Buffer::New.
+static bool RecordApiViewConstruction(Frame& frame,JS::HandleObject object) {
+  JS::RootedObject constructor(frame.cx,nullptr);
+  return js::ObjectRealm::get(object).recordConstructorIdentity(frame.cx,object,constructor,false);
 }
 Local<Object> Object::New(Isolate* isolate,Local<Value> prototype,
                           Local<Name>* names,Local<Value>* entries,size_t count) {

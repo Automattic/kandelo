@@ -4,6 +4,7 @@ import {nativeStackCases} from './native-stack-controls';
 import {nativeMessageCases} from './native-message-controls';
 import {nativeIsolateCases,nativeIsolateFixtureFiles} from './native-isolate-controls';
 import {constructionIdentityCases} from './construction-identity-controls';
+import {constructorNameCases,constructorNameFixtureFiles} from './constructor-name-engine-controls';
 import {nativeInternalsCases} from './native-internals-controls';
 import {nativeStateCases} from './native-state-controls';
 import {persistentHandleCases} from './persistent-handle-controls';
@@ -21,9 +22,11 @@ export const nativeOwnerSourceFiles=[...nativeIsolateFixtureFiles,'tests/nodejs/
  'tests/nodejs/upstream/aliased-controls.ts','tests/nodejs/upstream/aliased-engine-controls.js',
  'tests/nodejs/upstream/environment-controls.ts','tests/nodejs/upstream/environment-engine-controls.js'];
 nativeOwnerSourceFiles.push('tests/nodejs/upstream/construction-identity-controls.ts');
+nativeOwnerSourceFiles.push(...constructorNameFixtureFiles);
 const source=readFileSync(nativeOwnerFixture,'utf8');
 const setup=`const api=__kandeloUpstreamTest;api.initializeContext();const realm=api.initializeRealm();const op=(name,...args)=>api.nativeOwners(name,...args);`;
 export const nativeOwnerCases=[
+ ...constructorNameCases,
  ...constructionIdentityCases,
  ...nativeIsolateCases,
  ...nativeInternalsCases,

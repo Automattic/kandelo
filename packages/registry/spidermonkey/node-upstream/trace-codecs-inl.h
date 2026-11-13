@@ -57,6 +57,7 @@ Local<ArrayBuffer> ArrayBuffer::New(Isolate* isolate,std::unique_ptr<BackingStor
 Local<Uint8Array> Uint8Array::New(Local<ArrayBuffer> buffer,size_t offset,size_t length) {
   auto& f=*Frame::current;if(JS_IsExceptionPending(f.cx))return {};
   JS::RootedObject raw(f.cx,&buffer->cell().value.toObject());JS::RootedObject object(f.cx,kandelo::node::NewNativeBufferView(f.cx,raw,offset,length));if(!object)return {};
+  if(!RecordApiViewConstruction(f,object))return {};
   JS::RootedValue value(f.cx,JS::ObjectValue(*object));return f.Own<Uint8Array>(value);
 }
 namespace {
