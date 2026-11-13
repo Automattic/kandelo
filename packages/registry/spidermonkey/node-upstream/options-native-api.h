@@ -9,6 +9,11 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#ifndef NODE_WANT_INTERNALS
+#define NODE_WANT_INTERNALS 1
+#endif
+#include "shell/node-upstream/build-profile.h"
+#include "shell/node-upstream/tracing-upstream/node_mutex.h"
 namespace kandelo_node_options_impl { class Environment; }
 namespace kandelo_node_options_api {
 class Isolate;
@@ -107,6 +112,7 @@ template<class T> class FunctionCallbackInfo {
 };
 }
 namespace kandelo_node_options_impl {
+using Mutex=::node::Mutex;
 using StringVector=std::vector<std::string>;
 class EnvironmentOptions;
 class PerIsolateOptions;
@@ -160,9 +166,12 @@ using Initializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
 extern Initializer initializer;
 }
 #define NODE_WANT_INTERNALS 1
-#include "shell/node-upstream/build-profile.h"
 #define NODE_EXTERN_PRIVATE
 #define NODE_EXTERN
+#undef CHECK
+#undef CHECK_EQ
+#undef CHECK_NE
+#undef UNREACHABLE
 #define CHECK(x) do { if (!(x)) __builtin_trap(); } while (false)
 #define CHECK_EQ(x,y) CHECK((x)==(y))
 #define CHECK_NE(x,y) CHECK((x)!=(y))

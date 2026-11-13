@@ -220,17 +220,9 @@ Local<Private> Environment::untransferable_object_private_symbol() {
   JS::RootedSymbol key(frame.cx,kandelo::node::GetRuntimeSymbol(frame.cx,runtime,"untransferable_object_private_symbol"));CHECK(key);
   JS::RootedValue value(frame.cx,JS::SymbolValue(key));return frame.Own<Private>(value);
 }
-IsolateData* Environment::isolate_data() { Current(isolate());static thread_local IsolateData data;return &data; }
-bool IsolateData::is_building_snapshot() const { return false; } // This embedding creates live realms; it has no snapshot builder.
+IsolateData* Environment::isolate_data() { auto& f=Current(isolate());AssertForeground();CHECK(!IsClosed());return &f.state->isolateData; }
+bool IsolateData::is_building_snapshot() const { Current(isolate_).state->environment.AssertForeground();return false; } // This embedding creates live realms; it has no snapshot builder.
 void Environment::ThrowRangeError(const char* text) { auto value=Error(isolate(),JSEXN_RANGEERR,nullptr,text);if(!value.IsEmpty())isolate()->ThrowException(value); }
-const per_process::BufferOptions* per_process::BufferOptionsAccess::operator->() const {
-  static thread_local BufferOptions value;
-  auto flags=kandelo::node::ReadProcessEnvironmentFlags();value.zero_fill_all_buffers=flags.zeroFill;value.report_on_fatalerror=flags.reportOnFatal;
-  if(!value.per_isolate){value.per_isolate=std::make_shared<NativeEnvIsolateOptions>();value.per_isolate->per_env=std::make_shared<NativeEnvOptions>();}
-  *value.per_isolate->per_env=NativeEnvOptions{
-    flags.pendingDeprecation,flags.traceEnv,flags.traceEnvJsStack,flags.traceEnvNativeStack,flags.traceUncaught,flags.extraInfoOnFatal};
-  return &value;
-}
 
 }
 namespace kandelo::node {

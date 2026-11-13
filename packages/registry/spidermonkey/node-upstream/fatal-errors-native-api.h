@@ -39,14 +39,11 @@ struct OOMDetails {bool is_heap_oom;const char* detail;};
 struct ModifyCodeGenerationFromStringsResult {bool codegen_allowed;MaybeLocal<String> modified_source;};
 }
 namespace kandelo_node_codec_impl {
-struct FatalProcessOptions {bool report_on_fatalerror;};
-struct FatalProcessOptionsAccess {const FatalProcessOptions* operator->()const;};
 namespace per_process {
- extern Mutex cli_options_mutex;
- extern FatalProcessOptionsAccess fatal_cli_options;
+ extern Mutex& cli_options_mutex;
+ extern std::shared_ptr<kandelo_node_options_impl::PerProcessOptions>& fatal_cli_options;
 }
 namespace ContextEmbedderIndex {extern const int kAllowCodeGenerationFromStrings;}
-struct FatalIsolateOptions {bool report_uncaught_exception;};
 [[noreturn]] void AbortWithDetails(const char*,const char*);
 void ResetStdio();std::string GetHumanReadableProcessName();
 void DefineErrorConstant(Isolate*,Local<Object>,const char*,int);

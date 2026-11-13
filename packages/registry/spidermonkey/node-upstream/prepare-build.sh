@@ -115,6 +115,7 @@ cp "$node_import/native/builtin-source-registry.cpp" \
     "$node_consumer/options.cpp" \
     "$node_consumer/options.h" \
     "$node_consumer/options-native-api.h" \
+    "$node_consumer/options-shared-types.h" \
     "$node_consumer/options-upstream.cpp" \
     "$node_consumer/per-context.h" "$shell_sources/"
 # Keep the portable registry's include names independent of Mozilla shell paths.

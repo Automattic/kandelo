@@ -21,11 +21,7 @@
 #include "js/Stack.h"
 #include "js/Wrapper.h"
 #include "shell/node-upstream/options-native-api.h"
-#define v8 kandelo_node_options_api
-#define node kandelo_node_options_impl
-#include "shell/node-upstream/options-upstream/node_options.h"
-#undef node
-#undef v8
+#include "shell/node-upstream/options-shared-types.h"
 
 #include "shell/node-upstream/per-context.h"
 #include "shell/node-upstream/realm.h"
@@ -375,6 +371,18 @@ bool BorrowNativeInvocation(JSContext* cx,JS::HandleObject realm,
     return Error(cx,nullptr,"Native Node invocation has not been configured");
   *arguments=&data->arguments;*execArguments=&data->execArguments;return true;
 }
+std::shared_ptr<n::PerIsolateOptions> BorrowNativeIsolateOptions(JSContext* cx,JS::HandleObject realm) {
+  if(!CheckRealmLibraryActive(cx,realm))return {};
+  auto* data=Data(cx,realm);if(!data)return {};
+  // Runtime record pointers are confined to the context thread. Native callers
+  // may already hold the process mutex; borrowing must not acquire it again.
+  return data->isolate;
+}
+std::shared_ptr<n::EnvironmentOptions> BorrowNativeEnvironmentOptions(JSContext* cx,JS::HandleObject realm) {
+  if(!CheckRealmLibraryActive(cx,realm))return {};
+  auto* data=Data(cx,realm);if(!data)return {};
+  return data->environment;
+}
 bool ReadNativeTracingConfiguration(JSContext* cx,JS::HandleObject realm,
                                     NativeTracingConfiguration* result) {
   if (!CheckRealmLibraryActive(cx,realm) || !Data(cx,realm)) return false;
@@ -411,4 +419,11 @@ bool NativeAsyncContextFrameEnabled() {
   n::Mutex::ScopedLock lock(n::per_process::cli_options_mutex);
   return n::per_process::cli_options->per_isolate->per_env->async_context_frame;
 }
+}
+namespace kandelo_node_codec_impl::per_process {
+// These references reach the original parser's storage and mutex, including
+// replacement during initial configuration. They are not parallel snapshots.
+std::shared_ptr<n::PerProcessOptions>& cli_options=n::per_process::cli_options;
+std::shared_ptr<n::PerProcessOptions>& fatal_cli_options=n::per_process::cli_options;
+::node::Mutex& cli_options_mutex=n::per_process::cli_options_mutex;
 }

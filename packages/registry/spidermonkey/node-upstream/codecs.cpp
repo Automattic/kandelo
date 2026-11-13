@@ -90,6 +90,7 @@ const JSClass icuBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct NativeOwnerProbeState;
 struct State {
   Isolate isolate;
+  native::IsolateData isolateData{&isolate};
   CatchScope* catchScope=nullptr;
   size_t nativeEntryDepth=0;
   native::Environment environment{&isolate};
@@ -731,14 +732,26 @@ void Environment::ThrowErrnoException(int error,const char* syscall,const char* 
   AssertForeground();isolate()->ThrowException(ErrnoException(isolate(),error,syscall,message,path));
 }
 std::shared_ptr<KVStore> Environment::env_vars(){AssertForeground();return per_process::system_environment;}
-std::shared_ptr<NativeEnvOptions> Environment::options(){
-  auto& f=Current(isolate());AssertForeground();kandelo::node::NativeEnvironmentFlags flags;
-  CHECK(kandelo::node::ReadEnvironmentFlags(f.cx,f.realm,&flags));
-  return std::make_shared<NativeEnvOptions>(NativeEnvOptions{flags.pendingDeprecation,flags.traceEnv,flags.traceEnvJsStack,flags.traceEnvNativeStack,flags.traceUncaught,flags.extraInfoOnFatal});
+static JSObject* PrincipalOptionsRealm(Frame& f){
+  JS::RootedObject runtime(f.cx,kandelo::node::GetRealmRuntime(f.cx,f.realm));if(!runtime)return nullptr;
+  JS::RootedObject realm(f.cx,kandelo::node::GetRuntimePrincipalRealm(f.cx,runtime));if(!realm)return nullptr;
+  return js::CheckedUnwrapDynamic(realm,f.cx,false);
 }
-Isolate* IsolateData::isolate() { return &Frame::current->state->isolate; }
+std::shared_ptr<NativeEnvOptions> Environment::options(){
+  auto& f=Current(isolate());AssertForeground();auto owner=context();CHECK(!owner.IsEmpty());
+  Context::Scope home(owner);JS::RootedObject realm(f.cx,PrincipalOptionsRealm(f));if(!realm)return {};
+  return kandelo::node::BorrowNativeEnvironmentOptions(f.cx,realm);
+}
+IsolateData::IsolateData():IsolateData(Isolate::GetCurrent()){}
+IsolateData::IsolateData(Isolate* isolate):isolate_(isolate){CHECK(isolate_);}
+Isolate* IsolateData::isolate() {auto& frame=Current(isolate_);frame.state->environment.AssertForeground();return isolate_;}
+std::shared_ptr<FatalIsolateOptions> IsolateData::options(){
+  auto& f=Current(isolate());auto owner=f.state->environment.context();CHECK(!owner.IsEmpty());
+  Context::Scope home(owner);JS::RootedObject realm(f.cx,PrincipalOptionsRealm(f));if(!realm)return {};
+  return kandelo::node::BorrowNativeIsolateOptions(f.cx,realm);
+}
 void IsolateData::set_i18n_converter_template(Local<ObjectTemplate> value) {
-  auto& f=*Frame::current;CHECK(f.binding && JS::GetClass(f.binding)==&api::icuBindingClass);
+  auto& f=Current(isolate());CHECK(f.binding && JS::GetClass(f.binding)==&api::icuBindingClass);
   JS::RootedValue metadata(f.cx,Input(value));CHECK(JS_WrapValue(f.cx,&metadata));JS::SetReservedSlot(f.binding,0,metadata);
 }
 Local<ObjectTemplate> Environment::i18n_converter_template() {

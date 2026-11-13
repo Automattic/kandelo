@@ -29,6 +29,7 @@
 #include "shell/node-upstream/tracing-upstream/node_mutex.h"
 
 namespace kandelo::node { struct TraceProcess; }
+namespace kandelo_node_options_impl {class EnvironmentOptions;class PerIsolateOptions;class PerProcessOptions;}
 namespace node {
 struct LibuvMutexTraits;
 template<class Traits> class MutexBase;
@@ -603,7 +604,10 @@ class Exception {
 namespace kandelo_node_codec_impl {
 using namespace kandelo_node_codec_api;
 struct SpanOwner;
-class Environment;class IsolateData;class BaseObject;struct NativeRealmData;class KVStore;struct NativeEnvOptions;struct NativeEnvIsolateOptions;struct FatalIsolateOptions;
+class Environment;class IsolateData;class BaseObject;struct NativeRealmData;class KVStore;
+using NativeEnvOptions=kandelo_node_options_impl::EnvironmentOptions;
+using NativeEnvIsolateOptions=kandelo_node_options_impl::PerIsolateOptions;
+using FatalIsolateOptions=kandelo_node_options_impl::PerIsolateOptions;
 class EnabledDebugList;
 class AsyncWrap;class ReqWrapBase;class HandleWrap;class NodeArrayBufferAllocator;
 class ProcessImmediateInfo;
@@ -780,7 +784,11 @@ class Environment {
   }
 };
 class IsolateData {
- public: Isolate* isolate();void set_i18n_converter_template(Local<ObjectTemplate>);
+  Isolate* isolate_;
+ public:
+  IsolateData();explicit IsolateData(Isolate*);
+  IsolateData(const IsolateData&)=delete;IsolateData& operator=(const IsolateData&)=delete;
+  Isolate* isolate();void set_i18n_converter_template(Local<ObjectTemplate>);
   bool is_building_snapshot() const;
   NodeArrayBufferAllocator* node_allocator();
   std::shared_ptr<FatalIsolateOptions> options();
@@ -843,9 +851,7 @@ MaybeLocal<Object> New(Environment*,char*,size_t,void(*)(char*,void*),void*);
 }
 
 namespace per_process {
-struct BufferOptions { bool zero_fill_all_buffers;bool report_on_fatalerror;std::shared_ptr<NativeEnvIsolateOptions> per_isolate; };
-struct BufferOptionsAccess { const BufferOptions* operator->() const; };
-inline const BufferOptionsAccess cli_options;
+extern std::shared_ptr<kandelo_node_options_impl::PerProcessOptions>& cli_options;
 }
 class ExternalReferenceRegistry {
  public:

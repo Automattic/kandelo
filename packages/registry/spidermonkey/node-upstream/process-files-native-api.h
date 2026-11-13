@@ -24,8 +24,6 @@ class PropertyDescriptor {
 namespace kandelo_node_codec_impl {
 // Native store interface only. All store/copy/environment algorithms are in
 // complete original node_env_var.cc, not duplicated in this API bridge.
-struct NativeEnvOptions {bool pending_deprecation,trace_env,trace_env_js_stack,trace_env_native_stack,trace_uncaught,extra_info_on_fatal_exception;};
-struct NativeEnvIsolateOptions {std::shared_ptr<NativeEnvOptions> per_env;};
 namespace per_process {
  extern std::shared_ptr<KVStore> system_environment;
 }

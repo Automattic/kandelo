@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 67 source connects the original process initializer,
+The current revision 68 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 24 symbols and has no normal runnable artifact.
+still fails final linking on 23 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -2798,3 +2798,20 @@ The targeted normal build has no C++ compile errors but still fails final linkin
 Initial encoding-declaration, include/macro-order and style failures are retained. Bridge include cycles were removed. The new style patch exempts only the unchanged imported header and its generated declaration routing from Mozilla include conventions; bridge headers remain checked, and the final build passes the style, MacroAssembler and opcode checks. All previous patches are unchanged; no VM algorithm changed in this revision. Build operations reuse exactly verified prepared source in place of acquisition/patch application; there is no resolver-cache publication or new normal executable.
 
 All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. This closes the recorded handwritten Buffer-helper source-policy gap, while overall source-policy and conformance acceptance remain incomplete. Genuine startup, separate CJS/ESM and the complete backend catalog/roadmap remain unfinished; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred. See the [native internals contracts](../tests/nodejs/upstream/native-internals-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-internals-engine-check.json).
+
+
+## Actual isolate identity and shared option records (revision 68)
+
+Each native codec State now owns IsolateData bound to its actual Isolate. Environment returns that stable instance; native initializer adapters bind to the current actual Isolate, and access validates native-frame ownership and foreground use. The thread-local ambient facade is removed.
+
+The complete original node_options.h supplies the same parsed PerProcessOptions, PerIsolateOptions and EnvironmentOptions objects to both native adapters. Environment/isolate getters borrow the real shared owners from the principal realm-state record; process/fatal aliases reference the original parser's shared_ptr storage and actual canonical libuv-backed mutex. Buffer, error and environment consumers now read these original records. The handwritten value structures and Buffer snapshot accessor are removed. Owner-local pointer borrowing does not reacquire the process mutex, so callers may already hold it. Scoped preprocessor aliases preserve each adapter's marshalling and assertions.
+
+The identified private artifact passes 66 process drivers on each of Node, Chromium, Firefox and WebKit, 264 guest runs total. Three new drivers cover actual identity, configuration replacement with retained old records, callback reentry/GC, reads under the process mutex, foreign-active-context restoration and failed-profile errors. Eight added regression drivers execute the existing complete 14-group options fixture, five profile error controls and two expected source-assertion traps. All 55 prior driver source strings are unchanged and pass too. The program is 59,938,709 bytes, SHA-256 `fbb1cfd40f2db4fe22408c23074f714154d1cbc71fd4fccd2989b219a08b6c95`, using the unchanged ABI56 kernel. It rejects process_methods and cannot establish normal startup.
+
+The normal targeted build has no C++ compile errors but still fails linking on 23 symbols, down from 24 by the real IsolateData.options implementation, with no additions. There is no normal executable or resolver-cache publication. Recipe operations reuse exactly verified prepared source in place of acquisition/patch application. All 46 relevant patches and all seven prepared files are unchanged. The actual staged original options header/parser/inline definitions and canonical mutex match authenticated source bytes.
+
+Initial style failure and the real realm/global argument bug are retained: three new Node drivers asserted because the helper received a global instead of the canonical native realm-state object; the caller was corrected and the assertion preserved. Browser validation initially rejected the two deliberately triggered assertion console messages. The fixture now requires their already-validated source failure, exit132, exact worker diagnostic and expected native stack frames; every other console/page/request error remains rejected. Expected diagnostics are retained separately from unexpected failures.
+
+Shared parsed options do not implement the requested behaviors of all flags. Complete engine/config/security/report/permission adoption, failed-bootstrap/fatal/worker/fork lifecycle, actual allocator selection and allocation/free bodies remain incomplete. Healthy initialized ownership is the normal native caller precondition; failed profiles retain the existing error rather than manufacturing defaults. Full source policy, genuine startup/CJS/ESM and the complete backend catalog/roadmap remain unfinished. All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged; no V8 heap/serialization data or rewritten Node algorithms are used. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [native isolate/options contracts](../tests/nodejs/upstream/native-isolate-options-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-isolate-options-engine-check.json).

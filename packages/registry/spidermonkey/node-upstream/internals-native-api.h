@@ -12,6 +12,7 @@
 #include <ostream>
 #include <signal.h>
 #include <unordered_map>
+#include "shell/node-upstream/options-shared-types.h"
 #include "shell/node-upstream/resource-native-api.h"
 #include "shell/node-upstream/trace-native.h"
 #ifndef __POSIX__

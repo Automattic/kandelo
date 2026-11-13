@@ -45,7 +45,18 @@ test('private native ownership survives GC, reentry and actual uv close',async (
       resources.push(observed.artifact);
       entry.detail=verifyNativeOwnerResult(control,observed.result);
       const emitted=errors.slice(errorStart);
-      expect(emitted).toEqual([]);
+      if(control.code===132&&(entry.detail as {status?:string})?.status==='expected-source-assertion-trap'){
+        // Only a control whose native result already verified its exact source
+        // assertion may account for the corresponding worker console failure.
+        const diagnostics=observed.result.hostDiagnostics;
+        expect(diagnostics).toHaveLength(1);
+        expect(diagnostics[0].source).toBe('worker-main error message');
+        expect(diagnostics[0].status).toBe(132);
+        expect(diagnostics[0].message).toContain('kandelo_node_options_impl::SetMethodNoSideEffect');
+        expect(diagnostics[0].message).toContain('options_parser::Initialize');
+        expect(emitted).toEqual(diagnostics.map((d:{message:string})=>'console: '+d.message));
+        expectedFatalConsole.push(...emitted);entry.expectedFatalConsole=emitted;
+      }else expect(emitted).toEqual([]);
       entry.status='pass';
     }
     await Promise.all(responses);
@@ -59,7 +70,7 @@ test('private native ownership survives GC, reentry and actual uv close',async (
     writeFileSync(join(process.env.KANDELO_LIBUV_REPORT_DIR!,'native-owner-'+testInfo.project.name+'.json'),JSON.stringify({
       schema:1,completedAt:new Date().toISOString(),host:testInfo.project.name,browserVersion:browser.version(),
       scope:'Private ownership diagnostic only; normal engine remains unlinked and startup is not accepted',
-      program:identity(program),kernel:identity(kernel),fixtures:nativeOwnerSourceFiles.map(path=>identity(resolve(path))),sources:nativeOwnerCases.map(({name,source})=>({name,sha256:createHash('sha256').update(source).digest('hex')})),resources,errors,expectedFatalConsole,runs,failure,
+      program:identity(program),kernel:identity(kernel),fixtures:[...nativeOwnerSourceFiles,'tests/nodejs/upstream/native-owner-browser/native-owner.spec.ts'].map(path=>identity(resolve(path))),sources:nativeOwnerCases.map(({name,source})=>({name,sha256:createHash('sha256').update(source).digest('hex')})),resources,errors,expectedFatalConsole,runs,failure,
     },null,2)+'\n');
   }
 });

@@ -3,6 +3,8 @@
 #ifdef KANDELO_NATIVE_OWNER_PROBE
 namespace kandelo_node_codec_api {
 struct NativeOwnerProbeState {
+  native::IsolateData* observedIsolateData=nullptr;
+  std::shared_ptr<native::FatalIsolateOptions> retainedIsolateOptions;
   std::set<native::BaseObject*> objects;
   std::map<uint64_t,native::BaseObjectPtr<native::BaseObject>> references;
   std::map<uint64_t,Global<Value>> persistents;
@@ -65,6 +67,45 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strncmp(operation.get(),"isolate",7)){
+    auto* data=state->environment.isolate_data();
+    if(!counters->observedIsolateData)counters->observedIsolateData=data;
+    auto options=data->options();if(!options)return false;
+    if(!std::strcmp(operation.get(),"isolateHoldOptions")){counters->retainedIsolateOptions=options;return true;}
+    if(!std::strcmp(operation.get(),"isolateClearOptions")){counters->retainedIsolateOptions.reset();return true;}
+    JS::RootedValue callbackResult(cx);bool replaced=false,beforeReport=options->report_uncaught_exception,foreignRestored=true;
+    if(!std::strcmp(operation.get(),"isolateCallOptions")){
+      if(!args.get(1).isObject()||!JS::IsCallable(&args[1].toObject())){JS_ReportErrorASCII(cx,"Isolate options control requires Function");return false;}
+      auto callback=frame.Own<api::Function>(args[1]);api::Local<api::Value> result;
+      if(!callback->Call(state->environment.context(),api::Undefined(&state->isolate),0,nullptr).ToLocal(&result))return false;
+      callbackResult.set(api::Input(result));auto next=data->options();if(!next)return false;
+      replaced=next!=options;beforeReport=options->report_uncaught_exception;options=std::move(next);
+    }else if(!std::strcmp(operation.get(),"isolateOptionsLocked")){
+      native::Mutex::ScopedLock lock(native::per_process::cli_options_mutex);
+      options=data->options();if(!options)return false;
+      auto environmentOptions=state->environment.options();if(!environmentOptions)return false;
+      CHECK(environmentOptions==options->per_env);
+    }else if(!std::strcmp(operation.get(),"isolateOptionsForeign")){
+      JS::RootedObject target(cx,api::UnwrapObject(cx,args.get(1)));if(!target||!JS_IsGlobalObject(target)){JS_ReportErrorASCII(cx,"Isolate options context control requires global");return false;}
+      {JSAutoRealm active(cx,target);options=data->options();if(!options)return false;foreignRestored=JS::CurrentGlobalOrNull(cx)==target;}
+    }else if(std::strcmp(operation.get(),"isolateOptions")){JS_ReportErrorASCII(cx,"Unknown isolate options control");return false;}
+    auto environmentOptions=state->environment.options();if(!environmentOptions)return false;
+    auto parsed=kandelo::node::BorrowNativeIsolateOptions(cx,realm);if(!parsed)return false;
+    JS::RootedObject result(cx,JS_NewPlainObject(cx));if(!result)return false;
+    auto flag=[&](const char* name,bool input){JS::RootedValue value(cx,JS::BooleanValue(input));return JS_DefineProperty(cx,result,name,value,JSPROP_ENUMERATE);};
+    if(!flag("canonicalIsolateData",data==&state->isolateData)||!flag("stableIdentity",data==counters->observedIsolateData)||
+       !flag("sameIsolate",data->isolate()==&state->isolate)||!flag("sameParsedOwner",options==parsed)||
+       !flag("sameEnvironmentOwner",environmentOptions==options->per_env)||!flag("sameProcessStorage",&native::per_process::cli_options==&kandelo_node_options_impl::per_process::cli_options)||
+       !flag("sameFatalProcessStorage",&native::per_process::fatal_cli_options==&kandelo_node_options_impl::per_process::cli_options)||
+       !flag("sameOptionsMutex",&native::per_process::cli_options_mutex==&kandelo_node_options_impl::per_process::cli_options_mutex)||
+       !flag("reportUncaught",options->report_uncaught_exception)||!flag("zeroFill",native::per_process::cli_options->zero_fill_all_buffers)||
+       !flag("pendingDeprecation",environmentOptions->pending_deprecation)||!flag("reportOnFatal",native::per_process::fatal_cli_options->report_on_fatalerror)||
+       !flag("hasRetained",bool(counters->retainedIsolateOptions))||!flag("retainedSame",counters->retainedIsolateOptions==options)||
+       !flag("foreignRestored",foreignRestored)||!flag("replacedDuringCallback",replaced)||!flag("beforeReport",beforeReport))return false;
+    JS::RootedValue retained(cx,counters->retainedIsolateOptions?JS::BooleanValue(counters->retainedIsolateOptions->report_uncaught_exception):JS::UndefinedValue());
+    if(!JS_DefineProperty(cx,result,"retainedReport",retained,JSPROP_ENUMERATE)||!JS_DefineProperty(cx,result,"callbackResult",callbackResult,JSPROP_ENUMERATE))return false;
+    args.rval().setObject(*result);return true;
+  }
   if(!std::strcmp(operation.get(),"internalsBuffer")){
     if(!args.get(1).isInt32()||args[1].toInt32()<0||args[1].toInt32()>4){JS_ReportErrorASCII(cx,"Original internals buffer control requires mode 0..4");return false;}
     int mode=args[1].toInt32();

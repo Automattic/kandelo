@@ -1,11 +1,15 @@
 #ifndef KANDELO_NODE_OPTIONS_H
 #define KANDELO_NODE_OPTIONS_H
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "js/TypeDecls.h"
+namespace kandelo_node_options_impl {class EnvironmentOptions;class PerIsolateOptions;}
 namespace kandelo::node {
+std::shared_ptr<kandelo_node_options_impl::PerIsolateOptions> BorrowNativeIsolateOptions(JSContext*,JS::HandleObject);
+std::shared_ptr<kandelo_node_options_impl::EnvironmentOptions> BorrowNativeEnvironmentOptions(JSContext*,JS::HandleObject);
 struct NativeTracingConfiguration {
   std::string filePattern, categories;
   bool permissionsEnabled = false;
