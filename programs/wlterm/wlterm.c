@@ -24,6 +24,7 @@
  *   WLTERM_RESIZE cols=.. rows=.. — the compositor dictated a new size
  *   WLTERM_EXIT code=<n>    — shell exited, clean shutdown
  *   WLTERM_EXIT signal=<n>  — shell died on a signal
+ * wlterm's own exit status is the shell's: <n>, or 128+<n> for a signal.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -142,10 +143,11 @@ static const char help_text[] =
     "closed; on a close it sends the command SIGHUP and waits for it. It\n"
     "writes WLTERM_READY, WLTERM_RESIZE cols=COLS rows=ROWS, and finally\n"
     "WLTERM_EXIT code=STATUS or WLTERM_EXIT signal=NUMBER for the command, on\n"
-    "its standard output. wlterm exits with status 0 once the command has\n"
-    "been reaped, whatever the command's status, and 1 when the window,\n"
-    "font or pseudo-terminal cannot be set up. If COMMAND cannot be executed\n"
-    "the command's status is 127.\n"
+    "its standard output. wlterm exits with the command's exit status, or\n"
+    "128 plus the signal number when a signal ended it; closing the window\n"
+    "usually ends the command with SIGHUP, giving 129. If COMMAND cannot be\n"
+    "executed the command's status is 127. wlterm exits with status 1 when\n"
+    "the window, font or pseudo-terminal cannot be set up.\n"
     "\n"
     "Options:\n"
     "      --watch TEXT  write WLTERM_GRID \"TEXT\" on standard output the\n"
@@ -345,21 +347,30 @@ int main(int argc, char **argv) {
      * blocked forever. SIGHUP on an already-exited pid is a harmless ESRCH. */
     close(master);
     int status = 0;
-    if (pid > 0) {
-        kill(pid, SIGHUP);
-        waitpid(pid, &status, 0);
+    kill(pid, SIGHUP);
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno == EINTR) continue;
+        /* No status to report: saying code=0 would claim a clean exit. */
+        perror("waitpid");
+        return 1;
     }
     /* WEXITSTATUS is undefined unless WIFEXITED, so a signal death cannot be
-     * reported through code=. */
+     * reported through code=. wlterm's own status follows the shell
+     * convention (status, or 128+N for signal N), so whatever runs wlterm --
+     * a desktop script, or cage, which forwards its client's status -- sees
+     * how the command ended, not just that the window went away. */
+    int exit_status;
     if (WIFSIGNALED(status)) {
         printf("WLTERM_EXIT signal=%d\n", WTERMSIG(status));
+        exit_status = 128 + WTERMSIG(status);
     } else {
-        printf("WLTERM_EXIT code=%d\n", WIFEXITED(status) ? WEXITSTATUS(status) : 0);
+        exit_status = WIFEXITED(status) ? WEXITSTATUS(status) : 0;
+        printf("WLTERM_EXIT code=%d\n", exit_status);
     }
     fflush(stdout);
 
     free(g_input);
     vt100_destroy(term);
     wpk_font_destroy(font);
-    return 0;
+    return exit_status;
 }

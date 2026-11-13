@@ -16,15 +16,14 @@ as SOURCE says:
               the first pak0.pak found (in any letter case) to
               BASEDIR/id1/pak0.pak. The extracted files stay in BASEDIR.
   librequake  ARCHIVE is a LibreQuake lite release. Extract all of it,
-              documentation and notices included, in BASEDIR, and move its
-              lite/id1 directory to BASEDIR/id1, which must not yet hold
-              any files.
+              documentation and notices included, in BASEDIR, and move the
+              contents of its lite/id1 directory into BASEDIR/id1.
   openquartz  ARCHIVE is an OpenQuartz PAK archive. Extract it in
               BASEDIR/id1.
   file        ARCHIVE is a pak0.pak. Copy it to BASEDIR/id1/pak0.pak.
 
-Give ARCHIVE and BASEDIR as absolute paths: the shareware step works from
-within BASEDIR, and announces itself on standard error. quake(1) runs this
+ARCHIVE and BASEDIR may be relative to the current directory. The
+shareware step announces itself on standard error. quake(1) runs this
 command to prepare its shareware data on first launch, and
 quake-activity(1) to prepare a networked game's data.
 
@@ -43,6 +42,10 @@ source_id="$1"
 archive="$2"
 base="$3"
 mkdir -p "$base/id1"
+# The shareware step works from within BASEDIR, so both paths are made
+# absolute first.
+case "$archive" in /*) ;; *) archive="$PWD/$archive" ;; esac
+base="$(cd "$base" && pwd)"
 case "$source_id" in
     shareware)
         echo 'quake: extracting shareware data from quake106.zip...' >&2
@@ -56,8 +59,10 @@ case "$source_id" in
     librequake)
         # Retain the full lite release, including all documentation/notices.
         unzip -o "$archive" -d "$base" >/dev/null
-        rmdir "$base/id1"
-        mv "$base/lite/id1" "$base/id1"
+        # BASEDIR/id1 may already hold files (it is created above, and a
+        # caller may reuse BASEDIR), so the release's id1 is merged into it.
+        cp -R "$base/lite/id1/." "$base/id1/"
+        rm -rf "$base/lite/id1"
         ;;
     openquartz) unzip -o "$archive" -d "$base/id1" >/dev/null ;;
     file) cp "$archive" "$base/id1/pak0.pak" ;;

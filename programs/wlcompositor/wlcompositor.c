@@ -3,8 +3,9 @@
  * wasm32 POSIX kernel (DRI plan §5 PR6, extended to a floating-window
  * desktop). It is a genuine libwayland *server*: it runs libwayland's
  * wl_event_loop on the kernel's epoll, listens on an AF_UNIX socket at
- * /tmp/wayland-0, holds DRM master on card0, and drives real input from
- * the ported libinput 1.25.0 path backend. Nothing here is mocked —
+ * $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY (by default /tmp/wayland-0), holds DRM
+ * master on card0, and drives real input from the ported libinput 1.25.0
+ * path backend. Nothing here is mocked —
  * clients speak the real wire protocol.
  *
  * v2 interface set:
@@ -137,10 +138,13 @@ extern unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle,
                                     unsigned gl_target);
 extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 
-/* The Wayland runtime dir. / is a read-only rootfs and /var/run is a
- * root-owned 0755 scratch mount, so under this kernel the only dir writable
- * by any uid is /tmp (mode 1777) — it plays the XDG_RUNTIME_DIR role here. */
-#define WL_SOCKET_PATH "/tmp/wayland-0"
+/* The Wayland runtime dir when XDG_RUNTIME_DIR is unset: Kandelo has no
+ * login manager to create one, / is a read-only rootfs and /var/run is a
+ * root-owned 0755 scratch mount, so the only dir writable by any uid is /tmp
+ * (mode 1777) — it plays the XDG_RUNTIME_DIR role here. With WAYLAND_DISPLAY
+ * also unset, the socket is /tmp/wayland-0, where every desktop launcher
+ * waits for it. */
+#define WL_RUNTIME_DIR "/tmp"
 /* The hyprctl analog: a control + event socket alongside the wayland one.
  * kwlctl (programs/wlcompositor/kwlctl.c) and the Tier-1 bar speak to it. */
 #define KWLCTL_SOCKET_PATH "/tmp/kwlctl-0"
@@ -150,7 +154,7 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 /* The Hyprland IPC socket pair, where Waybar's hyprland modules expect it:
  * $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock (request/
  * reply) + .socket2.sock (event stream). XDG_RUNTIME_DIR is /tmp here (see
- * WL_SOCKET_PATH above); main() exports the signature so spawned clients
+ * WL_RUNTIME_DIR above); main() exports the signature so spawned clients
  * find the dir. Requests answer in hyprctl -j shapes; both sockets share
  * kwlctl's command table and event broadcast. */
 #define HYPR_INSTANCE_SIG  "wlcompositor"
@@ -4153,7 +4157,12 @@ static void setup_gl_fail(void) {
  * this process, the DRM master, scans out. EGL offers 8-bit ARGB and ABGR
  * visuals; ARGB8888 has the scanout's [B,G,R,A] byte order. */
 static void setup_gl(void) {
-    if (getenv("WLC_NO_GPU")) return;
+    /* Only 1 forces the CPU path, as documented: WLC_NO_GPU=0 must not
+     * silently disable the GPU. Any other value is reported, like a bad
+     * WLC_SCALE, rather than guessed at. */
+    const char *no_gpu = getenv("WLC_NO_GPU");
+    if (no_gpu && strcmp(no_gpu, "1") == 0) return;
+    if (no_gpu) fprintf(stderr, "wlcompositor: ignoring WLC_NO_GPU=%s\n", no_gpu);
 
     glc.dpy = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, g.gbm, NULL);
     if (glc.dpy == EGL_NO_DISPLAY) return;
@@ -6141,10 +6150,6 @@ static int setup_input(void) {
     return 0;
 }
 
-/* Bind + listen an AF_UNIX socket at the fixed Wayland path and hand it to
- * libwayland. We manage the socket ourselves (rather than
- * wl_display_add_socket, which derives the path from XDG_RUNTIME_DIR) so
- * the path is deterministic for the client. */
 /* ====================================================================== */
 /* kwlctl control + event IPC (the hyprctl analog)                        */
 /* ====================================================================== */
@@ -6545,21 +6550,20 @@ static int setup_kwlctl(void) {
     return bind_control_socket(HYPR_SOCKET2_PATH, hypr_socket2_readable);
 }
 
+/* Listen where Wayland clients look: libwayland's wl_display_add_socket(NULL)
+ * resolves WAYLAND_DISPLAY (default wayland-0) in XDG_RUNTIME_DIR, or takes
+ * an absolute WAYLAND_DISPLAY as the path, exactly as wl_display_connect
+ * does on the client side. It also holds <socket>.lock, so a stale socket
+ * left by a compositor that died is replaced but a live compositor's is
+ * not, and it removes the socket on a clean exit. main() has already
+ * defaulted XDG_RUNTIME_DIR to WL_RUNTIME_DIR, so with neither variable set
+ * the socket is /tmp/wayland-0. */
 static int setup_socket(void) {
-    unlink(WL_SOCKET_PATH);              /* clear a stale socket */
-
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) { perror("socket"); return -1; }
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, WL_SOCKET_PATH, sizeof(addr.sun_path) - 1);
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind"); close(fd); return -1;
-    }
-    if (listen(fd, 8) < 0) { perror("listen"); close(fd); return -1; }
-    if (wl_display_add_socket_fd(g.display, fd) < 0) {
-        fprintf(stderr, "wl_display_add_socket_fd\n"); close(fd); return -1;
+    if (wl_display_add_socket(g.display, NULL) < 0) {
+        const char *name = getenv("WAYLAND_DISPLAY");
+        fprintf(stderr, "wlcompositor: cannot listen on Wayland display %s: %s\n",
+                name ? name : "wayland-0", strerror(errno));
+        return -1;
     }
     return 0;
 }
@@ -6574,7 +6578,9 @@ static const char help_text[] =
     "pointer input from /dev/input/event0 and /dev/input/event1 through\n"
     "libinput, and composites client windows with OpenGL ES 2 when an EGL\n"
     "renderer is available, otherwise on the CPU. Clients connect to the\n"
-    "socket " WL_SOCKET_PATH ". Its globals include xdg-shell, wlr layer shell,\n"
+    "socket named by WAYLAND_DISPLAY, by default wayland-0, in the directory\n"
+    "XDG_RUNTIME_DIR, by default " WL_RUNTIME_DIR "; an absolute WAYLAND_DISPLAY is\n"
+    "the socket's path. Its globals include xdg-shell, wlr layer shell,\n"
     "linux-dmabuf, wl_data_device_manager, the wlr and ext data-control\n"
     "protocols, ext-session-lock, ext-idle-notify and Hyprland global\n"
     "shortcuts.\n"
@@ -6585,7 +6591,7 @@ static const char help_text[] =
     HYPR_SOCKET2_PATH ". Commands started by key\n"
     "bindings or by \"dispatch exec\" inherit\n"
     "HYPRLAND_INSTANCE_SIGNATURE=" HYPR_INSTANCE_SIG " and, if it was unset,\n"
-    "XDG_RUNTIME_DIR=/tmp.\n"
+    "XDG_RUNTIME_DIR=" WL_RUNTIME_DIR ".\n"
     "\n"
     "Key bindings, window rules, the starting theme and a theme-change\n"
     "notifier are read from " WLC_CONFIG_PATH ", a subset of\n"
@@ -6605,12 +6611,15 @@ static const char help_text[] =
     "last connected client disconnects, and with status 1 when setup fails.\n"
     "\n"
     "Environment:\n"
-    "  WLC_CONFIG     read this configuration file instead\n"
-    "  WLC_LAYOUT     dwindle selects the tiling layout; the default floats\n"
-    "  WLC_SCALE      output scale from 1 to 3; by default it is derived from\n"
-    "                 the display's physical size\n"
-    "  WLC_THEME_DIR  read themes from this directory instead\n"
-    "  WLC_NO_GPU     when set, always composite on the CPU\n"
+    "  WAYLAND_DISPLAY  the socket's name in XDG_RUNTIME_DIR, or its absolute\n"
+    "                   path\n"
+    "  XDG_RUNTIME_DIR  the directory of the socket\n"
+    "  WLC_CONFIG       read this configuration file instead\n"
+    "  WLC_LAYOUT       dwindle selects the tiling layout; the default floats\n"
+    "  WLC_SCALE        output scale from 1 to 3; by default it is derived\n"
+    "                   from the display's physical size\n"
+    "  WLC_THEME_DIR    read themes from this directory instead\n"
+    "  WLC_NO_GPU       1 makes it always composite on the CPU\n"
     "\n"
     "Options:\n"
     "      --help     display this help and exit\n"
@@ -6732,6 +6741,10 @@ int main(int argc, char **argv) {
     new_client.notify = client_created;
     wl_display_add_client_created_listener(g.display, &new_client);
 
+    /* Kandelo's runtime dir stands in for an unset XDG_RUNTIME_DIR before
+     * the socket is placed in it, so the socket and every client spawned
+     * through dispatch exec agree on the directory. */
+    setenv("XDG_RUNTIME_DIR", WL_RUNTIME_DIR, 0);
     if (setup_socket() != 0) return 1;
 
     /* Auto-reap `dispatch exec` children so they don't linger as zombies. */
@@ -6742,9 +6755,8 @@ int main(int argc, char **argv) {
      * it; kwlctl_send already handles the short write. */
     signal(SIGPIPE, SIG_IGN);
     /* Children spawned via dispatch exec (Waybar among them) locate the
-     * Hyprland IPC sockets through this pair. */
+     * Hyprland IPC sockets through this and XDG_RUNTIME_DIR (set above). */
     setenv("HYPRLAND_INSTANCE_SIGNATURE", HYPR_INSTANCE_SIG, 1);
-    setenv("XDG_RUNTIME_DIR", "/tmp", 0);
     if (setup_kwlctl() != 0) return 1;
 
     printf("COMPOSITOR_UP w=%u h=%u\n", g.width, g.height);

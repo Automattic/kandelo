@@ -17,8 +17,9 @@ match the catalog, and installs it in $XDG_DATA_HOME/dos-play/GAME (by
 default ~/.local/share/dos-play/GAME): a ZIP is extracted with every file
 kept, licenses included, and a lone program is installed with its license.
 While a game downloads, its lock directory, .GAME.lock beside it, makes
-another dos-play of the same game fail. dos-play then runs the game's
-program with dosbox-pure(1).
+another dos-play of the same game fail; a lock left by a download that was
+killed is removed. dos-play then runs the game's program with
+dosbox-pure(1).
 
 PATH, which must begin with /, ./ or ../, is local content passed to
 dosbox-pure(1) as is: a game ZIP, a DOS program, a disk image, a
@@ -71,7 +72,19 @@ mkdir -p "$GAMES"
 if [ "$(cat "$DIR/.download-sha256" 2>/dev/null || true)" != "$SHA256" ] ||
    [ ! -f "$DIR/$EXE" ]; then
     LOCK="$GAMES/.$ID.lock"
-    mkdir "$LOCK" 2>/dev/null || { say "Another download is in progress: $ID ($LOCK)"; exit 1; }
+    if ! mkdir "$LOCK" 2>/dev/null; then
+        # A download killed outright (SIGKILL, machine stopped) cannot run
+        # its cleanup. Its lock names a process that no longer exists, so it
+        # is removed and taken over. A lock without a PID yet belongs to a
+        # download that is just starting.
+        OWNER=$(cat "$LOCK/pid" 2>/dev/null || true)
+        if [ -n "$OWNER" ] && ! kill -0 "$OWNER" 2>/dev/null; then
+            say "Removing the lock of an interrupted download: $ID"
+            rm -rf "$LOCK"
+        fi
+        mkdir "$LOCK" 2>/dev/null || { say "Another download is in progress: $ID ($LOCK)"; exit 1; }
+    fi
+    echo $$ > "$LOCK/pid"
     cleanup() { rm -rf "$LOCK"; }
     trap cleanup EXIT
     trap 'exit 130' INT
