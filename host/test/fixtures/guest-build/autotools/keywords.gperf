@@ -1,0 +1,8 @@
+%struct-type
+%language=ANSI-C
+%define lookup-function-name keyword_lookup
+struct keyword { const char *name; int value; };
+%%
+one, 1
+two, 2
+three, 3
