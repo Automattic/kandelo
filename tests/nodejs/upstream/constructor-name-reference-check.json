@@ -1,0 +1,455 @@
+{
+  "schema": 1,
+  "recordedAt": "2026-11-13T02:22:17.869103+00:00",
+  "scope": "Authenticated constructor-name contract/capture audit and pinned native-reference controls only; no new Kandelo implementation/build/runtime evidence",
+  "nativeReference": {
+    "report": {
+      "path": ".context/node-constructor-name/final-reference/report.json",
+      "bytes": 11834,
+      "sha256": "41752867c40f3a6f077b33152a1a0f45c28c7665c9072d0ab117c1071abeaa11"
+    },
+    "program": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+      "bytes": 147346864,
+      "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+    },
+    "fixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/constructor-name-reference-controls.js",
+      "bytes": 4803,
+      "sha256": "7ba6b2f5a9b846e325fbb5c9cc03cfb3b51f385978305fc5fd55dce08582a35a"
+    },
+    "expectations": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/constructor-name-reference-expectations.json",
+      "bytes": 3291,
+      "sha256": "e427e9b7a7bd51c7b4d23d2e526b8f2a45280f034ee249e932fc2e437da49a16"
+    },
+    "runner": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/scripts/run-nodejs-constructor-name-reference.py",
+      "bytes": 4329,
+      "sha256": "31601dcbb87507ee2e57585a6203a76b550e0edeee59f4bf07d268b0313d31e5"
+    },
+    "groups": 40,
+    "nameObservations": 80,
+    "userGetterOrProxyCalls": 0,
+    "explicitGCInvoked": true,
+    "compactionProven": false,
+    "identityRejection": {
+      "path": ".context/node-constructor-name/identity-rejection/report.json",
+      "bytes": 1976,
+      "sha256": "e23a9656545b7a8d20290f03733f73ffbf522c4e79ee151d1f618c847ac500bc"
+    },
+    "rejectedCandidateLaunched": false
+  },
+  "sourceReview": {
+    "recordedAt": "2026-11-13T02:20:56.932502+00:00",
+    "sourceArchives": [
+      {
+        "path": "/Users/brandon/kandelo-preservation/davao-20261109T062614Z/node-upstream-restart/reference-archives/node-v26.13.0.tar.gz",
+        "bytes": 127162302,
+        "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+      },
+      {
+        "path": "/Users/brandon/.cache/kandelo/source-only/source-archives/sha256/1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028/payload",
+        "bytes": 637083992,
+        "sha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028"
+      }
+    ],
+    "wholeOriginalSources": [
+      {
+        "originalPath": "deps/v8/src/objects/js-objects.cc",
+        "archive": "node",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/node/deps/v8/src/objects/js-objects.cc",
+          "bytes": 241219,
+          "sha256": "b9b77eec122059b1408f35cc3122d72e01375a784af4d6cb019ad0df83b00bff"
+        },
+        "wholeOriginalFile": true
+      },
+      {
+        "originalPath": "deps/v8/src/objects/js-objects.h",
+        "archive": "node",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/node/deps/v8/src/objects/js-objects.h",
+          "bytes": 65549,
+          "sha256": "fb51133035482db60a062db7d42e0989925fcf6b3e0ce9f624af51e14be13e74"
+        },
+        "wholeOriginalFile": true
+      },
+      {
+        "originalPath": "deps/v8/include/v8-object.h",
+        "archive": "node",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/node/deps/v8/include/v8-object.h",
+          "bytes": 44114,
+          "sha256": "d0fba4db8ee994b3d431ba3a432dfcb3d6cea832fe0013e79d2dd4a51ad515a0"
+        },
+        "wholeOriginalFile": true
+      },
+      {
+        "originalPath": "src/node_util.cc",
+        "archive": "node",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/node/src/node_util.cc",
+          "bytes": 22384,
+          "sha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae"
+        },
+        "wholeOriginalFile": true
+      },
+      {
+        "originalPath": "src/util.cc",
+        "archive": "node",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/node/src/util.cc",
+          "bytes": 32624,
+          "sha256": "d5ff5ddf59fea718016f5028ec54661ea8f92e37070d82c7dae2e39ab1e91172"
+        },
+        "wholeOriginalFile": true
+      },
+      {
+        "originalPath": "src/node_errors.cc",
+        "archive": "node",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/node/src/node_errors.cc",
+          "bytes": 45641,
+          "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d"
+        },
+        "wholeOriginalFile": true
+      },
+      {
+        "originalPath": "lib/internal/util/inspect.js",
+        "archive": "node",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/node/lib/internal/util/inspect.js",
+          "bytes": 102484,
+          "sha256": "55d054a4f96e664558a0271e2029a31da6e644edca9a224ce05a4de73b425ca9"
+        },
+        "wholeOriginalFile": true
+      },
+      {
+        "originalPath": "js/src/vm/PlainObject-inl.h",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/vm/PlainObject-inl.h",
+          "bytes": 3379,
+          "sha256": "a01b5a92828a8ab561b0e0f659af9a12feb81e19e009b6dabed3e6f1943dcb81"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/vm/PlainObject-inl.h",
+          "bytes": 3379,
+          "sha256": "a01b5a92828a8ab561b0e0f659af9a12feb81e19e009b6dabed3e6f1943dcb81"
+        },
+        "currentPreparedMatchesOriginal": true
+      },
+      {
+        "originalPath": "js/src/vm/Interpreter.cpp",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/vm/Interpreter.cpp",
+          "bytes": 169059,
+          "sha256": "4dbb043fad1e76c7291fc8219f7eb0b9c7d12fb6d47c1f4ed55bfef7ba5f1f16"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/vm/Interpreter.cpp",
+          "bytes": 169059,
+          "sha256": "4dbb043fad1e76c7291fc8219f7eb0b9c7d12fb6d47c1f4ed55bfef7ba5f1f16"
+        },
+        "currentPreparedMatchesOriginal": true
+      },
+      {
+        "originalPath": "js/src/vm/PortableBaselineInterpret.cpp",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/vm/PortableBaselineInterpret.cpp",
+          "bytes": 331825,
+          "sha256": "97a6613d3fa45035f38f48330fe45cf840f32eade0ec600b7a5709bda4d223a2"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/vm/PortableBaselineInterpret.cpp",
+          "bytes": 331825,
+          "sha256": "97a6613d3fa45035f38f48330fe45cf840f32eade0ec600b7a5709bda4d223a2"
+        },
+        "currentPreparedMatchesOriginal": true
+      },
+      {
+        "originalPath": "js/src/jit/VMFunctions.cpp",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/jit/VMFunctions.cpp",
+          "bytes": 103931,
+          "sha256": "18e0e70db40e2fb87485a054fbed899e6d58c38595b481d58ad22dc4a044c2c0"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/jit/VMFunctions.cpp",
+          "bytes": 103931,
+          "sha256": "18e0e70db40e2fb87485a054fbed899e6d58c38595b481d58ad22dc4a044c2c0"
+        },
+        "currentPreparedMatchesOriginal": true
+      },
+      {
+        "originalPath": "js/src/jit/CodeGenerator.cpp",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/jit/CodeGenerator.cpp",
+          "bytes": 752826,
+          "sha256": "ff156c134e0046027d946302f10a1e0763c5a2d3c9270a46309042d8b8f9f6f5"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/jit/CodeGenerator.cpp",
+          "bytes": 752826,
+          "sha256": "ff156c134e0046027d946302f10a1e0763c5a2d3c9270a46309042d8b8f9f6f5"
+        },
+        "currentPreparedMatchesOriginal": true
+      },
+      {
+        "originalPath": "js/src/jit/WarpCacheIRTranspiler.cpp",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/jit/WarpCacheIRTranspiler.cpp",
+          "bytes": 221366,
+          "sha256": "a8a70d91e7cbba4092850c5b4880bb29366e10f23e8c9c7fb4096b5f2beb2d53"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/jit/WarpCacheIRTranspiler.cpp",
+          "bytes": 221366,
+          "sha256": "a8a70d91e7cbba4092850c5b4880bb29366e10f23e8c9c7fb4096b5f2beb2d53"
+        },
+        "currentPreparedMatchesOriginal": true
+      },
+      {
+        "originalPath": "js/src/vm/Realm.h",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/vm/Realm.h",
+          "bytes": 33908,
+          "sha256": "b224fe5ef8e41ddbfc924444a6fd6c6dcf35abc936ce49e434f80455aea46b87"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/vm/Realm.h",
+          "bytes": 33908,
+          "sha256": "b224fe5ef8e41ddbfc924444a6fd6c6dcf35abc936ce49e434f80455aea46b87"
+        },
+        "currentPreparedMatchesOriginal": true
+      },
+      {
+        "originalPath": "js/src/vm/Realm.cpp",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/vm/Realm.cpp",
+          "bytes": 25616,
+          "sha256": "7ed4c5c115556b210e016eb19ada98f83570b10093dffe2f4f6040ce95ae3aaa"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/vm/Realm.cpp",
+          "bytes": 25616,
+          "sha256": "7ed4c5c115556b210e016eb19ada98f83570b10093dffe2f4f6040ce95ae3aaa"
+        },
+        "currentPreparedMatchesOriginal": true
+      },
+      {
+        "originalPath": "js/src/vm/JSObject.h",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/vm/JSObject.h",
+          "bytes": 39641,
+          "sha256": "51dac37922a00480bfdcb104c2ffa7cc9488bc4ad2f1fa93cd97a20b9301b996"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/vm/JSObject.h",
+          "bytes": 39641,
+          "sha256": "51dac37922a00480bfdcb104c2ffa7cc9488bc4ad2f1fa93cd97a20b9301b996"
+        },
+        "currentPreparedMatchesOriginal": true
+      },
+      {
+        "originalPath": "js/src/jsfriendapi.h",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/jsfriendapi.h",
+          "bytes": 30896,
+          "sha256": "4494b5ec8a82b6ba2669190e953c0c0a496190f2f221fef421fa9e1d55dad2fd"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/jsfriendapi.h",
+          "bytes": 30896,
+          "sha256": "4494b5ec8a82b6ba2669190e953c0c0a496190f2f221fef421fa9e1d55dad2fd"
+        },
+        "currentPreparedMatchesOriginal": true
+      },
+      {
+        "originalPath": "js/src/jsfriendapi.cpp",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/jsfriendapi.cpp",
+          "bytes": 26937,
+          "sha256": "a2614b1b95c03bb97a3650358bb4838a1917aa2e0d1559a510a604240be331c8"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/jsfriendapi.cpp",
+          "bytes": 26937,
+          "sha256": "a2614b1b95c03bb97a3650358bb4838a1917aa2e0d1559a510a604240be331c8"
+        },
+        "currentPreparedMatchesOriginal": true
+      },
+      {
+        "originalPath": "js/src/gc/WeakMap.h",
+        "archive": "mozilla",
+        "retained": {
+          "path": ".context/node-constructor-name/authenticated-source/mozilla/js/src/gc/WeakMap.h",
+          "bytes": 15305,
+          "sha256": "a426ea1faeab04c0b3e5579781a02c39c63de39e3e570af0797c3231c074a732"
+        },
+        "wholeOriginalFile": true,
+        "currentPreparedSource": {
+          "path": ".scratch/agent-jobs/node-backtraces-private-cached-1112-165951-0042/scratch/owner-build/spidermonkey-source/js/src/gc/WeakMap.h",
+          "bytes": 15305,
+          "sha256": "a426ea1faeab04c0b3e5579781a02c39c63de39e3e570af0797c3231c074a732"
+        },
+        "currentPreparedMatchesOriginal": true
+      }
+    ],
+    "currentPreparedFilesUnchanged": true
+  },
+  "sourceReviewFile": {
+    "path": ".context/node-constructor-name/source-review.json",
+    "bytes": 11806,
+    "sha256": "b66d5bbdf13a5649ca8a81e99395707be7e32a437cd701510f7179a69711d446"
+  },
+  "metadataInputs": [
+    {
+      "path": "docs/nodejs-upstream-runtime.md",
+      "bytes": 195844,
+      "sha256": "95d24fbe1e8e5241579c4b97e099f1dc9601b629e0509dba3699e052967f1eaa"
+    },
+    {
+      "path": "tests/nodejs/upstream/implementation-ledger.json",
+      "bytes": 102127,
+      "sha256": "c51c45f077f9bcdc38979fbe2a74aa19714ff93a0df2cfda9e58802310c85b37"
+    },
+    {
+      "path": "tests/nodejs/upstream/constructor-name-contracts.json",
+      "bytes": 9563,
+      "sha256": "135ed13c05c0caa653f9f0e863dc48f1cb751d3f5f163abf8cbf4a0f9ae9478c"
+    },
+    {
+      "path": "scripts/run-nodejs-constructor-name-reference.py",
+      "bytes": 4329,
+      "sha256": "31601dcbb87507ee2e57585a6203a76b550e0edeee59f4bf07d268b0313d31e5"
+    },
+    {
+      "path": "tests/nodejs/upstream/constructor-name-reference-controls.js",
+      "bytes": 4803,
+      "sha256": "7ba6b2f5a9b846e325fbb5c9cc03cfb3b51f385978305fc5fd55dce08582a35a"
+    },
+    {
+      "path": "tests/nodejs/upstream/constructor-name-reference-expectations.json",
+      "bytes": 3291,
+      "sha256": "e427e9b7a7bd51c7b4d23d2e526b8f2a45280f034ee249e932fc2e437da49a16"
+    }
+  ],
+  "engineInputs": {
+    "priorEngineReceipt": {
+      "path": "tests/nodejs/upstream/native-isolate-options-engine-check.json",
+      "bytes": 314694,
+      "sha256": "a0012e586019616c309015b86ae2e557bb4eb697132a8ebad193d4cf0f0bdae6"
+    },
+    "all785DeclaredBuildInputsUnchanged": true,
+    "all100StagedNativeSourceInputsUnchanged": true,
+    "packageRevision": 68,
+    "program": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-isolate-options/native-owner-probe.wasm",
+      "bytes": 59938709,
+      "sha256": "fbb1cfd40f2db4fe22408c23074f714154d1cbc71fd4fccd2989b219a08b6c95"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "normalUndefined": 23,
+    "normalExecutableExists": false,
+    "freshBuildRun": false,
+    "freshKandeloRuntimeValidation": false,
+    "priorFourHostEvidence": "native-isolate-options-engine-check.json"
+  },
+  "sourceIdentity": {
+    "manifest": {
+      "path": "third_party/nodejs/sources.json",
+      "bytes": 135353,
+      "sha256": "717e5bd66db7aba6126467e44356a9384c919abd3040b81c7c529b1245cc5431"
+    },
+    "records": 581,
+    "javascriptFiles": 443,
+    "javascriptBytes": 10993403,
+    "allImportedBytesUnchanged": true
+  },
+  "sourceIndexControls": {
+    "report": {
+      "path": ".context/node-constructor-name/source-verification-final.json",
+      "bytes": 11462,
+      "sha256": "aad1f5c6080bbba5ff42820f5d25e6d46c70e106165680f5b8a2487fba0acacb"
+    },
+    "groups": 29,
+    "canonicalOutputs": 3,
+    "sameCountMutationRejection": true
+  },
+  "retainedInitialEvidence": [
+    {
+      "path": ".context/node-constructor-name/native-reference-initial.json",
+      "bytes": 4119,
+      "sha256": "ba0dcdbe96c461fd59b28f8d710b23590caae46c57737ca8b3dab738f9aa6fe6"
+    },
+    {
+      "path": ".context/node-constructor-name/native-fixture-initial.cjs",
+      "bytes": 4855,
+      "sha256": "7c9aafe8013a9a3cc18f86fb2ed9d13996feca65046f4b6d4026cbd08bcec78f"
+    },
+    {
+      "path": ".context/node-constructor-name/native-reference-final.json",
+      "bytes": 11009,
+      "sha256": "1c15fe21458be59bd26b2f235d70653e3cdc9fdb150cffcc0de22dea455926cc"
+    },
+    {
+      "path": ".context/node-constructor-name/verified-reference/report.json",
+      "bytes": 11357,
+      "sha256": "a5986038226ab10a8e51c00f8224d9d36c8eab89567dfb58bec88dd8830d2b1c"
+    },
+    {
+      "path": ".context/node-constructor-name/archive-prefix-failure.json",
+      "bytes": 525,
+      "sha256": "3bbb3254bd3616a6467f88b09bea1a05f687297e25283ac80ae32a3b7006b663"
+    }
+  ],
+  "initialSourceAuditFailure": "Initial collector assumed an outer Mozilla archive directory; actual archive has a flat layout. Retained error, corrected streaming exact-member matching; no source/runtime workaround or upstream change.",
+  "implementationChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamNodeAlgorithmsRewritten": false,
+  "functionExcerptsImported": false,
+  "sourcePinChanged": false,
+  "sourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "completeBackendCatalog": false,
+  "wholeGoalComplete": false,
+  "notRun": [
+    "Kandelo constructor-name runtime controls",
+    "new engine/package build",
+    "new guest four-host runs",
+    "full products/images/kernel/successor ABI rebuilds",
+    "overall conformance suites"
+  ],
+  "remaining": [
+    "Actual engine construction identity and data-only native lookup",
+    "Original constructor-name consumers on identified artifacts/all four hosts",
+    "All23 normal interfaces, genuine startup/CJS/ESM, complete backend catalog/ordered roadmap and explicit review gate"
+  ]
+}

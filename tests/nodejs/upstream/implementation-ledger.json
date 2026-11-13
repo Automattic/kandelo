@@ -105,7 +105,9 @@
     "nativeInternalsPartialCatalog": "native-internals-contracts.json",
     "nativeInternalsEngineEvidence": "native-internals-engine-check.json",
     "nativeIsolateOptionsPartialCatalog": "native-isolate-options-contracts.json",
-    "nativeIsolateOptionsEngineEvidence": "native-isolate-options-engine-check.json"
+    "nativeIsolateOptionsEngineEvidence": "native-isolate-options-engine-check.json",
+    "constructorNamePartialCatalog": "constructor-name-contracts.json",
+    "constructorNameNativeReferenceEvidence": "constructor-name-reference-check.json"
   },
   "implementation": [
     {
@@ -427,6 +429,12 @@
       "status": "Codec State owns stable IsolateData bound to its actual Isolate; Environment/isolate getters return the original parsed option objects, and process/fatal aliases share original storage and mutex. Shadow value structures and snapshot accessors removed. Selected private66 controls pass on four hosts, including original14-group options fixture and expected failure/assertion paths.",
       "evidence": "native-isolate-options-engine-check.json",
       "remaining": "Normal23 native contracts; actual allocator selection/allocation bodies, full startup/fatal/config/worker lifecycle, source-policy and complete catalog/roadmap"
+    },
+    {
+      "area": "constructor-name engine contract/source capture review",
+      "status": "Reference-only40 controls/80 name observations pass with explicit native GC and zero user getter/proxy calls; actual engine construction identity is required and unimplemented. No engine/package input change.",
+      "evidence": "constructor-name-reference-check.json",
+      "remaining": "All23 normal native interfaces remain unlinked; constructor capture, actual owning-engine lookup and four-host validation not implemented"
     }
   ],
   "runtimeConformance": {
@@ -1720,7 +1728,7 @@
     }
   },
   "nextWork": [
-    "Implement normal23 actual allocator/heap/guest-memory accounting, process exit/stdio/at-exit, real request/handle producer/ref state, signal/permission/report and native-loading contracts. Original option records and mutex now shared with actual per-State IsolateData identity; no shadow defaults. Preserve incomplete field/factory/construction/Message/source-policy and full config/lifecycle gaps. Then genuine startup/CJS/ESM/full catalog/ordered roadmap and explicit review gate; private66 controls do not establish startup.",
+    "Implement normal23 actual allocator/heap/guest-memory accounting, process exit/stdio/at-exit, real request/handle producer/ref state, signal/permission/report and native-loading contracts. Original option records and mutex now shared with actual per-State IsolateData identity; no shadow defaults. Preserve incomplete field/factory/construction/Message/source-policy and full config/lifecycle gaps. Then genuine startup/CJS/ESM/full catalog/ordered roadmap and explicit review gate; private66 controls do not establish startup. Constructor-name reference40 controls show retained constructor identity plus live data name, data-only tag/prototype fallback and separate newTarget/prototype roles; implement owning-engine metadata rather than a cached name/prototype heuristic. See constructor-name-contracts.json.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",

@@ -1,0 +1,167 @@
+{
+  "schema": 1,
+  "kind": "native-constructor-name-reference",
+  "cases": 40,
+  "observations": [
+    {
+      "name": "plain-object",
+      "result": "Object"
+    },
+    {
+      "name": "null-prototype",
+      "result": "Object"
+    },
+    {
+      "name": "ordinary-class-instance",
+      "result": "Original"
+    },
+    {
+      "name": "own-constructor-value",
+      "result": "Original"
+    },
+    {
+      "name": "own-constructor-getter",
+      "result": "Object"
+    },
+    {
+      "name": "prototype-constructor-replaced-after-construction",
+      "result": "Original"
+    },
+    {
+      "name": "prototype-constructor-getter",
+      "result": "Original"
+    },
+    {
+      "name": "instance-prototype-replaced",
+      "result": "Original"
+    },
+    {
+      "name": "constructor-name-redefined",
+      "result": "Replacement"
+    },
+    {
+      "name": "constructor-name-getter",
+      "result": "Original"
+    },
+    {
+      "name": "constructor-prototype-object",
+      "result": "Object"
+    },
+    {
+      "name": "constructed-object-becomes-a-prototype",
+      "result": "Original"
+    },
+    {
+      "name": "prototype-only-constructor-data",
+      "result": "Replacement"
+    },
+    {
+      "name": "prototype-only-constructor-accessor",
+      "result": "Object"
+    },
+    {
+      "name": "different-new-target",
+      "result": "Replacement"
+    },
+    {
+      "name": "different-new-target-with-prototype-constructor-replaced",
+      "result": "Third"
+    },
+    {
+      "name": "empty-named-constructor",
+      "result": "Object"
+    },
+    {
+      "name": "anonymous-class-inferred-name",
+      "result": "Inferred"
+    },
+    {
+      "name": "own-string-tag-on-object",
+      "result": "Tagged"
+    },
+    {
+      "name": "own-empty-string-tag-on-object",
+      "result": ""
+    },
+    {
+      "name": "own-number-tag-on-object",
+      "result": "Object"
+    },
+    {
+      "name": "own-tag-getter-on-object",
+      "result": "Object"
+    },
+    {
+      "name": "prototype-string-tag-on-object",
+      "result": "Tagged"
+    },
+    {
+      "name": "tag-on-constructed-instance",
+      "result": "Original"
+    },
+    {
+      "name": "tag-on-constructed-instance-prototype",
+      "result": "Original"
+    },
+    {
+      "name": "proxy",
+      "result": "Object"
+    },
+    {
+      "name": "proxy-to-constructed-instance",
+      "result": "Object"
+    },
+    {
+      "name": "revoked-proxy",
+      "result": "Object"
+    },
+    {
+      "name": "proxy-in-prototype-chain",
+      "result": "Object"
+    },
+    {
+      "name": "array",
+      "result": "Array"
+    },
+    {
+      "name": "array-prototype-replaced",
+      "result": "Array"
+    },
+    {
+      "name": "typed-array",
+      "result": "Uint8Array"
+    },
+    {
+      "name": "array-buffer",
+      "result": "ArrayBuffer"
+    },
+    {
+      "name": "map",
+      "result": "Map"
+    },
+    {
+      "name": "date",
+      "result": "Date"
+    },
+    {
+      "name": "error",
+      "result": "TypeError"
+    },
+    {
+      "name": "function",
+      "result": "Function"
+    },
+    {
+      "name": "bound-function",
+      "result": "Function"
+    },
+    {
+      "name": "cross-context-instance",
+      "result": "Foreign"
+    },
+    {
+      "name": "frozen-constructed-instance",
+      "result": "Original"
+    }
+  ]
+}
