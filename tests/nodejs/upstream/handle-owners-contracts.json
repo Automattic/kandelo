@@ -130,5 +130,11 @@
     "catalog": "template-inheritance-contracts.json",
     "evidence": "template-inheritance-engine-check.json",
     "scope": "Actual traced native inheritance, same-context parent prototypes and inherited receiver signatures validated with generic native fixtures on four hosts. Full original factories, AsyncWrap field layout and callback dependencies remain unfinished."
+  },
+  "signalOwnerFollowup": {
+    "packageRevision": 75,
+    "catalog": "signal-owner-contracts.json",
+    "evidence": "signal-owner-engine-check.json",
+    "scope": "Complete original SignalWrap class/unit and real original handler map compile. Initial empty-map and real callback construction state tested; positive signal/handle producer and callback lifecycle remain unvalidated."
   }
 }

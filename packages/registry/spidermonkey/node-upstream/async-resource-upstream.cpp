@@ -13,3 +13,6 @@
 #define node kandelo_node_codec_impl
 #include "shell/node-upstream/resource-upstream/async_wrap.cc"
 #include "shell/node-upstream/resource-upstream/handle_wrap.cc"
+#undef NODE_BINDING_CONTEXT_AWARE_INTERNAL
+#define NODE_BINDING_CONTEXT_AWARE_INTERNAL(name,callback) namespace kandelo_signal_wrap_adapter {Initializer initializer=::callback;}
+#include "shell/node-upstream/resource-upstream/signal_wrap.cc"

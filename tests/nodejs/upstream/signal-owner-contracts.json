@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "packageRevision": 75,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Complete original SignalWrap unit and actual process-wide mutex-protected handler map compile; initial-empty map and genuine native construction-state primitives validated. Positive original signal registration/delivery/stop/close lifecycle remains unvalidated.",
+  "completeBindingContract": false,
+  "evidence": "signal-owner-engine-check.json",
+  "wholeOriginalFiles": [
+    {
+      "path": "src/signal_wrap.cc",
+      "role": "provenance",
+      "bytes": 5887,
+      "sha256": "d7dd9888ebb0fddb0fc5e350c36ea02c018eb71cb410a01c6fecbf5a3a7b5bbe",
+      "builtinId": null
+    }
+  ],
+  "upstreamConsumers": [
+    {
+      "path": "src/node_process_methods.cc",
+      "entry": "Kill",
+      "contract": "Original self/group signal termination check uses HasSignalJSHandler before running original at-exit callbacks. It must distinguish actual Node JS handler state from unrelated host or guest default signal dispositions."
+    },
+    {
+      "path": "src/signal_wrap.cc",
+      "entry": "HasSignalJSHandler/DecreaseSignalHandlerCount/SignalWrap.Start/Stop/Close",
+      "contract": "Original map and mutex own state. Successful real uv_signal_start increments; original stop/close decrements and erases at zero. Native callback enters original context/HandleScope and original MakeCallback route. Bodies remain unchanged."
+    },
+    {
+      "path": "src/signal_wrap.cc",
+      "entry": "SignalWrap.New/Initialize",
+      "contract": "Original constructor asserts IsConstructCall and inherits original HandleWrap/AsyncWrap templates. Existing bootstrap/resource assertions remain. Factory/lifecycle activation still requires original owner/callback prerequisites."
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "HasSignalJSHandler(int)",
+      "owner": "Whole original SignalWrap translation unit/process-wide handler map",
+      "contract": "Original locked contains query; no fabricated inventory or constant-false substitute. Initial control queries actual empty state before any Node signal producer and does not mutate it."
+    },
+    {
+      "name": "FunctionCallbackInfo.IsConstructCall",
+      "owner": "SpiderMonkey actual JS::CallArgs constructing flag",
+      "contract": "Read the actual current native callback arguments. Ordinary call/call/apply are false; new/subclass/Reflect.construct are true. Nested calls and shrinking GC preserve outer frame state; hook exceptions retain exact identity."
+    },
+    {
+      "name": "Boolean.New/Value",
+      "owner": "SpiderMonkey genuine Boolean values and concrete native wrappers",
+      "contract": "Construct actual BooleanValue and typed root; checked Value reads actual primitive without coercion. Native callback control round-trips both true and false through JS. Value getter implementation compiles; separate negative/type controls remain unrun."
+    }
+  ],
+  "ownershipAndScheduling": {
+    "map": "Same original mutex/map shared by all original SignalWrap producers in this guest process; counts update only on successful original start and original retirement. Initial empty state does not prove positive producer support.",
+    "resources": "Original HandleWrap/AsyncWrap constructor and callback graph remain intact and unactivated. No fake bootstrap flag, synthetic increment/decrement, fake uv handle, manual signal-map mutation or callback-success stub is supplied.",
+    "construction": "Actual native callback Frame owns original JS::CallArgs while callbacks run. Native reentry restores previous Frame; no receiver/prototype-based construction inference.",
+    "shutdown": "Positive native signal ref/stop/close/cancel/GC and pending-resource shutdown remain incomplete with the other original owner prerequisites."
+  },
+  "runtime": {
+    "driversPerHost": 95,
+    "newPrimitiveDriversPerHost": 2,
+    "previousDriversPerHost": 93,
+    "previousSourcesByteIdentical": true,
+    "hosts": [
+      "node",
+      "chromium",
+      "firefox",
+      "webkit"
+    ],
+    "totalGuestDrivers": 380,
+    "program": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-startup-native-owners/native-owner-probe.wasm",
+      "bytes": 60034922,
+      "sha256": "be6d630fe639b60db941546c6efb259fc570dec29bf7c36907150aa53b5df206"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "scope": "One generic construction-state/Boolean control, one actual initial-empty signal-map control, and93unchanged regressions. Private profile rejects process_methods; no normal startup or positive signal lifecycle evidence."
+  },
+  "remaining": [
+    "Complete original BaseObject class/unit/type-tag/native ownership integration; full AsyncWrap/HandleWrap/SignalWrap factory and callback closure",
+    "Real positive signal start/handler counts/delivery/stop/close/cancel/ref/GC and full shutdown after genuine bootstrap",
+    "InternalMakeCallback/async-context and further native callback/weak/root/lifecycle dependencies",
+    "All17 normal linker dependencies, genuine startup/CJS/ESM/fourhosts, complete backend catalog/ordered roadmap and explicit review"
+  ],
+  "wholeSignalUnitCompiles": true,
+  "initialSignalMapRuntimeValidated": true,
+  "callbackConstructionStateRuntimeValidated": true,
+  "positiveSignalLifecycleValidated": false,
+  "originalBaseObjectIntegrationComplete": false,
+  "originalConstructorFactoryRuntimeValidated": false,
+  "positiveHandleLifecycleValidated": false,
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamNodeAlgorithmsRewritten": false,
+  "functionExcerptsImported": false,
+  "nativeV8HeapOrSerializationUsed": false,
+  "sourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false
+}

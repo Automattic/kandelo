@@ -329,6 +329,9 @@ void Return(Isolate* isolate, Local<Value> value) {
 void ReturnNumber(Isolate* isolate,double value) { ReturnRaw(isolate,JS::DoubleValue(value)); }
 void ReturnBoolean(Isolate* isolate,bool value) { ReturnRaw(isolate,JS::BooleanValue(value)); }
 int ArgumentCount(Isolate* isolate) { auto& f=Current(isolate);CHECK(f.arguments);return int(f.arguments->length()); }
+bool CallbackIsConstructCall(Isolate* isolate){auto& frame=Current(isolate);CHECK(frame.arguments);return frame.arguments->isConstructing();}
+Local<Boolean> Boolean::New(Isolate* isolate,bool input){auto& frame=Current(isolate);JS::RootedValue value(frame.cx,JS::BooleanValue(input));return frame.Own<Boolean>(value);}
+bool Boolean::Value()const{CHECK(cell().value.isBoolean());return cell().value.toBoolean();}
 struct CatchScope {
   State& state;
   JSContext* cx;

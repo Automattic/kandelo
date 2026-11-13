@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 74 source connects the original process initializer,
+The current revision 75 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 18 symbols and has no normal runnable artifact.
+still fails final linking on 17 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -92,7 +92,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 585 files after complete native source/header additions; every
+manifest has 586 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -2912,3 +2912,18 @@ The full original BaseObject integration remains unfinished. The authenticated s
 The fresh normal build still has zero C++ errors and the same 18 unresolved symbols; there is no normal executable. All 585 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. All 20 prepared engine/build files and 74 declared patch inputs are unchanged. The new owned header is copied by the actual recipe and covered by normal style checking, with no new ignore rule or source patch. Exact 796 declared inputs, 103 staged native inputs and the private configuration are retained. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred. Startup, separate CommonJS/ESM entrypaths and the complete catalog/ordered-roadmap review milestone remain incomplete.
 
 See the [internal-field contracts](../tests/nodejs/upstream/internal-field-contracts.json) and [identified four-host receipt](../tests/nodejs/upstream/internal-field-engine-check.json).
+
+
+## Original signal owner and native construction state (revision 75)
+
+The complete unchanged signal_wrap.cc now compiles beside the original AsyncWrap and HandleWrap units. Its actual mutex-protected process-wide map supplies HasSignalJSHandler to the original process Kill method. The original successful-start increment, stop/close decrement, zero-count erase, native callback dispatch, factory inheritance and constructor assertions remain intact. The new runtime control only observes the genuine empty map before any Node signal producer. Positive registration, signal delivery, ref/stop/close/cancel/GC and shutdown remain unvalidated; unrelated host or guest default signal dispositions are not substituted for Node JS handler state.
+
+The SpiderMonkey embedding supplies FunctionCallbackInfo.IsConstructCall from the actual native JS::CallArgs flag. One control checks ordinary calls, call/apply, new, JavaScript subclasses, Reflect.construct, nested reentry, shrinking GC, preserved outer construction state and exact thrown-hook identity. Boolean.New/Value uses genuine VM Boolean primitives; true and false round-trip through this control. The original constructor assertion is not weakened and no bootstrap flag is fabricated.
+
+The identified private artifact passes 95 controls on each of Node, Chromium, Firefox and WebKit, 380 guest runs: two new controls and 93 byte-identical prior sources. The private profile rejects process_methods and cannot establish normal startup. The fresh normal build has zero C++ errors and 17 unresolved symbols, removing only HasSignalJSHandler from the previous 18. The linker set remains an incomplete backend-gap inventory. Complete original BaseObject/type-tag/native owner integration, full resource factories, InternalMakeCallback/async context and positive signal producers still require actual backends.
+
+The first compile failed on the missing map include and IsConstructCall interface; after those were supplied, a second build exposed the missing native Boolean factory. Both failures, their exact staged native inputs and configurations are retained. No executable was produced by those attempts and no upstream function body/assertion was changed. The final primitive and regression runs use the same identified successful private artifact.
+
+All 585 previous imported identities remain unchanged. The complete authenticated signal unit brings the total to 586; all 443 JavaScript files/10,993,403 bytes remain unchanged. Canonical source indexes were regenerated; 29 source-control groups, three reproducible indexes and changed-edge rejection pass. A strict source-style patch recognizes only the exact generated signal unit include path under the existing original-source classification, with no new ignored directory or owned-adapter exemption. Of 20 prepared engine/build files, 19 are unchanged and only the checker changes. All 74 prior declared patch inputs remain unchanged; the new patch makes 75. Exact 798 declared/103 staged inputs and private configuration are retained. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred. Startup, separate CommonJS/ESM entrypaths and the full catalog/ordered-roadmap review milestone remain incomplete.
+
+See the [signal-owner contracts](../tests/nodejs/upstream/signal-owner-contracts.json) and [identified four-host receipt](../tests/nodejs/upstream/signal-owner-engine-check.json).

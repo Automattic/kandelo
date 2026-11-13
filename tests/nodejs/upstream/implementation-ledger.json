@@ -10,7 +10,7 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 585,
+    "importedFiles": 586,
     "taskQueuePartialCatalog": "task-queue-contracts.json",
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
     "constantsPartialCatalog": "constants-contracts.json",
@@ -120,7 +120,9 @@
     "templateInheritancePartialCatalog": "template-inheritance-contracts.json",
     "templateInheritanceEngineEvidence": "template-inheritance-engine-check.json",
     "internalFieldPartialCatalog": "internal-field-contracts.json",
-    "internalFieldEngineEvidence": "internal-field-engine-check.json"
+    "internalFieldEngineEvidence": "internal-field-engine-check.json",
+    "signalOwnerPartialCatalog": "signal-owner-contracts.json",
+    "signalOwnerEngineEvidence": "signal-owner-engine-check.json"
   },
   "implementation": [
     {
@@ -484,6 +486,12 @@
       "status": "Actual variable-count per-instance field stores with traced Data payloads and concrete root factories; exact tagged caller-owned native pointers; five new controls plus88unchanged regressions pass on each of four hosts.",
       "evidence": "internal-field-engine-check.json",
       "remaining": "Whole original BaseObject class/unit/type-tag layout and resource owner integration, full factory/callback graph and complete negative/OOM/lifecycle coverage remain unfinished."
+    },
+    {
+      "area": "whole original signal handler owner and native construction state",
+      "status": "Complete original SignalWrap unit supplies actual mutex-protected process handler map. IsConstructCall reads real engine callback state; native Boolean construction uses actual primitive. Two new controls plus93unchanged regressions pass perhost.",
+      "evidence": "signal-owner-engine-check.json",
+      "remaining": "Original complete owner/factory/callback activation, positive signal lifecycle and normal17startup dependencies remain incomplete."
     }
   ],
   "runtimeConformance": {
@@ -1269,8 +1277,8 @@
       "originalUtilityIntegrationComplete": false
     },
     "nativeUtilities": {
-      "status": "Original units compile; native inheritance/internal-field primitives and93private controls perhost pass; normal18 unlinked; original BaseObject integration incomplete",
-      "evidence": "internal-field-engine-check.json",
+      "status": "Whole original SignalWrap and actual initial handler map plus native construction state validated;95private controls perhost pass; normal17unlinked",
+      "evidence": "signal-owner-engine-check.json",
       "currentRuntimeValidated": true,
       "unmodifiedSourcePolicySatisfied": false
     }
@@ -1777,7 +1785,7 @@
     }
   },
   "nextWork": [
-    "Resolve remaining18 real normal startup dependencies: HeapStatistics6, selected allocator, permission/signal, Environment.Exit, ResetStdio/RunAtExit, report, native loading and libuv memory. Engine template inheritance and general internal fields are implemented, but complete original BaseObject class/unit/type-tag layout and native ownership, full resource factories and InternalMakeCallback/async context remain unfinished. Then genuine startup/CJS/ESM/fourhosts, full backend catalog/dependency-ordered roadmap and explicit user review before broader execution.",
+    "Resolve remaining17 real normal startup dependencies: HeapStatistics6, selected allocator, permission, Environment.Exit, ResetStdio/RunAtExit, report, native loading and libuv memory. Original signal handler map now compiled, positive signal producers and original owner/factory/callback graph remain incomplete. Preserve whole original algorithms and honest errors, no fake memory or permission/exit/loading success. Then genuine startup/CJS/ESM/fourhosts, complete catalog/ordered roadmap and explicit review before broader execution.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1786,17 +1794,17 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 74,
+    "packageRevision": 75,
     "status": "failed final link in targeted original recipe operations over verified prepared source",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 18,
-    "evidence": "internal-field-engine-check.json",
+    "undefinedSymbols": 17,
+    "evidence": "signal-owner-engine-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
     "buildCacheKey": null,
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-internal-fields-normal-1113-011245-540a",
+    "buildJob": "node-signal-owner-normal-1113-014910-026e",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1829,8 +1837,8 @@
     ],
     "persistentHandleLayoutPrerequisitesCompile": true,
     "wholeOriginalUtilitiesCompile": true,
-    "sourceIdentityRecords": 585,
-    "previousCompileEvidence": "template-inheritance-engine-check.json",
+    "sourceIdentityRecords": 586,
+    "previousCompileEvidence": "internal-field-engine-check.json",
     "removedSinceRevision62": [
       "kandelo_node_codec_api::FunctionTemplate::New(kandelo_node_codec_api::Isolate*, void (*)(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&), kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Signature>, int, kandelo_node_codec_api::ConstructorBehavior, kandelo_node_codec_api::SideEffectType, kandelo_node_codec_api::CFunction const*)",
       "kandelo_node_codec_api::FunctionTemplate::PrototypeTemplate()",
@@ -1925,7 +1933,12 @@
     "nativeInternalFieldsImplemented": true,
     "originalBaseObjectIntegrationComplete": false,
     "removedSinceRevision73": [],
-    "addedSinceRevision73": []
+    "addedSinceRevision73": [],
+    "wholeOriginalSignalUnitCompiles": true,
+    "removedSinceRevision74": [
+      "kandelo_node_codec_impl::HasSignalJSHandler(int)"
+    ],
+    "addedSinceRevision74": []
   },
   "currentLibuvExecutablePath": {
     "packageRevision": 5,
@@ -1943,21 +1956,21 @@
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   },
   "currentNativeOwnerDiagnostic": {
-    "evidence": "internal-field-engine-check.json",
-    "packageRevision": 74,
+    "evidence": "signal-owner-engine-check.json",
+    "packageRevision": 75,
     "normalPackageArtifact": false,
     "startupAccepted": false,
     "normalEngineLinked": false,
     "privateProfileRejectsProcessMethods": true,
     "linked": true,
     "currentRuntimeValidated": true,
-    "currentDriversPerHost": 93,
-    "lastRuntimeValidatedRevision": 74,
+    "currentDriversPerHost": 95,
+    "lastRuntimeValidatedRevision": 75,
     "historicalDriversPerHost": 32,
     "undefinedSymbols": 0,
     "historicalEvidence": "persistent-handle-engine-check.json",
-    "buildJob": "node-internal-fields-private-1113-010930-b4ef",
-    "intendedDriversPerHost": 93,
+    "buildJob": "node-signal-owner-boolean-1113-014749-b703",
+    "intendedDriversPerHost": 95,
     "newDriversNotExecuted": 0,
     "hosts": [
       "node",
@@ -1966,16 +1979,16 @@
       "webkit"
     ],
     "program": {
-      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-internal-fields/native-owner-probe.wasm",
-      "bytes": 60026671,
-      "sha256": "3bc726774f4d423badee9f35493a4c60aa952c23cb19db518e6ef6a20d1e72ff"
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-startup-native-owners/native-owner-probe.wasm",
+      "bytes": 60034922,
+      "sha256": "be6d630fe639b60db941546c6efb259fc570dec29bf7c36907150aa53b5df206"
     },
     "kernel": {
       "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
       "bytes": 2958224,
       "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
     },
-    "previousDrivers": 88,
+    "previousDrivers": 93,
     "historicalFeatureDriverCounts": {
       "newStackDrivers": 4,
       "newTemplateDrivers": 4,
@@ -1988,12 +2001,14 @@
       "newConstructorDrivers": 7,
       "newHandlePrimitiveDrivers": 4,
       "newRequestDrivers": 0,
-      "newTemplateInheritanceDrivers": 5
+      "newTemplateInheritanceDrivers": 5,
+      "newInternalFieldDrivers": 5
     },
     "requestLifecycleValidated": false,
     "positiveHandleLifecycleValidated": false,
-    "newInternalFieldDrivers": 5,
-    "originalBaseObjectIntegrationComplete": false
+    "originalBaseObjectIntegrationComplete": false,
+    "newSignalPrimitiveDrivers": 2,
+    "positiveSignalLifecycleValidated": false
   },
   "historicalNativeOwnerDiagnostic": {
     "evidence": "persistent-handle-engine-check.json",

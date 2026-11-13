@@ -548,6 +548,7 @@ void Return(Isolate*,Local<Value>);
 void ReturnNumber(Isolate*,double);
 void ReturnBoolean(Isolate*,bool);
 int ArgumentCount(Isolate*);
+bool CallbackIsConstructCall(Isolate*);
 Local<Object> Receiver(Isolate*);
 Local<Object> PropertyHolder(Isolate*);
 Local<Value> PropertyData(Isolate*);
@@ -572,6 +573,7 @@ template<class T> class FunctionCallbackInfo {
   explicit FunctionCallbackInfo(Isolate* isolate):isolate_(isolate) {}
   Isolate* GetIsolate() const { return isolate_; }
   int Length() const { return ArgumentCount(isolate_); }
+  bool IsConstructCall()const{return CallbackIsConstructCall(isolate_);}
   Local<Value> operator[](int index) const { return Argument(isolate_,index); }
   Local<Object> This() const { return Receiver(isolate_); }
   Local<Value> Data() const { return CallbackData(isolate_); }

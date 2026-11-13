@@ -3971,6 +3971,13 @@
       "builtinId": null
     },
     {
+      "path": "src/signal_wrap.cc",
+      "role": "provenance",
+      "bytes": 5887,
+      "sha256": "d7dd9888ebb0fddb0fc5e350c36ea02c018eb71cb410a01c6fecbf5a3a7b5bbe",
+      "builtinId": null
+    },
+    {
       "path": "src/string_bytes.cc",
       "role": "provenance",
       "bytes": 29594,

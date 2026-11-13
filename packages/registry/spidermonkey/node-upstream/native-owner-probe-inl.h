@@ -68,6 +68,26 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"constructCallFactory")){
+    auto callback=[](const api::FunctionCallbackInfo<api::Value>& call){
+      auto* isolate=call.GetIsolate();auto context=isolate->GetCurrentContext();auto result=api::Object::New(isolate);
+      auto before=api::String::NewFromUtf8(isolate,"constructCall",api::NewStringType::kNormal,-1).ToLocalChecked();
+      if(result->Set(context,before,api::Boolean::New(isolate,call.IsConstructCall())).IsNothing())return;
+      if(call.Data()->IsFunction()){
+        api::Local<api::Value> value=api::Boolean::New(isolate,call.IsConstructCall());
+        if(call.Data().As<api::Function>()->Call(context,api::Undefined(isolate),1,&value).IsEmpty())return;
+      }
+      auto after=api::String::NewFromUtf8(isolate,"after",api::NewStringType::kNormal,-1).ToLocalChecked();
+      if(result->Set(context,after,api::Boolean::New(isolate,call.IsConstructCall())).IsNothing())return;
+      call.GetReturnValue().Set(result);
+    };
+    auto value=api::FunctionTemplate::New(&state->isolate,callback,frame.OwnValue(args.get(1)));api::Local<api::Function> function;
+    if(!value->GetFunction(state->isolate.GetCurrentContext()).ToLocal(&function))return false;args.rval().set(api::Input(function));return true;
+  }
+  if(!std::strcmp(operation.get(),"signalHasHandler")){
+    if(!args.get(1).isInt32()){JS_ReportErrorASCII(cx,"Signal handler query requires int32");return false;}
+    args.rval().setBoolean(native::HasSignalJSHandler(args[1].toInt32()));return true;
+  }
   if(!std::strcmp(operation.get(),"templateInherit")||!std::strcmp(operation.get(),"templateSetData")||!std::strcmp(operation.get(),"templateFields")){
     const auto get=[&](const JS::Value& input)->api::Local<api::FunctionTemplate>{
       const double token=input.isNumber()?input.toNumber():0;

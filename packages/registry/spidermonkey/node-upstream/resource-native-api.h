@@ -3,6 +3,7 @@
 // Consumed interfaces for the complete original resource units. Missing
 // backends remain undefined; importing a unit does not activate its binding.
 #include <functional>
+#include <map>
 #include <openssl/opensslv.h>
 #include <variant>
 #include "node-async-metadata.generated.h"
@@ -16,6 +17,7 @@
 #undef v8
 #undef node
 namespace kandelo_node_codec_impl {
+bool HasSignalJSHandler(int);
 struct Environment::HandleQueue
     : ListHead<HandleWrap, &HandleWrap::handle_wrap_queue_> {};
 // The original provider enum and existing canonical JS inventory must use the
@@ -55,5 +57,10 @@ using Initializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
 using IsolateInitializer=void(*)(kandelo_node_codec_impl::IsolateData*,Local<ObjectTemplate>);
 extern Initializer initializer;
 extern IsolateInitializer isolate_initializer;
+}
+namespace kandelo_signal_wrap_adapter {
+using namespace kandelo_node_codec_api;
+using Initializer=void(*)(Local<Object>,Local<Value>,Local<Context>,void*);
+extern Initializer initializer;
 }
 #endif

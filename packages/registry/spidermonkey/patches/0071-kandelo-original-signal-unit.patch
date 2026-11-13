@@ -1,0 +1,10 @@
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -93,6 +93,7 @@
+         "shell/node-upstream/resource-upstream/async_wrap.h",
+         "shell/node-upstream/resource-upstream/handle_wrap.h",
+         "shell/node-upstream/resource-upstream/handle_wrap.cc",
++        "shell/node-upstream/resource-upstream/signal_wrap.cc",
+         "shell/node-upstream/resource-upstream/req_wrap.h",
+         "shell/node-upstream/resource-upstream/req_wrap-inl.h",
+         "shell/node-upstream/resource-upstream/async_wrap-inl.h",
