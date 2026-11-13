@@ -79,8 +79,11 @@
 #include "vm/JSAtomUtils.h"
 #include "vm/JSFunction.h"
 #include "vm/NativeObject.h"
+#include "vm/Realm.h"
 #include "vm/SavedFrame.h"
 #include "vm/StringType.h"
+
+#include "vm/Realm-inl.h"
 
 namespace kandelo_node_codec_impl { extern const JSClass categoryClass,nativeBindingClass,nativeChannelClass; }
 namespace api = kandelo_node_codec_api;

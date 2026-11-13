@@ -264,5 +264,248 @@
   "sourcePinChanged": false,
   "sourcePolicySatisfied": false,
   "startupAccepted": false,
-  "wholeGoalComplete": false
+  "wholeGoalComplete": false,
+  "constructionIdentityPrerequisite": {
+    "evidence": "construction-identity-engine-check.json",
+    "catalog": "construction-identity-contracts.json",
+    "status": "Actual base-scripted and native-template allocation identity validated; full GetConstructorName lookup and built-in creation coverage remain unimplemented"
+  },
+  "nativeBuiltinFollowup": {
+    "scope": "Native-only exploratory evidence for next implementation; no Kandelo built-in construction support",
+    "observations": [
+      {
+        "key": "before-Object",
+        "name": "Object"
+      },
+      {
+        "key": "after-name-Object",
+        "name": "RenamedObject"
+      },
+      {
+        "key": "after-name-new-Object",
+        "name": "RenamedObject"
+      },
+      {
+        "key": "renamed-object-literal",
+        "name": "RenamedObject"
+      },
+      {
+        "key": "renamed-object-create-null",
+        "name": "RenamedObject"
+      },
+      {
+        "key": "renamed-object-create-proto",
+        "name": "RenamedObject"
+      },
+      {
+        "key": "null-prototype-Object",
+        "name": "Object"
+      },
+      {
+        "key": "different-newtarget-Object",
+        "name": "Third"
+      },
+      {
+        "key": "before-Array",
+        "name": "Array"
+      },
+      {
+        "key": "after-name-Array",
+        "name": "RenamedArray"
+      },
+      {
+        "key": "after-name-new-Array",
+        "name": "RenamedArray"
+      },
+      {
+        "key": "renamed-array-literal",
+        "name": "RenamedArray"
+      },
+      {
+        "key": "null-prototype-Array",
+        "name": "Array"
+      },
+      {
+        "key": "different-newtarget-Array",
+        "name": "Third"
+      },
+      {
+        "key": "before-Date",
+        "name": "Date"
+      },
+      {
+        "key": "after-name-Date",
+        "name": "RenamedDate"
+      },
+      {
+        "key": "after-name-new-Date",
+        "name": "RenamedDate"
+      },
+      {
+        "key": "null-prototype-Date",
+        "name": "Date"
+      },
+      {
+        "key": "different-newtarget-Date",
+        "name": "Third"
+      },
+      {
+        "key": "before-Map",
+        "name": "Map"
+      },
+      {
+        "key": "after-name-Map",
+        "name": "RenamedMap"
+      },
+      {
+        "key": "after-name-new-Map",
+        "name": "RenamedMap"
+      },
+      {
+        "key": "null-prototype-Map",
+        "name": "Map"
+      },
+      {
+        "key": "different-newtarget-Map",
+        "name": "Third"
+      },
+      {
+        "key": "before-Set",
+        "name": "Set"
+      },
+      {
+        "key": "after-name-Set",
+        "name": "RenamedSet"
+      },
+      {
+        "key": "after-name-new-Set",
+        "name": "RenamedSet"
+      },
+      {
+        "key": "null-prototype-Set",
+        "name": "Set"
+      },
+      {
+        "key": "different-newtarget-Set",
+        "name": "Third"
+      },
+      {
+        "key": "before-Error",
+        "name": "Error"
+      },
+      {
+        "key": "after-name-Error",
+        "name": "RenamedError"
+      },
+      {
+        "key": "after-name-new-Error",
+        "name": "RenamedError"
+      },
+      {
+        "key": "null-prototype-Error",
+        "name": "Error"
+      },
+      {
+        "key": "different-newtarget-Error",
+        "name": "Third"
+      },
+      {
+        "key": "before-TypeError",
+        "name": "TypeError"
+      },
+      {
+        "key": "after-name-TypeError",
+        "name": "RenamedTypeError"
+      },
+      {
+        "key": "after-name-new-TypeError",
+        "name": "RenamedTypeError"
+      },
+      {
+        "key": "null-prototype-TypeError",
+        "name": "TypeError"
+      },
+      {
+        "key": "different-newtarget-TypeError",
+        "name": "Third"
+      },
+      {
+        "key": "before-ArrayBuffer",
+        "name": "ArrayBuffer"
+      },
+      {
+        "key": "after-name-ArrayBuffer",
+        "name": "RenamedArrayBuffer"
+      },
+      {
+        "key": "after-name-new-ArrayBuffer",
+        "name": "RenamedArrayBuffer"
+      },
+      {
+        "key": "null-prototype-ArrayBuffer",
+        "name": "ArrayBuffer"
+      },
+      {
+        "key": "different-newtarget-ArrayBuffer",
+        "name": "Third"
+      },
+      {
+        "key": "before-Uint8Array",
+        "name": "Uint8Array"
+      },
+      {
+        "key": "after-name-Uint8Array",
+        "name": "RenamedUint8Array"
+      },
+      {
+        "key": "after-name-new-Uint8Array",
+        "name": "RenamedUint8Array"
+      },
+      {
+        "key": "null-prototype-Uint8Array",
+        "name": "Uint8Array"
+      },
+      {
+        "key": "different-newtarget-Uint8Array",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Object",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Array",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Date",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Map",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Set",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Error",
+        "name": "Third"
+      },
+      {
+        "key": "derived-ArrayBuffer",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Uint8Array",
+        "name": "Third"
+      }
+    ],
+    "findings": [
+      "Original intrinsic function data name is observed even for object/array literals and Object.create(null)",
+      "Different newTarget and built-in subclass prototype constructor replacement yield prototype data name, not fixed engine class string",
+      "Need intrinsic constructor ownership and actual creation/newTarget path distinctions before completing native name lookup"
+    ]
+  }
 }

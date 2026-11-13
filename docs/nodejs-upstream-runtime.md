@@ -18,7 +18,7 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 68 source connects the original process initializer,
+The current revision 69 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
 still fails final linking on 23 symbols and has no normal runnable artifact.
@@ -2826,3 +2826,16 @@ Forty native-reference controls produce 80 matching observations before and afte
 The source review traces actual SpiderMonkey CreateThis, native construction, portable baseline and other JIT paths, existing realm allocation metadata and the native template bridge. An outer constructor can return an existing object, and allocation metadata already has a separate debugger owner; neither is a safe shortcut for recording construction identity. These are implementation gaps, with no demonstrated browser impossibility. No engine implementation, package revision, kernel or ABI change is made in this review. The revision68 artifact and its four-host evidence are unchanged; this phase adds no Kandelo runtime validation or startup acceptance.
 
 Run `scripts/dev-shell.sh python3 scripts/run-nodejs-constructor-name-reference.py <audited-native-node> <new-report-directory>` to reproduce the native-only controls. The runner authenticates the exact recorded executable immediately before the child, checks all expected outcomes and retains failures/timeouts. GC invocation is proven; compaction is not claimed. See the [constructor-name contracts](../tests/nodejs/upstream/constructor-name-contracts.json) and [source/reference receipt](../tests/nodejs/upstream/constructor-name-reference-check.json).
+
+
+## Actual construction identity prerequisite (revision 69)
+
+SpiderMonkey ObjectRealm now owns a construction-identity ephemeron table independent of debugger allocation metadata. Scripted base-receiver allocation records the actual constructor function when callee equals newTarget, while derived/newTarget and replacement-return objects retain their distinct allocation paths. The native template bridge records its actual materialized constructor at receiver allocation. These records preserve function identity through prototype mutation, instead of guessing from public properties or caching a name string.
+
+The actual receiver is rooted during fallible table insertion. GC tracing preserves constructors conditionally on live object keys, dead keys and constructor/instance cycles collect, realm retirement clears the table and table allocations are included in engine metadata-memory measurement. Selected controls prove nursery promotion, debugger metadata coexistence, mutation/freezing, original function identity, cross-compartment wrapping and native template allocation. OOM injection, workers/fork, other JIT inline paths and full exceptional/security/reentrant shutdown coverage remain unproven.
+
+The identified private artifact passes 72 drivers on each of Node, Chromium, Firefox and WebKit, 288 guest runs total: six new construction-identity controls and all 66 previous driver sources unchanged. This remains a private diagnostic profile that rejects process_methods. The normal targeted build compiles with the exact same 23 unresolved native interfaces and no additions. Object.GetConstructorName remains undefined while complete data-only name/tag/prototype selection and native built-in construction coverage are unfinished; this prerequisite does not establish normal startup.
+
+Initial failures are retained. The first link lacked the engine inline definition header in the embedding. Initial native-template identity tests then exposed reading CallArgs.callee after setting rval, which aliases the callee slot; the bridge now uses its actual callee rooted at function entry. All other new controls and prior Node regressions passed that initial run; final identified-artifact results are separate. No upstream Node JavaScript or C++ algorithm is changed or excerpted. All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [construction-identity contracts](../tests/nodejs/upstream/construction-identity-contracts.json) and [build/runtime receipt](../tests/nodejs/upstream/construction-identity-engine-check.json).

@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "scope": "Actual construction-identity prerequisite only; complete constructor-name interface remains unimplemented",
+  "currentRuntimeValidated": true,
+  "completeBindingContract": false,
+  "evidence": "construction-identity-engine-check.json",
+  "engineOwner": "ObjectRealm separate ObjectWeakMap keyed by the actual allocated object; trace, finishRoots and actual shallow table-memory reporting integrated",
+  "producers": [
+    {
+      "path": "js/src/vm/PlainObject-inl.h",
+      "entry": "CreateThis",
+      "contract": "Record the rooted actual callee only for base receiver allocation with callee==newTarget; do not assign the outer constructor to replacement return objects"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/template-codecs-inl.h",
+      "entry": "InvokeNativeTemplate",
+      "contract": "Record the actual materialized native constructor at receiver allocation before callback; use the entry-rooted callee, never callee slot after rval writes"
+    }
+  ],
+  "lifetime": "Weak object key; actual constructor retained conditionally through ephemeron, no object-key root or uncollectable constructor/instance cycle. Actual allocated receiver is rooted during map insertion; fallible allocation/put returns failure with pending OOM. Realm root retirement clears table.",
+  "validated": [
+    "Direct function identity survives prototype/constructor/name mutation and freezing",
+    "No getters or proxy traps in identity lookup controls",
+    "Literal/prototype/different-newTarget and replacement return objects do not acquire false direct records",
+    "Constructor retained for live detached-prototype instance and collected after final instance release",
+    "Rooted constructor does not root discarded instance; ephemeron cycles collect",
+    "Actual nursery promotion and independent debugger allocation metadata identity survive GC",
+    "Cross-compartment scripted/native template allocation returns original constructor identity"
+  ],
+  "runtime": {
+    "driversPerHost": 72,
+    "newConstructionDriversPerHost": 6,
+    "previousDriversPerHost": 66,
+    "hosts": [
+      "node",
+      "chromium",
+      "firefox",
+      "webkit"
+    ],
+    "totalGuestDrivers": 288,
+    "program": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-construction-identity/native-owner-probe.wasm",
+      "bytes": 59944990,
+      "sha256": "d33de2d917d867b6aaa7aa98faad16ae907f0eaaae38119cbb046b63588d6999"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    }
+  },
+  "remaining": [
+    "Object.GetConstructorName data-only lookup/name/tag/prototype-role selection remains undefined; no linker symbol eliminated",
+    "Native built-in/newTarget/subclass/returned-object allocation coverage beyond actual native template receiver path",
+    "Other JIT inline allocation paths, workers/fork/security/reentrancy/OOM injection/full shutdown and compaction-specific proof",
+    "All23 normal startup interfaces and full source-policy/catalog/roadmap acceptance"
+  ],
+  "constructorNameImplemented": false,
+  "normalEngineLinked": false,
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamNodeAlgorithmsRewritten": false,
+  "functionExcerptsImported": false,
+  "nativeV8HeapUsed": false,
+  "sourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false
+}

@@ -67,6 +67,12 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"constructionIdentity")){
+    JS::RootedObject object(cx,api::UnwrapObject(cx,args.get(1)));if(!object)return false;
+    JS::RootedObject constructor(cx,js::ObjectRealm::get(object).getConstructorIdentity(object));
+    if(constructor){if(!JS_WrapObject(cx,&constructor))return false;args.rval().setObject(*constructor);}
+    return true;
+  }
   if(!std::strncmp(operation.get(),"isolate",7)){
     auto* data=state->environment.isolate_data();
     if(!counters->observedIsolateData)counters->observedIsolateData=data;

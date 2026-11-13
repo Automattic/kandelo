@@ -96,6 +96,7 @@ bool InvokeNativeTemplate(JSContext* cx,unsigned argc,JS::Value* vp){
     NativeTemplateInfo* instanceInfo=instanceTemplate?&TemplateInfo(instanceTemplate):nullptr;
     auto allocation=info;if(instanceInfo)allocation.fieldCount=instanceInfo->fieldCount;
     JS::RootedObject object(cx,JS_NewObjectForConstructor(cx,InstanceClass(allocation),args));if(!object)return false;
+    if(callee==&args.newTarget().toObject()&&!js::ObjectRealm::get(object).recordConstructorIdentity(cx,object,callee))return false;
     JS::RootedObject brand(cx,record);if(!JS_WrapObject(cx,&brand))return false;
     JS::SetReservedSlot(object,native::BaseObject::kInternalFieldCount,JS::ObjectValue(*brand));
     receiver.setObject(*object);
