@@ -106,7 +106,7 @@
   },
   "remaining": [
     "Positive original HandleWrap construction/ref/unref/active/close/GC ownership and callback execution after genuine bootstrap",
-    "FunctionTemplate.Inherit and original full constructor-template factories; InternalMakeCallback/async-context activation exposes further native prerequisites",
+    "Original full constructor-template factories; native inheritance is supplied in revision73, but InternalMakeCallback/async-context activation exposes further native prerequisites",
     "Request waiting counters, dispatch/completion/cancellation and full environment request/handle shutdown",
     "General BaseObject leak classification, native snapshot/memory traversal and other missing native contracts",
     "Remaining18 normal interfaces, genuine startup/CJS/ESM/fourhosts, full catalog/dependency-ordered roadmap and explicit review"
@@ -124,5 +124,11 @@
   "functionExcerptsImported": false,
   "sourcePolicySatisfied": false,
   "startupAccepted": false,
-  "wholeGoalComplete": false
+  "wholeGoalComplete": false,
+  "templateInheritanceFollowup": {
+    "packageRevision": 73,
+    "catalog": "template-inheritance-contracts.json",
+    "evidence": "template-inheritance-engine-check.json",
+    "scope": "Actual traced native inheritance, same-context parent prototypes and inherited receiver signatures validated with generic native fixtures on four hosts. Full original factories, AsyncWrap field layout and callback dependencies remain unfinished."
+  }
 }

@@ -18,7 +18,7 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 72 source connects the original process initializer,
+The current revision 73 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
 still fails final linking on 18 symbols and has no normal runnable artifact.
@@ -2882,3 +2882,18 @@ The normal targeted build has zero C++ compile errors and 18 unresolved symbols,
 All 583 previous imported identities remain unchanged. Two complete authenticated handle files bring the total to 585; all 443 JavaScript files/10,993,403 bytes remain unchanged, and canonical selection/bytes match the pinned archive. Source inventories are regenerated for the new manifest identity. A strict generated-source-path patch recognizes only the two new upstream include paths under the existing classification. Overall source-policy/startup/CJS/ESM/catalog/roadmap acceptance remains incomplete; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
 
 See the [handle-owner contracts](../tests/nodejs/upstream/handle-owners-contracts.json) and [identified build/primitive/regression receipt](../tests/nodejs/upstream/handle-owners-engine-check.json).
+
+
+## Native template inheritance (revision 73)
+
+The SpiderMonkey embedding now implements FunctionTemplate.Inherit using actual traced parent-template records. Native signature checks follow the unforgeable instance brand and template ancestry, independently of mutable JavaScript prototype properties. Actual descendants and JavaScript subclasses retain parent-method access after prototype mutation; plain objects, forged prototypes and ordinary proxies remain rejected. Function materialization uses the parent function in the selected context and reads its current prototype. Only the instance-prototype chain inherits; constructor functions keep their context Function.prototype. Ordinary parent static and instance-template data are not copied, and only the selected native constructor callback runs.
+
+A textual scan of all 460 pinned native C++ source/header files records 45 inheritance and 162 internal-field candidate sites, with source hashes and imported-source status. This includes conditional and platform-specific files; it is not a parsed call graph or a complete binding contract. The partial inventory is retained in template-inheritance-consumers.json.
+
+The identified private artifact passes 88 controls on each of Node, Chromium, Firefox and WebKit, 352 guest runs. Five new controls exercise inheritance chains, signed receivers, context-local prototypes, mutable parent prototypes, constructor callback behavior, traced parent ownership/collection and reentrant GC with exact thrown-value identity. All 83 prior driver sources remain unchanged. A separately rehashed pinned native Node reference records actual Pipe/LibuvStreamWrap/HandleWrap/AsyncWrap behavior and two real close callbacks. This reference does not establish Kandelo Pipe support. The private artifact still rejects process_methods and is not a normal startup executable.
+
+Full original HandleWrap/AsyncWrap constructor factories and callback activation remain incomplete. InternalMakeCallback and async-context dependencies are missing; the existing zero-or-two native-field layouts also do not implement AsyncWrap's additional native field. General template attributes/accessors/security, recursive materialization, worker/fork and injected allocation-failure coverage remain incomplete. This implementation uses SpiderMonkey operations; it imports no V8 function bodies, heap or serialization and changes no upstream Node JavaScript or algorithms.
+
+The fresh normal build still has zero C++ errors and the same 18 unresolved symbols. Its linker set does not exercise every constructor factory and is not a complete backend-gap inventory. All 585 imported identities, including 443 JavaScript files/10,993,403 bytes, remain unchanged. All 20 prepared VM/build files and 74 declared patch inputs (71 SpiderMonkey and three libuv) are unchanged. The first browser command selected the wrong Playwright installation and failed before any tests; the retained harness failure was corrected by invoking the browser project's existing runner, without changing tests or timeouts. No full products, images, kernel, successor ABI or overall conformance suites were built. Startup, separate CommonJS/ESM entrypaths and the full catalog/ordered-roadmap review milestone remain incomplete.
+
+See the [template inheritance contracts](../tests/nodejs/upstream/template-inheritance-contracts.json) and [identified four-host receipt](../tests/nodejs/upstream/template-inheritance-engine-check.json).

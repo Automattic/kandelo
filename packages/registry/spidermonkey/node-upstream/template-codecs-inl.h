@@ -9,7 +9,7 @@ JSObject* UnwrapTemplateObject(JSContext* cx,const JS::Value& input){
   JS::RootedValue value(cx,input);return UnwrapObject(cx,value);
 }
 enum NativeTemplateSlot {TemplateConfig,TemplatePayload,TemplateReceiver,
-  TemplatePrototype,TemplateInstance,TemplateProperties,TemplateCache,TemplateName,TemplateConstructor,TemplateSlotCount};
+  TemplatePrototype,TemplateInstance,TemplateProperties,TemplateCache,TemplateName,TemplateConstructor,TemplateParent,TemplateSlotCount};
 enum class NativeTemplateKind {Function,Object};
 enum class NativeObjectRole {Standalone,Prototype,Instance};
 struct NativeTemplateInfo {
@@ -69,8 +69,14 @@ bool ReceiverMatches(Frame& frame,JS::HandleValue value,JS::HandleObject expecte
   JS::RootedObject object(frame.cx,UnwrapTemplateObject(frame.cx,value));if(!object)return false;
   const JSClass* clasp=JS::GetClass(object);
   if(clasp!=&templateInstanceClass&&clasp!=&native::categoryClass&&clasp!=&native::converterClass&&clasp!=&native::nativeChannelClass)return false;
-  auto brand=JS::GetReservedSlot(object,native::BaseObject::kInternalFieldCount);
-  return brand.isObject()&&UnwrapTemplateObject(frame.cx,brand)==expected;
+  JS::RootedObject brand(frame.cx,UnwrapTemplateObject(frame.cx,JS::GetReservedSlot(object,native::BaseObject::kInternalFieldCount)));
+  // Native ancestry is independent of mutable public prototype properties.
+  while(brand){
+    CHECK(JS::GetClass(brand)==&templateClass);
+    if(brand==expected)return true;
+    brand=UnwrapTemplateObject(frame.cx,JS::GetReservedSlot(brand,TemplateParent));
+  }
+  return false;
 }
 bool InvokeNativeTemplate(JSContext* cx,unsigned argc,JS::Value* vp){
   auto args=JS::CallArgsFromVp(argc,vp);JS::RootedObject callee(cx,&args.callee());
@@ -192,6 +198,15 @@ void FunctionTemplate::SetClassName(Local<String> name){
   auto& frame=*Frame::current;JS::RootedObject record(frame.cx,TemplateRecord(frame,Local<FunctionTemplate>(this)));CHECK(!TemplateInfo(record).used);
   JSAutoRealm home(frame.cx,record);JS::RootedValue value(frame.cx,Input(name));CHECK(JS_WrapValue(frame.cx,&value));JS::SetReservedSlot(record,TemplateName,value);
 }
+void FunctionTemplate::Inherit(Local<FunctionTemplate> parent){
+  auto& frame=*Frame::current;
+  JS::RootedObject record(frame.cx,TemplateRecord(frame,Local<FunctionTemplate>(this))),ancestor(frame.cx,TemplateRecord(frame,parent));
+  CHECK(TemplateInfo(record).kind==NativeTemplateKind::Function&&!TemplateInfo(record).used);
+  CHECK(TemplateInfo(ancestor).kind==NativeTemplateKind::Function);
+  for(JS::RootedObject current(frame.cx,ancestor);current;current=UnwrapTemplateObject(frame.cx,JS::GetReservedSlot(current,TemplateParent)))CHECK(current!=record);
+  JSAutoRealm home(frame.cx,record);CHECK(JS_WrapObject(frame.cx,&ancestor));
+  JS::SetReservedSlot(record,TemplateParent,JS::ObjectValue(*ancestor));
+}
 void ObjectTemplate::SetInternalFieldCount(int count){
   CHECK(count==0||count==native::BaseObject::kInternalFieldCount);auto& frame=*Frame::current;
   JS::RootedObject record(frame.cx,TemplateRecord(frame,Local<ObjectTemplate>(this)));auto& info=TemplateInfo(record);CHECK(!info.used);info.fieldCount=count;
@@ -235,6 +250,15 @@ MaybeLocal<Function> FunctionTemplate::GetFunction(Local<Context> context){
     if(!JS_DefineProperty(frame.cx,prototype,"constructor",object,0)||!JS_DefineProperty(frame.cx,object,"prototype",prototype,JSPROP_PERMANENT))return {};
     JS::RootedObject prototypeTemplate(frame.cx,UnwrapTemplateObject(frame.cx,JS::GetReservedSlot(record,TemplatePrototype)));
     if(prototypeTemplate&&!ApplyTemplateProperties(frame,prototypeTemplate,prototype,context))return {};
+    JS::RootedObject parent(frame.cx,UnwrapTemplateObject(frame.cx,JS::GetReservedSlot(record,TemplateParent)));
+    if(parent){
+      JS::RootedValue parentRecord(frame.cx,JS::ObjectValue(*parent));Local<Function> constructor;
+      if(!frame.Own<FunctionTemplate>(parentRecord)->GetFunction(context).ToLocal(&constructor))return {};
+      JS::RootedObject parentFunction(frame.cx,&Input(constructor).toObject());JS::RootedValue parentPrototype(frame.cx);
+      if(!JS_GetProperty(frame.cx,parentFunction,"prototype",&parentPrototype))return {};
+      CHECK(parentPrototype.isObjectOrNull());JS::RootedObject inherited(frame.cx,parentPrototype.toObjectOrNull());
+      if(!JS_SetPrototype(frame.cx,prototype,inherited))return {};
+    }
   }
   if(!ApplyTemplateProperties(frame,record,object,context))return {};
   {JSAutoRealm cacheRealm(frame.cx,cache);JS::RootedValue key(frame.cx,JS::ObjectValue(*global)),stored(frame.cx,value);if(!JS_WrapValue(frame.cx,&key)||!JS_WrapValue(frame.cx,&stored)||!JS::SetWeakMapEntry(frame.cx,cache,key,stored))return {};}

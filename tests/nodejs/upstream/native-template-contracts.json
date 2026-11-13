@@ -91,7 +91,8 @@
     },
     {
       "area": "inheritance",
-      "detail": "FunctionTemplate.Inherit remains undefined. Inherited template/signature brands are not accepted as implemented."
+      "detail": "FunctionTemplate.Inherit and inherited native receiver brands implemented and runtime-validated in revision73 with generic templates; see template-inheritance-contracts.json. Full template API and original constructor factories remain incomplete.",
+      "status": "implemented interface; broader integration incomplete"
     },
     {
       "area": "recursive template materialization",
@@ -161,5 +162,11 @@
   "startupAccepted": false,
   "completeNativeTemplateConformance": false,
   "wholeGoalComplete": false,
-  "remaining": "Whole original backtrace dependency closure, prior normal process/Message/source/report/lifecycle dependencies, actual four-host original-helper/regression execution, startup/CJS/ESM/full catalog and ordered roadmap/user review gate"
+  "remaining": "Whole original backtrace dependency closure, prior normal process/Message/source/report/lifecycle dependencies, actual four-host original-helper/regression execution, startup/CJS/ESM/full catalog and ordered roadmap/user review gate",
+  "templateInheritanceFollowup": {
+    "packageRevision": 73,
+    "catalog": "template-inheritance-contracts.json",
+    "evidence": "template-inheritance-engine-check.json",
+    "scope": "Actual traced native inheritance, same-context parent prototypes and inherited receiver signatures validated with generic native fixtures on four hosts. Full original factories, AsyncWrap field layout and callback dependencies remain unfinished."
+  }
 }

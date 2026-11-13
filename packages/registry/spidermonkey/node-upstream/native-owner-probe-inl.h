@@ -67,6 +67,27 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
+  if(!std::strcmp(operation.get(),"templateInherit")||!std::strcmp(operation.get(),"templateSetData")){
+    const auto get=[&](const JS::Value& input)->api::Local<api::FunctionTemplate>{
+      const double token=input.isNumber()?input.toNumber():0;
+      if(!std::isfinite(token)||token<1||token>9007199254740991.0||std::floor(token)!=token){JS_ReportErrorASCII(cx,"Invalid inheritance template token");return {};}
+      auto it=counters->templates.find(uint64_t(token));if(it==counters->templates.end()){JS_ReportErrorASCII(cx,"Unknown inheritance template token");return {};}return it->second.Get(&state->isolate);
+    };
+    auto child=get(args.get(1));if(child.IsEmpty())return false;
+    if(!std::strcmp(operation.get(),"templateSetData")){
+      if(!args.get(2).isString()&&!args.get(2).isSymbol()){JS_ReportErrorASCII(cx,"Template property control requires String or Symbol");return false;}
+      api::Local<api::Template> target=child;
+      if(!args.get(4).isUndefined()){
+        if(!args[4].isString()){JS_ReportErrorASCII(cx,"Template property target requires String");return false;}
+        JS::RootedString name(cx,args[4].toString());bool prototype,instance;
+        if(!JS_StringEqualsAscii(cx,name,"prototype",&prototype)||!JS_StringEqualsAscii(cx,name,"instance",&instance))return false;
+        if(prototype)target=child->PrototypeTemplate();else if(instance)target=child->InstanceTemplate();else{JS_ReportErrorASCII(cx,"Unknown template property target");return false;}
+      }
+      target->Set(frame.OwnValue(args[2]).As<api::Name>(),frame.OwnValue(args.get(3)));return true;
+    }
+    auto parent=get(args.get(2));if(parent.IsEmpty())return false;
+    child->Inherit(parent);return true;
+  }
   if(!std::strcmp(operation.get(),"objectHas")){
     if(!args.get(1).isObject()){JS_ReportErrorASCII(cx,"Native property existence control requires Object");return false;}
     auto object=frame.Own<api::Object>(args[1]);bool found;
