@@ -39,6 +39,7 @@ inputs = [
   "images/vfs/scripts/shell-runtime-layout.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "images/vfs/lib/init/shell-binaries.ts",
+  "images/vfs/lib/init/dev-tools.ts",
   "package.json",
   "package-lock.json",
   "host/src/constants.ts",

@@ -1,0 +1,4 @@
+Name: greeting
+Description: Compile-time greeting for the Kandelo autotools fixture
+Version: 1.2
+Cflags: -DGREETING="\"hello from pkg-config\""

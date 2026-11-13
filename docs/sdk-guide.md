@@ -997,3 +997,84 @@ and `llvm-nm` through the guest wrappers, then links and runs its caller.
 `apps/browser-demos/test/kandelo-compiler.spec.ts` runs the same guest
 programs and checks browser ZIP requests. The `void main` adapter is a
 compatibility extension; portable C programs should return `int`.
+
+## GNU build tools
+
+The shell (and every image built on it) and the build image that package
+builds boot carry the GNU build tools, so a project that ships
+`configure.ac` and `Makefile.am` builds inside Kandelo with the usual
+commands:
+
+```sh
+autoreconf -fi
+./configure
+make
+make check
+```
+
+| Package | Commands |
+|---|---|
+| `autoconf` 2.73 | `autoconf`, `autoreconf`, `autoheader`, `autom4te`, `autoscan`, `autoupdate`, `ifnames` |
+| `automake` 1.20 | `automake`, `aclocal` |
+| `libtool` 2.6.2 | `libtoolize`, `libtool` |
+| `autoconf-archive` | The `AX_*` macros in `/usr/share/aclocal` |
+| `gettext` 1.0 | `autopoint`, `gettextize`, `msgfmt`, `xgettext`, `msgmerge`, the other `msg*` programs, `gettext`, `ngettext`, `envsubst` |
+| `pkgconf` 3.0.10 | `pkgconf`, `pkg-config` |
+| `bison` 3.8.2 | `bison` (`yacc` stays Berkeley yacc) |
+| `gperf` 3.3 | `gperf` |
+| `texinfo` 7.3 | `makeinfo`/`texi2any`, `texindex`, `install-info` |
+| `help2man` 1.49.3 | `help2man` |
+
+The list is `images/vfs/lib/init/dev-tools.ts`. In the shell each tool
+is a lazy file or archive, fetched on first use; the build image holds
+them resident, together with Perl and `tar`, `gzip`, `bzip2` and `xz`.
+Autoconf, Automake, help2man and `texi2any` are Perl and m4 programs and
+run `/usr/bin/perl` and `/usr/bin/m4`. Texinfo's Perl runs without its
+optional XS modules: Kandelo's Perl is built without dynamic loading, and a
+package patch keeps Texinfo from requiring `DynaLoader` when XS is off.
+
+**Build identity.** Inside Kandelo, `uname` reports `wasm32`,
+`wasm-posix` and `kandelo`, which upstream `config.guess` does not know.
+The `config.guess` that Automake and Libtool install, and `autoreconf -fi`
+copies into a project, is patched to answer `wasm32-unknown-linux-musl`:
+the identity the SDK's `configure` wrapper already gives GNU build systems
+for cross builds (see `sdk/config.site`). It names musl's userland and does
+not claim a Linux kernel or define `__linux__`. Because the build and host
+types match, `configure` runs natively: its run tests execute inside
+Kandelo instead of being answered from a cache. A release tarball whose
+own `config.guess` predates this stops with "unable to guess system type";
+run `autoreconf -fi`, or pass `--build=wasm32-unknown-linux-musl`.
+
+**Libtool** builds static libraries only. A Kandelo executable cannot be
+linked against a shared library (`cc` builds `-shared` side modules for
+`dlopen`, but linking a program against one fails with "attempted static
+link of dynamic object"). Given the `linux-musl` identity, upstream
+libtool would build `libfoo.so` and fail to link programs against it, so
+the shipped `libtool.m4` reports no dynamic linker on Kandelo (a package
+patch), and `libtool` installs `.a` archives whatever `LT_INIT` asks for.
+A release tarball whose bundled `libtool.m4` predates this needs
+`--disable-shared`, or `autoreconf -fi`. Libtool cannot build `dlopen`
+modules (`-module`) on Kandelo; build those with `cc -shared`.
+
+**`ld`** is `/usr/bin/ld`, a script that runs the SDK's `wasm-ld`. It
+is not a symlink because LLD picks which linker to be from the name it
+runs as, and Kandelo's LLD has only the WebAssembly one; the script's
+comment (in `images/vfs/scripts/build-kandelo-sdk-zip.sh`) has the
+detail. Configure scripts look for an `ld` on PATH (libtool's
+`LT_PATH_LD`, and gnulib's `lib-ld.m4` behind gettext and
+`AC_LIB_LINKFLAGS`) and stop without one; they use it only for
+relocatable links (`ld -r`) and to classify the linker. Link programs
+with `cc`: a direct `ld` link does not add the syscall glue, ABI stamp
+and fork instrumentation the SDK driver adds.
+
+**pkg-config** searches `/usr/local/lib/pkgconfig`, `/usr/local/share/pkgconfig`,
+`/usr/lib/pkgconfig`, `/usr/share/pkgconfig` and the guest SDK sysroot's
+`lib/pkgconfig` and `share/pkgconfig`, so it finds what `make install`
+puts under `/usr/local` and the libraries `cc` links against. The SDK's
+`wasm32posix-pkg-config` runs it too.
+
+`host/test/guest-autotools.test.ts` builds a project that uses every one
+of these tools (an Autoconf Archive macro, Libtool, a Bison grammar, a
+gperf table, a Texinfo manual, a help2man page and a pkg-config module)
+with `autoreconf -fi`, `./configure`, `make` and `make check` in the build
+image.

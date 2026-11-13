@@ -762,6 +762,56 @@
       "role": "lazy-file"
     },
     {
+      "name": "autoconf",
+      "version": "2.73",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "automake",
+      "version": "1.20",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "libtool",
+      "version": "2.6.2",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "autoconf-archive",
+      "version": "2026.11.11",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "gettext",
+      "version": "1.0",
+      "role": "lazy-file"
+    },
+    {
+      "name": "help2man",
+      "version": "1.49.3",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "texinfo",
+      "version": "7.3",
+      "role": "lazy-file"
+    },
+    {
+      "name": "pkgconf",
+      "version": "3.0.10",
+      "role": "lazy-file"
+    },
+    {
+      "name": "bison",
+      "version": "3.8.2",
+      "role": "lazy-file"
+    },
+    {
+      "name": "gperf",
+      "version": "3.3",
+      "role": "lazy-file"
+    },
+    {
       "name": "cargo",
       "version": "1.97.0-nightly-2026-04-27",
       "role": "lazy-file"

@@ -1,0 +1,7 @@
+\input texinfo
+@setfilename calc.info
+@settitle calc
+@node Top
+@top calc
+@command{calc} evaluates one sum or product per line.
+@bye

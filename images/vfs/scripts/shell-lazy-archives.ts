@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
+import { DEV_TOOL_ARCHIVE_SPECS } from "../lib/init/dev-tools";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -274,6 +275,9 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
     // A regular file: the SDK tool names are symlinks to the driver.
     requiredMember: "bin/kandelo-cc",
   },
+  // Autoconf, Automake, Libtool and the other build tools' scripts and data
+  // (images/vfs/lib/init/dev-tools.ts).
+  ...DEV_TOOL_ARCHIVE_SPECS,
 ] as const);
 
 /** Data the canonical shell can load on first use: trust roots, speech, cursors, keymaps and desktops.

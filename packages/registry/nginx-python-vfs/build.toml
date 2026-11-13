@@ -25,6 +25,7 @@ inputs = [
   "scripts/package-runtime-file.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
   "images/vfs/lib/init/shell-binaries.ts",
+  "images/vfs/lib/init/dev-tools.ts",
   "images/rootfs/etc/services",
   "packages/registry/nginx-python-vfs/app",
   # images/vfs/scripts/python-bytecode-prewarm.ts boots a NodeKernelHost to

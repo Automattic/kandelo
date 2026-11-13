@@ -1249,17 +1249,22 @@ function displacedPlaceholderIdentities(
 }
 
 /**
- * Each displaced placeholder's path must now name the replacing program's
- * alias, not the placeholder: the overlay removed the placeholder so the
- * replacement's symlink could claim the path.
+ * Each displaced placeholder's path must now name the replacing program (its
+ * lazy file or an alias of it), not the placeholder: the overlay removed the
+ * placeholder so the replacement could claim the path.
  */
 function requirePlaceholdersSuperseded(
   fs: KandeloImageFs,
   displaced: readonly { path: string; identity: LazyIdentity }[],
 ): void {
   for (const { path, identity } of displaced) {
-    const stat = fs.lstat(path);
-    if ((stat.mode & FILE_TYPE_MASK) !== SYMBOLIC_LINK_MODE || sameLazyIdentity(stat, identity)) {
+    let stat;
+    try {
+      stat = fs.lstat(path);
+    } catch {
+      throw new Error(`${path} lost its posix-utils-lite placeholder but nothing replaced it`);
+    }
+    if (sameLazyIdentity(stat, identity)) {
       throw new Error(`${path} still resolves to the posix-utils-lite placeholder`);
     }
   }
