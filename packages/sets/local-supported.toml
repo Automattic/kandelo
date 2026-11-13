@@ -171,6 +171,42 @@ name = "gperf"
 class = "user-software"
 
 [[packages]]
+name = "autoconf-docs"
+class = "browser-product"
+
+[[packages]]
+name = "automake-docs"
+class = "browser-product"
+
+[[packages]]
+name = "bison-docs"
+class = "browser-product"
+
+[[packages]]
+name = "gettext-docs"
+class = "browser-product"
+
+[[packages]]
+name = "gperf-docs"
+class = "browser-product"
+
+[[packages]]
+name = "help2man-docs"
+class = "browser-product"
+
+[[packages]]
+name = "libtool-docs"
+class = "browser-product"
+
+[[packages]]
+name = "pkgconf-docs"
+class = "browser-product"
+
+[[packages]]
+name = "texinfo-docs"
+class = "browser-product"
+
+[[packages]]
 name = "binaryen"
 class = "platform"
 
