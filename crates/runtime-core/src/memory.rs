@@ -2156,6 +2156,12 @@ pub struct FileBacking {
     /// with no generation. A different live value means descriptor I/O
     /// changed the file, so cached pages and mapped snapshots are stale.
     source_generation: Option<u64>,
+    /// Whether descriptor I/O announced a change through
+    /// [`SharedMappingTable::prepare_overwrite`] since the generation was last
+    /// reconciled. A generation that moves unannounced means a mapping's
+    /// overlay missed the bytes it observed, which only a missing hook in a
+    /// storage write path can cause.
+    overwrite_announced: bool,
 }
 
 #[derive(Debug)]
@@ -2255,6 +2261,28 @@ pub struct CleanStamp {
 /// means an epoch event was missed and skipping would have lost a store.
 /// That build runs over every mapping test and a desktop session as the
 /// evidence for skipping.
+/// How many bytes of a file mapping one pull compares against what it
+/// observed in a single host comparison. A mapping with no stores costs one
+/// comparison per window, not one per page. The window is stack scratch, well
+/// inside the kernel's 1 MiB stack.
+const COMPARE_WINDOW: usize = 16 * FILE_PAGE_SIZE;
+
+/// The file pages that the `len` bytes at `file_offset` cover, each as
+/// `(page, at, from, count)`: the `count` bytes at offset `at` of the range
+/// are bytes `from..from + count` of file page `page`.
+fn file_pages(file_offset: u64, len: usize) -> impl Iterator<Item = (u64, usize, usize, usize)> {
+    let page_size = FILE_PAGE_SIZE as u64;
+    let end = file_offset.saturating_add(len as u64);
+    let first = file_offset / page_size;
+    let last = if len == 0 { first } else { (end - 1) / page_size + 1 };
+    (first..last).map(move |page| {
+        let page_start = page * page_size;
+        let lo = file_offset.max(page_start);
+        let hi = end.min(page_start + page_size);
+        (page, (lo - file_offset) as usize, (lo - page_start) as usize, (hi - lo) as usize)
+    })
+}
+
 const SKIP_PROVED_PULLS: bool = !cfg!(feature = "shared-mapping-proof-verify");
 
 #[cfg(feature = "shared-mapping-proof-verify")]
@@ -2314,7 +2342,6 @@ impl<'a, Mapping> IntoIterator for &'a ProcessMappings<Mapping> {
 
 /// One tracked `MAP_SHARED` interval of one process.
 #[derive(Debug)]
-#[cfg_attr(test, derive(Clone))]
 pub struct SharedMapping {
     pub fd: i32,
     /// Offset into the backing object (file offset, or offset into the
@@ -2327,16 +2354,24 @@ pub struct SharedMapping {
     pub write_allowed: bool,
     pub backing_kind: Option<BackingKind>,
     pub backing_key: Option<String>,
-    /// The bytes this process last observed. Diffing against it is what lets
-    /// two mappings publish disjoint writes without clobbering each other.
+    /// The bytes an anonymous mapping's process last observed. Diffing
+    /// against it is what lets two mappings publish disjoint writes without
+    /// clobbering each other. A file mapping keeps none; see `overlay`.
     pub snapshot: Option<IoBuffer<u8>>,
+    /// What a file mapping's process last observed, kept sparse: file page
+    /// index → the bytes it observed in that page, for each page the file
+    /// changed under it since its last refresh. Every other page of what it
+    /// observed is the file's current page. A mapping therefore costs kernel
+    /// memory only for pages a peer or a descriptor changed and its process
+    /// has not been refreshed past, not for its whole length.
+    overlay: PreparedMap<u64, IoBuffer<u8>>,
     pub seen_version: u64,
     /// A writeback of this mapping's file failed since this mapping last
     /// reported one; its next `msync` fails with `EIO` (Linux reports a
     /// writeback error to `msync` through the mapping's file).
     pub writeback_error: bool,
-    /// The last time a pull saw this mapping's bytes equal to `snapshot`
-    /// while its process was quiescent; see [`CleanStamp`]. Only a pull or
+    /// The last time a pull saw this mapping's bytes equal to what it
+    /// observed while its process was quiescent; see [`CleanStamp`]. Only a pull or
     /// a refresh sets it. Every other change to the bytes or the snapshot
     /// clears it, and a forked child starts without one.
     pub clean: Option<CleanStamp>,
@@ -2354,13 +2389,15 @@ impl SharedMapping {
             backing_kind: Some(BackingKind::Anonymous),
             backing_key: Some(key),
             snapshot: Some(snapshot),
+            overlay: PreparedMap::new(),
             seen_version: 0,
             writeback_error: false,
             clean: None,
         }
     }
 
-    /// A tracked file `MAP_SHARED` interval over a page-cached backing.
+    /// A tracked file `MAP_SHARED` interval over a page-cached backing,
+    /// whose process holds the file's bytes as of `seen_version`.
     pub fn file(
         fd: i32,
         file_offset: u64,
@@ -2368,7 +2405,6 @@ impl SharedMapping {
         writable: bool,
         write_allowed: bool,
         key: String,
-        snapshot: IoBuffer<u8>,
         seen_version: u64,
     ) -> Self {
         Self {
@@ -2379,7 +2415,8 @@ impl SharedMapping {
             write_allowed,
             backing_kind: Some(BackingKind::File),
             backing_key: Some(key),
-            snapshot: Some(snapshot),
+            snapshot: None,
+            overlay: PreparedMap::new(),
             seen_version,
             writeback_error: false,
             clean: None,
@@ -2401,19 +2438,88 @@ impl SharedMapping {
             backing_kind: self.backing_kind,
             backing_key,
             snapshot,
+            overlay: PreparedMap::new(),
             seen_version: self.seen_version,
             writeback_error: self.writeback_error,
             clean: None,
         })
     }
 
-    fn has_unpublished_changes(&self, pid: u32, addr: u64, io: &mut dyn SharedMappingIo) -> Result<bool, Errno> {
-        let Some(snapshot) = self.snapshot.as_ref() else { return Ok(false); };
+    /// Move the overlay pages that `other`, a split-off part of this file
+    /// mapping, covers into it. The pages move whole, so the split needs no
+    /// credit; a page is never covered by both parts.
+    fn move_covered_overlay(&mut self, other: &mut SharedMapping) {
+        let page_size = FILE_PAGE_SIZE as u64;
+        let covered = other.file_offset / page_size
+            ..other.file_offset.saturating_add(other.len as u64).div_ceil(page_size);
+        while let Some(page) = self.overlay.range(covered.clone()).next().map(|(page, _)| *page) {
+            let entry = self.overlay.remove_entry(&page).expect("overlay page found above");
+            other.overlay.publish_io(entry);
+        }
+    }
+
+    /// The file pages a file mapping covers; see [`file_pages`].
+    fn file_pages(&self) -> impl Iterator<Item = (u64, usize, usize, usize)> {
+        file_pages(self.file_offset, self.len)
+    }
+
+    /// Fill `page_bytes` with what a file mapping's process last observed in
+    /// file page `page`: its overlay page, or else the file's current page.
+    /// False means the page is unknown ([`SharedMappingTable::prepare_truncate`])
+    /// and `page_bytes` is untouched.
+    fn observed_page(
+        &self,
+        backing: &mut FileBacking,
+        page: u64,
+        page_bytes: &mut [u8; FILE_PAGE_SIZE],
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<bool, Errno> {
+        match self.overlay.get(&page) {
+            Some(observed) if observed.is_empty() => Ok(false),
+            Some(observed) => {
+                page_bytes.copy_from_slice(observed);
+                Ok(true)
+            }
+            None => backing.current_page_into(page, page_bytes, io).map(|()| true),
+        }
+    }
+
+    /// Whether a file mapping's process holds bytes its backing has moved
+    /// past: the backing published since, or a page changed under it.
+    fn is_behind(&self, backing: &FileBacking) -> bool {
+        self.seen_version != backing.version || !self.overlay.is_empty()
+    }
+
+    /// Drop the overlay pages a file mapping no longer covers, after a trim.
+    fn retain_covered_overlay(&mut self) {
+        let page_size = FILE_PAGE_SIZE as u64;
+        let start = self.file_offset / page_size;
+        let end = self.file_offset.saturating_add(self.len as u64).div_ceil(page_size);
+        self.overlay.retain(|page, _| (start..end).contains(page));
+    }
+
+    fn has_unpublished_changes(
+        &self,
+        pid: u32,
+        addr: u64,
+        backing: Option<&mut FileBacking>,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<bool, Errno> {
         let mut current = [0u8; FILE_PAGE_SIZE];
-        for offset in (0..self.len).step_by(FILE_PAGE_SIZE) {
-            let count = (self.len - offset).min(FILE_PAGE_SIZE);
-            io.read_process(pid, addr + offset as u64, &mut current[..count])?;
-            if current[..count] != snapshot[offset..offset + count] { return Ok(true); }
+        if let Some(snapshot) = self.snapshot.as_ref() {
+            for offset in (0..self.len).step_by(FILE_PAGE_SIZE) {
+                let count = (self.len - offset).min(FILE_PAGE_SIZE);
+                io.read_process(pid, addr + offset as u64, &mut current[..count])?;
+                if current[..count] != snapshot[offset..offset + count] { return Ok(true); }
+            }
+            return Ok(false);
+        }
+        let Some(backing) = backing else { return Ok(false); };
+        let mut observed = [0u8; FILE_PAGE_SIZE];
+        for (page, at, from, count) in self.file_pages() {
+            if !self.observed_page(backing, page, &mut observed, io)? { continue; }
+            io.read_process(pid, addr + at as u64, &mut current[..count])?;
+            if current[..count] != observed[from..from + count] { return Ok(true); }
         }
         Ok(false)
     }
@@ -2593,6 +2699,7 @@ impl FileBacking {
             ref_count: 0,
             version: 0,
             source_generation: None,
+            overwrite_announced: false,
         }
     }
 
@@ -2632,6 +2739,11 @@ impl FileBacking {
         };
         if live == seen {
             return;
+        }
+        if !core::mem::take(&mut self.overwrite_announced) {
+            crate::writeback_loss::shared_mapping_fault(format_args!(
+                "mapped file {} changed from generation {seen} to {live} without announcing the overwrite",
+                self.key));
         }
         let _ = self.revalidate(io);
         self.invalidate_all_stale();
@@ -2696,6 +2808,41 @@ impl FileBacking {
         self.size = stat.size;
         self.size_valid = true;
         Ok(())
+    }
+
+    /// Lay the bytes of page `page` that the cache holds dirty, stores not
+    /// written back yet, over `bytes`, the page as the file's storage has
+    /// it: what a mapping observes through the file.
+    fn overlay_dirty_bytes(&self, page: u64, bytes: &mut [u8; FILE_PAGE_SIZE]) {
+        let (Some(dirty), Some(cached)) = (self.dirty_pages.get(&page), self.pages.get(&page)) else {
+            return;
+        };
+        for (offset, byte) in bytes.iter_mut().enumerate() {
+            if dirty.contains(offset) {
+                *byte = cached[offset];
+            }
+        }
+    }
+
+    /// Fill `bytes` with the file's current page `page`: the cached page,
+    /// which holds stores not yet written back, or else the file's own page.
+    /// Unlike [`Self::ensure_page_loaded`], this caches nothing, so it costs
+    /// no I/O credit.
+    fn current_page_into(
+        &mut self,
+        page: u64,
+        bytes: &mut [u8; FILE_PAGE_SIZE],
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        if self.pages.contains_key(&page) {
+            self.ensure_page_loaded(page, io)?;
+            bytes.copy_from_slice(&self.pages[&page]);
+            return Ok(());
+        }
+        if !self.size_valid {
+            self.revalidate(io)?;
+        }
+        self.read_page_into(page, bytes, io)
     }
 
     /// Read one whole page. Bytes past EOF stay zero; bytes the stat declared
@@ -2788,51 +2935,6 @@ impl FileBacking {
             self.ensure_page_loaded(page, io)?;
         }
         Ok(())
-    }
-
-    /// Assemble `len` bytes of the authoritative cache starting at `offset`.
-    pub fn read_range(
-        &mut self,
-        offset: u64,
-        len: usize,
-        io: &mut dyn SharedMappingIo,
-    ) -> Result<IoBuffer<u8>, Errno> {
-        offset.checked_add(len as u64).ok_or(Errno::EINVAL)?;
-        let mut out = IoBuffer::try_filled(len, 0)?;
-        let mut copied = 0usize;
-        while copied < len {
-            let absolute = offset + copied as u64;
-            let page = absolute / FILE_PAGE_SIZE as u64;
-            let page_offset = (absolute % FILE_PAGE_SIZE as u64) as usize;
-            let count = (FILE_PAGE_SIZE - page_offset).min(len - copied);
-            self.ensure_page_loaded(page, io)?;
-            let src = &self.pages[&page][page_offset..page_offset + count];
-            out[copied..copied + count].copy_from_slice(src);
-            copied += count;
-        }
-        Ok(out)
-    }
-
-    /// Refresh bytes are provisional replacements, not another retained copy.
-    /// Keep their credits temporary until their exact snapshot guard admits
-    /// promotion; ordinary owned reads retain their existing live policy.
-    fn read_range_staged(
-        &mut self, offset: u64, len: usize, io: &mut dyn SharedMappingIo,
-    ) -> Result<crate::io_buffer::StagedIoBuffer<u8>, Errno> {
-        offset.checked_add(len as u64).ok_or(Errno::EINVAL)?;
-        let mut out = crate::io_buffer::StagedIoBuffer::try_filled(len, 0)?;
-        let mut copied = 0usize;
-        while copied < len {
-            let absolute = offset + copied as u64;
-            let page = absolute / FILE_PAGE_SIZE as u64;
-            let page_offset = (absolute % FILE_PAGE_SIZE as u64) as usize;
-            let count = (FILE_PAGE_SIZE - page_offset).min(len - copied);
-            self.ensure_page_loaded(page, io)?;
-            let src = &self.pages[&page][page_offset..page_offset + count];
-            out[copied..copied + count].copy_from_slice(src);
-            copied += count;
-        }
-        Ok(out)
     }
 
     /// Copy bytes into the cache at `offset`, marking touched pages dirty.
@@ -3853,15 +3955,45 @@ impl SharedMappingTable {
             self.cancel_kernel_file_mapping(io);
             return Err(Errno::EEXIST);
         }
-        let written = io.write_process(pid, map_addr, mapping.snapshot.as_deref().unwrap_or(&[]));
-        if let Err(error) = written {
-            self.cancel_kernel_file_mapping(io);
-            return Err(error);
-        }
         let mut pending = self.pending_file_mapping.take().expect("file mapping preparation missing");
+        let mapping = pending.mapping.mapping.value();
+        let written = self.populate_from_backing(pid, map_addr, mapping.backing_key.as_deref(),
+            mapping.file_offset, mapping.len, io);
+        let version = match written {
+            Ok(version) => version,
+            Err(error) => {
+                self.pending_file_mapping = Some(pending);
+                self.cancel_kernel_file_mapping(io);
+                return Err(error);
+            }
+        };
+        pending.mapping.mapping.value_mut().seen_version = version;
         pending.mapping.mapping.replace_key(map_addr);
         self.publish_mapping(pid, pending.mapping);
         Ok(())
+    }
+
+    /// Write the file's current bytes `[file_offset, file_offset + len)` of
+    /// the backing at `key` into process `pid` at `map_addr`, a page at a
+    /// time so no copy of the range is held, and return the backing version
+    /// they are. A new mapping, a moved one and a forked child's all start
+    /// observing the file this way, with an empty overlay.
+    fn populate_from_backing(
+        &mut self,
+        pid: u32,
+        map_addr: u64,
+        key: Option<&str>,
+        file_offset: u64,
+        len: usize,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<u64, Errno> {
+        let backing = key.and_then(|key| self.file_backings.get_mut(key)).ok_or(Errno::EIO)?;
+        let mut page_bytes = [0u8; FILE_PAGE_SIZE];
+        for (page, at, from, count) in file_pages(file_offset, len) {
+            backing.current_page_into(page, &mut page_bytes, io)?;
+            io.write_process(pid, map_addr + at as u64, &page_bytes[from..from + count])?;
+        }
+        Ok(backing.version)
     }
 
     pub fn cancel_kernel_file_mapping(&mut self, io: &mut dyn SharedMappingIo) {
@@ -3907,17 +4039,8 @@ impl SharedMappingTable {
             return Err(Errno::ENOTSUP);
         }
         self.get_or_create_file_backing(key, &stat, true, io)?;
-        let populated = self
-            .pull_backing(key, None, io)
-            .and_then(|_| {
-                let backing = self.file_backings.get_mut(key).ok_or(Errno::EIO)?;
-                let version = backing.version;
-                let bytes = backing.read_range(file_offset, len, io);
-                backing.settle();
-                Ok((bytes?, version))
-            });
-        let (initial, version) = match populated {
-            Ok(populated) => populated,
+        let version = match self.pull_backing(key, None, io) {
+            Ok(_) => self.file_backings.get(key).ok_or(Errno::EIO)?.version,
             Err(err) => {
                 self.discard_unreferenced_file_backing(key, io);
                 return Err(err);
@@ -3930,7 +4053,6 @@ impl SharedMappingTable {
                 writable,
                 write_allowed,
                 mapping_key,
-                initial,
                 version,
             )).and_then(|mapping| self.prepare_mapping_entry(pid, mapping)) {
             Ok(prepared) => prepared,
@@ -3998,79 +4120,82 @@ impl SharedMappingTable {
     }
 
     /// Bring `pid`'s file mappings at `addrs` that are behind their backing
-    /// up to date. Every range is read before any process memory is written,
-    /// so one unreadable backing cannot leave the process half refreshed, and
-    /// only the runs that differ from the snapshot are written. Callers pull
-    /// the mappings first, so the snapshot is the process's own bytes.
+    /// up to date. Callers pull the mappings first, so what a mapping
+    /// observed is the process's own bytes.
+    ///
+    /// Only an overlay page can differ from the file: every other page the
+    /// process observed is the file's current page, which it holds already.
+    /// The runs where the file now differs from an overlay page are written,
+    /// and the page leaves the overlay. Every such page is read once before
+    /// any process memory is written, so one unreadable backing cannot leave
+    /// the process half refreshed, and the refresh holds no copy of a range:
+    /// it reads each page again when it writes it.
     fn refresh_mappings(
         &mut self,
         pid: u32,
         addrs: &[u64],
         io: &mut dyn SharedMappingIo,
     ) -> Result<(), Errno> {
-        // A current mapping needs no replacement or table walk. This is the
-        // ordinary no-work completion path, so it must not acquire I/O credit.
+        // A current mapping needs no table walk. This is the ordinary no-work
+        // completion path, so it must not acquire I/O credit.
         if addrs.is_empty() { return Ok(()); }
-        debug_assert!(addrs.windows(2).all(|pair| pair[0] <= pair[1]));
-        struct Refresh<'a> {
-            addr: u64,
-            replacement: crate::io_buffer::PreparedIoBufferReplacement<'a, u8>,
-            seen_version: &'a mut u64,
-            clean: &'a mut Option<CleanStamp>,
-            version: u64,
-        }
-        // All reads AND replacement admissions precede every process write.
-        // Temporary metadata owns the guards, so any later failure rolls back
-        // earlier credits and snapshots without another allocation.
-        let mut refreshes = crate::io_buffer::StagedIoBuffer::try_with_capacity(addrs.len())?;
-        let Self { mappings, file_backings, failures, .. } = self;
-        let Some(pid_mappings) = mappings.get_mut(&pid) else { return Ok(()); };
-        // Both internal callers enumerate the sorted mapping table. Retain
-        // that order while borrowing disjoint snapshot/version/epoch fields;
-        // no second lookup or alias into a mutably borrowed table is needed.
-        pid_mappings.try_for_each_mut_entry(|map_addr, mapping| {
-            if addrs.binary_search(map_addr).is_err() { return Ok(()); }
-            let Some(backing) = mapping.backing_key.as_deref()
-                .and_then(|key| file_backings.get_mut(key)) else { return Ok(()); };
-            if mapping.seen_version == backing.version { return Ok(()); }
-            let latest = match backing.read_range_staged(mapping.file_offset, mapping.len, io) {
-                Ok(latest) => latest,
-                Err(error) => {
-                    failures.record("refresh_read", pid, *map_addr, mapping.len,
-                        mapping.file_offset, backing.handle, 0, mapping.len, error);
-                    return Err(error);
+        let page_size = FILE_PAGE_SIZE as u64;
+        let mut latest = [0u8; FILE_PAGE_SIZE];
+        for writing in [false, true] {
+            for &map_addr in addrs {
+                let Some(mapping) = self.mappings.get(&pid).and_then(|m| m.get(&map_addr)) else { continue; };
+                let Some(key) = mapping.backing_key.clone() else { continue; };
+                let Some(backing) = self.file_backings.get(&key) else { continue; };
+                if mapping.seen_version == backing.version && mapping.overlay.is_empty() { continue; }
+                let (version, handle) = (backing.version, backing.handle);
+                let (file_offset, len) = (mapping.file_offset, mapping.len);
+                let end = file_offset.saturating_add(len as u64);
+                let mut cursor = None;
+                loop {
+                    let overlay = &self.mappings[&pid][&map_addr].overlay;
+                    let next = match cursor {
+                        None => overlay.keys().next().copied(),
+                        Some(previous) => overlay.next_after(&previous).map(|(page, _)| *page),
+                    };
+                    let Some(page) = next else { break; };
+                    cursor = Some(page);
+                    let page_start = page * page_size;
+                    let (lo, hi) = (file_offset.max(page_start), end.min(page_start + page_size));
+                    if lo < hi {
+                        let (at, from, count) =
+                            ((lo - file_offset) as usize, (lo - page_start) as usize, (hi - lo) as usize);
+                        let backing = self.file_backings.get_mut(&key).expect("backing checked above");
+                        if let Err(error) = backing.current_page_into(page, &mut latest, io) {
+                            self.failures.record("refresh_read", pid, map_addr, len, file_offset,
+                                handle, at, count, error);
+                            return Err(error);
+                        }
+                        if !writing { continue; }
+                        // Preserve changed-run publication: unrelated sibling
+                        // stores outside the peer's changed runs must survive.
+                        let observed = &self.mappings[&pid][&map_addr].overlay[&page];
+                        if observed.is_empty() {
+                            io.write_process(pid, map_addr + at as u64, &latest[from..from + count])?;
+                        } else {
+                            for (run_start, run_end) in refresh_runs(&latest[from..from + count], &observed[from..from + count]) {
+                                io.write_process(pid, map_addr + (at + run_start) as u64,
+                                    &latest[from + run_start..from + run_end])?;
+                            }
+                        }
+                    } else if !writing {
+                        continue;
+                    }
+                    self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr))
+                        .expect("mapping checked above").overlay.remove(&page);
                 }
-            };
-            let replacement = match latest.prepare_replacing(&mut mapping.snapshot) {
-                Ok(replacement) => replacement,
-                Err(error) => {
-                    failures.record("refresh_promote", pid, *map_addr, mapping.len,
-                        mapping.file_offset, backing.handle, 0, mapping.len, error);
-                    return Err(error);
-                }
-            };
-            refreshes.push(Refresh { addr: *map_addr, replacement,
-                seen_version: &mut mapping.seen_version, clean: &mut mapping.clean,
-                version: backing.version });
-            Ok(())
-        })?;
-
-        // Preserve changed-run publication: unrelated sibling stores outside
-        // the peer's changed runs must survive the refresh.
-        for refresh in refreshes {
-            let runs = match refresh.replacement.original() {
-                Some(snapshot) => refresh_runs(refresh.replacement.latest(), snapshot),
-                None => alloc::vec![(0, refresh.replacement.latest().len())],
-            };
-            for (start, end) in runs {
-                io.write_process(pid, refresh.addr + start as u64,
-                    &refresh.replacement.latest()[start..end])?;
+                if !writing { continue; }
+                let observed_at = io.quiescent_epoch(pid)
+                    .map(|epoch| CleanStamp { epoch, log_position: io.kernel_write_position() });
+                let mapping = self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr))
+                    .expect("mapping checked above");
+                mapping.seen_version = version;
+                mapping.clean = observed_at;
             }
-            let observed = io.quiescent_epoch(pid)
-                .map(|epoch| CleanStamp { epoch, log_position: io.kernel_write_position() });
-            refresh.replacement.commit();
-            *refresh.seen_version = refresh.version;
-            *refresh.clean = observed;
         }
         Ok(())
     }
@@ -4140,13 +4265,12 @@ impl SharedMappingTable {
             .flat_map(|m| m.iter())
             .filter(|(addr, mapping)| {
                 mapping.backing_kind == Some(BackingKind::File)
-                    && mapping.snapshot.is_some()
                     && addr.saturating_add(mapping.len as u64) <= mem_len
                     && mapping
                         .backing_key
                         .as_deref()
                         .and_then(|key| self.file_backings.get(key))
-                        .is_some_and(|backing| backing.version != mapping.seen_version)
+                        .is_some_and(|backing| mapping.is_behind(backing))
             })
             .map(|(addr, mapping)| {
                 // An alias was pulled with its peers in step 1 already.
@@ -4214,9 +4338,6 @@ impl SharedMappingTable {
                 let Some(key) = mapping.backing_key.as_deref() else {
                     continue;
                 };
-                if mapping.snapshot.is_none() {
-                    continue;
-                }
                 let Some(backing) = self.file_backings.get(key) else {
                     continue;
                 };
@@ -4226,7 +4347,7 @@ impl SharedMappingTable {
                 if map_addr.saturating_add(mapping.len as u64) > mem_len {
                     continue;
                 }
-                let was_stale = mapping.seen_version != backing.version;
+                let was_stale = mapping.is_behind(backing);
                 if !force && backing.ref_count <= 1 && !was_stale {
                     continue;
                 }
@@ -4362,9 +4483,14 @@ impl SharedMappingTable {
     /// Publish one file mapping's stores into its backing, without touching
     /// the process's memory.
     ///
-    /// The snapshot becomes the bytes just read, so a later pull finds only
-    /// stores made after this one; keeping the old snapshot would merge the
-    /// same runs again over a peer's newer bytes. The mapping's
+    /// A store is a byte that differs from what the mapping last observed
+    /// ([`SharedMapping::observed_page`]). Before a page of the file takes a
+    /// store, every other mapping that still observes the page through the
+    /// file keeps the old page in its overlay ([`Self::preserve_page`]), so
+    /// the store cannot pass for a store of theirs. This mapping's own
+    /// observation then includes the bytes just merged, so a later pull finds
+    /// only stores made after this one; observing the old bytes would merge
+    /// the same runs again over a peer's newer bytes. The mapping's
     /// `seen_version` advances only when it was current before its own merge,
     /// because only then does the backing range equal those bytes afterwards.
     fn pull_mapping(
@@ -4377,13 +4503,7 @@ impl SharedMappingTable {
             // The process is gone; its mappings are published at teardown.
             return Ok(PullOutcome::Unchanged);
         };
-        let Self {
-            mappings,
-            file_backings,
-            failures,
-            ..
-        } = self;
-        let Some(mapping) = mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr)) else {
+        let Some(mapping) = self.mappings.get(&pid).and_then(|m| m.get(&map_addr)) else {
             return Ok(PullOutcome::Unchanged);
         };
         if mapping.backing_kind != Some(BackingKind::File) || !mapping.writable {
@@ -4392,15 +4512,14 @@ impl SharedMappingTable {
         let Some(key) = mapping.backing_key.clone() else {
             return Ok(PullOutcome::Unchanged);
         };
-        let Some(backing) = file_backings.get_mut(&key) else {
+        let Some(backing) = self.file_backings.get(&key) else {
             return Ok(PullOutcome::Unchanged);
         };
         if map_addr.saturating_add(mapping.len as u64) > mem_len {
             return Ok(PullOutcome::Unchanged);
         }
-        let Some(mut snapshot) = mapping.snapshot.take() else {
-            return Ok(PullOutcome::Unchanged);
-        };
+        let (file_offset, len, handle) = (mapping.file_offset, mapping.len, backing.handle);
+        let was_current = mapping.seen_version == backing.version;
         // Read the epoch before the comparison: whatever the comparison sees,
         // a later change to the bytes changes the epoch first.
         let epoch = io.quiescent_epoch(pid);
@@ -4408,117 +4527,189 @@ impl SharedMappingTable {
         let proved = match (epoch, mapping.clean) {
             (Some(epoch), Some(clean)) => {
                 clean.epoch == epoch
-                    && snapshot.len() == mapping.len
-                    && io.kernel_wrote_since(pid, clean.log_position, map_addr, mapping.len as u64)
-                        == Some(false)
+                    && io.kernel_wrote_since(pid, clean.log_position, map_addr, len as u64) == Some(false)
             }
             _ => false,
         };
         if proved && SKIP_PROVED_PULLS {
-            mapping.snapshot = Some(snapshot);
             return Ok(PullOutcome::Unchanged);
         }
-        let observed = epoch.map(|epoch| CleanStamp { epoch, log_position });
-        let comparison = match io.process_differs_from_snapshot(pid, map_addr, mapping.len, &snapshot) {
-            Ok(comparison) => comparison,
-            Err(err) => {
-                failures.record("pull_compare", pid, map_addr, mapping.len,
-                    mapping.file_offset, backing.handle, 0, mapping.len, err);
-                mapping.snapshot = Some(snapshot);
-                mapping.clean = None;
-                return Err(err);
-            }
-        };
-        if comparison == Some(false) {
-            mapping.snapshot = Some(snapshot);
-            mapping.clean = observed;
-            #[cfg(feature = "shared-mapping-proof-verify")]
-            if proved { PROOFS_VERIFIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed); }
-            return Ok(PullOutcome::Unchanged);
-        }
-        let was_current = mapping.seen_version == backing.version;
+        let observed_at = epoch.map(|epoch| CleanStamp { epoch, log_position });
         let mut changed = false;
         let mut failure = None;
-        let mut pressure_writeback_failed = false;
-        // Publication is fixed-page scratch, as on the normal descriptor
-        // fence path. A full current copy would need another live mapping's
-        // credit while its original snapshot must remain owned for retry.
+        let mut writeback_failed = None;
+        // Publication is fixed stack scratch, as on the normal descriptor
+        // fence path, so it needs no credit: a whole-mapping copy would cost
+        // what the overlay exists to save.
+        let mut window = [0u8; COMPARE_WINDOW];
+        let mut observed = [0u8; FILE_PAGE_SIZE];
         let mut current = [0u8; FILE_PAGE_SIZE];
-        for offset in (0..mapping.len).step_by(FILE_PAGE_SIZE) {
-            let chunk = FILE_PAGE_SIZE.min(mapping.len - offset);
-            if let Err(err) = io.read_process(pid, map_addr + offset as u64, &mut current[..chunk]) {
-                failures.record("pull_page_read", pid, map_addr, mapping.len,
-                    mapping.file_offset, backing.handle, offset, chunk, err);
-                failure = Some(err);
-                break;
+        let mut before = [0u8; FILE_PAGE_SIZE];
+        let mut window_start = 0usize;
+        'windows: while window_start < len {
+            let window_len = (len - window_start).min(COMPARE_WINDOW);
+            for (page, at, from, count) in file_pages(file_offset + window_start as u64, window_len) {
+                let mapping = &self.mappings[&pid][&map_addr];
+                let backing = self.file_backings.get_mut(&key).expect("backing checked above");
+                let known = match mapping.observed_page(backing, page, &mut observed, io) {
+                    // An unknown page publishes nothing: compare it equal.
+                    Ok(false) => io.read_process(pid, map_addr + (window_start + at) as u64, &mut observed[from..from + count]),
+                    result => result.map(|_| ()),
+                };
+                if let Err(err) = known {
+                    self.failures.record("pull_observed_read", pid, map_addr, len, file_offset,
+                        handle, window_start + at, count, err);
+                    failure = Some(err);
+                    break 'windows;
+                }
+                window[at..at + count].copy_from_slice(&observed[from..from + count]);
             }
-            let src = &current[..chunk];
-            let snap = snapshot.get_mut(offset..offset + chunk).unwrap_or(&mut []);
-            if !range_differs_from_snapshot(src, snap) { continue; }
-            if proved {
-                crate::writeback_loss::shared_mapping_fault(format_args!(
-                    "quiescence proof for pid {pid} mapping {map_addr:#x}+{} at epoch {:?} missed a change",
-                    mapping.len, epoch));
+            let comparison = io.process_differs_from_snapshot(pid, map_addr + window_start as u64,
+                window_len, &window[..window_len]);
+            match comparison {
+                Ok(Some(false)) => {
+                    window_start += window_len;
+                    continue;
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    self.failures.record("pull_compare", pid, map_addr, len, file_offset,
+                        handle, window_start, window_len, err);
+                    failure = Some(err);
+                    break;
+                }
             }
-            let merged = match backing.merge_changed_runs(src, snap, mapping.file_offset + offset as u64, io) {
-                Err(Errno::ENOMEM) if backing.writes_through() && backing.dirty_page_count() != 0 => {
-                    // WHY: accepted dirty pages otherwise accumulate until the
-                    // entire mapping fits in cache. Only under real pressure,
-                    // persist that owned prefix and release its clean cache.
-                    // Retry this immutable page once against the advanced
-                    // snapshot, so accepted bytes are never replayed. Ordinary
-                    // publication pays no per-page flush or admission query.
-                    match backing.flush_all(io) {
-                        Ok(()) => {
-                            backing.settle();
-                            backing.merge_changed_runs(src, snap, mapping.file_offset + offset as u64, io)
-                        }
-                        Err(_) => {
-                            // The unaccepted tail still lacks admission. Keep
-                            // ENOMEM, retain dirty custody, and report the real
-                            // failed writeback after restoring the snapshot.
-                            pressure_writeback_failed = true;
-                            Err(Errno::ENOMEM)
-                        }
+            for (page, at, from, count) in file_pages(file_offset + window_start as u64, window_len) {
+                let at = window_start + at;
+                if let Err(err) = io.read_process(pid, map_addr + at as u64, &mut current[from..from + count]) {
+                    self.failures.record("pull_page_read", pid, map_addr, len, file_offset,
+                        handle, at, count, err);
+                    failure = Some(err);
+                    break 'windows;
+                }
+                let overlay_page = self.mappings[&pid][&map_addr].overlay.get(&page);
+                if overlay_page.is_some_and(|observed| observed.is_empty()) {
+                    continue;
+                }
+                observed[from..from + count].copy_from_slice(&window[at - window_start..at - window_start + count]);
+                if !range_differs_from_snapshot(&current[from..from + count], &observed[from..from + count]) {
+                    continue;
+                }
+                if proved {
+                    crate::writeback_loss::shared_mapping_fault(format_args!(
+                        "quiescence proof for pid {pid} mapping {map_addr:#x}+{len} at epoch {epoch:?} missed a change"));
+                }
+                let overlaid = self.mappings[&pid][&map_addr].overlay.contains_key(&page);
+                let backing = self.file_backings.get_mut(&key).expect("backing checked above");
+                let preserved = backing.current_page_into(page, &mut before, io)
+                    .and_then(|()| self.preserve_page(&key, page, Some((pid, map_addr)), Some(&before)));
+                if let Err(err) = preserved {
+                    self.failures.record("pull_preserve", pid, map_addr, len, file_offset,
+                        handle, at, count, err);
+                    failure = Some(err);
+                    break 'windows;
+                }
+                let backing = self.file_backings.get_mut(&key).expect("backing checked above");
+                let backing_offset = page * FILE_PAGE_SIZE as u64 + from as u64;
+                let (src, snap) = (&current[from..from + count], &mut observed[from..from + count]);
+                let merged = backing.merge_changed_runs(src, snap, backing_offset, io);
+                // Only completed run merges advance the observation; an
+                // overlay page takes them in place, and a page observed
+                // through the file holds them in the backing already.
+                if overlaid {
+                    let mapping = self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr))
+                        .expect("mapping checked above");
+                    mapping.overlay.get_mut(&page).expect("overlay page checked above")[from..from + count]
+                        .copy_from_slice(&observed[from..from + count]);
+                }
+                match merged {
+                    Ok(true) => changed = true,
+                    Ok(false) => {}
+                    Err(err) => {
+                        self.failures.record("pull_merge", pid, map_addr, len, file_offset,
+                            handle, at, count, err);
+                        failure = Some(err);
+                        break 'windows;
                     }
                 }
-                result => result,
-            };
-            match merged {
-                Ok(true) => changed = true,
-                Ok(false) => {}
-                Err(err) => {
-                    failures.record("pull_merge", pid, map_addr, mapping.len,
-                        mapping.file_offset, backing.handle, offset, chunk, err);
-                    failure = Some(err); break;
+                // A write-through backing persists each page as it is merged,
+                // so publication never holds more than one dirty page.
+                let backing = self.file_backings.get_mut(&key).expect("backing checked above");
+                if backing.writes_through() {
+                    let flushed = backing.flush_all(io);
+                    backing.settle();
+                    if let Err(error) = flushed {
+                        writeback_failed = Some(error);
+                        break 'windows;
+                    }
                 }
             }
+            window_start += window_len;
         }
-        // Only completed run merges advance the baseline. Storing a whole
-        // freshly read range here would hide unmerged bytes after a refusal.
-        mapping.snapshot = Some(snapshot);
-        mapping.clean = if failure.is_none() { observed } else { None };
+        let mapping = self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr))
+            .expect("mapping checked above");
+        mapping.clean = if failure.is_none() { observed_at } else { None };
         if let Some(err) = failure {
-            if pressure_writeback_failed {
-                self.report_writeback_loss(pid, map_addr, &key, "write failed", io);
-            }
             return Err(err);
         }
         #[cfg(feature = "shared-mapping-proof-verify")]
         if proved { PROOFS_VERIFIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed); }
         if !changed { return Ok(PullOutcome::Unchanged); }
+        let backing = self.file_backings.get(&key).expect("backing checked above");
         if was_current {
             mapping.seen_version = backing.version;
         }
-        // A write-through backing persists the publication now, so a
-        // descriptor `read` sees it.
-        if backing.writes_through() {
-            if let Err(error) = backing.flush_all(io) {
-                self.report_writeback_loss(pid, map_addr, &key, "write failed", io);
-                return Ok(PullOutcome::WritebackFailed(error));
-            }
+        // A write-through backing persisted the publication page by page, so
+        // a descriptor `read` sees it.
+        if let Some(error) = writeback_failed {
+            self.report_writeback_loss(pid, map_addr, &key, "write failed", io);
+            return Ok(PullOutcome::WritebackFailed(error));
         }
         Ok(PullOutcome::Published)
+    }
+
+    /// Before file page `page` of the backing at `key` changes, give every
+    /// mapping of it that covers the page and still observes it through the
+    /// file the page as it is now, `old`, or mark the page unknown when `old`
+    /// is `None` (a truncation discards it). `except` is the mapping whose
+    /// stores are changing it, which observes its own stores.
+    ///
+    /// All copies are admitted before any is published, so a refusal leaves
+    /// every overlay as it was and the page unchanged.
+    fn preserve_page(
+        &mut self,
+        key: &str,
+        page: u64,
+        except: Option<(u32, u64)>,
+        old: Option<&[u8; FILE_PAGE_SIZE]>,
+    ) -> Result<(), Errno> {
+        let page_start = page * FILE_PAGE_SIZE as u64;
+        let page_end = page_start + FILE_PAGE_SIZE as u64;
+        let mut prepared = IoBuffer::new();
+        for (pid, entries) in self.mappings.iter() {
+            for (addr, mapping) in entries.iter() {
+                if except == Some((*pid, *addr))
+                    || mapping.backing_kind != Some(BackingKind::File)
+                    || mapping.backing_key.as_deref() != Some(key)
+                    || mapping.file_offset >= page_end
+                    || mapping.file_offset.saturating_add(mapping.len as u64) <= page_start
+                    || mapping.overlay.contains_key(&page)
+                {
+                    continue;
+                }
+                let observed = match old {
+                    Some(old) => IoBuffer::copy_from(old)?,
+                    None => IoBuffer::new(),
+                };
+                let entry = mapping.overlay.prepare_io(page, observed)?;
+                prepared.try_push((*pid, *addr, entry))?;
+            }
+        }
+        for (pid, addr, entry) in prepared {
+            self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&addr))
+                .expect("mapping observed above").overlay.publish_io(entry);
+        }
+        Ok(())
     }
 
     /// Publish every writable mapping of one backing, in every process
@@ -4599,6 +4790,119 @@ impl SharedMappingTable {
             return Ok(());
         };
         self.fence_key(&key, io)
+    }
+
+    /// Before descriptor I/O changes bytes `[start, end)` of the kernel-owned
+    /// file behind `handle` -- a `write`, a shrinking truncation, an `O_TRUNC`
+    /// open -- give every mapping of it that observes a page there through the
+    /// file that page as it is now, read by `read_old`.
+    ///
+    /// Descriptor I/O is the file's other writer; [`Self::preserve_page`] does
+    /// the same for publication. Without it, a mapping whose process has not
+    /// been refreshed past the change would take the old bytes still in its
+    /// memory for stores of its own and publish them over the write at its
+    /// next pull. A refusal (`ENOMEM`) changes no overlay, so the storage
+    /// fails the syscall before it touches the file.
+    pub fn prepare_overwrite(
+        &mut self,
+        handle: i64,
+        start: u64,
+        end: u64,
+        read_old: &mut dyn FnMut(u64, &mut [u8; FILE_PAGE_SIZE]) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        let Some(key) = self.fence_handles.get(&handle).map(|key| copy_mapping_key(key)).transpose()? else {
+            return Ok(());
+        };
+        let Some(backing) = self.file_backings.get_mut(&key) else {
+            return Ok(());
+        };
+        backing.overwrite_announced = true;
+        let page_size = FILE_PAGE_SIZE as u64;
+        let mut pages: IoBuffer<u64> = IoBuffer::new();
+        for entries in self.mappings.values() {
+            for mapping in entries.values() {
+                if mapping.backing_kind != Some(BackingKind::File) || mapping.backing_key.as_deref() != Some(&*key) {
+                    continue;
+                }
+                let lo = start.max(mapping.file_offset);
+                let hi = end.min(mapping.file_offset.saturating_add(mapping.len as u64));
+                if lo >= hi {
+                    continue;
+                }
+                for page in lo / page_size..=(hi - 1) / page_size {
+                    if !mapping.overlay.contains_key(&page) {
+                        pages.try_push(page)?;
+                    }
+                }
+            }
+        }
+        pages.sort_unstable();
+        let mut old = [0u8; FILE_PAGE_SIZE];
+        let mut previous = None;
+        for page in pages.iter().copied() {
+            if previous == Some(page) {
+                continue;
+            }
+            previous = Some(page);
+            read_old(page * page_size, &mut old)?;
+            self.file_backings.get(&key).expect("backing checked above").overlay_dirty_bytes(page, &mut old);
+            self.preserve_page(&key, page, None, Some(&old))?;
+        }
+        Ok(())
+    }
+
+    /// Before descriptor I/O truncates or extends the kernel-owned file
+    /// behind `handle` to `size` (an `O_TRUNC` open truncates to 0), prepare
+    /// every mapping of it as [`Self::prepare_overwrite`] does.
+    ///
+    /// The truncation discards every whole page at or past `size`, so a
+    /// mapping that observes one through the file gets it marked unknown
+    /// rather than copied: its pulls publish nothing from the page, and its
+    /// refresh writes the file's page over it. A store a peer raced into
+    /// those bytes is lost with them, as the truncation decides. Only a page
+    /// straddling `size` keeps bytes, so only it is read, through `read_old`.
+    pub fn prepare_truncate(
+        &mut self,
+        handle: i64,
+        size: u64,
+        read_old: &mut dyn FnMut(u64, &mut [u8; FILE_PAGE_SIZE]) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        let page_size = FILE_PAGE_SIZE as u64;
+        let straddled = size % page_size != 0;
+        let kept = size / page_size;
+        if straddled {
+            self.prepare_overwrite(handle, size, (kept + 1) * page_size, read_old)?;
+        }
+        let Some(key) = self.fence_handles.get(&handle).map(|key| copy_mapping_key(key)).transpose()? else {
+            return Ok(());
+        };
+        let Some(backing) = self.file_backings.get_mut(&key) else {
+            return Ok(());
+        };
+        backing.overwrite_announced = true;
+        let discarded = if straddled { kept + 1 } else { kept };
+        let mut pages: IoBuffer<u64> = IoBuffer::new();
+        for entries in self.mappings.values() {
+            for mapping in entries.values() {
+                if mapping.backing_kind != Some(BackingKind::File) || mapping.backing_key.as_deref() != Some(&*key) {
+                    continue;
+                }
+                for (page, ..) in mapping.file_pages().filter(|(page, ..)| *page >= discarded) {
+                    if !mapping.overlay.contains_key(&page) {
+                        pages.try_push(page)?;
+                    }
+                }
+            }
+        }
+        pages.sort_unstable();
+        let mut previous = None;
+        for page in pages.iter().copied() {
+            if previous != Some(page) {
+                self.preserve_page(&key, page, None, None)?;
+            }
+            previous = Some(page);
+        }
+        Ok(())
     }
 
     /// Whether a backing holds `handle`, i.e. whether [`Self::fence_handle`]
@@ -5199,6 +5503,7 @@ impl SharedMappingTable {
                     snapshot.copy_within(trim.., 0);
                     snapshot.truncate(snapshot.len() - trim);
                 }
+                mapping.retain_covered_overlay();
                 entry.replace_key(overlap_end);
                 self.mappings.get_mut(&pid).expect("process missing").publish_io(entry);
                 continue;
@@ -5216,6 +5521,7 @@ impl SharedMappingTable {
                 if let Some(snapshot) = mapping.snapshot.as_mut() {
                     snapshot.truncate(mapping.len);
                 }
+                mapping.retain_covered_overlay();
                 continue;
             }
 
@@ -5232,6 +5538,7 @@ impl SharedMappingTable {
                     let skip = (overlap_end - map_addr) as usize;
                     target.copy_from_slice(&source[skip..]);
                 }
+                mapping.move_covered_overlay(right.value_mut());
                 right.value_mut().seen_version = mapping.seen_version;
                 mapping.len = left_len;
                 mapping.clean = None;
@@ -5239,6 +5546,7 @@ impl SharedMappingTable {
                 if let Some(snapshot) = mapping.snapshot.as_mut() {
                     snapshot.truncate(left_len);
                 }
+                mapping.retain_covered_overlay();
             }
             match (right.value().backing_kind, right.value().backing_key.as_deref()) {
                 (Some(BackingKind::File), Some(key)) => {
@@ -5284,15 +5592,13 @@ impl SharedMappingTable {
             version: mapping.seen_version, anonymous_growth: None,
         };
         let file_offset = mapping.file_offset;
-        if let Some(key) = mapping.backing_key.as_deref().filter(|_| mapping.snapshot.is_some()) {
+        let tracked = mapping.snapshot.is_some() || mapping.backing_kind == Some(BackingKind::File);
+        if let Some(key) = mapping.backing_key.as_deref().filter(|_| tracked) {
             match mapping.backing_kind {
                 Some(BackingKind::File) => {
+                    // The moved interval is seeded from the file when it moves.
                     let backing = self.file_backings.get_mut(key).ok_or(Errno::EIO)?;
                     backing.reconcile_source(io);
-                    let latest = backing.read_range(file_offset, new_len, io);
-                    backing.settle();
-                    plan.snapshot = Some(latest?);
-                    plan.version = backing.version;
                 }
                 Some(BackingKind::Anonymous) => {
                     let backing = self.anon_backings.get(key).ok_or(Errno::EIO)?;
@@ -5335,16 +5641,21 @@ impl SharedMappingTable {
         }
         let mut plan = self.pending_remap.take().expect("remap plan missing");
         let mapping = self.mappings.get(&pid).and_then(|entries| entries.get(&old_addr)).expect("mapping missing");
+        let (file_offset, old_len, kind) = (mapping.file_offset, mapping.len, mapping.backing_kind);
+        let key = mapping.backing_key.as_deref().map(copy_mapping_key).transpose()?;
         if let Some(growth) = plan.anonymous_growth.as_mut() {
-            let base = mapping.file_offset as usize;
-            if new_len > mapping.len {
-                io.read_process(pid, new_addr + mapping.len as u64, &mut growth[base + mapping.len..base + new_len])?;
+            let base = file_offset as usize;
+            if new_len > old_len {
+                io.read_process(pid, new_addr + old_len as u64, &mut growth[base + old_len..base + new_len])?;
             }
             if let Some(snapshot) = plan.snapshot.as_mut() { snapshot.copy_from_slice(&growth[base..base + new_len]); }
         }
         if let Some(snapshot) = plan.snapshot.as_ref() { io.write_process(pid, new_addr, snapshot)?; }
+        if kind == Some(BackingKind::File) {
+            plan.version = self.populate_from_backing(pid, new_addr, key.as_deref(), file_offset, new_len, io)?;
+        }
         if let Some(growth) = plan.anonymous_growth {
-            let key = mapping.backing_key.as_deref().ok_or(Errno::EIO)?;
+            let key = key.as_deref().ok_or(Errno::EIO)?;
             let backing = self.anon_backings.get_mut(key).ok_or(Errno::EIO)?;
             backing.bytes = growth;
             backing.version += 1;
@@ -5356,6 +5667,7 @@ impl SharedMappingTable {
         mapping.len = new_len;
         mapping.clean = None;
         mapping.snapshot = plan.snapshot;
+        mapping.overlay = PreparedMap::new();
         mapping.seen_version = plan.version;
         entry.replace_key(new_addr);
         entries.publish_io(entry);
@@ -5457,7 +5769,8 @@ impl SharedMappingTable {
             let file_failed = self.sync_file_from_process(pid, true, io).is_err();
             self.sync_sysv_from_process(pid, true, io);
 
-            for (addr, mapping) in self.mappings.get(&pid).into_iter().flat_map(|mappings| mappings.iter()) {
+            let Self { mappings, file_backings, .. } = self;
+            for (addr, mapping) in mappings.get(&pid).into_iter().flat_map(|mappings| mappings.iter()) {
                 if !mapping.writable { continue; }
                 let failed = match mapping.backing_kind {
                     Some(BackingKind::File) => file_failed,
@@ -5466,14 +5779,15 @@ impl SharedMappingTable {
                 };
                 let key = mapping.backing_key.as_deref().unwrap_or("");
                 if failed {
-                    match mapping.has_unpublished_changes(pid, *addr, io) {
+                    let backing = mapping.backing_key.as_deref().and_then(|key| file_backings.get_mut(key));
+                    match mapping.has_unpublished_changes(pid, *addr, backing, io) {
                         Ok(true) => io.report_writeback_loss(pid, *addr, key, "publication failed"),
                         Err(_) => io.report_writeback_loss(pid, *addr, key, "process read failed"),
                         Ok(false) => {}
                     }
                 }
                 if mapping.backing_kind != Some(BackingKind::File) { continue; }
-                if let Some(backing) = mapping.backing_key.as_deref().and_then(|key| self.file_backings.get_mut(key)) {
+                if let Some(backing) = mapping.backing_key.as_deref().and_then(|key| file_backings.get_mut(key)) {
                     // A failed final writeback keeps the dirty pages on the
                     // backing (see `release_file_backing_reference`), but this
                     // process's stores are no longer guaranteed to reach the
@@ -5498,11 +5812,15 @@ impl SharedMappingTable {
 
     /// Give a freshly forked child its parent's shared mappings.
     ///
-    /// Everything that can fail is staged first: every authoritative range is
-    /// read, and every address and length revalidated against the child's real
-    /// memory size, before any child state is published. If the commit phase
-    /// still fails, the child's memory and every backing refcount are rolled
-    /// back, so a child never starts with a partially inherited address space.
+    /// Everything that can fail is staged first: every anonymous and SysV
+    /// range is read, and every address and length revalidated against the
+    /// child's real memory size, before any child state is published. A file
+    /// mapping stages no copy: the commit seeds the child's range from the
+    /// file a page at a time. If the commit phase still fails, the child's
+    /// memory and every backing refcount are rolled back, so a child never
+    /// starts with a partially inherited address space. A file range is put
+    /// back from the parent's bytes at the same address, which the child's
+    /// memory was copied from.
     pub fn inherit_process_mappings(
         &mut self,
         parent_pid: u32,
@@ -5536,13 +5854,7 @@ impl SharedMappingTable {
                         return Err(Errno::EINVAL);
                     };
                     backing.reconcile_source(io);
-                    let version = backing.version;
-                    let latest = backing.read_range(mapping.file_offset, mapping.len, io)
-                        .inspect_err(|&error| failures.record("fork_stage_read", child_pid,
-                            *map_addr, mapping.len, mapping.file_offset, backing.handle,
-                            0, mapping.len, error));
-                    backing.settle();
-                    (latest?, version)
+                    (None, backing.version)
                 }
                 _ => {
                     let Some(backing) = self.anon_backings.get(key) else {
@@ -5552,10 +5864,10 @@ impl SharedMappingTable {
                     if base.saturating_add(mapping.len) > backing.bytes.len() {
                         return Err(Errno::EINVAL);
                     }
-                    (IoBuffer::copy_from(&backing.bytes[base..base + mapping.len])
+                    (Some(IoBuffer::copy_from(&backing.bytes[base..base + mapping.len])
                         .inspect_err(|&error| failures.record("fork_anon_stage", child_pid,
                             *map_addr, mapping.len, mapping.file_offset, -1,
-                            0, mapping.len, error))?, backing.version)
+                            0, mapping.len, error))?), backing.version)
                 }
             };
             let mut inherited = mapping.try_copy_range(0, 0).inspect_err(|&error| {
@@ -5565,7 +5877,7 @@ impl SharedMappingTable {
                     mapping.file_offset, handle, 0, core::mem::size_of::<SharedMapping>(), error);
             })?;
             inherited.len = mapping.len;
-            inherited.snapshot = Some(latest);
+            inherited.snapshot = latest;
             inherited.seen_version = version;
             inherited.clean = None;
             staged.try_insert_io(*map_addr, inherited).inspect_err(|&error| {
@@ -5611,7 +5923,7 @@ impl SharedMappingTable {
         let mut originals = crate::io_buffer::StagedIoBuffer::try_with_capacity(original_count).inspect_err(|&error|
             failures.record("fork_rollback_metadata", child_pid, 0, 0, 0, -1, 0,
                 original_count.saturating_mul(core::mem::size_of::<(u64, crate::io_buffer::StagedIoBuffer<u8>)>()), error))?;
-        for (map_addr, mapping) in &staged {
+        for (map_addr, mapping) in staged.iter().filter(|(_, mapping)| mapping.snapshot.is_some()) {
             let mut bytes = crate::io_buffer::StagedIoBuffer::try_filled(mapping.len, 0).inspect_err(|&error| {
                 let handle = mapping.backing_key.as_deref().and_then(|key| self.file_backings.get(key))
                     .map_or(-1, |backing| backing.handle);
@@ -5649,11 +5961,20 @@ impl SharedMappingTable {
 
         // --- commit ------------------------------------------------------
         let mut failure: Option<Errno> = None;
+        let mut seeded_files = 0usize;
         for (map_addr, mapping) in staged.as_ref().into_iter().flat_map(|entry| entry.value().iter()) {
-            if let Err(err) = io.write_process(child_pid, *map_addr, mapping.snapshot.as_deref().unwrap_or(&[])) {
+            let written = match mapping.snapshot.as_deref() {
+                Some(snapshot) => io.write_process(child_pid, *map_addr, snapshot),
+                None => {
+                    seeded_files += 1;
+                    self.populate_from_backing(child_pid, *map_addr, mapping.backing_key.as_deref(),
+                        mapping.file_offset, mapping.len, io).map(|_| ())
+                }
+            };
+            if let Err(err) = written {
                 let handle = mapping.backing_key.as_deref().and_then(|key| self.file_backings.get(key))
                     .map_or(-1, |backing| backing.handle);
-                failures.record("fork_commit_write", child_pid, *map_addr, mapping.len,
+                self.failures.record("fork_commit_write", child_pid, *map_addr, mapping.len,
                     mapping.file_offset, handle, 0, mapping.len, err);
                 failure = Some(err);
                 break;
@@ -5662,7 +5983,7 @@ impl SharedMappingTable {
         if failure.is_none() {
             for (map_addr, mapping) in staged_sysv.as_ref().into_iter().flat_map(|entry| entry.value().iter()) {
                 if let Err(err) = io.write_process(child_pid, *map_addr, &mapping.snapshot) {
-                    failures.record("fork_sysv_commit_write", child_pid, *map_addr, mapping.size,
+                    self.failures.record("fork_sysv_commit_write", child_pid, *map_addr, mapping.size,
                         0, -1, 0, mapping.size, err);
                     failure = Some(err);
                     break;
@@ -5675,8 +5996,26 @@ impl SharedMappingTable {
                     let mapping = staged.as_ref().and_then(|entry| entry.value().get(&map_addr));
                     let handle = mapping.and_then(|mapping| mapping.backing_key.as_deref())
                         .and_then(|key| self.file_backings.get(key)).map_or(-1, |backing| backing.handle);
-                    failures.record("fork_rollback_write", child_pid, map_addr, bytes.len(),
+                    self.failures.record("fork_rollback_write", child_pid, map_addr, bytes.len(),
                         mapping.map_or(0, |mapping| mapping.file_offset), handle, 0, bytes.len(), error);
+                }
+            }
+            let seeded = staged.as_ref().into_iter().flat_map(|entry| entry.value().iter())
+                .filter(|(_, mapping)| mapping.snapshot.is_none()).take(seeded_files);
+            let mut page_bytes = [0u8; FILE_PAGE_SIZE];
+            for (map_addr, mapping) in seeded {
+                for at in (0..mapping.len).step_by(FILE_PAGE_SIZE) {
+                    let count = (mapping.len - at).min(FILE_PAGE_SIZE);
+                    let address = *map_addr + at as u64;
+                    let restored = io.read_process(parent_pid, address, &mut page_bytes[..count])
+                        .and_then(|()| io.write_process(child_pid, address, &page_bytes[..count]));
+                    if let Err(error) = restored {
+                        let handle = mapping.backing_key.as_deref().and_then(|key| self.file_backings.get(key))
+                            .map_or(-1, |backing| backing.handle);
+                        self.failures.record("fork_rollback_write", child_pid, *map_addr, mapping.len,
+                            mapping.file_offset, handle, at, count, error);
+                        break;
+                    }
                 }
             }
             return Err(err);
@@ -5759,6 +6098,19 @@ pub fn with_kernel_process_write_log<R>(f: impl FnOnce(&KernelProcessWriteLog) -
 mod shared_mapping_tests {
     use super::*;
     use alloc::string::ToString;
+
+    impl FileBacking {
+        /// The backing's bytes `[offset, offset + len)` as its cache serves
+        /// them, the pages they touch made resident first.
+        fn cached_bytes(&mut self, offset: u64, len: usize, io: &mut dyn SharedMappingIo) -> Result<Vec<u8>, Errno> {
+            self.ensure_range_loaded(offset, len, io)?;
+            let mut bytes = vec![0; len];
+            for (page, at, from, count) in file_pages(offset, len) {
+                bytes[at..at + count].copy_from_slice(&self.pages[&page][from..from + count]);
+            }
+            Ok(bytes)
+        }
+    }
 
     /// In-memory stand-in for every capability the mapping table needs.
     struct MockIo {
@@ -5880,6 +6232,18 @@ mod shared_mapping_tests {
             *self.generations.get_mut(&handle).expect("kernel file") += 1;
         }
 
+        /// Page `offset` of a file as it is now, zero past EOF: what a
+        /// storage layer hands the table before it changes the file.
+        fn file_page(&self, handle: i64, offset: u64, page: &mut [u8; FILE_PAGE_SIZE]) -> Result<(), Errno> {
+            let file = &self.files[&handle];
+            crate::kernel_file_mapping::read_old_page(page, offset, |at, dst| {
+                let start = (at as usize).min(file.len());
+                let count = dst.len().min(file.len() - start);
+                dst[..count].copy_from_slice(&file[start..start + count]);
+                Ok(count)
+            })
+        }
+
         fn retained_count(&self, handle: i64) -> i32 {
             self.retained.get(&handle).copied().unwrap_or(0)
         }
@@ -5909,6 +6273,39 @@ mod shared_mapping_tests {
             let mem = &self.procs[&pid];
             mem[addr as usize..addr as usize + len].to_vec()
         }
+    }
+
+    /// What a file mapping last observed, assembled from its overlay pages
+    /// and the file's current pages.
+    fn observed(table: &mut SharedMappingTable, io: &mut MockIo, pid: u32, addr: u64) -> Vec<u8> {
+        let mapping = &table.mappings[&pid][&addr];
+        let key = mapping.backing_key.clone().unwrap();
+        let mut bytes = vec![0; mapping.len];
+        let pages: Vec<_> = mapping.file_pages().collect();
+        let mut page_bytes = [0u8; FILE_PAGE_SIZE];
+        for (page, at, from, count) in pages {
+            let mapping = &table.mappings[&pid][&addr];
+            let backing = table.file_backings.get_mut(&key).unwrap();
+            assert!(mapping.observed_page(backing, page, &mut page_bytes, io).unwrap(), "page {page} is unknown");
+            bytes[at..at + count].copy_from_slice(&page_bytes[from..from + count]);
+        }
+        bytes
+    }
+
+    /// A descriptor write as the storage layers make one: announced to the
+    /// table first ([`SharedMappingTable::prepare_overwrite`]).
+    fn descriptor_write(table: &mut SharedMappingTable, io: &mut MockIo, handle: i64, offset: usize, bytes: &[u8]) {
+        let end = (offset + bytes.len()) as u64;
+        table.prepare_overwrite(handle, offset as u64, end, &mut |at, page| io.file_page(handle, at, page)).unwrap();
+        io.descriptor_write(handle, offset, bytes);
+    }
+
+    /// A truncation (or extension) as the storage layers make one: announced
+    /// to the table first ([`SharedMappingTable::prepare_truncate`]).
+    fn descriptor_truncate(table: &mut SharedMappingTable, io: &mut MockIo, handle: i64, size: usize) {
+        table.prepare_truncate(handle, size as u64, &mut |at, page| io.file_page(handle, at, page)).unwrap();
+        io.files.get_mut(&handle).unwrap().resize(size, 0);
+        *io.generations.get_mut(&handle).unwrap() += 1;
     }
 
     impl SharedMappingIo for MockIo {
@@ -6192,7 +6589,7 @@ mod shared_mapping_tests {
         io.poke(1, 16, &baseline);
         table.file_backing_mut(&key).unwrap().ref_count += 1;
         table.insert_mapping(1, 16, SharedMapping::file(
-            3, 0, 8, true, true, key.clone(), IoBuffer::copy_from(&baseline).unwrap(), 0,
+            3, 0, 8, true, true, key.clone(), 0,
         ));
         // Alias zero is unchanged; the later alias fails after a partial read.
         io.poke(1, 16, b"....BBBB");
@@ -6200,7 +6597,7 @@ mod shared_mapping_tests {
         let version = table.file_backing(&key).unwrap().version;
         assert_eq!(table.sync_file_from_process(1, false, &mut io), Err(Errno::EFAULT));
         for addr in [0, 16] {
-            assert_eq!(table.mapping(1, addr).unwrap().snapshot.as_deref(), Some(baseline.as_slice()));
+            assert_eq!(observed(&mut table, &mut io, 1, addr), baseline);
         }
         assert_eq!(table.file_backing(&key).unwrap().version, version);
         assert_eq!(io.files[&10], baseline);
@@ -6220,13 +6617,13 @@ mod shared_mapping_tests {
         let mut table = file_table_with_two_observers(&mut io, &key);
         io.poke(1, 0, b"AAAA....");
         table.sync_file_from_process(1, false, &mut io).unwrap();
-        let baseline = table.mapping(2, 0).unwrap().snapshot.clone().unwrap();
+        let baseline = observed(&mut table, &mut io, 2, 0);
         assert_eq!(io.read_process_if_changed(2, 0, 8, &baseline), Ok(None));
         assert_eq!(io.peek(2, 0, 8), b"........".to_vec());
         table.sync_file_from_process(2, false, &mut io).unwrap();
         assert_eq!(io.peek(2, 0, 8), b"AAAA....".to_vec());
+        assert_eq!(observed(&mut table, &mut io, 2, 0), b"AAAA....");
         let mapping = table.mapping(2, 0).unwrap();
-        assert_eq!(mapping.snapshot.as_deref(), Some(&b"AAAA...."[..]));
         assert_eq!(mapping.seen_version, table.file_backing(&key).unwrap().version);
         // A later store still publishes after the earlier no-change result.
         io.poke(2, 4, b"BBBB");
@@ -6244,13 +6641,13 @@ mod shared_mapping_tests {
         io.poke(1, 16, b"........");
         table.file_backing_mut(&key).unwrap().ref_count += 1;
         table.insert_mapping(1, 16, SharedMapping::file(
-            3, 0, 8, true, true, key.clone(), IoBuffer::copy_from(b"........").unwrap(), 0,
+            3, 0, 8, true, true, key.clone(), 0,
         ));
         io.poke(1, 16, b"....BBBB");
         table.sync_file_from_process(1, false, &mut io).unwrap();
         for addr in [0, 16] {
             assert_eq!(io.peek(1, addr, 8), b"....BBBB".to_vec());
-            assert_eq!(table.mapping(1, addr).unwrap().snapshot.as_deref(), Some(&b"....BBBB"[..]));
+            assert_eq!(observed(&mut table, &mut io, 1, addr), b"....BBBB");
         }
     }
 
@@ -6260,11 +6657,11 @@ mod shared_mapping_tests {
             .with_kernel_file(10, 1, 2, b"........".to_vec());
         let key = io.key_of(10);
         let mut table = file_table_with_two_observers(&mut io, &key);
-        io.descriptor_write(10, 2, b"ZZ");
+        descriptor_write(&mut table, &mut io, 10, 2, b"ZZ");
         table.sync_file_from_process(1, false, &mut io).unwrap();
         assert_eq!(io.peek(1, 0, 8), b"..ZZ....".to_vec());
         assert_eq!(io.files[&10], b"..ZZ....".to_vec());
-        assert_eq!(table.mapping(1, 0).unwrap().snapshot.as_deref(), Some(&b"..ZZ...."[..]));
+        assert_eq!(observed(&mut table, &mut io, 1, 0), b"..ZZ....");
     }
 
     #[test]
@@ -6294,13 +6691,16 @@ mod shared_mapping_tests {
             let stat = io.stat_of(handle);
             let backing = table.get_or_create_file_backing(key, &stat, true, io).unwrap();
             backing.ref_count = 1;
-            let initial = backing.read_range(0, 8, io).unwrap();
+            let initial = backing.cached_bytes(0, 8, io).unwrap();
             let addr = (16 * index) as u64;
             io.write_process(1, addr, &initial).unwrap();
             table.insert_mapping(1, addr, SharedMapping::file(
-                3 + index as i32, 0, 8, true, true, key.clone(), initial, 0));
+                3 + index as i32, 0, 8, true, true, key.clone(), 0));
         }
         for (key, bytes) in keys.iter().zip([b"AAAA....", b"....BBBB"]) {
+            let mut old = [0u8; FILE_PAGE_SIZE];
+            old[..8].copy_from_slice(b"........");
+            table.preserve_page(key, 0, None, Some(&old)).unwrap();
             let backing = table.file_backing_mut(key).unwrap();
             backing.write_range(0, bytes, false, io).unwrap();
             backing.version += 1;
@@ -6315,23 +6715,22 @@ mod shared_mapping_tests {
     }
 
     #[test]
-    fn refresh_replacements_need_temporary_not_duplicate_live_snapshot_credit() {
+    fn refresh_needs_no_credit_and_releases_overlay_pages() {
         let mut io = refresh_replacement_io();
         let (mut table, keys) = refresh_replacement_pair(&mut io);
         let held = crate::io_buffer::IO_MEMORY.usage().0;
         let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
         {
-            // All retained mappings/cache pages fit. Their equally sized
-            // replacements and staging metadata need no additional LIVE room.
             let _limit = crate::io_buffer::test_budget(held);
             table.refresh_mappings(1, &[0, 16], &mut io).unwrap();
-            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            assert!(crate::io_buffer::IO_MEMORY.usage().0 < held, "the overlay pages are released");
             assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
         }
         for (addr, key, bytes) in [(0, &keys[0], b"AAAA...."), (16, &keys[1], b"....BBBB")] {
             assert_eq!(io.peek(1, addr, 8).as_slice(), bytes);
+            assert_eq!(observed(&mut table, &mut io, 1, addr), bytes);
             let mapping = table.mapping(1, addr).unwrap();
-            assert_eq!(mapping.snapshot.as_deref(), Some(&bytes[..]));
+            assert!(mapping.overlay.is_empty());
             assert_eq!(mapping.seen_version, table.file_backing(key).unwrap().version);
         }
     }
@@ -6349,41 +6748,15 @@ mod shared_mapping_tests {
         assert_eq!(io.epochs[&1], epoch);
         for addr in [0, 16] {
             assert_eq!(io.peek(1, addr, 8).as_slice(), b"........");
-            let mapping = table.mapping(1, addr).unwrap();
-            assert_eq!(mapping.snapshot.as_deref(), Some(&b"........"[..]));
-            assert_eq!(mapping.seen_version, 0);
+            assert_eq!(observed(&mut table, &mut io, 1, addr), b"........");
+            assert_eq!(table.mapping(1, addr).unwrap().seen_version, 0);
         }
         assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, usage);
         assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
     }
 
     #[test]
-    fn later_refresh_promotion_refusal_preserves_all_guest_bytes_and_snapshots() {
-        let mut io = refresh_replacement_io();
-        let (mut table, _) = refresh_replacement_pair(&mut io);
-        // The pre-existing no-baseline refresh path needs an entire new live
-        // snapshot. It must not spend an earlier guard's rollback capacity.
-        table.mappings.get_mut(&1).unwrap().get_mut(&16).unwrap().snapshot = None;
-        let held = crate::io_buffer::IO_MEMORY.usage().0;
-        let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
-        let epoch = io.epochs[&1];
-        {
-            let _limit = crate::io_buffer::test_budget(held);
-            assert_eq!(table.refresh_mappings(1, &[0, 16], &mut io), Err(Errno::ENOMEM));
-            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
-            assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
-        }
-        assert_eq!(io.epochs[&1], epoch);
-        assert_eq!(io.peek(1, 0, 8).as_slice(), b"........");
-        assert_eq!(io.peek(1, 16, 8).as_slice(), b"........");
-        assert_eq!(table.mapping(1, 0).unwrap().snapshot.as_deref(), Some(&b"........"[..]));
-        assert!(table.mapping(1, 16).unwrap().snapshot.is_none());
-        assert_eq!(table.mapping(1, 0).unwrap().seen_version, 0);
-        assert_eq!(table.mapping(1, 16).unwrap().seen_version, 0);
-    }
-
-    #[test]
-    fn refresh_write_failure_restores_only_uncommitted_replacement_and_credits() {
+    fn refresh_write_failure_keeps_the_unrefreshed_overlay_and_needs_no_credit() {
         let mut io = refresh_replacement_io();
         let (mut table, keys) = refresh_replacement_pair(&mut io);
         io.parked.insert(1);
@@ -6395,17 +6768,17 @@ mod shared_mapping_tests {
         {
             let _limit = crate::io_buffer::test_budget(held);
             assert_eq!(table.refresh_mappings(1, &[0, 16], &mut io), Err(Errno::EFAULT));
-            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
             assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
         }
         assert_eq!(io.peek(1, 0, 8).as_slice(), b"AAAA....");
         assert_eq!(io.peek(1, 16, 8).as_slice(), b"........");
+        assert_eq!(observed(&mut table, &mut io, 1, 0), b"AAAA....");
         let first = table.mapping(1, 0).unwrap();
-        assert_eq!(first.snapshot.as_deref(), Some(&b"AAAA...."[..]));
+        assert!(first.overlay.is_empty());
         assert_eq!(first.seen_version, table.file_backing(&keys[0]).unwrap().version);
         assert_eq!(first.clean.unwrap().epoch, io.epochs[&1]);
+        assert_eq!(observed(&mut table, &mut io, 1, 16), b"........");
         let second = table.mapping(1, 16).unwrap();
-        assert_eq!(second.snapshot.as_deref(), Some(&b"........"[..]));
         assert_eq!(second.seen_version, 0);
         assert!(second.clean.is_none());
     }
@@ -6452,8 +6825,12 @@ mod shared_mapping_tests {
         let mut table = file_table_with_two_observers(&mut io, &key);
         let retained = io.retained_count(10);
         {
-            // This page and its dirty-byte owner are admitted before pressure,
-            // so failure cannot be attributed to new cache/dirty metadata.
+            // This page, its dirty-byte owner and both observers' overlay
+            // pages are admitted before pressure, so failure cannot be
+            // attributed to new cache, dirty or overlay metadata.
+            let mut old = [0u8; FILE_PAGE_SIZE];
+            old[..8].copy_from_slice(b"........");
+            table.preserve_page(&key, 0, None, Some(&old)).unwrap();
             let backing = table.file_backing_mut(&key).unwrap();
             backing.write_range(4, b"Q", true, &mut io).unwrap();
             backing.version += 1;
@@ -6468,14 +6845,14 @@ mod shared_mapping_tests {
         };
         assert_eq!(result, Ok(PullOutcome::Published),
             "valid retained mapping must publish without a second full snapshot");
-        assert_eq!(&table.mapping(1, 0).unwrap().snapshot.as_ref().unwrap()[..], b"AA......");
+        assert_eq!(observed(&mut table, &mut io, 1, 0), b"AA......");
         assert_eq!(io.files[&10], b"AA..Q...".to_vec());
         assert_eq!(io.retained_count(10), retained);
         assert_eq!(table.mapping(1, 0).unwrap().backing_key.as_deref(), Some(key.as_str()));
         assert_eq!(table.file_backing(&key).unwrap().handle, 10);
     }
 
-    fn pull_pressure_fixture(offset: usize, len: usize) -> (MockIo, SharedMappingTable, String, usize, usize) {
+    fn pull_pressure_fixture(offset: usize, len: usize) -> (MockIo, SharedMappingTable, String, usize, usize, usize) {
         let mut io = MockIo::new().with_process(1, len + 64).with_process(2, len + 64)
             .with_kernel_file(10, 1, 2, alloc::vec![b'.'; offset + len]);
         let key = io.key_of(10);
@@ -6483,44 +6860,47 @@ mod shared_mapping_tests {
         let stat = io.stat_of(10);
         let backing = table.get_or_create_file_backing(&key, &stat, true, &mut io).unwrap();
         backing.ref_count = 2;
-        let initial = backing.read_range(offset as u64, len, &mut io).unwrap();
         for pid in [1u32, 2u32] {
-            io.write_process(pid, 0, &initial).unwrap();
+            io.poke(pid, 0, &alloc::vec![b'.'; len]);
             table.insert_mapping(pid, 0, SharedMapping::file(3, offset as u64, len,
-                true, true, key.clone(), initial.clone(), 0));
+                true, true, key.clone(), 0));
         }
-        drop(initial);
-        table.file_backing_mut(&key).unwrap().settle();
         let held = crate::io_buffer::IO_MEMORY.usage().0;
-        // Measure actual one-page+dirty ownership; do not encode native/Wasm
-        // layout sizes or increase any production/native budget.
+        // Measure actual one-page+dirty and overlay-page ownership; do not
+        // encode native/Wasm layout sizes or increase any production/native
+        // budget.
         let backing = table.file_backing_mut(&key).unwrap();
         backing.write_range(0, b".", true, &mut io).unwrap();
         let one_page = crate::io_buffer::IO_MEMORY.usage().0 - held;
         backing.flush_all(&mut io).unwrap();backing.settle();
         assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
-        (io, table, key, held, one_page)
+        table.preserve_page(&key, 0, Some((1, 0)), Some(&[b'.'; FILE_PAGE_SIZE])).unwrap();
+        let overlay_page = crate::io_buffer::IO_MEMORY.usage().0 - held;
+        table.mappings.get_mut(&2).unwrap().get_mut(&0).unwrap().overlay = PreparedMap::new();
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        (io, table, key, held, one_page, overlay_page)
     }
 
     #[test]
-    fn pull_pressure_reclaims_write_through_dirty_prefix_without_full_mapping_cache() {
+    fn publication_holds_one_dirty_page_and_the_lagging_observer_overlay() {
         for offset in [0usize, 7] {
             let len = 3 * FILE_PAGE_SIZE + 19;
-            let (mut io, mut table, key, held, one_page) = pull_pressure_fixture(offset, len);
+            let (mut io, mut table, key, held, one_page, overlay_page) = pull_pressure_fixture(offset, len);
             io.poke(1, 0, &alloc::vec![b'A'; len]);
+            let pages = file_pages(offset as u64, len).count();
             let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
             {
-                // Existing snapshots plus ONE actual dirty page fit. The old
-                // whole-mapping dirty cache cannot, despite fitting retention.
-                let _limit = crate::io_buffer::test_budget(held + one_page);
+                // One dirty page and the reader's overlay copy of each
+                // changed page fit. A whole-mapping copy does not.
+                let _limit = crate::io_buffer::test_budget(held + one_page + pages * overlay_page);
                 table.sync_file_at_completion(2, &mut io).unwrap();
-                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held, "the reader's refresh releases its overlay");
                 assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
             }
             assert_eq!(&io.files[&10][offset..offset + len], &alloc::vec![b'A'; len]);
             assert_eq!(io.peek(2, 0, len), alloc::vec![b'A'; len]);
             for pid in [1u32, 2u32] {
-                assert_eq!(table.mapping(pid, 0).unwrap().snapshot.as_deref(), Some(&alloc::vec![b'A'; len][..]));
+                assert_eq!(observed(&mut table, &mut io, pid, 0), alloc::vec![b'A'; len]);
                 assert_eq!(table.mapping(pid, 0).unwrap().seen_version, table.file_backing(&key).unwrap().version);
             }
             assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 0);
@@ -6530,28 +6910,14 @@ mod shared_mapping_tests {
     }
 
     #[test]
-    fn pull_pressure_partial_flush_keeps_accepted_prefix_and_unaccepted_tail_distinct() {
+    fn partial_write_through_flush_keeps_custody_of_the_unaccepted_tail() {
         let offset = 7usize;let len = 3 * FILE_PAGE_SIZE + 19;
-        let (mut io, mut table, key, held, one_page) = pull_pressure_fixture(offset, len);
+        let (mut io, mut table, key, _, _, _) = pull_pressure_fixture(offset, len);
         io.poke(1, 0, &alloc::vec![b'A'; len]);
         io.write_budget = Some(3);
-        let accepted = FILE_PAGE_SIZE - offset;
-        let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
-        {
-            let _limit = crate::io_buffer::test_budget(held + one_page);
-            // The first page was accepted before the next page's allocation
-            // refused. Failed reclamation cannot accept the unseen tail or
-            // turn this into historical-success WritebackFailed.
-            assert_eq!(table.pull_mapping(1, 0, &mut io), Err(Errno::ENOMEM));
-            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held + one_page);
-            assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
-        }
-        let snapshot = table.mapping(1, 0).unwrap().snapshot.as_ref().unwrap();
-        assert_eq!(&snapshot[..accepted], &alloc::vec![b'A'; accepted]);
-        assert_eq!(&snapshot[accepted..], &alloc::vec![b'.'; len - accepted]);
-        assert!(table.file_backing(&key).unwrap().version > 0);
-        assert_eq!(table.mapping(1, 0).unwrap().seen_version, 0);
-        assert!(table.mapping(1, 0).unwrap().clean.is_none());
+        // The first page's flush accepts three bytes. The rest of that page
+        // stays dirty, and the pages after it stay unpublished in the process.
+        assert_eq!(table.pull_mapping(1, 0, &mut io), Ok(PullOutcome::WritebackFailed(Errno::ENOSPC)));
         assert_eq!(&io.files[&10][offset..offset + 3], b"AAA");
         assert_eq!(&io.files[&10][offset + 3..], &alloc::vec![b'.'; len - 3]);
         assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 1);
@@ -6561,7 +6927,7 @@ mod shared_mapping_tests {
         // A later descriptor write supersedes an already-persisted byte.
         // Retrying publication must not replay the previously accepted A.
         io.write_budget = None;
-        io.descriptor_write(10, offset, b"B");
+        descriptor_write(&mut table, &mut io, 10, offset, b"B");
         table.pull_backing(&key, None, &mut io).unwrap();
         assert_eq!(io.files[&10][offset], b'B');
         assert_eq!(&io.files[&10][offset + 1..], &alloc::vec![b'A'; len - 1]);
@@ -6569,42 +6935,16 @@ mod shared_mapping_tests {
     }
 
     #[test]
-    fn pull_pressure_one_shot_allocation_refusal_recovers_once() {
-        let len = 2 * FILE_PAGE_SIZE;
-        let (mut io, mut table, key, _, _) = pull_pressure_fixture(0, len);
-        io.poke(1, 0, b"A");io.fail_pwrite = true;
-        assert_eq!(table.pull_mapping(1, 0, &mut io), Ok(PullOutcome::WritebackFailed(Errno::EIO)));
-        io.fail_pwrite = false;io.losses.clear();
-        io.poke(1, FILE_PAGE_SIZE as u64, b"Z");
-        let mut expected = table.mapping(1, 0).unwrap().snapshot.clone();
-        // WHY: fail_after_allocations(0) is deliberately one-shot: its zero
-        // counter wraps to MAX at the refusal. The bounded recovery may now
-        // admit the page; asserting persistent ENOMEM would misstate the
-        // fixture. Separate zero-headroom coverage preserves real refusal.
-        crate::prepared_map::fail_after_allocations(0);
-        let result = table.pull_mapping(1, 0, &mut io);
-        crate::prepared_map::fail_after_allocations(usize::MAX);
-        assert_eq!(result, Ok(PullOutcome::Published));
-        expected.as_mut().unwrap()[FILE_PAGE_SIZE] = b'Z';
-        assert_eq!(table.mapping(1, 0).unwrap().snapshot, expected);
-        assert_eq!(table.mapping(1, 0).unwrap().seen_version, table.file_backing(&key).unwrap().version);
-        assert_eq!(io.files[&10][0], b'A');
-        assert_eq!(io.files[&10][FILE_PAGE_SIZE], b'Z');
-        assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 0);
-        assert!(io.losses.is_empty());
-    }
-
-    #[test]
     fn pull_pressure_without_first_page_credit_still_reports_enomem() {
         let len = 2 * FILE_PAGE_SIZE;
-        let (mut io, mut table, key, held, _) = pull_pressure_fixture(0, len);
+        let (mut io, mut table, key, held, _, _) = pull_pressure_fixture(0, len);
         io.poke(1, 0, &alloc::vec![b'A'; len]);
         {
             let _limit = crate::io_buffer::test_budget(held);
             assert_eq!(table.pull_mapping(1, 0, &mut io), Err(Errno::ENOMEM));
             assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
         }
-        assert_eq!(table.mapping(1, 0).unwrap().snapshot.as_deref(), Some(&alloc::vec![b'.'; len][..]));
+        assert_eq!(observed(&mut table, &mut io, 1, 0), alloc::vec![b'.'; len]);
         assert_eq!(&io.files[&10][..], &alloc::vec![b'.'; len]);
         assert_eq!(table.file_backing(&key).unwrap().version, 0);
         assert!(io.losses.is_empty());
@@ -6739,7 +7079,7 @@ mod shared_mapping_tests {
         let key = io.key_of(10);
         let mut backing = FileBacking::new(key, 10, true, 5);
 
-        let page = backing.read_range(0, FILE_PAGE_SIZE, &mut io).unwrap();
+        let page = backing.cached_bytes(0, FILE_PAGE_SIZE, &mut io).unwrap();
         assert_eq!(&page[..5], b"hello");
         assert!(page[5..].iter().all(|b| *b == 0));
 
@@ -6769,7 +7109,7 @@ mod shared_mapping_tests {
         let mut io = MockIo::new().with_file(10, 1, 2, vec![b'x'; 8192]);
         let key = io.key_of(10);
         let mut backing = FileBacking::new(key, 10, true, 8192);
-        backing.read_range(0, 8192, &mut io).unwrap();
+        backing.cached_bytes(0, 8192, &mut io).unwrap();
         backing.write_range(0, b"D", true, &mut io).unwrap();
         assert_eq!(backing.cached_page_count(), 2);
 
@@ -6785,7 +7125,7 @@ mod shared_mapping_tests {
         let mut io = MockIo::new().with_file(10, 1, 2, b"ab".to_vec());
         let key = io.key_of(10);
         let mut backing = FileBacking::new(key, 10, true, 64);
-        assert_eq!(backing.read_range(0, 8, &mut io), Err(Errno::EIO));
+        assert_eq!(backing.cached_bytes(0, 8, &mut io), Err(Errno::EIO));
     }
 
     #[test]
@@ -7018,14 +7358,14 @@ mod shared_mapping_tests {
         let initial = table
             .file_backing_mut(key)
             .unwrap()
-            .read_range(0, 8, io)
+            .cached_bytes(0, 8, io)
             .unwrap();
         for pid in [1u32, 2u32] {
             io.write_process(pid, 0, &initial).unwrap();
             table.insert_mapping(
                 pid,
                 0,
-                SharedMapping::file(3, 0, 8, true, true, String::from(key), initial.clone(), 0),
+                SharedMapping::file(3, 0, 8, true, true, String::from(key), 0),
             );
         }
         table
@@ -7219,7 +7559,7 @@ mod shared_mapping_tests {
     fn a_descriptor_write_shows_through_at_the_next_completion() {
         let mut io = kernel_file_io();
         let mut table = sole_kernel_mapping(&mut io);
-        io.descriptor_write(10, 2, b"WW");
+        descriptor_write(&mut table, &mut io, 10, 2, b"WW");
         completion(&mut table, &mut io, 1);
         assert_eq!(io.peek(1, 0, 8), b"..WW....".to_vec());
     }
@@ -7481,7 +7821,7 @@ mod shared_mapping_tests {
                         io.park(pid);
                         table.fence_handle(10, &mut io).unwrap();
                         let v = value();
-                        io.descriptor_write(10, byte, &[v]);
+                        descriptor_write(&mut table, &mut io, 10, byte, &[v]);
                         clock[pid as usize][pid as usize] += 1;
                         history[byte].push((clock[pid as usize][pid as usize], v));
                         io.materialize(pid);
@@ -7550,13 +7890,13 @@ mod shared_mapping_tests {
             let initial = table
                 .file_backing_mut(&key)
                 .unwrap()
-                .read_range(0, 8, &mut io)
+                .cached_bytes(0, 8, &mut io)
                 .unwrap();
             io.write_process(1, address, &initial).unwrap();
             table.insert_mapping(
                 1,
                 address,
-                SharedMapping::file(3, 0, 8, true, true, key, initial, 0),
+                SharedMapping::file(3, 0, 8, true, true, key, 0),
             );
         }
         io.poke(1, 0, b"ROOT....");
@@ -7607,7 +7947,7 @@ mod shared_mapping_tests {
             let stat = io.stat_of(10);
             table.get_or_create_file_backing(&key, &stat, true, &mut io).unwrap().ref_count = 1;
             table.insert_mapping(1, 0,
-                SharedMapping::file(3, 0, 8, true, true, key.clone(), IoBuffer::copy_from(b"........").unwrap(), 0));
+                SharedMapping::file(3, 0, 8, true, true, key.clone(), 0));
             io.poke(1, 0, b"RETRY...");
             io.pwrite_error = Some(error);
             assert_eq!(table.flush_file_backings_matching(&|handle| handle == 10, &mut io), Err(error));
@@ -7630,7 +7970,7 @@ mod shared_mapping_tests {
         let stat = io.stat_of(10);
         table.get_or_create_file_backing(&key, &stat, true, &mut io).unwrap().ref_count = 1;
         table.insert_mapping(1, 0,
-            SharedMapping::file(3, 0, 8, true, true, key.clone(), IoBuffer::copy_from(b"........").unwrap(), 0));
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), 0));
         io.poke(1, 0, b"COMPLETE");
         io.write_budget = Some(3);
         assert_eq!(table.flush_file_backings_matching(&|handle| handle == 10, &mut io), Err(Errno::ENOSPC));
@@ -7658,7 +7998,7 @@ mod shared_mapping_tests {
         table.insert_mapping(
             1,
             0,
-            SharedMapping::file(3, 0, 8, true, true, key.clone(), IoBuffer::copy_from(b"........").unwrap(), 0),
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), 0),
         );
         io.poke(1, 0, b"RETRY...");
         io.fail_pwrite = true;
@@ -7693,18 +8033,18 @@ mod shared_mapping_tests {
             .get_or_create_file_backing(&key, &stat, false, &mut io)
             .unwrap()
             .ref_count = 1;
-        let initial = table.file_backing_mut(&key).unwrap().read_range(0, 8, &mut io).unwrap();
+        let initial = table.file_backing_mut(&key).unwrap().cached_bytes(0, 8, &mut io).unwrap();
         io.write_process(1, 0, &initial).unwrap();
         table.insert_mapping(
             1,
             0,
-            SharedMapping::file(3, 0, 8, false, false, key.clone(), initial, 0),
+            SharedMapping::file(3, 0, 8, false, false, key.clone(), 0),
         );
 
         table.sync_file_from_process(1, false, &mut io).unwrap();
         assert_eq!(io.peek(1, 0, 8), b"........".to_vec());
 
-        io.descriptor_write(10, 2, b"WW");
+        descriptor_write(&mut table, &mut io, 10, 2, b"WW");
         table.sync_file_from_process(1, false, &mut io).unwrap();
         assert_eq!(io.peek(1, 0, 8), b"..WW....".to_vec());
     }
@@ -7720,7 +8060,7 @@ mod shared_mapping_tests {
         let key = io.key_of(10);
         let mut table = file_table_with_two_observers(&mut io, &key);
 
-        io.descriptor_write(10, 4, b"____");
+        descriptor_write(&mut table, &mut io, 10, 4, b"____");
         io.poke(1, 0, b"AAAAAAAA");
         table.sync_file_from_process(1, false, &mut io).unwrap();
         assert_eq!(io.files[&10], b"AAAAAAAA".to_vec());
@@ -7738,13 +8078,12 @@ mod shared_mapping_tests {
         {
             let _limit = crate::io_buffer::test_budget(baseline);
             assert_eq!(backing.write_range(0, b"A", true, &mut io), Err(Errno::ENOMEM));
-            assert_eq!(backing.read_range(0, 8, &mut io), Err(Errno::ENOMEM));
             assert_eq!(&backing.pages[&0][..8], b"........");
             assert_eq!(backing.dirty_page_count(), 0);
         }
         crate::prepared_map::fail_after_allocations(0);
         assert_eq!(backing.write_range(0, b"A", true, &mut io), Err(Errno::ENOMEM));
-        assert_eq!(backing.read_range(0, 8, &mut io).unwrap(), b"........");
+        assert_eq!(backing.cached_bytes(0, 8, &mut io).unwrap(), b"........");
         backing.write_range(0, b"A", true, &mut io).unwrap();
         assert!(crate::io_buffer::IO_MEMORY.usage().0 > baseline);
         {
@@ -7775,6 +8114,7 @@ mod shared_mapping_tests {
         assert_eq!(backing.version, 1);
         backing.flush_range(0, 1, &mut io).unwrap();
         io.descriptor_write(10, 0, b"D");
+        backing.overwrite_announced = true;
         backing.reconcile_source(&mut io);
         backing.merge_changed_runs(&source, &mut snapshot, 0, &mut io).unwrap();
         backing.flush_all(&mut io).unwrap();
@@ -7866,35 +8206,16 @@ mod shared_mapping_tests {
         io.poke(1, FILE_PAGE_SIZE as u64, b"B");
         io.fail_read_process_address = Some(FILE_PAGE_SIZE as u64);
         assert_eq!(table.sync_file_from_process(1, true, &mut io), Err(Errno::EFAULT));
-        let snapshot = table.mapping(1, 0).unwrap().snapshot.as_ref().unwrap();
-        assert_eq!(snapshot[0], b'A');
-        assert_eq!(snapshot[FILE_PAGE_SIZE], b'.');
+        let observed = observed(&mut table, &mut io, 1, 0);
+        assert_eq!(observed[0], b'A');
+        assert_eq!(observed[FILE_PAGE_SIZE], b'.');
         table.file_backing_mut(&key).unwrap().flush_range(0, 1, &mut io).unwrap();
-        io.descriptor_write(10, 0, b"D");
+        descriptor_write(&mut table, &mut io, 10, 0, b"D");
         io.fail_read_process_address = None;
         table.sync_file_from_process(1, true, &mut io).unwrap();
         assert_eq!(io.files[&10][0], b'D');
         assert_eq!(io.files[&10][FILE_PAGE_SIZE], b'B');
         assert_eq!(io.peek(1, 0, 1), b"D");
-    }
-
-    #[test]
-    fn retained_mapping_snapshot_refuses_even_when_all_pages_are_already_cached() {
-        let mut io = MockIo::new().with_file(10, 1, 2, vec![b'.'; 8192]);
-        let mut backing = FileBacking::new(io.key_of(10), 10, true, 8192);
-        backing.ensure_range_loaded(0, 8192, &mut io).unwrap();
-        let retained = crate::io_buffer::IO_MEMORY.usage().0;
-        {
-            let _limit = crate::io_buffer::test_budget(retained);
-            assert_eq!(backing.read_range(0, 8192, &mut io), Err(Errno::ENOMEM));
-            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, retained);
-        }
-        let snapshot = backing.read_range(0, 8192, &mut io).unwrap();
-        backing.invalidate_clean_pages();
-        let owned = crate::io_buffer::IO_MEMORY.usage().0;
-        assert!(owned >= 2 * snapshot.len());
-        drop(snapshot);
-        assert!(crate::io_buffer::IO_MEMORY.usage().0 < owned);
     }
 
     #[test]
@@ -7943,28 +8264,33 @@ mod shared_mapping_tests {
     }
 
     #[test]
-    fn split_preparation_refuses_before_changes_and_commit_uses_current_snapshot_without_allocation() {
-        let mut io = MockIo::new().with_process(1, 4096)
-            .with_kernel_file(10, 1, 2, b"01234567".to_vec());
+    fn split_preparation_refuses_before_changes_and_commit_moves_current_overlay_without_allocation() {
+        let page = FILE_PAGE_SIZE;
+        let mut io = MockIo::new().with_process(1, 4 * page)
+            .with_kernel_file(10, 1, 2, vec![b'.'; 3 * page]);
         let mut table = SharedMappingTable::new();
         let key = io.key_of(10);
-        table.track_kernel_file_mapping(1, 0, 3, &key, 10, 0, 8, true, true, &mut io).unwrap();
+        table.track_kernel_file_mapping(1, 0, 3, &key, 10, 0, 3 * page, true, true, &mut io).unwrap();
         {
             let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
-            assert_eq!(table.prepare_cleanup_mappings(1, 3, 2), Err(Errno::ENOMEM));
+            assert_eq!(table.prepare_cleanup_mappings(1, page as u64, page as u64), Err(Errno::ENOMEM));
         }
-        assert_eq!(table.mapping(1, 0).unwrap().len, 8);
+        assert_eq!(table.mapping(1, 0).unwrap().len, 3 * page);
         assert_eq!(table.file_backing(&key).unwrap().ref_count, 1);
-        table.prepare_cleanup_mappings(1, 3, 2).unwrap();
-        table.mappings.get_mut(&1).unwrap().get_mut(&0).unwrap().snapshot.as_mut().unwrap()[5] = b'X';
+        table.prepare_cleanup_mappings(1, page as u64, page as u64).unwrap();
+        // The overlay changes after preparation; the commit moves its
+        // current page into the right part.
+        table.preserve_page(&key, 2, None, Some(&[b'.'; FILE_PAGE_SIZE])).unwrap();
+        table.mappings.get_mut(&1).unwrap().get_mut(&0).unwrap().overlay.get_mut(&2).unwrap()[5] = b'X';
         {
             let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
             crate::prepared_map::fail_after_allocations(0);
-            table.cleanup_mappings(1, 3, 2, &mut io).unwrap();
+            table.cleanup_mappings(1, page as u64, page as u64, &mut io).unwrap();
             crate::prepared_map::fail_after_allocations(usize::MAX);
         }
-        assert_eq!(table.mapping(1, 5).unwrap().snapshot.as_deref(), Some(&b"X67"[..]));
-        assert_eq!(table.mapping(1, 0).unwrap().len, 3);
+        assert_eq!(observed(&mut table, &mut io, 1, 2 * page as u64)[5], b'X');
+        assert!(table.mapping(1, 0).unwrap().overlay.is_empty());
+        assert_eq!(table.mapping(1, 0).unwrap().len, page);
         assert_eq!(table.file_backing(&key).unwrap().ref_count, 2);
     }
 
@@ -8022,7 +8348,7 @@ mod shared_mapping_tests {
         (table, io)
     }
 
-    fn assert_fork_rollback_parent_custody(table: &SharedMappingTable, io: &MockIo,
+    fn assert_fork_rollback_parent_custody(table: &mut SharedMappingTable, io: &mut MockIo,
         kind: u8, ranges: usize) {
         for index in 0..ranges {
             let addr = (16 * index) as u64;
@@ -8032,8 +8358,12 @@ mod shared_mapping_tests {
                 assert_eq!(&mapping.snapshot[..], b"PARENTAL");
                 assert_eq!(table.sysv_segment_version(mapping.seg_id), mapping.seen_version);
             } else {
+                if kind == 0 {
+                    assert_eq!(observed(table, io, 1, addr), b"PARENTAL");
+                } else {
+                    assert_eq!(table.mapping(1, addr).unwrap().snapshot.as_deref(), Some(&b"PARENTAL"[..]));
+                }
                 let mapping = table.mapping(1, addr).unwrap();
-                assert_eq!(mapping.snapshot.as_deref(), Some(&b"PARENTAL"[..]));
                 let key = mapping.backing_key.as_deref().unwrap();
                 if kind == 0 {
                     assert_eq!(table.file_backing(key).unwrap().ref_count as usize, ranges);
@@ -8074,7 +8404,7 @@ mod shared_mapping_tests {
             let baseline = crate::io_buffer::IO_MEMORY.usage().0;
             let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
             let delta = fork_rollback_retained_delta(&mut table, &mut io, 1);
-            assert_fork_rollback_parent_custody(&table, &io, kind, 1);
+            assert_fork_rollback_parent_custody(&mut table, &mut io, kind, 1);
             {
                 // Retained child state fits exactly. Originals are rollback-only,
                 // so charging them LIVE must not refuse an otherwise admitted fork.
@@ -8085,15 +8415,15 @@ mod shared_mapping_tests {
                 assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline + delta);
                 assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
                 assert_eq!(io.peek(2, 0, 8).as_slice(), b"PARENTAL");
-                if kind == 2 {
-                    assert_eq!(&table.sysv_mapping(2, 0).unwrap().snapshot[..], b"PARENTAL");
-                } else {
-                    assert_eq!(table.mapping(2, 0).unwrap().snapshot.as_deref(), Some(&b"PARENTAL"[..]));
+                match kind {
+                    0 => assert_eq!(observed(&mut table, &mut io, 2, 0), b"PARENTAL"),
+                    1 => assert_eq!(table.mapping(2, 0).unwrap().snapshot.as_deref(), Some(&b"PARENTAL"[..])),
+                    _ => assert_eq!(&table.sysv_mapping(2, 0).unwrap().snapshot[..], b"PARENTAL"),
                 }
                 table.release_all_for_process(2, false, &mut io);
                 assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
                 assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
-                assert_fork_rollback_parent_custody(&table, &io, kind, 1);
+                assert_fork_rollback_parent_custody(&mut table, &mut io, kind, 1);
             }
             drop((table, io));
             assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, original_live);
@@ -8106,7 +8436,9 @@ mod shared_mapping_tests {
     fn fork_rollback_late_child_read_refusal_releases_both_classes_before_any_write() {
         let original_live = crate::io_buffer::IO_MEMORY.usage().0;
         let original_temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
-        for kind in 0..3 {
+        // A file mapping takes no rollback copy of the child; see
+        // `fork_rollback_late_commit_refusal_restores_earlier_range_and_exact_credits`.
+        for kind in 1..3 {
             let (mut table, mut io) = fork_rollback_credit_fixture(kind, 2);
             let baseline = crate::io_buffer::IO_MEMORY.usage().0;
             let temporary = crate::io_buffer::IO_MEMORY.temporary_usage();
@@ -8125,7 +8457,7 @@ mod shared_mapping_tests {
                 assert!(!table.sysv.contains_key(&2));
                 assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
                 assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
-                assert_fork_rollback_parent_custody(&table, &io, kind, 2);
+                assert_fork_rollback_parent_custody(&mut table, &mut io, kind, 2);
             }
             drop((table, io));
             assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, original_live);
@@ -8151,7 +8483,11 @@ mod shared_mapping_tests {
             {
                 let _limit = crate::io_buffer::test_budget(baseline.checked_add(delta).unwrap());
                 assert_eq!(table.inherit_process_mappings(1, 2, &mut io), Err(Errno::EFAULT));
-                assert_eq!(io.procs[&2], original_child);
+                // A file range is put back from the parent's bytes, which a
+                // real child's memory was copied from.
+                let mut expected = original_child.clone();
+                if kind == 0 { expected[..8].copy_from_slice(b"PARENTAL"); }
+                assert_eq!(io.procs[&2], expected);
                 // Successful first commit and its exact rollback are real
                 // child writes; the refused second write changes no bytes.
                 assert_eq!(io.epochs[&2], child_epoch + 2);
@@ -8160,7 +8496,7 @@ mod shared_mapping_tests {
                 assert!(!table.sysv.contains_key(&2));
                 assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
                 assert_eq!(crate::io_buffer::IO_MEMORY.temporary_usage(), temporary);
-                assert_fork_rollback_parent_custody(&table, &io, kind, 2);
+                assert_fork_rollback_parent_custody(&mut table, &mut io, kind, 2);
                 assert_eq!(table.failures.total, 2); // Commit refusal plus second rollback refusal.
                 assert_eq!(table.failures.records[0].unwrap().phase,
                     if kind == 2 { "fork_sysv_commit_write" } else { "fork_commit_write" });
@@ -8173,8 +8509,8 @@ mod shared_mapping_tests {
     }
 
     #[test]
-    fn inheritance_admits_snapshots_rollback_bytes_and_nodes_before_child_publication() {
-        for cut in 0..3 {
+    fn inheritance_admits_its_nodes_before_child_publication() {
+        for cut in 0..2 {
             let mut io = MockIo::new().with_process(1, 4096).with_process(2, 4096)
                 .with_kernel_file(10, 1, 2, b"filedata".to_vec());
             let mut table = SharedMappingTable::new();
@@ -8357,8 +8693,10 @@ mod shared_mapping_tests {
         backing.write_range(6, b"Z", true, &mut io).unwrap();
         io.files.get_mut(&10).unwrap().truncate(2);
         *io.generations.get_mut(&10).unwrap() += 1;
+        backing.overwrite_announced = true;
         backing.reconcile_source(&mut io);
         io.descriptor_write(10, 7, b"B");
+        backing.overwrite_announced = true;
         backing.flush_all(&mut io).unwrap();
         assert_eq!(io.files[&10], b"A.\0\0\0\0\0B");
         assert_eq!(backing.dirty_page_count(), 0);
@@ -8376,15 +8714,14 @@ mod shared_mapping_tests {
         io.poke(1, 0, b"A.....Z.");
         assert_eq!(table.sync_file_from_process(1, false, &mut io), Err(Errno::EIO));
         io.fail_pwrite = false;
-        io.files.get_mut(&10).unwrap().truncate(2);
-        *io.generations.get_mut(&10).unwrap() += 1;
+        descriptor_truncate(&mut table, &mut io, 10, 2);
         {
             let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
             crate::prepared_map::fail_after_allocations(0);
             table.notify_file_truncated(10, 2);
             crate::prepared_map::fail_after_allocations(usize::MAX);
         }
-        io.descriptor_write(10, 7, b"B");
+        descriptor_write(&mut table, &mut io, 10, 7, b"B");
         // Background publication already recorded the loss. Persistence may
         // recover now, but this mapping's first explicit sync reports that
         // historical error once; it must not silently turn into success.
@@ -8393,6 +8730,172 @@ mod shared_mapping_tests {
         assert_eq!(io.peek(1, 0, 8), b"A.\0\0\0\0\0B");
         table.flush_mappings(1, 0, 8, &mut io).unwrap();
         assert!(!table.take_writeback_error(1, 0, 8), "the historical error is consumed exactly once");
+    }
+
+    #[test]
+    fn a_second_mapper_of_a_large_kernel_file_costs_no_copy_of_it() {
+        let len = 64 * FILE_PAGE_SIZE;
+        let mut io = MockIo::new().with_process(1, len).with_process(2, len)
+            .with_kernel_file(10, 1, 2, vec![b'.'; len]);
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        let before = crate::io_buffer::IO_MEMORY.usage().0;
+        table.track_kernel_file_mapping(1, 0, 3, &key, 10, 0, len, true, true, &mut io).unwrap();
+        let first = crate::io_buffer::IO_MEMORY.usage().0 - before;
+        table.track_kernel_file_mapping(2, 0, 3, &key, 10, 0, len, true, true, &mut io).unwrap();
+        let second = crate::io_buffer::IO_MEMORY.usage().0 - before - first;
+        // A mapping observes the file through the file itself, so neither
+        // mapper holds a copy of what it observed.
+        assert!(first < FILE_PAGE_SIZE, "the first mapper holds {first} credits");
+        assert!(second < FILE_PAGE_SIZE, "the second mapper holds {second} credits");
+        let mapped = crate::io_buffer::IO_MEMORY.usage().0;
+        io.poke(1, 0, &vec![b'A'; len]);
+        table.sync_file_at_completion(2, &mut io).unwrap();
+        assert_eq!(io.peek(2, 0, len), vec![b'A'; len]);
+        assert_eq!(io.files[&10], vec![b'A'; len]);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, mapped, "the reader's overlay is released at its refresh");
+        table.release_all_for_process(1, true, &mut io);
+        table.release_all_for_process(2, true, &mut io);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, before);
+    }
+
+    #[test]
+    #[should_panic(expected = "without announcing the overwrite")]
+    fn an_unannounced_change_to_a_mapped_kernel_file_is_a_fatal_fault() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64)
+            .with_kernel_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        io.descriptor_write(10, 0, b"Z");
+        let _ = table.sync_file_from_process(1, false, &mut io);
+    }
+
+    #[test]
+    fn truncation_marks_discarded_pages_unknown_and_refresh_writes_the_file_over_them() {
+        let page = FILE_PAGE_SIZE;
+        let mut io = MockIo::new().with_process(1, 2 * page).with_process(2, 2 * page)
+            .with_kernel_file(10, 1, 2, vec![b'.'; 2 * page]);
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        for pid in [1, 2] {
+            table.track_kernel_file_mapping(pid, 0, 3, &key, 10, 0, 2 * page, true, true, &mut io).unwrap();
+        }
+        // A store into the page the truncation discards races with it.
+        io.poke(1, page as u64, b"X");
+        descriptor_truncate(&mut table, &mut io, 10, page);
+        table.notify_file_truncated(10, page as u64);
+        assert!(table.mapping(1, 0).unwrap().overlay[&1].is_empty(), "the discarded page is unknown");
+        table.sync_file_from_process(1, true, &mut io).unwrap();
+        assert_eq!(io.files[&10].len(), page, "nothing is published from an unknown page");
+        assert_eq!(io.peek(1, page as u64, 1), [0], "the refresh writes the file's page over it");
+        descriptor_truncate(&mut table, &mut io, 10, 2 * page);
+        table.notify_file_truncated(10, 2 * page as u64);
+        table.sync_file_from_process(2, true, &mut io).unwrap();
+        table.sync_file_from_process(1, true, &mut io).unwrap();
+        assert_eq!(&io.files[&10][page..], &vec![0; page][..], "the regrown range holds zeros, not the raced store");
+        for pid in [1, 2] {
+            assert_eq!(io.peek(pid, page as u64, page), vec![0; page]);
+            assert!(table.mapping(pid, 0).unwrap().overlay.is_empty());
+        }
+    }
+
+    /// Process memory from a [`MockIo`]; files from the kernel's own storage
+    /// layers, reached the way `WasmSharedMappingIo` reaches them.
+    struct KernelStorageIo(MockIo);
+
+    impl SharedMappingIo for KernelStorageIo {
+        fn read_process(&mut self, pid: u32, addr: u64, dst: &mut [u8]) -> Result<(), Errno> {
+            self.0.read_process(pid, addr, dst)
+        }
+        fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno> {
+            self.0.write_process(pid, addr, src)
+        }
+        fn process_memory_len(&mut self, pid: u32) -> Option<u64> {
+            self.0.process_memory_len(pid)
+        }
+        fn pread(&mut self, handle: i64, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
+            crate::kernel_file_mapping::pread(handle, offset, dst, &mut crate::process::test_host::NoopHost)
+        }
+        fn pwrite(&mut self, handle: i64, offset: u64, src: &[u8]) -> Result<usize, Errno> {
+            crate::kernel_file_mapping::pwrite(handle, offset, src, &mut crate::process::test_host::NoopHost)
+        }
+        fn fstat_handle(&mut self, handle: i64) -> Result<SharedMappingStat, Errno> {
+            let (size, mode) = crate::kernel_file_mapping::size_and_mode(handle)?;
+            Ok(SharedMappingStat { dev: 0, ino: 0, size, mode, host_handle: Some(handle) })
+        }
+        fn content_generation(&mut self, handle: i64) -> Option<u64> {
+            crate::kernel_file_mapping::content_generation(handle)
+        }
+        fn handle_identity(&mut self, handle: i64, _dev: u64, _ino: u64) -> Option<String> {
+            crate::kernel_file_mapping::identity_key(handle)
+        }
+        fn retain_handle(&mut self, handle: i64) -> Result<(), Errno> {
+            crate::kernel_file_mapping::pin(handle)
+        }
+        fn release_handle(&mut self, handle: i64) {
+            crate::kernel_file_mapping::unpin(handle);
+        }
+        fn shm_read(&mut self, seg_id: i32, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+            self.0.shm_read(seg_id, offset, dst)
+        }
+        fn shm_write(&mut self, seg_id: i32, offset: u64, src: &[u8]) -> Result<(), Errno> {
+            self.0.shm_write(seg_id, offset, src)
+        }
+        fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, file_key: &str, reason: &str) {
+            self.0.report_writeback_loss(pid, map_addr, file_key, reason);
+        }
+    }
+
+    #[test]
+    fn a_storage_write_to_a_mapped_kernel_file_survives_a_mapper_still_holding_the_old_bytes() {
+        use wasm_posix_shared::flags::{O_CREAT, O_RDWR};
+        crate::rootfs::reset();
+        for scratch in [false, true] {
+            let path = if scratch { b"/tmp/mapping-overwrite-hook".as_slice() }
+                else { b"/mapping-overwrite-hook".as_slice() };
+            let handle = if scratch {
+                crate::tmpfs::open(path, O_CREAT | O_RDWR, 0o600, 0, 0).unwrap()
+            } else {
+                crate::rootfs::open(path, O_CREAT | O_RDWR, 0o600, 0, 0).unwrap()
+            };
+            let write = |offset: i64, bytes: &[u8]| if scratch {
+                crate::tmpfs::write(handle, offset, bytes).unwrap()
+            } else {
+                crate::rootfs::write(handle, offset, bytes, |_, _| Err(Errno::EIO)).unwrap()
+            };
+            write(0, b"........");
+            let mapping = crate::kernel_file_mapping::mapping_handle_for(crate::ofd::FileType::Regular, handle).unwrap();
+            let key = crate::kernel_file_mapping::identity_key(mapping).unwrap();
+            let mut io = KernelStorageIo(MockIo::new().with_process(1, 64).with_process(2, 64));
+            let table = unsafe { global_shared_mapping_table() };
+            for pid in [1, 2] {
+                table.track_kernel_file_mapping(pid, 0, 3, &key, mapping, 0, 8, true, true, &mut io).unwrap();
+            }
+            io.0.poke(1, 0, b"AA......");
+            // The descriptor fence before the write publishes the stores made
+            // so far; the mapper keeps running and stores again after it.
+            table.fence_handle(mapping, &mut io).unwrap();
+            io.0.poke(1, 2, b"B");
+            write(4, b"ZZ");
+            table.sync_file_at_completion(2, &mut io).unwrap();
+            assert_eq!(io.0.peek(2, 0, 8), b"AAB.ZZ..", "scratch={scratch}");
+            table.sync_file_at_completion(1, &mut io).unwrap();
+            assert_eq!(io.0.peek(1, 0, 8), b"AAB.ZZ..", "scratch={scratch}");
+            let mut file = [0u8; 8];
+            assert_eq!(io.pread(mapping, 0, &mut file), Ok(8));
+            assert_eq!(&file, b"AAB.ZZ..", "scratch={scratch}");
+            for pid in [1, 2] {
+                table.release_all_for_process(pid, true, &mut io);
+            }
+            assert!(!table.has_file_backings());
+            if scratch {
+                crate::tmpfs::release_handle(handle);
+                crate::tmpfs::unlink(path).unwrap();
+            } else {
+                crate::rootfs::release_handle(handle);
+                crate::rootfs::unlink(path).unwrap();
+            }
+        }
     }
 
     #[test]
@@ -8456,7 +8959,7 @@ mod shared_mapping_tests {
         io.poke(1, 0, b"A.......");
         assert_eq!(table.sync_file_from_process(1, false, &mut io), Err(Errno::EIO));
         io.fail_pwrite = false;
-        io.descriptor_write(10, 1, b"B");
+        descriptor_write(&mut table, &mut io, 10, 1, b"B");
         // Background publication already recorded the loss. Persistence may
         // recover now, but this mapping's first explicit sync reports that
         // historical error once; it must not silently turn into success.
@@ -8482,7 +8985,7 @@ mod shared_mapping_tests {
         assert_eq!(table.sync_file_from_process(1, false, &mut io), Err(Errno::ENOSPC));
         assert_eq!(io.files[&10], b"A.......");
         io.write_budget = None;
-        io.descriptor_write(10, 0, b"B");
+        descriptor_write(&mut table, &mut io, 10, 0, b"B");
         // Background publication already recorded the loss. Persistence may
         // recover now, but this mapping's first explicit sync reports that
         // historical error once; it must not silently turn into success.
@@ -8502,7 +9005,7 @@ mod shared_mapping_tests {
         let stat = io.stat_of(10);
         let backing = table.get_or_create_file_backing(&key, &stat, true, &mut io).unwrap();
         backing.write_range(0, b"DD", true, &mut io).unwrap();
-        io.descriptor_write(10, page, b"ee");
+        descriptor_write(&mut table, &mut io, 10, page, b"ee");
 
         let backing = table.file_backing_mut(&key).unwrap();
         let version = backing.version;
@@ -8956,13 +9459,13 @@ mod shared_mapping_tests {
         let initial = table
             .file_backing_mut(&key)
             .unwrap()
-            .read_range(0, 8, &mut io)
+            .cached_bytes(0, 8, &mut io)
             .unwrap();
         io.write_process(1, 0, &initial).unwrap();
         table.insert_mapping(
             1,
             0,
-            SharedMapping::file(3, 0, 8, true, true, key.clone(), initial, 0),
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), 0),
         );
 
         io.poke(1, 0, b"AAAA....");
@@ -9032,14 +9535,17 @@ mod shared_mapping_tests {
         table.insert_mapping(
             1,
             0,
-            SharedMapping::file(3, 0, 8, true, true, key.clone(), IoBuffer::copy_from(b"01234567").unwrap(), 0),
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), 0),
         );
+        let mut seen = [0u8; FILE_PAGE_SIZE];
+        seen[..8].copy_from_slice(b"01234567");
+        table.preserve_page(&key, 0, None, Some(&seen)).unwrap();
 
         table.cleanup_mappings(1, 0, 3, &mut io).unwrap();
         let mapping = table.mapping(1, 3).expect("tail survives");
         assert_eq!(mapping.len, 5);
         assert_eq!(mapping.file_offset, 3);
-        assert_eq!(mapping.snapshot.as_deref(), Some(&b"34567"[..]));
+        assert_eq!(observed(&mut table, &mut io, 1, 3), b"34567");
     }
 
     #[test]
@@ -9059,7 +9565,7 @@ mod shared_mapping_tests {
         table.insert_mapping(
             1,
             0,
-            SharedMapping::file(3, 0, 8, true, true, key.clone(), IoBuffer::try_filled(8, b'.').unwrap(), 0),
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), 0),
         );
 
         table.cleanup_mappings(1, 3, 2, &mut io).unwrap();
@@ -9074,8 +9580,8 @@ mod shared_mapping_tests {
     // -- fork inheritance --------------------------------------------------
 
     #[test]
-    fn fork_failures_identify_snapshot_read_rollback_read_metadata_and_write_without_mutation() {
-        for scenario in 0..4 {
+    fn fork_failures_identify_stage_metadata_and_commit_write_without_mutation() {
+        for scenario in 0..3 {
             let mut io = MockIo::new().with_process(1, 64).with_process(2, 64)
                 .with_process(3, 64).with_kernel_file(10, 1, 2, b"........".to_vec());
             let key = io.key_of(10);
@@ -9083,26 +9589,18 @@ mod shared_mapping_tests {
             io.poke(3, 0, b"ORIGINAL");
             let retained = io.retained_count(10);
             let version = table.file_backing(&key).unwrap().version;
-            // Inheritance settles write-through cache pages even on refusal.
-            // Measure exact retained custody cold, then warm the cache so the
-            // injected map-node refusal cannot hit an earlier page admission.
-            table.file_backing_mut(&key).unwrap().settle();
-            let retained_usage = crate::io_buffer::IO_MEMORY.usage().0;
-            drop(table.file_backing_mut(&key).unwrap().read_range(0, 8, &mut io).unwrap());
+            // Inheritance reads no file range, so nothing it caches can
+            // absorb the injected refusals.
             let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let retained_usage = held;
             let (error, phase) = match scenario {
                 0 => {
                     let _limit = crate::io_buffer::test_budget(held);
                     let result = table.inherit_process_mappings(1, 3, &mut io);
                     assert_eq!(result, Err(Errno::ENOMEM));
-                    (Errno::ENOMEM, "fork_stage_read")
+                    (Errno::ENOMEM, "fork_stage_metadata")
                 }
                 1 => {
-                    io.fail_read_process_at = Some((3, 0));
-                    assert_eq!(table.inherit_process_mappings(1, 3, &mut io), Err(Errno::EFAULT));
-                    (Errno::EFAULT, "fork_rollback_read")
-                }
-                2 => {
                     io.fail_write_process_at = Some(0);
                     assert_eq!(table.inherit_process_mappings(1, 3, &mut io), Err(Errno::EFAULT));
                     (Errno::EFAULT, "fork_commit_write")
@@ -9117,7 +9615,7 @@ mod shared_mapping_tests {
             };
             assert!(table.mapping(3, 0).is_none());
             assert_eq!(io.peek(3, 0, 8).as_slice(), b"ORIGINAL");
-            assert_eq!(table.mapping(1, 0).unwrap().snapshot.as_deref(), Some(&b"........"[..]));
+            assert_eq!(observed(&mut table, &mut io, 1, 0), b"........");
             assert_eq!(table.file_backing(&key).unwrap().version, version);
             assert_eq!(table.file_backing(&key).unwrap().ref_count, 2);
             assert_eq!(io.retained_count(10), retained);
@@ -9133,7 +9631,7 @@ mod shared_mapping_tests {
             if scenario == 0 {
                 assert!(report.contains(&alloc::format!("io_live={held} io_limit={held}")));
             }
-            if scenario == 2 {
+            if scenario == 1 {
                 // Diagnostic observation must not turn the original rollback
                 // attempt into another write or replace its original errno.
                 assert_eq!(table.failures.total, 2);
@@ -9609,13 +10107,13 @@ mod shared_mapping_tests {
         let initial = table
             .file_backing_mut(&key)
             .unwrap()
-            .read_range(0, 8, &mut io)
+            .cached_bytes(0, 8, &mut io)
             .unwrap();
         io.write_process(1, 0, &initial).unwrap();
         table.insert_mapping(
             1,
             0,
-            SharedMapping::file(3, 0, 8, true, true, key.clone(), initial, 0),
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), 0),
         );
 
         io.poke(1, 0, b"FINALLLL");
@@ -9645,7 +10143,7 @@ mod shared_mapping_tests {
         table.insert_mapping(
             1,
             0,
-            SharedMapping::file(3, 0, 8, true, true, key.clone(), IoBuffer::try_filled(8, b'.').unwrap(), 0),
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), 0),
         );
         table.track_sysv_mapping(1, 8, 7, 8, false, &mut io).unwrap();
 
@@ -9686,7 +10184,7 @@ mod shared_mapping_tests {
         let seen = table
             .file_backing_mut(&key)
             .unwrap()
-            .read_range(0, 8, &mut io)
+            .cached_bytes(0, 8, &mut io)
             .unwrap();
         assert_eq!(seen, b"BEFORE..".to_vec());
         let before = table.file_backing(&key).unwrap().version;
@@ -9698,7 +10196,7 @@ mod shared_mapping_tests {
         let seen = table
             .file_backing_mut(&key)
             .unwrap()
-            .read_range(0, 8, &mut io)
+            .cached_bytes(0, 8, &mut io)
             .unwrap();
         assert_eq!(seen, b"AFTER...".to_vec(), "the cache followed the file");
         assert!(
@@ -9715,7 +10213,7 @@ mod shared_mapping_tests {
         table
             .file_backing_mut(&key)
             .unwrap()
-            .read_range(0, 8, &mut io)
+            .cached_bytes(0, 8, &mut io)
             .unwrap();
 
         // ftruncate(fd, 4): the tail is gone and must now read as zero.
@@ -9725,7 +10223,7 @@ mod shared_mapping_tests {
         let seen = table
             .file_backing_mut(&key)
             .unwrap()
-            .read_range(0, 8, &mut io)
+            .cached_bytes(0, 8, &mut io)
             .unwrap();
         assert_eq!(seen, b"ABCD\0\0\0\0".to_vec(), "past EOF reads as zero");
         assert_eq!(table.file_backing(&key).unwrap().size, 4);
@@ -9754,7 +10252,7 @@ mod shared_mapping_tests {
         table
             .file_backing_mut(&key)
             .unwrap()
-            .read_range(0, 8, &mut io)
+            .cached_bytes(0, 8, &mut io)
             .unwrap();
 
         // pwrite(fd, "WXYZ", 4, 2) has already reached the file.
@@ -9764,7 +10262,7 @@ mod shared_mapping_tests {
         let seen = table
             .file_backing_mut(&key)
             .unwrap()
-            .read_range(0, 8, &mut io)
+            .cached_bytes(0, 8, &mut io)
             .unwrap();
         assert_eq!(seen, b"..WXYZ..".to_vec(), "the cache took the written bytes");
         assert_eq!(
@@ -9782,7 +10280,7 @@ mod shared_mapping_tests {
         table
             .file_backing_mut(&key)
             .unwrap()
-            .read_range(0, 8, &mut io)
+            .cached_bytes(0, 8, &mut io)
             .unwrap();
         assert_eq!(table.file_backing(&key).unwrap().cached_page_count(), 1);
 
@@ -9846,7 +10344,7 @@ mod shared_mapping_tests {
         let page1 = table
             .file_backing_mut(&key)
             .unwrap()
-            .read_range(FILE_PAGE_SIZE as u64, 1, &mut io)
+            .cached_bytes(FILE_PAGE_SIZE as u64, 1, &mut io)
             .unwrap();
         assert_eq!(page1, alloc::vec![b'Z'], "the named page was re-read");
         assert_eq!(
@@ -9891,13 +10389,13 @@ mod shared_mapping_tests {
         let initial = table
             .file_backing_mut(key)
             .unwrap()
-            .read_range(0, 8, io)
+            .cached_bytes(0, 8, io)
             .unwrap();
         io.write_process(1, 32, &initial).unwrap();
         table.insert_mapping(
             1,
             32,
-            SharedMapping::file(3, 0, 8, true, true, String::from(key), initial, 0),
+            SharedMapping::file(3, 0, 8, true, true, String::from(key), 0),
         );
         table
     }

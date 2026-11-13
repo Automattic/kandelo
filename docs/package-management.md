@@ -345,7 +345,9 @@ Optional eSpeak voice data and desktop assets are verified lazy ZIP archives
 at `/usr/share/espeak-ng-data` and `/usr/share/kandelo`; ordinary file reads
 fetch the complete archive on first use and inflate members as needed. The
 rootfs's `/usr/share/misc/magic` is a standalone lazy file, fetched when
-`file` loads its database. The browser's ordinary and grouped deployments and
+`file` loads its database. Omarchy's theme backgrounds are the `omarchy`
+package's runtime files, one standalone lazy file per image, so a machine
+fetches only the backgrounds it draws. The browser's ordinary and grouped deployments and
 the Node resolver map these image-owned references to the same package bytes.
 The shell also defers both CA bundle paths to the verified
 `ca-certificates.zip` data package. They remain separate guest files:
@@ -2829,8 +2831,8 @@ libc defects to fix, not answers to hard-code.
 
 ### Packages built as if the target were Linux
 
-`qtbase`, `qtdeclarative`, `qtshadertools`, `quickshell`, `qtgallery` and
-`basu` compile with `-D__linux__` (the Qt packages also with `-DQT_LINUXBASE`).
+`qtbase`, `qtdeclarative`, `qtshadertools`, `quickshell` and `basu`
+compile with `-D__linux__` (the Qt packages also with `-DQT_LINUXBASE`).
 Qt's `qsystemdetection.h` has no branch for this target and refuses to build
 without a known OS. Kandelo is not a Linux target, and the SDK deliberately
 does not define `__linux__`: every Linux-only code path the define enables is

@@ -1,8 +1,8 @@
 kind = "program"
 
 # swaybg, the wallpaper client sway starts for each output's `bg`. Built
-# through upstream's meson build with the SDK cross file. Without
-# gdk-pixbuf, so it reads PNG images through cairo; without man pages.
+# through upstream's meson build with the SDK cross file. With
+# gdk-pixbuf, whose png and jpeg loaders read the image; without man pages.
 name = "swaybg"
 version = "1.2.1"
 kernel_abi = 52
@@ -10,6 +10,7 @@ depends_on = [
   "libwayland@1.24.0",
   "wayland-protocols@1.47",
   "cairo@1.18.6",
+  "gdk-pixbuf@2.36.12",
 ]
 
 [[host_tools]]

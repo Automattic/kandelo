@@ -111,7 +111,6 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
   ["patch-docs", "share/man/man1/patch.1"],
   ["perl-docs", "share/man/man1/perl.1"],
   ["php-docs", "share/man/man1/php.1"],
-  ["qtgallery-docs", "share/man/man1/qtgallery.1"],
   ["quickshell-docs", "share/man/man1/quickshell.1"],
   ["redis-docs", "share/man/man1/redis-cli.1"],
   ["retro-emulators-docs", "share/man/man1/retro-run.1"],
@@ -318,6 +317,20 @@ export const SHELL_LAZY_DATA_ARCHIVE_SPECS = withArchiveAddresses([
     resolverPath: "programs/wayland-demo/xkeyboard-config.zip",
     mountPrefix: "/usr/share/X11/xkb/",
     requiredMember: "rules/evdev",
+  },
+  {
+    id: "omarchy",
+    dependency: "omarchy",
+    resolverPath: "programs/omarchy/omarchy.zip",
+    mountPrefix: "/usr/share/omarchy/",
+    requiredMember: "bin/omarchy-menu",
+  },
+  {
+    id: "jetbrains-mono-nerd-font",
+    dependency: "jetbrains-mono-nerd-font",
+    resolverPath: "programs/jetbrains-mono-nerd-font.zip",
+    mountPrefix: "/usr/share/fonts/jetbrains-mono-nerd-font/",
+    requiredMember: "JetBrainsMonoNerdFont-Regular.ttf",
   },
 ] as const);
 

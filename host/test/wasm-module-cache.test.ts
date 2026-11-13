@@ -2,6 +2,7 @@ import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { computeForkModuleTemplateId } from "../src/fork-module-state";
 import { WasmModuleCache } from "../src/wasm-module-cache";
 
 /** An empty module plus one custom section, so `tag` changes the bytes. */
@@ -57,6 +58,20 @@ describe("WasmModuleCache", () => {
     expect(moduleBytes("a").byteLength).toBe(moduleBytes("b").byteLength);
     expect(b).not.toBe(a);
     expect(cache.stats().compiles).toBe(2);
+  });
+
+  it("hands out the fork template id it keys on, hashing each buffer once", async () => {
+    const cache = new WasmModuleCache();
+    const bytes = moduleBytes("a");
+    const expected = await computeForkModuleTemplateId(bytes);
+    await cache.programModule(bytes);
+    const digest = await cache.programDigest(bytes);
+    expect(digest).toEqual(expected);
+    expect(cache.stats().digests).toBe(1);
+    digest.fill(0);
+    expect(await cache.programDigest(bytes)).toEqual(expected);
+    expect(await cache.programDigest(moduleBytes("b"))).not.toEqual(expected);
+    expect(cache.stats().digests).toBe(2);
   });
 
   it("joins concurrent requests for the same bytes to one compilation", async () => {

@@ -578,6 +578,8 @@ pub struct ParsedArgs {
     pub preprocess_only: bool,
     pub assembly_only: bool,
     pub shared: bool,
+    /// `-r`: a relocatable (partial) link that produces one object file.
+    pub relocatable: bool,
     pub pic: bool,
     pub link_dl: bool,
     pub thread_slots: Option<i64>,
@@ -636,6 +638,10 @@ pub fn parse_args(args: &[String]) -> Result<ParsedArgs> {
             result.compile_only = true;
         } else if arg == "-shared" {
             result.shared = true;
+        } else if arg == "-r" {
+            result.relocatable = true;
+            result.other_args.push(arg.to_string());
+            result.forwarded_args.push(arg.to_string());
         } else if arg == "-fPIC" {
             result.pic = true;
         } else if arg == "-ldl" {

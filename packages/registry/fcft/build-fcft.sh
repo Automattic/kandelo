@@ -7,8 +7,8 @@
 # bypass it like libxkbcommon/libwayland: run the three upstream
 # header generators (version.h, unicode-compose-table.h from
 # UnicodeData.txt, emoji-data.h via python3) and compile the two TUs
-# directly. No harfbuzz → no grapheme/run shaping and no
-# FCFT_HAVE_UTF8PROC (its only uses sit behind the harfbuzz guards);
+# directly. harfbuzz + utf8proc → grapheme and run shaping, as
+# upstream's -Dgrapheme-shaping=enabled -Drun-shaping=enabled;
 # svg-backend=disabled → the nanosvg TUs stay out.
 
 set -euo pipefail
@@ -43,6 +43,8 @@ FREETYPE_PREFIX="${WASM_POSIX_DEP_FREETYPE_DIR:?WASM_POSIX_DEP_FREETYPE_DIR not 
 FONTCONFIG_PREFIX="${WASM_POSIX_DEP_FONTCONFIG_DIR:?WASM_POSIX_DEP_FONTCONFIG_DIR not set}"
 PIXMAN_PREFIX="${WASM_POSIX_DEP_PIXMAN_DIR:?WASM_POSIX_DEP_PIXMAN_DIR not set}"
 TLLIST_PREFIX="${WASM_POSIX_DEP_TLLIST_DIR:?WASM_POSIX_DEP_TLLIST_DIR not set}"
+HARFBUZZ_PREFIX="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not set}"
+UTF8PROC_PREFIX="${WASM_POSIX_DEP_UTF8PROC_DIR:?WASM_POSIX_DEP_UTF8PROC_DIR not set}"
 
 # --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -76,12 +78,16 @@ CFLAGS=(
     -O2 -fPIC -std=c11
     -D_GNU_SOURCE=200809L
     -DFCFT_EXPORT=
+    -DFCFT_HAVE_HARFBUZZ
+    -DFCFT_HAVE_UTF8PROC
     "-I$SRC_DIR"
     "-I$BUILD_DIR/gen"
     "-I$FREETYPE_PREFIX/include/freetype2"
     "-I$FONTCONFIG_PREFIX/include"
     "-I$PIXMAN_PREFIX/include/pixman-1"
     "-I$TLLIST_PREFIX/include"
+    "-I$HARFBUZZ_PREFIX/include"
+    "-I$UTF8PROC_PREFIX/include"
 )
 
 echo "==> Compiling fcft for wasm32..."
@@ -102,7 +108,7 @@ includedir=\${prefix}/include
 Name: fcft
 Description: Simple font loading and glyph rasterization library
 Version: $FCFT_VERSION
-Requires.private: fontconfig freetype2 pixman-1
+Requires.private: fontconfig freetype2 pixman-1 harfbuzz libutf8proc
 Libs: -L\${libdir} -lfcft
 Cflags: -I\${includedir}
 EOF

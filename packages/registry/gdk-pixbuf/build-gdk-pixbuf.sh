@@ -3,9 +3,9 @@
 # Build gdk-pixbuf 2.36.12 (libgdk_pixbuf-2.0.a) for wasm32-posix-kernel.
 #
 # 2.36.12 is the last autotools release (2.38 moved to meson), so the
-# port rides the standard configure cross-compile pattern. Scope per
-# plan §4 (PR24): the png loader only, compiled in statically — no
-# jpeg/tiff, no dynamic loader modules.
+# port rides the standard configure cross-compile pattern. Scope: the png
+# and jpeg loaders, compiled in statically — no tiff, no dynamic loader
+# modules.
 #
 # Honors the dep-resolver build-script contract (see
 # docs/package-management.md). When invoked via
@@ -18,6 +18,7 @@
 #     WASM_POSIX_DEP_SOURCE_SHA256    # expected sha256 of the tarball
 #     WASM_POSIX_DEP_GLIB_DIR         # resolved glib prefix
 #     WASM_POSIX_DEP_LIBPNG_DIR       # resolved libpng prefix
+#     WASM_POSIX_DEP_LIBJPEG_TURBO_DIR  # resolved libjpeg-turbo prefix
 
 set -euo pipefail
 
@@ -47,6 +48,7 @@ fi
 
 GLIB_PREFIX="${WASM_POSIX_DEP_GLIB_DIR:?WASM_POSIX_DEP_GLIB_DIR not set (must be invoked via cargo xtask build-deps resolve gdk-pixbuf)}"
 LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:?WASM_POSIX_DEP_LIBPNG_DIR not set}"
+LIBJPEG_PREFIX="${WASM_POSIX_DEP_LIBJPEG_TURBO_DIR:?WASM_POSIX_DEP_LIBJPEG_TURBO_DIR not set}"
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 
@@ -89,7 +91,13 @@ echo "==> Configuring gdk-pixbuf for wasm32..."
     # derives from --prefix, which is the resolver's per-invocation
     # staging directory — a host path deleted at publication, and
     # different between two builds of this recipe.
+    #
+    # LIBJPEG is configure's own result variable; set, it skips the probe
+    # and goes into Libs.private as given, so static consumers find
+    # libjpeg.a through gdk-pixbuf-2.0.pc the way they find libpng.
     CFLAGS="-O2" \
+    CPPFLAGS="-I$LIBJPEG_PREFIX/include" \
+    LIBJPEG="-L$LIBJPEG_PREFIX/lib -ljpeg" \
     LDFLAGS="-L$LIBFFI_PREFIX/lib -L$ZLIB_PREFIX/lib" \
     PKG_CONFIG_PATH="$PC_PATH" \
     gio_can_sniff=no \
@@ -99,8 +107,7 @@ echo "==> Configuring gdk-pixbuf for wasm32..."
         --enable-static \
         --disable-shared \
         --disable-modules \
-        --with-included-loaders=png \
-        --without-libjpeg \
+        --with-included-loaders=png,jpeg \
         --without-libtiff \
         --disable-glibtest \
         --enable-introspection=no \
@@ -118,6 +125,16 @@ echo "==> Configuring gdk-pixbuf for wasm32..."
     make -C gdk-pixbuf install
     make install-pkgconfigDATA
 )
+
+# configure links gdk-pixbuf against gio-2.0 (GDK_PIXBUF_PACKAGES), but
+# upstream's gdk-pixbuf-2.0.pc.in omits it: a shared library carries the
+# dependency itself. A static consumer that does not use gio directly
+# (swaybg) needs the .pc to name it.
+sed -i.bak 's/^Requires.private: gmodule-no-export-2.0/& gio-2.0/' \
+    "$INSTALL_DIR/lib/pkgconfig/gdk-pixbuf-2.0.pc"
+rm -f "$INSTALL_DIR/lib/pkgconfig/gdk-pixbuf-2.0.pc.bak"
+grep -q '^Requires.private: gmodule-no-export-2.0 gio-2.0' \
+    "$INSTALL_DIR/lib/pkgconfig/gdk-pixbuf-2.0.pc"
 
 # The loaders are compiled in, so the query/csource tools (wasm
 # binaries) have no consumer; drop them from the install tree.

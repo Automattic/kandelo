@@ -264,6 +264,8 @@ function fixturePaths(root: string) {
   const wldesktopPath = join(root, "wldesktop");
   const omarchydesktopPath = join(root, "omarchydesktop");
   const desktopDataPath = join(root, "kandelo-desktop-data.zip");
+  const omarchyPath = join(root, "omarchy.zip");
+  const jetbrainsMonoNerdFontPath = join(root, "jetbrains-mono-nerd-font.zip");
   const libinputQuirksPath = join(root, "libinput-quirks.zip");
   const xkeyboardConfigPath = join(root, "xkeyboard-config.zip");
   const demoConfigPath = join(
@@ -286,6 +288,14 @@ function fixturePaths(root: string) {
       "themes/tokyo-night/theme.conf": new TextEncoder().encode("# Tokyo Night\n"),
       "apps/terminal.conf": new TextEncoder().encode("name = Terminal\n"),
     }),
+  );
+  writeFileSync(
+    omarchyPath,
+    zipSync({ "bin/omarchy-menu": new TextEncoder().encode("#!/bin/bash\n") }),
+  );
+  writeFileSync(
+    jetbrainsMonoNerdFontPath,
+    zipSync({ "JetBrainsMonoNerdFont-Regular.ttf": new TextEncoder().encode("font") }),
   );
   writeFileSync(
     libinputQuirksPath,
@@ -401,6 +411,8 @@ function fixturePaths(root: string) {
     wldesktopPath,
     omarchydesktopPath,
     desktopDataPath,
+    omarchyPath,
+    jetbrainsMonoNerdFontPath,
     libinputQuirksPath,
     xkeyboardConfigPath,
     demoConfigPath,
@@ -958,7 +970,10 @@ describe("canonical source-rootfs shell", () => {
       const source = spec.id === "ca-certificates" ? paths.caBundlePath
         : spec.id === "desktop-data" ? paths.desktopDataPath
         : spec.id === "cursor-theme" ? paths.resolveArtifact(spec.resolverPath, spec.dependency)
-        : spec.id === "xkeyboard-config" ? paths.xkeyboardConfigPath : paths.espeakNgDataPath;
+        : spec.id === "xkeyboard-config" ? paths.xkeyboardConfigPath
+        : spec.id === "omarchy" ? paths.omarchyPath
+        : spec.id === "jetbrains-mono-nerd-font" ? paths.jetbrainsMonoNerdFontPath
+        : paths.espeakNgDataPath;
       const bytes = readFileSync(source);
       expect(fs.isPathDeferred(`${spec.mountPrefix}${spec.requiredMember}`)).toBe(true);
       expect(composed.archives.find(({ uri }) => uri === spec.archiveUrl))
@@ -1671,6 +1686,11 @@ describe("canonical source-rootfs shell", () => {
     const waylandDemoDir = extendedDependencyDirs.get("wayland-demo")!;
     writeFileSync(join(rootfsDir, "rootfs.vfs.zst"), "rootfs");
     writeFileSync(join(extendedDependencyDirs.get("ca-certificates")!, "ca-certificates.zip"), "CA ZIP");
+    writeFileSync(join(extendedDependencyDirs.get("omarchy")!, "omarchy.zip"), "omarchy ZIP");
+    writeFileSync(
+      join(extendedDependencyDirs.get("jetbrains-mono-nerd-font")!, "jetbrains-mono-nerd-font.zip"),
+      "font ZIP",
+    );
     writeFileSync(join(bashDir, "bash.wasm"), "bash");
     writeFileSync(join(espeakNgDir, "espeak-ng-data.zip"), "espeak-ng-data");
     for (const name of [
@@ -1773,6 +1793,10 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     expect(invocation).toContain(`--omarchydesktop ${waylandDemoDir}/omarchydesktop`);
     expect(invocation).toContain(
       `--desktop-data ${waylandDemoDir}/kandelo-desktop-data.zip`,
+    );
+    expect(invocation).toContain(`--omarchy ${extendedDependencyDirs.get("omarchy")}/omarchy.zip`);
+    expect(invocation).toContain(
+      `--jetbrains-mono-nerd-font ${extendedDependencyDirs.get("jetbrains-mono-nerd-font")}/jetbrains-mono-nerd-font.zip`,
     );
     expect(invocation).toContain(
       `--libinput-quirks ${waylandDemoDir}/libinput-quirks.zip`,

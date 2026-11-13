@@ -1,0 +1,75 @@
+kind = "program"
+
+# fuzzel, a Wayland application launcher and dmenu replacement on
+# wlr-layer-shell. Built through upstream's meson build with the SDK cross
+# file. PNG icons through libpng and SVG icons through the bundled nanosvg;
+# without cairo, which only the librsvg backend needs.
+name = "fuzzel"
+version = "1.15.0"
+kernel_abi = 55
+depends_on = [
+  "fcft@3.3.3",
+  "harfbuzz@10.1.0",
+  "utf8proc@2.9.0",
+  "glib@2.84.4",
+  "pcre2@10.44",
+  "libcxx@21.1.7",
+  "tllist@1.1.0",
+  "fontconfig@2.15.0",
+  "freetype@2.13.3",
+  "pixman@0.46.4",
+  "libpng@1.6.43",
+  "libwayland@1.24.0",
+  "wayland-protocols@1.47",
+  "libxkbcommon@1.13.2",
+  "libffi@0.1.0",
+  "libxml2@2.13.8",
+  "libiconv@1.17",
+  "zlib@1.3.1",
+]
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.3.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wayland-scanner"
+version_constraint = ">=1.24"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh" }
+
+# meson resolves the native wayland-scanner with the build machine's
+# pkg-config, so the probe asks that pkg-config for it.
+[[host_tools]]
+name = "pkg-config"
+version_constraint = ">=1.20.0"
+probe = { args = ["--modversion", "wayland-scanner"], version_regex = "(?m)^(\\d+\\.\\d+(?:\\.\\d+)?)$" }
+install_hints = { darwin = "wayland-scanner is provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "wayland-scanner is provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "scdoc"
+version_constraint = ">=1.0.0"
+probe = { args = ["-v"], version_regex = "scdoc (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh" }
+
+[source]
+url = "https://codeberg.org/dnkl/fuzzel/releases/download/1.15.0/fuzzel-1.15.0.tar.gz"
+sha256 = "11bee600e19ee1638db592e41980445673224716fbedbd0213b25153325f4182"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://codeberg.org/dnkl/fuzzel/src/tag/1.15.0/LICENSE"
+
+[build]
+script_path = "packages/registry/fuzzel/build-fuzzel.sh"
+
+[[outputs]]
+name = "fuzzel"
+wasm = "fuzzel.wasm"

@@ -1,0 +1,422 @@
+kind = "program"
+
+# Omarchy 4's scripts, menu, themes and theme templates, adapted to a sway
+# session. Omarchy runs its menu, lock, background and notifications in one
+# QuickShell process; Kandelo ships sway, so the patches answer that
+# process's IPC with fuzzel, swaylock, swaybg and mako, and change each
+# hyprctl and uwsm call to swaymsg.
+#
+# `allowlist` names the files the archive ships: the scripts the menu, the
+# lock, the logout, the theme switch, the key bindings and the notifications
+# reach, Omarchy's Lua binding declarations, and each theme's colors.
+# Each theme's backgrounds, PNG and JPG, are runtime files at
+# /usr/share/backgrounds/omarchy/<theme>/, one lazy file each in the shell
+# image, and the archive's themes/<theme>/backgrounds/ entries are absolute
+# links to them: omarchy-theme-set copies the theme directory with cp -r,
+# which copies the links, so a machine downloads only the backgrounds swaybg
+# and swaylock draw. Each theme gets a preview linked to its first
+# background, the image omarchy-theme-switcher falls back to, so the first
+# theme menu opens with one find per theme instead of up to seven.
+# Upstream's own previews stay out: omarchy-theme-set copies the theme
+# directory at first boot, which would fetch their 8.8 MB with the archive.
+# omarchy-notification-send calls busctl, which the image provides as basu's
+# basuctl.
+# Each patch under `patches/` states the boundary it adapts to.
+#
+# The archive mounts at /usr/share/omarchy, Omarchy's OMARCHY_PATH.
+name = "omarchy"
+version = "4.0.6"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = []
+
+[[host_tools]]
+name = "zip"
+version_constraint = ">=3.0"
+probe = { args = ["-v"], version_regex = "Zip (\\d+\\.\\d+)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[source]
+url = "https://github.com/basecamp/omarchy/archive/refs/tags/v4.0.6.tar.gz"
+sha256 = "e399386c4eb1744a0d712fe03ba71bbb29530188ee116cfcc475930c996441a8"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/basecamp/omarchy/blob/v4.0.6/LICENSE"
+
+[build]
+script_path = "packages/registry/omarchy/build-omarchy.sh"
+
+[[outputs]]
+name = "omarchy"
+wasm = "omarchy.zip"
+fork_instrumentation = "disabled"
+
+[[runtime_files]]
+artifact = "backgrounds/catppuccin-latte/1-color-fade.png"
+guest_path = "/usr/share/backgrounds/omarchy/catppuccin-latte/1-color-fade.png"
+
+[[runtime_files]]
+artifact = "backgrounds/catppuccin-latte/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/catppuccin-latte/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/catppuccin/1-totoro.png"
+guest_path = "/usr/share/backgrounds/omarchy/catppuccin/1-totoro.png"
+
+[[runtime_files]]
+artifact = "backgrounds/catppuccin/2-waves.png"
+guest_path = "/usr/share/backgrounds/omarchy/catppuccin/2-waves.png"
+
+[[runtime_files]]
+artifact = "backgrounds/catppuccin/3-blue-eye.png"
+guest_path = "/usr/share/backgrounds/omarchy/catppuccin/3-blue-eye.png"
+
+[[runtime_files]]
+artifact = "backgrounds/catppuccin/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/catppuccin/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/ethereal/1-cosmic.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/ethereal/1-cosmic.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/ethereal/2-meadow.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/ethereal/2-meadow.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/ethereal/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/ethereal/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/everforest/1-tree-tops.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/everforest/1-tree-tops.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/everforest/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/everforest/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/flexoki-light/1-orb.png"
+guest_path = "/usr/share/backgrounds/omarchy/flexoki-light/1-orb.png"
+
+[[runtime_files]]
+artifact = "backgrounds/flexoki-light/2-omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/flexoki-light/2-omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/gruvbox/1-the-backwater.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/gruvbox/1-the-backwater.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/gruvbox/2-flower-basket.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/gruvbox/2-flower-basket.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/gruvbox/3-village-square.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/gruvbox/3-village-square.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/gruvbox/4-idyllic-procession.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/gruvbox/4-idyllic-procession.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/gruvbox/5-leaves.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/gruvbox/5-leaves.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/gruvbox/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/gruvbox/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/hackerman/1-synth-scape.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/hackerman/1-synth-scape.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/hackerman/2-geometric.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/hackerman/2-geometric.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/hackerman/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/hackerman/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/kanagawa/1-kanagawa.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/kanagawa/1-kanagawa.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/kanagawa/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/kanagawa/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/last-horizon/1-eyes-wide.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/last-horizon/1-eyes-wide.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/last-horizon/2-blink.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/last-horizon/2-blink.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/last-horizon/3-bokeh.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/last-horizon/3-bokeh.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/last-horizon/4-new-horizons.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/last-horizon/4-new-horizons.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/lumon/01-united-in-severance.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/lumon/01-united-in-severance.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/lumon/02-opinions-equally.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/lumon/02-opinions-equally.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/lumon/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/lumon/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/lupine/01-cherry-blossom-bokeh.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/lupine/01-cherry-blossom-bokeh.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/lupine/02-cherry-blossom-white.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/lupine/02-cherry-blossom-white.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/lupine/03-pastel-clouds.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/lupine/03-pastel-clouds.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/lupine/04-elegant-blue-wave.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/lupine/04-elegant-blue-wave.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/lupine/05-abstract-wave.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/lupine/05-abstract-wave.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/lupine/06-omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/lupine/06-omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/matte-black/0-ship-at-sea.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/matte-black/0-ship-at-sea.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/matte-black/1-dark-waters.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/matte-black/1-dark-waters.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/matte-black/2-dot-hands.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/matte-black/2-dot-hands.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/matte-black/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/matte-black/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/miasma/01-nature-of-fear.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/miasma/01-nature-of-fear.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/miasma/02-crowned.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/miasma/02-crowned.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/miasma/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/miasma/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/nord/0-black-moon.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/nord/0-black-moon.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/nord/1-city-view.png"
+guest_path = "/usr/share/backgrounds/omarchy/nord/1-city-view.png"
+
+[[runtime_files]]
+artifact = "backgrounds/nord/2-night-hawks.png"
+guest_path = "/usr/share/backgrounds/omarchy/nord/2-night-hawks.png"
+
+[[runtime_files]]
+artifact = "backgrounds/nord/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/nord/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/osaka-jade/1-glowing-city.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/osaka-jade/1-glowing-city.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/osaka-jade/2-shaded-entrance.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/osaka-jade/2-shaded-entrance.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/osaka-jade/3-mountain-moon.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/osaka-jade/3-mountain-moon.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/osaka-jade/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/osaka-jade/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/retro-82/1-in-the-groove.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/retro-82/1-in-the-groove.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/retro-82/2-dusk-guardian.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/retro-82/2-dusk-guardian.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/retro-82/3-glassy-lines.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/retro-82/3-glassy-lines.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/retro-82/4-gateway.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/retro-82/4-gateway.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/retro-82/5-zen-boat.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/retro-82/5-zen-boat.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/retro-82/6-abstract-pyramids.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/retro-82/6-abstract-pyramids.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/retro-82/7-the-journey.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/retro-82/7-the-journey.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/retro-82/8-glitter-glass.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/retro-82/8-glitter-glass.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/retro-82/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/retro-82/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/ristretto/0-launch.png"
+guest_path = "/usr/share/backgrounds/omarchy/ristretto/0-launch.png"
+
+[[runtime_files]]
+artifact = "backgrounds/ristretto/1-color-curves.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/ristretto/1-color-curves.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/ristretto/2-coffee-beans.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/ristretto/2-coffee-beans.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/ristretto/3-industrial-moon.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/ristretto/3-industrial-moon.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/ristretto/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/ristretto/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/rose-pine/1-funky-shapes.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/rose-pine/1-funky-shapes.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/rose-pine/2-dot-map.png"
+guest_path = "/usr/share/backgrounds/omarchy/rose-pine/2-dot-map.png"
+
+[[runtime_files]]
+artifact = "backgrounds/rose-pine/3-omarchy-plants.png"
+guest_path = "/usr/share/backgrounds/omarchy/rose-pine/3-omarchy-plants.png"
+
+[[runtime_files]]
+artifact = "backgrounds/rose-pine/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/rose-pine/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/solitude/1-on-pole.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/solitude/1-on-pole.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/solitude/2-wreakage.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/solitude/2-wreakage.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/solitude/3-climb.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/solitude/3-climb.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/solitude/4-ether.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/solitude/4-ether.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/solitude/5-eyed.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/solitude/5-eyed.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/tokyo-night/0-winding-road.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/tokyo-night/0-winding-road.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/tokyo-night/1-quattro.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/tokyo-night/1-quattro.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/tokyo-night/2-swirl-buck.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/tokyo-night/2-swirl-buck.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/tokyo-night/3-sunset-lake.png"
+guest_path = "/usr/share/backgrounds/omarchy/tokyo-night/3-sunset-lake.png"
+
+[[runtime_files]]
+artifact = "backgrounds/tokyo-night/4-omakub.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/tokyo-night/4-omakub.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/tokyo-night/5-oma-cityscape.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/tokyo-night/5-oma-cityscape.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/tokyo-night/6-oma.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/tokyo-night/6-oma.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/tokyo-night/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/tokyo-night/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/vantablack/0-dot-hands.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/vantablack/0-dot-hands.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/vantablack/1-twisted-stairs.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/vantablack/1-twisted-stairs.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/vantablack/2-layers-deep.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/vantablack/2-layers-deep.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/vantablack/3-layers-stacked.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/vantablack/3-layers-stacked.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/vantablack/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/vantablack/omarchy.png"
+
+[[runtime_files]]
+artifact = "backgrounds/white/1-white.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/white/1-white.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/white/2-white.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/white/2-white.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/white/3-white.jpg"
+guest_path = "/usr/share/backgrounds/omarchy/white/3-white.jpg"
+
+[[runtime_files]]
+artifact = "backgrounds/white/omarchy.png"
+guest_path = "/usr/share/backgrounds/omarchy/white/omarchy.png"

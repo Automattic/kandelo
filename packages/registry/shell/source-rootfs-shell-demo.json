@@ -342,10 +342,10 @@
       }
     },
     "omarchy": {
-      "requires": ["wayland-demo", "quickshell", "dbus", "foot"],
+      "requires": ["wayland-demo", "sway", "swaybg", "foot", "dbus", "bibata-cursor-theme", "omarchy", "fuzzel", "mako", "waybar", "swayidle", "swaylock", "basuctl", "busybox", "lua-cli", "jq", "xkbcli", "jetbrains-mono-nerd-font"],
       "identity": {
-        "title": "Omarchy-style desktop",
-        "summary": "An Omarchy-style shell on Kandelo's Hyprland-compatible compositor. One Quickshell process draws the wallpaper, bar, launcher (Alt+G), menu (Alt+M), notifications, on-screen display and lock screen (Alt+X). Alt+Shift+Y cycles six live colour themes. The desktop starts bare: open clients from the launcher, Alt+Return (terminal), Alt+C (clock) or Alt+P (paint); Alt+J/K changes focus and Alt+Shift+Q closes a window. Alt is Option on Mac.",
+        "title": "Omarchy look-alike",
+        "summary": "Omarchy 4's own scripts, menus, themes and key bindings on upstream sway, not Hyprland. fuzzel draws Omarchy's menu (CTRL+Space) and app launcher (CTRL+ALT+Space), swaylock is the lock screen, and mako shows notifications, in place of Omarchy's Quickshell shell. Switch among Omarchy's themes from the theme menu (CTRL+SHIFT+Space). The desktop starts bare: open clients from the launcher, CTRL+Return (terminal), or CTRL+K (clock); CTRL+Escape opens the System menu.",
         "accent": "#7aa2f7",
         "glyph": "O",
         "packages": [
@@ -376,8 +376,7 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer",
-        "hostPointer": true
+        "internalsAccess": "drawer"
       }
     }
   }

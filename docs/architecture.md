@@ -694,14 +694,15 @@ the trusted host fills it, while retaining the same boundary synchronization,
 alias ordering and snapshot comparisons. Other mapping backends retain the
 safe initialized-slice implementation.
 
-For file mappings, the Wasm backend first compares the live process range
-against the existing initialized Rust snapshot through the synchronous
-`host_proc_compare_bytes` import. The host validates both complete ranges,
+For file mappings, the Wasm backend compares the live process range, one
+64 KiB window at a time, against what the mapping last observed, assembled
+from its overlay pages and the file's own pages (see the kernel-owned file
+model below), through the synchronous `host_proc_compare_bytes` import. The host validates both complete ranges,
 rechecks the exact kernel Memory and generation after process lookup, and
 keeps all read-only native authority inside that call. Exactly zero means
 equal, one means different, and two means the optional comparator is
 unavailable; unavailability never establishes equality. Shared-file
-publication retains an equal snapshot without allocating a new full range;
+publication allocates nothing for an equal window;
 changed bytes and unavailable comparisons use bounded page reads, advancing
 the baseline only for completed merges. Callers requiring an independent
 owned process snapshot retain their separately checked full-copy path.
@@ -2378,13 +2379,31 @@ variant is keyed on the *program's* digest; `patchWasmForThread` is a pure
 function of those bytes. When the patch leaves the bytes unchanged (a module
 without a start section), the thread module is the program module itself.
 
-**Admission is never skipped.** The cache replaces only the compile step.
-The ABI marker and artifact-policy checks still run on every launch's bytes
-before the lookup, exec permission and set-ID policy are still decided by the
-kernel's prepared target, and the process worker still re-runs the artifact
-policy and fork-instrumentation validation on the module it is given. A
-compile failure is reported to every caller waiting on it and is never
-cached.
+**Admission is never skipped.** The cache replaces only the compile step
+and the digest. The ABI marker and artifact-policy checks still run on the
+bytes of every new image before the lookup, and exec permission and set-ID
+policy are still decided by the kernel's prepared target. Each image's bytes
+are judged once, before the process worker starts:
+
+- An exec or `posix_spawn` target is judged in the kernel worker before the
+  commit: Rust's `exec_target::admit` checks the ABI marker and artifact
+  policy, and `launchPreparedExecTarget` adds the fork-artifact contract and
+  the kernel's ABI-contract digest. A refusal fails the call with `ENOEXEC`.
+- A fork child runs its parent's bytes, which were judged at the parent's
+  launch. Fork loads no new image.
+- A top-level host spawn is judged by its process worker.
+
+The init message's `programAdmitted` flag tells the worker which case it is
+in, so the worker does not repeat a check the kernel worker already ran. Every
+worker still validates the fork instrumentation it replays. A compile failure
+is reported to every caller waiting on it and is never cached.
+
+**The digest is the fork template id.** The cache key's SHA-256 is the same
+value as the fork module template id (`computeForkModuleTemplateId`). The
+kernel worker sends it as `programTemplateId` in each process and thread
+init message, so a worker does not hash its program bytes again. Every
+launch path passes the same bytes buffer the cache already hashed, so this
+costs no extra hash in the kernel worker.
 
 **Lifetime.** The cache's own index holds each module through a `WeakRef`.
 Strong references belong to the users: each process record's
@@ -2396,8 +2415,8 @@ launches of the same bytes that overlap share one in-flight compilation.
 On top of that a bounded retention window keeps recently launched modules
 strongly referenced: at most 16 MiB of Wasm bytes in total, each for 30
 seconds after its most recent launch, least recently launched evicted first.
-Modules larger than the bound (Quickshell at 75 MB, Waybar at 51 MB,
-qtgallery at 23 MB) are never retained past their last user. The window exists
+Modules larger than the bound (Quickshell at 75 MB, Waybar at 51 MB) are
+never retained past their last user. The window exists
 because weak references alone lose short-lived programs to the garbage
 collector between runs: a shell running coreutils `ls` 20 times compiled
 coreutils 10–13 times with weak references only, and once with the window
@@ -2508,7 +2527,11 @@ child admissions precede process-memory writes. Failed preparation publishes
 no child mappings; a later write refusal restores previously written ranges
 before the transaction releases its temporary custody. These two owners must
 stay distinct: a child that fits its retained allowance must not be refused
-solely because rollback bytes compete for the same live credit.
+solely because rollback bytes compete for the same live credit. A
+kernel-owned file mapping stages neither: the commit seeds the child's range
+from the file a page at a time, and a refused commit restores that range from
+the parent's bytes at the same address, which the child's memory was copied
+from. A child whose inheritance fails never runs.
 
 Who keeps a mapping coherent follows who owns its bytes. The host keeps
 anonymous regions and files on host-mounted directories
@@ -2528,37 +2551,52 @@ not just a dirty-page flag. Successful short-write prefixes retire immediately;
 retry writes only the remaining dirty runs, preserving later descriptor writes
 to other bytes. Generation reconciliation refreshes clean bytes without losing
 pending stores and discards stores invalidated by truncation. A mapping's
-comparison snapshot advances as its changed bytes enter the shared backing,
+observation advances as its changed bytes enter the shared backing,
 even when subsequent writeback fails, so retry cannot replay an already
 accepted prefix over a newer descriptor write. Dirty-byte tracking nodes use
 fallible shared I/O admission before cache mutation.
 
+A kernel-owned file mapping keeps no copy of what its process last observed.
+The file itself is the shared part of every mapping's observation; a mapping
+holds only an overlay of the 4 KiB pages the file changed under it since its
+process was last refreshed (`SharedMapping::overlay`). Before a publication
+changes a file page, every other mapping that still observes that page
+through the file receives the old page in its overlay. Descriptor I/O does
+the same through the storage hooks `kernel_file_mapping::prepare_overwrite`
+and `prepare_truncate`, which rootfs, tmpfs and memfd call before they change
+a file's bytes. A page that a truncation discards is marked unknown instead
+of copied: nothing is published from it, and the refresh writes the file
+over it. A refresh writes only the overlay pages, where they differ from the
+file, and releases them. A mapping's resident cost is therefore the pages
+changed under it and not yet refreshed, not its length. A Wayland client's
+buffer pool, mapped by the client and the compositor, costs nothing while
+idle; a published frame costs the compositor one overlay copy of the
+changed pages until its own completion refreshes it, which is the same
+kernel call when the compositor's completion pulled the frame. A content
+generation that moves without an announced change is a fatal kernel fault
+rather than a silent republication of old bytes.
+
 Unreleased storage-memory work also admits file-cache page payloads and
-cache nodes through that shared budget, reclaims only clean pages on
-admission pressure, and prepares replacement pages before publishing a
-refresh. If publication cannot admit its next page while a kernel-owned
-write-through backing retains dirty pages, it first persists that already
-accepted prefix, releases the resulting clean cache, and retries the same
-immutable source page once against its advanced comparison snapshot. This
-avoids needing a whole mapping of dirty cache in addition to its retained
-snapshots. Ordinary publication adds no per-page flush. A failed pressure
-writeback retains dirty custody and records the writeback loss; the
-unaccepted tail still returns its original admission failure. A retry
-cannot replay an accepted prefix over a later descriptor write. Failure invalidation walks resident cache entries without
+cache nodes through that shared budget and reclaims only clean pages on
+admission pressure. A kernel-owned write-through backing persists and
+releases each page as publication merges it, so publication never holds more
+than one dirty page. A failed writeback retains dirty custody of the
+unaccepted bytes and records the writeback loss; the pages not yet merged
+stay unpublished in the process. A retry cannot replay an accepted prefix
+over a later descriptor write. Failure invalidation walks resident cache entries without
 allocating a logical-page cohort. File publication reads process memory
 through fixed page scratch and streams changed runs, retaining accepted
 progress if a later page read fails. The optional native comparison borrows
 the retained snapshot to recognize an unchanged range. A differing range
 still uses page scratch: requiring a second mapping-sized live copy can
 refuse publication even though the mapping itself was already admitted. These changes are not in checkpoint
-1.13. The subsequent chunk admits retained mapping snapshots,
-anonymous backing bytes, fork rollback/replacement payloads and mapping
-registry nodes. File mapping preparation runs before VM allocation in the
-Rust dispatcher; host registration consumes the prepared snapshot/nodes.
-Middle-unmap splits reserve their right-hand snapshot/node before VM
-mutation and commit without allocation, using the current comparison bytes.
-Remap prepares authoritative bytes before VM mutation and retains the old
-tracker until the new process write succeeds. No new host import or kernel
+1.13. The subsequent chunk admits anonymous backing bytes, fork
+rollback payloads and mapping registry nodes. File mapping preparation runs
+before VM allocation in the Rust dispatcher; host registration consumes the
+prepared nodes and seeds the process from the file a page at a time.
+Middle-unmap splits reserve their right-hand node before VM mutation and
+commit without allocation, moving the right-hand overlay pages whole.
+Remap retains the old tracker until the new range is seeded from the file. No new host import or kernel
 export is needed. The snapshot/preflight prefix passes an actual guest's
 8 GiB sparse-window/oversized-map refusal and strict recovery case under a
 64 MiB kernel ceiling on Node and all three browser engines.
@@ -3740,8 +3778,8 @@ the same admission limit; production uses the streamed reachable-metadata mode.
 Journal cache slots and clean/dirty payloads, retained metadata-cache ownership,
 encoded/replayed transaction frames and prepared-publication vectors now share
 an I/O admission pool with ordinary and archive verified-read tables, chunks
-and streaming verification buffers. The pool also owns retained mapping
-baselines and inherited child state, not only disposable cache. Both hosts
+and streaming verification buffers. The pool also owns mapping overlay pages
+and inherited child state, not only disposable cache. Both hosts
 configure the smaller of 128 MiB and one eighth of the existing kernel ceiling
 (128 MiB on desktop, 96 MiB on constrained). This changes admission capacity;
 it neither preallocates those bytes nor enlarges a Wasm memory maximum. A fixed
@@ -5551,9 +5589,11 @@ device and agent (below).
   otherwise, which keeps the syscall completion path untouched. Only the
   paste gesture is browser-only: Node has no DOM `paste` event, the same
   boundary `NodeInputSource` documents.
-- **kclipd** (`programs/kclipd.c`, started by `omarchydesktop`) speaks
-  `ext_data_control_v1` rather than reading the device inside the compositor,
-  so it keeps working when a real Hyprland replaces `wlcompositor`. It serves
+- **kclipd** (`programs/kclipd.c`, started by the Omarchy machine's sway
+  session) speaks `ext_data_control_v1` rather than reading the device
+  inside the compositor, so it works under any compositor that serves the
+  protocol: sway serves it through wlroots, and `wlcompositor` serves it
+  too. It serves
   pastes by writing into the pasting client's pipe without blocking, and logs
   sequence numbers and lengths, never the text.
 - **The gesture** (`BrowserInputSource`, images that declare the `clipboard`
@@ -7142,8 +7182,10 @@ the client's status. It reaches the platform the way a Linux compositor does:
   routes keys and buttons to the focused toplevel.
 
 cage offers no layer shell, data-control, tiling or multi-window layout, so
-the desktops (`wldesktop`, `omarchydesktop`, `hyprdesktop`) and their shell
-clients (Waybar, mako, quickshell, kclipd, qtgallery) stay on `wlcompositor`.
+the `wldesktop` and `hyprdesktop` desktops and their shell clients (Waybar,
+quickshell) stay on `wlcompositor`. The Omarchy machine's `omarchydesktop`
+runs on sway (see
+[browser-support.md](browser-support.md#omarchy-desktop-demo)).
 
 The browser shell image carries cage as a lazy file, and its `cage` machine
 runs `cage -- wlterm`. The machine declares `kms-gl-scanout`, so the vblank
@@ -7232,7 +7274,7 @@ The compositor owns fd mapping, buffer offsets and texture upload; clients
 need no renderer-specific pool allocator. Node exercises the same pool
 protocol through CPU compositing, while browser specs exercise GPU drawing.
 
-On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (a desktop machine's launcher script, `wldesktop` or `omarchydesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.28.1 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). A `wl_shm` pool is any mappable fd the client passes over `SCM_RIGHTS` — a memfd, a `/dev/shm` file, or a `gbm` dumb BO's prime-fd — and the compositor maps it `PROT_READ`/`MAP_SHARED` at `create_pool` (remapping on `resize`, refusing a shrink, as libwayland's `wl_shm` does), so each buffer is read at its offset in that mapping and the kernel's shared-mapping coherence (see `mmap()` in `docs/posix-status.md`) carries the client's later stores into it at the compositor's syscall boundaries (`host/test/wlcompositor-shm-memfd-smoke.test.ts`). A dumb BO's prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888`/`XBGR8888`/`ABGR8888` + `LINEAR` only, no feedback; a GL client's buffer from `libwayland-egl` is `XBGR8888`, because a WebGL RGBA texture stores `[R,G,B,A]` bytes, and the compositor samples it without the red/blue swizzle it applies to `XRGB8888` `[B,G,R,X]` buffers): `zwp_linux_buffer_params_v1.create[_immed]` first imports the plane with `gbm_bo_import` as the claimed fourcc and refuses a buffer no import can sample (`failed`, or `invalid_wl_buffer` for `create_immed`): a plane outside its dma-buf, or a GPU-tier buffer made in storage that fourcc does not name. `add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` with the buffer's real fourcc + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) — a `wl_shm` buffer whose pool is no dma-buf, or that starts partway into its pool, is uploaded from the pool mapping instead (`glTexImage2D`, then `glTexSubImage2D` per dirtying commit, its bytes as `GL_RGBA` so the shader's swizzle matches an imported bo) — and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to CPU-blitting into the scanout buffer, reading `wl_shm` buffers from the pool mapping and `linux-dmabuf` buffers through `gbm_bo_import`. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-ENODEV` once the binding's renderer was lost (`host/src/webgl/renderer-loss.ts`; sticky across a later restoration of the same context object), `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails with `EGL_CONTEXT_LOST`, and the compositor's repaint falls through to the CPU path and terminates EGL. An `ENODEV` reply on submit, query or make-current lets libEGL record the context reset; its failure-only checked scope receipt propagates known physical renderer loss to the share group while keeping logical A3 resets local. `glGetGraphicsResetStatus` (`GL_EXT_robustness`/`GL_KHR_robustness`) answers from the recorded state without another host request. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
+On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (the wayland machine's launcher script, `wldesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.28.1 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). A `wl_shm` pool is any mappable fd the client passes over `SCM_RIGHTS` — a memfd, a `/dev/shm` file, or a `gbm` dumb BO's prime-fd — and the compositor maps it `PROT_READ`/`MAP_SHARED` at `create_pool` (remapping on `resize`, refusing a shrink, as libwayland's `wl_shm` does), so each buffer is read at its offset in that mapping and the kernel's shared-mapping coherence (see `mmap()` in `docs/posix-status.md`) carries the client's later stores into it at the compositor's syscall boundaries (`host/test/wlcompositor-shm-memfd-smoke.test.ts`). A dumb BO's prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888`/`XBGR8888`/`ABGR8888` + `LINEAR` only, no feedback; a GL client's buffer from `libwayland-egl` is `XBGR8888`, because a WebGL RGBA texture stores `[R,G,B,A]` bytes, and the compositor samples it without the red/blue swizzle it applies to `XRGB8888` `[B,G,R,X]` buffers): `zwp_linux_buffer_params_v1.create[_immed]` first imports the plane with `gbm_bo_import` as the claimed fourcc and refuses a buffer no import can sample (`failed`, or `invalid_wl_buffer` for `create_immed`): a plane outside its dma-buf, or a GPU-tier buffer made in storage that fourcc does not name. `add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` with the buffer's real fourcc + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) — a `wl_shm` buffer whose pool is no dma-buf, or that starts partway into its pool, is uploaded from the pool mapping instead (`glTexImage2D`, then `glTexSubImage2D` per dirtying commit, its bytes as `GL_RGBA` so the shader's swizzle matches an imported bo) — and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to CPU-blitting into the scanout buffer, reading `wl_shm` buffers from the pool mapping and `linux-dmabuf` buffers through `gbm_bo_import`. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-ENODEV` once the binding's renderer was lost (`host/src/webgl/renderer-loss.ts`; sticky across a later restoration of the same context object), `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails with `EGL_CONTEXT_LOST`, and the compositor's repaint falls through to the CPU path and terminates EGL. An `ENODEV` reply on submit, query or make-current lets libEGL record the context reset; its failure-only checked scope receipt propagates known physical renderer loss to the share group while keeping logical A3 resets local. `glGetGraphicsResetStatus` (`GL_EXT_robustness`/`GL_KHR_robustness`) answers from the recorded state without another host request. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
 
 Kandelo-authored clients build on `libkwl` (`examples/libs/libkwl/`), a small toolkit over `libwayland-client` that wraps registry bind, an `xdg` CSD toplevel, double-buffered `wl_shm` back buffers, xkb keysym/UTF-8 translation, and a `kwl_dispatch` event loop; it exposes `kwl_display_fd()` so an app can `poll` the Wayland connection alongside its own fds. Drawing goes through `libwpkdraw` (`examples/libs/wpkdraw/`), a CPU rasterizer (alpha-blended clear/pixel/rect + an `stb_truetype` font engine over a bundled Inconsolata) that renders into a caller-owned ARGB buffer. `programs/wlterm/` is the first real client: a terminal that `forkpty()`s `sh` (bash, which every Kandelo image binds to `/bin/sh`), runs an in-tree VT100 core (`vt100.c`), and multiplexes the Wayland display fd and the PTY master fd in one `poll` loop — Wayland key events become PTY writes, PTY output feeds the VT100 grid and is rendered back into the libkwl window. Because `wlterm` forks, its wasm is mandatorily processed by `wasm-fork-instrument` (see [fork-instrumentation.md](fork-instrumentation.md)).
 
@@ -7281,10 +7323,9 @@ from the `wlr-protocols` package,
 `share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml`), and the
 in-tree clients below consume it. This is the **O1** milestone of
 [docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md](plans/2026-07-14-build-hyprland-class-compositor-plan.md).
-The Omarchy machine runs Quickshell in every one of these slots instead
-(see [browser-support.md](browser-support.md#omarchy-desktop-demo)); the
-in-tree clients stay as the dependency-free shell the layer-shell and theme
-smokes gate on.
+A Quickshell shell can fill every one of these slots (the Omarchy machine
+ran one before it moved to sway); the in-tree clients stay as the
+dependency-free shell the layer-shell and theme smokes gate on.
 
 Three more protocols carry what a Quickshell shell needs from its
 compositor beyond layer-shell, each served the way Hyprland serves it:
@@ -7354,8 +7395,6 @@ compositor beyond layer-shell, each served the way Hyprland serves it:
   opens a menu instead: a root level (Apps, Theme) that descends
   into the app list or the installed-theme list (read from `kwlctl theme`,
   switched with `dispatch theme`); ESC in a submenu returns to the root.
-  The Omarchy machine's launcher is the Quickshell shell's, reading
-  `.desktop` entries.
 - **Themes.** A theme is a directory holding one `theme.conf` under
   `/usr/share/kandelo/themes` (`WLC_THEME_DIR` / `KANDELO_THEME_DIR` override
   the root) — the same file-based design Omarchy uses. The compositor reads the
@@ -7375,10 +7414,7 @@ compositor beyond layer-shell, each served the way Hyprland serves it:
   every shell client to reload its own palette. `kwlctl theme` reports the live
   name plus the installed set, so a client that starts later still matches.
 
-Gated by `host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts` and, in the
-browser, by `apps/browser-demos/test/kandelo-omarchy.spec.ts` (the Omarchy
-machine).
-See [browser-support.md](browser-support.md#omarchy-desktop-demo).
+Gated by `host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts`.
 
 ### Stock upstream clients (`foot` + the font stack)
 
@@ -7407,9 +7443,10 @@ What it took, on each side of the protocol:
   garble its font reload. `wp_presentation` (above) is its frame clock.
 - **The font stack.** Four library packages feed it: `freetype` 2.13.3
   (rasterizer), `fontconfig` 2.15.0 (font discovery — reads the config
-  `FONTCONFIG_FILE` names and scans the font dirs it lists), `fcft` 3.1.9 (the
-  glyph-cache layer foot draws with) and `tllist` 1.1.0, over `pixman` 0.42.2
-  and `utf8proc` 2.9.0. Gates: `host/test/fontstack-smoke.test.ts` and the
+  `FONTCONFIG_FILE` names and scans the font dirs it lists), `fcft` 3.3.3 (the
+  glyph-cache layer foot and fuzzel draw with, shaping text runs with
+  `harfbuzz` 10.1.0 and `utf8proc` 2.9.0) and `tllist` 1.1.0, over `pixman`
+  0.42.2. Gates: `host/test/fontstack-smoke.test.ts` and the
   per-package `host/test/{pixman,utf8proc}-smoke.test.ts`.
 - **Kernel: signals interrupt host-converted epoll waits.** foot's SIGCHLD
   reaper parks in `epoll_pwait` with the signal unblocked only inside the

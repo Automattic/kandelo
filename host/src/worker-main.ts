@@ -3057,10 +3057,12 @@ export async function centralizedWorkerMain(
       if (!retainProgramBytes) programBytes.transfer(0);
     };
     const ptrWidth = initData.ptrWidth ?? 4;
-    const artifactFailures = describeWasmArtifactPolicyFailures(programBytes, {
-      expectedAbi: initData.kernelAbiVersion,
-      expectedAbiContractDigest: initData.kernelAbiContractDigest,
-    });
+    const artifactFailures = initData.programAdmitted
+      ? []
+      : describeWasmArtifactPolicyFailures(programBytes, {
+          expectedAbi: initData.kernelAbiVersion,
+          expectedAbiContractDigest: initData.kernelAbiContractDigest,
+        });
     if (artifactFailures.length > 0) {
       throw new Error(
         `pid=${pid}: refusing unsafe program artifact before execution: ` +
@@ -3269,7 +3271,8 @@ export async function centralizedWorkerMain(
             `does not match linked frames ${linkedFrameFormat.ptrWidth}`,
         );
       }
-      const mainTemplateId = await computeForkModuleTemplateId(programBytes);
+      const mainTemplateId = initData.programTemplateId
+        ?? await computeForkModuleTemplateId(programBytes);
       const forkContinuation = new LinkedForkContinuation(
         memory,
         linkedFrameFormat,
@@ -5442,7 +5445,8 @@ export async function centralizedThreadWorkerMain(
         )
       : null;
     const threadTemplateId = hasForkInstrumentation
-      ? await computeForkModuleTemplateId(initData.programBytes)
+      ? initData.programTemplateId
+        ?? await computeForkModuleTemplateId(initData.programBytes)
       : null;
     const newThreadModuleStateArena = (): ForkModuleStateArena =>
       new ForkModuleStateArena(

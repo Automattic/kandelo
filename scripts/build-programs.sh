@@ -522,8 +522,9 @@ if ls "$REPO_ROOT"/programs/utf8proc_*.c >/dev/null 2>&1; then
     stage_sysroot_file "$UTF8PROC_PREFIX/include/utf8proc.h" "$SYSROOT/include/utf8proc.h"
 fi
 
-# Resolve the rest of the font stack (fcft → fontconfig + freetype, plus
-# their libxml2/zlib link deps) when the fontstack smoke is present. fcft
+# Resolve the rest of the font stack (fcft → fontconfig + freetype and
+# fcft's harfbuzz + utf8proc text shaping, plus their libxml2/zlib link
+# deps) when the fontstack smoke is present. fcft
 # and fontconfig headers keep their subdirs; freetype is include-path-only
 # via fcft, so only its archive is copied.
 if ls "$REPO_ROOT"/programs/fontstack_*.c >/dev/null 2>&1; then
@@ -533,11 +534,13 @@ if ls "$REPO_ROOT"/programs/fontstack_*.c >/dev/null 2>&1; then
     # through GNU libiconv). It is linked from its resolved prefix rather
     # than staged: a libiconv in the sysroot would shadow libc's iconv for
     # every other program.
-    for pkg in fcft fontconfig freetype libxml2 libiconv zlib; do
+    for pkg in fcft fontconfig freetype harfbuzz utf8proc libxml2 libiconv zlib; do
         (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve "$pkg" >/dev/null)
     done
     LIBICONV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libiconv)"
     FCFT_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path fcft)"
+    HARFBUZZ_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path harfbuzz)"
+    UTF8PROC_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path utf8proc)"
     FONTCONFIG_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path fontconfig)"
     FREETYPE_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path freetype)"
     LIBXML2_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libxml2)"
@@ -545,6 +548,8 @@ if ls "$REPO_ROOT"/programs/fontstack_*.c >/dev/null 2>&1; then
 
     stage_sysroot_tree "$FCFT_PREFIX/include/fcft"              "$SYSROOT/include/fcft"
     stage_sysroot_file "$FCFT_PREFIX/lib/libfcft.a"             "$SYSROOT/lib/libfcft.a"
+    stage_sysroot_file "$HARFBUZZ_PREFIX/lib/libharfbuzz.a"     "$SYSROOT/lib/libharfbuzz.a"
+    stage_sysroot_file "$UTF8PROC_PREFIX/lib/libutf8proc.a"     "$SYSROOT/lib/libutf8proc.a"
     stage_sysroot_file "$FONTCONFIG_PREFIX/lib/libfontconfig.a" "$SYSROOT/lib/libfontconfig.a"
     stage_sysroot_file "$FREETYPE_PREFIX/lib/libfreetype.a"     "$SYSROOT/lib/libfreetype.a"
     stage_sysroot_file "$LIBXML2_PREFIX/lib/libxml2.a"          "$SYSROOT/lib/libxml2.a"
@@ -603,6 +608,7 @@ if ls "$REPO_ROOT"/programs/gtk3_*.c >/dev/null 2>&1; then
     GTK3_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path gtk3)"
     ATK_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path atk)"
     GDK_PIXBUF_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path gdk-pixbuf)"
+    LIBJPEG_TURBO_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libjpeg-turbo)"
     LIBEPOXY_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libepoxy)"
     CAIRO_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path cairo)"
     LIBWL_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libwayland)"
@@ -611,6 +617,7 @@ if ls "$REPO_ROOT"/programs/gtk3_*.c >/dev/null 2>&1; then
     stage_sysroot_file "$GTK3_PREFIX/lib/libgdk-3.a"                "$SYSROOT/lib/libgdk-3.a"
     stage_sysroot_file "$ATK_PREFIX/lib/libatk-1.0.a"               "$SYSROOT/lib/libatk-1.0.a"
     stage_sysroot_file "$GDK_PIXBUF_PREFIX/lib/libgdk_pixbuf-2.0.a" "$SYSROOT/lib/libgdk_pixbuf-2.0.a"
+    stage_sysroot_file "$LIBJPEG_TURBO_PREFIX/lib/libjpeg.a"        "$SYSROOT/lib/libjpeg.a"
     stage_sysroot_file "$LIBEPOXY_PREFIX/lib/libepoxy.a"            "$SYSROOT/lib/libepoxy.a"
     stage_sysroot_file "$CAIRO_PREFIX/lib/libcairo-gobject.a"       "$SYSROOT/lib/libcairo-gobject.a"
     stage_sysroot_file "$LIBWL_PREFIX/lib/libwayland-cursor.a"      "$SYSROOT/lib/libwayland-cursor.a"
@@ -872,6 +879,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libfreetype.a" \
                 "$SYSROOT/lib/libxml2.a" \
                 "$LIBICONV_PREFIX/lib/libiconv.a" \
+                "$SYSROOT/lib/libjpeg.a" \
                 "$SYSROOT/lib/libpng.a" \
                 "$SYSROOT/lib/libz.a" \
                 "$SYSROOT/lib/libgbm.a" \
@@ -886,12 +894,16 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # freetype/fontconfig/fcft/pixman stack (PR19).
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libfcft.a" \
+                "$SYSROOT/lib/libharfbuzz.a" \
+                "$SYSROOT/lib/libutf8proc.a" \
                 "$SYSROOT/lib/libfontconfig.a" \
                 "$SYSROOT/lib/libfreetype.a" \
                 "$SYSROOT/lib/libxml2.a" \
                 "$LIBICONV_PREFIX/lib/libiconv.a" \
                 "$SYSROOT/lib/libpixman-1.a" \
-                "$SYSROOT/lib/libz.a"
+                "$SYSROOT/lib/libz.a" \
+                "$LIBCXX_PREFIX_32/lib/libc++.a" \
+                "$LIBCXX_PREFIX_32/lib/libc++abi.a"
             ;;
         libevdev_smoke.c)
             # evdev capability probe + event decode against the libevdev port.
