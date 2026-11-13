@@ -152,8 +152,12 @@ describe("dev lazy-asset route", () => {
         config: { base: "/" },
         middlewares: { use: (handler: typeof middleware) => { middleware = handler; } },
       });
+      // Stands in for the SourceOnly store, which answers its pinned path
+      // with an immutable response.
       const server = createServer((req, res) => middleware(req, res, () => {
         res.statusCode = 418;
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        res.setHeader("X-Pinned-Path", req.url ?? "");
         res.end("next");
       }));
       return new Promise<{ url: string; close: () => void }>((resolve) => {
@@ -189,8 +193,14 @@ describe("dev lazy-asset route", () => {
       const head = await fetch(`${url}/@kandelo-lazy/assets/programs/wasm32/sfwbar/kandelo-sfwbar`, { method: "HEAD" });
       expect(head.headers.get("content-length")).toBe(String(script.length));
 
-      // A pinned SourceOnly path is left to the store's middleware.
-      expect((await fetch(`${url}/@kandelo-lazy/assets/programs/wasm32/pinned.wasm`)).status).toBe(418);
+      expect(shell.headers.get("cache-control")).toBe("no-store");
+
+      // A pinned SourceOnly path is left to the store's middleware, but the
+      // lazy URL is not content-addressed, so its answer is never cached.
+      const pinned = await fetch(`${url}/@kandelo-lazy/assets/programs/wasm32/pinned.wasm`);
+      expect(pinned.status).toBe(418);
+      expect(pinned.headers.get("x-pinned-path")).toBe("/@source-only/abc/pinned.wasm");
+      expect(pinned.headers.get("cache-control")).toBe("no-store");
       expect((await fetch(`${url}/@kandelo-lazy/assets/programs/wasm32/missing.wasm`)).status).toBe(404);
       const post = await fetch(`${url}/@kandelo-lazy/assets/programs/wasm32/sfwbar/kandelo-sfwbar`, { method: "POST" });
       expect(post.status).toBe(405);
