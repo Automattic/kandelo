@@ -1,0 +1,132 @@
+{
+  "schema": 1,
+  "date": "2026-11-09",
+  "planningWorkspaceBase": "a3490ca0f48d7c249592925cb7b4ac1ab74b9c2a",
+  "frozenWorkspace": "/Users/brandon/conductor/workspaces/kandelo/davao",
+  "frozenHead": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+  "auditInputs": [
+    {
+      "path": "packages/registry/node-compat/target.json",
+      "sha256": "89102b1877ac810caf73b3e1fa2fe1e165434286528fc409a5fd63549e18a4d7"
+    },
+    {
+      "path": "third_party/node-core/sources.json",
+      "sha256": "45e7d033cadfb857f9c09df67317e1ed6d89f2b422db366649071f4c3bc896cc"
+    },
+    {
+      "path": "tests/nodejs/core-plan.json",
+      "sha256": "5eefcc31526a267a0171eb9b8890c68a54aac3e6210e688f7e78dff93800c152"
+    },
+    {
+      "path": "tests/nodejs/audit/audit-completion.json",
+      "sha256": "cdb7d388836ae8a9b444bea1e8846b2b954131b8aa3edfc129436fc69eb6de71"
+    },
+    {
+      "path": "tests/nodejs/audit/audit-report.md",
+      "sha256": "e226ac3f46a5bf9b8f19d73d26ba03eaa3f740b016124d5279a11f3a45937325"
+    },
+    {
+      "path": "tests/nodejs/audit/target-pins.md",
+      "sha256": "b0c9bf36c02ca4a9fa68601de58971908610fa7aaeae046ec84477269a8078de"
+    },
+    {
+      "path": "tests/nodejs/audit/module-reviews.json",
+      "sha256": "7cd2cbb05083067ee238804648f92a115733516365516dee5fe38a874a6880b8"
+    },
+    {
+      "path": "tests/nodejs/audit/existing-evidence.json",
+      "sha256": "9dd7c4e8478bf501d6df0cb1265099b7d49a823e1ca04016e382929c0d39dcc3"
+    },
+    {
+      "path": "tests/nodejs/audit/historical-evidence-index.json",
+      "sha256": "d32a5f2783abd8b70ba45444f0999fc51baffad0fff5dbf9aada5e77860b56a1"
+    },
+    {
+      "path": ".context/node-core-freeze-20261108T220604Z/manifest.json",
+      "sha256": "b5addc6060cf090c5159e03bb2b6e047cddbedb9f00e95f4a5f56bf3bfa7ef61"
+    },
+    {
+      "path": "tests/nodejs/audit/values-contracts.md",
+      "sha256": "accb7225fa336e74d789ecfc1defe666edadb6661bc9fa038c1763143f27c334"
+    },
+    {
+      "path": "tests/nodejs/audit/async.md",
+      "sha256": "30022b48ed8591f15f0d38d77b2f1161a7fc165076e7a73363a92930a816df72"
+    },
+    {
+      "path": "tests/nodejs/audit/streams-contracts.md",
+      "sha256": "a25643b7194a335edf67d4ebf0f2a8bbe7d222c02f0375e15dff4f28b1f9a887"
+    },
+    {
+      "path": "tests/nodejs/audit/filesystem-contracts.md",
+      "sha256": "4f7102e2c4abc17521c8fd06a8cfc0ae0abc676b2e4946d57da898fbc7b3a93c"
+    },
+    {
+      "path": "tests/nodejs/audit/process-contracts.md",
+      "sha256": "06a1e78aa49a7120d435c737f1bf87b3d3ab3a98f17f83bad5b4d4255618fe29"
+    },
+    {
+      "path": "tests/nodejs/audit/network-contracts.md",
+      "sha256": "5d7e77dec63a36c51eb590e3f301877ca7f3831ac2a91e6d10d9ac306ce49c79"
+    },
+    {
+      "path": "tests/nodejs/audit/http-contracts.md",
+      "sha256": "daf944ac74a53a205438448eb179f1686d6eef81ee9feada519e033e1d1f96bf"
+    },
+    {
+      "path": "tests/nodejs/audit/secure-network-contracts.md",
+      "sha256": "bae703c2e8c7a8ec933eb0f6739bc1912e75edb5df185dbe426162fb07f45aa8"
+    },
+    {
+      "path": "tests/nodejs/audit/crypto-contracts.md",
+      "sha256": "de319bc4da9f82229e7627e3293d854c68d1bcd4e7c1ab32f585aac588dc7d3e"
+    },
+    {
+      "path": "tests/nodejs/audit/web-contracts.md",
+      "sha256": "733d889cdeaf94d6f6c38aaef9765f57727cf2ccd178772f8719b065397fda33"
+    },
+    {
+      "path": "tests/nodejs/audit/loading-contracts.md",
+      "sha256": "ca0c92a99b1e56b92dbded52e75bd68e8f0005e45a2f0ba03d4b8390f7c0b562"
+    },
+    {
+      "path": "tests/nodejs/audit/terminal.md",
+      "sha256": "b1eea9bd9616fa86cd318352f8a5433acd4fdee1baabf2de069e3739d3d16f11"
+    },
+    {
+      "path": "tests/nodejs/audit/worker-contracts.md",
+      "sha256": "7df16ec7d2cd734c34066f19f746d0df07ff1a806401235856cf7c8a332a9e68"
+    },
+    {
+      "path": "tests/nodejs/audit/compression-contracts.md",
+      "sha256": "a90a37ce4729beb074c729cea33e6c2c851d8a828d5d8a2a453e948312cc786b"
+    },
+    {
+      "path": "tests/nodejs/audit/observability.md",
+      "sha256": "7310487397f56d8c3e676dc821e45fa40f917c68b348d36209583e59a32a67ac"
+    },
+    {
+      "path": "tests/nodejs/audit/engine-contracts.md",
+      "sha256": "e259def41a0e23870a437718b0e19a5467f8e8023b9233b9018f9cfeca3b4849"
+    },
+    {
+      "path": "tests/nodejs/audit/testing-public-contracts.md",
+      "sha256": "c3323e52816f690ae9497ce36a3fcf49209f6ad3ea1bd13ff19886b1f344f363"
+    },
+    {
+      "path": "tests/nodejs/audit/native-integration.md",
+      "sha256": "450545d4d2def928c49994e7fc7dd2bb9a323a1eaa34e0ad408f84933cfe3a4c"
+    },
+    {
+      "path": "tests/nodejs/audit/documentation-contracts.md",
+      "sha256": "ac1773c72b575ffe137c64407ac53ab333b8951d77050c4d35242abbf6abad9e"
+    }
+  ],
+  "bunPrimaryCommit": "a9f5d3c115b3d7a1ade2d97ea2aa4b164318de0e",
+  "bunBackups": {
+    "originalStash": "7020918631b4696a27af95a51c9aed9a80b8edb9",
+    "stableRef": "refs/preservation/bun-auto-unpacking-20261108",
+    "manifest": "../../../.context/bun-auto-unpacking-preservation/manifest.json"
+  },
+  "noTargetCodeExecuted": true
+}
