@@ -1,0 +1,72 @@
+import {errorPolicyCases,errorPolicyFixtureFiles} from './error-policy-controls';
+import {nativeTemplateCases} from './native-template-controls';
+import {nativeStackCases} from './native-stack-controls';
+import {nativeMessageCases} from './native-message-controls';
+import {nativeIsolateCases,nativeIsolateFixtureFiles} from './native-isolate-controls';
+import {constructionIdentityCases} from './construction-identity-controls';
+import {constructorNameCases,constructorNameFixtureFiles} from './constructor-name-engine-controls';
+import {handleOwnerCases} from './handle-owner-controls';
+import {templateInheritanceCases} from './template-inheritance-controls';
+import {internalFieldCases} from './internal-field-controls';
+import {nativeInternalsCases} from './native-internals-controls';
+import {nativeStateCases} from './native-state-controls';
+import {persistentHandleCases} from './persistent-handle-controls';
+import {scopedCatchCases} from './scoped-catch-controls';
+import {readFileSync} from 'node:fs';
+import {asyncResourcePrimitiveCases} from './async-resource-primitives-controls';
+import {diagnosticsCases,verifyDiagnosticsResult} from './diagnostics-controls';
+import {bufferCases,verifyBufferResult} from './buffer-controls';
+import {aliasedCases,verifyAliasedResult} from './aliased-controls';
+import {environmentCases,verifyEnvironmentResult} from './environment-controls';
+export const nativeOwnerFixture='tests/nodejs/upstream/native-owner-engine-controls.js';
+export const nativeOwnerSourceFiles=[...nativeIsolateFixtureFiles,'tests/nodejs/upstream/native-internals-controls.ts','tests/nodejs/upstream/native-state-controls.ts','tests/nodejs/upstream/native-message-controls.ts','tests/nodejs/upstream/native-stack-controls.ts','tests/nodejs/upstream/native-template-controls.ts',...errorPolicyFixtureFiles,'tests/nodejs/upstream/persistent-handle-controls.ts','tests/nodejs/upstream/scoped-catch-controls.ts','tests/nodejs/upstream/async-resource-primitives-controls.ts',nativeOwnerFixture,'tests/nodejs/upstream/native-owner-controls.ts',
+ 'tests/nodejs/upstream/diagnostics-controls.ts','tests/nodejs/upstream/diagnostics-engine-controls.js','tests/nodejs/upstream/diagnostics-shared-controls.js','tests/nodejs/upstream/diagnostics-native-reference.json',
+ 'tests/nodejs/upstream/buffer-controls.ts','tests/nodejs/upstream/buffer-engine-controls.js','tests/nodejs/upstream/buffer-shared-controls.js','tests/nodejs/upstream/buffer-native-reference.json',
+ 'tests/nodejs/upstream/aliased-controls.ts','tests/nodejs/upstream/aliased-engine-controls.js',
+ 'tests/nodejs/upstream/environment-controls.ts','tests/nodejs/upstream/environment-engine-controls.js'];
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/construction-identity-controls.ts');
+nativeOwnerSourceFiles.push(...constructorNameFixtureFiles);
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/handle-owner-controls.ts');
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/template-inheritance-controls.ts');
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/internal-field-controls.ts');
+const source=readFileSync(nativeOwnerFixture,'utf8');
+const setup=`const api=__kandeloUpstreamTest;api.initializeContext();const realm=api.initializeRealm();const op=(name,...args)=>api.nativeOwners(name,...args);`;
+export const nativeOwnerCases=[
+ {name:'native-constructor-callback-info-reads-real-call-state-across-reflect-subclass-and-reentry',source:`const api=__kandeloUpstreamTest;api.initializeContext();api.initializeRealm();function assert(value){if(!value)throw Error('native call state')}const factory=api.nativeOwners('constructCallFactory');for(const value of [factory(),factory.call({}),Reflect.apply(factory,{},[])])assert(value.constructCall===false&&value.after===false);class Child extends factory{}for(const value of [new factory(),new Child(),Reflect.construct(factory,[],class Alternate{})])assert(value.constructCall===true&&value.after===true);let nested=false,seen=[];const reentry=api.nativeOwners('constructCallFactory',value=>{seen.push(value);if(value&&!nested){nested=true;const ordinary=reentry();assert(ordinary.constructCall===false&&ordinary.after===false);gc(undefined,'shrinking');nested=false}});const result=new reentry();assert(result.constructCall===true&&result.after===true&&JSON.stringify(seen)==='[true,false]');const marker={same:true},throwing=api.nativeOwners('constructCallFactory',()=>{throw marker});let error;try{new throwing()}catch(caught){error=caught}assert(error===marker);print('CONSTRUCT_CALL_FRAME_OK');`,code:0,stdout:'CONSTRUCT_CALL_FRAME_OK'},
+ {name:'original-signal-handler-map-is-empty-before-real-node-signal-producers',source:`const api=__kandeloUpstreamTest;api.initializeContext();api.initializeRealm();for(const signum of [0,1,2,15,31,127])if(api.nativeOwners('signalHasHandler',signum)!==false)throw Error('unexpected original signal handler');print('SIGNAL_MAP_INITIAL_EMPTY');`,code:0,stdout:'SIGNAL_MAP_INITIAL_EMPTY'},
+ ...internalFieldCases,
+ ...templateInheritanceCases,
+ ...handleOwnerCases,
+ ...constructorNameCases,
+ ...constructionIdentityCases,
+ ...nativeIsolateCases,
+ ...nativeInternalsCases,
+ ...nativeStateCases,
+ ...nativeMessageCases,
+ ...nativeStackCases,
+ ...nativeTemplateCases,
+ ...persistentHandleCases,
+ ...errorPolicyCases,
+ ...scopedCatchCases,
+ ...asyncResourcePrimitiveCases,
+ {name:'canonical-native-ownership-gc-reentry-and-real-uv-close',source,code:0},
+ {name:'private-probe-explicitly-rejects-process-methods',source:setup+`let error;try{realm.internalBinding('process_methods')}catch(caught){error=caught}if(!error||!error.message.includes('private native-owner diagnostic build'))throw Error('missing diagnostic boundary');print('OWNER_DIAGNOSTIC_ONLY');`,code:0,stdout:'OWNER_DIAGNOSTIC_ONLY'},
+ {name:'native-destruction-callback-job-is-drained',source:setup+`const object=op('create'),ref=op('hold',object);op('onDestroy',object,()=>Promise.resolve().then(()=>print('OWNER_JOB_DONE')));op('detach',object);op('release',ref);`,code:0,stdout:'OWNER_JOB_DONE'},
+ // No private poll call: the real engine loop must run the uv close callback.
+ // Otherwise native retirement hits the probe destructor's !opened_ invariant.
+ {name:'real-engine-loop-drains-native-close-before-retirement',source:setup+`const object=op('create',true);op('close',object);print('OWNER_CLOSE_PENDING');`,code:0,stdout:'OWNER_CLOSE_PENDING'},
+ {name:'original-diagnostics-remains-coherent-with-canonical-native-cells',source:setup+`const dc=realm.require('diagnostics_channel'),name='owner-regression';api.diagnosticsNative('get',name);let called=0;const callback=()=>called++;dc.channel(name).subscribe(callback);gc();api.diagnosticsNative('publish',name,{});dc.channel(name).unsubscribe(callback);if(called!==1)throw Error('native diagnostics identity/lifetime');print('OWNER_DIAGNOSTICS_OK');`,code:0,stdout:'OWNER_DIAGNOSTICS_OK'},
+ // Select the existing complete positive fixtures explicitly. Startup drivers
+ // remain separate because this private profile deliberately rejects startup.
+ {...diagnosticsCases[0],validate:(result:NativeOwnerResult)=>verifyDiagnosticsResult(diagnosticsCases[0],result)},
+ {...bufferCases[0],validate:(result:NativeOwnerResult)=>verifyBufferResult(bufferCases[0],result)},
+ {...aliasedCases[0],validate:(result:NativeOwnerResult)=>verifyAliasedResult(aliasedCases[0],result)},
+ {...environmentCases[0],validate:(result:NativeOwnerResult)=>verifyEnvironmentResult(environmentCases[0],result)},
+];
+type NativeOwnerResult={exitCode:number;stdout:string;stderr:string;hostDiagnostics:unknown[]};
+export function verifyNativeOwnerResult(control:typeof nativeOwnerCases[number],result:NativeOwnerResult){
+ if('validate'in control)return control.validate(result);
+ if(result.exitCode!==control.code||result.stderr!==('stderr'in control?control.stderr:'')||result.hostDiagnostics.length)throw Error(JSON.stringify(result));
+ if('stdout'in control){if(result.stdout.trim()!==control.stdout)throw Error(result.stdout);return{status:'pass'}}
+ const detail=JSON.parse(result.stdout);if(detail.failures!==0||detail.diagnosticOnly!==true||detail.startupAccepted!==false||detail.results.length!==12||detail.results.some((r:{status:string})=>r.status!=='pass'))throw Error(result.stdout);return detail;
+}

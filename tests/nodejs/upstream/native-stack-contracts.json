@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "scope": "Startup-required original debug utilities and native synchronous JavaScript stack prerequisites; full diagnostics/reporting and startup remain incomplete",
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "packageRevision": 64,
+  "owningLayers": [
+    "SpiderMonkey SavedFrame capture/identity",
+    "SpiderMonkey embedding native Data handles",
+    "complete original Node debug_utils.cc and node_errors.cc",
+    "Kandelo libc/libuv for diagnostic I/O and handle inspection"
+  ],
+  "originalConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/src/debug_utils.cc",
+      "bytes": 16324,
+      "sha256": "9f2904508a8443beb454dc789a07d60afb2f2ec7f9b2f56bc651d9c66edb0ea3"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/debug_utils.h",
+      "bytes": 7892,
+      "sha256": "040b8d03509d8908cb5521f038ba9d95dab01f022b06070401e548d731596cb5"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/debug_utils-inl.h",
+      "bytes": 9757,
+      "sha256": "98e67d4365e66ac0345cba12f238905b2c349c76d1fe918ce975bb542f722aad"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_errors.cc",
+      "bytes": 45641,
+      "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_errors.h",
+      "bytes": 23299,
+      "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8"
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "GetCurrentStackTrace/PrintStackTrace/DumpJavaScriptBacktrace",
+      "contract": "Compile complete original source units. Preserve original OOM/context/reentry guards and original formatting. Capture actual VM SavedFrames through typed non-Value Data roots and original escaping scope."
+    },
+    {
+      "name": "StackTrace.CurrentStackTrace/GetFrameCount/GetFrame",
+      "contract": "Capture synchronous live VM frames, respect requested upper bound, skip self-hosted frames, stop at actual asynchronous ancestry. Capture filtering can yield fewer frames than requested; native/builtin frame parity is not established."
+    },
+    {
+      "name": "StackFrame names/positions/script identity/IsEval",
+      "contract": "Read actual SavedFrame function display name, source, line, one-origin UTF16 column and compiler source ID. SavedFrame capture records actual Script/Eval/Function/Wasm compiler provenance; cache identity includes source ID and provenance, without filename heuristics."
+    },
+    {
+      "name": "FWrite/native symbols/loaded libraries/libuv diagnostics",
+      "contract": "Whole original implementation owns formatting/output/platform selection. Native symbol fallback on this musl/Wasm target is upstream unavailable execinfo behavior, not a synthesized native stack. No host stack or loaded-library list is substituted."
+    }
+  ],
+  "ownership": {
+    "stack": "VM captures own SavedFrame parent chains; scoped Data roots retain actual frame/array objects; original EscapableHandleScope preserves concrete StackTrace roots. No filename or frame metadata fabrication.",
+    "sourceProvenance": "New SavedFrame slot initialized during live capture and copied for async adoption; reconstructed/structured-cloned frames lacking captured provenance remain Unknown and IsEval fails explicitly. Structured clone format is unchanged."
+  },
+  "implementationGaps": [
+    "Message/source-line/origin/report/fatal interfaces remain partial and normal engine is still unlinked.",
+    "Wasm position conversion explicitly unsupported; nested guest Wasm remains deferred.",
+    "Reconstructed/structured-cloned frame provenance is unavailable; no inferred eval answer.",
+    "Native symbolication, builtin frame parity, complete async/security/OOM/GC/lifetime behavior are not conformance-proven.",
+    "Existing Buffer ownership bridge still requires complete node_internals.h integration; overall source policy is not satisfied.",
+    "Environment-aware credentials::SafeGetenv is declared for the complete original diagnostics consumer and remains unimplemented; the existing two-argument guest secure_getenv adapter does not satisfy that contract."
+  ],
+  "validationObligations": [
+    "Compile private and normal profiles with exact stable inputs and retain all failures.",
+    "Execute new stack and template controls plus prior private regressions on Node, Chromium, Firefox and WebKit with identical identified private artifact/kernel.",
+    "Compare native reference position/eval behavior without copying V8 internals or assuming Error.CallSite observations prove every native StackTrace contract.",
+    "Preserve separate genuine startup/CJS/ESM milestones and complete backend catalog/review gate."
+  ],
+  "currentEvidence": "native-stack-engine-check.json: private original stack/template/ownership controls, 40 drivers per host on four hosts, normal profile 48 unresolved symbols; no startup",
+  "currentRuntimeValidated": true,
+  "startupAccepted": false,
+  "completeNativeInterfaceConformance": false,
+  "sourcePolicySatisfied": false
+}

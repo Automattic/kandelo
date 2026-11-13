@@ -1,0 +1,157 @@
+--- a/js/src/vm/SavedFrame.h
++++ b/js/src/vm/SavedFrame.h
+@@ -49,6 +49,10 @@
+   // Convenient getters for SavedFrame's reserved slots for use from C++.
+   JSAtom* getSource();
+   uint32_t getSourceId();
++  // Capture compiler provenance while the script is live. Reconstructed frames
++  // without this metadata remain explicitly Unknown.
++  enum class KandeloSourceKind : uint32_t { Unknown, Script, Eval, Function, Wasm };
++  KandeloSourceKind getKandeloSourceKind();
+   // Line number (1-origin).
+   uint32_t getLine();
+   // Column number in UTF-16 code units.
+@@ -123,6 +127,7 @@
+   void initFromLookup(JSContext* cx, Handle<Lookup> lookup);
+   void initSource(JSAtom* source);
+   void initSourceId(uint32_t id);
++  void initKandeloSourceKind(KandeloSourceKind);
+   void initLine(uint32_t line);
+   void initColumn(JS::TaggedColumnNumberOneOrigin column);
+   void initFunctionDisplayName(JSAtom* maybeName);
+@@ -136,6 +141,7 @@
+     // The reserved slots in the SavedFrame class.
+     JSSLOT_SOURCE,
+     JSSLOT_SOURCEID,
++    JSSLOT_KANDELO_SOURCE_KIND,
+     JSSLOT_LINE,
+     JSSLOT_COLUMN,
+     JSSLOT_FUNCTIONDISPLAYNAME,
+--- a/js/src/vm/SavedStacks.cpp
++++ b/js/src/vm/SavedStacks.cpp
+@@ -178,9 +178,11 @@
+          JSAtom* asyncCause, SavedFrame* parent, JSPrincipals* principals,
+          bool mutedErrors,
+          const Maybe<LiveSavedFrameCache::FramePtr>& framePtr = Nothing(),
+-         jsbytecode* pc = nullptr, Activation* activation = nullptr)
++         jsbytecode* pc = nullptr, Activation* activation = nullptr,
++         KandeloSourceKind sourceKind = KandeloSourceKind::Unknown)
+       : source(source),
+         sourceId(sourceId),
++        sourceKind(sourceKind),
+         line(line),
+         column(column),
+         functionDisplayName(functionDisplayName),
+@@ -201,6 +203,7 @@
+   explicit Lookup(SavedFrame& savedFrame)
+       : source(savedFrame.getSource()),
+         sourceId(savedFrame.getSourceId()),
++        sourceKind(savedFrame.getKandeloSourceKind()),
+         line(savedFrame.getLine()),
+         column(savedFrame.getColumn()),
+         functionDisplayName(savedFrame.getFunctionDisplayName()),
+@@ -216,6 +219,7 @@
+
+   JSAtom* source;
+   uint32_t sourceId;
++  KandeloSourceKind sourceKind;
+
+   // Line number (1-origin).
+   uint32_t line;
+@@ -256,6 +260,7 @@
+  public:
+   JSAtom* source() { return value().source; }
+   uint32_t sourceId() { return value().sourceId; }
++  SavedFrame::KandeloSourceKind sourceKind() { return value().sourceKind; }
+   uint32_t line() { return value().line; }
+   JS::TaggedColumnNumberOneOrigin column() { return value().column; }
+   JSAtom* functionDisplayName() { return value().functionDisplayName; }
+@@ -314,7 +319,8 @@
+   // Assume that we can take line mod 2^32 without losing anything of
+   // interest.  If that assumption changes, we'll just need to start with 0
+   // and add another overload of AddToHash with more arguments.
+-  return AddToHash(lookup.line, lookup.column.rawValue(), lookup.source,
++  return AddToHash(lookup.sourceId, uint32_t(lookup.sourceKind),
++                   lookup.line, lookup.column.rawValue(), lookup.source,
+                    lookup.functionDisplayName, lookup.asyncCause,
+                    lookup.mutedErrors, parentHash,
+                    JSPrincipalsPtrHasher::hash(lookup.principals));
+@@ -323,6 +329,12 @@
+ /* static */
+ bool SavedFrame::HashPolicy::match(SavedFrame* existing, const Lookup& lookup) {
+   MOZ_ASSERT(existing);
++
++  // Distinct compilations and provenance must retain their actual identity.
++  if (existing->getSourceId() != lookup.sourceId ||
++      existing->getKandeloSourceKind() != lookup.sourceKind) {
++    return false;
++  }
+
+   if (existing->getLine() != lookup.line) {
+     return false;
+@@ -448,6 +460,12 @@
+   return &s->asAtom();
+ }
+
++SavedFrame::KandeloSourceKind SavedFrame::getKandeloSourceKind() {
++  auto value = getReservedSlot(JSSLOT_KANDELO_SOURCE_KIND);
++  return value.isUndefined() ? KandeloSourceKind::Unknown
++                             : KandeloSourceKind(value.toPrivateUint32());
++}
++
+ uint32_t SavedFrame::getSourceId() {
+   const Value& v = getReservedSlot(JSSLOT_SOURCEID);
+   return v.toPrivateUint32();
+@@ -509,6 +527,10 @@
+
+ void SavedFrame::initSourceId(uint32_t sourceId) {
+   initReservedSlot(JSSLOT_SOURCEID, PrivateUint32Value(sourceId));
++}
++
++void SavedFrame::initKandeloSourceKind(KandeloSourceKind kind) {
++  initReservedSlot(JSSLOT_KANDELO_SOURCE_KIND, PrivateUint32Value(uint32_t(kind)));
+ }
+
+ void SavedFrame::initLine(uint32_t line) {
+@@ -570,6 +592,7 @@
+
+   initSource(lookup.source());
+   initSourceId(lookup.sourceId());
++  initKandeloSourceKind(lookup.sourceKind());
+   initLine(lookup.line());
+   initColumn(lookup.column());
+   initFunctionDisplayName(lookup.functionDisplayName());
+@@ -1587,13 +1610,32 @@
+     // If we haven't yet seen the start, then don't add anything to the stack
+     // chain.
+     if (seenStartAt) {
++      auto sourceKind = SavedFrame::KandeloSourceKind::Script;
++      if (iter.isWasm()) {
++        sourceKind = SavedFrame::KandeloSourceKind::Wasm;
++      } else {
++        auto* script = iter.script();
++        auto* source = script->scriptSource();
++        if (script->isForEval()) sourceKind = SavedFrame::KandeloSourceKind::Eval;
++        if (source->hasIntroductionType()) {
++          const char* type = source->introductionType();
++          if (strcmp(type, "eval") == 0) {
++            sourceKind = SavedFrame::KandeloSourceKind::Eval;
++          } else if (strcmp(type, "Function") == 0 ||
++                     strcmp(type, "AsyncFunction") == 0 ||
++                     strcmp(type, "GeneratorFunction") == 0 ||
++                     strcmp(type, "AsyncGenerator") == 0) {
++            sourceKind = SavedFrame::KandeloSourceKind::Function;
++          }
++        }
++      }
+       if (!stackChain.emplaceBack(location.source(), location.sourceId(),
+                                   location.line(), location.column(),
+                                   displayAtom,
+                                   nullptr,  // asyncCause
+                                   nullptr,  // parent (not known yet)
+                                   principals, iter.mutedErrors(), framePtr,
+-                                  iter.pc(), &activation)) {
++                                  iter.pc(), &activation, sourceKind)) {
+         return false;
+       }
+     }

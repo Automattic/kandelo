@@ -1,0 +1,304 @@
+--- a/js/src/vm/NativeObject.cpp
++++ b/js/src/vm/NativeObject.cpp
+@@ -1285,7 +1285,8 @@
+ template <IsAddOrChange AddOrChange>
+ static MOZ_ALWAYS_INLINE bool AddOrChangeProperty(
+     JSContext* cx, Handle<NativeObject*> obj, HandleId id,
+-    Handle<PropertyDescriptor> desc, PropertyResult* existing = nullptr) {
++    Handle<PropertyDescriptor> desc, PropertyResult* existing = nullptr,
++    bool kandeloLazyData = false) {
+   desc.assertComplete();
+ 
+ #ifdef DEBUG
+@@ -1303,6 +1304,8 @@
+   // integer key with default property attributes and are either adding a new
+   // property or changing a dense element.
+   PropertyFlags flags = ComputePropertyFlags(desc);
++  MOZ_ASSERT_IF(kandeloLazyData, desc.isDataDescriptor());
++  flags.setFlag(PropertyFlag::KandeloLazyDataProperty, kandeloLazyData);
+   if (id.isInt() && flags == PropertyFlags::defaultDataPropFlags &&
+       (AddOrChange == IsAddOrChange::Add || existing->isDenseElement())) {
+     MOZ_ASSERT(!desc.isAccessorDescriptor());
+@@ -1392,7 +1395,7 @@
+     }
+   }
+ 
+-  if (desc.isDataDescriptor()) {
++  if (desc.isDataDescriptor() && !kandeloLazyData) {
+     return CallAddPropertyHook(cx, obj, id, desc.value());
+   }
+ 
+@@ -1453,6 +1456,9 @@
+ 
+ static bool GetCustomDataProperty(JSContext* cx, HandleObject obj, HandleId id,
+                                   MutableHandleValue vp);
++static bool GetKandeloLazyDataProperty(JSContext* cx, Handle<NativeObject*> obj,
++                                       HandleId id, PropertyInfo prop,
++                                       MutableHandleValue vp);
+ 
+ static bool GetExistingDataProperty(JSContext* cx, Handle<NativeObject*> obj,
+                                     HandleId id, const PropertyResult& prop,
+@@ -1472,6 +1478,9 @@
+     return true;
+   }
+ 
++  if (propInfo.isKandeloLazyDataProperty()) {
++    return GetKandeloLazyDataProperty(cx, obj, id, propInfo, vp);
++  }
+   MOZ_RELEASE_ASSERT(propInfo.isCustomDataProperty());
+   return GetCustomDataProperty(cx, obj, id, vp);
+ }
+@@ -1541,7 +1550,7 @@
+ 
+ bool js::NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
+                               HandleId id, Handle<PropertyDescriptor> desc_,
+-                              ObjectOpResult& result) {
++                              ObjectOpResult& result, bool kandeloLazyData) {
+   desc_.assertValid();
+ 
+   // Section numbers and step numbers below refer to ES2025, draft rev
+@@ -1556,6 +1565,7 @@
+     // 10.4.2.1 step 1. Redefining an array's length is very special.
+     auto arr = HandleObject(obj).as<ArrayObject>();
+     if (id == NameToId(cx->names().length)) {
++      if (kandeloLazyData) return result.fail(JSMSG_CANT_REDEFINE_PROP);
+       // 10.1.6.3 ValidateAndApplyPropertyDescriptor, step 5.c.
+       if (desc_.isAccessorDescriptor()) {
+         return result.fail(JSMSG_CANT_REDEFINE_PROP);
+@@ -1574,6 +1584,7 @@
+   } else if (obj->is<TypedArrayObject>()) {
+     // 10.4.5.3 step 1. Indexed properties of typed arrays are special.
+     if (mozilla::Maybe<uint64_t> index = ToTypedArrayIndex(id)) {
++      if (kandeloLazyData) return result.fail(JSMSG_CANT_REDEFINE_PROP);
+       auto tobj = HandleObject(obj).as<TypedArrayObject>();
+       return DefineTypedArrayElement(cx, tobj, index.value(), desc_, result);
+     }
+@@ -1619,6 +1630,18 @@
+   }
+   MOZ_ASSERT(!prop.isTypedArrayElement());
+ 
++  // ECMAScript descriptor operations observe the actual current data value.
++  // Assignment and integrity-level changes have separate native paths which
++  // can avoid this read. Re-lookup after arbitrary callback side effects.
++  if (prop.isNativeProperty() &&
++      prop.propertyInfo().isKandeloLazyDataProperty()) {
++    RootedValue value(cx);
++    if (!GetKandeloLazyDataProperty(cx, obj, id, prop.propertyInfo(), &value) ||
++        !NativeLookupOwnProperty<CanGC>(cx, obj, id, &prop)) {
++      return false;
++    }
++  }
++
+   // From this point, the step numbers refer to
+   // 10.1.6.3, ValidateAndApplyPropertyDescriptor.
+   // Step 1 is a redundant assertion.
+@@ -1644,7 +1667,8 @@
+     // Fill in missing desc fields with defaults.
+     CompletePropertyDescriptor(&desc);
+ 
+-    if (!AddOrChangeProperty<IsAddOrChange::Add>(cx, obj, id, desc)) {
++    if (!AddOrChangeProperty<IsAddOrChange::Add>(cx, obj, id, desc,
++                                                nullptr, kandeloLazyData)) {
+       return false;
+     }
+     return result.succeed();
+@@ -1796,12 +1820,87 @@
+   }
+   desc.assertComplete();
+ 
+-  if (!AddOrChangeProperty<IsAddOrChange::Change>(cx, obj, id, desc, &prop)) {
++  if (!AddOrChangeProperty<IsAddOrChange::Change>(
++          cx, obj, id, desc, &prop, kandeloLazyData)) {
+     return false;
+   }
+ 
+   // Step 7.
+   return result.succeed();
++}
++
++namespace {
++struct KandeloLazyCallback {
++  KandeloLazyDataGetter getter;
++  explicit KandeloLazyCallback(KandeloLazyDataGetter input) : getter(input) {}
++};
++class KandeloLazyRecord : public NativeObject {
++ public:
++  static const JSClass class_;
++  static void finalize(JS::GCContext*, JSObject* object) {
++    auto value = object->as<KandeloLazyRecord>().getReservedSlot(0);
++    if (!value.isUndefined()) {
++      js_delete(static_cast<KandeloLazyCallback*>(value.toPrivate()));
++    }
++  }
++};
++static const JSClassOps kandeloLazyOps = {
++    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
++    KandeloLazyRecord::finalize, nullptr, nullptr, nullptr};
++const JSClass KandeloLazyRecord::class_ = {
++    "KandeloLazyData", JSCLASS_HAS_RESERVED_SLOTS(2), &kandeloLazyOps};
++}  // namespace
++
++bool js::DefineKandeloLazyDataProperty(JSContext* cx, HandleObject target,
++                                      HandleId id, KandeloLazyDataGetter getter,
++                                      HandleValue data, unsigned attrs,
++                                      ObjectOpResult& result) {
++  cx->check(target, id, data);
++  if (!target->is<NativeObject>()) {
++    JS_ReportErrorASCII(cx, "Native lazy data properties require a native target");
++    return false;
++  }
++  auto callback = cx->make_unique<KandeloLazyCallback>(getter);
++  if (!callback) return false;
++  Rooted<KandeloLazyRecord*> record(
++      cx, NewObjectWithGivenProto<KandeloLazyRecord>(cx, nullptr));
++  if (!record) return false;
++  record->setReservedSlot(0, PrivateValue(callback.release()));
++  record->setReservedSlot(1, data);
++  RootedValue value(cx, ObjectValue(*record));
++  Rooted<PropertyDescriptor> desc(cx, PropertyDescriptor::Data(value, attrs));
++  return NativeDefineProperty(cx, target.as<NativeObject>(), id, desc, result, true);
++}
++
++static bool GetKandeloLazyDataProperty(JSContext* cx, Handle<NativeObject*> obj,
++                                       HandleId id, PropertyInfo prop,
++                                       MutableHandleValue value) {
++  MOZ_ASSERT(prop.isKandeloLazyDataProperty());
++  Rooted<KandeloLazyRecord*> record(
++      cx, &obj->getSlot(prop.slot()).toObject().as<KandeloLazyRecord>());
++  auto* callback = static_cast<KandeloLazyCallback*>(
++      record->getReservedSlot(0).toPrivate());
++  RootedValue data(cx, record->getReservedSlot(1));
++  if (!callback->getter(cx, obj, id, data, value)) return false;
++
++  // The callback may collect, throw, delete or redefine the property. Cache
++  // only into the exact still-live record; never resurrect a deleted property
++  // or overwrite a value assigned by reentrant script.
++  PropertyResult current;
++  if (!NativeLookupOwnPropertyNoResolve(cx, obj, id, &current)) return false;
++  if (current.isNativeProperty()) {
++    auto info = current.propertyInfo();
++    if (info.isKandeloLazyDataProperty() &&
++        obj->getSlot(info.slot()) == ObjectValue(*record)) {
++      auto flags = info.flags();
++      flags.clearFlag(PropertyFlag::KandeloLazyDataProperty);
++      uint32_t slot;
++      if (!NativeObject::changeProperty(cx, obj, id, flags, &slot)) return false;
++      Watchtower::watchPropertyValueChange<AllowGC::CanGC>(cx, obj, id, value, info);
++      obj->setSlot(slot, value);
++    }
++  }
++  return true;
+ }
+ 
+ bool js::NativeDefineDataProperty(JSContext* cx, Handle<NativeObject*> obj,
+@@ -2097,6 +2196,9 @@
+     return js::CallGetter(cx, receiver, getter, vp);
+   }
+ 
++  if (prop.isKandeloLazyDataProperty()) {
++    return GetKandeloLazyDataProperty(cx, obj, id, prop, vp);
++  }
+   MOZ_ASSERT(prop.isCustomDataProperty());
+ 
+   return GetCustomDataProperty(cx, obj, id, vp);
+@@ -2115,7 +2217,8 @@
+ 
+   vp.setUndefined();
+ 
+-  if (!prop.isCustomDataProperty() && !obj->hasGetter(prop)) {
++  if (!prop.isCustomDataProperty() && !prop.isKandeloLazyDataProperty() &&
++      !obj->hasGetter(prop)) {
+     return true;
+   }
+ 
+@@ -2418,6 +2521,14 @@
+     return result.succeed();
+   }
+ 
++  if (prop.isKandeloLazyDataProperty()) {
++    PropertyFlags flags = prop.flags();
++    flags.clearFlag(PropertyFlag::KandeloLazyDataProperty);
++    uint32_t slot;
++    if (!NativeObject::changeProperty(cx, obj, id, flags, &slot)) return false;
++    obj->setSlot(slot, v);
++    return result.succeed();
++  }
+   MOZ_ASSERT(prop.isCustomDataProperty());
+   MOZ_ASSERT(!obj->is<WithEnvironmentObject>());  // See bug 1128681.
+ 
+--- a/js/src/vm/NativeObject.h
++++ b/js/src/vm/NativeObject.h
+@@ -1776,7 +1776,18 @@
+ extern bool NativeDefineProperty(JSContext* cx, Handle<NativeObject*> obj,
+                                  HandleId id,
+                                  Handle<JS::PropertyDescriptor> desc,
+-                                 ObjectOpResult& result);
++                                 ObjectOpResult& result,
++                                 bool kandeloLazyData = false);
++
++// Native embedding callback for a lazy DATA property. The record and its data
++// are traced from the property's real slot; there is no JS getter Function.
++using KandeloLazyDataGetter = bool (*)(JSContext*, HandleObject, HandleId,
++                                       HandleValue, MutableHandleValue);
++extern bool DefineKandeloLazyDataProperty(JSContext* cx, HandleObject target,
++                                          HandleId id,
++                                          KandeloLazyDataGetter getter,
++                                          HandleValue data, unsigned attrs,
++                                          ObjectOpResult& result);
+ 
+ extern bool NativeDefineDataProperty(JSContext* cx, Handle<NativeObject*> obj,
+                                      HandleId id, HandleValue value,
+--- a/js/src/vm/PropertyInfo.h
++++ b/js/src/vm/PropertyInfo.h
+@@ -45,6 +45,10 @@
+   //
+   // This flag is deprecated (we don't want to add more uses).
+   CustomDataProperty = 1 << 4,
++
++  // A traced native callback record occupies the slot until the actual data
++  // value is materialized. Never expose the record as a normal slot read.
++  KandeloLazyDataProperty = 1 << 5,
+ };
+ 
+ class PropertyFlags : public EnumFlags<PropertyFlag> {
+@@ -66,13 +70,17 @@
+   // Note: this returns true only for plain data properties with a slot. Returns
+   // false for custom data properties. See CustomDataProperty flag.
+   bool isDataProperty() const {
+-    return !isAccessorProperty() && !isCustomDataProperty();
++    return !isAccessorProperty() && !isCustomDataProperty() &&
++           !isKandeloLazyDataProperty();
+   }
+   bool isAccessorProperty() const {
+     return hasFlag(PropertyFlag::AccessorProperty);
+   }
+   bool isCustomDataProperty() const {
+     return hasFlag(PropertyFlag::CustomDataProperty);
++  }
++  bool isKandeloLazyDataProperty() const {
++    return hasFlag(PropertyFlag::KandeloLazyDataProperty);
+   }
+ 
+   // Note: unlike isDataProperty, this returns true also for custom data
+@@ -134,6 +142,9 @@
+ 
+   bool isDataProperty() const { return flags().isDataProperty(); }
+   bool isCustomDataProperty() const { return flags().isCustomDataProperty(); }
++  bool isKandeloLazyDataProperty() const {
++    return flags().isKandeloLazyDataProperty();
++  }
+   bool isAccessorProperty() const { return flags().isAccessorProperty(); }
+   bool isDataDescriptor() const { return flags().isDataDescriptor(); }
+ 
+--- a/js/src/vm/PropMap.cpp
++++ b/js/src/vm/PropMap.cpp
+@@ -1075,6 +1075,9 @@
+       case PropertyFlag::AccessorProperty:
+         known("AccessorProperty");
+         break;
++      case PropertyFlag::KandeloLazyDataProperty:
++        known("KandeloLazyDataProperty");
++        break;
+       case PropertyFlag::CustomDataProperty:
+         known("UseWatchtowerTestingCallback");
+         break;

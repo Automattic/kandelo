@@ -1,0 +1,683 @@
+{
+  "rawReport": {
+    "path": ".context/node-types/engine-result.json",
+    "bytes": 169152,
+    "sha256": "3b91f6ff126f681833abd137ea0456af04afb3a7c1df05a8f7914f1d4ecee17d"
+  },
+  "report": {
+    "schema": 1,
+    "completedAt": "2026-11-11T10:13:36.253Z",
+    "scope": "Focused SpiderMonkey guest-engine types controls on the Node host; no upstream Node startup",
+    "host": {
+      "version": "v24.15.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    },
+    "program": {
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev31-wasm32-abi56-4bde274aa942a2f0b4a8f454f51e123bfbee02b8e0b1c094813effd4a791ecea/js.wasm",
+      "bytes": 51381152,
+      "sha256": "f4742a7600c70570aa44a8b8fd7524fba2d6ed3e9967683015d99ef2b9e87dd0"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "fixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/types-engine-controls.js",
+      "bytes": 5390,
+      "sha256": "2e3ea5e65a186ac9f7e0750ea14588b812e9e9cc41d13683b4faf22e760e1443"
+    },
+    "runner": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 19464,
+      "sha256": "9fd8761d012e40072ee49c72d6015a48cf62df057c7d9f13e9c6b3ebcbe2ecca"
+    },
+    "sharedFixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/types-shared-controls.js",
+      "bytes": 6465,
+      "sha256": "0ba4b83dd6ab77a2f91862b44019d2844c1114ed588f8950c74ed862c91c5d31"
+    },
+    "executedFixtureSha256": "b67cfd11b885e68f1b897a31b89d9fef01ea13dbc05aa8bc6cb6876a6ca3b95f",
+    "runs": [
+      {
+        "name": "ordinary-shell-does-not-expose-native-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "node-mode-refuses-native-test-controls",
+        "status": "pass",
+        "exitCode": 3,
+        "stdout": "",
+        "stderr": "Error: upstream test controls require JS-shell mode\n",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "types-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "{\"kind\":\"native-types-controls\",\"cases\":21,\"failures\":0,\"observations\":[{\"name\":\"all-native-method-attributes-and-call-signatures\",\"status\":\"pass\"},{\"name\":\"primitive-and-ordinary-values-have-no-native-object-tags\",\"status\":\"pass\"},{\"name\":\"boxed-primitives-use-real-internal-slots\",\"status\":\"pass\"},{\"name\":\"real-collections-iterators-and-buffers-are-distinguished\",\"status\":\"pass\"},{\"name\":\"native-error-tags-ignore-javascript-inheritance\",\"status\":\"pass\"},{\"name\":\"function-and-generator-flags-match-original-node\",\"status\":\"pass\"},{\"name\":\"mapped-and-unmapped-arguments-use-engine-tags\",\"status\":\"pass\"},{\"name\":\"builtin-prototypes-retain-their-actual-native-types\",\"status\":\"pass\"},{\"name\":\"scripted-and-revoked-proxies-do-not-unwrap-or-run-traps\",\"status\":\"pass\"},{\"name\":\"spoofed-tags-and-prototypes-do-not-invoke-user-code\",\"status\":\"pass\"},{\"name\":\"detached-buffer-and-modified-prototypes-preserve-native-identity\",\"status\":\"pass\"},{\"name\":\"module-namespace-is-genuine-and-is-not-a-scripted-proxy\",\"status\":\"pass\"},{\"name\":\"opaque-external-retains-real-native-pointer-through-gc\",\"status\":\"pass\"},{\"name\":\"native-binding-and-functions-remain-cached-through-moving-gc\",\"status\":\"pass\"},{\"name\":\"separate-realms-own-distinct-native-predicate-functions\",\"status\":\"pass\"},{\"name\":\"engine-wrappers-preserve-foreign-native-types-without-scripted-proxy-traps\",\"status\":\"pass\"},{\"name\":\"complete-original-types-module-uses-real-binding-and-intrinsic-view-getters\",\"status\":\"pass\"},{\"name\":\"opaque-pointer-readback-rejects-ordinary-and-scripted-proxy-values\",\"status\":\"pass\"},{\"name\":\"real-module-namespace-classification-survives-moving-gc\",\"status\":\"pass\"},{\"name\":\"native-predicate-inspection-ignores-poisoned-public-constructor-properties\",\"status\":\"pass\"},{\"name\":\"whole-original-bootstrap-passes-types-and-invalidates-failed-realm-functions\",\"status\":\"pass\"}],\"classificationMatrix\":[{\"name\":\"undefined\",\"matches\":[]},{\"name\":\"null\",\"matches\":[]},{\"name\":\"false\",\"matches\":[]},{\"name\":\"zero\",\"matches\":[]},{\"name\":\"nan\",\"matches\":[]},{\"name\":\"string\",\"matches\":[]},{\"name\":\"symbol\",\"matches\":[]},{\"name\":\"bigint\",\"matches\":[]},{\"name\":\"object\",\"matches\":[]},{\"name\":\"null-prototype\",\"matches\":[]},{\"name\":\"array\",\"matches\":[]},{\"name\":\"function\",\"matches\":[]},{\"name\":\"class\",\"matches\":[]},{\"name\":\"typed-array\",\"matches\":[]},{\"name\":\"data-view\",\"matches\":[]},{\"name\":\"string-iterator\",\"matches\":[]},{\"name\":\"array-iterator\",\"matches\":[]},{\"name\":\"number-object\",\"matches\":[\"isNumberObject\",\"isBoxedPrimitive\"]},{\"name\":\"boolean-object\",\"matches\":[\"isBooleanObject\",\"isBoxedPrimitive\"]},{\"name\":\"string-object\",\"matches\":[\"isStringObject\",\"isBoxedPrimitive\"]},{\"name\":\"bigint-object\",\"matches\":[\"isBigIntObject\",\"isBoxedPrimitive\"]},{\"name\":\"symbol-object\",\"matches\":[\"isSymbolObject\",\"isBoxedPrimitive\"]},{\"name\":\"map\",\"matches\":[\"isMap\"]},{\"name\":\"set\",\"matches\":[\"isSet\"]},{\"name\":\"weak-map\",\"matches\":[\"isWeakMap\"]},{\"name\":\"weak-set\",\"matches\":[\"isWeakSet\"]},{\"name\":\"map-iterator\",\"matches\":[\"isMapIterator\"]},{\"name\":\"set-iterator\",\"matches\":[\"isSetIterator\"]},{\"name\":\"date\",\"matches\":[\"isDate\"]},{\"name\":\"regexp\",\"matches\":[\"isRegExp\"]},{\"name\":\"promise\",\"matches\":[\"isPromise\"]},{\"name\":\"array-buffer\",\"matches\":[\"isArrayBuffer\",\"isAnyArrayBuffer\"]},{\"name\":\"shared-array-buffer\",\"matches\":[\"isSharedArrayBuffer\",\"isAnyArrayBuffer\"]},{\"name\":\"error\",\"matches\":[\"isNativeError\"]},{\"name\":\"type-error\",\"matches\":[\"isNativeError\"]},{\"name\":\"aggregate-error\",\"matches\":[\"isNativeError\"]},{\"name\":\"error-subclass\",\"matches\":[\"isNativeError\"]},{\"name\":\"domexception\",\"matches\":[\"isNativeError\"]},{\"name\":\"fake-error-prototype\",\"matches\":[]},{\"name\":\"async-function\",\"matches\":[\"isAsyncFunction\"]},{\"name\":\"generator-function\",\"matches\":[\"isGeneratorFunction\"]},{\"name\":\"async-generator-function\",\"matches\":[\"isAsyncFunction\",\"isGeneratorFunction\"]},{\"name\":\"generator-object\",\"matches\":[\"isGeneratorObject\"]},{\"name\":\"async-generator-object\",\"matches\":[\"isGeneratorObject\"]},{\"name\":\"bound-async-function\",\"matches\":[]},{\"name\":\"bound-generator-function\",\"matches\":[]},{\"name\":\"generator-prototype\",\"matches\":[]},{\"name\":\"mapped-arguments\",\"matches\":[\"isArgumentsObject\"]},{\"name\":\"unmapped-arguments\",\"matches\":[\"isArgumentsObject\"]},{\"name\":\"date-prototype\",\"matches\":[]},{\"name\":\"regexp-prototype\",\"matches\":[]},{\"name\":\"map-prototype\",\"matches\":[]},{\"name\":\"set-prototype\",\"matches\":[]},{\"name\":\"weak-map-prototype\",\"matches\":[]},{\"name\":\"weak-set-prototype\",\"matches\":[]},{\"name\":\"symbol-prototype\",\"matches\":[]},{\"name\":\"bigint-prototype\",\"matches\":[]},{\"name\":\"error-prototype\",\"matches\":[]},{\"name\":\"async-function-prototype\",\"matches\":[]},{\"name\":\"generator-function-prototype\",\"matches\":[]},{\"name\":\"number-prototype\",\"matches\":[\"isNumberObject\",\"isBoxedPrimitive\"]},{\"name\":\"boolean-prototype\",\"matches\":[\"isBooleanObject\",\"isBoxedPrimitive\"]},{\"name\":\"string-prototype\",\"matches\":[\"isStringObject\",\"isBoxedPrimitive\"]},{\"name\":\"proxy-63\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-64\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-65\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-66\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-67\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-68\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-69\",\"matches\":[\"isProxy\"]},{\"name\":\"revoked-proxy\",\"matches\":[\"isProxy\"]},{\"name\":\"spoofed-Date\",\"matches\":[]},{\"name\":\"spoofed-Map\",\"matches\":[]},{\"name\":\"spoofed-Set\",\"matches\":[]},{\"name\":\"spoofed-Promise\",\"matches\":[]},{\"name\":\"spoofed-Number\",\"matches\":[]},{\"name\":\"spoofed-Generator\",\"matches\":[]},{\"name\":\"spoofed-Module\",\"matches\":[]},{\"name\":\"spoofed-External\",\"matches\":[]},{\"name\":\"inherited-map\",\"matches\":[]},{\"name\":\"inherited-date\",\"matches\":[]},{\"name\":\"detached-array-buffer\",\"matches\":[\"isArrayBuffer\",\"isAnyArrayBuffer\"]},{\"name\":\"prototype-cleared-map\",\"matches\":[\"isMap\"]},{\"name\":\"module-namespace\",\"matches\":[\"isModuleNamespaceObject\"]},{\"name\":\"module-namespace-proxy\",\"matches\":[\"isProxy\"]},{\"name\":\"native-external\",\"matches\":[\"isExternal\"]},{\"name\":\"foreign-0\",\"matches\":[\"isMap\"]},{\"name\":\"foreign-1\",\"matches\":[\"isNumberObject\",\"isBoxedPrimitive\"]},{\"name\":\"foreign-2\",\"matches\":[\"isAsyncFunction\"]},{\"name\":\"foreign-3\",\"matches\":[\"isGeneratorFunction\"]},{\"name\":\"foreign-4\",\"matches\":[\"isNativeError\"]},{\"name\":\"foreign-5\",\"matches\":[\"isArrayBuffer\",\"isAnyArrayBuffer\"]},{\"name\":\"foreign-6\",\"matches\":[\"isProxy\"]},{\"name\":\"poisoned-real-map\",\"matches\":[\"isMap\"]}],\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'options' is not implemented\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\",\"internal/bootstrap/node\",\"internal/timers\",\"internal/async_hooks\",\"internal/validators\",\"internal/util\",\"internal/options\"]},\"limits\":[\"Actual engine native predicates and complete original internal/util/types execution, not successful Node startup\",\"Opaque borrowed pointer carrier is not a resource handle or Node-API implementation\",\"Security-denied wrappers, OOM and complete teardown remain unvalidated\"]}\n",
+        "stderr": "",
+        "hostDiagnostics": [],
+        "detail": {
+          "kind": "native-types-controls",
+          "cases": 21,
+          "failures": 0,
+          "observations": [
+            {
+              "name": "all-native-method-attributes-and-call-signatures",
+              "status": "pass"
+            },
+            {
+              "name": "primitive-and-ordinary-values-have-no-native-object-tags",
+              "status": "pass"
+            },
+            {
+              "name": "boxed-primitives-use-real-internal-slots",
+              "status": "pass"
+            },
+            {
+              "name": "real-collections-iterators-and-buffers-are-distinguished",
+              "status": "pass"
+            },
+            {
+              "name": "native-error-tags-ignore-javascript-inheritance",
+              "status": "pass"
+            },
+            {
+              "name": "function-and-generator-flags-match-original-node",
+              "status": "pass"
+            },
+            {
+              "name": "mapped-and-unmapped-arguments-use-engine-tags",
+              "status": "pass"
+            },
+            {
+              "name": "builtin-prototypes-retain-their-actual-native-types",
+              "status": "pass"
+            },
+            {
+              "name": "scripted-and-revoked-proxies-do-not-unwrap-or-run-traps",
+              "status": "pass"
+            },
+            {
+              "name": "spoofed-tags-and-prototypes-do-not-invoke-user-code",
+              "status": "pass"
+            },
+            {
+              "name": "detached-buffer-and-modified-prototypes-preserve-native-identity",
+              "status": "pass"
+            },
+            {
+              "name": "module-namespace-is-genuine-and-is-not-a-scripted-proxy",
+              "status": "pass"
+            },
+            {
+              "name": "opaque-external-retains-real-native-pointer-through-gc",
+              "status": "pass"
+            },
+            {
+              "name": "native-binding-and-functions-remain-cached-through-moving-gc",
+              "status": "pass"
+            },
+            {
+              "name": "separate-realms-own-distinct-native-predicate-functions",
+              "status": "pass"
+            },
+            {
+              "name": "engine-wrappers-preserve-foreign-native-types-without-scripted-proxy-traps",
+              "status": "pass"
+            },
+            {
+              "name": "complete-original-types-module-uses-real-binding-and-intrinsic-view-getters",
+              "status": "pass"
+            },
+            {
+              "name": "opaque-pointer-readback-rejects-ordinary-and-scripted-proxy-values",
+              "status": "pass"
+            },
+            {
+              "name": "real-module-namespace-classification-survives-moving-gc",
+              "status": "pass"
+            },
+            {
+              "name": "native-predicate-inspection-ignores-poisoned-public-constructor-properties",
+              "status": "pass"
+            },
+            {
+              "name": "whole-original-bootstrap-passes-types-and-invalidates-failed-realm-functions",
+              "status": "pass"
+            }
+          ],
+          "classificationMatrix": [
+            {
+              "name": "undefined",
+              "matches": []
+            },
+            {
+              "name": "null",
+              "matches": []
+            },
+            {
+              "name": "false",
+              "matches": []
+            },
+            {
+              "name": "zero",
+              "matches": []
+            },
+            {
+              "name": "nan",
+              "matches": []
+            },
+            {
+              "name": "string",
+              "matches": []
+            },
+            {
+              "name": "symbol",
+              "matches": []
+            },
+            {
+              "name": "bigint",
+              "matches": []
+            },
+            {
+              "name": "object",
+              "matches": []
+            },
+            {
+              "name": "null-prototype",
+              "matches": []
+            },
+            {
+              "name": "array",
+              "matches": []
+            },
+            {
+              "name": "function",
+              "matches": []
+            },
+            {
+              "name": "class",
+              "matches": []
+            },
+            {
+              "name": "typed-array",
+              "matches": []
+            },
+            {
+              "name": "data-view",
+              "matches": []
+            },
+            {
+              "name": "string-iterator",
+              "matches": []
+            },
+            {
+              "name": "array-iterator",
+              "matches": []
+            },
+            {
+              "name": "number-object",
+              "matches": [
+                "isNumberObject",
+                "isBoxedPrimitive"
+              ]
+            },
+            {
+              "name": "boolean-object",
+              "matches": [
+                "isBooleanObject",
+                "isBoxedPrimitive"
+              ]
+            },
+            {
+              "name": "string-object",
+              "matches": [
+                "isStringObject",
+                "isBoxedPrimitive"
+              ]
+            },
+            {
+              "name": "bigint-object",
+              "matches": [
+                "isBigIntObject",
+                "isBoxedPrimitive"
+              ]
+            },
+            {
+              "name": "symbol-object",
+              "matches": [
+                "isSymbolObject",
+                "isBoxedPrimitive"
+              ]
+            },
+            {
+              "name": "map",
+              "matches": [
+                "isMap"
+              ]
+            },
+            {
+              "name": "set",
+              "matches": [
+                "isSet"
+              ]
+            },
+            {
+              "name": "weak-map",
+              "matches": [
+                "isWeakMap"
+              ]
+            },
+            {
+              "name": "weak-set",
+              "matches": [
+                "isWeakSet"
+              ]
+            },
+            {
+              "name": "map-iterator",
+              "matches": [
+                "isMapIterator"
+              ]
+            },
+            {
+              "name": "set-iterator",
+              "matches": [
+                "isSetIterator"
+              ]
+            },
+            {
+              "name": "date",
+              "matches": [
+                "isDate"
+              ]
+            },
+            {
+              "name": "regexp",
+              "matches": [
+                "isRegExp"
+              ]
+            },
+            {
+              "name": "promise",
+              "matches": [
+                "isPromise"
+              ]
+            },
+            {
+              "name": "array-buffer",
+              "matches": [
+                "isArrayBuffer",
+                "isAnyArrayBuffer"
+              ]
+            },
+            {
+              "name": "shared-array-buffer",
+              "matches": [
+                "isSharedArrayBuffer",
+                "isAnyArrayBuffer"
+              ]
+            },
+            {
+              "name": "error",
+              "matches": [
+                "isNativeError"
+              ]
+            },
+            {
+              "name": "type-error",
+              "matches": [
+                "isNativeError"
+              ]
+            },
+            {
+              "name": "aggregate-error",
+              "matches": [
+                "isNativeError"
+              ]
+            },
+            {
+              "name": "error-subclass",
+              "matches": [
+                "isNativeError"
+              ]
+            },
+            {
+              "name": "domexception",
+              "matches": [
+                "isNativeError"
+              ]
+            },
+            {
+              "name": "fake-error-prototype",
+              "matches": []
+            },
+            {
+              "name": "async-function",
+              "matches": [
+                "isAsyncFunction"
+              ]
+            },
+            {
+              "name": "generator-function",
+              "matches": [
+                "isGeneratorFunction"
+              ]
+            },
+            {
+              "name": "async-generator-function",
+              "matches": [
+                "isAsyncFunction",
+                "isGeneratorFunction"
+              ]
+            },
+            {
+              "name": "generator-object",
+              "matches": [
+                "isGeneratorObject"
+              ]
+            },
+            {
+              "name": "async-generator-object",
+              "matches": [
+                "isGeneratorObject"
+              ]
+            },
+            {
+              "name": "bound-async-function",
+              "matches": []
+            },
+            {
+              "name": "bound-generator-function",
+              "matches": []
+            },
+            {
+              "name": "generator-prototype",
+              "matches": []
+            },
+            {
+              "name": "mapped-arguments",
+              "matches": [
+                "isArgumentsObject"
+              ]
+            },
+            {
+              "name": "unmapped-arguments",
+              "matches": [
+                "isArgumentsObject"
+              ]
+            },
+            {
+              "name": "date-prototype",
+              "matches": []
+            },
+            {
+              "name": "regexp-prototype",
+              "matches": []
+            },
+            {
+              "name": "map-prototype",
+              "matches": []
+            },
+            {
+              "name": "set-prototype",
+              "matches": []
+            },
+            {
+              "name": "weak-map-prototype",
+              "matches": []
+            },
+            {
+              "name": "weak-set-prototype",
+              "matches": []
+            },
+            {
+              "name": "symbol-prototype",
+              "matches": []
+            },
+            {
+              "name": "bigint-prototype",
+              "matches": []
+            },
+            {
+              "name": "error-prototype",
+              "matches": []
+            },
+            {
+              "name": "async-function-prototype",
+              "matches": []
+            },
+            {
+              "name": "generator-function-prototype",
+              "matches": []
+            },
+            {
+              "name": "number-prototype",
+              "matches": [
+                "isNumberObject",
+                "isBoxedPrimitive"
+              ]
+            },
+            {
+              "name": "boolean-prototype",
+              "matches": [
+                "isBooleanObject",
+                "isBoxedPrimitive"
+              ]
+            },
+            {
+              "name": "string-prototype",
+              "matches": [
+                "isStringObject",
+                "isBoxedPrimitive"
+              ]
+            },
+            {
+              "name": "proxy-63",
+              "matches": [
+                "isProxy"
+              ]
+            },
+            {
+              "name": "proxy-64",
+              "matches": [
+                "isProxy"
+              ]
+            },
+            {
+              "name": "proxy-65",
+              "matches": [
+                "isProxy"
+              ]
+            },
+            {
+              "name": "proxy-66",
+              "matches": [
+                "isProxy"
+              ]
+            },
+            {
+              "name": "proxy-67",
+              "matches": [
+                "isProxy"
+              ]
+            },
+            {
+              "name": "proxy-68",
+              "matches": [
+                "isProxy"
+              ]
+            },
+            {
+              "name": "proxy-69",
+              "matches": [
+                "isProxy"
+              ]
+            },
+            {
+              "name": "revoked-proxy",
+              "matches": [
+                "isProxy"
+              ]
+            },
+            {
+              "name": "spoofed-Date",
+              "matches": []
+            },
+            {
+              "name": "spoofed-Map",
+              "matches": []
+            },
+            {
+              "name": "spoofed-Set",
+              "matches": []
+            },
+            {
+              "name": "spoofed-Promise",
+              "matches": []
+            },
+            {
+              "name": "spoofed-Number",
+              "matches": []
+            },
+            {
+              "name": "spoofed-Generator",
+              "matches": []
+            },
+            {
+              "name": "spoofed-Module",
+              "matches": []
+            },
+            {
+              "name": "spoofed-External",
+              "matches": []
+            },
+            {
+              "name": "inherited-map",
+              "matches": []
+            },
+            {
+              "name": "inherited-date",
+              "matches": []
+            },
+            {
+              "name": "detached-array-buffer",
+              "matches": [
+                "isArrayBuffer",
+                "isAnyArrayBuffer"
+              ]
+            },
+            {
+              "name": "prototype-cleared-map",
+              "matches": [
+                "isMap"
+              ]
+            },
+            {
+              "name": "module-namespace",
+              "matches": [
+                "isModuleNamespaceObject"
+              ]
+            },
+            {
+              "name": "module-namespace-proxy",
+              "matches": [
+                "isProxy"
+              ]
+            },
+            {
+              "name": "native-external",
+              "matches": [
+                "isExternal"
+              ]
+            },
+            {
+              "name": "foreign-0",
+              "matches": [
+                "isMap"
+              ]
+            },
+            {
+              "name": "foreign-1",
+              "matches": [
+                "isNumberObject",
+                "isBoxedPrimitive"
+              ]
+            },
+            {
+              "name": "foreign-2",
+              "matches": [
+                "isAsyncFunction"
+              ]
+            },
+            {
+              "name": "foreign-3",
+              "matches": [
+                "isGeneratorFunction"
+              ]
+            },
+            {
+              "name": "foreign-4",
+              "matches": [
+                "isNativeError"
+              ]
+            },
+            {
+              "name": "foreign-5",
+              "matches": [
+                "isArrayBuffer",
+                "isAnyArrayBuffer"
+              ]
+            },
+            {
+              "name": "foreign-6",
+              "matches": [
+                "isProxy"
+              ]
+            },
+            {
+              "name": "poisoned-real-map",
+              "matches": [
+                "isMap"
+              ]
+            }
+          ],
+          "bootstrapFailure": {
+            "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+            "message": "Native Node binding 'options' is not implemented",
+            "compiledBuiltinIds": [
+              "internal/bootstrap/realm",
+              "internal/errors",
+              "internal/assert",
+              "internal/bootstrap/node",
+              "internal/timers",
+              "internal/async_hooks",
+              "internal/validators",
+              "internal/util",
+              "internal/options"
+            ]
+          },
+          "limits": [
+            "Actual engine native predicates and complete original internal/util/types execution, not successful Node startup",
+            "Opaque borrowed pointer carrier is not a resource handle or Node-API implementation",
+            "Security-denied wrappers, OOM and complete teardown remain unvalidated"
+          ]
+        }
+      }
+    ],
+    "failures": 0,
+    "limits": [
+      "No Chromium/Firefox/WebKit execution",
+      "No upstream startup or module compatibility evidence",
+      "No complete native-V8 differential proof",
+      "No security-wrapper/OOM or complete symbol-owner teardown/finalization proof"
+    ]
+  }
+}

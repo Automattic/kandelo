@@ -1,0 +1,285 @@
+{
+  "scope": "Pinned native binding reference; observer exception routing is a remaining embedding gap",
+  "program": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixtureSha256": "e95326b6ac232f4b756dec0e853bf7c540ace556533e72b422931622ba7ff5d3",
+  "detail": {
+    "cases": 21,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "complete-native-binding-exports-and-normal-mode",
+        "status": "pass",
+        "detail": [
+          "hasAgent",
+          "getEnabledCategories",
+          "setTraceCategoryStateUpdateHandler",
+          "getCategoryEnabledBuffer",
+          "CategorySet",
+          "isTraceCategoryEnabled",
+          "trace",
+          "usePerfetto"
+        ]
+      },
+      {
+        "name": "source-method-names-and-intrinsic-arities",
+        "status": "pass",
+        "detail": {
+          "hasAgent": 0,
+          "getEnabledCategories": 0,
+          "setTraceCategoryStateUpdateHandler": 0,
+          "getCategoryEnabledBuffer": 0,
+          "CategorySet": 0,
+          "isTraceCategoryEnabled": 1,
+          "trace": 5
+        }
+      },
+      {
+        "name": "native-constructor-and-prototype-property-shape",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "prototype-signature-rejects-ordinary-and-proxy-receivers",
+        "status": "pass",
+        "detail": 5
+      },
+      {
+        "name": "empty-category-owner-is-idempotent-and-keeps-categories-absent",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "source-overlapping-category-reference-counts-and-sorting",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "actual-category-bytes-alias-controller-state",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "source-array-getters-and-coercion-run-in-order",
+        "status": "pass",
+        "detail": [
+          "get",
+          "string"
+        ]
+      },
+      {
+        "name": "constructor-getter-exceptions-retain-identity",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "disabled-builtin-exits-before-other-argument-validation",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "category-type-errors-come-from-original-intrinsics",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "enabled-builtin-validates-phase-name-id-and-empty-name",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "actual-engine-json-traversal-and-getters",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "json-getter-exception-retains-identity",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "engine-json-cycles-and-bigint-remain-type-errors",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "trace-and-enabled-functions-survive-moving-gc",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "observer-replacement-does-not-notify-on-registration",
+        "status": "pass",
+        "detail": [
+          false,
+          false
+        ]
+      },
+      {
+        "name": "native-observer-delivers-real-enable-disable-state",
+        "status": "pass",
+        "detail": [
+          false,
+          true,
+          false,
+          false
+        ]
+      },
+      {
+        "name": "original-utf8-stack-and-heap-paths-retain-unicode",
+        "status": "pass",
+        "detail": {
+          "category": "trace.unicode.\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00",
+          "name": "unicode-name-\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00"
+        }
+      },
+      {
+        "name": "original-numeric-phase-and-id-conversion",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "json-reentrancy-keeps-real-native-frames-and-owners",
+        "status": "pass",
+        "detail": true
+      }
+    ]
+  },
+  "traceProjection": [
+    {
+      "cat": "trace.json",
+      "name": "json-owned",
+      "ph": "i",
+      "args": {
+        "data": {
+          "unicode": "\u4e2d\ud83d\ude00",
+          "notFinite": null,
+          "value": 17
+        }
+      }
+    },
+    {
+      "cat": "trace.gc",
+      "name": "gc-event",
+      "ph": "i",
+      "id": "0xffffffff80000000",
+      "args": {
+        "data": {
+          "value": 1
+        }
+      }
+    },
+    {
+      "cat": "trace.unicode.\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00",
+      "name": "unicode-name-\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00",
+      "ph": "i",
+      "args": {
+        "data": {
+          "text": "caf\u00e9\u4e2d\ud83d\ude00"
+        }
+      }
+    },
+    {
+      "cat": "trace.numeric",
+      "name": "numeric-nan",
+      "ph": "i",
+      "id": "0x0",
+      "args": {}
+    },
+    {
+      "cat": "trace.numeric",
+      "name": "numeric-infinity",
+      "ph": "i",
+      "id": "0x0",
+      "args": {}
+    },
+    {
+      "cat": "trace.numeric",
+      "name": "numeric-wrap",
+      "ph": "i",
+      "id": "0x1",
+      "args": {}
+    },
+    {
+      "cat": "trace.numeric",
+      "name": "numeric-negative",
+      "ph": "i",
+      "id": "0x7fffffff",
+      "args": {}
+    },
+    {
+      "cat": "trace.reentrant",
+      "name": "json-inner",
+      "ph": "i",
+      "args": {
+        "data": {
+          "value": 3
+        }
+      }
+    },
+    {
+      "cat": "trace.reentrant",
+      "name": "json-outer",
+      "ph": "i",
+      "args": {
+        "data": {
+          "value": 5
+        }
+      }
+    }
+  ],
+  "runs": [
+    {
+      "name": "shared",
+      "sourceSha256": "892f52dbe1b6fb121fe18c3daf9c9454134a831ba450d014d476818a2100b013",
+      "exitCode": 0,
+      "stdout": "{\"cases\":21,\"failures\":0,\"observations\":[{\"name\":\"complete-native-binding-exports-and-normal-mode\",\"status\":\"pass\",\"detail\":[\"hasAgent\",\"getEnabledCategories\",\"setTraceCategoryStateUpdateHandler\",\"getCategoryEnabledBuffer\",\"CategorySet\",\"isTraceCategoryEnabled\",\"trace\",\"usePerfetto\"]},{\"name\":\"source-method-names-and-intrinsic-arities\",\"status\":\"pass\",\"detail\":{\"hasAgent\":0,\"getEnabledCategories\":0,\"setTraceCategoryStateUpdateHandler\":0,\"getCategoryEnabledBuffer\":0,\"CategorySet\":0,\"isTraceCategoryEnabled\":1,\"trace\":5}},{\"name\":\"native-constructor-and-prototype-property-shape\",\"status\":\"pass\",\"detail\":true},{\"name\":\"prototype-signature-rejects-ordinary-and-proxy-receivers\",\"status\":\"pass\",\"detail\":5},{\"name\":\"empty-category-owner-is-idempotent-and-keeps-categories-absent\",\"status\":\"pass\",\"detail\":true},{\"name\":\"source-overlapping-category-reference-counts-and-sorting\",\"status\":\"pass\",\"detail\":true},{\"name\":\"actual-category-bytes-alias-controller-state\",\"status\":\"pass\",\"detail\":true},{\"name\":\"source-array-getters-and-coercion-run-in-order\",\"status\":\"pass\",\"detail\":[\"get\",\"string\"]},{\"name\":\"constructor-getter-exceptions-retain-identity\",\"status\":\"pass\",\"detail\":true},{\"name\":\"disabled-builtin-exits-before-other-argument-validation\",\"status\":\"pass\",\"detail\":true},{\"name\":\"category-type-errors-come-from-original-intrinsics\",\"status\":\"pass\",\"detail\":true},{\"name\":\"enabled-builtin-validates-phase-name-id-and-empty-name\",\"status\":\"pass\",\"detail\":true},{\"name\":\"actual-engine-json-traversal-and-getters\",\"status\":\"pass\",\"detail\":true},{\"name\":\"json-getter-exception-retains-identity\",\"status\":\"pass\",\"detail\":true},{\"name\":\"engine-json-cycles-and-bigint-remain-type-errors\",\"status\":\"pass\",\"detail\":true},{\"name\":\"trace-and-enabled-functions-survive-moving-gc\",\"status\":\"pass\",\"detail\":true},{\"name\":\"observer-replacement-does-not-notify-on-registration\",\"status\":\"pass\",\"detail\":[false,false]},{\"name\":\"native-observer-delivers-real-enable-disable-state\",\"status\":\"pass\",\"detail\":[false,true,false,false]},{\"name\":\"original-utf8-stack-and-heap-paths-retain-unicode\",\"status\":\"pass\",\"detail\":{\"category\":\"trace.unicode.\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\",\"name\":\"unicode-name-\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\u4e2d\ud83d\ude00\"}},{\"name\":\"original-numeric-phase-and-id-conversion\",\"status\":\"pass\",\"detail\":true},{\"name\":\"json-reentrancy-keeps-real-native-frames-and-owners\",\"status\":\"pass\",\"detail\":true}]}\n",
+      "stderr": ""
+    },
+    {
+      "name": "source-constructor-array-check",
+      "sourceSha256": "136b42579beabc0e9937bb67a11cef5390759161ccc1bf64b041a2a0ee05b350",
+      "exitCode": -6,
+      "stdout": "",
+      "stderr": "\n  #  /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node[45414]: static void node::NodeCategorySet::New(const FunctionCallbackInfo<Value> &) at ../src/node_trace_events.cc:69\n  #  Assertion failed: args[0]->IsArray()\n\n----- Native stack trace -----\n\n 1: 0x104ed7468 node::(anonymous namespace)::DefaultAbortHandler(char const*, char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 2: 0x104ed720c node::Assert(node::AssertionInfo const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 3: 0x10744ac30 node::NodeCategorySet::New(v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 4: 0x10518c324 v8::internal::FunctionCallbackArguments::CallOrConstruct(v8::internal::Isolate*, v8::internal::Tagged<v8::internal::FunctionTemplateInfo>, bool) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 5: 0x10518b9fc v8::internal::Builtin_HandleApiConstruct(int, unsigned long*, v8::internal::Isolate*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 6: 0x105eb0bec Builtins_CEntry_Return1_ArgvOnStack_BuiltinExit [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 7: 0x105e0de58 Builtins_InterpreterPushArgsThenFastConstructFunction [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 8: 0x105fa673c Builtins_ConstructHandler [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 9: 0x105e0d424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n10: 0x105e0a788 Builtins_JSEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n11: 0x105e0a478 Builtins_JSEntry [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n12: 0x1052be61c v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n13: 0x1052beb00 v8::internal::Execution::CallScript(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::JSFunction>, v8::internal::DirectHandle<v8::internal::Object>, v8::internal::DirectHandle<v8::internal::Object>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n14: 0x105142898 v8::Script::Run(v8::Local<v8::Context>, v8::Local<v8::Data>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n15: 0x104ec4380 node::contextify::ContextifyScript::EvalMachine(v8::Local<v8::Context>, node::Environment*, long long, bool, bool, bool, v8::MicrotaskQueue*, v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n16: 0x1073f6a3c node::contextify::ContextifyScript::RunInContext(v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n17: 0x105e0f20c Builtins_CallApiCallbackGeneric [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n18: 0x105e0d424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n19: 0x105e0d424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n20: 0x105e0d424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n21: 0x105e0d424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n22: 0x105e0d424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n23: 0x105e0d424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n24: 0x105e0d424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n25: 0x105e0a788 Builtins_JSEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n26: 0x105e0a478 Builtins_JSEntry [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n27: 0x1052be61c v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n28: 0x1052bdff0 v8::internal::Execution::Call(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::Object>, v8::internal::DirectHandle<v8::internal::Object>, v8::base::Vector<v8::internal::DirectHandle<v8::internal::Object> const>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n29: 0x10514e4b4 v8::Function::Call(v8::Isolate*, v8::Local<v8::Context>, v8::Local<v8::Value>, int, v8::Local<v8::Value>*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n30: 0x104eabc64 node::builtins::BuiltinLoader::CompileAndCall(v8::Local<v8::Context>, char const*, node::Realm*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n31: 0x10742cb38 node::Realm::ExecuteBootstrapper(char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n32: 0x1073e42a0 node::StartExecution(node::Environment*, char const*) (.cold.1) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n33: 0x104e8bacc node::StartExecution(node::Environment*, char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n34: 0x104e8ba48 node::StartExecution(node::Environment*, std::__1::function<v8::MaybeLocal<v8::Value> (node::StartExecutionCallbackInfoWithModule const&)>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n35: 0x104dd0b6c node::LoadEnvironment(node::Environment*, std::__1::function<v8::MaybeLocal<v8::Value> (node::StartExecutionCallbackInfoWithModule const&)>, std::__1::function<void (node::Environment*, v8::Local<v8::Value>, v8::Local<v8::Value>)>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n36: 0x107420e9c node::NodeMainInstance::Run() (.cold.1) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n37: 0x104f23b4c node::NodeMainInstance::Run() [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n38: 0x104e8ffdc node::Start(int, char**) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n39: 0x191fc0d7c start [/usr/lib/dyld]\n\n----- JavaScript stack trace -----\n\n1: [eval]:1:108\n2: runScriptInThisContext (node:internal/vm:219:10)\n3: node:internal/process/execution:485:12\n4: [eval]-wrapper:6:24\n5: runScriptInContext (node:internal/process/execution:483:60)\n6: evalFunction (node:internal/process/execution:317:30)\n7: evalTypeScript (node:internal/process/execution:329:3)\n8: node:internal/main/eval_string:71:3\n\n\n"
+    },
+    {
+      "name": "source-proxy-array-check",
+      "sourceSha256": "6199693320f8d76ce55214ede192a8fe836ef98b3e493950141da6bbaffe7690",
+      "exitCode": -6,
+      "stdout": "",
+      "stderr": "\n  #  /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node[45416]: static void node::NodeCategorySet::New(const FunctionCallbackInfo<Value> &) at ../src/node_trace_events.cc:69\n  #  Assertion failed: args[0]->IsArray()\n\n----- Native stack trace -----\n\n 1: 0x10438f468 node::(anonymous namespace)::DefaultAbortHandler(char const*, char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 2: 0x10438f20c node::Assert(node::AssertionInfo const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 3: 0x106902c30 node::NodeCategorySet::New(v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 4: 0x104644324 v8::internal::FunctionCallbackArguments::CallOrConstruct(v8::internal::Isolate*, v8::internal::Tagged<v8::internal::FunctionTemplateInfo>, bool) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 5: 0x1046439fc v8::internal::Builtin_HandleApiConstruct(int, unsigned long*, v8::internal::Isolate*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 6: 0x105368bec Builtins_CEntry_Return1_ArgvOnStack_BuiltinExit [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 7: 0x1052c5e58 Builtins_InterpreterPushArgsThenFastConstructFunction [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 8: 0x10545e73c Builtins_ConstructHandler [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 9: 0x1052c5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n10: 0x1052c2788 Builtins_JSEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n11: 0x1052c2478 Builtins_JSEntry [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n12: 0x10477661c v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n13: 0x104776b00 v8::internal::Execution::CallScript(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::JSFunction>, v8::internal::DirectHandle<v8::internal::Object>, v8::internal::DirectHandle<v8::internal::Object>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n14: 0x1045fa898 v8::Script::Run(v8::Local<v8::Context>, v8::Local<v8::Data>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n15: 0x10437c380 node::contextify::ContextifyScript::EvalMachine(v8::Local<v8::Context>, node::Environment*, long long, bool, bool, bool, v8::MicrotaskQueue*, v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n16: 0x1068aea3c node::contextify::ContextifyScript::RunInContext(v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n17: 0x1052c720c Builtins_CallApiCallbackGeneric [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n18: 0x1052c5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n19: 0x1052c5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n20: 0x1052c5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n21: 0x1052c5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n22: 0x1052c5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n23: 0x1052c5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n24: 0x1052c5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n25: 0x1052c2788 Builtins_JSEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n26: 0x1052c2478 Builtins_JSEntry [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n27: 0x10477661c v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n28: 0x104775ff0 v8::internal::Execution::Call(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::Object>, v8::internal::DirectHandle<v8::internal::Object>, v8::base::Vector<v8::internal::DirectHandle<v8::internal::Object> const>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n29: 0x1046064b4 v8::Function::Call(v8::Isolate*, v8::Local<v8::Context>, v8::Local<v8::Value>, int, v8::Local<v8::Value>*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n30: 0x104363c64 node::builtins::BuiltinLoader::CompileAndCall(v8::Local<v8::Context>, char const*, node::Realm*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n31: 0x1068e4b38 node::Realm::ExecuteBootstrapper(char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n32: 0x10689c2a0 node::StartExecution(node::Environment*, char const*) (.cold.1) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n33: 0x104343acc node::StartExecution(node::Environment*, char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n34: 0x104343a48 node::StartExecution(node::Environment*, std::__1::function<v8::MaybeLocal<v8::Value> (node::StartExecutionCallbackInfoWithModule const&)>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n35: 0x104288b6c node::LoadEnvironment(node::Environment*, std::__1::function<v8::MaybeLocal<v8::Value> (node::StartExecutionCallbackInfoWithModule const&)>, std::__1::function<void (node::Environment*, v8::Local<v8::Value>, v8::Local<v8::Value>)>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n36: 0x1068d8e9c node::NodeMainInstance::Run() (.cold.1) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n37: 0x1043dbb4c node::NodeMainInstance::Run() [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n38: 0x104347fdc node::Start(int, char**) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n39: 0x191fc0d7c start [/usr/lib/dyld]\n\n----- JavaScript stack trace -----\n\n1: [eval]:1:108\n2: runScriptInThisContext (node:internal/vm:219:10)\n3: node:internal/process/execution:485:12\n4: [eval]-wrapper:6:24\n5: runScriptInContext (node:internal/process/execution:483:60)\n6: evalFunction (node:internal/process/execution:317:30)\n7: evalTypeScript (node:internal/process/execution:329:3)\n8: node:internal/main/eval_string:71:3\n\n\n"
+    },
+    {
+      "name": "source-handler-function-check",
+      "sourceSha256": "e9d3d67f527fc5979412b4ec85b9e09e9a2618cc8fe3994467f0f2a00f7a2c83",
+      "exitCode": -6,
+      "stdout": "",
+      "stderr": "\n  #  /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node[45418]: void node::SetTraceCategoryStateUpdateHandler(const FunctionCallbackInfo<Value> &) at ../src/node_trace_events.cc:134\n  #  Assertion failed: args[0]->IsFunction()\n\n----- Native stack trace -----\n\n 1: 0x1043d3468 node::(anonymous namespace)::DefaultAbortHandler(char const*, char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 2: 0x1043d320c node::Assert(node::AssertionInfo const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 3: 0x106947078 node::SetTraceCategoryStateUpdateHandler(v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 4: 0x10530b20c Builtins_CallApiCallbackGeneric [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 5: 0x105309424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 6: 0x105306788 Builtins_JSEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 7: 0x105306478 Builtins_JSEntry [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 8: 0x1047ba61c v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 9: 0x1047bab00 v8::internal::Execution::CallScript(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::JSFunction>, v8::internal::DirectHandle<v8::internal::Object>, v8::internal::DirectHandle<v8::internal::Object>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n10: 0x10463e898 v8::Script::Run(v8::Local<v8::Context>, v8::Local<v8::Data>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n11: 0x1043c0380 node::contextify::ContextifyScript::EvalMachine(v8::Local<v8::Context>, node::Environment*, long long, bool, bool, bool, v8::MicrotaskQueue*, v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n12: 0x1068f2a3c node::contextify::ContextifyScript::RunInContext(v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n13: 0x10530b20c Builtins_CallApiCallbackGeneric [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n14: 0x105309424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n15: 0x105309424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n16: 0x105309424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n17: 0x105309424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n18: 0x105309424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n19: 0x105309424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n20: 0x105309424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n21: 0x105306788 Builtins_JSEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n22: 0x105306478 Builtins_JSEntry [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n23: 0x1047ba61c v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n24: 0x1047b9ff0 v8::internal::Execution::Call(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::Object>, v8::internal::DirectHandle<v8::internal::Object>, v8::base::Vector<v8::internal::DirectHandle<v8::internal::Object> const>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n25: 0x10464a4b4 v8::Function::Call(v8::Isolate*, v8::Local<v8::Context>, v8::Local<v8::Value>, int, v8::Local<v8::Value>*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n26: 0x1043a7c64 node::builtins::BuiltinLoader::CompileAndCall(v8::Local<v8::Context>, char const*, node::Realm*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n27: 0x106928b38 node::Realm::ExecuteBootstrapper(char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n28: 0x1068e02a0 node::StartExecution(node::Environment*, char const*) (.cold.1) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n29: 0x104387acc node::StartExecution(node::Environment*, char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n30: 0x104387a48 node::StartExecution(node::Environment*, std::__1::function<v8::MaybeLocal<v8::Value> (node::StartExecutionCallbackInfoWithModule const&)>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n31: 0x1042ccb6c node::LoadEnvironment(node::Environment*, std::__1::function<v8::MaybeLocal<v8::Value> (node::StartExecutionCallbackInfoWithModule const&)>, std::__1::function<void (node::Environment*, v8::Local<v8::Value>, v8::Local<v8::Value>)>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n32: 0x10691ce9c node::NodeMainInstance::Run() (.cold.1) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n33: 0x10441fb4c node::NodeMainInstance::Run() [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n34: 0x10438bfdc node::Start(int, char**) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n35: 0x191fc0d7c start [/usr/lib/dyld]\n\n----- JavaScript stack trace -----\n\n1: [eval]:1:116\n2: runScriptInThisContext (node:internal/vm:219:10)\n3: node:internal/process/execution:485:12\n4: [eval]-wrapper:6:24\n5: runScriptInContext (node:internal/process/execution:483:60)\n6: evalFunction (node:internal/process/execution:317:30)\n7: evalTypeScript (node:internal/process/execution:329:3)\n8: node:internal/main/eval_string:71:3\n\n\n"
+    },
+    {
+      "name": "source-category-buffer-string-check",
+      "sourceSha256": "4ac5dd420f4ffa489e86dd5449ba0d9b861be41427c1bd0ab4777618b9116c2a",
+      "exitCode": -6,
+      "stdout": "",
+      "stderr": "\n  #  /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node[45420]: void node::GetCategoryEnabledBuffer(const FunctionCallbackInfo<Value> &) at ../src/node_trace_events.cc:139\n  #  Assertion failed: args[0]->IsString()\n\n----- Native stack trace -----\n\n 1: 0x1007af468 node::(anonymous namespace)::DefaultAbortHandler(char const*, char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 2: 0x1007af20c node::Assert(node::AssertionInfo const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 3: 0x102d231cc node::GetCategoryEnabledBuffer(v8::FunctionCallbackInfo<v8::Value> const&) (.cold.1) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 4: 0x10089c5f4 node::GetCategoryEnabledBuffer(v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 5: 0x1016e720c Builtins_CallApiCallbackGeneric [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 6: 0x1016e5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 7: 0x1016e2788 Builtins_JSEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 8: 0x1016e2478 Builtins_JSEntry [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n 9: 0x100b9661c v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n10: 0x100b96b00 v8::internal::Execution::CallScript(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::JSFunction>, v8::internal::DirectHandle<v8::internal::Object>, v8::internal::DirectHandle<v8::internal::Object>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n11: 0x100a1a898 v8::Script::Run(v8::Local<v8::Context>, v8::Local<v8::Data>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n12: 0x10079c380 node::contextify::ContextifyScript::EvalMachine(v8::Local<v8::Context>, node::Environment*, long long, bool, bool, bool, v8::MicrotaskQueue*, v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n13: 0x102ccea3c node::contextify::ContextifyScript::RunInContext(v8::FunctionCallbackInfo<v8::Value> const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n14: 0x1016e720c Builtins_CallApiCallbackGeneric [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n15: 0x1016e5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n16: 0x1016e5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n17: 0x1016e5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n18: 0x1016e5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n19: 0x1016e5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n20: 0x1016e5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n21: 0x1016e5424 Builtins_InterpreterEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n22: 0x1016e2788 Builtins_JSEntryTrampoline [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n23: 0x1016e2478 Builtins_JSEntry [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n24: 0x100b9661c v8::internal::(anonymous namespace)::Invoke(v8::internal::Isolate*, v8::internal::(anonymous namespace)::InvokeParams const&) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n25: 0x100b95ff0 v8::internal::Execution::Call(v8::internal::Isolate*, v8::internal::DirectHandle<v8::internal::Object>, v8::internal::DirectHandle<v8::internal::Object>, v8::base::Vector<v8::internal::DirectHandle<v8::internal::Object> const>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n26: 0x100a264b4 v8::Function::Call(v8::Isolate*, v8::Local<v8::Context>, v8::Local<v8::Value>, int, v8::Local<v8::Value>*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n27: 0x100783c64 node::builtins::BuiltinLoader::CompileAndCall(v8::Local<v8::Context>, char const*, node::Realm*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n28: 0x102d04b38 node::Realm::ExecuteBootstrapper(char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n29: 0x102cbc2a0 node::StartExecution(node::Environment*, char const*) (.cold.1) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n30: 0x100763acc node::StartExecution(node::Environment*, char const*) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n31: 0x100763a48 node::StartExecution(node::Environment*, std::__1::function<v8::MaybeLocal<v8::Value> (node::StartExecutionCallbackInfoWithModule const&)>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n32: 0x1006a8b6c node::LoadEnvironment(node::Environment*, std::__1::function<v8::MaybeLocal<v8::Value> (node::StartExecutionCallbackInfoWithModule const&)>, std::__1::function<void (node::Environment*, v8::Local<v8::Value>, v8::Local<v8::Value>)>) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n33: 0x102cf8e9c node::NodeMainInstance::Run() (.cold.1) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n34: 0x1007fbb4c node::NodeMainInstance::Run() [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n35: 0x100767fdc node::Start(int, char**) [/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node]\n36: 0x191fc0d7c start [/usr/lib/dyld]\n\n----- JavaScript stack trace -----\n\n1: [eval]:1:116\n2: runScriptInThisContext (node:internal/vm:219:10)\n3: node:internal/process/execution:485:12\n4: [eval]-wrapper:6:24\n5: runScriptInContext (node:internal/process/execution:483:60)\n6: evalFunction (node:internal/process/execution:317:30)\n7: evalTypeScript (node:internal/process/execution:329:3)\n8: node:internal/main/eval_string:71:3\n\n\n"
+    },
+    {
+      "name": "original-json-undefined-result-cast",
+      "sourceSha256": "ef61fdb4b62ef69c1f1c39940099987e24830e38f447ae014da31b82ab8093dc",
+      "exitCode": -6,
+      "stdout": "",
+      "stderr": "bad_optional_access was thrown in -fno-exceptions mode"
+    },
+    {
+      "name": "observer-exception-routing",
+      "sourceSha256": "a9b07ef956c4b3e506bd6a5f5cc65794936051974763086cbe2fc2dba81f196a",
+      "exitCode": 0,
+      "stdout": "{\"values\":[true,true,true,true,true]}\n",
+      "stderr": ""
+    }
+  ]
+}

@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "scope": "Native Object.GetConstructorName engine implementation and original whole-unit utility consumer; full util binding and broader runtime compatibility remain incomplete",
+  "interface": "kandelo_node_codec_api::Object::GetConstructorName() -> Local<String>",
+  "runtimeValidated": true,
+  "completeBindingContract": false,
+  "evidence": "constructor-name-engine-check.json",
+  "engineOwner": "ObjectRealm ObjectValueWeakMap stores the actual constructor function for direct receiver births, or an explicit prototype-based birth marker for distinct newTarget/native typed-array API allocation. Trace, retirement and shallow table-memory hooks remain real.",
+  "producers": [
+    "Actual scripted CreateThis receiver; replacement return objects keep their own provenance",
+    "Native call scope at interpreter and portable baseline entry; successful GetPrototypeFromBuiltinConstructor resolution marks the pending receiver class after prototype getters return",
+    "NativeObject and ArrayObject allocation consume matching pending origin before metadata hooks",
+    "Dynamic function, Object different-newTarget, DisplayNames and JS_NewObjectForConstructor actual receiver paths",
+    "Native template receiver retains its entry-rooted materialized constructor",
+    "C++ typed-array allocation API records actual prototype-based birth, including original Buffer native consumers"
+  ],
+  "lookup": "Pure native data-slot inspection; retained actual constructor or protected intrinsic constructor ownership, genuine isUsedAsPrototype state, explicit/inferred function debug atoms excluding guessed names, data-only Symbol.toStringTag/prototype traversal, checked compartment unwrap and user-proxy stopping. No user getters or proxy traps.",
+  "nativeConsumers": [
+    {
+      "path": "src/util.cc",
+      "status": "Whole original DetermineSpecificErrorType consumer compiled and exercised for objects and primitives"
+    },
+    {
+      "path": "src/node_errors.cc",
+      "status": "Whole original unit compiled; focused error-owner regressions retained; full exceptional lifecycle unproven"
+    },
+    {
+      "path": "src/node_util.cc",
+      "status": "Original native binding wrapper not yet imported/activated as a complete unit; do not claim full internal util export compatibility"
+    }
+  ],
+  "valuePrerequisites": {
+    "Value.TypeOf": "Actual engine type operation",
+    "JSON.Stringify": "Actual engine JS::ToJSON and string builder; empty serialization becomes actual undefined string; public JSON replacement ignored; original getter exceptions and cycle TypeError retained",
+    "Value.ToDetailString": "Actual primitives and SymbolDescriptiveString only; objects explicitly fail ERR_KANDELO_NOT_IMPLEMENTED without user conversion callbacks"
+  },
+  "validated": [
+    "40 native-reference cases and 80 pre/post-GC naming observations with zero user getter/proxy callbacks",
+    "57 intrinsic-name, native built-in, different-newTarget and subclass reference observations",
+    "Original Buffer alloc/allocUnsafe/from string/array/ArrayBuffer paths and standard typed array; renamed Function intrinsic versus bound function",
+    "Hot 2000-iteration scripted/Map/Array allocation sites",
+    "Reentrant prototype getter, Error message coercion and Map.set with nested allocations and GC",
+    "Foreign prototype data and actual native template identity after prototype mutation/GC",
+    "All prior72 driver sources unchanged, including ephemeron lifetime/nursery promotion/debugger metadata controls"
+  ],
+  "runtime": {
+    "driversPerHost": 79,
+    "newConstructorDriversPerHost": 7,
+    "previousDriversPerHost": 72,
+    "hosts": [
+      "node",
+      "chromium",
+      "firefox",
+      "webkit"
+    ],
+    "totalGuestDrivers": 316,
+    "program": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-constructor-lookup/native-owner-probe.wasm",
+      "bytes": 59981054,
+      "sha256": "187d2cc03df73710032e6dc0e996f88bcf144005bc536becc0f83e186a29007a"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    }
+  },
+  "remaining": [
+    "Full native util binding unit and export, complete public/internal consumer compatibility",
+    "No-side-effects object detail formatting",
+    "Other JIT configurations/inline allocation paths, unusual native/API construction classes, workers/fork/security/OOM injection/full exceptional shutdown and compaction-specific proof",
+    "All22 normal startup dependencies, genuine startup/CJS/ESM/four-host acceptance, complete catalog/ordered roadmap and user review gate"
+  ],
+  "constructorNameImplemented": true,
+  "nativeBuiltinConstructionCoverageComplete": false,
+  "normalEngineLinked": false,
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamNodeAlgorithmsRewritten": false,
+  "functionExcerptsImported": false,
+  "nativeV8HeapUsed": false,
+  "sourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false
+}

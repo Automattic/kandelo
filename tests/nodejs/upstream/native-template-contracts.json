@@ -1,0 +1,179 @@
+{
+  "schema": 1,
+  "scope": "Native function/object template and signature prerequisites for complete original Node utilities and current bindings; compile/link proof only",
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "packageRevision": 63,
+  "owningLayer": "SpiderMonkey embedding/native engine API",
+  "originalConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/src/util.h",
+      "bytes": 43448,
+      "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/util-inl.h",
+      "bytes": 27698,
+      "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/util.cc",
+      "bytes": 32624,
+      "sha256": "d5ff5ddf59fea718016f5028ec54661ea8f92e37070d82c7dae2e39ab1e91172"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_i18n.cc",
+      "bytes": 24681,
+      "sha256": "92609fad1107071d39f8211ccac9536257a63752db95e1160ae345d6618f76ff"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_trace_events.cc",
+      "bytes": 8004,
+      "sha256": "d49d2ee967961a72bc879fb4eb228f2670b58559a03619800fad6650b6efdc5e"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_diagnostics_channel.cc",
+      "bytes": 10920,
+      "sha256": "b28f81fec9a23b759640ac464609bd9f4384acdae0d85a2ecf99c3ad7ad7a4ca"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_process_methods.cc",
+      "bytes": 29912,
+      "sha256": "909b412cc5fa20de7eb1a0de081849edd98dbe4a239ae412e48551eb2deb0b39"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_env_var.cc",
+      "bytes": 23835,
+      "sha256": "9b3bfe0143640e9e8ce00ff982385162c288e1361742d250384a515b88958b66"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/async_wrap.cc",
+      "bytes": 27422,
+      "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709"
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "Data/Value/Template/Signature and persistent/local roots",
+      "contract": "Template and Signature are non-Value Data kinds. Shared Data owns the actual root cell and exact wrapper factory. Scope/global cloning preserves the concrete C++ kind. Generic roots canonicalize internal wrappers; JavaScript values retain ordinary contextual wrapping. Existing first-Local persistent layout and trivial Local layout are preserved.",
+      "lifetime": "Scope roots own wrappers; globals own stable independent cells. Whole original PersistentToLocal::Strong is consumed by the compiled probe. Weak generic Data remains unsupported; object Value weak paths are retained."
+    },
+    {
+      "name": "opaque template/signature records",
+      "contract": "Real engine objects hold native callback/configuration pointers and traced property/payload/signature/prototype/instance/cache edges. Native configuration holds no persistent JS roots. Signatures have distinct engine records retaining their actual receiver template.",
+      "lifetime": "A private, debugger-invisible metadata realm belongs to the native State and contains no Node module environment. Persistent template records do not capture Node realm/binding owners. Those edges belong only to actual function-instance invocation objects; per-context function caches use real JS WeakMap ephemerons. Metadata realm root retires during environment shutdown. Explicit callback payload values retain their normal ownership."
+    },
+    {
+      "name": "FunctionTemplate.New/NewWithCFunctionOverloads/GetFunction",
+      "contract": "Native JS functions enforce constructor behavior and length. Actual name properties/atoms are set, including engine name inference for template properties. Functions cache independently by target context. Callback data and receiver are actual rooted values, with native frame/realm/state dispatch and propagated exceptions/termination. Native fast signatures are retained but original slow callbacks execute.",
+      "lifetime": "No captured native Frame or hidden strong root from a persistent template back to a Node realm/binding. Function instances own their invocation realm/binding edges in traced slots."
+    },
+    {
+      "name": "Signature.New and instance brands",
+      "contract": "Native instances store an unforgeable template identity in a traced engine slot beyond the two existing native fields. Signature checks use actual instance class and template identity, rejecting forged prototype objects and ordinary proxies. Original native resource finalization retains its actual class and foreground protocol.",
+      "lifetime": "The instance brand keeps its real template alive. Realm and metadata references are wrapped for the destination compartment."
+    },
+    {
+      "name": "Template.Set/FunctionTemplate.PrototypeTemplate/InstanceTemplate",
+      "contract": "Actual string/symbol properties store typed native template or Value data. Instantiation materializes properties into real functions/objects, preserving per-context prototypes. Original Node SetMethod/SetProtoMethod/SetConstructorFunction bodies remain unchanged.",
+      "lifetime": "Template configuration seals when used. Partial functions are not published into the context cache before successful instantiation."
+    },
+    {
+      "name": "ObjectTemplate.New/SetInternalFieldCount/NewInstance",
+      "contract": "Standalone binding templates materialize onto actual native binding objects before original per-context initializers. Instance templates construct through their real function template. Current native field layouts support zero or two native fields plus the private engine brand slot.",
+      "lifetime": "Existing ICU converter and diagnostic wrapper template storage now carries actual non-Value records. Native scope/persistent handles retain the exact record kind."
+    }
+  ],
+  "implementationGaps": [
+    {
+      "area": "constructor association",
+      "detail": "ObjectTemplate.New with a nonempty constructor reports unimplemented through the native failure seam. The original node_env_var.cc has a consumer; it must be implemented before activating that path."
+    },
+    {
+      "area": "inheritance",
+      "detail": "FunctionTemplate.Inherit and inherited native receiver brands implemented and runtime-validated in revision73 with generic templates; see template-inheritance-contracts.json. Full template API and original constructor factories remain incomplete.",
+      "status": "implemented interface; broader integration incomplete"
+    },
+    {
+      "area": "recursive template materialization",
+      "detail": "Reentrant creation of the same template reports an explicit unimplemented error. No partially instantiated function is cached as success."
+    },
+    {
+      "area": "native field layouts",
+      "detail": "General per-instance field counts and concrete Data/tagged-pointer storage implemented in revision74, independent of private native owner/brand slots. Complete original BaseObject field0/type and field 1/pointer integration remains unfinished; see internal-field-contracts.json.",
+      "status": "engine field interface implemented; original owner integration incomplete"
+    },
+    {
+      "area": "generic Data surface",
+      "detail": "Private/Context and other non-Value Data types remain incomplete. Generic Data weak handles are unsupported; existing object Value weak roots are separate."
+    },
+    {
+      "area": "VM/debug interfaces",
+      "detail": "Fast CFunction JIT and inspector side-effect enforcement are not implemented; metadata is retained while genuine original slow callbacks execute."
+    },
+    {
+      "area": "allocation/failure/reentry",
+      "detail": "OOM, failed instantiation recovery and all callback/reentrant/cross-realm lifetime behavior require identified-artifact execution; compilation does not prove those semantics."
+    }
+  ],
+  "validationObligations": [
+    "Normal/private compile and exact unresolved symbols; byte-identical declared/staged inputs",
+    "Actual non-Value kinds and whole original PersistentToLocal strong conversion across closed caller scopes and moving/full GC",
+    "Original helper-installed method names/lengths/descriptors and actual constructor/return/receiver semantics",
+    "Legitimate instances versus forged prototypes/proxies; per-context prototypes/functions and shared explicit payload identity",
+    "No hidden template-to-Node-realm/binding strong cycle; weak-cache context retirement and metadata record finalization; shutdown/off-thread retirement obligations",
+    "Callback getter reentry, thrown values/saved stacks, dropped persistent owner during a live function invocation",
+    "Symbol property naming/attributes, class-name mutation constraints, failed/recursive/cyclic instantiation, constructor association and inherited brands",
+    "All prior focused regressions on Node, Chromium, Firefox and WebKit after a current artifact links"
+  ],
+  "fixtures": {
+    "newControls": 4,
+    "registeredDrivers": 36,
+    "syntaxAndRegistrationOnly": true,
+    "guestExecution": false,
+    "files": [
+      {
+        "path": "tests/nodejs/upstream/native-template-controls.ts",
+        "bytes": 3241,
+        "sha256": "76c641ed070fff8196b3b51f7457d97e101cc23c9a10524f5244aa5c0cab504b"
+      },
+      {
+        "path": "tests/nodejs/upstream/native-owner-controls.ts",
+        "bytes": 5057,
+        "sha256": "77d561429369260d13aec24d83bf1eeb7d21295ee68c3fcb8cf662bf44eb1eb8"
+      }
+    ],
+    "compiledProbe": {
+      "path": "packages/registry/spidermonkey/node-upstream/native-owner-probe-inl.h",
+      "bytes": 20113,
+      "sha256": "13c4d9a57267f6e7d26606779165b7943954769be41105528dafd1aad035e885"
+    }
+  },
+  "nativeReference": {
+    "evidence": ".context/node-native-templates/native-name-reference.json",
+    "scope": "One freshly authenticated native child observes six ICU method names/lengths. trace_events is unavailable through process.binding; retained as an unavailable observation, not a passing tracing control.",
+    "comparisonToGuest": "Not run; current profiles are unlinked"
+  },
+  "sourcePolicySatisfied": false,
+  "remainingSourcePolicyGaps": [
+    "Buffer ownership bridge requires whole node_internals.h integration",
+    "FWrite/backtrace dependencies require whole debug_utils.cc/header integration"
+  ],
+  "currentRuntimeValidated": false,
+  "startupAccepted": false,
+  "completeNativeTemplateConformance": false,
+  "wholeGoalComplete": false,
+  "remaining": "Whole original backtrace dependency closure, prior normal process/Message/source/report/lifecycle dependencies, actual four-host original-helper/regression execution, startup/CJS/ESM/full catalog and ordered roadmap/user review gate",
+  "templateInheritanceFollowup": {
+    "packageRevision": 73,
+    "catalog": "template-inheritance-contracts.json",
+    "evidence": "template-inheritance-engine-check.json",
+    "scope": "Actual traced native inheritance, same-context parent prototypes and inherited receiver signatures validated with generic native fixtures on four hosts. Full original factories, AsyncWrap field layout and callback dependencies remain unfinished."
+  },
+  "internalFieldFollowup": {
+    "packageRevision": 74,
+    "catalog": "internal-field-contracts.json",
+    "evidence": "internal-field-engine-check.json",
+    "scope": "Actual independent per-instance field storage, traced concrete Data kinds and tagged native pointers validated with generic native fixtures on four hosts. Whole original BaseObject class/unit and its field layout, full resource factories and callback graph remain incomplete."
+  }
+}

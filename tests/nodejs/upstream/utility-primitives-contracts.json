@@ -1,0 +1,199 @@
+{
+  "schema": 1,
+  "scope": "Native utility primitives needed by unchanged original utilities; compile/link closure and runtime evidence are separate",
+  "packageRevision": 62,
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "nativeV8HeapDataOrSerializationUsed": false,
+  "interfaces": [
+    {
+      "name": "LocalVector",
+      "owner": "SpiderMonkey embedding handle scopes",
+      "model": "Contiguous trivial Local slots refer to stable wrapper cells owned by Frame/HandleScope. Vector copying, movement, growth, swap, clear and destruction never independently acquire or release those cells. A copied Local remains valid only while its owning scope is alive. Global or EscapableHandleScope is required to cross scope boundaries.",
+      "primaryInterfaceReferences": [
+        {
+          "sourcePath": "deps/v8/include/v8-local-handle.h",
+          "path": ".context/node-vector-roots/source/v8-local-handle.h",
+          "bytes": 28468,
+          "sha256": "8c4d900245fe55f6c78630032d2e4f90a2656418d7ae3ffc0025e1452cbb92a7"
+        },
+        {
+          "sourcePath": "deps/v8/include/v8-internal.h",
+          "path": ".context/node-vector-roots/source/v8-internal.h",
+          "bytes": 75313,
+          "sha256": "73db93bad8c49dd348aa3aa1f3778e4110be5a00474e992be5cb2154a51ca909"
+        },
+        {
+          "sourcePath": "deps/v8/include/v8-handle-base.h",
+          "path": ".context/node-vector-roots/source/v8-handle-base.h",
+          "bytes": 4921,
+          "sha256": "a39ce35b295ac1225e6842ab5f3a422384a5c5dbe13b5c5f384a245252670b14"
+        }
+      ],
+      "referenceRole": "Interface and lifetime review only; no V8 implementation/header/heap data adopted into build",
+      "consumers": [
+        {
+          "source": {
+            "path": "third_party/nodejs/upstream/src/node_builtins.cc",
+            "bytes": 37013,
+            "sha256": "e96508e01765d9f89cefb8e6508d87025e6ded4dc8bafc4a8c46a6e5c02305d2"
+          },
+          "lines": [
+            389,
+            474,
+            804,
+            809
+          ]
+        },
+        {
+          "source": {
+            "path": "third_party/nodejs/upstream/src/node_dotenv.cc",
+            "bytes": 11522,
+            "sha256": "750bcdf4300a8a2ba1d4d572c7f8a51b10f50694262acf23d90409200465da4d"
+          },
+          "lines": [
+            92,
+            93
+          ]
+        },
+        {
+          "source": {
+            "path": "third_party/nodejs/upstream/src/node_env_var.cc",
+            "bytes": 23835,
+            "sha256": "9b3bfe0143640e9e8ce00ff982385162c288e1361742d250384a515b88958b66"
+          },
+          "lines": [
+            357
+          ]
+        },
+        {
+          "source": {
+            "path": "third_party/nodejs/upstream/src/node_options.cc",
+            "bytes": 99186,
+            "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279"
+          },
+          "lines": [
+            2010,
+            2011
+          ]
+        },
+        {
+          "source": {
+            "path": "third_party/nodejs/upstream/src/node_process_methods.cc",
+            "bytes": 29912,
+            "sha256": "909b412cc5fa20de7eb1a0de081849edd98dbe4a239ae412e48551eb2deb0b39"
+          },
+          "lines": [
+            302,
+            319,
+            331
+          ]
+        },
+        {
+          "source": {
+            "path": "third_party/nodejs/upstream/src/util-inl.h",
+            "bytes": 27698,
+            "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561"
+          },
+          "lines": [
+            502
+          ]
+        },
+        {
+          "source": {
+            "path": "third_party/nodejs/upstream/src/util.h",
+            "bytes": 43448,
+            "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
+          },
+          "lines": [
+            609
+          ]
+        }
+      ],
+      "coverage": "Selected imported C++ sources only; not an exhaustive archive-wide native contract census",
+      "supersedes": "Revision61 provisional independently cloned vector roots and intentionally undefined data()",
+      "runtimeValidation": false
+    },
+    {
+      "name": "ArrayBufferView.HasBuffer/CopyContents",
+      "owner": "SpiderMonkey buffer-view representation and atomic operations",
+      "model": "HasBuffer reads ArrayBufferViewObject.hasBuffer without materialization. CopyContents roots and unwraps the view, bounds by current view byte length, accesses inline/backed storage under AutoCheckCannotGC and uses the engine racy byte copy for shared storage. Zero-length/detached views return zero. No backing allocation is forced.",
+      "consumer": {
+        "path": "third_party/nodejs/upstream/src/util-inl.h",
+        "bytes": 27698,
+        "sha256": "28c58722f9d3a47d0d3c61d08e26778d1637fc1d438492cf4b6e41215ff1e561"
+      },
+      "runtimeValidation": false
+    },
+    {
+      "name": "Isolate.TryGetCurrent/LowMemoryNotification",
+      "owner": "SpiderMonkey native frame and collector",
+      "model": "Current returns the active native frame isolate or null. LowMemoryNotification asserts foreground ownership, saves actual pending value and throw stack, performs full shrinking collection and restores that exception state.",
+      "runtimeValidation": false
+    },
+    {
+      "name": "per_process.v8_initialized",
+      "owner": "SpiderMonkey shell engine initialization/shutdown",
+      "model": "The upstream-compatible field begins false. The shell changes it only after successful JS_InitWithFailureDiagnostic and immediately before its scope-exit JS_ShutDown. True is checked against JS_IsInitialized; that public query alone cannot represent shutdown because it intentionally remains true after shutdown.",
+      "runtimeValidation": false
+    },
+    {
+      "name": "Function.SetName",
+      "owner": "SpiderMonkey function and own name property",
+      "model": "Atomizes the actual UTF16 string, replaces the own nonenumerable readonly configurable name property, then sets the actual JSFunction atom. An already resolved own name is updated.",
+      "limitations": "General bound/proxy/nonconfigurable-name compatibility is unvalidated; current consumed helpers install ordinary freshly allocated native functions.",
+      "runtimeValidation": false
+    }
+  ],
+  "validationObligations": [
+    "Normal and diagnostic builds with zero C++ errors and exact native link symbol census",
+    "Vector writable data, growth, copy, move, swap, clear and retirement with same-scope copy-out under nursery/moving/full GC",
+    "Fresh sole-native roots; Globals and escaped handles across nested scopes; never dereference an expired Local to test a valid contract",
+    "Original MaybeStackBuffer<Local<Value>> raw allocation/reallocation compatibility and original Array/container conversion execution",
+    "View offsets and bounded/truncated/zero copies for inline typed arrays, DataView, detached, shared, resizable and foreign-realm views; verify no materialization by HasBuffer/CopyContents",
+    "Real collection count advancement, weak clearing, pending value and saved throw-stack preservation, current-isolate absence/reentry",
+    "Initialization success/failure/early-return and shutdown ordering",
+    "Function own name descriptors, repeated naming, UTF16/NUL/surrogates and stack/name observations",
+    "Identified runtime artifact and all focused regressions on Node, Chromium, Firefox and WebKit"
+  ],
+  "completeUtilityBackend": false,
+  "currentRuntimeValidated": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false,
+  "remaining": [
+    "FunctionTemplate.New/PrototypeTemplate, Signature.New and Template.Set with real callback, receiver-brand, realm and GC ownership",
+    "Complete original backtrace source/dependencies and actual engine metadata",
+    "Complete node_internals.h integration to retire the pre-existing ownership-template bridge",
+    "Prior Message/source/report/lifecycle/scheduling and process dependencies, real startup and separate CJS/ESM",
+    "Full backend catalog, dependency-ordered roadmap and explicit user review before broader implementation"
+  ],
+  "remainingSourcePolicyGaps": [
+    {
+      "consumer": "Original node_i18n.cc buffer conversion returns",
+      "existingAdapter": "codec-native-api.h Buffer::New(Environment*,MaybeStackBuffer*)",
+      "requiredWholeSource": "src/node_internals.h"
+    },
+    {
+      "consumer": "Original debug_utils-inl.h FPrintF",
+      "existingAdapter": "codecs.cpp FWrite(FILE*,const std::string&) byte/stream helper",
+      "requiredWholeSource": "src/debug_utils.cc",
+      "reason": "The complete original unit owns FWrite as well as both missing backtrace bodies; retire the adapter during whole-unit integration."
+    }
+  ],
+  "backtraceWholeSourceReview": {
+    "archivePath": "src/debug_utils.cc",
+    "reviewedCopy": {
+      "path": ".context/node-vector-roots/source/src/debug_utils.cc",
+      "bytes": 16324,
+      "sha256": "9f2904508a8443beb454dc789a07d60afb2f2ec7f9b2f56bc651d9c66edb0ea3"
+    },
+    "additionalDependencies": [
+      "complete original debug_utils.h debug categories and NativeSymbolDebuggingContext",
+      "credentials.SafeGetenv and original case conversion",
+      "real GetCurrentStackTrace/PrintStackTrace and StackTrace frame count",
+      "POSIX symbol/stack support selected by original feature branches",
+      "uv_walk/uv_loop_close and real handle metadata"
+    ],
+    "platformBoundary": "Original header itself provides a no-symbol/no-native-stack fallback when native symbol debugging is unavailable. Determine the actual target branch and document its capability; never invent frames or copy these bodies."
+  }
+}

@@ -1,0 +1,6 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -42,2 +42,3 @@
+     "node-upstream/timers.cpp",
++    "node-upstream/types.cpp",
+ ]

@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "packageRevision": 74,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Owning SpiderMonkey internal-field API and actual traced Data/tagged-pointer storage, independent of legacy native ownership and template branding. Whole original BaseObject integration and full native resource lifecycle remain incomplete.",
+  "completeBindingContract": false,
+  "evidence": "internal-field-engine-check.json",
+  "staticConsumerCandidates": "template-inheritance-consumers.json",
+  "upstreamConsumers": [
+    {
+      "path": "src/async_wrap.h",
+      "entry": "AsyncWrap.InternalFields",
+      "contract": "Original kAsyncContextFrame is field2 and extends BaseObject two-field layout. Field2 must not alias the private native signature brand."
+    },
+    {
+      "path": "src/async_wrap-inl.h",
+      "entry": "AsyncWrap.context_frame/set_context_frame",
+      "contract": "Original field value is Value or Private; empty frame uses canonical environment Private sentinel. Whole source unchanged; these original methods are not activated by the generic field fixture."
+    },
+    {
+      "path": "src/base_object.h/base_object-inl.h/base_object.cc",
+      "entry": "InternalFields/TagBaseObject/SetInternalFields/FromJSObject and constructors/destructor",
+      "contract": "Original field0 is tagged embedder type; field1 is native BaseObject pointer. Current legacy adapter uses separate hidden native owner0/realm1 slots, not this original field layout. Original complete class/unit integration remains unfinished; no rewritten SetInternalFields body or fake embedder identifier is supplied."
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "ObjectTemplate.SetInternalFieldCount/InternalFieldCount",
+      "owner": "SpiderMonkey opaque native template metadata",
+      "contract": "Actual per-template nonnegative count, sealed after use. Constructor and standalone object allocation create an independent private field store of that count. No artificial0or2 limit remains. Field counts are not inherited/copied from parent templates."
+    },
+    {
+      "name": "Object.InternalFieldCount",
+      "owner": "Actual instance field-store length",
+      "contract": "Count reflects actual per-instance storage, independent of public properties/prototypes. Plain objects, prototype forgeries, prototypes and ordinary proxies have no API fields. Compartment wrappers read actual underlying instances."
+    },
+    {
+      "name": "Object.SetInternalField/GetInternalField",
+      "owner": "Traced private JS field records plus concrete native Data root factories",
+      "contract": "Store the actual payload and original root factory without native persistent JS roots. Getter recreates the concrete C++ Data wrapper: Value, Private and available opaque template/signature kinds retain kind and identity. Values wrap to active context; internal Data records canonicalize wrappers. No guest property getter/setter or public Array prototype is consulted."
+    },
+    {
+      "name": "Object.SetAlignedPointerInInternalField/GetAlignedPointerFromInternalField",
+      "owner": "Actual caller-owned native pointer and tag metadata",
+      "contract": "Real2-byte-aligned pointer or null, exact native tag match, distinct from Data fields. Native field metadata owns no pointed-to allocation. Overwrite retires the prior traced payload/metadata through actual GC; caller retains pointee lifetime responsibility."
+    }
+  ],
+  "ownershipAndErrors": {
+    "storage": "Four reserved wrapper slots hold existing native owner, realm, unforgeable template brand and separate field store. Store entries are private traced JS records; native metadata contains only root factory/type information or pointer/tag. Native finalizers never interpret API pointer fields as BaseObject ownership.",
+    "gc": "Field-held values survive shrinking/moving GC and are collectible after overwrite or wrapper death while constructor metadata remains live. Concrete Data factories preserve Private/ObjectTemplate/FunctionTemplate/Signature across closed scopes and GC.",
+    "contexts": "Cross-context wrappers access the same actual field store and preserve actual foreign payload identity. Field access does not consult public Array.prototype or ordinary frozen-object properties.",
+    "boundaries": "Matching setters must precede getters, as required by the public API. Empty data, invalid indices/counts, mismatched Data-versus-pointer use, wrong pointer tags and unaligned pointers retain checked native failures. Negative native assertion controls and injected allocation-failure coverage were not run."
+  },
+  "runtime": {
+    "driversPerHost": 93,
+    "newPrimitiveDriversPerHost": 5,
+    "previousDriversPerHost": 88,
+    "previousSourcesByteIdentical": true,
+    "hosts": [
+      "node",
+      "chromium",
+      "firefox",
+      "webkit"
+    ],
+    "totalGuestDrivers": 372,
+    "program": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-internal-fields/native-owner-probe.wasm",
+      "bytes": 60026671,
+      "sha256": "3bc726774f4d423badee9f35493a4c60aa952c23cb19db518e6ef6a20d1e72ff"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "scope": "Generic engine field controls plus unchanged prior regressions; private profile rejects process_methods. No original resource producer/field-layout or startup proof."
+  },
+  "remaining": [
+    "Import/integrate complete original BaseObject header/inlines/unit and original type-tag/pointer layout over genuine native ownership; current hidden-slot adapter remains separate",
+    "Activate complete original AsyncWrap/HandleWrap factories and callbacks only after real InternalMakeCallback/async-context and ownership prerequisites",
+    "Full field negative/assertion, allocation-failure, worker/fork/security and exceptional/lifecycle coverage remains incomplete",
+    "Positive request/handle producer/ref/close/cancel/callback lifecycle and full pending-resource shutdown after genuine bootstrap",
+    "Remaining18 normal linker symbols, genuine startup/CJS/ESM/fourhosts, complete backend catalog/ordered roadmap and explicit review"
+  ],
+  "nativeInternalFieldsImplemented": true,
+  "originalBaseObjectIntegrationComplete": false,
+  "originalConstructorFactoryRuntimeValidated": false,
+  "positiveHandleLifecycleValidated": false,
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamNodeAlgorithmsRewritten": false,
+  "functionExcerptsImported": false,
+  "nativeV8HeapOrSerializationUsed": false,
+  "sourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false
+}

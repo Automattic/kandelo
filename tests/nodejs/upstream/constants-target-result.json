@@ -1,0 +1,77 @@
+{
+  "program": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-constants-target.rffwSy/constants-target-probe.wasm",
+    "bytes": 51435,
+    "sha256": "f431cf60f38e2954adfd63476c86e1f9832251849fbeb7c126391c425e475579"
+  },
+  "kernel": {
+    "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+    "bytes": 2958224,
+    "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+  },
+  "fixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/constants-target-probe.c",
+    "bytes": 2614,
+    "sha256": "2a6e36fe973a2f63fe605f9c272db3cf54d341c5f4e39b19411e992a144d6d72"
+  },
+  "result": {
+    "exitCode": 0,
+    "stdout": "{\"kind\":\"native-constants-target-probe\",\"values\":{\"os.errno.EAGAIN\":11,\"os.errno.ENOENT\":2,\"os.errno.EINVAL\":22,\"os.errno.ENOSYS\":38,\"os.errno.ECANCELED\":125,\"os.signals.SIGINT\":2,\"os.signals.SIGTERM\":15,\"os.signals.SIGUSR1\":10,\"os.signals.SIGCHLD\":17,\"os.signals.SIGABRT\":6,\"os.signals.SIGKILL\":9,\"os.dlopen.RTLD_LAZY\":1,\"os.dlopen.RTLD_NOW\":2,\"os.dlopen.RTLD_GLOBAL\":256,\"os.dlopen.RTLD_LOCAL\":0,\"fs.O_RDONLY\":0,\"fs.O_WRONLY\":1,\"fs.O_RDWR\":2,\"fs.O_CREAT\":64,\"fs.O_TRUNC\":512,\"fs.O_APPEND\":1024,\"fs.O_DIRECTORY\":65536,\"fs.O_NONBLOCK\":2048,\"fs.O_SYNC\":1052672,\"fs.O_DSYNC\":4096,\"fs.S_IFMT\":61440,\"fs.S_IFREG\":32768,\"fs.S_IFDIR\":16384,\"fs.S_IRUSR\":256,\"fs.S_IWUSR\":128,\"fs.F_OK\":0,\"fs.R_OK\":4,\"fs.W_OK\":2,\"fs.X_OK\":1,\"os.UV_UDP_REUSEADDR\":4,\"crypto.OPENSSL_VERSION_NUMBER\":808452128,\"crypto.TLS1_2_VERSION\":771,\"crypto.SSL_OP_NO_TLSv1_3\":536870912,\"zlib.ZLIB_VERNUM\":4880,\"zlib.Z_FINISH\":4,\"zlib.Z_DEFAULT_COMPRESSION\":-1,\"zlib.ZSTD_CLEVEL_DEFAULT\":3,\"zlib.ZSTD_error_noForwardProgress_inputEmpty\":82},\"effects\":[\"create-write-mode\",\"append-read\",\"exclusive-EEXIST\",\"unlink-ENOENT\"]}\n",
+    "stderr": "",
+    "hostDiagnostics": []
+  },
+  "detail": {
+    "kind": "native-constants-target-probe",
+    "values": {
+      "os.errno.EAGAIN": 11,
+      "os.errno.ENOENT": 2,
+      "os.errno.EINVAL": 22,
+      "os.errno.ENOSYS": 38,
+      "os.errno.ECANCELED": 125,
+      "os.signals.SIGINT": 2,
+      "os.signals.SIGTERM": 15,
+      "os.signals.SIGUSR1": 10,
+      "os.signals.SIGCHLD": 17,
+      "os.signals.SIGABRT": 6,
+      "os.signals.SIGKILL": 9,
+      "os.dlopen.RTLD_LAZY": 1,
+      "os.dlopen.RTLD_NOW": 2,
+      "os.dlopen.RTLD_GLOBAL": 256,
+      "os.dlopen.RTLD_LOCAL": 0,
+      "fs.O_RDONLY": 0,
+      "fs.O_WRONLY": 1,
+      "fs.O_RDWR": 2,
+      "fs.O_CREAT": 64,
+      "fs.O_TRUNC": 512,
+      "fs.O_APPEND": 1024,
+      "fs.O_DIRECTORY": 65536,
+      "fs.O_NONBLOCK": 2048,
+      "fs.O_SYNC": 1052672,
+      "fs.O_DSYNC": 4096,
+      "fs.S_IFMT": 61440,
+      "fs.S_IFREG": 32768,
+      "fs.S_IFDIR": 16384,
+      "fs.S_IRUSR": 256,
+      "fs.S_IWUSR": 128,
+      "fs.F_OK": 0,
+      "fs.R_OK": 4,
+      "fs.W_OK": 2,
+      "fs.X_OK": 1,
+      "os.UV_UDP_REUSEADDR": 4,
+      "crypto.OPENSSL_VERSION_NUMBER": 808452128,
+      "crypto.TLS1_2_VERSION": 771,
+      "crypto.SSL_OP_NO_TLSv1_3": 536870912,
+      "zlib.ZLIB_VERNUM": 4880,
+      "zlib.Z_FINISH": 4,
+      "zlib.Z_DEFAULT_COMPRESSION": -1,
+      "zlib.ZSTD_CLEVEL_DEFAULT": 3,
+      "zlib.ZSTD_error_noForwardProgress_inputEmpty": 82
+    },
+    "effects": [
+      "create-write-mode",
+      "append-read",
+      "exclusive-EEXIST",
+      "unlink-ENOENT"
+    ]
+  }
+}

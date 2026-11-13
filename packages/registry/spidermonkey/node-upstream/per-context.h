@@ -1,0 +1,54 @@
+#ifndef KANDELO_NODE_PER_CONTEXT_H
+#define KANDELO_NODE_PER_CONTEXT_H
+
+#include "js/RootingAPI.h"
+#include "js/TypeDecls.h"
+
+namespace kandelo::node {
+
+// The embedding owns this persistent root and destroys it before its JSContext.
+// One shell context is one guest runtime; child realms reuse this same owner.
+JSObject* EnsureRuntimeState(JSContext* cx, JS::PersistentRootedObject& owner);
+
+// Caller must already have entered the intended realm. Initialization is once
+// per actual global; repeated explicit initialization rejects. Allocation before
+// publishing the canonical carrier can retry; any later failure is terminal.
+bool InitializeCurrentContext(JSContext* cx, JS::HandleObject runtime);
+JSObject* GetCurrentContextExports(JSContext* cx, JS::HandleObject runtime);
+JSObject* GetCurrentContextErrorStackState(JSContext* cx, JS::HandleObject runtime);
+JSObject* GetCurrentContextModuleWrapBinding(JSContext* cx, JS::HandleObject runtime);
+JS::Symbol* GetRuntimeSymbol(JSContext* cx, JS::HandleObject runtime, const char* name);
+JSObject* CreateRuntimePrivateSymbolTable(JSContext* cx, JS::HandleObject runtime);
+JSObject* CreateRuntimeSymbolsBinding(JSContext* cx, JS::HandleObject runtime);
+// Original Environment::ExitInfoField layout; one actual guest process owns
+// this live Int32Array across all of its realms (src/env.h).
+enum ExitInfoField { kExiting = 0, kExitCode, kHasExitCode, kExitInfoFieldCount };
+JSObject* GetRuntimeExitInfo(JSContext* cx, JS::HandleObject runtime);
+JSObject* GetRuntimeTimerState(JSContext* cx, JS::HandleObject runtime, bool create);
+bool HasRuntimeTimerState(JSObject* runtime);
+JSObject* GetRuntimeTaskState(JSContext* cx, JS::HandleObject runtime, bool create);
+bool HasRuntimeTaskState(JSObject* runtime);
+JSObject* GetRuntimeAsyncState(JSContext* cx, JS::HandleObject runtime, bool create);
+JSObject* GetRuntimeCodecState(JSContext* cx, JS::HandleObject runtime, bool create);
+JSObject* GetRuntimeOptionsState(JSContext* cx, JS::HandleObject runtime, bool create);
+bool RegisterRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime,
+                                   JS::HandleObject realm, JS::HandleObject process);
+JSObject* GetRuntimePrincipalRealm(JSContext* cx, JS::HandleObject runtime, bool required = true);
+JSObject* GetRuntimePrincipalProcess(JSContext* cx, JS::HandleObject runtime);
+bool ConfigureCurrentOptions(JSContext* cx, JS::HandleObject runtime, JS::HandleObject arguments, JS::HandleString environment);
+JSObject* InspectCurrentOptions(JSContext* cx, JS::HandleObject runtime);
+JSObject* InspectCurrentTimerState(JSContext* cx, JS::HandleObject runtime);
+bool InitializeCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime);
+bool RunCurrentNodeBootstrap(JSContext* cx, JS::HandleObject runtime);
+JSObject* GetCurrentRealmLibrary(JSContext* cx, JS::HandleObject runtime, bool inspect);
+// Actual canonical native owner; unlike GetCurrentRealmLibrary, no diagnostic
+// snapshot is allocated. Valid after the native realm has been published.
+JSObject* GetCurrentRealmOwner(JSContext*,JS::HandleObject);
+bool RequireCurrentRealmBuiltin(JSContext*,JS::HandleObject,JS::HandleValue,JS::MutableHandleValue);
+
+// Privileged diagnostics return a snapshot, never the canonical carrier/key.
+JSObject* InspectCurrentContextForTesting(JSContext* cx, JS::HandleObject runtime);
+
+}  // namespace kandelo::node
+
+#endif

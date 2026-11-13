@@ -1,0 +1,32 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -75,2 +75,3 @@
+     "node-upstream/types.cpp",
++    "node-upstream/utility-upstream.cpp",
+ ]
+@@ -127,2 +128,3 @@
+ SOURCES["node-upstream/codecs.cpp"].flags += ["-std=c++20"]
++SOURCES["node-upstream/utility-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+ SOURCES["node-upstream/decoder-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -45,2 +45,3 @@
+ ignored_js_src_dirs = [
++    "js/src/shell/node-upstream/utilities-upstream/",  # complete original Node utilities
+     "js/src/shell/node-upstream/error-policy-upstream/",  # complete original Node header
+@@ -69,2 +70,9 @@
+         "shell/node-upstream/error-policy-upstream/node_errors.h",
++        "shell/node-upstream/utilities-upstream/util.h",
++        "shell/node-upstream/utilities-upstream/util-inl.h",
++        "shell/node-upstream/utilities-upstream/util.cc",
++        "shell/node-upstream/utilities-upstream/node_concepts.h",
++        "shell/node-upstream/utilities-upstream/node_union_bytes.h",
++        "shell/node-upstream/utilities-upstream/node_exit_code.h",
++        "shell/node-upstream/utilities-upstream/node_revert.h",
+         "shell/node-upstream/resource-upstream/async_wrap.cc",
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -93,2 +93,3 @@
+     "..",
++    "/js/src/shell/node-upstream/utility-engine-includes",
+ ]

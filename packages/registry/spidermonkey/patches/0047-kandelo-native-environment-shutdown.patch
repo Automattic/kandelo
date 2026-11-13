@@ -1,0 +1,18 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -186,6 +186,7 @@
+ #include "shell/jsoptparse.h"
+ #include "shell/jsshell.h"
+ #include "shell/kandelo-node-bootstrap.h"
++#include "shell/node-upstream/codecs.h"
+ #include "shell/node-upstream/options.h"
+ #include "shell/node-upstream/per-context.h"
+ #include "shell/node-upstream/private-key-test-api.h"
+@@ -14494,6 +14495,7 @@
+ }
+ 
+ ShellContext::~ShellContext() {
++  if (cx_) kandelo::node::ShutdownRuntimeCodecs(cx_);
+   markObservers.reset();
+   if (cx_) {
+     JS_SetContextPrivate(cx_, nullptr);

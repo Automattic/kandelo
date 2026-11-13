@@ -1,0 +1,18 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -41,2 +41,3 @@
+     "node-upstream/decoder-upstream.cpp",
++    "node-upstream/diagnostics-upstream.cpp",
+     "node-upstream/encoding-upstream.cpp",
+@@ -210,1 +211,2 @@
+ SOURCES["node-upstream/buffer-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
++SOURCES["node-upstream/diagnostics-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -89,2 +89,6 @@
+         "shell/node-upstream/codecs-upstream/aliased_buffer-inl.h",
++        "shell/node-upstream/codecs-upstream/base_object_types.h",
++        "shell/node-upstream/codecs-upstream/node_snapshotable.h",
++        "shell/node-upstream/codecs-upstream/node_diagnostics_channel.cc",
++        "shell/node-upstream/codecs-upstream/node_diagnostics_channel.h",
+         "shell/node-upstream/codecs-upstream/node_buffer.cc",

@@ -1,0 +1,1184 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Complete original process/error/AsyncWrap units and whole error-policy header compile; revision59 normal link fails on57symbols after original catch constructor resolves. Original coded error templates replace13provisional definitions; private primitive validation is separate from startup.",
+  "completeBindingContract": false,
+  "nativeSourceReview": {
+    "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+    "files": [
+      {
+        "path": "src/node_process_methods.cc",
+        "bytes": 29912,
+        "sha256": "909b412cc5fa20de7eb1a0de081849edd98dbe4a239ae412e48551eb2deb0b39"
+      },
+      {
+        "path": "src/node_process.h",
+        "bytes": 3909,
+        "sha256": "92d60126064d1f132ec7179d957a7baee2aa4cb5d47cf8f4505a2ec29c0308d6"
+      },
+      {
+        "path": "src/node_process-inl.h",
+        "bytes": 737,
+        "sha256": "22ad1b25a496672fa61429c06cb6848c25d50c5c81618e20ea8b83c35d0e5987"
+      },
+      {
+        "path": "src/node_process_object.cc",
+        "bytes": 8595,
+        "sha256": "301c1819a6cd59a48bd28f4c2252298137b6631cc33dda0ddb55dd8067d48957"
+      },
+      {
+        "path": "src/debug_utils.h",
+        "bytes": 7892,
+        "sha256": "040b8d03509d8908cb5521f038ba9d95dab01f022b06070401e548d731596cb5"
+      },
+      {
+        "path": "src/debug_utils-inl.h",
+        "bytes": 9757,
+        "sha256": "98e67d4365e66ac0345cba12f238905b2c349c76d1fe918ce975bb542f722aad"
+      },
+      {
+        "path": "src/node_dotenv.h",
+        "bytes": 1130,
+        "sha256": "a88e46ee815d45c7f58188655f117f526a34811e6db536f5b404c5d5a2050180"
+      },
+      {
+        "path": "src/path.h",
+        "bytes": 1049,
+        "sha256": "fd447905dae3570d308fc6746ab7ffef9571d79b7c3aa67805f0f564d767549a"
+      },
+      {
+        "path": "src/permission/permission_base.h",
+        "bytes": 3099,
+        "sha256": "db98ec7e2de879cdc644aa72d307f9f42572044bf8ff460cacb3d05af37b0e8d"
+      },
+      {
+        "path": "src/node_revert.h",
+        "bytes": 2129,
+        "sha256": "281e00e8265720a12ce69e88267dfabf33c57c16a91795c49ee4d5cf7c63cbcb"
+      },
+      {
+        "path": "src/node_mutex.h",
+        "bytes": 8585,
+        "sha256": "13208fe79bf345733d992eb7e1c598817fdab79ab859a2b81cec92b0e1763572"
+      }
+    ]
+  },
+  "wholeNativeFilesImportedThisStep": true,
+  "upstreamConsumers": {
+    "binding": {
+      "name": "process_methods",
+      "siteIds": [
+        "lib/inspector.js:909:internalBinding",
+        "lib/internal/bootstrap/node.js:5368:internalBinding",
+        "lib/internal/bootstrap/node.js:12207:internalBinding",
+        "lib/internal/bootstrap/switches/does_not_own_process_state.js:86:internalBinding",
+        "lib/internal/bootstrap/switches/does_own_process_state.js:86:internalBinding",
+        "lib/internal/bootstrap/switches/is_main_thread.js:84:internalBinding",
+        "lib/internal/process/per_thread.js:1624:internalBinding",
+        "lib/internal/process/pre_execution.js:11785:internalBinding",
+        "lib/internal/vfs/setup.js:38666:internalBinding"
+      ],
+      "contractStatus": "incomplete",
+      "directRequestedExportPaths": [
+        [
+          "_debugEnd"
+        ],
+        [
+          "dlopenBinary"
+        ],
+        [
+          "setEmitWarningSync"
+        ]
+      ]
+    },
+    "sites": [
+      {
+        "id": "lib/inspector.js:909:internalBinding",
+        "path": "lib/inspector.js",
+        "start": 909,
+        "end": 943,
+        "line": 38,
+        "column": 22,
+        "builtinId": "inspector",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "process_methods",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "_debugEnd"
+          ]
+        ],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "process_methods"
+        }
+      },
+      {
+        "id": "lib/internal/bootstrap/node.js:5368:internalBinding",
+        "path": "lib/internal/bootstrap/node.js",
+        "start": 5368,
+        "end": 5402,
+        "line": 153,
+        "column": 19,
+        "builtinId": "internal/bootstrap/node",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "process_methods",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "process_methods"
+        }
+      },
+      {
+        "id": "lib/internal/bootstrap/node.js:12207:internalBinding",
+        "path": "lib/internal/bootstrap/node.js",
+        "start": 12207,
+        "end": 12241,
+        "line": 357,
+        "column": 0,
+        "builtinId": "internal/bootstrap/node",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "process_methods",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "setEmitWarningSync"
+          ]
+        ],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "process_methods"
+        }
+      },
+      {
+        "id": "lib/internal/bootstrap/switches/does_not_own_process_state.js:86:internalBinding",
+        "path": "lib/internal/bootstrap/switches/does_not_own_process_state.js",
+        "start": 86,
+        "end": 120,
+        "line": 4,
+        "column": 19,
+        "builtinId": "internal/bootstrap/switches/does_not_own_process_state",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "process_methods",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "process_methods"
+        }
+      },
+      {
+        "id": "lib/internal/bootstrap/switches/does_own_process_state.js:86:internalBinding",
+        "path": "lib/internal/bootstrap/switches/does_own_process_state.js",
+        "start": 86,
+        "end": 120,
+        "line": 4,
+        "column": 19,
+        "builtinId": "internal/bootstrap/switches/does_own_process_state",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "process_methods",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "process_methods"
+        }
+      },
+      {
+        "id": "lib/internal/bootstrap/switches/is_main_thread.js:84:internalBinding",
+        "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+        "start": 84,
+        "end": 118,
+        "line": 7,
+        "column": 19,
+        "builtinId": "internal/bootstrap/switches/is_main_thread",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "process_methods",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "process_methods"
+        }
+      },
+      {
+        "id": "lib/internal/process/per_thread.js:1624:internalBinding",
+        "path": "lib/internal/process/per_thread.js",
+        "start": 1624,
+        "end": 1658,
+        "line": 68,
+        "column": 16,
+        "builtinId": "internal/process/per_thread",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "process_methods",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "process_methods"
+        }
+      },
+      {
+        "id": "lib/internal/process/pre_execution.js:11785:internalBinding",
+        "path": "lib/internal/process/pre_execution.js",
+        "start": 11785,
+        "end": 11819,
+        "line": 337,
+        "column": 18,
+        "builtinId": "internal/process/pre_execution",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "process_methods",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [],
+        "contextIds": [
+          "lib/internal/process/pre_execution.js:11724:FunctionDeclaration:"
+        ],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "process_methods"
+        }
+      },
+      {
+        "id": "lib/internal/vfs/setup.js:38666:internalBinding",
+        "path": "lib/internal/vfs/setup.js",
+        "start": 38666,
+        "end": 38700,
+        "line": 1066,
+        "column": 31,
+        "builtinId": "internal/vfs/setup",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "process_methods",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "dlopenBinary"
+          ]
+        ],
+        "contextIds": [
+          "lib/internal/vfs/setup.js:37980:FunctionDeclaration:",
+          "lib/internal/vfs/setup.js:38066:FunctionExpression:",
+          "lib/internal/vfs/setup.js:38521:IfStatement:consequent"
+        ],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "process_methods"
+        }
+      }
+    ],
+    "literalSites": 9,
+    "aliasDataflowComplete": false,
+    "directExportSyntaxIsNotFullUsage": true
+  },
+  "registeredMethods": [
+    {
+      "name": "hrtime",
+      "nativeFunction": "SlowHrtime",
+      "source": "src/node_process_methods.cc",
+      "line": 684,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "hrtimeBigInt",
+      "nativeFunction": "SlowHrtimeBigInt",
+      "source": "src/node_process_methods.cc",
+      "line": 686,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "_debugProcess",
+      "nativeFunction": "DebugProcess",
+      "source": "src/node_process_methods.cc",
+      "line": 787,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "abort",
+      "nativeFunction": "Abort",
+      "source": "src/node_process_methods.cc",
+      "line": 788,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "causeSegfault",
+      "nativeFunction": "CauseSegfault",
+      "source": "src/node_process_methods.cc",
+      "line": 789,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "chdir",
+      "nativeFunction": "Chdir",
+      "source": "src/node_process_methods.cc",
+      "line": 790,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "umask",
+      "nativeFunction": "Umask",
+      "source": "src/node_process_methods.cc",
+      "line": 792,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "memoryUsage",
+      "nativeFunction": "MemoryUsage",
+      "source": "src/node_process_methods.cc",
+      "line": 793,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "constrainedMemory",
+      "nativeFunction": "GetConstrainedMemory",
+      "source": "src/node_process_methods.cc",
+      "line": 794,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "availableMemory",
+      "nativeFunction": "GetAvailableMemory",
+      "source": "src/node_process_methods.cc",
+      "line": 795,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "rss",
+      "nativeFunction": "Rss",
+      "source": "src/node_process_methods.cc",
+      "line": 796,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "cpuUsage",
+      "nativeFunction": "CPUUsage",
+      "source": "src/node_process_methods.cc",
+      "line": 797,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "threadCpuUsage",
+      "nativeFunction": "ThreadCPUUsage",
+      "source": "src/node_process_methods.cc",
+      "line": 798,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "resourceUsage",
+      "nativeFunction": "ResourceUsage",
+      "source": "src/node_process_methods.cc",
+      "line": 799,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "_debugEnd",
+      "nativeFunction": "DebugEnd",
+      "source": "src/node_process_methods.cc",
+      "line": 801,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "_getActiveRequests",
+      "nativeFunction": "GetActiveRequests",
+      "source": "src/node_process_methods.cc",
+      "line": 802,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "_getActiveHandles",
+      "nativeFunction": "GetActiveHandles",
+      "source": "src/node_process_methods.cc",
+      "line": 803,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "getActiveResourcesInfo",
+      "nativeFunction": "GetActiveResourcesInfo",
+      "source": "src/node_process_methods.cc",
+      "line": 804,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "_kill",
+      "nativeFunction": "Kill",
+      "source": "src/node_process_methods.cc",
+      "line": 805,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "_rawDebug",
+      "nativeFunction": "RawDebug",
+      "source": "src/node_process_methods.cc",
+      "line": 806,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "cwd",
+      "nativeFunction": "Cwd",
+      "source": "src/node_process_methods.cc",
+      "line": 808,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "dlopen",
+      "nativeFunction": "binding::DLOpen",
+      "source": "src/node_process_methods.cc",
+      "line": 809,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "dlopenBinary",
+      "nativeFunction": "binding::DLOpenBinary",
+      "source": "src/node_process_methods.cc",
+      "line": 810,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "reallyExit",
+      "nativeFunction": "ReallyExit",
+      "source": "src/node_process_methods.cc",
+      "line": 811,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "execve",
+      "nativeFunction": "Execve",
+      "source": "src/node_process_methods.cc",
+      "line": 814,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "__POSIX__ && !__PASE__"
+    },
+    {
+      "name": "uptime",
+      "nativeFunction": "Uptime",
+      "source": "src/node_process_methods.cc",
+      "line": 816,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "patchProcessObject",
+      "nativeFunction": "PatchProcessObject",
+      "source": "src/node_process_methods.cc",
+      "line": 817,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "loadEnvFile",
+      "nativeFunction": "LoadEnvFile",
+      "source": "src/node_process_methods.cc",
+      "line": 819,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    },
+    {
+      "name": "setEmitWarningSync",
+      "nativeFunction": "SetEmitWarningSync",
+      "source": "src/node_process_methods.cc",
+      "line": 821,
+      "status": "whole source compiles; final link incomplete; not runtime validated",
+      "guard": "unconditional registration; callback bodies retain platform guards"
+    }
+  ],
+  "methodGroups": [
+    {
+      "exports": [
+        "hrtime",
+        "hrtimeBigInt"
+      ],
+      "inputs": "Actual binding receiver; shared hrtimeBuffer Uint32Array length 3",
+      "outputs": "Original C++ updates live aliased storage from uv_hrtime; JS performs original conversion",
+      "owner": "Realm BindingData, SpiderMonkey typed storage, libuv monotonic clock",
+      "prerequisites": [
+        "whole original node_process_methods.cc/h/inl",
+        "real receiver internal field",
+        "existing weak AliasedBuffer/native-object ownership"
+      ],
+      "errors": "Original receiver/type assertions; pending engine failures; no copied encoding algorithm"
+    },
+    {
+      "exports": [
+        "cpuUsage",
+        "threadCpuUsage",
+        "resourceUsage"
+      ],
+      "inputs": "Float64Array of exact length 2, 2 or 16; byteOffset zero",
+      "outputs": "Native accounting writes through real backing memory",
+      "owner": "libuv, libc and guest kernel accounting",
+      "prerequisites": [
+        "accurate process/thread resource state; current zero-filled getrusage is a gap"
+      ],
+      "errors": "Preserve native CHECKs and uv error exceptions; no fabricated zero measurements"
+    },
+    {
+      "exports": [
+        "memoryUsage",
+        "rss",
+        "constrainedMemory",
+        "availableMemory"
+      ],
+      "inputs": "memoryUsage requires Float64Array length 5, byteOffset zero; others no payload",
+      "outputs": "Actual guest RSS, engine heap used/capacity/external memory, ArrayBuffer accounting, real constraint/availability",
+      "owner": "SpiderMonkey allocator/accounting and guest kernel/libuv memory state",
+      "prerequisites": [
+        "missing libuv memory symbols",
+        "honest engine heap/external allocator metrics",
+        "fixed sysinfo values are not measurements"
+      ],
+      "errors": "uv error exceptions where present; no unavailable-memory success values"
+    },
+    {
+      "exports": [
+        "chdir",
+        "cwd",
+        "umask"
+      ],
+      "inputs": "chdir exactly one String; umask exactly one undefined or Uint32",
+      "outputs": "Actual guest cwd and process umask, shared lock for umask query/update",
+      "owner": "Environment permission/ownership, libuv, libc, guest process/VFS",
+      "prerequisites": [
+        "bootstrap state invariant",
+        "actual permission enforcement",
+        "ownership semantics for workers"
+      ],
+      "errors": "Preserve CHECKs, ThrowUVException and original old/new path context"
+    },
+    {
+      "exports": [
+        "_kill",
+        "_debugProcess",
+        "abort",
+        "causeSegfault",
+        "reallyExit",
+        "execve"
+      ],
+      "inputs": "Native coercions and original arity/type assertions; execve String plus argv/env arrays",
+      "outputs": "Guest signals, abnormal termination, actual exit status, address-space replacement",
+      "owner": "Environment lifecycle, libc and guest kernel",
+      "prerequisites": [
+        "RunAtExit and signal-handler state",
+        "exit/drain/cancellation ordering",
+        "exec fd flags restored on failure",
+        "Wasm fault semantics need focused evidence"
+      ],
+      "errors": "UV/errno exceptions and original fatal assertions; successful execve does not return; never signal host processes"
+    },
+    {
+      "exports": [
+        "_getActiveRequests",
+        "_getActiveHandles",
+        "getActiveResourcesInfo"
+      ],
+      "inputs": "Current Environment",
+      "outputs": "Actual registered live request/handle owners, resource names, ref-bearing timeout/immediate counts",
+      "owner": "Native Environment queues and timer/libuv lifecycle",
+      "prerequisites": [
+        "real ReqWrapBase/HandleWrap producers",
+        "persistent and ref-state filtering",
+        "no fabricated handles or unconditional empty queues"
+      ],
+      "errors": "Engine allocation failures; full shutdown/reentrant iteration and GC admission need review"
+    },
+    {
+      "exports": [
+        "_debugEnd"
+      ],
+      "inputs": "Current Environment",
+      "outputs": "Stop real listening inspector when compiled with HAVE_INSPECTOR",
+      "owner": "Inspector service and guest transports",
+      "prerequisites": [
+        "truthful feature metadata",
+        "whole original conditional body"
+      ],
+      "errors": "Do not replace a present inspector with successful stop stub"
+    },
+    {
+      "exports": [
+        "_rawDebug",
+        "uptime"
+      ],
+      "inputs": "_rawDebug exactly one String; uptime Current Environment",
+      "outputs": "Actual guest stderr newline/flush; real monotonic time since node_start_time",
+      "owner": "libc guest descriptor I/O, Environment loop, libuv clock",
+      "prerequisites": [
+        "actual runtime time origin and loop"
+      ],
+      "errors": "Preserve CHECK and original I/O behavior"
+    },
+    {
+      "exports": [
+        "dlopen",
+        "dlopenBinary",
+        "loadEnvFile"
+      ],
+      "inputs": "Original external-unit contracts, path coercion and permissions",
+      "outputs": "Real native addon loading or original dotenv parsing/environment changes",
+      "owner": "Full native addon loader, source Dotenv parser, guest file and environment APIs",
+      "prerequisites": [
+        "full source units and concrete capability checks; no parsing/function excerpts"
+      ],
+      "errors": "Keep unavailable capabilities explicit and original load/path/type errors; full signature review pending"
+    },
+    {
+      "exports": [
+        "patchProcessObject",
+        "setEmitWarningSync"
+      ],
+      "inputs": "Original process patch inputs; warning callback Function assertion",
+      "outputs": "Actual live native process properties, argv/execArgv/pid/execPath/versions; traced callback ownership",
+      "owner": "Complete process object unit, native engine data properties, Environment metadata/roots",
+      "prerequisites": [
+        "new live-data primitive must be connected to native callback adapter",
+        "real process title/parent/debug state",
+        "same complete upstream callback bodies"
+      ],
+      "errors": "No V8 binding generation or invented V8 metadata; original coercion/range errors and checks"
+    }
+  ],
+  "sharedNativeState": {
+    "bindingData": "SnapshotableObject with actual per-Realm weak AliasedUint32Array length 3 and receiver native pointer",
+    "warning": "Environment traced process_emit_warning_sync callback",
+    "resourceQueues": "actual request/handle wrap queues and referenced timer/immediate counts",
+    "processState": "guest cwd/umask/title/argv/pid/ppid; permissions; inspector HostPort; native start time",
+    "gcLifecycle": "existing weak ownership is a prerequisite, not proof for new producers; cleanup/exit/cancellation/worker/reentrant/OOM contracts incomplete",
+    "snapshots": "V8 heap serialization/restoration is unavailable and must fail explicitly"
+  },
+  "liveNativeDataProperties": {
+    "requiredBy": "src/node_process_object.cc:PatchProcessObject",
+    "properties": [
+      {
+        "name": "title",
+        "getter": "ProcessTitleGetter",
+        "setter": "ProcessTitleSetter if owns_process_state else absent"
+      },
+      {
+        "name": "ppid",
+        "getter": "GetParentProcessId",
+        "setter": null
+      },
+      {
+        "name": "debugPort",
+        "getter": "DebugPortGetter",
+        "setter": "DebugPortSetter if owns_process_state else absent"
+      }
+    ],
+    "observableContract": "Live data descriptor; no exposed JS accessor functions; inherited writes define receiver data; readonly/configurable rules retained",
+    "engineEvidence": "native-data-engine-check.json",
+    "nativeReference": "native-data-native-reference.json",
+    "limitations": [
+      "Proxy native targets explicitly rejected",
+      "Getter callback reentrant descriptor recursion not claimed compatible",
+      "Existing live tests use privileged native thunks, not process binding substitutes",
+      "Native debugPort conversion exception may still update state to 0; fixture only compares attribute ordering in this case",
+      "Full V8 templates/interceptor/security/side-effect metadata contract not implemented",
+      "ShouldThrowOnError/interceptor strictness metadata and debugger side-effect enforcement unavailable; stored classifications do not establish inspector support"
+    ],
+    "nativePropertyCallbackAdapterImplemented": true,
+    "processObjectAndMethodsUnitsIntegrated": false,
+    "nativeCallbackEvidence": "property-callback-engine-check.json"
+  },
+  "platformAccountingGaps": [
+    {
+      "source": "crates/runtime-core/src/syscalls.rs",
+      "symbol": "sys_getrusage",
+      "line": 23331,
+      "observed": "Returns success with zero-filled rusage; real CPU/resource accounting missing",
+      "classification": "Kandelo implementation gap; browser impossibility not established",
+      "fixedThisStep": false
+    },
+    {
+      "source": "crates/runtime-core/src/syscalls.rs",
+      "symbol": "sys_sysinfo",
+      "line": 23947,
+      "observed": "Fixed uptime 1, totalram 512MiB, freeram 256MiB and procs 1",
+      "classification": "Kandelo implementation gap; not real process or system memory metadata",
+      "fixedThisStep": false
+    }
+  ],
+  "libuvGaps": {
+    "evidence": "packages/registry/libuv/README.md",
+    "declaredMissingSymbols": [
+      "uv_cpu_info",
+      "uv_get_available_memory",
+      "uv_get_constrained_memory",
+      "uv_get_free_memory",
+      "uv_get_total_memory",
+      "uv_interface_addresses",
+      "uv_loadavg",
+      "uv_resident_set_memory",
+      "uv_uptime"
+    ],
+    "processTitle": "Existing uv_get_process_title/uv_set_process_title return UV_ENOSYS; no success emulation added",
+    "fullLibuvCompatibility": false,
+    "exepathEvidence": "libuv-exepath-engine-check.json"
+  },
+  "dependencyOrder": [
+    "validate live engine data callbacks on four hosts",
+    "connect real native callback interface needed by whole process object unit",
+    "compile whole original process_methods/process object units with required genuine native prerequisites",
+    "validate actual startup path and explicit unavailable contracts; address concrete platform build needs before deferred builds",
+    "continue startup to empty/simple output/errors/jobs/exit and separate CJS/ESM paths",
+    "complete full catalog and roadmap, then stop for user review before broader implementation"
+  ],
+  "validationObligations": [
+    "keep all original assertions and source byte identities",
+    "real guest output/error/exit, clock/time origin, per-Realm weak hrtime storage",
+    "actual native property callbacks, metadata and permissions, including worker ownership",
+    "positive/negative I/O, lifecycle/ref-state and resource-accounting behavior on Node/Chromium/Firefox/WebKit",
+    "do not call a missing binding resolved by its engine prerequisite alone"
+  ],
+  "reuseIndexes": [
+    ".context/davao-handoff/BACKEND-SALVAGE.md",
+    "tests/nodejs/upstream/backend-binding-survey.json",
+    "docs/nodejs-upstream-runtime.md"
+  ],
+  "fullRoadmapImplementationAuthorized": false,
+  "upstreamStartup": false,
+  "boundedConsumerAliasReview": {
+    "scope": "Bounded manual process consumer alias review; not complete alias dataflow or graph execution proof",
+    "completeAliasDataflow": false,
+    "sites": [
+      {
+        "path": "lib/internal/process/per_thread.js",
+        "line": 68,
+        "sourceLine": "const binding = internalBinding('process_methods');",
+        "sourceBytes": 16763,
+        "sourceSha256": "4c4bf8e32964fe1a18e15ea4a38ead7738955685af7db5555e0d40ea6cc7bece",
+        "kind": "module-alias",
+        "exports": [
+          "hrtimeBuffer",
+          "hrtime",
+          "hrtimeBigInt"
+        ],
+        "notes": "binding names actual shared native object; hrtimeBuffer.buffer used to construct BigUint64Array at module load"
+      },
+      {
+        "path": "lib/internal/process/per_thread.js",
+        "line": 107,
+        "sourceLine": "function wrapProcessMethods(binding) {",
+        "sourceBytes": 16763,
+        "sourceSha256": "4c4bf8e32964fe1a18e15ea4a38ead7738955685af7db5555e0d40ea6cc7bece",
+        "kind": "function-parameter-alias",
+        "exports": [
+          "cpuUsage",
+          "threadCpuUsage",
+          "memoryUsage",
+          "rss",
+          "resourceUsage",
+          "loadEnvFile",
+          "execve",
+          "_rawDebug"
+        ],
+        "notes": "binding parameter receives same rawMethods via the single literal wrapProcessMethods call at bootstrap/node:169; symbolic other callers remain open"
+      },
+      {
+        "path": "lib/internal/bootstrap/node.js",
+        "line": 153,
+        "sourceLine": "const rawMethods = internalBinding('process_methods');",
+        "sourceBytes": 16325,
+        "sourceSha256": "02a0489fb6713fc59e8fc95582ebd44a50b0f4c4a48d6e1c7879724ac6b93332",
+        "kind": "native-function-export-attachment",
+        "exports": [
+          "dlopen",
+          "uptime",
+          "_getActiveRequests",
+          "_getActiveHandles",
+          "getActiveResourcesInfo",
+          "reallyExit",
+          "_kill",
+          "constrainedMemory",
+          "availableMemory"
+        ],
+        "notes": "These values are attached directly to actual shared process object. Wrapper outputs from wrapProcessMethods are separate JS functions"
+      },
+      {
+        "path": "lib/internal/bootstrap/node.js",
+        "line": 357,
+        "sourceLine": "internalBinding('process_methods').setEmitWarningSync(emitWarningSync);",
+        "sourceBytes": 16325,
+        "sourceSha256": "02a0489fb6713fc59e8fc95582ebd44a50b0f4c4a48d6e1c7879724ac6b93332",
+        "kind": "warning-root-registration",
+        "exports": [
+          "setEmitWarningSync"
+        ],
+        "notes": "Stores original emitWarningSync callback in native Environment"
+      },
+      {
+        "path": "lib/internal/bootstrap/switches/does_own_process_state.js",
+        "line": 4,
+        "sourceLine": "const rawMethods = internalBinding('process_methods');",
+        "sourceBytes": 3835,
+        "sourceSha256": "eab185e4a26a807d21da8f3addba046b7a91e5ba2ca0bba86ef062663dd6f4aa",
+        "kind": "owned-process-native-methods",
+        "exports": [
+          "abort",
+          "chdir",
+          "cwd",
+          "umask"
+        ],
+        "notes": "Actual guest state changes; JS caches cwd and resets it after successful native chdir; original snapshot callbacks clear JS cache"
+      },
+      {
+        "path": "lib/internal/bootstrap/switches/does_not_own_process_state.js",
+        "line": 4,
+        "sourceLine": "const rawMethods = internalBinding('process_methods');",
+        "sourceBytes": 1285,
+        "sourceSha256": "3cc0d582c196f255992cd6733eafc9a30b0b27b176b1aaf811e416a4cb482800",
+        "kind": "non-owning-process-native-methods",
+        "exports": [
+          "cwd",
+          "umask"
+        ],
+        "notes": "JS rejects writes to process umask and provides unavailable abort/chdir; native cwd and read-only umask still real"
+      },
+      {
+        "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+        "line": 7,
+        "sourceLine": "const rawMethods = internalBinding('process_methods');",
+        "sourceBytes": 9468,
+        "sourceSha256": "da6d9350b7f2284dfc3613e43fd295c521d51aacc3674d79df76290f74cd55ab",
+        "kind": "main-thread-method-attachment",
+        "exports": [
+          "_debugProcess",
+          "_debugEnd"
+        ],
+        "notes": "Original JS attaches native debug operations"
+      },
+      {
+        "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+        "line": 287,
+        "sourceLine": "rawMethods.resetStdioForTesting = function() {",
+        "sourceBytes": 9468,
+        "sourceSha256": "da6d9350b7f2284dfc3613e43fd295c521d51aacc3674d79df76290f74cd55ab",
+        "kind": "javascript-owned-shared-binding-augmentation",
+        "exports": [
+          "resetStdioForTesting"
+        ],
+        "notes": "Original JS assigns its own function to shared binding. Not a missing registered C++ method; must retain mutability and shared object identity"
+      },
+      {
+        "path": "lib/internal/process/pre_execution.js",
+        "line": 337,
+        "sourceLine": "  const binding = internalBinding('process_methods');",
+        "sourceBytes": 29504,
+        "sourceSha256": "b87b010a0f42b40bc7af93195b520193e49dd1ac80a30ece13642978737c351c",
+        "kind": "pre-execution-process-patch",
+        "exports": [
+          "patchProcessObject"
+        ],
+        "notes": "Native call occurs during entrypath preparation, not binding initialization alone"
+      },
+      {
+        "path": "lib/internal/vfs/setup.js",
+        "line": 1066,
+        "sourceLine": "      const { dlopenBinary } = internalBinding('process_methods');",
+        "sourceBytes": 41509,
+        "sourceSha256": "46720bcf0cdfc8d9cbfc12507fc19cbf8ed151ecae03a2468f1219f69dd53387",
+        "kind": "conditional-native-addon-byte-loader",
+        "exports": [
+          "dlopenBinary"
+        ],
+        "notes": "Only when process addon path begins normalized reserved VFS prefix; require(fs) and raw binary loading remain native prerequisites"
+      },
+      {
+        "path": "lib/inspector.js",
+        "line": 38,
+        "sourceLine": "const { _debugEnd } = internalBinding('process_methods');",
+        "sourceBytes": 7308,
+        "sourceSha256": "0b967712491f7ce3330529c5dd64deac8c91a7b1c894628258e1e32225e73d39",
+        "kind": "conditional-native-debug-stop",
+        "exports": [
+          "_debugEnd"
+        ],
+        "notes": "inspector availability check precedes require/binding use"
+      }
+    ],
+    "usedRegisteredMethods": [
+      "_debugEnd",
+      "_debugProcess",
+      "_getActiveHandles",
+      "_getActiveRequests",
+      "_kill",
+      "_rawDebug",
+      "abort",
+      "availableMemory",
+      "chdir",
+      "constrainedMemory",
+      "cpuUsage",
+      "cwd",
+      "dlopen",
+      "dlopenBinary",
+      "execve",
+      "getActiveResourcesInfo",
+      "hrtime",
+      "hrtimeBigInt",
+      "loadEnvFile",
+      "memoryUsage",
+      "patchProcessObject",
+      "reallyExit",
+      "resourceUsage",
+      "rss",
+      "setEmitWarningSync",
+      "threadCpuUsage",
+      "umask",
+      "uptime"
+    ],
+    "registeredMethodsNotAccountedByThisReview": [
+      "causeSegfault"
+    ],
+    "sharedBindingData": [
+      "hrtimeBuffer"
+    ],
+    "javascriptOwnedAugmentations": [
+      "resetStdioForTesting"
+    ],
+    "falsePositiveCaution": "binding identifiers in bootstrap/node also name config/builtins in other lexical scopes; bare receiver regex is not a binding provenance proof",
+    "sourceIndexLiteralSites": 9,
+    "reviewRecords": 11,
+    "open": [
+      "dynamic/symbolic callers and user mutation of process methods",
+      "full signature/error/worker/exceptional native lifecycle",
+      "transitive consumers of methods attached to process and wrapper results"
+    ]
+  },
+  "nativePropertyCallbackInterface": {
+    "implemented": [
+      "Object::SetNativeDataProperty",
+      "PropertyCallbackInfo::GetIsolate",
+      "PropertyCallbackInfo::Data",
+      "PropertyCallbackInfo::HolderV2",
+      "PropertyCallbackInfo::GetReturnValue",
+      "Environment::GetCurrent(PropertyCallbackInfo)",
+      "Value::Int32Value"
+    ],
+    "evidence": "property-callback-engine-check.json",
+    "rooting": "Actual separate native callback frame and traced realm/payload slots; no captured native frame",
+    "fullNativeProcessIntegration": false,
+    "fullV8PropertyInterfaceCompatibility": false
+  },
+  "sourceCompilation": {
+    "evidence": "fatal-errors-compile-check.json",
+    "wholeOriginalMethodsAndObjectUnitsCompile": true,
+    "sourceInitializerConnected": true,
+    "finalLinkSucceeded": false,
+    "undefinedSymbols": [
+      "kandelo_node_codec_api::HeapStatistics::HeapStatistics()",
+      "kandelo_node_codec_api::HeapStatistics::external_memory() const",
+      "kandelo_node_codec_api::HeapStatistics::total_heap_size() const",
+      "kandelo_node_codec_api::HeapStatistics::used_heap_size() const",
+      "kandelo_node_codec_api::HeapStatistics::~HeapStatistics()",
+      "kandelo_node_codec_api::Isolate::GetHeapStatistics(kandelo_node_codec_api::HeapStatistics*)",
+      "kandelo_node_codec_impl::AsyncWrap::GetOwner()",
+      "kandelo_node_codec_impl::AsyncWrap::MemoryInfoName() const",
+      "kandelo_node_codec_impl::AsyncWrap::persistent()",
+      "kandelo_node_codec_impl::CheckProcessPermission(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::permission::PermissionScope, std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
+      "kandelo_node_codec_impl::Environment::Exit(kandelo_node_codec_impl::ExitCode)",
+      "kandelo_node_codec_impl::Environment::handle_wrap_queue()",
+      "kandelo_node_codec_impl::Environment::req_wrap_queue()",
+      "kandelo_node_codec_impl::HandleWrap::HasRef(kandelo_node_codec_impl::HandleWrap*)",
+      "kandelo_node_codec_impl::HasSignalJSHandler(int)",
+      "kandelo_node_codec_impl::IsolateData::node_allocator()",
+      "kandelo_node_codec_impl::NodeArrayBufferAllocator::total_mem_usage() const",
+      "kandelo_node_codec_impl::ReqWrapBase::GetAsyncWrap()",
+      "kandelo_node_codec_impl::RunAtExit(kandelo_node_codec_impl::Environment*)",
+      "kandelo_node_codec_impl::binding::DLOpen(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+      "kandelo_node_codec_impl::binding::DLOpenBinary(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+      "uv_get_available_memory",
+      "uv_get_constrained_memory",
+      "uv_resident_set_memory"
+    ],
+    "undefinedSymbolCount": 24,
+    "allSymbolsForThisLinkInvocation": true,
+    "fullContractInventoryComplete": false,
+    "originalCreateProcessObjectActivated": false,
+    "originalCreateProcessObjectMayNeedAdditionalContracts": true,
+    "finalBuildJob": "node-fatal-errors-final-1112-074430-5a89",
+    "finalBuildCacheKey": "acf3c39bc01fbf0f3cc53721f6f116495f647d21927da7a89d8bb8c4b7d4d955",
+    "wholeOriginalFormattingHeadersCompile": true,
+    "packageRevision": 55,
+    "currentRuntimeArtifact": null,
+    "priorCompileEvidence": "process-errors-compile-check.json",
+    "wholeOriginalProcessFilesCompile": true,
+    "wholeOriginalExceptionFactoriesCompile": true,
+    "wholeOriginalFatalErrorUnitCompiles": true
+  },
+  "sourceImport": {
+    "priorFiles": 561,
+    "currentFiles": 570,
+    "newWholeFiles": 9,
+    "allPriorRecordsAndBytesUnchanged": true,
+    "preexistingWholeProcessObject": "src/node_process_object.cc was already imported as metadata provenance; it is newly compiled",
+    "javascriptFiles": 443,
+    "javascriptBytes": 10993403,
+    "javascriptChanged": false,
+    "reimportManifestByteIdentical": true,
+    "evidence": "process-units-compile-check.json"
+  },
+  "compiledEmbeddingPrerequisites": {
+    "runtimeValidated": false,
+    "scope": "Definitions compiled in the final failed-link build; not runtime or whole-interface support",
+    "canonicalTimerState": "Environment borrows the existing uv_loop_t and pins/roots the actual shared timeout/immediate typed arrays for the callback frame",
+    "bootstrapState": "Reads actual full-bootstrap completion; NodeBodyDone remains insufficient",
+    "warningCallback": "Actual Environment-owned Global<Function>, cleared at shutdown; automatic warning emission remains unfinished",
+    "inspectorPort": "Delegates to the original options owner under native mutexes; no independent default/copy",
+    "bindingOwnership": "Actual native class, owning State, active realm and original SnapshotableObject type checked before returning native pointer",
+    "formatting": "Complete original debug_utils.h/inl, original provider-name macro metadata, native byte-length libc stream writes and UTF8/NUL-preserving engine error strings",
+    "genericEnginePrimitives": [
+      "Maybe presence/checked conversion",
+      "independently rooted LocalVector<Value>",
+      "actual Array/Object creation and property attributes",
+      "actual Float64Array brand",
+      "owned UTF8 string bytes",
+      "string-vector conversion",
+      "native method-template overloads preserving normal callback metadata"
+    ],
+    "processInvocation": {
+      "status": "compiled definitions; not runtime validated in SpiderMonkey",
+      "arguments": "References to original successfully configured NativeOptions vectors; retaining runtime roots their owner until shutdown",
+      "unconfiguredInvocation": "Explicit binding-initialization error; no empty/default argument fallback",
+      "executablePath": "Complete original libuv procfs-exepath.c reads actual guest image; Environment snapshots it at initialization before callbacks and retries full/truncated buffers",
+      "processStateOwnership": "Actual canonical shell runtime identity and ShellContext main/worker role; cleared at shutdown",
+      "startEpoch": "Actual uv_hrtime at the once-only guest main CaptureOptionsInvocation hook",
+      "argvNormalization": "Left in complete original internal/process/pre_execution.js; no native argv0 rewrite",
+      "validation": "libuv executable-path backend has separate four-host identified-artifact evidence; process Environment accessors have compile-only evidence",
+      "remainingValidation": [
+        "positive/negative configuration and argv ownership through actual startup",
+        "main/worker ownership and retirement",
+        "epoch/uptime consistency and errors",
+        "preload/rename ordering and partial initialization/OOM"
+      ]
+    },
+    "processFiles": {
+      "catalog": "process-files-contracts.json",
+      "status": "whole original units and real generic definitions compile; runtime unvalidated",
+      "environment": "Actual original RealEnvStore global for canonical process; per-worker clone/share not implemented",
+      "options": "Actual original options flags under mutex",
+      "roots": "Typed independent persistent roots for Value/Name vectors; rooted Value-mode temporary buffer",
+      "bytes": "Actual string UTF8 or native view byte copy and terminator",
+      "objects": "Explicit prototype and real property definitions; enumerable own names and retained numeric indices",
+      "timezone": "Original POSIX tzset then actual JS::ResetTimeZone; cross-worker/Intl behavior unvalidated"
+    },
+    "systemErrorFactories": {
+      "catalog": "process-errors-contracts.json",
+      "evidence": "process-errors-compile-check.json",
+      "status": "Complete upstream API factory unit and real engine primitives compile; not runtime validated",
+      "remaining": "Full fatal/uncaught/message/stack/report prerequisites unavailable; original errno algorithm now compiles",
+      "genericDefinitions": [
+        "actual UTF16 intrinsic Error/capture",
+        "actual Context-scoped ToObject",
+        "295original macro-owned property keys"
+      ],
+      "nativeReferenceOnlyControls": 8
+    }
+  },
+  "knownPlatformGaps": [
+    {
+      "owner": "guest kernel",
+      "path": "crates/runtime-core/src/syscalls.rs",
+      "symbol": "sys_getrusage",
+      "observedImplementation": "success with zero-filled rusage; not genuine resource measurements",
+      "affects": [
+        "process.cpuUsage",
+        "process.resourceUsage"
+      ],
+      "boundary": "implementation gap; not established browser impossibility",
+      "deferredBuildRequiredForFix": true
+    },
+    {
+      "owner": "guest kernel",
+      "path": "crates/runtime-core/src/syscalls.rs",
+      "symbol": "sys_sysinfo",
+      "observedImplementation": "fixed uptime, total/free memory and process count; not genuine system measurements",
+      "affects": [
+        "native memory/accounting prerequisites"
+      ],
+      "boundary": "implementation gap; do not use as real process data",
+      "deferredBuildRequiredForFix": true
+    }
+  ],
+  "processFilesPrerequisites": {
+    "catalog": "process-files-contracts.json",
+    "compileEvidence": "process-files-compile-check.json",
+    "sourceImport": {
+      "priorFiles": 570,
+      "currentFiles": 574,
+      "newWholeFiles": 4,
+      "allPriorRecordsAndBytesUnchanged": true,
+      "javascriptChanged": false
+    },
+    "resolvedSinceRevision52": [
+      "kandelo_node_codec_impl::BufferValue::BufferValue(kandelo_node_codec_api::Isolate*, kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>)",
+      "kandelo_node_codec_impl::Dotenv::ParsePath(std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
+      "kandelo_node_codec_impl::Dotenv::SetEnvironment(kandelo_node_codec_impl::Environment*)",
+      "kandelo_node_codec_impl::ToNamespacedPath(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::BufferValue*)"
+    ],
+    "runtimeValidated": false,
+    "envProxyAvailable": false,
+    "workerStoreSelectionImplemented": false,
+    "adaLibraryLinked": false,
+    "wholeURLPathBackendAvailable": false
+  },
+  "fatalErrorPrerequisites": {
+    "catalog": "fatal-errors-contracts.json",
+    "evidence": "fatal-errors-compile-check.json",
+    "runtimeValidated": false
+  },
+  "memoryPrerequisites": "process-memory-contracts.json",
+  "nativeOwnerPrerequisiteCatalog": "native-owner-contracts.json",
+  "nativeOwnerPrerequisiteEvidence": "native-owner-engine-check.json",
+  "asyncResourceCatalog": "async-resource-contracts.json",
+  "asyncResourceEvidence": "async-resource-engine-check.json",
+  "scopedCatchCatalog": "scoped-catch-contracts.json",
+  "scopedCatchEvidence": "scoped-catch-engine-check.json",
+  "errorPolicyCatalog": "error-policy-contracts.json",
+  "errorPolicyEvidence": "error-policy-engine-check.json"
+}

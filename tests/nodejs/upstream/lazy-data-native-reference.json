@@ -1,0 +1,238 @@
+{
+  "native": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixtures": [
+    {
+      "path": "tests/nodejs/upstream/lazy-data-native-prefix.cjs",
+      "bytes": 687,
+      "sha256": "19dbd3ba24790802fb743e9c966af98806fd057ac68e484c2961a11dfb41862d"
+    },
+    {
+      "path": "tests/nodejs/upstream/lazy-data-shared-controls.js",
+      "bytes": 5897,
+      "sha256": "39c2e3470ae750d3b2d98aecb440e347291d16e07f76bbb59ecd7cace707bc12"
+    }
+  ],
+  "generatedFixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-lazy-native.4omjbw25/reference.cjs",
+    "bytes": 6548,
+    "sha256": "9d4472e396d1b5d746186d379cd6e52c2b6dee2a7b321b7509f99979f8fb958f"
+  },
+  "flags": [
+    "--no-warnings",
+    "--no-node-snapshot",
+    "--expose-internals",
+    "--expose-gc"
+  ],
+  "result": {
+    "exitCode": 0,
+    "stdout": "{\"kind\":\"native-lazy-data-reference\",\"cases\":19,\"failures\":0,\"observations\":[{\"name\":\"binding-function-descriptor\",\"status\":\"pass\",\"detail\":{\"name\":\"defineLazyProperties\",\"length\":0,\"writable\":true,\"enumerable\":true,\"configurable\":true}},{\"name\":\"registration-and-name-enumeration-do-not-load\",\"status\":\"pass\",\"detail\":[\"x\"]},{\"name\":\"descriptor-access-materializes-actual-data-without-getter-function\",\"status\":\"pass\",\"detail\":{\"value\":\"function\",\"getType\":\"undefined\",\"writable\":true,\"enumerable\":true,\"configurable\":true}},{\"name\":\"nonenumerable-properties-remain-real-data\",\"status\":\"pass\",\"detail\":{\"value\":\"function\",\"getType\":\"undefined\",\"writable\":true,\"enumerable\":false,\"configurable\":true}},{\"name\":\"plain-assignment-replaces-without-loading\",\"status\":\"pass\",\"detail\":{\"value\":37,\"getType\":\"undefined\",\"writable\":true,\"enumerable\":true,\"configurable\":true}},{\"name\":\"deletion-does-not-load\",\"status\":\"pass\",\"detail\":{\"deleted\":true,\"own\":false}},{\"name\":\"freeze-does-not-load-and-read-propagates-real-module-error\",\"status\":\"pass\",\"detail\":{\"name\":\"TypeError\",\"message\":\"Missing internal module 'internal/kandelo_missing_lazy_control'\"}},{\"name\":\"getter-value-is-computed-once-and-cached-on-holder\",\"status\":\"pass\",\"detail\":{\"calls\":1,\"first\":1,\"second\":1}},{\"name\":\"throwing-computation-is-not-cached-and-preserves-error-identity\",\"status\":\"pass\",\"detail\":{\"calls\":2,\"result\":43}},{\"name\":\"inherited-read-materializes-holder-and-does-not-own-receiver\",\"status\":\"pass\",\"detail\":{\"value\":1,\"calls\":1,\"receiverOwn\":false,\"holderValue\":1}},{\"name\":\"inherited-assignment-does-not-load-or-modify-holder\",\"status\":\"pass\",\"detail\":{\"before\":0,\"value\":1,\"calls\":1,\"receiverValue\":47}},{\"name\":\"frozen-lazy-value-materializes-with-readonly-attributes\",\"status\":\"pass\",\"detail\":{\"value\":53,\"descriptor\":{\"value\":53,\"getType\":\"undefined\",\"writable\":false,\"enumerable\":true,\"configurable\":false},\"frozen\":true}},{\"name\":\"attribute-only-definition-materializes-current-data\",\"status\":\"pass\",\"detail\":{\"before\":1,\"keys\":[],\"value\":1,\"calls\":1}},{\"name\":\"define-data-value-materializes-current-descriptor\",\"status\":\"pass\",\"detail\":{\"calls\":1,\"descriptor\":{\"value\":59,\"getType\":\"undefined\",\"writable\":true,\"enumerable\":true,\"configurable\":true}}},{\"name\":\"define-accessor-materializes-current-descriptor\",\"status\":\"pass\",\"detail\":{\"calls\":1,\"value\":61,\"getter\":\"function\",\"writable\":\"undefined\"}},{\"name\":\"empty-key-array-performs-no-definition-or-loading\",\"status\":\"pass\",\"detail\":[]},{\"name\":\"key-getter-errors-preserve-earlier-definitions\",\"status\":\"pass\",\"detail\":{\"keys\":[\"isDate\"],\"works\":true}},{\"name\":\"assign-values-entries-and-json-use-materialized-data\",\"status\":\"pass\",\"detail\":{\"assigned\":{\"__kandelo_lazy_control__\":71},\"values\":[71],\"entries\":[[\"__kandelo_lazy_control__\",71]],\"json\":\"{\\\"__kandelo_lazy_control__\\\":71}\"}},{\"name\":\"array-target-retains-native-class-and-length\",\"status\":\"pass\",\"detail\":{\"length\":0,\"value\":73,\"tag\":\"[object Array]\"}}]}\n",
+    "stderr": ""
+  },
+  "detail": {
+    "kind": "native-lazy-data-reference",
+    "cases": 19,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "binding-function-descriptor",
+        "status": "pass",
+        "detail": {
+          "name": "defineLazyProperties",
+          "length": 0,
+          "writable": true,
+          "enumerable": true,
+          "configurable": true
+        }
+      },
+      {
+        "name": "registration-and-name-enumeration-do-not-load",
+        "status": "pass",
+        "detail": [
+          "x"
+        ]
+      },
+      {
+        "name": "descriptor-access-materializes-actual-data-without-getter-function",
+        "status": "pass",
+        "detail": {
+          "value": "function",
+          "getType": "undefined",
+          "writable": true,
+          "enumerable": true,
+          "configurable": true
+        }
+      },
+      {
+        "name": "nonenumerable-properties-remain-real-data",
+        "status": "pass",
+        "detail": {
+          "value": "function",
+          "getType": "undefined",
+          "writable": true,
+          "enumerable": false,
+          "configurable": true
+        }
+      },
+      {
+        "name": "plain-assignment-replaces-without-loading",
+        "status": "pass",
+        "detail": {
+          "value": 37,
+          "getType": "undefined",
+          "writable": true,
+          "enumerable": true,
+          "configurable": true
+        }
+      },
+      {
+        "name": "deletion-does-not-load",
+        "status": "pass",
+        "detail": {
+          "deleted": true,
+          "own": false
+        }
+      },
+      {
+        "name": "freeze-does-not-load-and-read-propagates-real-module-error",
+        "status": "pass",
+        "detail": {
+          "name": "TypeError",
+          "message": "Missing internal module 'internal/kandelo_missing_lazy_control'"
+        }
+      },
+      {
+        "name": "getter-value-is-computed-once-and-cached-on-holder",
+        "status": "pass",
+        "detail": {
+          "calls": 1,
+          "first": 1,
+          "second": 1
+        }
+      },
+      {
+        "name": "throwing-computation-is-not-cached-and-preserves-error-identity",
+        "status": "pass",
+        "detail": {
+          "calls": 2,
+          "result": 43
+        }
+      },
+      {
+        "name": "inherited-read-materializes-holder-and-does-not-own-receiver",
+        "status": "pass",
+        "detail": {
+          "value": 1,
+          "calls": 1,
+          "receiverOwn": false,
+          "holderValue": 1
+        }
+      },
+      {
+        "name": "inherited-assignment-does-not-load-or-modify-holder",
+        "status": "pass",
+        "detail": {
+          "before": 0,
+          "value": 1,
+          "calls": 1,
+          "receiverValue": 47
+        }
+      },
+      {
+        "name": "frozen-lazy-value-materializes-with-readonly-attributes",
+        "status": "pass",
+        "detail": {
+          "value": 53,
+          "descriptor": {
+            "value": 53,
+            "getType": "undefined",
+            "writable": false,
+            "enumerable": true,
+            "configurable": false
+          },
+          "frozen": true
+        }
+      },
+      {
+        "name": "attribute-only-definition-materializes-current-data",
+        "status": "pass",
+        "detail": {
+          "before": 1,
+          "keys": [],
+          "value": 1,
+          "calls": 1
+        }
+      },
+      {
+        "name": "define-data-value-materializes-current-descriptor",
+        "status": "pass",
+        "detail": {
+          "calls": 1,
+          "descriptor": {
+            "value": 59,
+            "getType": "undefined",
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          }
+        }
+      },
+      {
+        "name": "define-accessor-materializes-current-descriptor",
+        "status": "pass",
+        "detail": {
+          "calls": 1,
+          "value": 61,
+          "getter": "function",
+          "writable": "undefined"
+        }
+      },
+      {
+        "name": "empty-key-array-performs-no-definition-or-loading",
+        "status": "pass",
+        "detail": []
+      },
+      {
+        "name": "key-getter-errors-preserve-earlier-definitions",
+        "status": "pass",
+        "detail": {
+          "keys": [
+            "isDate"
+          ],
+          "works": true
+        }
+      },
+      {
+        "name": "assign-values-entries-and-json-use-materialized-data",
+        "status": "pass",
+        "detail": {
+          "assigned": {
+            "__kandelo_lazy_control__": 71
+          },
+          "values": [
+            71
+          ],
+          "entries": [
+            [
+              "__kandelo_lazy_control__",
+              71
+            ]
+          ],
+          "json": "{\"__kandelo_lazy_control__\":71}"
+        }
+      },
+      {
+        "name": "array-target-retains-native-class-and-length",
+        "status": "pass",
+        "detail": {
+          "length": 0,
+          "value": 73,
+          "tag": "[object Array]"
+        }
+      }
+    ]
+  }
+}

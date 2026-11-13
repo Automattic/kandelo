@@ -1,0 +1,10 @@
+{
+  "command": "scripts/dev-shell.sh python3 -B tests/nodejs/upstream/source-registry-generator.test.py",
+  "tests": 12,
+  "result": "pass",
+  "scope": "source/protocol/publication integrity; protocol fixtures do not establish real metadata or guest support",
+  "generatorSha256": "c4a23b02b681a8c7ee0119b002ff3eff3adfa01bac9e08a42f7d2101e61ce165",
+  "testSha256": "05bf4dde381f86bfc0557c23f102f8c6045f051dc779f863b9ed0c691371c950",
+  "upstreamFilesReverified": 492,
+  "guestRuntimeTestsRun": false
+}

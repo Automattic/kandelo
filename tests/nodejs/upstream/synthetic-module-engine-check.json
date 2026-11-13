@@ -1,0 +1,384 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T00:27:37.065038+00:00",
+  "scope": "Callback-backed SpiderMonkey synthetic engine modules and Node-host guest controls only; no Node ModuleWrap binding or upstream realm/bootstrap startup",
+  "sourceHeadAtBuild": "c86a691518a7ac5f2e7c68e5501a9e0c0482ac17",
+  "testedInputs": [
+    {
+      "path": "packages/registry/spidermonkey/package.toml",
+      "bytes": 2553,
+      "sha256": "53c1df3b5e6b5d851eb90df02b3ab2e023f1577a0a8535493f25efbe95b250cf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build.toml",
+      "bytes": 769,
+      "sha256": "a8a2897772e27c5fac9425521654369d9d8d6a6ed02725cec264c7ccbb045da2"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build-spidermonkey.sh",
+      "bytes": 20665,
+      "sha256": "2c64a4569d382019b9e37860a0e96cc657a0bc6ed450c40917052afc4833835b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/private-key-test-api.cpp",
+      "bytes": 8370,
+      "sha256": "9161bfd24d68265eb7764d5f664e0f0512b1cac958db1684858b0e26276f90b2"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0027-kandelo-synthetic-modules.patch",
+      "bytes": 19313,
+      "sha256": "4adaba274a9081f562e20aed2831742ada77a72d9ae184ec8645ead51fff829d"
+    },
+    {
+      "path": "scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 5878,
+      "sha256": "a71247a8ac87e5f43aefed4d84331c893721e4eabeb4efe329dd799d288eb4b6"
+    },
+    {
+      "path": "tests/nodejs/upstream/synthetic-module-engine-controls.js",
+      "bytes": 11076,
+      "sha256": "a8d5f8aa3a041eb0bd21c65d504f3190a76589a83bc36307f7f61955da3d1a81"
+    },
+    {
+      "path": "tests/nodejs/upstream/per-context-engine-controls.js",
+      "bytes": 9898,
+      "sha256": "62e1fac223138750d8da88568a2afd5bcb214a8180fabb1099ccd7c3888a0998"
+    },
+    {
+      "path": "tests/nodejs/upstream/private-key-engine-controls.js",
+      "bytes": 9022,
+      "sha256": "2448424edbbed3eb2776eb64148ac6a8e42fa372d357a133910b2c5c3b20210c"
+    },
+    {
+      "path": "third_party/nodejs/sources.json",
+      "bytes": 116767,
+      "sha256": "7e131abb50f48efbfd1503d09f99934f399a1c82fcdc567fc39395425dcab8fd"
+    }
+  ],
+  "package": {
+    "name": "spidermonkey",
+    "revision": 20,
+    "architecture": "wasm32",
+    "cacheKey": "0d78353dd60984ec46e9f3abd27cc661551c33472636377be6cc8c9259edfd2b",
+    "mozillaVersion": "140.11.0esr",
+    "mozillaArchiveSha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028"
+  },
+  "implementation": {
+    "kind": "Actual native ModuleObject synthetic fields, native export environment and module namespace exotic object; no generated JS module substitute",
+    "tracing": "Module-owned HeapPtr private value/evaluation Promise, traced export/local atom vectors; no native persistent-root cycle",
+    "linking": "Distinct Unlinked/Linked state, real source graph resolution and mapped export bindings",
+    "evaluation": "Native synchronous callback, traced published Promise before reentry, once-only execution and actual error rejection; pending synthetic dependency refuses a reentrant graph",
+    "exportNames": "Public names map to unique internal identifiers, avoiding numeric/empty/*namespace* collisions",
+    "json": "Original JSON parser/type/evaluation path retained",
+    "diagnostics": "Opt-in shell APIs only, Node mode rejects test flag; shell synthetic debug getters remain intentionally hidden"
+  },
+  "jobs": {
+    "failedBuilds": [
+      {
+        "id": "node-synthetic-engine-1110-190722-e483",
+        "exit": 1,
+        "recipeExit": 2,
+        "seconds": 161,
+        "failure": "Internal ExportNameVector accidentally appeared in public callback declaration"
+      },
+      {
+        "id": "node-synthetic-engine-fixed-1110-191048-6375",
+        "exit": 1,
+        "recipeExit": 2,
+        "seconds": 352,
+        "failure": "New public API referenced ContainsElement before its declaration"
+      },
+      {
+        "id": "node-synthetic-engine-checked-1110-191722-ea5b",
+        "exit": 1,
+        "recipeExit": 2,
+        "seconds": 161,
+        "failure": "Missing EnvironmentObject-inl.h definition caused setAliasedBinding link failure"
+      }
+    ],
+    "successfulBuild": {
+      "id": "node-synthetic-engine-linked-1110-192030-69c3",
+      "exit": 0,
+      "seconds": 183
+    },
+    "firstGuestControls": {
+      "id": "node-synthetic-guest-1110-192340-102d",
+      "exit": 1,
+      "driverFailures": 1,
+      "engineCases": 15,
+      "passingCases": 12,
+      "failingCases": 3,
+      "failureObservations": [
+        {
+          "name": "real-module-record-link-and-synchronous-evaluation",
+          "status": "fail",
+          "error": {
+            "name": "Error",
+            "message": "Assertion failed: got (void 0), expected 0",
+            "stack": "@-e:45:11\ncheck@-e:7:9\n@-e:38:6\n"
+          }
+        },
+        {
+          "name": "callback-exception-becomes-cached-rejected-promise",
+          "status": "fail",
+          "error": {
+            "name": "Error",
+            "message": "Assertion failed: got (void 0), expected ({identity:\"original synthetic exception\"})",
+            "stack": "@-e:112:11\ncheck@-e:7:9\n@-e:103:6\n"
+          }
+        },
+        {
+          "name": "json-module-path-preserves-real-parser-and-type",
+          "status": "fail",
+          "error": {
+            "name": "SyntaxError",
+            "message": "import attributes are not currently supported",
+            "stack": "source@-e:34:29\n@-e:239:26\ncheck@-e:7:9\n@-e:237:6\n"
+          }
+        }
+      ],
+      "resolution": "Fixture used shell getters that intentionally hide synthetic internals; JSON import syntax required the existing --enable-import-attributes option. No engine bytes changed for corrected run."
+    },
+    "guestControls": {
+      "id": "node-synthetic-guest-corrected-1110-192504-ad01",
+      "exit": 0,
+      "seconds": 6
+    },
+    "regressions": {
+      "id": "node-synthetic-regressions-1110-192534-c971",
+      "exit": 0,
+      "seconds": 10
+    },
+    "selectedObjectDiagnostic": {
+      "exit": 1,
+      "classification": "Harness environment failure: direct mach invocation omitted recipe compiler environment and used Nix host clang for wasm target; not target engine evidence. Full normal package build validates final source."
+    }
+  },
+  "checks": {
+    "mozillaIncludeStyle": "passed",
+    "macroassemblerStyle": "passed",
+    "opcodeCheck": "passed",
+    "syntheticCases": 15,
+    "syntheticFailures": 0,
+    "notRun": 0,
+    "syntheticDriverRuns": 3,
+    "syntheticDriverFailures": 0,
+    "syntheticHostDiagnostics": 0,
+    "importAttributes": "Enabled using actual --enable-import-attributes parser option; required for JSON baseline syntax",
+    "perContextCases": 14,
+    "perContextFailures": 0,
+    "perContextDriverRuns": 4,
+    "perContextDriverFailures": 0,
+    "perContextSuccessHostDiagnostics": 0,
+    "fatalInvariantExit": 132,
+    "fatalInvariantHostDiagnostics": [
+      {
+        "pid": 100,
+        "source": "worker-main error message",
+        "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c2edeee:wasm-function[102]:0x5adbf\n    at wasm://wasm/0c2edeee:wasm-function[101]:0x57ae9\n    at wasm://wasm/0c2edeee:wasm-function[21452]:0x1350e68\n    at wasm://wasm/0c2edeee:wasm-function[7215]:0x50da7b\n    at wasm://wasm/0c2edeee:wasm-function[7214]:0x4fb542\n    at wasm://wasm/0c2edeee:wasm-function[7223]:0x50f9f0\n    at wasm://wasm/0c2edeee:wasm-function[7224]:0x50fc5f\n    at wasm://wasm/0c2edeee:wasm-function[8081]:0x5ddecc\n    at wasm://wasm/0c2edeee:wasm-function[87]:0x51209\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)",
+        "status": 132
+      }
+    ],
+    "privateKeyCases": 23,
+    "privateKeyFailures": 0,
+    "privateKeyDriverRuns": 3,
+    "privateKeyDriverFailures": 0,
+    "privateKeyHostDiagnostics": 0,
+    "nativeReferenceCases": 4,
+    "nativeReferenceFailures": 0
+  },
+  "nativeReference": "synthetic-module-native-reference.json",
+  "moduleWrapInventory": "module-wrap-contracts.md",
+  "artifacts": [
+    {
+      "kind": "program",
+      "original": {
+        "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev20-wasm32-abi56-0d78353dd60984ec46e9f3abd27cc661551c33472636377be6cc8c9259edfd2b/js.wasm",
+        "bytes": 51099579,
+        "sha256": "af73d3a6f75a1bfe0f9b7eff6d73da3fd0b6a7e3adb19ade0d10351b5eb5beee"
+      },
+      "retainedCompressed": {
+        "path": ".context/node-synthetic/program.af73d3a6f75a1bfe0f9b7eff6d73da3fd0b6a7e3adb19ade0d10351b5eb5beee.wasm.gz",
+        "bytes": 16810605,
+        "sha256": "fe9055aee28e948b23f479692dc65e6b4710544f5e9082bda14e246e52d4abc1"
+      },
+      "roundTripVerified": true
+    },
+    {
+      "kind": "kernel",
+      "original": {
+        "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+        "bytes": 2958224,
+        "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+      },
+      "retainedCompressed": {
+        "path": ".context/node-synthetic/kernel.f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c.wasm.gz",
+        "bytes": 847370,
+        "sha256": "b76f2c58fc2e76f053b466c4b81618deca938d6bbe5e30c59f09c45495ea3791"
+      },
+      "roundTripVerified": true
+    }
+  ],
+  "retainedLogs": [
+    {
+      "path": ".context/node-synthetic/style-check.log",
+      "bytes": 1265,
+      "sha256": "eaf6d46dc147472e6b13dca6ec4f14dda57fb3d9363ac88e6a527c50029b7706"
+    },
+    {
+      "path": ".context/node-synthetic/selected-object-check.log",
+      "bytes": 4894,
+      "sha256": "b52d8a805af7dca675de3d83375d87e2ac687fbfadcf63339ecaf07a5679c4d1"
+    },
+    {
+      "path": ".context/node-synthetic/reference-sources.log",
+      "bytes": 700,
+      "sha256": "ce6f87344d63252b8f1c9d86c7c3d055b25e8fa765534e472ffa25dc5c04ba26"
+    },
+    {
+      "path": ".context/node-synthetic/native-check.log",
+      "bytes": 1139,
+      "sha256": "defffc6330ff73481511d27ae820641a14e8061ec6fbd2fae0978eb1c1338f3c"
+    },
+    {
+      "path": ".context/node-synthetic/fixture-syntax.log",
+      "bytes": 428,
+      "sha256": "757a4b7fa62c83cc7bbb197646a02a2ede260a9ab534bffe8c1cef3b34473ea5"
+    },
+    {
+      "path": ".context/node-synthetic/build-first-job.log",
+      "bytes": 2657,
+      "sha256": "3049442d52c6e965f3d88463ac4f9b4b1a7b428e0e3dbf60f4fcd01069c112b7"
+    },
+    {
+      "path": ".context/node-synthetic/build-first.log",
+      "bytes": 288609,
+      "sha256": "b9ee3177d77d8476bb336ce2384fcf943bd657cd67dba71df7a94161f3a05e9f"
+    },
+    {
+      "path": ".context/node-synthetic/build-second-job.log",
+      "bytes": 2317,
+      "sha256": "193dc5f18ac871f1f4249d95d56950a3d62ef6ee88cb5bd26f8ac2e659ef44c6"
+    },
+    {
+      "path": ".context/node-synthetic/build-second.log",
+      "bytes": 257240,
+      "sha256": "2c0d5263c0ab9f7b6a3d7cd8a6b9d56c76d8ec6d7c7470625b379f0b6396daf5"
+    },
+    {
+      "path": ".context/node-synthetic/build-third-job.log",
+      "bytes": 2586,
+      "sha256": "d9b2fe47d143ce70f301fe065516be437b559ebeda65798bf40e795e0d7024a3"
+    },
+    {
+      "path": ".context/node-synthetic/build-third.log",
+      "bytes": 258030,
+      "sha256": "e9a360226603d5299f5585c6ea44ee23c8976d7e05b296e03d2cb3d09024e134"
+    },
+    {
+      "path": ".context/node-synthetic/build-passed-job.log",
+      "bytes": 375,
+      "sha256": "450ba7b326dc4212d959a58f2776a0aa9cebf4f233fe4adff2486946ec3abe61"
+    },
+    {
+      "path": ".context/node-synthetic/build-passed.log",
+      "bytes": 257130,
+      "sha256": "cdb81542f7db239a703d22350b51d561de64c0e73d173a78dbe23aab5fb10b7a"
+    },
+    {
+      "path": ".context/node-synthetic/guest-first-failure-job.log",
+      "bytes": 565,
+      "sha256": "7d8c32aa0fa4e26534e8999ff72987d9ea9d53a2858f46005709138e63c2ab3d"
+    },
+    {
+      "path": ".context/node-synthetic/guest-passed-job.log",
+      "bytes": 565,
+      "sha256": "28a8ed46f8950daf265aec66dbe8d2d18e1cf06c1115077304a8086fa6d63be8"
+    },
+    {
+      "path": ".context/node-synthetic/regression-job.log",
+      "bytes": 1428,
+      "sha256": "b5f852d89f2b29bddd53f69e564289fc089afcd80e151e7f2e64d224929b9a78"
+    },
+    {
+      "path": ".context/node-synthetic/reference-synthetic-module.cc",
+      "bytes": 5999,
+      "sha256": "e38a3f00626c816eb212d65f151a15c537fda3c40ff5b38bf4dd284ba23a6dbd"
+    },
+    {
+      "path": ".context/node-synthetic/reference-module_wrap.cc",
+      "bytes": 59918,
+      "sha256": "ef6d3f20a46aaa844d9471b32e489bf60b7539681d6d9e3f7e230e1abddcb051"
+    },
+    {
+      "path": ".context/node-synthetic/reference-module_wrap.h",
+      "bytes": 8318,
+      "sha256": "4206d52a828c9cb2efff385821354ae968e2b6d059828ebd6656c25cc379f07f"
+    }
+  ],
+  "retainedReports": [
+    {
+      "path": ".context/node-synthetic/guest-controls.json",
+      "bytes": 34426,
+      "sha256": "0d825f13dc294bf1f114820defe87f3bd425faeda4503d047ce9b3e447900dfc"
+    },
+    {
+      "path": ".context/node-synthetic/guest-controls-first-failure.json",
+      "bytes": 92226,
+      "sha256": "c4297dd366291353ec81a1fc1c6b912d12102bfff9b973f950265102ef0dae05"
+    },
+    {
+      "path": ".context/node-synthetic/fixture-first-failure.js",
+      "bytes": 10997,
+      "sha256": "5b4ff8b1ec30eeaf88ca9da395d9f071feec013f0f2a4478c44979643b78dd97"
+    },
+    {
+      "path": ".context/node-synthetic/runner-first-failure.ts",
+      "bytes": 5822,
+      "sha256": "d05e637b3ad8fdc275468d733b7ede30d4783e47ab4d6c62a00f8a104b475089"
+    },
+    {
+      "path": ".context/node-synthetic/per-context-regression.json",
+      "bytes": 32936,
+      "sha256": "6a5ba056868b4e1f6699b337c669316cf7161a5bbbd63f8e4c9d66d4675bcf8e"
+    },
+    {
+      "path": ".context/node-synthetic/private-key-regression.json",
+      "bytes": 42228,
+      "sha256": "4bd0cbc52d30a4ee0139879ff0dc1506f2d9fa1e451a3b869577eacbb7a135d6"
+    },
+    {
+      "path": ".context/node-synthetic/native-controls.stdout",
+      "bytes": 655,
+      "sha256": "02a2afadd94a7821fc7f13836bc0cc613b9b110014cc6a62c09d93fdd17a5599"
+    },
+    {
+      "path": ".context/node-synthetic/native-controls.stderr",
+      "bytes": 180,
+      "sha256": "71cca0a95beccc225ad1435f3e2b8c45d9f0f5f727631493ea8e2010cb922bb9"
+    }
+  ],
+  "buildDiagnostics": {
+    "mozillaReportedCompilerWarnings": 16,
+    "compilerFacts": "Existing optimization before instrumentation invalidates code-hash correlation; bounded native baseline fallback reported. No fork behavior claim."
+  },
+  "limits": {
+    "nodeModuleWrapBindingImplemented": false,
+    "nodeBuiltinSourceTextModuleCompilerHelperExercised": false,
+    "nodeRealmBootstrapExecuted": false,
+    "upstreamNodeStartup": false,
+    "cjsEntry": false,
+    "esmEntry": false,
+    "chromium": false,
+    "firefox": false,
+    "webkit": false,
+    "completeNativeV8Differential": false,
+    "fullSecurityOOMAndFinalizationProof": false,
+    "completeBackendCatalog": false,
+    "forkBehaviorValidated": false,
+    "fullProductBuild": false,
+    "successorAbiCampaignRebuild": false,
+    "overallSuitesRun": false
+  },
+  "targetingDebt": "Existing Linux triplet/__linux__/__unix__ defines unchanged; truthful target configuration and conformance remain open."
+}

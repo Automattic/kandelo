@@ -1,0 +1,122 @@
+{
+  "schema": 1,
+  "scope": "Whole original AliasedBuffer header pair and real engine primitives; not mksnapshot binding, startup or full Environment compatibility",
+  "sourceVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceFiles": [
+    {
+      "path": "src/aliased_buffer-inl.h",
+      "role": "provenance",
+      "bytes": 8694,
+      "sha256": "056df681ed699aa07b06b4e9adec470d5dd12c6cfdb5f4dacf4edae3dea06769",
+      "builtinId": null
+    },
+    {
+      "path": "src/aliased_buffer.h",
+      "role": "provenance",
+      "bytes": 6468,
+      "sha256": "a374d00816da192d44e45b1566c986081b26ad0dbea73401405682fd2b4434ec",
+      "builtinId": null
+    }
+  ],
+  "sourceBodiesRewritten": false,
+  "typedClasses": [
+    "Int8Array",
+    "Uint8Array",
+    "Int16Array",
+    "Uint16Array",
+    "Int32Array",
+    "Uint32Array",
+    "Float32Array",
+    "Float64Array",
+    "BigInt64Array",
+    "BigUint64Array"
+  ],
+  "contracts": [
+    {
+      "member": "constructor(count)",
+      "behavior": "CHECK count positive; checked native element-byte multiplication; actual zero-initialized engine ArrayBuffer and typed view; strong Global owns actual JS view",
+      "source": "src/aliased_buffer-inl.h:17"
+    },
+    {
+      "member": "constructor(backing,offset,count)",
+      "behavior": "Native Uint8 backing; source CHECK alignment and checked fit; actual shared ArrayBuffer and byte offset. Callers must supply valid live backing and offset. No detached-pointer use is authorized.",
+      "source": "src/aliased_buffer-inl.h:42"
+    },
+    {
+      "member": "copy constructor",
+      "behavior": "Copies native pointer/count/offset and installs independent strong Global to the same actual view",
+      "source": "src/aliased_buffer-inl.h:78"
+    },
+    {
+      "member": "GetValue/SetValue/operator[]",
+      "behavior": "Original native pointer operations; caller preserves valid live view, bounds and foreground ownership",
+      "source": "src/aliased_buffer-inl.h:176"
+    },
+    {
+      "member": "reserve",
+      "behavior": "Owning array only; extend length, allocate actual new backing, copy existing native bytes and replace strong Global; old JS view remains an independent allocation",
+      "source": "src/aliased_buffer-inl.h:228"
+    },
+    {
+      "member": "MakeWeak/GetJSArray/Release/is_valid",
+      "behavior": "Engine Global handle, weak-zone moving-GC updates and actual cleared weak target. Nursery targets are promoted while strongly rooted before weak publication. Release drops native Global only.",
+      "source": "src/aliased_buffer-inl.h:129"
+    },
+    {
+      "member": "Serialize/Deserialize",
+      "behavior": "Whole original bodies imported. Actual engine heap snapshot serialization/deserialization is unsupported and fails explicitly; SnapshotCreator cannot be constructed and no snapshot data indices are fabricated.",
+      "source": "src/aliased_buffer-inl.h:92"
+    },
+    {
+      "member": "MemoryInfo",
+      "behavior": "Whole original body imported; heap graph traversal unsupported with explicit fatal boundary, never reports an empty successful graph",
+      "source": "src/aliased_buffer-inl.h:275"
+    }
+  ],
+  "ownership": {
+    "layer": "SpiderMonkey package embedding; guest engine objects and native records, not outer-host Node builtins",
+    "strong": "Actual PersistentRootedValue; independent move-only Global records",
+    "weak": "Tenured JS::Heap edge updated by registered engine weak-zone callback; native registry never traces it strongly",
+    "nativePointer": "Borrowed actual engine backing; original AliasedBuffer requires a live JS owner before native access",
+    "teardown": "Stable Environment clears native controls and persistent roots before JSContext destruction; weak callback removed before registry retirement",
+    "scheduling": "Native pointer operations on owning foreground; weak-handle storage does not add libuv references"
+  },
+  "consumersReviewed": [
+    {
+      "path": "src/node_snapshotable.cc",
+      "line": 1665,
+      "role": "mksnapshot BindingData owns one-byte AliasedUint8Array, publishes actual JS view, initializes from actual IsolateData snapshot mode and makes native Global weak",
+      "integration": "Not imported/compiled; architecture choice pending"
+    },
+    {
+      "path": "src/env.h",
+      "role": "Timeout/exit/abort/stream native shared state declarations. Original full Environment and these consumers are not established by this prerequisite."
+    }
+  ],
+  "validation": {
+    "fixture": "aliased-engine-controls.js",
+    "status": "21 selected controls plus5 assertion/exit drivers pass per host on identical engine/kernel artifacts",
+    "hosts": [
+      "Node",
+      "Chromium",
+      "Firefox",
+      "WebKit"
+    ],
+    "controlsPerHost": 21,
+    "otherDriversPerHost": 5,
+    "nurseryTargetsActuallyExercised": true,
+    "expectedSourceAssertionsPerHost": 2,
+    "nativeDifferential": false,
+    "evidence": "aliased-engine-check.json",
+    "privateProbeRange": "Native read/write observations use small exactly representable values; this double-valued test protocol is not a complete 64-bit BigInt native API audit"
+  },
+  "remaining": [
+    "mksnapshot native unit architecture choice and genuine binding integration",
+    "actual native snapshot builder/restoration and heap graph traversal",
+    "complete AliasedBuffer API extremes/OOM/detach misuse/native move-assignment and concurrent lifecycle audit",
+    "full Environment native shared fields and consumers",
+    "genuine upstream startup and separate CJS/ESM entrypaths on all four hosts",
+    "complete reconciled backend graph and ordered roadmap"
+  ]
+}

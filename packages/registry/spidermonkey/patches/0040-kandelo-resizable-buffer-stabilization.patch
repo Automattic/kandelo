@@ -1,0 +1,15 @@
+--- a/js/src/vm/ArrayBufferObject.cpp
++++ b/js/src/vm/ArrayBufferObject.cpp
+@@ -2753,5 +2753,11 @@
+   size_t nbytes = buffer->maxByteLength();
+-  ArrayBufferContents copy = NewCopiedBufferContents(cx, buffer);
++  // [RUNTIME-WORKAROUND: FIREFOX-RAB-NONINLINE-CAPACITY] Suspected
++  // capacity loss: a resizable buffer can grow after this pointer is pinned
++  // and released. Preserve its full allocation and zero-filled growth region.
++  ArrayBufferContents copy = AllocateArrayBufferContents(cx, nbytes);
+   if (!copy) {
+     return false;
++  }
++  if (auto count = buffer->byteLength()) {
++    memcpy(copy.get(), buffer->dataPointer(), count);
+   }

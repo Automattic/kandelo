@@ -1,0 +1,514 @@
+{
+  "schema": 1,
+  "scope": "Object.GetConstructorName real engine implementation with focused four-host evidence; complete util binding/native construction coverage remains incomplete",
+  "interface": "kandelo_node_codec_api::Object::GetConstructorName() -> Local<String>",
+  "completeBindingContract": false,
+  "runtimeValidated": true,
+  "nativeReferenceValidated": true,
+  "nativeConsumers": [
+    {
+      "path": "src/node_util.cc",
+      "operation": "GetConstructorName native util export; original object assertion and result forwarding"
+    },
+    {
+      "path": "src/util.cc",
+      "operation": "DetermineSpecificErrorType object diagnostics; original formatting body"
+    },
+    {
+      "path": "src/node_errors.cc",
+      "operation": "IsStackOverflowError RangeError test under TryCatchScope; original assertion/error policy"
+    }
+  ],
+  "javascriptConsumers": [
+    {
+      "path": "lib/internal/util/inspect.js",
+      "operation": "aliased internalGetConstructorName fallback under original getConstructorName; public util.inspect and error formatting are transitive consumers"
+    }
+  ],
+  "nativeContract": [
+    "Direct base construction can retain constructor function/template identity independently of current public prototype or constructor property.",
+    "Retain function identity, not a cached name string: redefining the original function data name is observed, while a name getter is not invoked and falls back to internal debug name.",
+    "Prototype-role and different-new-target cases use distinct rules; Reflect.construct with a different new.target can observe that prototype constructor data replacement.",
+    "Fallback accepts data string Symbol.toStringTag including empty string; it does not execute accessors. Named direct construction can take precedence over that tag.",
+    "Native proxy receiver, revoked proxy and proxy in the traversed chain do not invoke user traps in the controlled cases.",
+    "Prototype inspection must use actual engine data lookup and prototype identity with no getters, interceptors or proxy traps.",
+    "Built-in kinds, foreign realms, frozen objects, empty/inferred names and objects used as prototypes need genuine engine metadata."
+  ],
+  "nativeReference": {
+    "evidence": "constructor-name-reference-check.json",
+    "groups": 40,
+    "nameObservations": 80,
+    "userGetterOrProxyCallbacks": 0,
+    "compactingGCProven": false,
+    "outcomes": [
+      {
+        "name": "plain-object",
+        "result": "Object"
+      },
+      {
+        "name": "null-prototype",
+        "result": "Object"
+      },
+      {
+        "name": "ordinary-class-instance",
+        "result": "Original"
+      },
+      {
+        "name": "own-constructor-value",
+        "result": "Original"
+      },
+      {
+        "name": "own-constructor-getter",
+        "result": "Object"
+      },
+      {
+        "name": "prototype-constructor-replaced-after-construction",
+        "result": "Original"
+      },
+      {
+        "name": "prototype-constructor-getter",
+        "result": "Original"
+      },
+      {
+        "name": "instance-prototype-replaced",
+        "result": "Original"
+      },
+      {
+        "name": "constructor-name-redefined",
+        "result": "Replacement"
+      },
+      {
+        "name": "constructor-name-getter",
+        "result": "Original"
+      },
+      {
+        "name": "constructor-prototype-object",
+        "result": "Object"
+      },
+      {
+        "name": "constructed-object-becomes-a-prototype",
+        "result": "Original"
+      },
+      {
+        "name": "prototype-only-constructor-data",
+        "result": "Replacement"
+      },
+      {
+        "name": "prototype-only-constructor-accessor",
+        "result": "Object"
+      },
+      {
+        "name": "different-new-target",
+        "result": "Replacement"
+      },
+      {
+        "name": "different-new-target-with-prototype-constructor-replaced",
+        "result": "Third"
+      },
+      {
+        "name": "empty-named-constructor",
+        "result": "Object"
+      },
+      {
+        "name": "anonymous-class-inferred-name",
+        "result": "Inferred"
+      },
+      {
+        "name": "own-string-tag-on-object",
+        "result": "Tagged"
+      },
+      {
+        "name": "own-empty-string-tag-on-object",
+        "result": ""
+      },
+      {
+        "name": "own-number-tag-on-object",
+        "result": "Object"
+      },
+      {
+        "name": "own-tag-getter-on-object",
+        "result": "Object"
+      },
+      {
+        "name": "prototype-string-tag-on-object",
+        "result": "Tagged"
+      },
+      {
+        "name": "tag-on-constructed-instance",
+        "result": "Original"
+      },
+      {
+        "name": "tag-on-constructed-instance-prototype",
+        "result": "Original"
+      },
+      {
+        "name": "proxy",
+        "result": "Object"
+      },
+      {
+        "name": "proxy-to-constructed-instance",
+        "result": "Object"
+      },
+      {
+        "name": "revoked-proxy",
+        "result": "Object"
+      },
+      {
+        "name": "proxy-in-prototype-chain",
+        "result": "Object"
+      },
+      {
+        "name": "array",
+        "result": "Array"
+      },
+      {
+        "name": "array-prototype-replaced",
+        "result": "Array"
+      },
+      {
+        "name": "typed-array",
+        "result": "Uint8Array"
+      },
+      {
+        "name": "array-buffer",
+        "result": "ArrayBuffer"
+      },
+      {
+        "name": "map",
+        "result": "Map"
+      },
+      {
+        "name": "date",
+        "result": "Date"
+      },
+      {
+        "name": "error",
+        "result": "TypeError"
+      },
+      {
+        "name": "function",
+        "result": "Function"
+      },
+      {
+        "name": "bound-function",
+        "result": "Function"
+      },
+      {
+        "name": "cross-context-instance",
+        "result": "Foreign"
+      },
+      {
+        "name": "frozen-constructed-instance",
+        "result": "Original"
+      }
+    ]
+  },
+  "engineCaptureReview": [
+    {
+      "path": "js/src/vm/PlainObject-inl.h",
+      "entry": "js::CreateThis",
+      "facts": "Actual callee/newTarget/allocated object are available; derived constructors may defer this allocation. A current-prototype lookup cannot recover this identity after mutation."
+    },
+    {
+      "path": "js/src/vm/Interpreter.cpp",
+      "entry": "MaybeCreateThisForConstructor/InternalConstruct/CallJSNativeConstructor",
+      "facts": "Scripted/native/proxy/construct-hook paths differ. A constructor may return another existing object, so recording the outer callee on every returned object is incorrect."
+    },
+    {
+      "path": "js/src/vm/PortableBaselineInterpret.cpp",
+      "entry": "CreateThis call sites in portable baseline interpreter",
+      "facts": "Current Wasm engine uses portable baseline; capture must cover actual allocation paths, not only outer interpreter calls."
+    },
+    {
+      "path": "js/src/jit/VMFunctions.cpp",
+      "entry": "CreateThisFromIC/CreateThisFromIon",
+      "facts": "Other configurations share CreateThis slow paths but have separate inline allocation paths; no general JIT coverage claim."
+    },
+    {
+      "path": "js/src/vm/Realm.h",
+      "entry": "ObjectRealm::objectMetadataTable",
+      "facts": "Existing allocation metadata table already has an independent purpose; do not overwrite it with constructor metadata."
+    },
+    {
+      "path": "js/src/vm/JSObject.h",
+      "entry": "isUsedAsPrototype",
+      "facts": "Genuine engine flag exists; prototype-role changes can affect selection. No guessed user-property flag."
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/template-codecs-inl.h",
+      "entry": "InvokeNativeTemplate/TemplateName/TemplateConstructor",
+      "facts": "Native template allocation has actual template identity and may return a different object. This is a separate owner path to reconcile."
+    }
+  ],
+  "owningLayers": {
+    "engine": "Construction identity, data-only name/descriptor/prototype inspection, proxy stopping, GC/compaction/weak ownership",
+    "embedding": "Map real native templates and created contexts to the same engine metadata; marshal original native interface",
+    "guestKernel": "No kernel or successor ABI rebuild required for constructor metadata itself",
+    "hosts": "No host-specific impossibility established; same-artifact four-host validation remains required"
+  },
+  "rejectedSubstitutes": [
+    "obj.constructor.name or arbitrary property access",
+    "cache an immutable constructor-name string",
+    "guess constructor from the current prototype only",
+    "assign every returned object the caller constructor",
+    "reuse/replace allocation debugger metadata",
+    "treat reference-only native tests as Kandelo runtime compatibility"
+  ],
+  "remaining": [
+    "Full native util binding unit and export, complete public/internal consumer compatibility",
+    "No-side-effects object detail formatting",
+    "Other JIT configurations/inline allocation paths, unusual native/API construction classes, workers/fork/security/OOM injection/full exceptional shutdown and compaction-specific proof",
+    "All22 normal startup dependencies, genuine startup/CJS/ESM/four-host acceptance, complete catalog/ordered roadmap and user review gate"
+  ],
+  "upstreamJavaScriptChanged": false,
+  "sourcePinChanged": false,
+  "sourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false,
+  "constructionIdentityPrerequisite": {
+    "evidence": "construction-identity-engine-check.json",
+    "catalog": "construction-identity-contracts.json",
+    "status": "Actual constructor ownership extended with native built-in/newTarget/API provenance and pure data-only naming; focused four-host controls pass"
+  },
+  "nativeBuiltinFollowup": {
+    "scope": "Native reference oracle now exercised on all four Kandelo hosts; selected cases only",
+    "observations": [
+      {
+        "key": "before-Object",
+        "name": "Object"
+      },
+      {
+        "key": "after-name-Object",
+        "name": "RenamedObject"
+      },
+      {
+        "key": "after-name-new-Object",
+        "name": "RenamedObject"
+      },
+      {
+        "key": "renamed-object-literal",
+        "name": "RenamedObject"
+      },
+      {
+        "key": "renamed-object-create-null",
+        "name": "RenamedObject"
+      },
+      {
+        "key": "renamed-object-create-proto",
+        "name": "RenamedObject"
+      },
+      {
+        "key": "null-prototype-Object",
+        "name": "Object"
+      },
+      {
+        "key": "different-newtarget-Object",
+        "name": "Third"
+      },
+      {
+        "key": "before-Array",
+        "name": "Array"
+      },
+      {
+        "key": "after-name-Array",
+        "name": "RenamedArray"
+      },
+      {
+        "key": "after-name-new-Array",
+        "name": "RenamedArray"
+      },
+      {
+        "key": "renamed-array-literal",
+        "name": "RenamedArray"
+      },
+      {
+        "key": "null-prototype-Array",
+        "name": "Array"
+      },
+      {
+        "key": "different-newtarget-Array",
+        "name": "Third"
+      },
+      {
+        "key": "before-Date",
+        "name": "Date"
+      },
+      {
+        "key": "after-name-Date",
+        "name": "RenamedDate"
+      },
+      {
+        "key": "after-name-new-Date",
+        "name": "RenamedDate"
+      },
+      {
+        "key": "null-prototype-Date",
+        "name": "Date"
+      },
+      {
+        "key": "different-newtarget-Date",
+        "name": "Third"
+      },
+      {
+        "key": "before-Map",
+        "name": "Map"
+      },
+      {
+        "key": "after-name-Map",
+        "name": "RenamedMap"
+      },
+      {
+        "key": "after-name-new-Map",
+        "name": "RenamedMap"
+      },
+      {
+        "key": "null-prototype-Map",
+        "name": "Map"
+      },
+      {
+        "key": "different-newtarget-Map",
+        "name": "Third"
+      },
+      {
+        "key": "before-Set",
+        "name": "Set"
+      },
+      {
+        "key": "after-name-Set",
+        "name": "RenamedSet"
+      },
+      {
+        "key": "after-name-new-Set",
+        "name": "RenamedSet"
+      },
+      {
+        "key": "null-prototype-Set",
+        "name": "Set"
+      },
+      {
+        "key": "different-newtarget-Set",
+        "name": "Third"
+      },
+      {
+        "key": "before-Error",
+        "name": "Error"
+      },
+      {
+        "key": "after-name-Error",
+        "name": "RenamedError"
+      },
+      {
+        "key": "after-name-new-Error",
+        "name": "RenamedError"
+      },
+      {
+        "key": "null-prototype-Error",
+        "name": "Error"
+      },
+      {
+        "key": "different-newtarget-Error",
+        "name": "Third"
+      },
+      {
+        "key": "before-TypeError",
+        "name": "TypeError"
+      },
+      {
+        "key": "after-name-TypeError",
+        "name": "RenamedTypeError"
+      },
+      {
+        "key": "after-name-new-TypeError",
+        "name": "RenamedTypeError"
+      },
+      {
+        "key": "null-prototype-TypeError",
+        "name": "TypeError"
+      },
+      {
+        "key": "different-newtarget-TypeError",
+        "name": "Third"
+      },
+      {
+        "key": "before-ArrayBuffer",
+        "name": "ArrayBuffer"
+      },
+      {
+        "key": "after-name-ArrayBuffer",
+        "name": "RenamedArrayBuffer"
+      },
+      {
+        "key": "after-name-new-ArrayBuffer",
+        "name": "RenamedArrayBuffer"
+      },
+      {
+        "key": "null-prototype-ArrayBuffer",
+        "name": "ArrayBuffer"
+      },
+      {
+        "key": "different-newtarget-ArrayBuffer",
+        "name": "Third"
+      },
+      {
+        "key": "before-Uint8Array",
+        "name": "Uint8Array"
+      },
+      {
+        "key": "after-name-Uint8Array",
+        "name": "RenamedUint8Array"
+      },
+      {
+        "key": "after-name-new-Uint8Array",
+        "name": "RenamedUint8Array"
+      },
+      {
+        "key": "null-prototype-Uint8Array",
+        "name": "Uint8Array"
+      },
+      {
+        "key": "different-newtarget-Uint8Array",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Object",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Array",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Date",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Map",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Set",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Error",
+        "name": "Third"
+      },
+      {
+        "key": "derived-ArrayBuffer",
+        "name": "Third"
+      },
+      {
+        "key": "derived-Uint8Array",
+        "name": "Third"
+      }
+    ],
+    "findings": [
+      "Original intrinsic function data name is observed even for object/array literals and Object.create(null)",
+      "Different newTarget and built-in subclass prototype constructor replacement yield prototype data name, not fixed engine class string",
+      "Need intrinsic constructor ownership and actual creation/newTarget path distinctions before completing native name lookup"
+    ]
+  },
+  "constructorNameImplemented": true,
+  "engineEvidence": "constructor-name-engine-check.json",
+  "engineCatalog": "constructor-name-engine-contracts.json"
+}

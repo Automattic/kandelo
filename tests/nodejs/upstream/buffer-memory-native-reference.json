@@ -1,0 +1,81 @@
+{
+  "scope": "Original native buffer.setDetachKey through real V8 transfer and structured clone; not guest binding/startup evidence",
+  "program": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixtureSha256": "73445f6921248e22e19c7884955b35ca1039f89bd6933b3f56f7ba5f9325fbab",
+  "sourceSha256": "812830ea977bb01772b734712588f7caa576a0208acc2dec44cec3199dd393a6",
+  "run": {
+    "exitCode": 0,
+    "stdout": "{\"cases\":12,\"failures\":0,\"observations\":[{\"name\":\"ordinary-transfers-retain-bytes-and-retire-all-views\",\"status\":\"pass\",\"detail\":4},{\"name\":\"all-defined-key-values-block-both-transfer-methods\",\"status\":\"pass\",\"detail\":24},{\"name\":\"key-replacement-and-clear-follow-current-native-state\",\"status\":\"pass\",\"detail\":true},{\"name\":\"native-key-is-hidden-and-independent-of-frozen-properties\",\"status\":\"pass\",\"detail\":true},{\"name\":\"ordinary-properties-cannot-clear-or-forge-a-native-key\",\"status\":\"pass\",\"detail\":true},{\"name\":\"resizable-key-survives-shrink-growth-and-view-revalidation\",\"status\":\"pass\",\"detail\":true},{\"name\":\"length-coercion-can-protect-before-transfer-checks-the-key\",\"status\":\"pass\",\"detail\":true},{\"name\":\"length-coercion-can-clear-before-transfer-checks-the-key\",\"status\":\"pass\",\"detail\":true},{\"name\":\"serialization-transfer-rejects-protected-fixed-and-resizable-backing\",\"status\":\"pass\",\"detail\":4},{\"name\":\"serialization-copy-keeps-source-key-and-gives-copy-independent-storage\",\"status\":\"pass\",\"detail\":true},{\"name\":\"slice-does-not-inherit-a-source-detach-key\",\"status\":\"pass\",\"detail\":true},{\"name\":\"zero-length-key-protects-the-real-detached-state\",\"status\":\"pass\",\"detail\":true}]}\n",
+    "stderr": ""
+  },
+  "detail": {
+    "cases": 12,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "ordinary-transfers-retain-bytes-and-retire-all-views",
+        "status": "pass",
+        "detail": 4
+      },
+      {
+        "name": "all-defined-key-values-block-both-transfer-methods",
+        "status": "pass",
+        "detail": 24
+      },
+      {
+        "name": "key-replacement-and-clear-follow-current-native-state",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "native-key-is-hidden-and-independent-of-frozen-properties",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "ordinary-properties-cannot-clear-or-forge-a-native-key",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "resizable-key-survives-shrink-growth-and-view-revalidation",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "length-coercion-can-protect-before-transfer-checks-the-key",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "length-coercion-can-clear-before-transfer-checks-the-key",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "serialization-transfer-rejects-protected-fixed-and-resizable-backing",
+        "status": "pass",
+        "detail": 4
+      },
+      {
+        "name": "serialization-copy-keeps-source-key-and-gives-copy-independent-storage",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "slice-does-not-inherit-a-source-detach-key",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "zero-length-key-protects-the-real-detached-state",
+        "status": "pass",
+        "detail": true
+      }
+    ]
+  }
+}

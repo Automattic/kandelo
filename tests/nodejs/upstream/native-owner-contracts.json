@@ -1,0 +1,212 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Canonical existing-object native reference ownership prerequisite; not a complete AsyncWrap/HandleWrap/ReqWrap implementation or startup proof.",
+  "completeBindingContract": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamAlgorithmsRewritten": false,
+  "functionExcerptsImported": false,
+  "sourceReview": {
+    "wholeFiles": [
+      {
+        "path": "src/handle_wrap.cc",
+        "bytes": 5823,
+        "sha256": "20f94b3dc1569f2b90116500dc6c7546b0b92b38f1398281f7b90d5b37f6751b"
+      },
+      {
+        "path": "src/handle_wrap.h",
+        "bytes": 4355,
+        "sha256": "9f3a9838da4e752d277582e4c750bed44f9a8a1aa765a7f0d9bae6ab7c969dd9"
+      },
+      {
+        "path": "src/req_wrap.h",
+        "bytes": 2315,
+        "sha256": "571212e6b7000aad7256fc3ad81398d3e75cb69c036bf87f4a6965b226bac5de"
+      },
+      {
+        "path": "src/req_wrap-inl.h",
+        "bytes": 5621,
+        "sha256": "ede34e6a3f999856a62284d1045deb2a6a2a578a321faf402c432a8605df75b1"
+      },
+      {
+        "path": "src/async_wrap.cc",
+        "bytes": 27422,
+        "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709"
+      },
+      {
+        "path": "src/async_wrap.h",
+        "bytes": 12578,
+        "sha256": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6"
+      },
+      {
+        "path": "src/async_wrap-inl.h",
+        "bytes": 4023,
+        "sha256": "ef01e968d801f04679043e57eb8be51c6fbc8c4748f05e74ed5d5e36711473ed"
+      },
+      {
+        "path": "src/base_object-inl.h",
+        "bytes": 10097,
+        "sha256": "cf890bf4723cb7b9ecbeb2662e98344ae81af0937abd4b214413885f6450d6d2"
+      },
+      {
+        "path": "src/env-inl.h",
+        "bytes": 31879,
+        "sha256": "f1849fd70267de7467ad49f06b67fb63bddd29f01cfc208e01c9776b54be8f41"
+      },
+      {
+        "path": "src/cleanup_queue.h",
+        "bytes": 2030,
+        "sha256": "a5eaea393dd49a7ca46002f92f90d91f5df60b50706dea653a2b055c5b133715"
+      },
+      {
+        "path": "src/cleanup_queue-inl.h",
+        "bytes": 899,
+        "sha256": "a5f2e94244461040185a11b658426b3244cca6b31677f2483cec041f6c25de4c"
+      },
+      {
+        "path": "src/base_object.cc",
+        "bytes": 5666,
+        "sha256": "48ca52d7d1e16d7cec5c08c77d4b348f83909c1a22a5a2cafe35b715480da804"
+      },
+      {
+        "path": "src/base_object.h",
+        "bytes": 14837,
+        "sha256": "cb4dbc336992f12f915adc0064c29fa116d39f00f0f9a8e1789eead796ed2655"
+      }
+    ],
+    "localDirectory": ".context/node-resource-owners/source",
+    "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+  },
+  "upstreamConsumers": [
+    {
+      "source": "src/handle_wrap.cc",
+      "contract": "OnClose acquires an existing HandleWrap, detaches it, updates close state and invokes the original close callback. OnGCCollect defers deletion until actual uv close completion."
+    },
+    {
+      "source": "src/req_wrap-inl.h",
+      "contract": "Completion acquires the existing request wrapper, detaches it, updates waiting state and invokes the original completion. Dispatch strengthening and later weak restoration share the same owner."
+    },
+    {
+      "source": "src/base_object.cc",
+      "contract": "Strong references clear weak JS ownership. Last detached release calls virtual OnGCCollect; otherwise requested weak ownership is restored. Detach is idempotent with a live native reference."
+    },
+    {
+      "source": "src/node_diagnostics_channel.cc",
+      "contract": "MakeDetachedBaseObject and copied native references must retain one deleting owner, independent of wrapper movement/collection."
+    }
+  ],
+  "contracts": [
+    {
+      "interface": "BaseObjectPtr<T>(T*) / copies / derived-to-base aliases",
+      "owner": "engine embedding: BaseObject NativeObjectOwner",
+      "implementation": "One weakly indexed canonical std::shared_ptr cell per realm-owned BaseObject. Existing-object acquisition aliases that cell; independently deleting shared_ptr construction is unavailable.",
+      "errors": "Foreground/active environment ownership is checked. Raw pointer validity remains the native caller contract; JavaScript probes reject ordinary, foreign and retired wrappers."
+    },
+    {
+      "interface": "BaseObject::MakeWeak / ClearWeak / persistent",
+      "owner": "SpiderMonkey traced strong roots and weak-zone registry",
+      "implementation": "Actual unwrapped wrapper identity; real nursery promotion before weak registration; native references keep a strong JS edge; the last native release restores a tenured weak edge only when requested. Strengthening removes weak registry membership.",
+      "errors": "Wrong owner/thread and premature nursery weakening fail invariants. Weak targets are not resurrected after collection."
+    },
+    {
+      "interface": "BaseObject::Detach / last native release / OnGCCollect",
+      "owner": "native resource class and canonical BaseObject reference cell",
+      "implementation": "Detach requires a live native reference and is idempotent. Last detached release calls the virtual collection hook. Base collection retires the JS pointer before derived destruction; resources may defer actual deletion through uv_close.",
+      "errors": "Outstanding native references cannot be freed behind their owner. Destruction/reentry observes the retired wrapper. Actual pending callback exceptions survive."
+    },
+    {
+      "interface": "GC finalization",
+      "owner": "SpiderMonkey foreground native-wrapper finalizer",
+      "implementation": "The finalizer clears the wrapper native slot before calling OnGCCollect. Native close completion may acquire an existing object without an active JavaScript callback frame.",
+      "errors": "A collected wrapper with a live native reference is an invariant failure."
+    }
+  ],
+  "privateDiagnostic": {
+    "buildFlag": "--check-native-owners",
+    "macro": "KANDELO_NATIVE_OWNER_PROBE",
+    "cannotInstallOrSatisfyPackageResolver": true,
+    "processMethods": "Explicit unavailable error; original initializer remains connected in the normal build.",
+    "testResources": "Actual uv_async_t handles on the canonical Environment loop; real uv_close completion. Counters follow actual creations, reference map membership, destruction and close events.",
+    "runtimeValidation": "12 native ownership controls and4 supporting drivers plus the unchanged positive diagnostics/Buffer/AliasedBuffer/environment fixtures pass on Node, Chromium, Firefox and WebKit using one identified private artifact and kernel. No normal startup acceptance.",
+    "startupAccepted": false,
+    "controls": [
+      "private-profile-is-explicit-and-does-not-claim-process-startup",
+      "multiple-raw-native-references-have-one-deleting-owner",
+      "native-root-keeps-wrapper-through-gc-and-restores-requested-weakness",
+      "weakening-with-live-native-reference-cannot-collect-wrapper",
+      "clearweak-persists-after-the-last-native-reference",
+      "repeated-native-acquisition-does-not-accumulate-weak-records",
+      "wrapper-is-retired-before-reentrant-derived-destruction",
+      "destruction-preserves-the-real-callback-exception",
+      "gc-defers-native-uv-destruction-until-real-close-completion",
+      "derived-close-reference-aliases-an-existing-base-reference",
+      "last-detached-reference-defers-live-resource-destruction",
+      "retired-and-ordinary-objects-cannot-acquire-native-ownership"
+    ],
+    "loopDispatch": "All close completion controls use the real engine drainJobQueue path; a direct uv_run probe violated canonical timer dispatch state and was removed. The timer assertion is preserved.",
+    "evidence": "native-owner-engine-check.json"
+  },
+  "prerequisitesAndRemaining": [
+    "Original AsyncWrap class/cc/inl now compile unchanged, with inherited BaseObject env and original Local<Object> GetOwner. Actual3-slot construction/provider IDs/init/destroy/hook/owner-chain exception backends and real producers remain unavailable; see async-resource-contracts.json.",
+    "Original HandleWrap/ReqWrap producers, real intrusive queues and request/handle registration; no synthetic empty registry is supplied.",
+    "Full original native callback Context/Frame/async-context and exception/fatal dispatch contracts.",
+    "Asynchronous resource close/drain during shutdown and cancellation; Realm cleanup still rejects outstanding native owners. Probe handles are explicitly drained before shutdown.",
+    "BaseObject weak native pointer flavor, complete templates/internal-field shapes and non-realm ICU/trace raw acquisition are not implemented by this subset.",
+    "Normal engine must link, then unchanged upstream startup/empty/simple/errors/jobs/exit and separate CJS/ESM must pass on all4hosts."
+  ],
+  "validationObligations": [
+    "Same private diagnostic/kernel identities on Node, Chromium, Firefox and WebKit.",
+    "Multiple existing references delete once; moving GC retains held wrappers; last release restores requested weakness without accumulating weak roots.",
+    "ClearWeak persists, reentrant destructor observes retired pointer, nested owners and real thrown callback values remain coherent.",
+    "GC and detached-last-release defer actual live libuv destruction until close completion; derived/raw callbacks alias existing base references.",
+    "Private diagnostic explicitly rejects process_methods, and cannot masquerade as normal startup.",
+    "Original diagnostics native/JavaScript channel identity and subscribers survive GC using the canonical owner.",
+    "All imported JavaScript/source bytes remain identical; normal build and diagnostic evidence are reported separately."
+  ],
+  "archivedReuseCandidates": {
+    "index": ".context/davao-handoff/BACKEND-SALVAGE.md",
+    "frozenCommit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+    "familyAndPRAudit": "tests/nodejs/upstream/backend-binding-survey.json",
+    "candidates": [
+      {
+        "paths": [
+          "third_party/node-core/callback-execution-stack.h",
+          "third_party/node-core/callback-scope.h",
+          "third_party/node-core/native-callback.cpp"
+        ],
+        "use": "Future complete native callback/Frame/exception ownership, behind original AsyncWrap contracts."
+      },
+      {
+        "paths": [
+          "third_party/node-core/socket-owner.h",
+          "third_party/node-core/socket-stream-state.h",
+          "third_party/node-core/native-socket-owner.cpp"
+        ],
+        "use": "Future actual fd/request/cancellation/close ownership; discard old public JS policy."
+      },
+      {
+        "paths": [
+          "third_party/node-core/sqlite-store.h",
+          "third_party/node-core/native-sqlite.cpp"
+        ],
+        "use": "Retire-before-reentry and pending-exception lifecycle review patterns; no SQLite implementation imported here."
+      }
+    ],
+    "archivedCodeCopiedThisStep": false,
+    "historicalEvidenceIsCurrentConformance": false
+  },
+  "currentSourceRevision": 57,
+  "currentPrivateEvidence": "async-resource-engine-check.json",
+  "requestHeaderFollowup": {
+    "packageRevision": 71,
+    "catalog": "request-owners-contracts.json",
+    "evidence": "request-owners-engine-check.json",
+    "scope": "Complete original request headers and real environment intrusive head now compile; prior79drivers perhost are regression evidence only. Positive request dispatch/cancellation/shutdown and HandleWrap remain unimplemented/unvalidated."
+  },
+  "handleUnitFollowup": {
+    "packageRevision": 72,
+    "catalog": "handle-owners-contracts.json",
+    "evidence": "handle-owners-engine-check.json",
+    "scope": "Whole original HandleWrap class/unit and actual intrusive storage compile; HasProperty and generic class-cache primitives tested on four hosts. Positive original handle/request lifecycle and complete template factory/callback paths still incomplete."
+  }
+}

@@ -1,0 +1,11 @@
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -87,6 +87,8 @@
+         "shell/node-upstream/tracing-upstream/tracing/trace_event_legacy_inl.h",
+         "shell/node-upstream/tracing-upstream/tracing/traced_value.cc",
+         "shell/node-upstream/tracing-upstream/tracing/traced_value.h",
++        "shell/node-upstream/codecs-upstream/aliased_buffer.h",
++        "shell/node-upstream/codecs-upstream/aliased_buffer-inl.h",
+         "shell/node-upstream/codecs-upstream/node_buffer.cc",
+         "shell/node-upstream/codecs-upstream/encoding.cc",
+         "shell/node-upstream/codecs-upstream/node_i18n.cc",

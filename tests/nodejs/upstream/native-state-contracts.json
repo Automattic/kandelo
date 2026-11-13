@@ -1,0 +1,256 @@
+{
+  "schema": 1,
+  "scope": "Startup-required typed private handles, native error classification/literals and environment error callbacks/state; selected private diagnostics only",
+  "packageRevision": 66,
+  "owningLayers": [
+    "SpiderMonkey embedding native Data/root factories",
+    "existing VM embedding-private symbol/property operations",
+    "canonical per-context error-stack callback owner",
+    "native Environment source-map/printed state and shutdown roots"
+  ],
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "originalConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/src/node_errors.cc",
+      "bytes": 45641,
+      "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/async_wrap-inl.h",
+      "bytes": 4023,
+      "sha256": "ef01e968d801f04679043e57eb8be51c6fbc8c4748f05e74ed5d5e36711473ed"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_buffer.cc",
+      "bytes": 76513,
+      "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_process_object.cc",
+      "bytes": 8595,
+      "sha256": "301c1819a6cd59a48bd28f4c2252298137b6631cc33dda0ddb55dd8067d48957"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/env.h",
+      "bytes": 53128,
+      "sha256": "2727db70801cd3d154790795f52aac30909279cfbbec5beab1c0b463a4aa55b8"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/env_properties.h",
+      "bytes": 42469,
+      "sha256": "891cb90ba1164eecc1ae5eef69ef3102369eeebc7630dccda2ca5737a2a097ad"
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "Private/Data and internal-field declarations",
+      "contract": "Private is non-Value Data over an actual embedding-private VM symbol. Scope roots validate the real symbol kind; typed factory cloning preserves Private through persistent/scope reads. Name returns the actual symbol description. Native internal-field declarations accept Data, matching the original async-context private sentinel consumer.",
+      "limits": "General internal-field storage/layout still unimplemented; no claim that changing the declaration activates AsyncWrap fields. Private.New/ForApi and generic weak Data remain unavailable."
+    },
+    {
+      "name": "Object.GetPrivate/SetPrivate and fixed Environment keys",
+      "contract": "Use the actual runtime symbol inventory and VM own-only hidden property storage. Private keys remain distinct from public Symbol values and from language #private fields. Native get/set use normal engine failure/exception propagation and cross-compartment wrapping; original reflection/proxy/freeze semantics come from the VM private-key implementation. Arrow/decorated/exit/untransferable/sentinel accessors share actual runtime keys."
+    },
+    {
+      "name": "Value.IsNativeError/String.NewFromUtf8Literal",
+      "contract": "Native-error classification uses the actual unwrapped VM ErrorObject kind, including subclasses, without public prototype/instanceof traps. Literal length is known from the C++ array bound, excludes only the final terminator and preserves embedded NUL/UTF8 through the engine string allocator."
+    },
+    {
+      "name": "Realm fatal/prepare callbacks and Environment getters",
+      "contract": "Native setters/getters share the existing per-context error-stack reserved slots with current JavaScript binding registration. Realm setters target their owning context; Environment getters read the principal context even from another active realm. Unregistered callbacks remain empty, never default success functions."
+    },
+    {
+      "name": "Environment source-map callbacks, feature state and printed-error latch",
+      "contract": "Source/cache callbacks have actual independent strong native roots, setters can replace/clear them, and reads/calls preserve their identity/reentry/exceptions. Source-map enable and printed-error fields are independent foreground-owned state, initially false as in the original Environment. Callback roots are reset and the feature disabled at native shutdown."
+    }
+  ],
+  "validationObligations": [
+    "Private root survives closed handle scope/full GC; own-only hidden reads/writes, freeze, proxies including revoked proxy, foreign realm and Buffer regressions.",
+    "Actual native Error/subclass/foreign versus forged/proxy objects; literal embedded NUL/Unicode.",
+    "Same callback identity across native and existing JS setters; principal/active context distinction.",
+    "Strong callbacks through GC, independent slots, reentrant clearing and original thrown value; promise job draining and registered root retirement at exit.",
+    "All prior45 private controls plus8 new drivers on four hosts with exact same identified program/kernel.",
+    "Exact normal link delta, unchanged original sources and byte-identical actual recipe inputs."
+  ],
+  "implementationGaps": [
+    "Private.New/ForApi, generic weak Data and complete internal-field storage/layout are not implemented.",
+    "General Object.GetConstructorName remains undefined; do not infer creation metadata from mutable public prototypes.",
+    "Full original fatal/source-map binding initializer and complete fatal/report/process routing remain unactivated or unlinked.",
+    "Full OOM/security-wrapper/cancellation/lifetime/realm-retirement conformance is not established by selected controls.",
+    "Buffer ownership bridge still requires whole node_internals.h; environment-aware SafeGetenv and Message compiler-origin/end-range/text/options gaps remain."
+  ],
+  "currentEvidence": "native-state-engine-check.json: private53 drivers/host on four hosts; targeted normal25 unresolved symbols, no startup",
+  "sourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false,
+  "currentRuntimeValidated": true,
+  "normalLinkRemainder": [
+    "kandelo_node_codec_api::HeapStatistics::HeapStatistics()",
+    "kandelo_node_codec_api::HeapStatistics::external_memory() const",
+    "kandelo_node_codec_api::HeapStatistics::total_heap_size() const",
+    "kandelo_node_codec_api::HeapStatistics::used_heap_size() const",
+    "kandelo_node_codec_api::HeapStatistics::~HeapStatistics()",
+    "kandelo_node_codec_api::Isolate::GetHeapStatistics(kandelo_node_codec_api::HeapStatistics*)",
+    "kandelo_node_codec_api::Object::GetConstructorName()",
+    "kandelo_node_codec_impl::CheckProcessPermission(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::permission::PermissionScope, std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
+    "kandelo_node_codec_impl::Environment::Exit(kandelo_node_codec_impl::ExitCode)",
+    "kandelo_node_codec_impl::Environment::handle_wrap_queue()",
+    "kandelo_node_codec_impl::Environment::req_wrap_queue()",
+    "kandelo_node_codec_impl::HandleWrap::HasRef(kandelo_node_codec_impl::HandleWrap*)",
+    "kandelo_node_codec_impl::HasSignalJSHandler(int)",
+    "kandelo_node_codec_impl::IsolateData::node_allocator()",
+    "kandelo_node_codec_impl::IsolateData::options()",
+    "kandelo_node_codec_impl::NodeArrayBufferAllocator::total_mem_usage() const",
+    "kandelo_node_codec_impl::ReqWrapBase::GetAsyncWrap()",
+    "kandelo_node_codec_impl::ResetStdio()",
+    "kandelo_node_codec_impl::RunAtExit(kandelo_node_codec_impl::Environment*)",
+    "kandelo_node_codec_impl::TriggerNodeReport(kandelo_node_codec_impl::Environment*, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&, char const*, char const*, kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>)",
+    "kandelo_node_codec_impl::binding::DLOpen(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+    "kandelo_node_codec_impl::binding::DLOpenBinary(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+    "uv_get_available_memory",
+    "uv_get_constrained_memory",
+    "uv_resident_set_memory"
+  ],
+  "normalLinkPrerequisiteReview": {
+    "scope": "All25 observed unresolved symbols only; not the complete backend catalog or a completed implementation roadmap",
+    "families": [
+      {
+        "family": "Engine heap accounting",
+        "unresolvedSymbols": [
+          "kandelo_node_codec_api::HeapStatistics::HeapStatistics()",
+          "kandelo_node_codec_api::HeapStatistics::external_memory() const",
+          "kandelo_node_codec_api::HeapStatistics::total_heap_size() const",
+          "kandelo_node_codec_api::HeapStatistics::used_heap_size() const",
+          "kandelo_node_codec_api::HeapStatistics::~HeapStatistics()",
+          "kandelo_node_codec_api::Isolate::GetHeapStatistics(kandelo_node_codec_api::HeapStatistics*)"
+        ],
+        "owner": "SpiderMonkey GC/allocator accounting and native Isolate owner",
+        "originalConsumers": [
+          "src/node_process_methods.cc:228",
+          "src/node_process_methods.cc:245"
+        ],
+        "obligation": "Capture actual engine used/committed/external totals with documented definitions, roots and GC timing; do not substitute total Wasm linear memory.",
+        "status": "unimplemented or unlinked; source-level prerequisite review only"
+      },
+      {
+        "family": "Native object construction metadata",
+        "unresolvedSymbols": [
+          "kandelo_node_codec_api::Object::GetConstructorName()"
+        ],
+        "owner": "SpiderMonkey object/class construction metadata",
+        "originalConsumers": [
+          "src/node_errors.cc:705"
+        ],
+        "obligation": "Preserve the native API security/side-effect contract and immutable construction identity; mutable constructor/prototype access is insufficient.",
+        "status": "unimplemented or unlinked; source-level prerequisite review only"
+      },
+      {
+        "family": "Guest process memory",
+        "unresolvedSymbols": [
+          "uv_get_available_memory",
+          "uv_get_constrained_memory",
+          "uv_resident_set_memory"
+        ],
+        "owner": "libuv Kandelo backend, libc and real guest process accounting",
+        "originalConsumers": [
+          "src/node_process_methods.cc:215",
+          "src/node_process_methods.cc:238",
+          "src/node_process_methods.cc:253",
+          "src/node_process_methods.cc:258"
+        ],
+        "obligation": "Report actual guest RSS/available/constrained memory and native unavailable semantics; never use host process statistics or invented limits.",
+        "status": "unimplemented or unlinked; source-level prerequisite review only"
+      },
+      {
+        "family": "Isolate options and buffer accounting",
+        "unresolvedSymbols": [
+          "kandelo_node_codec_impl::IsolateData::node_allocator()",
+          "kandelo_node_codec_impl::IsolateData::options()",
+          "kandelo_node_codec_impl::NodeArrayBufferAllocator::total_mem_usage() const"
+        ],
+        "owner": "Native IsolateData options and engine/backing-store allocator owners",
+        "originalConsumers": [
+          "src/node_process_methods.cc:231",
+          "src/node_process_methods.cc:249"
+        ],
+        "obligation": "Connect the actual options object and complete allocator lifetime accounting, including ownership transfer/detach; avoid parallel fake allocator state.",
+        "status": "unimplemented or unlinked; source-level prerequisite review only"
+      },
+      {
+        "family": "Native request and handle inventory",
+        "unresolvedSymbols": [
+          "kandelo_node_codec_impl::Environment::handle_wrap_queue()",
+          "kandelo_node_codec_impl::Environment::req_wrap_queue()",
+          "kandelo_node_codec_impl::HandleWrap::HasRef(kandelo_node_codec_impl::HandleWrap*)",
+          "kandelo_node_codec_impl::ReqWrapBase::GetAsyncWrap()"
+        ],
+        "owner": "Native request/handle lifecycle owners with real libuv ref state",
+        "originalConsumers": [
+          "src/node_process_methods.cc:303",
+          "src/node_process_methods.cc:320",
+          "src/node_process_methods.cc:334",
+          "src/node_process_methods.cc:342"
+        ],
+        "obligation": "Queues must be populated/retired by genuine producers, and liveness must read actual handles; empty permanent inventories are invalid.",
+        "status": "unimplemented or unlinked; source-level prerequisite review only"
+      },
+      {
+        "family": "Exit and stdio lifecycle",
+        "unresolvedSymbols": [
+          "kandelo_node_codec_impl::Environment::Exit(kandelo_node_codec_impl::ExitCode)",
+          "kandelo_node_codec_impl::ResetStdio()",
+          "kandelo_node_codec_impl::RunAtExit(kandelo_node_codec_impl::Environment*)"
+        ],
+        "owner": "Native Environment exit/at-exit and Kandelo guest descriptor lifecycle",
+        "originalConsumers": [
+          "src/node_process_methods.cc:204",
+          "src/node_process_methods.cc:504",
+          "src/node_errors.cc:389",
+          "src/node_errors.cc:1420"
+        ],
+        "obligation": "Preserve callback order/reentry, final exit code and descriptor state on normal/error/fatal paths.",
+        "status": "unimplemented or unlinked; source-level prerequisite review only"
+      },
+      {
+        "family": "Permission and signal state",
+        "unresolvedSymbols": [
+          "kandelo_node_codec_impl::CheckProcessPermission(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::permission::PermissionScope, std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
+          "kandelo_node_codec_impl::HasSignalJSHandler(int)"
+        ],
+        "owner": "Native permission policy and registered signal owners backed by guest state",
+        "originalConsumers": [
+          "src/node_process_methods.cc:201"
+        ],
+        "obligation": "Check actual selected policy and registered JS handlers; no unconditional success/false answers.",
+        "status": "unimplemented or unlinked; source-level prerequisite review only"
+      },
+      {
+        "family": "Diagnostic reports",
+        "unresolvedSymbols": [
+          "kandelo_node_codec_impl::TriggerNodeReport(kandelo_node_codec_impl::Environment*, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&, char const*, char const*, kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>)"
+        ],
+        "owner": "Complete original reporting implementation and native engine/guest data producers",
+        "originalConsumers": [
+          "src/node_errors.cc:579"
+        ],
+        "obligation": "Integrate the complete original unit and real report data; unavailable optional capabilities must remain explicit.",
+        "status": "unimplemented or unlinked; source-level prerequisite review only"
+      },
+      {
+        "family": "Native addon loading",
+        "unresolvedSymbols": [
+          "kandelo_node_codec_impl::binding::DLOpen(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+          "kandelo_node_codec_impl::binding::DLOpenBinary(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)"
+        ],
+        "owner": "Complete original loader, native module registration and Kandelo dynamic linking",
+        "originalConsumers": [
+          "src/node_process_methods.cc:809",
+          "src/node_process_methods.cc:810"
+        ],
+        "obligation": "Honor binary ownership, registration, ABI and error paths without fake handles or host Node loading.",
+        "status": "unimplemented or unlinked; source-level prerequisite review only"
+      }
+    ]
+  }
+}

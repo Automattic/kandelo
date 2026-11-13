@@ -1,0 +1,143 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Owning-engine scoped exception primitives required by original AsyncWrap::GetOwner and full node_errors policy; bounded prerequisite catalog, not complete binding or startup acceptance",
+  "completeBindingContract": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamAlgorithmsRewritten": false,
+  "functionBodiesExtracted": false,
+  "wholeOriginalConsumers": [
+    {
+      "path": "src/async_wrap.cc",
+      "role": "provenance",
+      "bytes": 27422,
+      "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_errors.h",
+      "role": "provenance",
+      "bytes": 23299,
+      "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_errors.cc",
+      "role": "provenance",
+      "bytes": 45641,
+      "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d",
+      "builtinId": null
+    },
+    {
+      "path": "src/api/exceptions.cc",
+      "role": "provenance",
+      "bytes": 8256,
+      "sha256": "36cd3250e4c7a957a32548d403b5e9e4c3014bc4a13adf17f69d5e30a9fa8ce5",
+      "builtinId": null
+    }
+  ],
+  "consumers": [
+    {
+      "source": "src/async_wrap.cc",
+      "surface": "GetOwner uses normal TryCatchScope around owner-symbol getters; async hook invocation uses fatal or fatal-rethrow-stack-overflow mode",
+      "state": "Whole source compiled; original inline policy constructors and full message/report closure remain missing"
+    },
+    {
+      "source": "src/node_errors.cc",
+      "surface": "TryCatchScope destructor, PrinterTryCatch, uncaught exception dispatch, error-stack decoration, source-map/fatal callbacks",
+      "state": "Whole unit compiled; generic catch value/lifetime primitives implemented separately from original policy. Full fatal initializer remains unused"
+    },
+    {
+      "source": "src/api/exceptions.cc",
+      "surface": "FatalException delegates the original uncaught policy using a const TryCatch",
+      "state": "Whole unit compiled; fatal path not claimed usable"
+    }
+  ],
+  "owningLayer": "SpiderMonkey native embedding, with actual shell execution-termination state; no host Node builtins, kernel/libc/ABI change or second exception/realm runtime",
+  "contracts": [
+    {
+      "surface": "construction/nesting/destruction",
+      "behavior": "LIFO handler stack in the canonical codec State; preserves prior engine exception through AutoSaveExceptionState. Actual caught value and SavedFrame stack have PersistentRooted owners independent of temporary HandleScopes and moving GC",
+      "validation": "Nested native handlers, prior pending cleanup exception, GC/reentry, foreign realms"
+    },
+    {
+      "surface": "HasCaught/Exception",
+      "behavior": "Captures the actual pending exception and engine classification at a returning native API depth. Thrown undefined is distinct from no caught value; foreign objects wrap through the current native context",
+      "validation": "All primitive/object/Error throw identities, cross realm identity and GC"
+    },
+    {
+      "surface": "JavaScript/native handler order",
+      "behavior": "NativeEntry depth keeps outer handlers from intercepting a failure before intervening JavaScript catch/finally has run; nested native handlers own failures at their own API depth",
+      "validation": "Coercion error handled by inner JavaScript while outer native call completes successfully"
+    },
+    {
+      "surface": "Reset/ReThrow",
+      "behavior": "Reset releases caught roots; ReThrow schedules the same value, actual throw stack and captured engine classification past its own handler. Reset after ReThrow preserves the scheduled exception",
+      "validation": "Subsequent success/failure, nested native rethrow actual SavedFrame identity, JavaScript handler identity"
+    },
+    {
+      "surface": "HasTerminated/CanContinue",
+      "behavior": "Uncatchable shell interrupt/quit sets real terminal state independently of pending JS value and exit code. Reset does not cancel execution; engine callbacks and implemented JS-entry primitives preserve failed termination. CanContinue also observes captured OutOfMemory classification",
+      "validation": "Real quit and real interrupt; OOM classification preservation untested"
+    },
+    {
+      "surface": "Exception on termination",
+      "behavior": "Returns the interface-defined null value; termination is represented by native execution state, never by a fabricated thrown JS object",
+      "validation": "Termination flags checked without reentering JavaScript"
+    },
+    {
+      "surface": "IsVerbose/SetVerbose",
+      "behavior": "Default nonverbose state; SetVerbose(false) supported. SetVerbose(true) explicitly aborts as unavailable until genuine message listener/report ownership is implemented",
+      "validation": "Default and false exercised by private control; true unavailable branch not executed"
+    }
+  ],
+  "implementedNativeEntryPrimitives": [
+    "Value::Uint32Value",
+    "Value::Int32Value",
+    "Value::NumberValue",
+    "Value::IntegerValue",
+    "Value::ToObject",
+    "Value::ToString",
+    "Object::Get",
+    "Object::Set",
+    "Object::GetOwnPropertyNames",
+    "Object::DefineOwnProperty",
+    "Object::SetPrototypeV2",
+    "Object::SetPrivate",
+    "Object::SetNativeDataProperty",
+    "Array::Get",
+    "Array::Set",
+    "Function::Call",
+    "Function::NewInstance",
+    "FunctionTemplate::GetFunction",
+    "ObjectTemplate::NewInstance",
+    "JsonStringify"
+  ],
+  "entryBoundaryListIsFullAPICoverage": false,
+  "unimplemented": [
+    "TryCatch::Message and Exception::CreateMessage with genuine source/stack metadata; StackTrace/StackFrame/ScriptOrigin accessors",
+    "Original policy classes now come from complete unchanged node_errors.h; full Message/report/fatal/uncaught/lifecycle and native utility closure remains missing",
+    "Verbose message reporting/listener ownership and uncaught/fatal/report/source-map callback/scheduling/lifecycle support",
+    "Native Isolate termination/cancellation API outside actual shell quit/interrupt; debugger and nested guest Wasm termination contracts",
+    "Full audit of all API entry boundaries, native error creation, allocation/OOM and exceptional cases; current explicit boundary coverage is bounded",
+    "Actual stack-overflow native-error/type/message correspondence consumed by unchanged original IsStackOverflowError policy; do not replace its string comparison with a guessed engine error number"
+  ],
+  "failureSemantics": "If exception retrieval/wrapping fails, preserve the new pending engine failure rather than clear it or restore a successful state. No invented message/stack metadata or catch-success default.",
+  "reuseEvidence": [
+    "Existing canonical codec State/Frame/Context/HandleScope and actual error-stack SavedFrames",
+    "19-family historical salvage index and33-PR audit remain evidence, not permission to reinstate public API substitutes"
+  ],
+  "prerequisiteOrder": [
+    "Validate scoped primitive identity/lifetime/ordering/termination on4hosts",
+    "Integrate complete original error-policy header and genuine Message/SavedFrame/source metadata",
+    "Implement genuine error/report/uncaught/lifecycle and native scheduling closure",
+    "Continue actual AsyncWrap/HandleWrap/ReqWrap constructor/field/queue/hook ownership required for startup",
+    "Validate unchanged original startup and CJS/ESM separately, then finish full backend catalog and obtain broader-roadmap review"
+  ],
+  "compileAndRuntimeEvidence": "scoped-catch-engine-check.json",
+  "fullStartupAccepted": false,
+  "broaderRoadmapExecutionAuthorized": false,
+  "originalPolicyHeaderIntegrated": true,
+  "errorPolicyCatalog": "error-policy-contracts.json",
+  "errorPolicyEvidence": "error-policy-engine-check.json"
+}

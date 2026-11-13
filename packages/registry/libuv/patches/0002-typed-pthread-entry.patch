@@ -1,0 +1,67 @@
+--- a/src/unix/thread.c
++++ b/src/unix/thread.c
+@@ -135,6 +135,25 @@
+ }
+ 
+ 
++#if defined(UV_PLATFORM_KANDELO)
++/* Calling a void callback through pthread's pointer-returning type is C UB.
++ * Wasm enforces the actual function type. Transfer a real callback/argument
++ * pair to an exactly typed pthread entry; the child owns it on success.
++ */
++struct uv__thread_start_context {
++  void (*entry)(void*);
++  void* arg;
++};
++
++static void* uv__thread_start(void* opaque) {
++  struct uv__thread_start_context context;
++  context = *(struct uv__thread_start_context*) opaque;
++  uv__free(opaque);
++  context.entry(context.arg);
++  return NULL;
++}
++#endif
++
+ int uv_thread_create_ex(uv_thread_t* tid,
+                         const uv_thread_options_t* params,
+                         void (*entry)(void *arg),
+@@ -146,11 +165,15 @@
+   size_t stack_size;
+   size_t min_stack_size;
+ 
++#if defined(UV_PLATFORM_KANDELO)
++  struct uv__thread_start_context* context;
++#else
+   /* Used to squelch a -Wcast-function-type warning. */
+   union {
+     void (*in)(void*);
+     void* (*out)(void*);
+   } f;
++#endif
+ 
+   stack_size =
+       params->flags & UV_THREAD_HAS_STACK_SIZE ? params->stack_size : 0;
+@@ -177,8 +200,22 @@
+       abort();
+   }
+ 
++#if defined(UV_PLATFORM_KANDELO)
++  context = uv__malloc(sizeof(*context));
++  if (context == NULL) {
++    if (attr != NULL)
++      pthread_attr_destroy(attr);
++    return UV_ENOMEM;
++  }
++  context->entry = entry;
++  context->arg = arg;
++  err = pthread_create(tid, attr, uv__thread_start, context);
++  if (err)
++    uv__free(context);
++#else
+   f.in = entry;
+   err = pthread_create(tid, attr, f.out, arg);
++#endif
+ 
+   if (attr != NULL)
+     pthread_attr_destroy(attr);

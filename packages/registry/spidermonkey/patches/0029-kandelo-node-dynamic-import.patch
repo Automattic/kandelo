@@ -1,0 +1,195 @@
+--- a/js/public/Modules.h
++++ b/js/public/Modules.h
+@@ -164,6 +164,26 @@
+     Handle<JSObject*> promise);
+ 
+ /**
++ * Opt-in callback-value dynamic import for native embedding loaders. The pure
++ * owner predicate must not allocate or invoke JavaScript. Only owned records
++ * use this hook, admit arbitrary string-valued import attributes, and propagate
++ * a synchronous native callback exception to the importing expression. Other
++ * records keep the original module-record hook and its rejection semantics.
++ */
++using ModuleDynamicImportValueOwner = bool (*)(Handle<Value> privateValue);
++extern JS_PUBLIC_API void SetModuleDynamicImportValueHook(
++    JSRuntime* rt, ModuleDynamicImportValueOwner owner,
++    ModuleDynamicImportHook callback);
++
++/**
++ * Complete an owned dynamic import by adopting a callback result in a fresh
++ * Promise in the current/referrer realm, then forwarding its settlement to
++ * the original import Promise. No static resolver or module lookup is used.
++ */
++extern JS_PUBLIC_API bool FinishDynamicModuleImportWithValue(
++    JSContext* cx, Handle<Value> value, Handle<JSObject*> promise);
++
++/**
+  * Parse the given source buffer as a module in the scope of the current global
+  * of cx and return a source text module record.
+  */
+--- a/js/src/vm/Runtime.h
++++ b/js/src/vm/Runtime.h
+@@ -1078,6 +1078,10 @@
+   // HostImportModuleDynamically. This is also used to enable/disable dynamic
+   // module import and can accessed by off-thread parsing.
+   mozilla::Atomic<JS::ModuleDynamicImportHook> moduleDynamicImportHook;
++  js::MainThreadData<JS::ModuleDynamicImportValueOwner>
++      moduleDynamicImportValueOwner{nullptr};
++  js::MainThreadData<JS::ModuleDynamicImportHook>
++      moduleDynamicImportValueHook{nullptr};
+ 
+   // Hooks called when script private references are created and destroyed.
+   js::MainThreadData<JS::ScriptPrivateReferenceHook> scriptPrivateAddRefHook;
+--- a/js/src/vm/Modules.cpp
++++ b/js/src/vm/Modules.cpp
+@@ -96,6 +96,23 @@
+   AssertHeapIsIdle();
+ 
+   rt->moduleDynamicImportHook = func;
++}
++
++JS_PUBLIC_API void JS::SetModuleDynamicImportValueHook(
++    JSRuntime* rt, ModuleDynamicImportValueOwner owner,
++    ModuleDynamicImportHook callback) {
++  AssertHeapIsIdle();
++  MOZ_ASSERT(bool(owner) == bool(callback));
++  rt->moduleDynamicImportValueOwner = owner;
++  rt->moduleDynamicImportValueHook = callback;
++}
++
++JS_PUBLIC_API bool JS::FinishDynamicModuleImportWithValue(
++    JSContext* cx, Handle<Value> value, Handle<JSObject*> promise) {
++  AssertHeapIsIdle();
++  CHECK_THREAD(cx);
++  cx->check(value, promise);
++  return js::FinishDynamicModuleImportWithValue(cx, value, promise);
+ }
+ 
+ JS_PUBLIC_API bool JS::FinishDynamicModuleImport(
+--- a/js/src/builtin/ModuleObject.h
++++ b/js/src/builtin/ModuleObject.h
+@@ -507,6 +507,9 @@
+ bool OnModuleEvaluationFailure(JSContext* cx, HandleObject evaluationPromise,
+                                JS::ModuleErrorBehaviour errorBehaviour);
+ 
++bool FinishDynamicModuleImportWithValue(JSContext* cx, HandleValue value,
++                                       HandleObject promise);
++
+ bool FinishDynamicModuleImport(JSContext* cx, HandleObject evaluationPromise,
+                                HandleValue referencingPrivate,
+                                HandleObject moduleRequest,
+--- a/js/src/builtin/ModuleObject.cpp
++++ b/js/src/builtin/ModuleObject.cpp
+@@ -2435,7 +2435,8 @@
+ // NOTE: The caller needs to handle the promise.
+ static bool EvaluateDynamicImportOptions(
+     JSContext* cx, HandleValue optionsArg,
+-    MutableHandle<ImportAttributeVector> attributesArrayArg) {
++    MutableHandle<ImportAttributeVector> attributesArrayArg,
++    bool allowEmbeddingAttributes = false) {
+   // Step 11. If options is not undefined, then
+   if (optionsArg.isUndefined()) {
+     return true;
+@@ -2508,7 +2509,7 @@
+     }
+ 
+     // Step 11.e.ii.iv.3. If key is a String, then
+-    if (key.isString()) {
++    if (key.isString() || (allowEmbeddingAttributes && key.isInt())) {
+       // Step 11.f (reordered). If AllImportAttributesSupported(attributes) is
+       // false, then
+       //
+@@ -2517,7 +2518,7 @@
+       // host hook is deeply unclear, and so right now embedders will not have
+       // the ability to alter or extend the set of supported attributes.
+       // See https://bugzilla.mozilla.org/show_bug.cgi?id=1840723.
+-      bool supported = key.isAtom(cx->names().type);
++      bool supported = allowEmbeddingAttributes || key.isAtom(cx->names().type);
+       if (!supported) {
+         UniqueChars printableKey = AtomToPrintableString(cx, key.toAtom());
+         if (!printableKey) {
+@@ -2540,7 +2541,9 @@
+ 
+       // Step 10.d.v.3.b. Append the ImportAttribute Record { [[Key]]: key,
+       // [[Value]]: value } to attributes.
+-      keyAtom = key.toAtom();
++      RootedValue keyValue(cx, IdToValue(key));
++      keyAtom = ToAtom<CanGC>(cx, keyValue);
++      if (!keyAtom) return false;
+       valueString = value.toString();
+       attributesArrayArg.infallibleEmplaceBack(keyAtom, valueString);
+       ++numberOfValidAttributes;
+@@ -2572,8 +2575,12 @@
+ 
+   Handle<PromiseObject*> promise = promiseObject.as<PromiseObject>();
+ 
+-  JS::ModuleDynamicImportHook importHook =
+-      cx->runtime()->moduleDynamicImportHook;
++  RootedValue referencingPrivate(cx, script->sourceObject()->getPrivate());
++  auto owner = cx->runtime()->moduleDynamicImportValueOwner.ref();
++  bool callbackValueImport = owner && owner(referencingPrivate);
++  JS::ModuleDynamicImportHook importHook = cx->runtime()->moduleDynamicImportHook;
++  if (callbackValueImport)
++    importHook = cx->runtime()->moduleDynamicImportValueHook.ref();
+ 
+   if (!importHook) {
+     // Dynamic import can be disabled by a pref and is not supported in all
+@@ -2604,7 +2611,8 @@
+   }
+ 
+   Rooted<ImportAttributeVector> attributes(cx);
+-  if (!EvaluateDynamicImportOptions(cx, optionsArg, &attributes)) {
++  if (!EvaluateDynamicImportOptions(cx, optionsArg, &attributes,
++                                    callbackValueImport)) {
+     if (!RejectPromiseWithPendingError(cx, promise)) {
+       return nullptr;
+     }
+@@ -2620,8 +2628,10 @@
+     return promise;
+   }
+ 
+-  RootedValue referencingPrivate(cx, script->sourceObject()->getPrivate());
+   if (!importHook(cx, referencingPrivate, moduleRequest, promise)) {
++    // Callback-value embeddings preserve an exception from their native
++    // callback. The original record hook still converts failures to rejection.
++    if (callbackValueImport) return nullptr;
+     // If there's no exception pending then the script is terminating
+     // anyway, so just return nullptr.
+     if (!cx->isExceptionPending() ||
+@@ -2851,6 +2861,36 @@
+   return PromiseObject::reject(cx, promise, error);
+ };
+ 
++static bool OnDynamicImportValueFulfilled(JSContext* cx, unsigned argc,
++                                         Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  Rooted<PromiseObject*> promise(cx, TargetFromHandler<PromiseObject>(args));
++  args.rval().setUndefined();
++  return PromiseObject::resolve(cx, promise, args.get(0));
++}
++
++static bool OnDynamicImportValueRejected(JSContext* cx, unsigned argc,
++                                        Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  Rooted<PromiseObject*> promise(cx, TargetFromHandler<PromiseObject>(args));
++  args.rval().setUndefined();
++  return PromiseObject::reject(cx, promise, args.get(0));
++}
++
++bool js::FinishDynamicModuleImportWithValue(JSContext* cx, HandleValue value,
++                                           HandleObject promise) {
++  // The intermediate Promise belongs to the referrer realm even when the
++  // callback returns a foreign Promise, thenable or ordinary value.
++  RootedObject adopted(cx, JS::NewPromiseObject(cx, nullptr));
++  if (!adopted || !JS::ResolvePromise(cx, adopted, value)) return false;
++  RootedFunction fulfilled(cx, NewHandler(cx, OnDynamicImportValueFulfilled,
++                                        promise.as<PromiseObject>()));
++  RootedFunction rejected(cx, NewHandler(cx, OnDynamicImportValueRejected,
++                                       promise.as<PromiseObject>()));
++  if (!fulfilled || !rejected) return false;
++  return JS::AddPromiseReactions(cx, adopted, fulfilled, rejected);
++}
++
+ bool js::FinishDynamicModuleImport(JSContext* cx,
+                                    HandleObject evaluationPromise,
+                                    HandleValue referencingPrivate,

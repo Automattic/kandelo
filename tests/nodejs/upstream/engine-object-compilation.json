@@ -1,0 +1,243 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-10T22:42:12.541425+00:00",
+  "scope": "Actual wasm32 relocation objects built by the configured Mozilla backend; no link or guest execution",
+  "sourceHead": "7e40e47708d62d72efc4d5688d3916bcf0ee52c3",
+  "testedInputs": [
+    {
+      "path": "packages/registry/spidermonkey/build-spidermonkey.sh",
+      "bytes": 20574,
+      "sha256": "cceccbedd9faad2ad0ee880e4c9e6367327d2de8051d5f3a3c958b9e2b6d92cf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build.toml",
+      "bytes": 769,
+      "sha256": "3fb895b8d3cfaee1b9e80d7dee8bde4d63ccb2fc3ab1850f263d79e18338759c"
+    },
+    {
+      "path": "packages/registry/spidermonkey/package.toml",
+      "bytes": 2553,
+      "sha256": "53c1df3b5e6b5d851eb90df02b3ab2e023f1577a0a8535493f25efbe95b250cf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.cpp",
+      "bytes": 3577,
+      "sha256": "55a5d446f2935f26eaa2062bbb9d60c7bdc38c65647def216678e623e4014416"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.h",
+      "bytes": 870,
+      "sha256": "1edb63c5fdd933ab1d0466e079803d47f7e3fd747ccc2f59469cf900c5c1a409"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/prepare-build.sh",
+      "bytes": 1748,
+      "sha256": "4f533db7d0fe15ad948473d9932e1ad8d7b35f453db1a95ed0b5d5a38d334306"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0023-kandelo-upstream-node-compiler-build.patch",
+      "bytes": 510,
+      "sha256": "25c9cc588291a31290b213bf1be4b4457627f8aabe58bfa0301264bc91ff562d"
+    },
+    {
+      "path": "third_party/nodejs/native/builtin-source-registry.cpp",
+      "bytes": 1597,
+      "sha256": "e6581b73f9ff9644eb0de27f78a4f6c528628d5641bc54d6d1e707487144925d"
+    },
+    {
+      "path": "third_party/nodejs/native/builtin-source-registry.h",
+      "bytes": 840,
+      "sha256": "1b84c5c99de447402c382429df731e1f0def761a9586f6545828043b585296a9"
+    },
+    {
+      "path": "scripts/generate-nodejs-source-registry.py",
+      "bytes": 11468,
+      "sha256": "c4a23b02b681a8c7ee0119b002ff3eff3adfa01bac9e08a42f7d2101e61ce165"
+    },
+    {
+      "path": "scripts/nodejs-builtin-metadata.cpp",
+      "bytes": 1972,
+      "sha256": "74a60d09dce591adf01c779a8788ccabccdbe498f93b0487f54a609428324348"
+    },
+    {
+      "path": "sdk/bin/wasm32posix-c++",
+      "bytes": 614,
+      "sha256": "5d2cd96da08ce1ba6c34459117569fe7c38a01e726f0d3dd4fe2c08bcb31b8b6"
+    }
+  ],
+  "packageRevision": 17,
+  "mozillaVersion": "140.11.0esr",
+  "mozillaArchiveSha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028",
+  "sourceIdentity": {
+    "manifestSha256": "512816907bd18ef06c377d2961ce9341557fb503cc149e20a5172242ca327645",
+    "version": "26.13.0",
+    "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+    "filesVerified": 492,
+    "builtinSources": 443,
+    "unchangedUpstreamBytes": true
+  },
+  "job": "node-upstream-fixed-objects-1110-173351-7083",
+  "buildLog": {
+    "path": ".scratch/agent-jobs/node-upstream-fixed-objects-1110-173351-7083/output.log",
+    "bytes": 87744,
+    "sha256": "4002ecf5e7161995ae419a77483684785c039c942baa4583104ae7d79b1278bd"
+  },
+  "configuration": {
+    "CC": "/Users/brandon/conductor/workspaces/kandelo/port-vila/sdk/bin/wasm32posix-cc -D__linux__=1 -D__unix__=1",
+    "CXX": "/Users/brandon/conductor/workspaces/kandelo/port-vila/sdk/bin/wasm32posix-c++ -D__linux__=1 -D__unix__=1",
+    "TARGET_CPU": {
+      "pythonExpression": "CPU('wasm32')"
+    },
+    "TARGET_OS": {
+      "pythonExpression": "OS('GNU')"
+    },
+    "OS_TARGET": "Linux",
+    "MOZ_DEBUG": null,
+    "MOZ_OPTIMIZE": "1",
+    "JS_CODEGEN_NONE": "1",
+    "ENABLE_EXPLICIT_RESOURCE_MANAGEMENT": "1"
+  },
+  "targetingDebt": "Unchanged recipe still uses wasm32-unknown-linux-musl and __linux__/__unix__ defines; object success does not establish finished Kandelo target metadata or conformance.",
+  "configurationFiles": [
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/mozconfig-wasm32",
+      "bytes": 1146,
+      "sha256": "2bb5ae939d21efd2c8a303d0149feeb2dd58e8cd27acddab0214a01614bb2f59"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/config.status",
+      "bytes": 28334,
+      "sha256": "96a1c7379dcccd18c72c120066e7699cd9d3228dd0bec72546a18d5f836e8287"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/config/autoconf.mk",
+      "bytes": 19958,
+      "sha256": "e4ddf7fade474f3841c310bc7f8292bef6a5705c5885aca1411e25ff843ce204"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/js/src/shell/backend.mk",
+      "bytes": 10898,
+      "sha256": "37a0155649801fdfdf4c5860b2bc27fe3178ba63ad62419cf8ed6e9abc05f95f"
+    }
+  ],
+  "selectedHeaders": [
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/js/src/js-config.h",
+      "bytes": 2322,
+      "sha256": "c7d34292be3dc1d1eb802dd38036f01fc82f75360d1b62cca12e4eb11283e5de"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/js/src/js-confdefs.h",
+      "bytes": 2510,
+      "sha256": "d1b92ed632d0ede9d03e771c632e9f441ba569044514f63cac5fdde8af471e2d"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/dist/include/js/PrefsGenerated.h",
+      "bytes": 21565,
+      "sha256": "3e05ee51a04e75920315845cc1ccf36fd3924e261480fa85895ac2ce50ccbc8c"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/dist/include/mozilla/Utf8.h",
+      "bytes": 25263,
+      "sha256": "5f2f777256d5beaaba7337e5e653c30325e1a450bc4d058dd8074f6ea5cdcb93"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/dist/include/js/TypeDecls.h",
+      "bytes": 4915,
+      "sha256": "b48bd03fc0813b7f29df3d6b795327ebd4fb2f968d6d55c314d2427c0e479d73"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/dist/include/js/CompilationAndEvaluation.h",
+      "bytes": 10246,
+      "sha256": "bf446df010d5f108668a707a4e8d2b5d7473ea6b16a0f8d2c392365664ae24e8"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/dist/include/js/CompileOptions.h",
+      "bytes": 31797,
+      "sha256": "9a7ae4c12235179670eb66e3e556f537b2b520161a8c937e1ca48b5abf3290e4"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/dist/include/js/EnvironmentChain.h",
+      "bytes": 2325,
+      "sha256": "9bdd6044518a0034dbe2348725126eb1f774162d06685c6bb7e53ea73dae8c76"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/dist/include/js/ErrorReport.h",
+      "bytes": 19899,
+      "sha256": "f36fb762ac6f3d2d257501797256f32c8521112786a46319eeec742fe1146e4c"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/dist/include/js/Modules.h",
+      "bytes": 11966,
+      "sha256": "1a033c867361cbf4d0f7aeb533a836b9ade69ded3d885be780ce906bb42595d0"
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/dist/include/js/SourceText.h",
+      "bytes": 13555,
+      "sha256": "b0345201ad6d74035f130f04a0029cdfd198501391beefbe68a39a518e513ed4"
+    }
+  ],
+  "generatedRegistryInclude": {
+    "path": ".scratch/node-upstream-verified.MoFfDN/spidermonkey-source/js/src/shell/node-upstream/node-source-registry.generated.inc",
+    "bytes": 67403446,
+    "sha256": "484a17dec225efd58e9cb955daf9efbc06e23562841f8da32a90f0e6a00ff05f"
+  },
+  "compiler": {
+    "path": "/nix/store/lyq5q6lw9bbayni7gcchg4vgr1qs8nq4-llvm-21.1.7-tree/bin/clang",
+    "version": "clang version 21.1.7\nTarget: arm64-apple-darwin27.2.0\nThread model: posix\nInstalledDir: /nix/store/r9b24knmncv9gxpyxq2qv8frm006mpcl-clang-21.1.7/bin\n"
+  },
+  "objects": [
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/js/src/shell/builtin-compiler.o",
+      "bytes": 530279,
+      "sha256": "0bfe38fdb692b95424f75b0cfe83babb7134f51dfb8a40d2f9e15b89bc96fa4e",
+      "fileHeader": "\nFile: /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-upstream-verified.MoFfDN/obj-wasm32/js/src/shell/builtin-compiler.o\nFormat: WASM\nArch: wasm32\nAddressSize: 32bit\nVersion: 0x1\n",
+      "definedNativeEntries": [
+        "00000001 T kandelo::node::CompileBuiltinFunction(JSContext*, std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
+        "0000022b T kandelo::node::CompileBuiltinSourceTextModule(JSContext*, std::__1::basic_string_view<char, std::__1::char_traits<char>>)"
+      ]
+    },
+    {
+      "path": ".scratch/node-upstream-verified.MoFfDN/obj-wasm32/js/src/shell/builtin-source-registry.o",
+      "bytes": 11274507,
+      "sha256": "7f355359e399aba8e15b329b92371573d7f56e2df26c2b5ed0dcbea334a8451a",
+      "fileHeader": "\nFile: /Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-upstream-verified.MoFfDN/obj-wasm32/js/src/shell/builtin-source-registry.o\nFormat: WASM\nArch: wasm32\nAddressSize: 32bit\nVersion: 0x1\n",
+      "definedNativeEntries": [
+        "00000007 T kandelo::node::BuiltinSourceAt(unsigned long)",
+        "0000007e T kandelo::node::FindBuiltinSource(std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
+        "00000001 T kandelo::node::BuiltinSourceCount()"
+      ]
+    }
+  ],
+  "priorAttempts": [
+    {
+      "job": "node-upstream-real-objects-1110-172340-1df4",
+      "exit": 2,
+      "failure": "Object check omitted pre-export header installation; mozilla/Utf8.h absent from dist/include"
+    },
+    {
+      "job": "node-upstream-real-objects-retry-1110-172625-e9e7",
+      "exit": 2,
+      "failure": "13 JS_PUBLIC_API visibility declaration errors; one wasm32 parameter-count comparison warning"
+    }
+  ],
+  "fixes": [
+    "Run real Mozilla pre-export before export",
+    "Use js/TypeDecls.h instead of unannotated forward declarations",
+    "Check unsigned parameter-count conversion by round trip"
+  ],
+  "scriptControls": {
+    "shellSyntax": "passed",
+    "invalidArgumentRefused": true,
+    "missingWorkRootRefused": true,
+    "resolverOutputRootRefused": true
+  },
+  "validationLimits": {
+    "linked": false,
+    "guestStartupRun": false,
+    "fourHostExecutionRun": false,
+    "overallSuitesRun": false,
+    "fullProductBuildRun": false,
+    "successorAbiArtifactRebuildRun": false
+  }
+}

@@ -1,0 +1,241 @@
+{
+  "schema": 1,
+  "binding": "async_context_frame",
+  "status": "whole original native source and actual engine continuation state implemented; active original JavaScript consumers guarded before genuine bootstrap",
+  "sourceVersion": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceFiles": [
+    {
+      "path": "lib/internal/async_context_frame.js",
+      "role": "library",
+      "bytes": 1579,
+      "sha256": "d8f8b52582fed7e01207e6a541b057a60ef05d78128b1f5c540cc4bb1bb4a667",
+      "builtinId": "internal/async_context_frame"
+    },
+    {
+      "path": "lib/internal/async_local_storage/async_context_frame.js",
+      "role": "library",
+      "bytes": 1930,
+      "sha256": "69bc40fdca2cddf39b8fd8cb632288f85de8a39f04affd249598f13a3efebaf3",
+      "builtinId": "internal/async_local_storage/async_context_frame"
+    },
+    {
+      "path": "lib/internal/async_local_storage/run_scope.js",
+      "role": "library",
+      "bytes": 487,
+      "sha256": "b90752745991b6372b12e64e01037bc0a03fde4daeb23e21b146fe4839a7ba8a",
+      "builtinId": "internal/async_local_storage/run_scope"
+    },
+    {
+      "path": "src/async_context_frame.cc",
+      "role": "provenance",
+      "bytes": 2750,
+      "sha256": "6de1a1e6c0eb2abf910628ffcb5722e5e33234d3725a2df27ce36349e091f9cc",
+      "builtinId": null
+    },
+    {
+      "path": "src/async_context_frame.h",
+      "role": "provenance",
+      "bytes": 903,
+      "sha256": "e2f173c35a8ea6b9afb670b1bbfb126890e29b8188108aa60c572bfe68345e92",
+      "builtinId": null
+    }
+  ],
+  "coverage": {
+    "originalJsFiles": 443,
+    "directBindingConsumers": [
+      {
+        "path": "lib/internal/async_context_frame.js",
+        "line": 10,
+        "kind": "internalBinding",
+        "requestedExports": [
+          "getContinuationPreservedEmbedderData",
+          "setContinuationPreservedEmbedderData"
+        ]
+      }
+    ],
+    "frameModuleLiteralConsumers": [
+      {
+        "path": "lib/async_hooks.js",
+        "builtinId": "async_hooks",
+        "line": 33,
+        "kind": "require",
+        "target": "internal/async_context_frame",
+        "computed": false,
+        "requestedExports": [],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/async_local_storage/async_context_frame.js",
+        "builtinId": "internal/async_local_storage/async_context_frame",
+        "line": 12,
+        "kind": "require",
+        "target": "internal/async_context_frame",
+        "computed": false,
+        "requestedExports": [],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/process/promises.js",
+        "builtinId": "internal/process/promises",
+        "line": 37,
+        "kind": "require",
+        "target": "internal/async_context_frame",
+        "computed": false,
+        "requestedExports": [],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/process/task_queues.js",
+        "builtinId": "internal/process/task_queues",
+        "line": 45,
+        "kind": "require",
+        "target": "internal/async_context_frame",
+        "computed": false,
+        "requestedExports": [],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/streams/end-of-stream.js",
+        "builtinId": "internal/streams/end-of-stream",
+        "line": 50,
+        "kind": "require",
+        "target": "internal/async_context_frame",
+        "computed": false,
+        "requestedExports": [],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      },
+      {
+        "path": "lib/internal/timers.js",
+        "builtinId": "internal/timers",
+        "line": 130,
+        "kind": "require",
+        "target": "internal/async_context_frame",
+        "computed": false,
+        "requestedExports": [],
+        "native": false,
+        "contractStatus": "unreviewed",
+        "evidence": "static syntax only"
+      }
+    ],
+    "completeGraphReconciled": false,
+    "lazyConditionalWorkerExceptionalClosureComplete": false
+  },
+  "exports": [
+    {
+      "name": "getContinuationPreservedEmbedderData",
+      "signature": "() -> arbitrary JS value",
+      "arity": 0,
+      "errors": "real wrapping/OOM failure; receiver ignored",
+      "owner": "engine JSContext rooted value, one value per engine context",
+      "implemented": true
+    },
+    {
+      "name": "setContinuationPreservedEmbedderData",
+      "signature": "(value?) -> undefined",
+      "arity": 1,
+      "errors": "no coercion; missing argument stores undefined",
+      "owner": "same actual engine context",
+      "implemented": true
+    }
+  ],
+  "completeNativeHelpers": [
+    {
+      "name": "current(Isolate*)",
+      "behavior": "read actual engine continuation value"
+    },
+    {
+      "name": "set(Environment*, value)",
+      "behavior": "actual original async_context_frame option gates source native setter"
+    },
+    {
+      "name": "set(Isolate*, value)",
+      "behavior": "current real native environment delegation"
+    },
+    {
+      "name": "exchange(Environment*|Isolate*, value)",
+      "behavior": "return prior actual value, then use original gated setter"
+    },
+    {
+      "name": "Scope::Scope/~Scope",
+      "behavior": "retain prior arbitrary value in genuine persistent root; original source exchanges/restores via actual native option"
+    }
+  ],
+  "engine": {
+    "storage": "JSContext ContextData<PersistentRooted<Value>>, independently traced from active realm",
+    "reactionCapture": "existing SpiderMonkey JobQueue::getHostDefinedData captures an actual native snapshot object when reaction is registered; includes undefined",
+    "queuedOwnership": "TraceableFifo entries trace both native job and JS value; direct jobs capture at enqueue, promise reactions use their real registration snapshot",
+    "execution": "install queued value and restore prior rooted value with native scope exit, including exception/quit paths",
+    "realm": "capture wraps into reaction compartment; getter wraps actual retained value into caller realm; cross-realm Promise/await and moving GC selected controls",
+    "debuggerQueue": "saved queue and debug copy/front use the same traced entries; complete debugger interruption/security/OOM validation remains open",
+    "noPromiseWrappers": true,
+    "rawPromiseLifecycleHooksImplemented": false,
+    "asyncIdConformanceEstablished": false
+  },
+  "options": {
+    "defaultEnabled": true,
+    "source": "src/node_options.h DEFINE_BOOL_FIELD(async_context_frame)=true",
+    "nativeCppGuard": "read actual original parser option under original CLI mutex",
+    "rawEngineIntrinsics": "available independently of Node source optional mode, matching native disabled-option reference",
+    "jsActivation": "original internal/options refuses options query before genuine bootstrap; guard preserved"
+  },
+  "ownership": {
+    "nativeBinding": "distinct cached per-realm functions/extras object, canonical runtime native-value state",
+    "failedOwners": "binding entry checks terminal owner, source Scope can restore engine bookkeeping after admitted callback throws",
+    "arbitraryValues": "actual numbers/bigints/symbols/objects/functions; no JSON snapshot, duck typing or copied source data",
+    "gc": "engine persistent current value, traced reaction snapshot/queued entry, source Global<Value> persistent prior root",
+    "liveness": "data does not invent a handle or keep the event loop alive beyond actual queued work",
+    "cancellation": "clearing/saving/dropping actual queue uses traced ownership; complete cancellation/fork/worker teardown not established"
+  },
+  "archivedReuse": {
+    "sourceCommit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+    "engineMechanisms": "0040-kandelo-node-async-context.patch: actual host-defined snapshots, traced typed queue, native restore; adapted to present engine primitive without old public JS surface",
+    "rawHookReviewOnly": "0195-node-mapping-curves-promise-fetch.patch; raw hooks and AsyncWrap IDs not adopted here",
+    "frozenCheckoutEdited": false
+  },
+  "validation": {
+    "engineReceipt": "continuation-engine-check.json",
+    "nativeReference": "continuation-native-reference.json",
+    "rawSharedCases": 20,
+    "engineControlsPerHost": 27,
+    "additionalDriversPerHost": 7,
+    "originalActiveConsumerCasesDeferred": [
+      "complete-original-frame-map-exchange-and-disable-use-native-data",
+      "original-async-local-storage-propagates-through-real-await",
+      "original-async-local-storage-nesting-and-throw-restore-prior-store",
+      "original-run-scope-disposes-once-and-restores-real-frame"
+    ],
+    "blockingFailureEvidence": ".context/node-async-context-frame/engine-first.json",
+    "blockedFailure": "ERR_OPTIONS_BEFORE_BOOTSTRAPPING from original internal/options; no fabricated bootstrap completion flag",
+    "nativeAfterBootstrapActiveConsumerCases": 4
+  },
+  "remaining": [
+    "Genuine startup, empty/simple scripts, separate CJS/ESM entrypaths",
+    "Run the four preserved original active Frame/AsyncLocalStorage/RunScope controls after genuine bootstrap",
+    "Complete engine raw Promise lifecycle hooks, assigned async ID/resource scopes and native callback integrations",
+    "Native timer/process/fs/worker callback frame admission/restoration, full destroy/cancel/teardown and fork behavior",
+    "OOM, debugger queue interruption and denied wrapper/security stress",
+    "Complete public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap"
+  ],
+  "startup": {
+    "principalCurrentGap": "buffer",
+    "stackLimitCurrentGap": "mksnapshot",
+    "fullStartupAccepted": false
+  },
+  "sourcePolicy": {
+    "originalJavascriptChanged": false,
+    "nativeFunctionBodiesExtracted": false,
+    "handwrittenPublicModule": false
+  },
+  "broaderRoadmapAuthorized": false
+}

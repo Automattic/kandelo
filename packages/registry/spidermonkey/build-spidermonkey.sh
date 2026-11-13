@@ -6,6 +6,26 @@
 
 set -euo pipefail
 
+UPSTREAM_OBJECT_CHECK=0
+NATIVE_OWNER_CHECK=0
+if [ "$#" -eq 1 ] && [ "$1" = "--check-upstream-compiler" ]; then
+    # A diagnostic must never satisfy a resolver request for a linked package.
+    if [ -z "${WASM_POSIX_DEP_WORK_DIR:-}" ] || [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        echo "ERROR: --check-upstream-compiler requires a private WASM_POSIX_DEP_WORK_DIR and no output directory." >&2
+        exit 2
+    fi
+    UPSTREAM_OBJECT_CHECK=1
+elif [ "$#" -eq 1 ] && [ "$1" = "--check-native-owners" ]; then
+    if [ -z "${WASM_POSIX_DEP_WORK_DIR:-}" ] || [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        echo "ERROR: --check-native-owners requires a private WASM_POSIX_DEP_WORK_DIR and no output directory." >&2
+        exit 2
+    fi
+    NATIVE_OWNER_CHECK=1
+elif [ "$#" -ne 0 ]; then
+    echo "usage: build-spidermonkey.sh [--check-upstream-compiler|--check-native-owners]" >&2
+    exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/scripts/package-build-roots.sh"
@@ -93,7 +113,7 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-for required_tool in python3 rustc cargo cbindgen node curl make; do
+for required_tool in python3 rustc cargo cbindgen node curl make clang++; do
     if ! command -v "$required_tool" >/dev/null 2>&1; then
         echo "ERROR: required host tool '$required_tool' not found in PATH." >&2
         exit 1
@@ -171,6 +191,38 @@ fi
 }
 export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
 
+LIBUV_PREFIX="${WASM_POSIX_DEP_LIBUV_DIR:-}"
+if [ -z "$LIBUV_PREFIX" ]; then
+    echo "==> Resolving libuv via cargo xtask build-deps..."
+    LIBUV_PREFIX="$(resolve_dep libuv)"
+fi
+[ -f "$LIBUV_PREFIX/lib/libuv.a" ] && [ -f "$LIBUV_PREFIX/include/uv.h" ] || {
+    echo "ERROR: libuv resolve missing archive/headers at $LIBUV_PREFIX" >&2
+    exit 1
+}
+export WASM_POSIX_DEP_LIBUV_DIR="$LIBUV_PREFIX"
+
+V8_TRACING_PREFIX="${WASM_POSIX_DEP_V8_TRACING_DIR:-}"
+if [ -z "$V8_TRACING_PREFIX" ]; then
+    echo "==> Resolving standalone V8 tracing via cargo xtask build-deps..."
+    V8_TRACING_PREFIX="$(resolve_dep v8-tracing)"
+fi
+[ -f "$V8_TRACING_PREFIX/lib/libv8-tracing.a" ] && [ -f "$V8_TRACING_PREFIX/include/libplatform/v8-tracing.h" ] || {
+    echo "ERROR: standalone V8 tracing resolve missing archive/headers at $V8_TRACING_PREFIX" >&2
+    exit 1
+}
+export WASM_POSIX_DEP_V8_TRACING_DIR="$V8_TRACING_PREFIX"
+
+NBYTES_PREFIX="${WASM_POSIX_DEP_NBYTES_DIR:-}"
+if [ -z "$NBYTES_PREFIX" ]; then NBYTES_PREFIX="$(resolve_dep nbytes)"; fi
+SIMDUTF_PREFIX="${WASM_POSIX_DEP_SIMDUTF_DIR:-}"
+if [ -z "$SIMDUTF_PREFIX" ]; then SIMDUTF_PREFIX="$(resolve_dep simdutf)"; fi
+for codec_prefix in "$NBYTES_PREFIX" "$SIMDUTF_PREFIX"; do
+    [ -d "$codec_prefix/include" ] || { echo "ERROR: missing codec headers at $codec_prefix" >&2; exit 1; }
+done
+export WASM_POSIX_DEP_NBYTES_DIR="$NBYTES_PREFIX"
+export WASM_POSIX_DEP_SIMDUTF_DIR="$SIMDUTF_PREFIX"
+
 if [ "$RESOLVER_BUILD" -eq 1 ]; then
     export WASM_POSIX_DEP_WORK_DIR="$WORK_DIR"
     export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
@@ -179,7 +231,7 @@ if [ "$RESOLVER_BUILD" -eq 1 ]; then
     export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
     SYSROOT="$(
         kandelo_package_prepare_private_sysroot spidermonkey "$SYSROOT" \
-            libcxx openssl zlib libzstd
+            libcxx openssl zlib libzstd libuv nbytes simdutf v8-tracing
     )"
     export WASM_POSIX_SYSROOT="$SYSROOT"
 fi
@@ -380,9 +432,35 @@ PROBE
     fi
     rm -rf "$PREFLIGHT_DIR"
 fi
-export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
-export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
-export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a -Wl,-z,stack-size=16777216"
+# Compile the new upstream builtin compiler in the real Mozilla shell build.
+# It remains inactive until the genuine per-realm/native binding owner exists.
+bash "$SCRIPT_DIR/node-upstream/prepare-build.sh" \
+    "$REPO_ROOT" "$SRC_DIR" "$OBJ_DIR" "$MACOS_SDK_DIR" "$ZLIB_PREFIX/include" "$ZSTD_PREFIX/include"
+
+export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -DUV_PLATFORM_KANDELO=1"
+export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include -I$LIBUV_PREFIX/include -I$NBYTES_PREFIX/include -I$SIMDUTF_PREFIX/include -I$V8_TRACING_PREFIX/include -DUV_PLATFORM_KANDELO=1 -DV8_PLATFORM_KANDELO=1"
+export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a $V8_TRACING_PREFIX/lib/libv8-tracing.a $LIBUV_PREFIX/lib/libuv.a $NBYTES_PREFIX/lib/libnbytes.a $SIMDUTF_PREFIX/lib/libsimdutf.a -lpthread -Wl,-z,stack-size=16777216 -Wl,--error-limit=0"
+
+
+# Record this recipe's actual flags without executing a host layout probe.
+if [ "$NATIVE_OWNER_CHECK" -eq 1 ]; then
+    # This private diagnostic intentionally cannot initialize process_methods.
+    # It must never publish or satisfy a normal package resolver request.
+    export CXXFLAGS="$CXXFLAGS -DKANDELO_NATIVE_OWNER_PROBE=1"
+fi
+
+python3 "$REPO_ROOT/scripts/generate-nodejs-build-settings.py" \
+    --mozconfig "$MOZCONFIG_PATH" \
+    --path-map "$WORK_DIR=/usr/src/kandelo-build/spidermonkey" \
+    --path-map "$REPO_ROOT=/usr/src/kandelo" \
+    --path-map "$OPENSSL_PREFIX=/deps/openssl" \
+    --path-map "$ZLIB_PREFIX=/deps/zlib" \
+    --path-map "$ZSTD_PREFIX=/deps/zstd" \
+    --path-map "$LIBUV_PREFIX=/deps/libuv" \
+    --path-map "$NBYTES_PREFIX=/deps/nbytes" \
+    --path-map "$SIMDUTF_PREFIX=/deps/simdutf" \
+    --path-map "$V8_TRACING_PREFIX=/deps/v8-tracing" \
+    --output "$SRC_DIR/js/src/shell/node-upstream/node-build-settings.generated.h"
 
 if [ -f "$OBJ_DIR/config.status" ] && {
     ! grep -q 'getrandom_backend' "$OBJ_DIR/config.status" ||
@@ -401,6 +479,23 @@ if [ -n "$JSRUST_FINGERPRINT" ] && ! grep -q 'target-feature=+atomics' "$JSRUST_
     echo "==> Rebuilding stale SpiderMonkey Rust archive for wasm atomics..."
     rm -f "$RUST_RELEASE_DIR/libjsrust.a"
     rm -rf "$RUST_RELEASE_DIR/.fingerprint"/jsrust-*
+fi
+
+if [ "$UPSTREAM_OBJECT_CHECK" -eq 1 ]; then
+    echo "==> Configuring/exporting SpiderMonkey and compiling upstream Node objects only..."
+    (
+        cd "$SRC_DIR"
+        ./mach --no-interactive configure
+        # pre-export installs the real public headers; export alone only runs
+        # generators and leaves dist/include incomplete for selected objects.
+        ./mach --no-interactive build pre-export export
+        ./mach --no-interactive build js/src/shell/builtin-compiler.o \
+            js/src/shell/builtin-source-registry.o js/src/shell/per-context.o \
+            js/src/shell/private-key-test-api.o js/src/shell/module-wrap.o \
+            js/src/shell/error-stack.o js/src/shell/realm.o js/src/shell/timers.o
+    )
+    echo "==> Upstream Node object check complete; no package linked or installed."
+    exit 0
 fi
 
 echo "==> Building SpiderMonkey JS shell for wasm32..."
@@ -424,18 +519,25 @@ cp "$JS_BIN" "$BIN_DIR/js.wasm"
 WASM_OPT="${WASM_OPT:-wasm-opt}"
 if command -v "$WASM_OPT" >/dev/null 2>&1; then
     echo "==> Optimizing js.wasm with wasm-opt -O2..."
-    "$WASM_OPT" -O2 "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm"
+    "$WASM_OPT" -O2 -g "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm"
 else
     echo "WARNING: wasm-opt not found; leaving unoptimized js.wasm." >&2
 fi
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "==> Applying fork instrumentation to js.wasm..."
-"$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm.instr"
+"$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" --keep-names -o "$BIN_DIR/js.wasm.instr"
 mv "$BIN_DIR/js.wasm.instr" "$BIN_DIR/js.wasm"
 
 JS_SIZE="$(wc -c < "$BIN_DIR/js.wasm" | tr -d ' ')"
 echo "==> SpiderMonkey built successfully: $BIN_DIR/js.wasm ($JS_SIZE bytes)"
+
+if [ "$NATIVE_OWNER_CHECK" -eq 1 ]; then
+    mv "$BIN_DIR/js.wasm" "$BIN_DIR/native-owner-probe.wasm"
+    echo "==> Private native-owner diagnostic only: $BIN_DIR/native-owner-probe.wasm"
+    echo "==> process_methods unavailable; no package, node alias or image installed."
+    exit 0
+fi
 
 cp "$BIN_DIR/js.wasm" "$BIN_DIR/node.wasm"
 NODE_SIZE="$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')"

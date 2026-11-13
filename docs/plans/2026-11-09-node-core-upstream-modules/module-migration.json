@@ -1,0 +1,1867 @@
+{
+  "schema": 1,
+  "kind": "Planning dispositions for all 74 audited module surfaces; no runtime support or import authorization",
+  "frozenCommit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+  "modules": [
+    {
+      "module": "node:_http_agent",
+      "upstreamWholeFile": {
+        "path": "lib/_http_agent.js",
+        "sha256": "e522fe285ce1bf44f90fa71c96530b1d242dc5dd20359c566654f45e88c39428"
+      },
+      "family": "http",
+      "wave": "3",
+      "directInternalJS": [
+        "async_hooks",
+        "events",
+        "internal/assert",
+        "internal/async_hooks",
+        "internal/http",
+        "internal/options",
+        "internal/stream_base_commons",
+        "internal/util",
+        "internal/util/debuglog",
+        "internal/validators",
+        "net",
+        "tls"
+      ],
+      "directNativeBindings": [
+        "stream_wrap"
+      ],
+      "reuseNativeCandidates": "native-http-parser.cpp, http-parser.h and node-llhttp; parser/socket ownership only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:_http_client",
+      "upstreamWholeFile": {
+        "path": "lib/_http_client.js",
+        "sha256": "4591a4d31634c62cc82f883cc60ed547f8a46a6b9dd7bb963f7e54008c6a5d31"
+      },
+      "family": "http",
+      "wave": "3",
+      "directInternalJS": [
+        "_http_agent",
+        "_http_common",
+        "_http_incoming",
+        "_http_outgoing",
+        "buffer",
+        "diagnostics_channel",
+        "internal/assert",
+        "internal/async_hooks",
+        "internal/errors",
+        "internal/http",
+        "internal/perf/observe",
+        "internal/timers",
+        "internal/url",
+        "internal/util",
+        "internal/util/debuglog",
+        "internal/validators",
+        "net",
+        "stream"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-http-parser.cpp, http-parser.h and node-llhttp; parser/socket ownership only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:_http_common",
+      "upstreamWholeFile": {
+        "path": "lib/_http_common.js",
+        "sha256": "76d4cf8b96390cb8afeaafdbb9335e8ac18502a603e403fa0d42ee0ec09f4cb5"
+      },
+      "family": "http",
+      "wave": "3",
+      "directInternalJS": [
+        "_http_incoming",
+        "internal/freelist",
+        "internal/options",
+        "timers"
+      ],
+      "directNativeBindings": [
+        "http_parser"
+      ],
+      "reuseNativeCandidates": "native-http-parser.cpp, http-parser.h and node-llhttp; parser/socket ownership only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:_http_incoming",
+      "upstreamWholeFile": {
+        "path": "lib/_http_incoming.js",
+        "sha256": "c8901e0965b32c80e61caacb2e8fb82c7d6e2a20798ce76b41a677fc864e5ac8"
+      },
+      "family": "http",
+      "wave": "3",
+      "directInternalJS": [
+        "internal/abort_controller",
+        "stream"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-http-parser.cpp, http-parser.h and node-llhttp; parser/socket ownership only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:_http_outgoing",
+      "upstreamWholeFile": {
+        "path": "lib/_http_outgoing.js",
+        "sha256": "737581e10460c2bf4cedcd98a402b46fd11b490ecd3e9d2ceccc22b94381f669"
+      },
+      "family": "http",
+      "wave": "3",
+      "directInternalJS": [
+        "_http_common",
+        "buffer",
+        "events",
+        "internal/assert",
+        "internal/async_hooks",
+        "internal/errors",
+        "internal/http",
+        "internal/streams/state",
+        "internal/util",
+        "internal/util/debuglog",
+        "internal/util/types",
+        "internal/validators",
+        "stream"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-http-parser.cpp, http-parser.h and node-llhttp; parser/socket ownership only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:_http_server",
+      "upstreamWholeFile": {
+        "path": "lib/_http_server.js",
+        "sha256": "b8878d4357201af985c07685ef62383a91cf9fc80ed42c1715623a30b0a9e8e9"
+      },
+      "family": "http",
+      "wave": "3",
+      "directInternalJS": [
+        "_http_common",
+        "_http_incoming",
+        "_http_outgoing",
+        "buffer",
+        "diagnostics_channel",
+        "events",
+        "internal/assert",
+        "internal/async_hooks",
+        "internal/errors",
+        "internal/http",
+        "internal/perf/observe",
+        "internal/util",
+        "internal/util/debuglog",
+        "internal/validators",
+        "net",
+        "stream",
+        "timers"
+      ],
+      "directNativeBindings": [
+        "http_parser"
+      ],
+      "reuseNativeCandidates": "native-http-parser.cpp, http-parser.h and node-llhttp; parser/socket ownership only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:_tls_common",
+      "upstreamWholeFile": {
+        "path": "lib/_tls_common.js",
+        "sha256": "0e0009cea1ab1f93e1b8399963a0a2536976bd9e55f1b5309d60afa53e946c55"
+      },
+      "family": "secure-network",
+      "wave": "3 then 4",
+      "directInternalJS": [
+        "internal/tls/common"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-tls-context.cpp, tls-owner.h, tls-credential-operations.h and OpenSSL; UDP/QUIC prerequisites separate",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:_tls_wrap",
+      "upstreamWholeFile": {
+        "path": "lib/_tls_wrap.js",
+        "sha256": "f1651a19446ab332a44ab8bc39045d0dc58b9b236a0014a932e2a743c6154f60"
+      },
+      "family": "secure-network",
+      "wave": "3 then 4",
+      "directInternalJS": [
+        "internal/tls/wrap"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-tls-context.cpp, tls-owner.h, tls-credential-operations.h and OpenSSL; UDP/QUIC prerequisites separate",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:assert",
+      "upstreamWholeFile": {
+        "path": "lib/assert.js",
+        "sha256": "e87a46a29cc96a9bc6025475220ca0c54e083a7d9aa53708919d0971506e87e2"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "internal/assert/assertion_error",
+        "internal/assert/utils",
+        "internal/errors",
+        "internal/util",
+        "internal/util/comparisons",
+        "internal/util/inspect",
+        "internal/util/types",
+        "internal/validators"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:assert/strict",
+      "upstreamWholeFile": {
+        "path": "lib/assert/strict.js",
+        "sha256": "07c94fd4322f33fb366bec83977c7aa4816802a0deb1a4ab54c1093d0c05a524"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "assert"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:async_hooks",
+      "upstreamWholeFile": {
+        "path": "lib/async_hooks.js",
+        "sha256": "19669397a9b2ece553eacde7a9be2a50df82e0528b6b1fe8cb01bc83e9d9b550"
+      },
+      "family": "async",
+      "wave": "1",
+      "directInternalJS": [
+        "internal/async_context_frame",
+        "internal/async_hooks",
+        "internal/async_local_storage/async_context_frame",
+        "internal/async_local_storage/async_hooks",
+        "internal/errors",
+        "internal/util",
+        "internal/validators"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-async.cpp, native-callback.cpp, callback-scope.h, async-default-trigger.h; engine Promise hooks and loop timer/wakeup owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:bench",
+      "upstreamWholeFile": {
+        "path": "lib/bench.js",
+        "sha256": "9d74a16e6cd3b6a6c4fd6d2041a4a0999725e22c1d5f2530c7a07ea2b2d98543"
+      },
+      "family": "testing",
+      "wave": "4",
+      "directInternalJS": [
+        "internal/bench_runner/harness",
+        "internal/bench_runner/runner",
+        "internal/util"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "shared process/worker/stream/diagnostics owners; actual coverage/profiler prerequisites",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:bench/reporters",
+      "upstreamWholeFile": {
+        "path": "lib/bench/reporters.js",
+        "sha256": "a830ce6f9ba4c0b5e693cab77c8774cd6a9611ee1812e8ead1ea276c283bff37"
+      },
+      "family": "testing",
+      "wave": "4",
+      "directInternalJS": [
+        "internal/bench_runner/reporter/json",
+        "internal/bench_runner/reporter/spec",
+        "internal/util"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "shared process/worker/stream/diagnostics owners; actual coverage/profiler prerequisites",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:buffer",
+      "upstreamWholeFile": {
+        "path": "lib/buffer.js",
+        "sha256": "9b76f4047cf88f9bc8ce2a097b42aff00dca9d214b306ef48c170abb2e0643f2"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "internal/assert",
+        "internal/blob",
+        "internal/buffer",
+        "internal/errors",
+        "internal/file",
+        "internal/options",
+        "internal/util",
+        "internal/util/inspect",
+        "internal/util/types",
+        "internal/v8/startup_snapshot",
+        "internal/validators"
+      ],
+      "directNativeBindings": [
+        "buffer",
+        "config",
+        "icu",
+        "util"
+      ],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:child_process",
+      "upstreamWholeFile": {
+        "path": "lib/child_process.js",
+        "sha256": "27b75e3b55a59eb5cb9c734ddc762de35ade2e1d1ca25589a35227f07b88f551"
+      },
+      "family": "processes",
+      "wave": "2",
+      "directInternalJS": [
+        "buffer",
+        "internal/child_process",
+        "internal/errors",
+        "internal/events/abort_listener",
+        "internal/fs/utils",
+        "internal/process/permission",
+        "internal/util",
+        "internal/util/debuglog",
+        "internal/util/types",
+        "internal/validators",
+        "timers"
+      ],
+      "directNativeBindings": [
+        "pipe_wrap",
+        "process_wrap"
+      ],
+      "reuseNativeCandidates": "native-os.cpp, native-environment-object.cpp, native-signals.cpp, process-state.h, child-wait.h; guest libc/kernel process owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:cluster",
+      "upstreamWholeFile": {
+        "path": "lib/cluster.js",
+        "sha256": "5adcd8b0f12c3375027e10e67a5d4ed6fbb9d454805dda3065fdc060efc9d35f"
+      },
+      "family": "processes",
+      "wave": "2",
+      "directInternalJS": [],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-os.cpp, native-environment-object.cpp, native-signals.cpp, process-state.h, child-wait.h; guest libc/kernel process owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:console",
+      "upstreamWholeFile": {
+        "path": "lib/console.js",
+        "sha256": "5a90c73a304c10ef51adf6c82e25b757f567eaff5e007093a2ca4fe05c309044"
+      },
+      "family": "observability",
+      "wave": "4",
+      "directInternalJS": [
+        "internal/console/global"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "histogram-native.cpp, native-tracing.cpp, event-loop-delay-native.cpp, monotonic-clock.h; real measurements only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:constants",
+      "upstreamWholeFile": {
+        "path": "lib/constants.js",
+        "sha256": "91c9af0602f8f474055e7d87d3138daa18d0cd2912c93940687d9db0af696f9a"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [],
+      "directNativeBindings": [
+        "constants"
+      ],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:crypto",
+      "upstreamWholeFile": {
+        "path": "lib/crypto.js",
+        "sha256": "2624db34b212d51f1410a9ff8720abd2f28298ead04c388135d36228d9910f2d"
+      },
+      "family": "crypto",
+      "wave": "3",
+      "directInternalJS": [
+        "internal/crypto/argon2",
+        "internal/crypto/certificate",
+        "internal/crypto/cipher",
+        "internal/crypto/diffiehellman",
+        "internal/crypto/hash",
+        "internal/crypto/hkdf",
+        "internal/crypto/kem",
+        "internal/crypto/keygen",
+        "internal/crypto/keys",
+        "internal/crypto/pbkdf2",
+        "internal/crypto/provider_mac",
+        "internal/crypto/random",
+        "internal/crypto/scrypt",
+        "internal/crypto/sig",
+        "internal/crypto/util",
+        "internal/crypto/webcrypto",
+        "internal/crypto/x509",
+        "internal/errors",
+        "internal/options",
+        "internal/util",
+        "internal/worker"
+      ],
+      "directNativeBindings": [
+        "constants",
+        "crypto"
+      ],
+      "reuseNativeCandidates": "native-digests.cpp, native-random.cpp, native-keys.cpp, native-cipher.cpp, native-signature-jobs.cpp, native-x509.cpp and node-ncrypto",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:dgram",
+      "upstreamWholeFile": {
+        "path": "lib/dgram.js",
+        "sha256": "10766e375a415e444691d5cc5affd7bfcf6a2fe94b9acaa919be7a88cfda3149"
+      },
+      "family": "network",
+      "wave": "3",
+      "directInternalJS": [
+        "buffer",
+        "cluster",
+        "diagnostics_channel",
+        "events",
+        "internal/async_hooks",
+        "internal/blocklist",
+        "internal/buffer",
+        "internal/dgram",
+        "internal/errors",
+        "internal/events/abort_listener",
+        "internal/net",
+        "internal/util",
+        "internal/util/types",
+        "internal/validators"
+      ],
+      "directNativeBindings": [
+        "constants",
+        "udp_wrap"
+      ],
+      "reuseNativeCandidates": "native-socket-owner.cpp, native-listener.cpp, native-dns-lookup.cpp, native-dns-records.cpp, native-datagram.cpp",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:diagnostics_channel",
+      "upstreamWholeFile": {
+        "path": "lib/diagnostics_channel.js",
+        "sha256": "6f1a26be931f740a12e932bbbb0d31bdee5c2b10c7711bc33bd20431a57f0b57"
+      },
+      "family": "async",
+      "wave": "1",
+      "directInternalJS": [
+        "internal/errors",
+        "internal/util",
+        "internal/util/types",
+        "internal/validators"
+      ],
+      "directNativeBindings": [
+        "diagnostics_channel",
+        "errors"
+      ],
+      "reuseNativeCandidates": "native-async.cpp, native-callback.cpp, callback-scope.h, async-default-trigger.h; engine Promise hooks and loop timer/wakeup owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:dns",
+      "upstreamWholeFile": {
+        "path": "lib/dns.js",
+        "sha256": "833ae81f329f8d1d97a9642d27314d1792ca78c4faccf25ec8dff2f7784edfe8"
+      },
+      "family": "network",
+      "wave": "3",
+      "directInternalJS": [
+        "internal/dns/callback_resolver",
+        "internal/dns/promises",
+        "internal/dns/utils",
+        "internal/errors",
+        "internal/net",
+        "internal/perf/observe",
+        "internal/util",
+        "internal/validators"
+      ],
+      "directNativeBindings": [
+        "cares_wrap"
+      ],
+      "reuseNativeCandidates": "native-socket-owner.cpp, native-listener.cpp, native-dns-lookup.cpp, native-dns-records.cpp, native-datagram.cpp",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:dns/promises",
+      "upstreamWholeFile": {
+        "path": "lib/dns/promises.js",
+        "sha256": "d95ebe014ed0ef8fd9004935545903944589345bb13e0e52d849bd50e15fc4a8"
+      },
+      "family": "network",
+      "wave": "3",
+      "directInternalJS": [
+        "internal/dns/promises"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-socket-owner.cpp, native-listener.cpp, native-dns-lookup.cpp, native-dns-records.cpp, native-datagram.cpp",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:domain",
+      "upstreamWholeFile": {
+        "path": "lib/domain.js",
+        "sha256": "929feafebae8bb251c3980a4fd2c25d90185de8c53fb6d4d13f5444eb13d4a30"
+      },
+      "family": "async",
+      "wave": "1",
+      "directInternalJS": [
+        "async_hooks",
+        "events",
+        "internal/async_hooks",
+        "internal/errors",
+        "internal/util"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-async.cpp, native-callback.cpp, callback-scope.h, async-default-trigger.h; engine Promise hooks and loop timer/wakeup owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:dtls",
+      "upstreamWholeFile": {
+        "path": "lib/dtls.js",
+        "sha256": "84e6c066e6da3a1f91a6a1fcc1f317d54c29ac66a8b3e7ce5739cc2f573a4abb"
+      },
+      "family": "secure-network",
+      "wave": "3 then 4",
+      "directInternalJS": [
+        "internal/dtls/dtls",
+        "internal/util"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-tls-context.cpp, tls-owner.h, tls-credential-operations.h and OpenSSL; UDP/QUIC prerequisites separate",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:events",
+      "upstreamWholeFile": {
+        "path": "lib/events.js",
+        "sha256": "1e974008f9c43a046124557f170ff1af23d239eb107f883b0420598f465611f3"
+      },
+      "family": "async",
+      "wave": "1",
+      "directInternalJS": [
+        "async_hooks",
+        "internal/errors",
+        "internal/event_target",
+        "internal/events/abort_listener",
+        "internal/events/symbols",
+        "internal/fixed_queue",
+        "internal/util",
+        "internal/util/inspect",
+        "internal/validators"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-async.cpp, native-callback.cpp, callback-scope.h, async-default-trigger.h; engine Promise hooks and loop timer/wakeup owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:ffi",
+      "upstreamWholeFile": {
+        "path": "lib/ffi.js",
+        "sha256": "e0625a261c64463f6542bc8ad769211e5a23f6b3dd94499ad83eea115b6a5786"
+      },
+      "family": "native-integration",
+      "wave": "4",
+      "directInternalJS": [
+        "buffer",
+        "internal/errors",
+        "internal/ffi-shared-buffer",
+        "internal/ffi/fast-api",
+        "internal/ffi/vfs",
+        "internal/process/permission",
+        "internal/util",
+        "internal/util/types",
+        "internal/validators"
+      ],
+      "directNativeBindings": [
+        "ffi"
+      ],
+      "reuseNativeCandidates": "native-ffi-memory.cpp, native-ffi-library.cpp, native-sqlite.cpp, native-wasi.cpp, native-sea.cpp; binary/format admission separate",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:fs",
+      "upstreamWholeFile": {
+        "path": "lib/fs.js",
+        "sha256": "21e9604151bcdfdacec9ec6e127e8ba906fb1b4e9415fd0de3221b7e92a08ef3"
+      },
+      "family": "filesystem",
+      "wave": "1 then 2",
+      "directInternalJS": [
+        "buffer",
+        "internal/blob",
+        "internal/constants",
+        "internal/errors",
+        "internal/event_target",
+        "internal/fs/cp/cp",
+        "internal/fs/cp/cp-sync",
+        "internal/fs/dir",
+        "internal/fs/glob",
+        "internal/fs/promises",
+        "internal/fs/read/context",
+        "internal/fs/recursive_watch",
+        "internal/fs/rimraf",
+        "internal/fs/streams",
+        "internal/fs/utils",
+        "internal/fs/watchers",
+        "internal/process/permission",
+        "internal/streams/fast-utf8-stream",
+        "internal/url",
+        "internal/util",
+        "internal/util/types",
+        "internal/validators",
+        "path",
+        "util"
+      ],
+      "directNativeBindings": [
+        "constants",
+        "fs"
+      ],
+      "reuseNativeCandidates": "native-fs.cpp, native-file-jobs.cpp, native-file-handle.cpp, native-fs-promise.cpp, native-work.cpp, file-handle-owner.h; raw-path and watch changes separately",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:fs/promises",
+      "upstreamWholeFile": {
+        "path": "lib/fs/promises.js",
+        "sha256": "f18e640c98afa9c2cac0541e7d281fd9ec65a802bd396eca6a3afb0a34480d8e"
+      },
+      "family": "filesystem",
+      "wave": "1 then 2",
+      "directInternalJS": [
+        "internal/fs/promises"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-fs.cpp, native-file-jobs.cpp, native-file-handle.cpp, native-fs-promise.cpp, native-work.cpp, file-handle-owner.h; raw-path and watch changes separately",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:http",
+      "upstreamWholeFile": {
+        "path": "lib/http.js",
+        "sha256": "162ef724b90c1eaf6c3d4f84ecc1c1f21bf519fcd43f4d096df1170e3421795b"
+      },
+      "family": "http",
+      "wave": "3",
+      "directInternalJS": [
+        "_http_agent",
+        "_http_client",
+        "_http_common",
+        "_http_incoming",
+        "_http_outgoing",
+        "_http_server",
+        "https",
+        "internal/deps/undici/undici",
+        "internal/errors",
+        "internal/http",
+        "internal/options",
+        "internal/url",
+        "internal/util/types",
+        "internal/validators"
+      ],
+      "directNativeBindings": [
+        "buffer"
+      ],
+      "reuseNativeCandidates": "native-http-parser.cpp, http-parser.h and node-llhttp; parser/socket ownership only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:http2",
+      "upstreamWholeFile": {
+        "path": "lib/http2.js",
+        "sha256": "1cd29a174f5780cb561628bf187b387f8babad06ae581908f7e472e597db7784"
+      },
+      "family": "http",
+      "wave": "3",
+      "directInternalJS": [
+        "internal/http2/core"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-http-parser.cpp, http-parser.h and node-llhttp; parser/socket ownership only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:https",
+      "upstreamWholeFile": {
+        "path": "lib/https.js",
+        "sha256": "509e884481a7f738b3d06fcce5ee80d91eca855a43f2ee95a412862e106ff85a"
+      },
+      "family": "http",
+      "wave": "3",
+      "directInternalJS": [
+        "_http_agent",
+        "_http_client",
+        "_http_server",
+        "buffer",
+        "internal/assert",
+        "internal/errors",
+        "internal/http",
+        "internal/net",
+        "internal/options",
+        "internal/url",
+        "internal/util",
+        "internal/util/debuglog",
+        "internal/validators",
+        "net",
+        "tls"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-http-parser.cpp, http-parser.h and node-llhttp; parser/socket ownership only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:inspector",
+      "upstreamWholeFile": {
+        "path": "lib/inspector.js",
+        "sha256": "0b967712491f7ce3330529c5dd64deac8c91a7b1c894628258e1e32225e73d39"
+      },
+      "family": "engine",
+      "wave": "4",
+      "directInternalJS": [
+        "events",
+        "internal/errors",
+        "internal/inspector/network_resources",
+        "internal/net",
+        "internal/process/task_queues",
+        "internal/util",
+        "internal/validators",
+        "worker_threads"
+      ],
+      "directNativeBindings": [
+        "config",
+        "inspector",
+        "process_methods"
+      ],
+      "reuseNativeCandidates": "native-vm.cpp, native-vm-modules.cpp, vm-execution-deadline.h; Debugger, realm and stack hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:inspector/promises",
+      "upstreamWholeFile": {
+        "path": "lib/inspector/promises.js",
+        "sha256": "df5c05b3b8912991d6312b55549e45fe5b3d719656b626b9c106a9e01c5f21c2"
+      },
+      "family": "engine",
+      "wave": "4",
+      "directInternalJS": [
+        "inspector",
+        "internal/util"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-vm.cpp, native-vm-modules.cpp, vm-execution-deadline.h; Debugger, realm and stack hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:module",
+      "upstreamWholeFile": {
+        "path": "lib/module.js",
+        "sha256": "3636f9bea504d82017b7e054810f88894e76e497f8e2dfd8ce8eb06d9083d0c2"
+      },
+      "family": "loading",
+      "wave": "0 then 1",
+      "directInternalJS": [
+        "internal/modules/cjs/loader",
+        "internal/modules/esm/loader",
+        "internal/modules/helpers",
+        "internal/modules/package_json_reader",
+        "internal/modules/typescript",
+        "internal/source_map/source_map",
+        "internal/source_map/source_map_cache"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-vm-modules.cpp, native-vm-import.cpp, native-module-syntax.cpp, native-package.cpp and SpiderMonkey module records/stencils",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:net",
+      "upstreamWholeFile": {
+        "path": "lib/net.js",
+        "sha256": "24db4f4a58808f0935265b1a71150989cec8601e971f07ca531d16004f3d6c43"
+      },
+      "family": "network",
+      "wave": "3",
+      "directInternalJS": [
+        "buffer",
+        "cluster",
+        "diagnostics_channel",
+        "dns",
+        "events",
+        "internal/assert",
+        "internal/async_hooks",
+        "internal/blocklist",
+        "internal/errors",
+        "internal/events/abort_listener",
+        "internal/net",
+        "internal/options",
+        "internal/perf/observe",
+        "internal/process/task_queues",
+        "internal/socketaddress",
+        "internal/stream_base_commons",
+        "internal/streams/state",
+        "internal/timers",
+        "internal/util",
+        "internal/util/debuglog",
+        "internal/util/types",
+        "internal/validators",
+        "internal/worker/js_transferable",
+        "stream",
+        "timers"
+      ],
+      "directNativeBindings": [
+        "cares_wrap",
+        "pipe_wrap",
+        "stream_wrap",
+        "tcp_wrap",
+        "uv"
+      ],
+      "reuseNativeCandidates": "native-socket-owner.cpp, native-listener.cpp, native-dns-lookup.cpp, native-dns-records.cpp, native-datagram.cpp",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:os",
+      "upstreamWholeFile": {
+        "path": "lib/os.js",
+        "sha256": "5b14b21284e19382708f588ff7fa5a212c5335a84b1d9ae6ebdf626244f8fde9"
+      },
+      "family": "processes",
+      "wave": "2",
+      "directInternalJS": [
+        "internal/errors",
+        "internal/util",
+        "internal/validators"
+      ],
+      "directNativeBindings": [
+        "constants",
+        "credentials",
+        "os"
+      ],
+      "reuseNativeCandidates": "native-os.cpp, native-environment-object.cpp, native-signals.cpp, process-state.h, child-wait.h; guest libc/kernel process owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:path",
+      "upstreamWholeFile": {
+        "path": "lib/path.js",
+        "sha256": "f05ab2a1f33102880bb8c5052cb0e634a001112883da897f3498492bef67f3f6"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "internal/constants",
+        "internal/fs/glob",
+        "internal/util",
+        "internal/validators"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:path/posix",
+      "upstreamWholeFile": {
+        "path": "lib/path/posix.js",
+        "sha256": "117a373870d6dd7ff7470e9e5d0eb7f0c284c39f036492da60453ad0615d643e"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "path"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:path/win32",
+      "upstreamWholeFile": {
+        "path": "lib/path/win32.js",
+        "sha256": "cfa5914ed0ada68fbf7891014ddb2db26db353810c8bbc7b25d941537ddf22e5"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "path"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:perf_hooks",
+      "upstreamWholeFile": {
+        "path": "lib/perf_hooks.js",
+        "sha256": "2b0ca08375c9b22750d05daa08b18f8d9b835dd8e4e5fbb2796bbeb2fbe389e1"
+      },
+      "family": "observability",
+      "wave": "4",
+      "directInternalJS": [
+        "internal/histogram",
+        "internal/perf/event_loop_delay",
+        "internal/perf/event_loop_utilization",
+        "internal/perf/observe",
+        "internal/perf/performance",
+        "internal/perf/performance_entry",
+        "internal/perf/resource_timing",
+        "internal/perf/timerify",
+        "internal/perf/usertiming"
+      ],
+      "directNativeBindings": [
+        "performance"
+      ],
+      "reuseNativeCandidates": "histogram-native.cpp, native-tracing.cpp, event-loop-delay-native.cpp, monotonic-clock.h; real measurements only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:process",
+      "upstreamWholeFile": {
+        "path": "lib/process.js",
+        "sha256": "93ff86f9669940eae34dafe6a2e734efd3eaa202bbda0709e7a49e19612b28e4"
+      },
+      "family": "processes",
+      "wave": "2",
+      "directInternalJS": [],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-os.cpp, native-environment-object.cpp, native-signals.cpp, process-state.h, child-wait.h; guest libc/kernel process owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:punycode",
+      "upstreamWholeFile": {
+        "path": "lib/punycode.js",
+        "sha256": "c5c75d5f31323affefa3595e63b3c50bca8bf7a2766936699e20460398e61717"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [],
+      "directNativeBindings": [
+        "util"
+      ],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:querystring",
+      "upstreamWholeFile": {
+        "path": "lib/querystring.js",
+        "sha256": "35c87b8230aef78ab162579a6820e78a4de8266a2983e36272ad3b248a357441"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "buffer",
+        "internal/querystring"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:quic",
+      "upstreamWholeFile": {
+        "path": "lib/quic.js",
+        "sha256": "57982b952ca6eb58b4620d2da9d9c05943e5de93192e235fc2c420afe9389f0a"
+      },
+      "family": "secure-network",
+      "wave": "3 then 4",
+      "directInternalJS": [
+        "internal/quic/quic",
+        "internal/util"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-tls-context.cpp, tls-owner.h, tls-credential-operations.h and OpenSSL; UDP/QUIC prerequisites separate",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:readline",
+      "upstreamWholeFile": {
+        "path": "lib/readline.js",
+        "sha256": "07a2ed16e48bebbd0b999823e68d7995ca36246bcc5f2b6c128f9549ae35391f"
+      },
+      "family": "terminal",
+      "wave": "2",
+      "directInternalJS": [
+        "internal/errors",
+        "internal/events/abort_listener",
+        "internal/readline/callbacks",
+        "internal/readline/emitKeypressEvents",
+        "internal/readline/interface",
+        "internal/util",
+        "internal/util/inspect",
+        "internal/validators",
+        "readline/promises"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-terminal.cpp, terminal-read-owner.h, terminal-write-owner.h; guest PTY and fd owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:readline/promises",
+      "upstreamWholeFile": {
+        "path": "lib/readline/promises.js",
+        "sha256": "76e9099cebd75a18992a0fef6f2a7f359a347aa2bfdb525739fdfe06f5db1eff"
+      },
+      "family": "terminal",
+      "wave": "2",
+      "directInternalJS": [
+        "internal/errors",
+        "internal/events/abort_listener",
+        "internal/readline/interface",
+        "internal/readline/promises",
+        "internal/util",
+        "internal/validators"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-terminal.cpp, terminal-read-owner.h, terminal-write-owner.h; guest PTY and fd owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:repl",
+      "upstreamWholeFile": {
+        "path": "lib/repl.js",
+        "sha256": "221aed38cf1900d45ed656680c8741e3f4ed0f58c36e343903de0df4d9d750ec"
+      },
+      "family": "terminal",
+      "wave": "2",
+      "directInternalJS": [
+        "async_hooks",
+        "console",
+        "fs",
+        "internal/deps/acorn/acorn-walk/dist/walk",
+        "internal/deps/acorn/acorn/dist/acorn",
+        "internal/errors",
+        "internal/modules/cjs/loader",
+        "internal/modules/esm/loader",
+        "internal/modules/helpers",
+        "internal/options",
+        "internal/readline/interface",
+        "internal/readline/utils",
+        "internal/repl/await",
+        "internal/repl/completion",
+        "internal/repl/highlight",
+        "internal/repl/utils",
+        "internal/url",
+        "internal/util",
+        "internal/util/colors",
+        "internal/util/debuglog",
+        "internal/util/inspect",
+        "internal/util/inspector",
+        "internal/validators",
+        "internal/vm",
+        "path",
+        "readline",
+        "vm"
+      ],
+      "directNativeBindings": [
+        "contextify"
+      ],
+      "reuseNativeCandidates": "native-terminal.cpp, terminal-read-owner.h, terminal-write-owner.h; guest PTY and fd owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:sea",
+      "upstreamWholeFile": {
+        "path": "lib/sea.js",
+        "sha256": "96e8357c40d66d7e3d4c964e87cc11cb21bf589247ae1ece691088c27032201d"
+      },
+      "family": "native-integration",
+      "wave": "4",
+      "directInternalJS": [
+        "internal/blob",
+        "internal/encoding",
+        "internal/errors",
+        "internal/validators"
+      ],
+      "directNativeBindings": [
+        "sea"
+      ],
+      "reuseNativeCandidates": "native-ffi-memory.cpp, native-ffi-library.cpp, native-sqlite.cpp, native-wasi.cpp, native-sea.cpp; binary/format admission separate",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:sqlite",
+      "upstreamWholeFile": {
+        "path": "lib/sqlite.js",
+        "sha256": "2910049a9c14d7d993c167a7cc7ad5a265f4c190fa752c9c8afb826e6b80a58c"
+      },
+      "family": "native-integration",
+      "wave": "4",
+      "directInternalJS": [],
+      "directNativeBindings": [
+        "sqlite"
+      ],
+      "reuseNativeCandidates": "native-ffi-memory.cpp, native-ffi-library.cpp, native-sqlite.cpp, native-wasi.cpp, native-sea.cpp; binary/format admission separate",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:stream",
+      "upstreamWholeFile": {
+        "path": "lib/stream.js",
+        "sha256": "3dec4d8da73ac37b6fcfd812ed252c12bf8355ccdc71ac6d669e76288f2a1857"
+      },
+      "family": "streams",
+      "wave": "2",
+      "directInternalJS": [
+        "internal/buffer",
+        "internal/errors",
+        "internal/streams/add-abort-signal",
+        "internal/streams/compose",
+        "internal/streams/destroy",
+        "internal/streams/duplex",
+        "internal/streams/duplexpair",
+        "internal/streams/end-of-stream",
+        "internal/streams/legacy",
+        "internal/streams/operators",
+        "internal/streams/passthrough",
+        "internal/streams/pipeline",
+        "internal/streams/readable",
+        "internal/streams/state",
+        "internal/streams/transform",
+        "internal/streams/utils",
+        "internal/streams/writable",
+        "internal/util",
+        "internal/util/types",
+        "stream/promises"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native backing spans and descriptor/stream completion owners; no separate public stream implementation",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:stream/consumers",
+      "upstreamWholeFile": {
+        "path": "lib/stream/consumers.js",
+        "sha256": "c30b6273efd77b5122d9b01c6dec58ec6d7708e72d49d60a4aa63bd3ba3831a6"
+      },
+      "family": "streams",
+      "wave": "2",
+      "directInternalJS": [
+        "buffer",
+        "internal/blob",
+        "internal/encoding"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native backing spans and descriptor/stream completion owners; no separate public stream implementation",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:stream/iter",
+      "upstreamWholeFile": {
+        "path": "lib/stream/iter.js",
+        "sha256": "b90e04681c6b4c130b2939ef640ae7a437a757f59e065d64594759c56e01473a"
+      },
+      "family": "streams",
+      "wave": "2",
+      "directInternalJS": [
+        "internal/streams/iter/broadcast",
+        "internal/streams/iter/classic",
+        "internal/streams/iter/consumers",
+        "internal/streams/iter/duplex",
+        "internal/streams/iter/from",
+        "internal/streams/iter/pull",
+        "internal/streams/iter/push",
+        "internal/streams/iter/share",
+        "internal/streams/iter/types",
+        "internal/util"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native backing spans and descriptor/stream completion owners; no separate public stream implementation",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:stream/promises",
+      "upstreamWholeFile": {
+        "path": "lib/stream/promises.js",
+        "sha256": "ea37b1b47c46c0c26ffe01a59a51bfc723fcadc6f6779ba91b61fe72b4849b39"
+      },
+      "family": "streams",
+      "wave": "2",
+      "directInternalJS": [
+        "internal/streams/end-of-stream",
+        "internal/streams/pipeline",
+        "internal/streams/utils",
+        "stream"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native backing spans and descriptor/stream completion owners; no separate public stream implementation",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:stream/web",
+      "upstreamWholeFile": {
+        "path": "lib/stream/web.js",
+        "sha256": "7de6f8ef62effcd9aee45ed6ae1170cde8b4bd3d588e1ae4be759913ff95485f"
+      },
+      "family": "web",
+      "wave": "2 then 3",
+      "directInternalJS": [
+        "internal/errors",
+        "internal/validators",
+        "internal/webstreams/compression",
+        "internal/webstreams/encoding",
+        "internal/webstreams/queuingstrategies",
+        "internal/webstreams/readablestream",
+        "internal/webstreams/transformstream",
+        "internal/webstreams/writablestream"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native backing, encoding/URL/ICU, native-ports.cpp and clone owners; upstream Undici payload",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:string_decoder",
+      "upstreamWholeFile": {
+        "path": "lib/string_decoder.js",
+        "sha256": "50ebfa7db26d22f4fed8fd96b141fa49d00c18e224ef9d74a5a77fde1774e697"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "buffer",
+        "internal/errors",
+        "internal/util"
+      ],
+      "directNativeBindings": [
+        "string_decoder"
+      ],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:sys",
+      "upstreamWholeFile": {
+        "path": "lib/sys.js",
+        "sha256": "69903611817dc78f3f430b720425602bc5d50eeba6bee2a2a9a562cc88d078fa"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "util"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:test",
+      "upstreamWholeFile": {
+        "path": "lib/test.js",
+        "sha256": "16c12ad39a8b7b41044b31902785d2451deeb0e006e38c951f39b11bbe1ca1f2"
+      },
+      "family": "testing",
+      "wave": "4",
+      "directInternalJS": [
+        "internal/test_runner/assert",
+        "internal/test_runner/harness",
+        "internal/test_runner/mock/mock",
+        "internal/test_runner/runner",
+        "internal/test_runner/snapshot"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "shared process/worker/stream/diagnostics owners; actual coverage/profiler prerequisites",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:test/reporters",
+      "upstreamWholeFile": {
+        "path": "lib/test/reporters.js",
+        "sha256": "e4dee73334fdd5ceeb6f672128a247060c6ea4440edf0f854064d06f1bb75043"
+      },
+      "family": "testing",
+      "wave": "4",
+      "directInternalJS": [
+        "internal/test_runner/reporter/dot",
+        "internal/test_runner/reporter/junit",
+        "internal/test_runner/reporter/lcov",
+        "internal/test_runner/reporter/spec",
+        "internal/test_runner/reporter/tap"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "shared process/worker/stream/diagnostics owners; actual coverage/profiler prerequisites",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:timers",
+      "upstreamWholeFile": {
+        "path": "lib/timers.js",
+        "sha256": "54f6d373fd165a4ede481f30ba4f2483f13aa98252c73a311fb3d78ecf77d40e"
+      },
+      "family": "async",
+      "wave": "1",
+      "directInternalJS": [
+        "internal/async_hooks",
+        "internal/linkedlist",
+        "internal/timers",
+        "internal/util",
+        "internal/util/debuglog",
+        "internal/validators",
+        "timers/promises"
+      ],
+      "directNativeBindings": [
+        "timers"
+      ],
+      "reuseNativeCandidates": "native-async.cpp, native-callback.cpp, callback-scope.h, async-default-trigger.h; engine Promise hooks and loop timer/wakeup owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:timers/promises",
+      "upstreamWholeFile": {
+        "path": "lib/timers/promises.js",
+        "sha256": "7352c2b6c168ab8003e6715de5e648a31a6fd74f4559d60e9f82a8dfb5f7ae2c"
+      },
+      "family": "async",
+      "wave": "1",
+      "directInternalJS": [
+        "internal/errors",
+        "internal/event_target",
+        "internal/timers",
+        "internal/util",
+        "internal/validators",
+        "timers"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-async.cpp, native-callback.cpp, callback-scope.h, async-default-trigger.h; engine Promise hooks and loop timer/wakeup owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:tls",
+      "upstreamWholeFile": {
+        "path": "lib/tls.js",
+        "sha256": "e3096a40fafa90eb2a0e125d2e7f720b18562757bc8a9827029bf35051b5b461"
+      },
+      "family": "secure-network",
+      "wave": "3 then 4",
+      "directInternalJS": [
+        "buffer",
+        "internal/errors",
+        "internal/options",
+        "internal/tls/common",
+        "internal/tls/wrap",
+        "internal/url",
+        "internal/util",
+        "internal/util/types",
+        "internal/v8/startup_snapshot",
+        "internal/validators",
+        "net"
+      ],
+      "directNativeBindings": [
+        "cares_wrap",
+        "crypto"
+      ],
+      "reuseNativeCandidates": "native-tls-context.cpp, tls-owner.h, tls-credential-operations.h and OpenSSL; UDP/QUIC prerequisites separate",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:trace_events",
+      "upstreamWholeFile": {
+        "path": "lib/trace_events.js",
+        "sha256": "5cfd4b8faea1d2bcd090dfda98db3e5a09aeb44192f5989efa82ba6c584e4a6d"
+      },
+      "family": "observability",
+      "wave": "4",
+      "directInternalJS": [
+        "internal/errors",
+        "internal/util",
+        "internal/util/inspect",
+        "internal/validators",
+        "internal/worker"
+      ],
+      "directNativeBindings": [
+        "config",
+        "trace_events"
+      ],
+      "reuseNativeCandidates": "histogram-native.cpp, native-tracing.cpp, event-loop-delay-native.cpp, monotonic-clock.h; real measurements only",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:tty",
+      "upstreamWholeFile": {
+        "path": "lib/tty.js",
+        "sha256": "119d25f6e820b3a082a17fde3e242207604149614c6f421be8c83dfb0631b0d2"
+      },
+      "family": "terminal",
+      "wave": "2",
+      "directInternalJS": [
+        "internal/errors",
+        "internal/tty",
+        "net",
+        "readline"
+      ],
+      "directNativeBindings": [
+        "tty_wrap"
+      ],
+      "reuseNativeCandidates": "native-terminal.cpp, terminal-read-owner.h, terminal-write-owner.h; guest PTY and fd owners",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:url",
+      "upstreamWholeFile": {
+        "path": "lib/url.js",
+        "sha256": "9037c1cae0efe6af02ea18da109ff0c406496cccaf9df4c3308ef057d009150f"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "internal/constants",
+        "internal/errors",
+        "internal/querystring",
+        "internal/url",
+        "internal/util",
+        "internal/validators",
+        "querystring"
+      ],
+      "directNativeBindings": [
+        "encoding_binding",
+        "url",
+        "url_pattern",
+        "util"
+      ],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:util",
+      "upstreamWholeFile": {
+        "path": "lib/util.js",
+        "sha256": "cd5ddc4930015553e7b981d827f60bad80997483d4169909658a00bdf3c99646"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "buffer",
+        "internal/abort_controller",
+        "internal/encoding",
+        "internal/errors",
+        "internal/mime",
+        "internal/options",
+        "internal/source_map/source_map_cache",
+        "internal/streams/utils",
+        "internal/util",
+        "internal/util/colors",
+        "internal/util/comparisons",
+        "internal/util/debounce",
+        "internal/util/debuglog",
+        "internal/util/diff",
+        "internal/util/inspect",
+        "internal/util/parse_args/parse_args",
+        "internal/util/throttle",
+        "internal/util/trace_sigint",
+        "internal/util/types",
+        "internal/validators"
+      ],
+      "directNativeBindings": [
+        "util"
+      ],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:util/types",
+      "upstreamWholeFile": {
+        "path": "lib/util/types.js",
+        "sha256": "ccdb74daed669baa9512818d6aef80a2f352277d767f0d3f2be60d6554a67966"
+      },
+      "family": "values",
+      "wave": "1",
+      "directInternalJS": [
+        "internal/util/types"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-buffer.cpp, native-backing-store.cpp, native-object-marks.cpp, string-bytes.h, native-error-source.cpp; actual ICU4X/URL engine hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:v8",
+      "upstreamWholeFile": {
+        "path": "lib/v8.js",
+        "sha256": "941a60534478888ed612ded3f2eb541903246d1b5de9bae18dd5aea9d3111f45"
+      },
+      "family": "engine",
+      "wave": "4",
+      "directInternalJS": [
+        "buffer",
+        "internal/assert",
+        "internal/buffer",
+        "internal/fs/utils",
+        "internal/heap_utils",
+        "internal/options",
+        "internal/promise_hooks",
+        "internal/util/inspect",
+        "internal/v8/cpu_profiler",
+        "internal/v8/heap_profile",
+        "internal/v8/startup_snapshot",
+        "internal/validators"
+      ],
+      "directNativeBindings": [
+        "config",
+        "heap_utils",
+        "profiler",
+        "serdes",
+        "v8"
+      ],
+      "reuseNativeCandidates": "native-vm.cpp, native-vm-modules.cpp, vm-execution-deadline.h; Debugger, realm and stack hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:vfs",
+      "upstreamWholeFile": {
+        "path": "lib/vfs.js",
+        "sha256": "81450cb23a703b1e91b0c007ef036093e56574215361a9261e45d858204bccf4"
+      },
+      "family": "filesystem",
+      "wave": "1 then 2",
+      "directInternalJS": [
+        "internal/vfs/file_system",
+        "internal/vfs/provider",
+        "internal/vfs/provider_registry",
+        "internal/vfs/providers/composable",
+        "internal/vfs/providers/memory",
+        "internal/vfs/providers/real",
+        "internal/vfs/providers/ziparchive",
+        "internal/vfs/router"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-fs.cpp, native-file-jobs.cpp, native-file-handle.cpp, native-fs-promise.cpp, native-work.cpp, file-handle-owner.h; raw-path and watch changes separately",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:vm",
+      "upstreamWholeFile": {
+        "path": "lib/vm.js",
+        "sha256": "774a31123f8ca83e7bc1d3966d1e738d9034ec2b3f8e98791fa5d40d058a9cdf"
+      },
+      "family": "engine",
+      "wave": "4",
+      "directInternalJS": [
+        "internal/errors",
+        "internal/util",
+        "internal/validators",
+        "internal/vm"
+      ],
+      "directNativeBindings": [
+        "contextify",
+        "symbols"
+      ],
+      "reuseNativeCandidates": "native-vm.cpp, native-vm-modules.cpp, vm-execution-deadline.h; Debugger, realm and stack hooks",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:wasi",
+      "upstreamWholeFile": {
+        "path": "lib/wasi.js",
+        "sha256": "1ac09ae3f0829b6f755610e03c5e2bece6a58d77be51058e6d78a2ee0747ebb2"
+      },
+      "family": "native-integration",
+      "wave": "4",
+      "directInternalJS": [
+        "internal/errors",
+        "internal/util",
+        "internal/validators"
+      ],
+      "directNativeBindings": [
+        "wasi"
+      ],
+      "reuseNativeCandidates": "native-ffi-memory.cpp, native-ffi-library.cpp, native-sqlite.cpp, native-wasi.cpp, native-sea.cpp; binary/format admission separate",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:worker_threads",
+      "upstreamWholeFile": {
+        "path": "lib/worker_threads.js",
+        "sha256": "6b5a54b8b7d6b279d62b829240dc3a10c6ea5e4156d414d9b70192056269fa60"
+      },
+      "family": "workers",
+      "wave": "2",
+      "directInternalJS": [
+        "internal/buffer",
+        "internal/locks",
+        "internal/util",
+        "internal/worker",
+        "internal/worker/io",
+        "internal/worker/messaging"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "native-worker.cpp, native-ports.cpp, port-transit-owner.h, native-locks.cpp; per-environment ownership",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:zlib",
+      "upstreamWholeFile": {
+        "path": "lib/zlib.js",
+        "sha256": "53a7296aacb93c3f828a3fe31e71cfec8e1d315a1560e787c133b52e1c2fb729"
+      },
+      "family": "compression",
+      "wave": "3",
+      "directInternalJS": [
+        "buffer",
+        "internal/assert",
+        "internal/async_hooks",
+        "internal/buffer",
+        "internal/errors",
+        "internal/util",
+        "internal/util/types",
+        "internal/validators",
+        "internal/zip",
+        "stream"
+      ],
+      "directNativeBindings": [
+        "constants",
+        "zlib"
+      ],
+      "reuseNativeCandidates": "codec-handle.cpp, native-work.cpp, node-codecs; native mode/byte/queue ownership",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    },
+    {
+      "module": "node:zlib/iter",
+      "upstreamWholeFile": {
+        "path": "lib/zlib/iter.js",
+        "sha256": "979961ee12e7aa6db9492c787c1f95a2bc7ad11b6a0b83add86f5342a0ffe920"
+      },
+      "family": "compression",
+      "wave": "3",
+      "directInternalJS": [
+        "internal/streams/iter/transform",
+        "internal/util"
+      ],
+      "directNativeBindings": [],
+      "reuseNativeCandidates": "codec-handle.cpp, native-work.cpp, node-codecs; native mode/byte/queue ownership",
+      "replace": "Existing public factory, facade, selected slices and module-local dependency substitutes for this surface; activation only after replacement ownership is validated",
+      "retain": "Family audit IDs, unchanged upstream candidates, original historical status/artifact/host identities and focused owner controls",
+      "patch": "No public algorithm patch proposed. Shared engine/private-slot patch inventory in README applies only at reached sites.",
+      "missingPrerequisites": "All reachable JS and actual binding contracts; conditional/dynamic dispatch requires review; native owners are candidates, not assumed compatible"
+    }
+  ]
+}

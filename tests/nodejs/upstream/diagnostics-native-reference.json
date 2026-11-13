@@ -1,0 +1,187 @@
+{
+  "native": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixtures": [
+    {
+      "path": "tests/nodejs/upstream/diagnostics-native-prefix.cjs",
+      "bytes": 308,
+      "sha256": "a69e376c49ed7756b27cb69d4caa97ca861adecfa30ee385bbe0ebeae633054d"
+    },
+    {
+      "path": "tests/nodejs/upstream/diagnostics-shared-controls.js",
+      "bytes": 3796,
+      "sha256": "0b024c00779a0cae1a6138282960732ddfff48c29a690c178b43b298e135f520"
+    }
+  ],
+  "generatedFixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-diagnostics-native.urzfi1eq/reference.cjs",
+    "bytes": 4073,
+    "sha256": "03830e98544648917d29bea993c2f0ee6d8eb2850399f0f4d65daaf112723d71"
+  },
+  "flags": [
+    "--no-warnings",
+    "--no-node-snapshot",
+    "--expose-internals",
+    "--expose-gc"
+  ],
+  "result": {
+    "exitCode": 0,
+    "stdout": "{\"cases\":12,\"failures\":0,\"observations\":[{\"name\":\"actual-binding-method-and-subscriber-descriptors\",\"status\":\"pass\",\"detail\":{\"linkNativeChannel\":{\"type\":\"function\",\"name\":\"linkNativeChannel\",\"length\":0,\"writable\":true,\"enumerable\":true,\"configurable\":true},\"notifyChannelActive\":{\"type\":\"function\",\"name\":\"notifyChannelActive\",\"length\":0,\"writable\":true,\"enumerable\":true,\"configurable\":true},\"notifyChannelInactive\":{\"type\":\"function\",\"name\":\"notifyChannelInactive\",\"length\":0,\"writable\":true,\"enumerable\":true,\"configurable\":true},\"subscribers\":{\"type\":\"object\",\"length\":1024,\"writable\":true,\"enumerable\":true,\"configurable\":true}}},{\"name\":\"actual-initial-aliased-storage\",\"status\":\"pass\",\"detail\":{\"length\":1024,\"bytes\":4096,\"offset\":0,\"frozen\":false,\"extensible\":true}},{\"name\":\"native-status-allows-full-uint32-domain-with-no-registered-listener\",\"status\":\"pass\",\"detail\":[\"undefined\",\"undefined\"]},{\"name\":\"original-channel-cache-and-symbol-identities\",\"status\":\"pass\",\"detail\":{\"string\":\"diagnostics-cache\",\"symbolType\":\"symbol\",\"channelInstance\":true}},{\"name\":\"original-name-and-subscriber-validation\",\"status\":\"pass\",\"detail\":[{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\"},{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\"}]},{\"name\":\"original-inactive-channel-and-return-values\",\"status\":\"pass\",\"detail\":{\"active\":false,\"global\":false,\"publish\":\"undefined\",\"unsubscribe\":false}},{\"name\":\"original-subscription-activation-data-and-name\",\"status\":\"pass\",\"detail\":{\"events\":[{\"name\":\"diagnostics-publish\",\"receiverUndefined\":true}],\"active\":false}},{\"name\":\"original-reentrant-unsubscribe-retains-current-publish-snapshot\",\"status\":\"pass\",\"detail\":[\"a\",\"b\",\"a\"]},{\"name\":\"original-duplicate-subscribers-retire-individually\",\"status\":\"pass\",\"detail\":{\"calls\":3,\"active\":false,\"again\":false}},{\"name\":\"original-top-level-subscription-methods-share-channel\",\"status\":\"pass\",\"detail\":{\"subscribe\":\"undefined\",\"removed\":true,\"calls\":1,\"active\":false}},{\"name\":\"original-inactive-runStores-preserves-receiver-arguments-and-result\",\"status\":\"pass\",\"detail\":9},{\"name\":\"original-util-weak-reference-counter-retains-actual-object\",\"status\":\"pass\",\"detail\":[1,2,1,0,true]}]}\n",
+    "stderr": ""
+  },
+  "detail": {
+    "cases": 12,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "actual-binding-method-and-subscriber-descriptors",
+        "status": "pass",
+        "detail": {
+          "linkNativeChannel": {
+            "type": "function",
+            "name": "linkNativeChannel",
+            "length": 0,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          },
+          "notifyChannelActive": {
+            "type": "function",
+            "name": "notifyChannelActive",
+            "length": 0,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          },
+          "notifyChannelInactive": {
+            "type": "function",
+            "name": "notifyChannelInactive",
+            "length": 0,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          },
+          "subscribers": {
+            "type": "object",
+            "length": 1024,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          }
+        }
+      },
+      {
+        "name": "actual-initial-aliased-storage",
+        "status": "pass",
+        "detail": {
+          "length": 1024,
+          "bytes": 4096,
+          "offset": 0,
+          "frozen": false,
+          "extensible": true
+        }
+      },
+      {
+        "name": "native-status-allows-full-uint32-domain-with-no-registered-listener",
+        "status": "pass",
+        "detail": [
+          "undefined",
+          "undefined"
+        ]
+      },
+      {
+        "name": "original-channel-cache-and-symbol-identities",
+        "status": "pass",
+        "detail": {
+          "string": "diagnostics-cache",
+          "symbolType": "symbol",
+          "channelInstance": true
+        }
+      },
+      {
+        "name": "original-name-and-subscriber-validation",
+        "status": "pass",
+        "detail": [
+          {
+            "name": "TypeError",
+            "code": "ERR_INVALID_ARG_TYPE"
+          },
+          {
+            "name": "TypeError",
+            "code": "ERR_INVALID_ARG_TYPE"
+          }
+        ]
+      },
+      {
+        "name": "original-inactive-channel-and-return-values",
+        "status": "pass",
+        "detail": {
+          "active": false,
+          "global": false,
+          "publish": "undefined",
+          "unsubscribe": false
+        }
+      },
+      {
+        "name": "original-subscription-activation-data-and-name",
+        "status": "pass",
+        "detail": {
+          "events": [
+            {
+              "name": "diagnostics-publish",
+              "receiverUndefined": true
+            }
+          ],
+          "active": false
+        }
+      },
+      {
+        "name": "original-reentrant-unsubscribe-retains-current-publish-snapshot",
+        "status": "pass",
+        "detail": [
+          "a",
+          "b",
+          "a"
+        ]
+      },
+      {
+        "name": "original-duplicate-subscribers-retire-individually",
+        "status": "pass",
+        "detail": {
+          "calls": 3,
+          "active": false,
+          "again": false
+        }
+      },
+      {
+        "name": "original-top-level-subscription-methods-share-channel",
+        "status": "pass",
+        "detail": {
+          "subscribe": "undefined",
+          "removed": true,
+          "calls": 1,
+          "active": false
+        }
+      },
+      {
+        "name": "original-inactive-runStores-preserves-receiver-arguments-and-result",
+        "status": "pass",
+        "detail": 9
+      },
+      {
+        "name": "original-util-weak-reference-counter-retains-actual-object",
+        "status": "pass",
+        "detail": [
+          1,
+          2,
+          1,
+          0,
+          true
+        ]
+      }
+    ]
+  }
+}

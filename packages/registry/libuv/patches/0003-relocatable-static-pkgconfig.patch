@@ -1,0 +1,13 @@
+--- a/libuv-static.pc.in
++++ b/libuv-static.pc.in
+@@ -1,7 +1,7 @@
+-prefix=@prefix@
++prefix=${pcfiledir}/../..
+ exec_prefix=${prefix}
+-libdir=@libdir@
+-includedir=@includedir@
++libdir=${prefix}/lib
++includedir=${prefix}/include
+ 
+ Name: libuv-static
+ Version: @PACKAGE_VERSION@

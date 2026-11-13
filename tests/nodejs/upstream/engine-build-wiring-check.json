@@ -1,0 +1,59 @@
+{
+  "completedAt": "2026-11-10T20:28:08.905472+00:00",
+  "scope": "declared source/tool closure and actual recipe preparation helper only",
+  "packageRevision": 16,
+  "metadataHostToolDeclared": true,
+  "newInputsDeclared": [
+    "packages/registry/spidermonkey/node-upstream",
+    "third_party/nodejs",
+    "scripts/generate-nodejs-source-registry.py",
+    "scripts/nodejs-builtin-metadata.cpp"
+  ],
+  "scriptSyntaxChecksPassed": true,
+  "mozBuildParsed": true,
+  "preparedSourceSha256": {
+    "builtin-compiler.cpp": "6e4047b1829d9c44965d41f9d1dd353305dd2e77b1139264347fa9bb18808600",
+    "builtin-compiler.h": "218770472bf96c7b2ba9978a1137c1106384af77246b9ce911f365bed8a7ac05",
+    "builtin-source-registry.cpp": "e6581b73f9ff9644eb0de27f78a4f6c528628d5641bc54d6d1e707487144925d",
+    "builtin-source-registry.h": "1b84c5c99de447402c382429df731e1f0def761a9586f6545828043b585296a9"
+  },
+  "registryReceipt": {
+    "builtinInfoSha256": {
+      "src/builtin_info.cc": "bf8336d85b92460242453232017f2c2dad94aa3b78ba7aecbba5af3e2c3ef1a0",
+      "src/builtin_info.h": "f81573ce5068e4d2d36a7b46b3ff58c0c86d2832814424b3216ef8ef89cdedc5"
+    },
+    "builtinSources": 443,
+    "manifestSha256": "512816907bd18ef06c377d2961ce9341557fb503cc149e20a5172242ca327645",
+    "metadataToolSha256": "8c84b0953c70144face8db223eda0ea89ca8398f0f99ca4cad3e928f2c23867e",
+    "output": "/Users/brandon/conductor/workspaces/kandelo/davao/.context/node-upstream-restart/build-wiring/source/js/src/shell/node-upstream/node-source-registry.generated.inc",
+    "sourceBytes": 10993403
+  },
+  "generatedIncludeSha256": "484a17dec225efd58e9cb955daf9efbc06e23562841f8da32a90f0e6a00ff05f",
+  "hostSdkProvided": true,
+  "mozillaConfigureRun": false,
+  "newEngineTranslationUnitsCompiled": false,
+  "packageBuilt": false,
+  "guestStartupRun": false,
+  "fullProductBuild": false,
+  "testedInputSha256": {
+    "packages/registry/spidermonkey/build.toml": "816d6d6a00d1ea5e7e2fb186a43e525ea26f8fd44ea841226c6c4da487834ce8",
+    "packages/registry/spidermonkey/package.toml": "53c1df3b5e6b5d851eb90df02b3ab2e023f1577a0a8535493f25efbe95b250cf",
+    "packages/registry/spidermonkey/build-spidermonkey.sh": "d6579f7cd1c1028aa3a27d3540c5bef968439ae8ca5ebcf973a4c6631f6e7966",
+    "packages/registry/spidermonkey/node-upstream/prepare-build.sh": "4f533db7d0fe15ad948473d9932e1ad8d7b35f453db1a95ed0b5d5a38d334306",
+    "packages/registry/spidermonkey/patches/0023-kandelo-upstream-node-compiler-build.patch": "25c9cc588291a31290b213bf1be4b4457627f8aabe58bfa0301264bc91ff562d"
+  },
+  "patchCheck": {
+    "base": "verified140.11.0esr archive moz.build plus matching main recipe hunks",
+    "existingMainMozBuildPatches": [],
+    "newPatchAppliedWithoutFuzz": true,
+    "newPatchStdout": "patching file 'js/src/shell/moz.build'\n",
+    "sourceCompilerReferencesPresent": true,
+    "engineCompileRun": false
+  },
+  "mozillaSourceIdentity": {
+    "archiveSha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028",
+    "mozillaMozBuildSha256": "c943b727626e80984b8f0d0b4d434cca5dffa71ac003a529c130df8e90367169",
+    "version": "140.11.0esr",
+    "buildsRun": false
+  }
+}

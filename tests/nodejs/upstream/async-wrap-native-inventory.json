@@ -1,0 +1,932 @@
+{
+  "programSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+  "fixtureSha256": "d9909e7f81bfab82ce98846970d60e8f0dffe317a6ef6f6d7af6e7c29e069e9d",
+  "exitCode": 0,
+  "stdout": "{\"version\":\"v26.13.0\",\"keys\":[\"setupHooks\",\"setCallbackTrampoline\",\"pushAsyncContext\",\"popAsyncContext\",\"executionAsyncResource\",\"clearAsyncIdStack\",\"queueDestroyAsyncId\",\"setPromiseHooks\",\"getPromiseHooks\",\"registerDestroyHook\",\"async_hook_fields\",\"async_id_fields\",\"execution_async_resources\",\"async_ids_stack\",\"constants\",\"Providers\"],\"attributes\":{\"setupHooks\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"function\"},\"setCallbackTrampoline\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"function\"},\"pushAsyncContext\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"function\"},\"popAsyncContext\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"function\"},\"executionAsyncResource\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"function\"},\"clearAsyncIdStack\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"function\"},\"queueDestroyAsyncId\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"function\"},\"setPromiseHooks\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"function\"},\"getPromiseHooks\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"function\"},\"registerDestroyHook\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"function\"},\"async_hook_fields\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"object\"},\"async_id_fields\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"object\"},\"execution_async_resources\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"object\"},\"async_ids_stack\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"object\"},\"constants\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"object\"},\"Providers\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"object\"}},\"constants\":{\"kInit\":0,\"kBefore\":1,\"kAfter\":2,\"kDestroy\":3,\"kPromiseResolve\":4,\"kTotals\":5,\"kCheck\":6,\"kExecutionAsyncId\":0,\"kTriggerAsyncId\":1,\"kAsyncIdCounter\":2,\"kDefaultTriggerAsyncId\":3,\"kUsesExecutionAsyncResource\":8,\"kStackLength\":7},\"providers\":{\"NONE\":0,\"DIRHANDLE\":1,\"DNSCHANNEL\":2,\"ELDHISTOGRAM\":3,\"FILEHANDLE\":4,\"FILEHANDLECLOSEREQ\":5,\"BLOBREADER\":6,\"FSEVENTWRAP\":7,\"FSREQCALLBACK\":8,\"FSREQPROMISE\":9,\"GETADDRINFOREQWRAP\":10,\"GETNAMEINFOREQWRAP\":11,\"HEAPSNAPSHOT\":12,\"HTTP2SESSION\":13,\"HTTP2STREAM\":14,\"HTTP2PING\":15,\"HTTP2SETTINGS\":16,\"HTTPINCOMINGMESSAGE\":17,\"HTTPCLIENTREQUEST\":18,\"LOCKS\":19,\"DTLS_ENDPOINT\":20,\"DTLS_SESSION\":21,\"JSSTREAM\":22,\"MESSAGEPORT\":23,\"PIPECONNECTWRAP\":24,\"PIPESERVERWRAP\":25,\"PIPEWRAP\":26,\"PROCESSWRAP\":27,\"PROMISE\":28,\"QUERYWRAP\":29,\"QUIC_ENDPOINT\":30,\"QUIC_LOGSTREAM\":31,\"QUIC_SESSION\":32,\"QUIC_STREAM\":33,\"QUIC_UDP\":34,\"SHUTDOWNWRAP\":35,\"SIGNALWRAP\":36,\"STATWATCHER\":37,\"STREAMPIPE\":38,\"TCPCONNECTWRAP\":39,\"TCPSERVERWRAP\":40,\"TCPWRAP\":41,\"TTYWRAP\":42,\"UDPSENDWRAP\":43,\"UDPWRAP\":44,\"SIGINTWATCHDOG\":45,\"WORKER\":46,\"WORKERCPUPROFILE\":47,\"WORKERCPUUSAGE\":48,\"WORKERHEAPPROFILE\":49,\"WORKERHEAPSNAPSHOT\":50,\"WORKERHEAPSTATISTICS\":51,\"WRITEWRAP\":52,\"ZLIB\":53,\"CHECKPRIMEREQUEST\":54,\"PBKDF2REQUEST\":55,\"KEYPAIRGENREQUEST\":56,\"KEYGENREQUEST\":57,\"KEYEXPORTREQUEST\":58,\"ARGON2REQUEST\":59,\"CIPHERREQUEST\":60,\"DERIVEBITSREQUEST\":61,\"HASHREQUEST\":62,\"RANDOMBYTESREQUEST\":63,\"RANDOMPRIMEREQUEST\":64,\"SCRYPTREQUEST\":65,\"SIGNREQUEST\":66,\"TLSWRAP\":67,\"VERIFYREQUEST\":68},\"constantAttributes\":{\"kInit\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kBefore\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kAfter\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kDestroy\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kPromiseResolve\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kTotals\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kCheck\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kExecutionAsyncId\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kTriggerAsyncId\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kAsyncIdCounter\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kDefaultTriggerAsyncId\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kUsesExecutionAsyncResource\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"kStackLength\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"}},\"providerAttributes\":{\"NONE\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"DIRHANDLE\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"DNSCHANNEL\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"ELDHISTOGRAM\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"FILEHANDLE\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"FILEHANDLECLOSEREQ\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"BLOBREADER\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"FSEVENTWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"FSREQCALLBACK\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"FSREQPROMISE\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"GETADDRINFOREQWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"GETNAMEINFOREQWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"HEAPSNAPSHOT\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"HTTP2SESSION\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"HTTP2STREAM\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"HTTP2PING\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"HTTP2SETTINGS\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"HTTPINCOMINGMESSAGE\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"HTTPCLIENTREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"LOCKS\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"DTLS_ENDPOINT\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"DTLS_SESSION\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"JSSTREAM\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"MESSAGEPORT\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"PIPECONNECTWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"PIPESERVERWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"PIPEWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"PROCESSWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"PROMISE\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"QUERYWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"QUIC_ENDPOINT\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"QUIC_LOGSTREAM\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"QUIC_SESSION\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"QUIC_STREAM\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"QUIC_UDP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"SHUTDOWNWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"SIGNALWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"STATWATCHER\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"STREAMPIPE\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"TCPCONNECTWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"TCPSERVERWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"TCPWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"TTYWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"UDPSENDWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"UDPWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"SIGINTWATCHDOG\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"WORKER\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"WORKERCPUPROFILE\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"WORKERCPUUSAGE\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"WORKERHEAPPROFILE\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"WORKERHEAPSNAPSHOT\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"WORKERHEAPSTATISTICS\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"WRITEWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"ZLIB\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"CHECKPRIMEREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"PBKDF2REQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"KEYPAIRGENREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"KEYGENREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"KEYEXPORTREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"ARGON2REQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"CIPHERREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"DERIVEBITSREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"HASHREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"RANDOMBYTESREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"RANDOMPRIMEREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"SCRYPTREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"SIGNREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"TLSWRAP\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"},\"VERIFYREQUEST\":{\"writable\":false,\"enumerable\":true,\"configurable\":false,\"type\":\"number\"}},\"layouts\":{\"fields\":9,\"ids\":4,\"stack\":32},\"postBootstrapFields\":[0,0,0,0,0,0,1,1,0],\"postBootstrapIds\":[1,0,2,-1],\"symbols\":{\"attributes\":{\"fs_use_promises_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"fs_use_promises_symbol\"},\"async_id_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"async_id_symbol\"},\"ffi_sb_shared_buffer_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"ffi_sb_shared_buffer_symbol\"},\"ffi_sb_invoke_slow_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"ffi_sb_invoke_slow_symbol\"},\"ffi_sb_arguments_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"ffi_sb_arguments_symbol\"},\"ffi_sb_return_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"ffi_sb_return_symbol\"},\"constructor_key_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"constructor_key_symbol\"},\"handle_onclose\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"handle_onclose\"},\"no_message_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"no_message_symbol\"},\"messaging_deserialize_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"messaging_deserialize_symbol\"},\"imported_cjs_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"imported_cjs_symbol\"},\"messaging_transfer_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"messaging_transfer_symbol\"},\"messaging_clone_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"messaging_clone_symbol\"},\"messaging_transfer_list_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"messaging_transfer_list_symbol\"},\"oninit\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"oninit\"},\"owner_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"owner_symbol\"},\"onpskexchange\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"onpskexchange\"},\"resource_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"resource_symbol\"},\"trigger_async_id_symbol\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"trigger_async_id_symbol\"},\"builtin_source_text_module_hdo\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"builtin_source_text_module_hdo\"},\"embedder_module_hdo\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"embedder_module_hdo\"},\"source_text_module_default_hdo\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"source_text_module_default_hdo\"},\"vm_context_no_contextify\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"vm_context_no_contextify\"},\"vm_dynamic_import_default_internal\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"vm_dynamic_import_default_internal\"},\"vm_dynamic_import_main_context_default\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"vm_dynamic_import_main_context_default\"},\"vm_dynamic_import_missing_flag\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"vm_dynamic_import_missing_flag\"},\"vm_dynamic_import_no_callback\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"type\":\"symbol\",\"description\":\"vm_dynamic_import_no_callback\"}},\"prototypeIsNull\":false,\"prototypeIsObject\":false},\"promiseHooks\":[\"undefined\",\"undefined\",\"undefined\",\"undefined\"]}\n",
+  "stderr": "",
+  "detail": {
+    "version": "v26.13.0",
+    "keys": [
+      "setupHooks",
+      "setCallbackTrampoline",
+      "pushAsyncContext",
+      "popAsyncContext",
+      "executionAsyncResource",
+      "clearAsyncIdStack",
+      "queueDestroyAsyncId",
+      "setPromiseHooks",
+      "getPromiseHooks",
+      "registerDestroyHook",
+      "async_hook_fields",
+      "async_id_fields",
+      "execution_async_resources",
+      "async_ids_stack",
+      "constants",
+      "Providers"
+    ],
+    "attributes": {
+      "setupHooks": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true,
+        "type": "function"
+      },
+      "setCallbackTrampoline": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true,
+        "type": "function"
+      },
+      "pushAsyncContext": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true,
+        "type": "function"
+      },
+      "popAsyncContext": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true,
+        "type": "function"
+      },
+      "executionAsyncResource": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true,
+        "type": "function"
+      },
+      "clearAsyncIdStack": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true,
+        "type": "function"
+      },
+      "queueDestroyAsyncId": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true,
+        "type": "function"
+      },
+      "setPromiseHooks": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true,
+        "type": "function"
+      },
+      "getPromiseHooks": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true,
+        "type": "function"
+      },
+      "registerDestroyHook": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true,
+        "type": "function"
+      },
+      "async_hook_fields": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "object"
+      },
+      "async_id_fields": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "object"
+      },
+      "execution_async_resources": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "object"
+      },
+      "async_ids_stack": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true,
+        "type": "object"
+      },
+      "constants": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "object"
+      },
+      "Providers": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "object"
+      }
+    },
+    "constants": {
+      "kInit": 0,
+      "kBefore": 1,
+      "kAfter": 2,
+      "kDestroy": 3,
+      "kPromiseResolve": 4,
+      "kTotals": 5,
+      "kCheck": 6,
+      "kExecutionAsyncId": 0,
+      "kTriggerAsyncId": 1,
+      "kAsyncIdCounter": 2,
+      "kDefaultTriggerAsyncId": 3,
+      "kUsesExecutionAsyncResource": 8,
+      "kStackLength": 7
+    },
+    "providers": {
+      "NONE": 0,
+      "DIRHANDLE": 1,
+      "DNSCHANNEL": 2,
+      "ELDHISTOGRAM": 3,
+      "FILEHANDLE": 4,
+      "FILEHANDLECLOSEREQ": 5,
+      "BLOBREADER": 6,
+      "FSEVENTWRAP": 7,
+      "FSREQCALLBACK": 8,
+      "FSREQPROMISE": 9,
+      "GETADDRINFOREQWRAP": 10,
+      "GETNAMEINFOREQWRAP": 11,
+      "HEAPSNAPSHOT": 12,
+      "HTTP2SESSION": 13,
+      "HTTP2STREAM": 14,
+      "HTTP2PING": 15,
+      "HTTP2SETTINGS": 16,
+      "HTTPINCOMINGMESSAGE": 17,
+      "HTTPCLIENTREQUEST": 18,
+      "LOCKS": 19,
+      "DTLS_ENDPOINT": 20,
+      "DTLS_SESSION": 21,
+      "JSSTREAM": 22,
+      "MESSAGEPORT": 23,
+      "PIPECONNECTWRAP": 24,
+      "PIPESERVERWRAP": 25,
+      "PIPEWRAP": 26,
+      "PROCESSWRAP": 27,
+      "PROMISE": 28,
+      "QUERYWRAP": 29,
+      "QUIC_ENDPOINT": 30,
+      "QUIC_LOGSTREAM": 31,
+      "QUIC_SESSION": 32,
+      "QUIC_STREAM": 33,
+      "QUIC_UDP": 34,
+      "SHUTDOWNWRAP": 35,
+      "SIGNALWRAP": 36,
+      "STATWATCHER": 37,
+      "STREAMPIPE": 38,
+      "TCPCONNECTWRAP": 39,
+      "TCPSERVERWRAP": 40,
+      "TCPWRAP": 41,
+      "TTYWRAP": 42,
+      "UDPSENDWRAP": 43,
+      "UDPWRAP": 44,
+      "SIGINTWATCHDOG": 45,
+      "WORKER": 46,
+      "WORKERCPUPROFILE": 47,
+      "WORKERCPUUSAGE": 48,
+      "WORKERHEAPPROFILE": 49,
+      "WORKERHEAPSNAPSHOT": 50,
+      "WORKERHEAPSTATISTICS": 51,
+      "WRITEWRAP": 52,
+      "ZLIB": 53,
+      "CHECKPRIMEREQUEST": 54,
+      "PBKDF2REQUEST": 55,
+      "KEYPAIRGENREQUEST": 56,
+      "KEYGENREQUEST": 57,
+      "KEYEXPORTREQUEST": 58,
+      "ARGON2REQUEST": 59,
+      "CIPHERREQUEST": 60,
+      "DERIVEBITSREQUEST": 61,
+      "HASHREQUEST": 62,
+      "RANDOMBYTESREQUEST": 63,
+      "RANDOMPRIMEREQUEST": 64,
+      "SCRYPTREQUEST": 65,
+      "SIGNREQUEST": 66,
+      "TLSWRAP": 67,
+      "VERIFYREQUEST": 68
+    },
+    "constantAttributes": {
+      "kInit": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kBefore": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kAfter": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kDestroy": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kPromiseResolve": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kTotals": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kCheck": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kExecutionAsyncId": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kTriggerAsyncId": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kAsyncIdCounter": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kDefaultTriggerAsyncId": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kUsesExecutionAsyncResource": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "kStackLength": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      }
+    },
+    "providerAttributes": {
+      "NONE": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "DIRHANDLE": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "DNSCHANNEL": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "ELDHISTOGRAM": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "FILEHANDLE": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "FILEHANDLECLOSEREQ": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "BLOBREADER": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "FSEVENTWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "FSREQCALLBACK": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "FSREQPROMISE": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "GETADDRINFOREQWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "GETNAMEINFOREQWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "HEAPSNAPSHOT": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "HTTP2SESSION": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "HTTP2STREAM": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "HTTP2PING": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "HTTP2SETTINGS": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "HTTPINCOMINGMESSAGE": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "HTTPCLIENTREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "LOCKS": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "DTLS_ENDPOINT": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "DTLS_SESSION": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "JSSTREAM": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "MESSAGEPORT": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "PIPECONNECTWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "PIPESERVERWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "PIPEWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "PROCESSWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "PROMISE": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "QUERYWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "QUIC_ENDPOINT": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "QUIC_LOGSTREAM": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "QUIC_SESSION": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "QUIC_STREAM": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "QUIC_UDP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "SHUTDOWNWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "SIGNALWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "STATWATCHER": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "STREAMPIPE": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "TCPCONNECTWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "TCPSERVERWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "TCPWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "TTYWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "UDPSENDWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "UDPWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "SIGINTWATCHDOG": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "WORKER": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "WORKERCPUPROFILE": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "WORKERCPUUSAGE": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "WORKERHEAPPROFILE": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "WORKERHEAPSNAPSHOT": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "WORKERHEAPSTATISTICS": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "WRITEWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "ZLIB": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "CHECKPRIMEREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "PBKDF2REQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "KEYPAIRGENREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "KEYGENREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "KEYEXPORTREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "ARGON2REQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "CIPHERREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "DERIVEBITSREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "HASHREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "RANDOMBYTESREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "RANDOMPRIMEREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "SCRYPTREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "SIGNREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "TLSWRAP": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      },
+      "VERIFYREQUEST": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false,
+        "type": "number"
+      }
+    },
+    "layouts": {
+      "fields": 9,
+      "ids": 4,
+      "stack": 32
+    },
+    "postBootstrapFields": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0
+    ],
+    "postBootstrapIds": [
+      1,
+      0,
+      2,
+      -1
+    ],
+    "symbols": {
+      "attributes": {
+        "fs_use_promises_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "fs_use_promises_symbol"
+        },
+        "async_id_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "async_id_symbol"
+        },
+        "ffi_sb_shared_buffer_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "ffi_sb_shared_buffer_symbol"
+        },
+        "ffi_sb_invoke_slow_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "ffi_sb_invoke_slow_symbol"
+        },
+        "ffi_sb_arguments_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "ffi_sb_arguments_symbol"
+        },
+        "ffi_sb_return_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "ffi_sb_return_symbol"
+        },
+        "constructor_key_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "constructor_key_symbol"
+        },
+        "handle_onclose": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "handle_onclose"
+        },
+        "no_message_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "no_message_symbol"
+        },
+        "messaging_deserialize_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "messaging_deserialize_symbol"
+        },
+        "imported_cjs_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "imported_cjs_symbol"
+        },
+        "messaging_transfer_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "messaging_transfer_symbol"
+        },
+        "messaging_clone_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "messaging_clone_symbol"
+        },
+        "messaging_transfer_list_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "messaging_transfer_list_symbol"
+        },
+        "oninit": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "oninit"
+        },
+        "owner_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "owner_symbol"
+        },
+        "onpskexchange": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "onpskexchange"
+        },
+        "resource_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "resource_symbol"
+        },
+        "trigger_async_id_symbol": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "trigger_async_id_symbol"
+        },
+        "builtin_source_text_module_hdo": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "builtin_source_text_module_hdo"
+        },
+        "embedder_module_hdo": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "embedder_module_hdo"
+        },
+        "source_text_module_default_hdo": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "source_text_module_default_hdo"
+        },
+        "vm_context_no_contextify": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "vm_context_no_contextify"
+        },
+        "vm_dynamic_import_default_internal": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "vm_dynamic_import_default_internal"
+        },
+        "vm_dynamic_import_main_context_default": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "vm_dynamic_import_main_context_default"
+        },
+        "vm_dynamic_import_missing_flag": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "vm_dynamic_import_missing_flag"
+        },
+        "vm_dynamic_import_no_callback": {
+          "writable": true,
+          "enumerable": true,
+          "configurable": true,
+          "type": "symbol",
+          "description": "vm_dynamic_import_no_callback"
+        }
+      },
+      "prototypeIsNull": false,
+      "prototypeIsObject": false
+    },
+    "promiseHooks": [
+      "undefined",
+      "undefined",
+      "undefined",
+      "undefined"
+    ]
+  },
+  "scope": "Already bootstrapped native binding inventory, not constructor-state or guest conformance"
+}

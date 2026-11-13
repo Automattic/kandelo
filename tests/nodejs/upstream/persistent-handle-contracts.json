@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "scope": "Native persistent-handle prerequisite for complete unchanged util.h/util-inl.h integration; not startup or full native utility acceptance",
+  "owningLayer": "SpiderMonkey embedding C++ handle/root layer, inside the guest engine executable",
+  "sourcePinChanged": false,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "upstreamConsumers": [
+    {
+      "source": {
+        "path": "third_party/nodejs/upstream/src/util.h",
+        "bytes": 43448,
+        "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
+      },
+      "contract": "PersistentToLocal::Default chooses weak/strong. Strong borrows first Local member without allocation; caller must not Reset while borrowed Local remains in use. Weak calls Local::New."
+    },
+    {
+      "source": {
+        "path": "third_party/nodejs/upstream/src/aliased_buffer-inl.h",
+        "bytes": 8694,
+        "sha256": "056df681ed699aa07b06b4e9adec470d5dd12c6cfdb5f4dacf4edae3dea06769"
+      },
+      "contract": "Global typed-array construction, move/reset, Get and SetWeak retain actual typed views/backing memory across local scope and GC."
+    },
+    {
+      "source": {
+        "path": "third_party/nodejs/upstream/src/async_wrap.cc",
+        "bytes": 27422,
+        "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709"
+      },
+      "contract": "Original resource source calls PersistentToLocal for resources; full original initializer/lifecycle remains unconnected."
+    }
+  ],
+  "contracts": [
+    {
+      "interface": "PersistentBase<T>/Global<T>",
+      "implementation": "Standard-layout PersistentBase begins with an actual Local<T>, enforced at compile time; opaque native PersistentCell owns canonical root/isolate. Global has no additional members. No V8 heap addresses or heap serialization."
+    },
+    {
+      "interface": "Local<T>",
+      "implementation": "One C++ wrapper pointer. Wrapper Cell owns a registered SpiderMonkey PersistentRootedValue while strong; moving GC updates the cell, not the wrapper address."
+    },
+    {
+      "interface": "Value root cloning",
+      "implementation": "Each Frame::Own<T> installs a typed clone factory. Retention and Get preserve the actual C++ wrapper type, including templates and symbols, rather than allocating base Value then downcasting."
+    },
+    {
+      "interface": "strong -> weak",
+      "implementation": "Promote nursery targets before publishing an actual weak edge. Unregister the persistent root in the stable Cell; weak-zone callback updates/clears the JS::Heap edge. Native wrapper allocation survives without a JS strong edge."
+    },
+    {
+      "interface": "weak -> strong",
+      "implementation": "Remove weak registry membership before registering the stable Cell root for the surviving target. A collected target remains empty. Foreground ownership assertions retained."
+    },
+    {
+      "interface": "move/reset",
+      "implementation": "Move transfers actual native record and borrowed Local; source becomes empty. Assignment retires previous root, self-move preserves it. Reset clears borrowed member before deleting record."
+    },
+    {
+      "interface": "Local::New/Get",
+      "implementation": "Create an independent rooted wrapper in the active Frame with the original C++ wrapper type; wrap JS values into the caller context. Safe across reentry and deletion/reset of original persistent during a JS call."
+    },
+    {
+      "interface": "shutdown/finalizers",
+      "implementation": "BorrowObject remains allocation-free and works during foreground finalization without a native Frame. Weak retirement asserts no registered strong root; existing canonical resource cleanup remains authoritative."
+    }
+  ],
+  "validationObligations": [
+    "Native sole strong root across caller HandleScope destruction and moving GC",
+    "Actual weak target collection, live weak strengthening, collected empty strengthening",
+    "Moves/self-move/reset and callback reentry releasing its own handle",
+    "Foreign-realm identity and original thrown-value propagation",
+    "Existing native ownership, original AliasedBuffer/Buffer/diagnostics/environment/error/catch regressions on Node/Chromium/Firefox/WebKit",
+    "Normal package C++ compilation/link result recorded separately from private diagnostic execution"
+  ],
+  "runtimeEvidence": "persistent-handle-engine-check.json",
+  "limitations": [
+    "Complete util.h/util-inl.h is not yet compiled; original PersistentToLocal fast path has layout prerequisite proof only, not actual execution proof",
+    "Existing provisional PersistentToLocal::Default remains until whole utility integration; not replaced with a copied upstream function",
+    "Private/Data handle-kind contracts, Global<Context> and parameterized weak callbacks remain unavailable/unproven",
+    "Existing ToUpper and other provisional Node utilities still require complete source integration",
+    "Original AsyncWrap/fatal initializer activation, full Message/stack/report/lifecycle/scheduling and startup remain incomplete"
+  ],
+  "sourceIdentity": "All existing imported files/JavaScript must remain byte-identical; no upstream function excerpts",
+  "programABIChanged": false,
+  "historicalABI55Changed": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false,
+  "validatedHosts": [
+    "node",
+    "chromium",
+    "firefox",
+    "webkit"
+  ],
+  "privateDiagnosticDriversPerHost": 32
+}

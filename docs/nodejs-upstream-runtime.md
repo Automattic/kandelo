@@ -1,0 +1,2929 @@
+# Upstream Node.js runtime restart
+
+## Current state
+
+The normal guest runtime still uses its existing compatibility bootstrap.
+Through privileged JS-shell controls, the selected SpiderMonkey package now
+executes the complete, unchanged upstream primordials, DOMException,
+messageport and realm library loader on the Node host. A canonical native
+context owns the original symbol inventory and protected primordials; the
+realm owner retains the actual original loader closures. Original JavaScript
+owns builtin caching, exposure policy and moduleLoadList. The eager native
+realm closure uses the real ModuleWrap/Error owners and shared private symbols.
+
+The native principal-body entry calls complete `internal/bootstrap/node` with
+protected state. It now executes the original internal tracing helper and
+passes the live `mksnapshot` binding and native lazy data-property setup in
+original `buffer.js`. It now reads real build configuration and the original
+body freezes `process.config` and registers the original messaging constructor
+callback and completes original diagnostics setup, then the last runnable revision stops at missing
+`process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
+The current revision 75 source connects the original process initializer,
+native invocation state, complete original dotenv/environment/path units and
+the original system-error factories and errno-name unit. Its targeted build
+still fails final linking on 17 symbols and has no normal runnable artifact.
+Complete original AsyncWrap owner traversal now exposes the original catch-scope
+and exception/reporting dependency closure; its binding is not activated.
+Canonical native reference ownership has separate four-host diagnostic evidence;
+that private profile explicitly rejects process_methods and cannot install a package. The original native tracing agent, binding,
+V8 tracing intrinsics and UTF-16 encoder are linked into the engine over real
+Kandelo and SpiderMonkey primitives. Focused controls exercise these on all
+four hosts. Continuation-preserved engine data and the complete original
+async-context native source are also integrated; active JavaScript consumers
+remain guarded until genuine bootstrap completes. Full observer exception/fatal
+routing remains incomplete.
+Engine ArrayBuffers now retain native detach keys and enforce them during
+transfer and serialization. The complete original native Buffer binding is now compiled over real engine
+allocation, retained storage, views, encodings and principal prototypes.
+Its original CallbackInfo cleanup runs on all four hosts. Thirty shared
+native control groups match exactly; a standalone native Node reentry
+discrepancy is retained separately. Full lifecycle/exceptional coverage remains
+incomplete. Original AliasedBuffer headers now compile over real typed/weak
+engine handles with focused four-host controls. The live snapshot interface is
+implemented directly with SpiderMonkey/Kandelo primitives; no V8 bindings or
+heap snapshot format are generated. Earlier
+revision sections below describe their evidence at the time.
+Complete Node startup, empty/simple evaluation,
+user CJS/ESM entrypaths and browser startup remain unachieved. The native process
+and util/builtins bindings remain partial; no complete module compatibility or
+443-source guest payload readback is established. ModuleWrap-owned dynamic
+imports and genuine source/synthetic graphs have focused Node-host controls.
+Owned Error stacks use real saved frames, with partial structured CallSites.
+
+The target remains Node.js 26.13.0, Lithium LTS, source commit
+`18b32a3b1552e199a01f1a8d9fd64aa756d3b75b`. Verification on November 10,
+2026 found no target drift: the official release index, release tag and
+source/native archive checksums agree. The retained source tree's 38,413
+regular files match the verified archive. The Darwin arm64 reference
+executable matches SHA-256
+`533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4`.
+Pin verification did not execute it; subsequent native controls are described
+below. Other native reference contents were not
+inspected. Evidence is in `tests/nodejs/upstream/pin-verification.json`.
+
+Official references:
+
+- https://nodejs.org/dist/index.json
+- https://nodejs.org/dist/v26.13.0/SHASUMS256.txt
+- https://github.com/nodejs/node/tree/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b
+
+## Architecture contract
+
+Run complete, unchanged upstream public modules and their internal and
+vendored JavaScript dependencies. Use upstream primordials, realm/builtin
+loaders and bootstrap. Implement their embedding, compiler, engine and
+native-binding contracts over SpiderMonkey and the Kandelo guest OS.
+One environment owns builtin identity, caching, cycles and CJS/ESM exposure.
+Host Node builtins are not substitutes for guest operations.
+
+Do not extract functions, rewrite upstream algorithms, replace public
+modules or supply separate private dependency environments per family.
+A concrete obstacle to unchanged execution needs an explicit decision.
+Missing dependencies remain visible as missing work.
+
+Imported source and runtime configuration are different. Optional sources
+can be stored while their backend is unavailable; runtime feature metadata
+must describe the implementation actually present. Native-reference
+configuration and V8 identity must not be copied to manufacture support.
+
+## Source inventory
+
+The initial `third_party/nodejs/sources.json` import recorded 494 unchanged archive files:
+427 library JavaScript files, 16 dependency JavaScript files, one library
+support file, 37 dependency license files and thirteen provenance files. Its
+443 builtin source records cover more than the public module list. The current
+manifest has 586 files after complete native source/header additions; every
+original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
+The original `src/env_properties.h` now supplies the native symbol inventory;
+its bytes are verified before staging into Mozilla's source tree. The complete
+original `src/node_exit_code.h` similarly supplies the native errors enum;
+adding it left every prior source record and all JavaScript bytes unchanged.
+
+`scripts/index-nodejs-bindings.mjs` traverses every builtin source using the
+repository-declared Babel parser. The initial index has 443 parsed files,
+zero parse errors, 3,342 loader/binding references, 72 literal native
+binding names and 14 computed references. These are syntax counts, not
+API counts or completed contract audits. The index retains computed
+references and explicitly records that alias analysis, signatures,
+implicit engine contracts, lifecycle and reachability remain unreviewed.
+See `tests/nodejs/upstream/binding-index.json`.
+
+Recreate the static index through the development shell:
+
+```sh
+scripts/dev-shell.sh node scripts/index-nodejs-bindings.mjs \
+  third_party/nodejs/sources.json /path/to/binding-index.json
+```
+
+The source-level startup order and wrapper contracts are recorded in
+`tests/nodejs/upstream/bootstrap-contracts.md` and its companion JSON.
+The review covers 13 ordered stages and direct startup binding consumers;
+transitive binding members remain unaudited.
+
+## Startup milestone
+
+Provide the actual native embedding needed to execute unchanged upstream
+per-context setup, realm loader, Node bootstrap, pre-execution and selected
+main scripts. The first evidence must cover an empty evaluation and a
+simple script, real output/error handling, asynchronous job draining and
+correct exit status. Track CommonJS and ES-module entrypaths separately
+across Node, Chromium, Firefox and WebKit hosts.
+
+Startup does not establish module compatibility. A selected SpiderMonkey
+artifact has been built and run for private-key and original per-context
+initializer controls; it does not execute the imported Node bootstrap. Full product and
+successor-ABI artifact rebuilds remain deferred. Immutable ABI 55 history
+and the separate Bun standalone extraction/launch work remain preserved.
+
+## Backend catalog and review gate
+
+Begin the catalog with startup work, then reconcile it across all imported
+modules, including lazy, conditional, worker, platform and exceptional
+paths. For each requirement record:
+
+- The exact upstream consumers, binding exports, classes, methods, symbols
+  and shared state.
+- Signatures, errors, callback scheduling and async-context requirements.
+- Ownership, GC, resource lifecycle, cancellation and ref/unref behavior.
+- Owning engine, host, libc or kernel layer and prerequisite dependencies.
+- Archived native reuse candidates, implementation status and validation
+  obligations on each of the four hosts.
+
+The reconciled source graph now retains all 443 source identities and 3,342 original
+references, 37 lazy registrations, 18 transfer metadata sites and separate CJS/ESM
+loader roots. An authenticated archive scan records 160 native registration sites
+across 460 source/header files. Every one of the 72 literal binding names has initializer syntax;
+17 have current Kandelo dispatcher routes and 55 do not. Route presence is not full
+binding support. The survey links all 19 historical family reviews and 33 PR reuse
+records. See [the source graph and native survey](../tests/nodejs/upstream/backend-graph.md)
+for scope, reproduction, symbolic domains and remaining native API obligations.
+
+The syntax index is the start of this catalog, not its completion. Use the
+prior 19-family audit and PR reuse audit as historical evidence and native
+salvage indexes. Do not import the old assembled public frontend wholesale.
+
+Undici's HTTP parser and Amaro's compiler execute embedded WebAssembly.
+Nested guest Wasm remains required for those paths; defer its implementation
+unless startup depends on it. Its absence is an implementation gap.
+
+Deliver the startup evidence, complete contract catalog and ordered
+implementation/validation roadmap for user review before broader backend
+implementation. Overall conformance suites wait for a later authorized
+milestone. Preserve all failures, skips, unsupported cases, timeouts and
+harness errors as distinct non-passing outcomes.
+
+Detailed source-registration and engine-contract reviews are preserved in
+`tests/nodejs/upstream/source-registration.md` and
+`tests/nodejs/upstream/engine-contracts.md`, with companion JSON. The import
+preserves original Undici bytes rather than applying upstream js2c's narrow
+Unicode punctuation normalization; that distinction is recorded explicitly.
+
+## Native compiler foundation checkpoint
+
+The normal upstream Node entrypath is still inactive. An immutable native source registry and
+build-time wrapper metadata producer now exist, along with a SpiderMonkey
+function/module compilation consumer. The registry and metadata were compiled
+and checked on the development host. The SpiderMonkey consumer and registry
+have since compiled as real wasm32 objects against configured engine headers
+and participated in a selected package build. The function compiler now runs
+the three original per-context bodies on the Node host. The source-text module
+compiler and upstream bootstrap remain unexercised. Guest readback of the full
+builtin payload remains unverified. See `engine-object-compilation.json`
+for the earlier object check and `private-key-engine-check.json` for the
+separate package and private-key control evidence.
+
+The metadata producer compiles the original Node `builtin_info.cc/.h` rather
+than duplicating its classification and parameter map. The guest compiler
+consumes immutable diagnostic origins, kinds and argument arrays, avoiding
+additional unchecked C++ string/map allocations in its entrypath. Separate
+engine function/module APIs preserve the required wrapper distinction; source
+line origins and ownership remain source-reviewed, not runtime-proven.
+
+The host-native composition control read all 443 records and 10,993,403 bytes
+through the actual compiled registry and compared them with the verified source
+files, independent registration inventory and original parameter contracts.
+Missing IDs, bounds and embedded-NUL lookup controls passed. Exact input/tool
+identities and limits are in `source-registry-composition.json`. Generator
+integrity checks use explicit metadata-protocol fixtures; these are separate
+from the original-C++ composition evidence and do not establish guest behavior.
+
+Reproduce the focused source checks through the development shell:
+
+```sh
+scripts/dev-shell.sh python3 -B   tests/nodejs/upstream/source-registry-generator.test.py
+scripts/dev-shell.sh python3 tests/nodejs/upstream/check-source-registry.py   --work-dir /path/to/new-private-evidence-directory
+```
+
+A bounded source review found real Float16Array, Iterator.from/drop, disposal
+symbols and Error.captureStackTrace implementations in the pinned engine.
+They must not be replaced with fake globals or preclassified as absent. The
+concrete Error gap is its eager fixed-depth string behavior versus Node's
+structured, lazy formatting, CallSites and stackTraceLimit. See
+`primordial-prerequisites.md`; engine configuration and behavior still need
+identified-artifact evidence.
+
+`implementation-ledger.json` separates source inventory, implementation and
+per-host startup/conformance. Next integrate genuine per-realm state and
+binding ownership, then the eager startup closure. The full backend catalog
+is incomplete. No full product or successor-ABI build ran.
+
+## Real engine build wiring and hidden-key prerequisite
+
+The source recipe now includes both native compiler/registry translation units
+in Mozilla's non-unified shell source list, declares their source/host-tool
+inputs and prepares their generated include in the recipe-owned source/object
+roots. Initial wiring used package revision 16; revision 17 fixed the actual
+compiler-header integration and added the focused object check below. Revision
+18 adds the distinct embedding-private engine kind and privileged controls,
+and fixes the include paths/generated header layout required by Mozilla's
+normal package checks. This does not
+activate upstream Node or turn an older engine artifact into evidence for the
+new code. Revision 19 adds the native runtime/context owner and executes the
+three complete original initializers through diagnostic controls. The selected
+package builds; later realm-library integration is described below, while principal Node bootstrap remains unfinished.
+
+The focused preparation check ran the actual recipe helper, built the host-only
+original-Node metadata producer using the declared SDK, verified all four staged
+C++/header copies and generated the 443-source include. Shell/TOML/Python syntax
+checks passed. The new Mozilla patch applied without fuzz against the exact
+verified source archive's moz.build; no earlier main patch modifies that file.
+Exact identities and scope are in `engine-build-wiring-check.json`.
+
+The actual-header check now runs in the Port Vila clean-branch checkout with
+normal wasm32 SDK-core provisioning and Mozilla configure/pre-export/export
+generation. Both selected native objects compiled with zero compiler warnings.
+The first attempts exposed missing header installation in the check and
+unannotated JSAPI forward declarations in the compiler; both were corrected.
+The parameter-count conversion now uses a checked round trip without the
+wasm32 always-false comparison warning. Exact inputs, configuration, headers,
+objects and failed-attempt history are in `engine-object-compilation.json`.
+This is object-only evidence, not link or execution evidence. Full product
+and successor-ABI campaign rebuilds remain deferred. The existing recipe's
+Linux target triplet/defines remain targeting debt and do not establish
+finished Kandelo runtime metadata or conformance.
+
+Source investigation also found that V8's internal private keys and
+SpiderMonkey's class-private names differ in observable operations: own-only
+inheritance, new writes on nonextensible objects, missing proxy reads, private
+proxy deletion and default enumerability. Existing clone-marker code does not
+establish the required behavior. First ordinary proxy writes reject in both
+engines; native initialization is a distinct operation and must not be weakened.
+The recommended owning design is a distinct embedding-private engine identity
+and operation contract that leaves ordinary Symbols and class #private
+semantics intact. This is an implementation prerequisite, not an approved
+engine-boundary exclusion or permission to rewrite upstream JavaScript.
+
+See `private-key-semantics.md` and `per-context-state-contracts.md`. The native
+owner must share 22 private and 27 ordinary symbol identities per guest runtime,
+create fresh per-context table objects with exact descriptors, preserve the
+original three-script initialization order, and keep failure terminal. A
+GC-traced canonical state per global is required; a publicly reflected Symbol
+or self-rooting native cycle is insufficient. None of this initializer or
+hidden-key behavior was runtime-validated by that source review. The initializer
+now has the focused guest evidence below. Neither those controls nor the
+distinct key controls establish the complete Node engine contract.
+
+A subsequent focused native control confirmed eleven covered hidden-key
+expectations against the exact pinned Node.js 26.13.0 Darwin arm64 binary,
+including both public untransferable-marker cases. Its flags/hash/outcomes and
+coverage limits are in `private-key-native-reference.json`; the unchanged
+control source is `private-key-native-controls.cjs`. These are reference
+results only. That reference run exercised no guest engine, browser host or
+current-candidate startup. The later guest controls below remain separate
+evidence and do not establish complete Node-equivalent private-key behavior.
+
+## Focused compiler object check
+
+The SpiderMonkey recipe accepts `--check-upstream-compiler` for a standalone
+development check. Supply an existing, absolute private work directory and
+leave `WASM_POSIX_DEP_OUT_DIR` unset. Run through the development shell after
+provisioning the wasm32 SDK core:
+
+```sh
+scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only
+mkdir -p .scratch
+compiler_work=$(mktemp -d "$PWD/.scratch/node-upstream-objects.XXXXXX")
+scripts/dev-shell.sh env WASM_POSIX_DEP_WORK_DIR="$compiler_work" \
+  bash packages/registry/spidermonkey/build-spidermonkey.sh \
+  --check-upstream-compiler
+```
+
+The check uses the recipe's verified Mozilla source, patches, declared native
+dependencies, private sysroot and target configuration. It runs Mozilla
+configure, `pre-export` to install public headers, `export` for generated
+headers, then the compiler, registry, per-context and diagnostic API object targets. Resolver output roots
+are rejected so this diagnostic cannot stand in for a complete package build.
+The guest engine is not linked, optimized, instrumented, installed or published.
+An object compile result does not establish runtime source positions, GC ownership,
+error behavior or startup on any host. For long runs, use `scripts/agent-job`
+and retain its command and log alongside the resulting object identities.
+
+## Embedding-private key prerequisite
+
+The guest engine now has a distinct `EmbeddingPrivateSymbol` kind and native
+factory. It leaves the existing class-private name kind unchanged. Native
+object lookups are own-only and bypass resolve hooks; new private entries
+can be added after nonextensibility, remain nonenumerable, and are omitted
+from public and class-private key collection and integrity-level changes.
+Storage uses the engine's traced property slots and supported proxy handlers'
+traced expando. Proxy policy and realm forwarding remain in the normal path.
+Missing proxy reads yield undefined; ordinary first writes still reject;
+native definition initializes an entry and deletion bypasses script traps.
+
+The source primitive has focused execution evidence on the Node host only:
+23 guest controls passed, including proxy initialization/deletion, revoked
+scripted proxies, cross-compartment forwarding, value retention across a GC,
+frozen objects, and ordinary Symbol/class-private controls. Two additional
+driver checks passed: normal shell mode exposes no test API, and Node mode
+rejects the test flag. Each execution used a dedicated kernel worker and real
+guest output and exit status. Program/kernel/fixture identities and raw results
+are in `tests/nodejs/upstream/private-key-engine-check.json` and
+`tests/nodejs/upstream/private-key-engine-result.json`.
+
+The diagnostic API is available only with `js --kandelo-test-upstream`. It
+creates genuine native keys and performs native initialization; it is not a
+runtime binding substitute. Reproduce the focused Node-host controls with an
+admitted selected-package artifact:
+
+```sh
+scripts/dev-shell.sh node_modules/.bin/tsx \
+  scripts/run-nodejs-private-key-controls.ts /absolute/path/to/js.wasm \
+  /absolute/path/to/new-report.json
+```
+
+The complete native-V8 differential contract, security-wrapper admission,
+OOM/finalization behavior and browser hosts remain unproven. The native
+reference's earlier eleven controls remain separate reference evidence.
+The canonical owner and per-context initializer now exist as described below;
+no Node runtime binding exposes their tables yet.
+
+The selected build passed Mozilla's include-style, macroassembler and opcode
+checks. It emitted 16 compiler warnings; the retained log includes ICU
+thread-safety/deprecation and unused linker-option diagnostics. Its existing
+pre-instrumentation optimization invalidates compiler-fact code hashes, so
+the instrumenter reported its bounded native baseline fallback. Preserve that
+diagnostic: these runs do not validate fork behavior. No full product,
+successor-ABI campaign rebuild, overall suite or upstream startup ran.
+
+## Original per-context initialization
+
+The native owner expands the unchanged pinned `env_properties.h` macros to
+create 22 embedding-private and 27 ordinary, nonregistry symbol identities
+once per guest `ShellContext`. An externally owned engine root holds the runtime
+carrier and is destroyed before its JSContext. Each global privately retains
+one canonical context carrier through a genuine embedding-private key. Its
+reserved slots contain traced JS values; cross-compartment owner references
+use engine wrappers. No JS finalizer owns a persistent root back to itself.
+
+Each context receives fresh null-prototype symbol tables with writable,
+enumerable, configurable properties, ordinary exports and null-prototype
+primordials. The exact original three scripts compile and run in order with
+their original four arguments and an undefined receiver. Native state moves
+through Initializing to Ready or terminal Failed. Normal getters expose exports
+only after Ready, repeated getters preserve identity, and explicit repeat or
+reentrant initialization rejects. Failure after canonical publication preserves
+the original exception and prevents retry; allocation failure before publication
+has no exposed state and may retry. Node's fresh-exports Has/CHECK invariant
+remains a native fatal assertion.
+
+On the Node host, 14 focused guest controls passed: all three original scripts,
+descriptors and freeze state, shared identities with fresh realm tables,
+realm-owned exports/constructors, original DOMException/QuotaExceededError and
+messageport behavior, stable getters, repeat/reentry rejection, terminal failure
+in each of the three initializer stages, global admission and identity across GC.
+Two API-exposure driver controls passed. A separate inherited-primordials
+invariant control produced the expected assertion, exit 132 and one host
+unreachable diagnostic; it returned neither a catch nor success marker. The
+successful initializer run had no host diagnostics. The same revision-19
+artifact also passed all 23 existing private-key controls and their two driver
+checks. Exact source/artifact identities, raw outputs and retained logs are in
+`tests/nodejs/upstream/per-context-engine-check.json` and the linked result receipts.
+
+Reproduce against the identified selected-package engine:
+
+```sh
+scripts/dev-shell.sh node_modules/.bin/tsx \
+  scripts/run-nodejs-private-key-controls.ts /absolute/path/to/js.wasm \
+  /absolute/path/to/new-report.json per-context
+```
+
+These are JS-shell diagnostics behind `--kandelo-test-upstream`; Node mode
+rejects the flag. They exercise the native owner and unchanged JavaScript,
+not a substitute bootstrap. Full security-wrapper, OOM, teardown/finalization
+and native-V8 differential contracts remain open, as do source-text modules,
+Node realm/bootstrap, CJS/ESM startup, browsers and the complete backend catalog.
+The package emitted 16 compiler warnings and the existing fork-facts mismatch
+diagnostic. Full products, successor-ABI campaign rebuilds and overall suites
+remain deferred; ABI 55 history is unchanged.
+
+## Synthetic module engine prerequisite
+
+Revision 20 extends SpiderMonkey's genuine synthetic module machinery beyond
+its original JSON-only evaluation path. `JS::CreateSyntheticModule` accepts
+unique string export names, native evaluation steps and a traced private value.
+`JS::SetSyntheticModuleExport` updates existing live bindings after linking.
+The module owns traced atoms/private state/evaluation Promise; namespaces and
+imports use the real engine module environment and graph. Public export names
+map to distinct local identifiers, including empty/numeric names and
+`*namespace*`, so they cannot collide with engine storage. JSON retains its
+original parser, type and evaluation path.
+
+The callback runs once and synchronously. Its Promise is published before
+embedding code can reenter, failures reject with the original exception, and
+source graphs propagate dependency failures. A reentrant graph cannot treat a
+still-evaluating synthetic dependency as complete. This is an engine API
+contract; the eventual native ModuleWrap must preserve Node's observable
+wrapper, status, callback receiver, error and Promise behavior separately.
+
+On the Node host, 15 guest controls passed with no host diagnostics, covering
+actual namespaces and live imports/reexports, dependency ordering/failure,
+top-level await, reentry, shared dependencies, arbitrary names, GC retention and
+the JSON path. The run enables the existing engine `--enable-import-attributes`
+parser option for JSON import syntax; the Node embedding must configure that
+capability before compiling sources that require it. All 14 original-context
+controls and 23 private-key controls also passed on the same artifact. The
+separate fatal-invariant regression retained its assertion, exit 132 and one
+expected host trap diagnostic.
+
+Three earlier package attempts failed on declaration ordering/header integration
+and a missing inline definition. One guest run recorded three control failures:
+the shell's intentionally hidden synthetic debug getters and disabled import
+attribute syntax. Corrected controls use actual link/evaluation/Promise
+operations and the real parser option; engine bytes did not change for that
+repeat. Full failures, final source/artifact identities and results are in
+`tests/nodejs/upstream/synthetic-module-engine-check.json` and its result receipt.
+
+```sh
+scripts/dev-shell.sh node_modules/.bin/tsx \
+  scripts/run-nodejs-private-key-controls.ts /absolute/path/to/js.wasm \
+  /absolute/path/to/new-report.json synthetic-modules
+```
+
+Four separate controls passed against the exact pinned native Node executable
+with `--experimental-vm-modules`. They include public VM reentry rejection,
+terminal error identity and distinct rejected Promises on repeated failed
+evaluation. They are reference observations, not guest/raw-engine equivalence.
+See `synthetic-module-native-reference.json` and `module-wrap-contracts.md`.
+The latter inventories the native ModuleWrap registration and prerequisites;
+full member/error/lifecycle and transitive-consumer coverage remains incomplete.
+
+The native ModuleWrap core below exists; there is no connected upstream realm/bootstrap yet.
+The original builtin source-text compiler helper, Node CJS/ESM entrypaths,
+browsers, complete native differential, security/OOM/finalization and startup
+remain unverified. The successful package emitted 16 compiler warnings and the
+existing instrumentation fallback diagnostic. No canonical image, full product,
+successor-ABI campaign rebuild or overall suite ran.
+
+## Native ModuleWrap core
+
+Revision 21 adds a canonical per-realm native binding with genuine ModuleWrap
+instances. Reserved slots trace engine records, callback state, dependency
+wrappers, host-defined identities and module-source objects. The existing
+canonical context carrier caches the binding; native constructor functions
+retain its private owner. Runtime module hooks route owned records to this
+binding and delegate other records to the prior shell hooks. No finalizer
+owns a persistent root back to itself.
+
+The core compiles complete UTF-16 source strings without rewriting them,
+retains parser request attributes, links ordered dependencies, creates real
+namespaces/live reexports and derives async-graph state from the linked
+dependencies. Attribute retention includes unknown values; the original engine
+unsupported-attribute error is preserved. Status values map explicitly to
+Node's constants. The synthetic callback receives its actual wrapper and is
+released before invocation. The first synthetic failure throws synchronously;
+later evaluation rejects with the same exception. Own lazy `hasAsyncGraph`,
+source pragmas, positive offsets, source-object identity and custom import.meta
+callbacks have bounded control coverage.
+
+Nineteen guest controls passed on the Node host, alongside six separate
+controls against the exact pinned native internal ModuleWrap binding. The
+guest checks include cycles, live imports, top-level await/sync refusal,
+original exception identity, separate realm bindings, GC retention and prior
+shell-hook delegation. Two isolated fatal controls preserve the constructor
+and once-only module-source-object assertions. The same artifact passed all
+15 synthetic-engine, 14 context and 23 private-key regressions, including the
+separate context fatal-invariant control. Expected assertion traps and host
+diagnostics are retained separately from successful runs.
+
+One earlier compile failed on two API mismatches. The first runtime candidate
+built but failed four controls: Boolean properties used an integer overload,
+and the engine discarded unknown attribute values before metadata storage.
+The corrected source and final identified artifact pass the controls. Exact
+input/artifact identities, earlier failures and raw results are in
+`tests/nodejs/upstream/module-wrap-engine-check.json` and its result receipt;
+native-reference evidence is in `module-wrap-native-reference.json`.
+
+```sh
+scripts/dev-shell.sh node_modules/.bin/tsx \
+  scripts/run-nodejs-private-key-controls.ts /absolute/path/to/js.wasm \
+  /absolute/path/to/new-report.json module-wrap
+```
+
+This remains a partial native binding. Dynamic import has the bounded core
+described below. Default import.meta
+URL/path/resolve handling, contextify admission, compile caches, required-ESM
+facades, positive deadlines and signal-interruption ownership are explicit
+unimplemented failures. Negative source offsets and embedded-NUL diagnostic
+URLs are also explicit gaps. Source/defer import phases and nested Wasm are
+not established by storing a module-source object. Full native differential,
+security/OOM/finalization, browser hosts and actual upstream startup remain
+unverified. No canonical image, full product, successor-ABI campaign rebuild
+or overall suite ran. The final package reported 16 warnings and the existing
+instrumentation fallback; no fork-behavior claim is made.
+
+## Native dynamic-import callback
+
+Revision 22 implements `setImportModuleDynamicallyCallback` and the engine
+handoff for ModuleWrap-owned evaluation-phase imports. The callback receives
+the original host identity, specifier, phase, frozen null-prototype attributes
+and compilation resource name, with an undefined receiver. Attribute values
+are validated by the engine; custom and numeric string keys reach the actual
+callback. Static unknown-attribute rejection and ordinary shell imports keep
+their existing paths.
+
+Node's callback returns a value, which may be a namespace, Promise, thenable
+or ordinary value. SpiderMonkey's original completion path instead expects
+an evaluated module from its resolver. The new opt-in engine hook preserves
+the callback-value contract: a fresh Promise in the referrer realm adopts the
+result and forwards settlement to the actual import Promise, without asking
+the static resolver to invent a module record. Native reactions trace pending
+completion state. A synchronous callback exception stops the source module;
+rejected callback Promises reject the import. Upstream JavaScript remains
+responsible for actual loader policy and module execution.
+
+Fourteen Node-host guest controls and twelve separate exact native internal
+binding controls pass. They cover arguments/resource identity, asynchronous
+thenable adoption, pending/foreign Promises, original rejection values,
+options conversion order, synchronous callback exceptions and actual namespace
+imports with top-level await. Guest controls additionally cover GC retention,
+per-realm registration/replacement and delegation to the ordinary shell
+loader. The same identified package passes 19 ModuleWrap, 15 synthetic-module,
+14 context and 23 private-key regression cases and their exposure/assertion
+drivers. Expected fatal traps are retained separately from successful runs.
+See `tests/nodejs/upstream/dynamic-import-engine-check.json` and
+`dynamic-import-native-reference.json` for identities and limits.
+
+Run the focused guest fixture with `dynamic-import` as the final argument to
+`scripts/run-nodejs-private-key-controls.ts`, using the command shape above.
+This does not establish script/contextify callback ownership, source/defer
+phases, browser behavior or upstream startup. Default metadata/resolver,
+cache/facade/interrupt backends and the complete backend catalog remain
+unfinished. The build reports the same 16 warnings and existing instrumentation
+fallback. No canonical image, full product, successor-ABI campaign rebuild,
+overall suite or fork-behavior validation ran.
+
+## Native Error stack core
+
+Revision 23 extends SpiderMonkey's existing native `Error.captureStackTrace`
+with an owned-realm policy before original primordials execute. It preserves
+actual saved frames, constructor trimming and capture-time limits, adds real
+own lazy accessors, caches any successful preparation result, retries thrown
+callbacks and guards recursive preparation across realms. Original shell
+realms retain their prior capture behavior. A canonical per-context WeakMap
+traces captures and prepared values without a finalizer-owned root cycle.
+
+The native errors binding stores and invokes the real bootstrap preparation
+callback with `(creationGlobalThis, error, trace)`. Both fatal enhancer
+callbacks have actual traced storage and a native phase dispatcher; the guest
+process's fatal-reporting path remains disconnected. CallSite objects expose
+actual saved-frame source/name/line/column and string formatting. Separate
+original-filename state is retained from active engine ScriptSources, so a
+`sourceURL` display name does not replace `getFileName()`. Unavailable historical
+filename metadata raises an implementation error. Additional
+receiver/function/eval/constructor/async/Wasm metadata remains explicit gaps;
+the implementation does not invent frame flags or placeholder receiver state.
+The native registration inventory and remaining methods are in
+`tests/nodejs/upstream/error-stack-contracts.md`.
+
+Twenty-one guest controls and eighteen separate pinned native reference
+controls cover the bounded core. The same artifact passes 85 existing engine
+regressions and their exposure/assertion drivers. The first compile failed a
+namespace assumption; the first runtime candidate failed two controls for
+pre-trim budgeting and the bootstrap global-this identity. Those source paths
+were corrected while retaining the assertions. Exact source/artifact inputs,
+logs and limitations are in `error-stack-engine-check.json` and its receipts.
+
+This is an engine/bootstrap prerequisite, not actual Node startup or complete
+stack compatibility. Realm/process/binding loader integration, CJS/ESM entry,
+browser hosts, full native/security/OOM/lifecycle differential and the complete
+backend catalog remain open. No canonical image, full product, successor-ABI
+campaign rebuild, overall suite or fork-behavior validation ran.
+
+## Original realm library loader
+
+Revision 24 executes the complete original `internal/bootstrap/realm` body
+with its original four arguments. The native realm owner is published before
+execution, retains the actual loader closures and preserves original thrown
+values and terminal failure. It reads primordials from protected context state.
+Its frozen builtins binding exposes the real registry and compiler; upstream
+JavaScript supplies the only builtin cache and exposure policy. Guest process
+metadata comes from actual uname/getpid/getppid calls through libc/kernel.
+Missing bindings, configuration and cache/source-text operations fail explicitly.
+
+Sixteen focused guest controls pass, including original internal/errors/assert
+execution, cache/loader identity, private symbols, real kernel-assigned PID,
+original moduleLoadList, builtin ESM facade evaluation, failed/reentrant
+initialization and separate realms with GC. The same package passes the 106
+prior stack/dynamic-import/ModuleWrap/synthetic/context/private-key cases.
+Twelve separate pinned native reference controls pass. Native private-loader
+access policy required the original modules helper; no upstream source or
+require implementation was substituted. See `realm-library-contracts.md` and
+`realm-library-engine-check.json` for exact identities and limitations.
+
+Principal bootstrap remains unfinished: the earlier complete-body diagnostic
+stopped on missing config; the native principal-body entry described below now
+reaches the missing timers binding through original internal/timers. This failure
+is recorded separately from successful realm controls. The process object,
+configuration, exit-info, Buffer, timers, async context and wider eager backend
+closure still need implementation. The complete catalog/roadmap, real user
+CJS/ESM startup and four-host evidence remain open. No canonical image, full
+product, successor-ABI campaign rebuild, overall suite or fork-behavior
+validation ran.
+
+## Native process and build configuration
+
+Revision 25 gives each realm process a distinct mutable native class prototype
+and empty-instance constructor. Non-constructor calls preserve actual effective
+receiver/global/boxing behavior. One runtime-owned Int32Array supplies the
+original hidden exit-info fields across realms, using checked compartment
+wrapping. Native util exposes the original field indices. Actual exit dispatch,
+full process metadata/environment and completion still need implementation.
+
+A per-realm config binding reports actual compiled engine/OpenSSL/Intl features,
+guest pointer width and selected standard web-bootstrap policy. The locale
+comes from the guest engine runtime. Native reference platform/V8 configuration
+is not copied; unsupported FIPS configuration and builtins JSON remain explicit
+errors. Inspector, tracing and NODE_OPTIONS integration are absent. See
+`process-config-contracts.md` for field ownership and current boundaries.
+
+The native owner calls the entire original internal/bootstrap/node body with
+protected process/require/internalBinding/primordials, records the actual body
+phase, and preserves terminal failure. This currently reaches missing timers
+rather than missing config. Node-body completion is separate from the remaining
+web/thread/ownership/env stages. Thirteen native-state controls, the 122 prior
+engine/realm cases and eight separate pinned native references pass; these
+include failure/retry tests, not successful startup. The first reference/guest
+attempts exposed incorrect receiver-return and cached-binding assumptions; the
+native implementation and control respectively were corrected while preserving
+the original JS cache. Exact artifacts/failures/limits are in
+`process-config-engine-check.json`. No user CJS/ESM or browser startup, full
+catalog, canonical products, successor-ABI campaign or overall suite is proven.
+
+## Native timer scheduler
+
+Revision 26 adds the native timer binding and an opt-in native shell-loop path.
+A runtime owns the actual single deadline, reference state, shared immediate and
+timeout arrays, real registered callbacks and principal process receiver. The
+clock uses guest CLOCK_MONOTONIC relative to environment creation. Integer
+conversion, deadline replacement/saturation, expiry return/ref semantics,
+reentrant scheduling, GC and foreign function ownership have focused controls.
+Public compatibility timer hooks do not supply this native path. Original
+internal/timers remains the JavaScript queue and policy implementation.
+
+Twenty-three guest binding/loop controls and 135 existing cases pass on the
+same package, with natural-exit and isolated fatal-invariant drivers. Sixteen
+separate native reference controls cover direct binding behavior, isolated
+unref-only natural exits and fresh-loop phase order. An initial ordering test
+assumed that independently queued timers/immediates always have one order;
+that assumption was corrected against native behavior. A separate replay then
+confirmed and fixed stale native phase state between drains. Exact artifacts,
+source identities and failures are in timers-engine-check.json; contracts and
+remaining callback/phase boundaries are in timers-contracts.md.
+
+The original principal-node body now passes timers and stops at task_queue.
+Native callback-scope/async/tick/fatal retry, full Node/libuv phase semantics,
+public timer/module compatibility, process exit dispatch, actual user CJS/ESM
+startup, browser hosts and the complete catalog remain unfinished. Full products,
+successor-ABI campaign rebuilds and overall suites remain deferred.
+
+## Standalone libuv foundation
+
+The initial libuv package builds the exact 1.52.1 sources bundled in the pinned
+Node archive through the normal resolver and the true Kandelo CMake toolchain.
+The standalone libuv release differs in four C files; its bytes were compared,
+not silently adopted. The port selects upstream POSIX poll/monotonic-clock
+backends and exports their public loop layout through CMake/pkg-config. A typed
+pthread wrapper replaces upstream's incompatible void/pointer-returning callback
+cast, with explicit child/caller allocation ownership. No kernel, libc, SDK or
+Node JavaScript source change was needed.
+
+Thirteen focused controls pass on Node, Chromium, Firefox and WebKit using the
+same probe and ABI-56 kernel bytes. They cover empty loops, timer deadlines and
+repeat/ref/close state, prepare/check phases, actual cross-thread async wakeups,
+thread-pool work, pipe readiness, asynchronous file write/read effects and
+errors. Two controls check honest unsupported boundaries: filesystem event
+watching and process titles return ENOSYS. This is initial loop evidence, not
+complete libuv conformance or Node startup. The archive defines 308 of 318 public
+function declarations; ten OS resource/interface/executable-path functions
+remain missing and fail to link. Socket/DNS/spawn/signal/cancellation/fork/OOM
+and complete lifecycle behavior remain unvalidated.
+
+The checks used empty guest filesystems. No partial/canonical product image or
+overall suite was built/run. The browser image-builder helpers were provisioned
+through their normal focused build. An initial ordinary browser setup began
+unrelated historical ABI-56 fixture/tool provisioning; it was stopped before
+cohort publication. No pinned ABI-55 or ABI-56 cohort artifacts were published;
+temporary ABI-56 build outputs remain under target/program-baseline.
+Subsequent focused setup avoids that provisioner. Earlier browser harness
+errors/timeouts and the actual pthread trap remain recorded. The passing browser
+run reports a separate host cleanup warning: macOS denied removal of the owned
+Firefox Downloads directory; guest stderr and host diagnostics are empty.
+
+Node's revision-26 embedding still uses its existing native scheduler and still
+stops on task_queue during the original principal body. Next adapt that scheduler
+to the verified libuv loop/handles, retain native realm/GC/callback ownership,
+and implement genuine task-queue/async callback scopes. Wider libuv support
+belongs in the backend catalog and ordered roadmap; it is not implied by these
+controls. Exact artifacts, inputs, source comparison, failures and limits are in
+[libuv-backend-engine-check.json](../tests/nodejs/upstream/libuv-backend-engine-check.json).
+
+## Native timers integrated with libuv
+
+Revision 27 links the normal resolved libuv 1.52.1 package (revision 3) and uses
+real loop, timer, check and idle handles. The native deadline/ref/PreferImmediate
+slots and custom phase selection are removed. Time, deadlines, liveness and
+phases now come from libuv. The native-only path blocks in UV_RUN_DEFAULT;
+existing non-libuv native watches retain an explicit NOWAIT/shell-poll bridge.
+The ordinary compatibility bootstrap and its timer path remain separate.
+
+Callbacks, shared arrays, principal process and realm remain traced in protected
+JS slots. Native data borrows only a stack root while uv_run executes. Timer and
+check callbacks run actual engine job checkpoints; foreground finalization
+closes initialized handles and their native loop without calling JS. Failed
+callbacks stop the loop and preserve their exception; shell quit status is also
+preserved. Full Node callback scopes, AsyncWrap/ticks/rejection/fatal routing and
+complete lifecycle/security/OOM behavior remain unfinished. Public handle sizes
+are checked before libuv writes native state. The explicit Kandelo header
+selector takes precedence over ambient legacy SpiderMonkey Linux macros; the
+libuv library itself uses the true Kandelo target. SpiderMonkey's wider target
+configuration debt remains open.
+
+Twenty-seven timer binding/loop controls pass on each of Node, Chromium, Firefox
+and WebKit using identical engine/kernel bytes, including moving GC during a
+callback checkpoint and outstanding immediate batches. Natural unref exits and
+callback quit status pass separately on all four hosts. On Node, the same
+artifact also passes the 135 prior cases and their drivers; six expected fatal
+assertions retain their diagnostic/error exits. Eighteen pinned native timer
+reference controls pass separately. These are binding/engine controls, not
+successful original public timers or Node startup.
+
+The initial patch build failed because short context let patch place the
+checkpoint before its dependencies; the corrected patch uses actual loop
+context. The first guest run then exposed a former scheduler test's incorrect
+same-drain assumption: the pinned native executable also services a reentrant
+zero-delay timer after its first callback unrefs it. The corrected fixture tests
+both that native phase behavior and future reentrant scheduling. No engine code
+was changed to force the old expectation. The first browser run failed in the
+harness's inspector-body hashing of the large response. The final runner hashes
+the exact consumed ArrayBuffer in-page and uses the normal resolver's file
+approval. Those failed attempts remain retained. The passing browser run still
+reports a separate macOS permission warning cleaning its owned Firefox profile.
+
+Original principal bootstrap still stops on task_queue at internal/timers:92;
+original stack-limit policy still reaches missing constants. User CJS/ESM entry,
+output/error/exit startup acceptance and the full backend catalog remain open.
+No partial/canonical product images, full product/ABI campaigns or overall suites
+ran. Exact inputs, artifacts, per-host results, failures and limits are in
+[timers-libuv-engine-check.json](../tests/nodejs/upstream/timers-libuv-engine-check.json).
+
+The next startup seam is cataloged in
+[task-queue-contracts.md](../tests/nodejs/upstream/task-queue-contracts.md).
+Selected Node-host probes confirm actual shell queue FIFO, nested suppression
+and promise event identity, but also two integration gaps: job exceptions use
+shell reporting/error exit rather than Node's fatal policy, and nested shell
+checkpoints clear kept objects during the active job. Six pinned native
+reference controls cover the corresponding binding contracts separately.
+These are measured prerequisites and gaps, not a task_queue implementation or
+startup success. Native Node callback/error routing and checkpoint ownership
+must address them while preserving the real engine queue and unchanged JS
+tick/rejection policy. No new browser queue probe or package rebuild belongs
+to this source inventory; earlier four-host timer evidence remains separate.
+
+## Native task queue checkpoints
+
+Revision 28 adds the actual native task queue state/registrations and engine
+enqueue/checkpoint path. Traced native job adapters retain arbitrary callables
+without a shadow FIFO or Promise wrapper. Native and shell nested checkpoints
+check the engine's real drain state before kept-object cleanup. The shared
+Uint8Array flags drive the retained original tick callback with the principal
+process receiver, separately from microtask-only entry.
+
+The native owner receives job errors through the script-environment preparer
+and can invoke the actual mutable process `_fatalException` callback. Real
+promise/reason identities and handler-added events reach the retained rejection
+callback. Full native AsyncWrap IDs/resources/frames, original public rejection
+policy, common callback scopes and fatal exit/at-exit remain incomplete.
+Assigned promise contexts and active module-evaluation checkpoints fail
+explicitly; unhandled/false/throwing fatal policy preserves the actual failure.
+
+The first integrated bootstrap exposed absent `errors.exitCodes`. Importing
+the complete pinned native header and expanding its enum supplies all fourteen
+constants and native property attributes, matching the pinned executable.
+The imported set is now 494 files; every previous record and all 443 registered
+JavaScript bodies remain unchanged. This does not establish process-exit support.
+Original principal bootstrap now stops on `async_wrap` through internal/async_hooks;
+the separate original stack-policy probe still stops on constants.
+
+Twenty-six task queue/enum controls pass on each host with identical
+engine/kernel bytes. The same artifact passes the prior 162 Node cases, with
+all eleven expected fatal controls retaining error exits/diagnostics. Six pinned
+native queue references pass separately. The first failed build, initial
+24-of-25 control run and intermediate bootstrap TypeError remain retained.
+The browser run also retains its macOS cleanup permission warning. These are
+raw binding/checkpoint results, not successful empty/simple or CJS/ESM startup.
+Full product/images/ABI campaigns and overall suites remain deferred. See
+[task-queue-engine-check.json](../tests/nodejs/upstream/task-queue-engine-check.json)
+for exact identities, per-host results, failures and limits.
+
+## Native async state and original internal hooks
+
+Revision 29 adds partial native `async_wrap` state and the canonical `symbols`
+binding. The complete original internal/async_hooks body executes through the
+existing realm loader. Actual runtime-owned fields, IDs, stack and resources
+support native and original-JS stack operations; registered hook/trampoline
+functions and owners are traced. The existing Promise rejection callback now
+pushes actual assigned IDs and the actual Promise resource, then conditionally
+restores context, including after callback failures or stack reset.
+
+The importer adds complete original src/env.h, src/async_wrap.h and
+src/async_wrap.cc. All previous 494 records and all 443 registered JavaScript
+bodies (10,993,403 bytes) remain unchanged; the import now contains 497 files.
+Thirteen API enum constants and the provider names come from verified complete
+native declarations. Constructor state follows the native constructor, not a
+post-bootstrap native snapshot. Provider names are not resource implementations.
+
+Twenty selected controls pass on each of Node, Chromium, Firefox and WebKit
+using identical engine/kernel bytes. The same artifact passes 188 prior Node
+cases. Nine shared assertions pass on the verified pinned native Node executable;
+thirteen constants and 69 provider values match. Nineteen expected fatal Node
+controls retain diagnostic/error exits across 73 process drivers. The first
+18-of-20 result, failed rooting build and copied browser count assertion remain
+recorded separately. Browser cleanup retains its macOS permission warning.
+
+Requested Promise lifecycle hooks, GC destroy observers and observer-enabled
+destroy delivery still fail explicitly. Common native callback scopes,
+continuation frames, complete fatal/exit lifecycle and full async resource classes
+remain unfinished. Original principal bootstrap now reaches missing constants in
+internal/util:62 through internal/validators:35 and internal/timers:120. Complete
+empty/simple/CJS/ESM startup and the full catalog remain unproven. No product images,
+full product/successor-ABI campaigns or overall suites ran. Exact artifacts and
+limits are in [async-wrap-engine-check.json](../tests/nodejs/upstream/async-wrap-engine-check.json);
+contracts and next work are in [async-wrap-contracts.md](../tests/nodejs/upstream/async-wrap-contracts.md).
+
+## Original native constants initializer
+
+Revision 30 compiles complete original node_constants.cc/node_constants.h through
+an actual SpiderMonkey property builder. It registers the original native
+initializer and creates per-realm cached null-prototype tables with original
+attributes. All 425 definitions come from original native declarations and actual
+target headers. Compression metadata derives 171 export operands and original
+enum/limit declarations; no upstream JavaScript or compression algorithms change.
+The imported set is 509 files; every prior 497 record and all 443 JS bodies remain
+unchanged. Pinned Brotli headers supply declarations only, not a Node backend.
+
+An independent C guest probe exposed missing zstd_errors.h in libzstd's outputs
+and unintended Mozilla bundled-zlib header precedence. The library now installs
+its matching public header; decoder archive bytes remain unchanged. The Node
+constants source explicitly uses the declared compression dependency headers.
+Actual codec symbol/version and operational integration remain future work.
+
+Ten constants controls, 43 target-header comparisons and four filesystem flag/errno
+effects pass on each host using identical artifacts. The engine also passes 208
+prior Node cases; 80 selected process drivers retain 19 expected fatal controls.
+Six shared native references pass; 348 values match the native snapshot and 90
+OS/dependency/configuration differences remain explicit. No Darwin values are
+substituted for target values. Original bootstrap now reaches missing types at
+internal/util:73; no complete upstream startup or full graph catalog follows.
+
+Exact source/artifact identities, failed builds, incorrect header selection,
+reference/probe fixture failures and limits are in
+[constants-engine-check.json](../tests/nodejs/upstream/constants-engine-check.json).
+Contracts and next work are in
+[constants-contracts.md](../tests/nodejs/upstream/constants-contracts.md).
+No product images, full products, successor-ABI campaigns or overall suites ran.
+
+## Native engine type predicates
+
+Revision 31 supplies all 26 native `types` exports using actual SpiderMonkey
+object classes and function flags. A strict generator derives export names from
+the complete byte-verified native source; original JavaScript remains unchanged.
+Predicates do not inspect public tags, constructors or prototypes. Checked engine
+wrappers preserve foreign native identity; scripted/revoked proxies do not unwrap
+or invoke handlers. Genuine module namespaces are distinguished from scripted
+proxies. The real borrowed-pointer External carrier has a private class, null
+prototype and no extensibility; it is not a Node resource handle or Node-API
+implementation. Traced functions retain their realm and reject after its failure.
+
+Twenty-one focused controls pass on Node, Chromium, Firefox and WebKit with
+identical engine/kernel bytes, including execution of the complete original
+`internal/util/types` module. All 86 shared-value classifications match the pinned
+native executable; thirteen shared native controls pass separately with a genuine
+External addon. The same engine passes 218 prior cases on Node, including nineteen
+expected fatal controls. The browser drivers preserve natural job exit, requested
+quit status and the original unhandled job error. Selected controls cover moving
+GC, cross-realm values, intrinsic typed-array getters and failed-realm isolation.
+Complete denied-wrapper/OOM/teardown/ShadowRealm equivalence remains unproven.
+
+The original principal body and stack-policy probe now reach missing `options`
+at `internal/options:20`, from `internal/util:74`; original typed NodeError
+construction still succeeds. Ordinary public startup remains the compatibility
+bootstrap. Empty/simple and separate CJS/ESM startup acceptance, the full backend
+catalog and broader implementation roadmap remain open. Initial include-style
+and native fixture failures are retained, along with the existing browser cleanup
+permission warning and Mozilla targeting/fork limitations. No product images,
+full product or successor-ABI builds, or overall suites ran. Exact evidence and
+partial contracts are in [types-engine-check.json](../tests/nodejs/upstream/types-engine-check.json)
+and [types-contracts.json](../tests/nodejs/upstream/types-contracts.json).
+
+## Original native options parser
+
+Revision 32 compiles the complete original native options parser, storage,
+validation and serializers unchanged, with the original libuv mutex header.
+A private API adapter marshals actual rooted SpiderMonkey values and real
+realm/profile state. It emits no JavaScript or function excerpts. Seven original
+methods and both readonly enum inventories are registered by the original native
+initializer; the complete original `internal/options` module executes.
+
+Six queries preserve ERR_OPTIONS_BEFORE_BOOTSTRAPPING until genuine complete
+bootstrap. No test override opens that phase. Real native guest invocation inputs
+are parsed before realm.js; explicit private profile controls exercise the same
+original parser and real storage without claiming startup. Unimplemented engine,
+config/security/file adoption and memory queries fail explicitly. Kernel sysinfo
+placeholders are not published as actual available memory. Full CLI adoption and
+post-bootstrap metadata equivalence remain unfinished.
+
+Fourteen selected controls pass on each of Node, Chromium, Firefox and WebKit with
+identical engine/kernel bytes; six shared native controls pass separately. Seven
+additional Node profile drivers preserve actual errors and unsupported boundaries.
+The same engine passes 239 prior Node cases. A separate complete-source C++ probe
+has identical 23-case observations on all four hosts, with 114 selected native
+value comparisons, ten matching errors and 152 common environment metadata entries.
+Inspector/FFI build differences and raw namespace versus schema filtering are
+recorded. These remain component controls, not successful upstream startup.
+
+Method registration now follows original Set-before-name ordering and inherited
+setters. Setter failures remain fatal; name inspection during that late mutation
+fails explicitly until engine tracking is implemented.
+
+The original principal and stack-policy probes now reach missing `string_decoder`;
+typed NodeError construction still succeeds. Empty/simple and separate CJS/ESM
+startup, the full backend catalog and roadmap remain open. No product images,
+full products, successor-ABI builds or overall suites ran. Full evidence, failures
+and partial contracts are in [options-engine-check.json](../tests/nodejs/upstream/options-engine-check.json)
+and [options-contracts.json](../tests/nodejs/upstream/options-contracts.json).
+
+## Decoder dependency inventory
+
+The `string_decoder` partial catalog records
+ten original exports, two literal native consumers and eight literal public-module
+consumers, including the lazy TextDecoder path. The original decoder stores its
+streaming state in actual guest buffer bytes and calls the native StringBytes
+codec layer. An encodings table alone does not implement that binding.
+
+The initial inventory retained thirteen native controls and 280 selected
+chunk/output/state records. Its separate compile-only codec preflight remains
+historical evidence; the linked revision-33 integration is described below.
+
+The catalog distinguishes native view/string ownership from the still incomplete
+public Buffer closure. Archived codec
+regression requirements and retained-allocation owners are reuse candidates;
+the old handwritten public codecs are excluded. See
+[string-decoder-contracts.json](../tests/nodejs/upstream/string-decoder-contracts.json)
+and [string-decoder-native-reference.json](../tests/nodejs/upstream/string-decoder-native-reference.json).
+
+## Resolved native codec dependencies
+
+The normal resolver now builds nbytes 0.1.4 and simdutf 7.7.0 from the exact
+audited Node archive. nbytes uses upstream CMake with optional C++ module scanning
+disabled for its non-module sources. simdutf builds the complete V8-vendored
+amalgamation. Both packages retain original headers/licenses, declare libcxx and
+use the true Kandelo SDK target. Their installed pkg-config metadata is relocatable.
+
+A consumer linked from relocated package copies passes seventeen selected controls
+on Node, Chromium, Firefox and WebKit with identical guest program/kernel bytes.
+The controls cover Unicode validation/conversion, surrogate replacement, base64
+and bounded output, Node byte primitives and actual implementation selection.
+These are native library controls, not the SpiderMonkey Node runtime or complete
+codec conformance. No product image or supported-package-set entry is added.
+
+The earlier declaration-only preflight compiled the complete original decoder
+and StringBytes translation units. Those historical objects do not establish
+runtime behavior. Exact artifacts, inputs, failed attempts
+and limits are in [native-codec-engine-check.json](../tests/nodejs/upstream/native-codec-engine-check.json).
+
+## Original native decoder and StringBytes integration
+
+Revision 33 links both resolved codec libraries and executes the complete,
+unchanged original decoder and StringBytes translation units. Six whole native
+files are staged byte-identically. The complete original encoding enum and three
+error type/code/message records supply verified metadata; no codec algorithm or
+JavaScript function is extracted. All prior 516 imported records and all 443
+JavaScript source records remain unchanged.
+
+The engine bridge owns real rooted values, typed callback metadata and actual
+ArrayBufferView storage, including view offsets, shared memory, aliasing and
+resizable buffers. It stabilizes inline backing storage before pinning lengths
+and restores only pins acquired by the current owner. Strings use actual engine
+allocation and external-string finalizers. Per-runtime shared native state keeps
+external-resource accounting alive until final disposal without permanent JS
+roots or JavaScript callbacks from finalizers.
+
+Twenty-two binding controls pass on Node, Chromium, Firefox and WebKit using
+identical engine/kernel bytes. Sixteen shared controls, export descriptors and
+280 chunk/output/state records match the authenticated native Node reference.
+Additional controls collect during native borrows, retain cached functions across
+GC, use cross-realm views and observe external Latin1/UTF16 resource retirement.
+Three invalid-state/input drivers retain fatal exits on Node. This is bounded
+native binding evidence; public StringDecoder and complete Buffer behavior are
+not established.
+
+The same artifact passes all 253 prior Node-host engine cases. Across these
+selected engine checks there are 341 case observations, 95 process drivers and
+24 expected fatal exits. Browser job-draining/error/quit-status drivers also
+pass. The browser harness retained its storage after reporting WebKit still
+running; the cleanup warning is separate from empty guest/host diagnostics.
+
+The initial aliasing failure came from calling the engine's stabilization helper
+on already pinned out-of-line storage; the bridge now inspects the actual storage
+kind first. A later GC trap narrowed to resizable storage. Engine patch 0040
+preserves full maximum capacity and zero-filled growth when converting inline
+storage. This is tracked as the suspected
+[resizable-buffer capacity defect](../tests/runtime-workarounds/FIREFOX-RAB-NONINLINE-CAPACITY/entry.md).
+An authenticated unmodified Mozilla 140.11.0 native shell did not crash on the
+first reduced case; that outcome is retained and the defect is not called confirmed.
+
+The revision-33 principal bootstrap and original stack-limit policy reached
+`TypeError: can't access property "openssl", process.versions is undefined`
+at `node:internal/util:78`. The next prerequisite is a truthful native versions
+provider from actual source/build/library identities. Buffer allocation/prototype
+support, complete StringBytes Write/Size coverage, OOM/security/worker teardown
+and complete graph reconciliation remain open. No partial/canonical image, full
+product, successor-ABI campaign or overall suite ran. See
+[decoder-engine-check.json](../tests/nodejs/upstream/decoder-engine-check.json).
+
+## Native process version metadata
+
+Revision 34 initializes `version` and `versions` on the actual initial realm
+process through the native embedding. The complete original `node_version.h`
+supplies source-version data. Four whole upstream process/metadata files are
+admitted for provenance and contract review; the original V8-dependent metadata
+constructor and process factory are not claimed as executed. No upstream
+JavaScript or native function excerpt is substituted.
+
+The provider reports the actual SpiderMonkey implementation, resolved libuv,
+OpenSSL, zlib, zstd, nbytes and simdutf, plus the engine's ICU, Unicode, CLDR and
+timezone data. Unsupported V8, addon ABI, Node-API and Amaro entries remain
+absent. Imported vendored sources do not enable their runtime features. Ordinary
+data properties retain the native reference's read-only/configurable/enumerable
+attributes, node-first ordering and ordinary mutable object prototype. Each
+initial realm process owns its own metadata; constructor instances remain empty.
+
+The first link exposed Mozilla's omission of the declared CLDR-query API. The
+build now compiles the complete unchanged ICU `ulocdata.cpp` unit and queries
+the installed data. The first runtime comparison then exposed Mozilla's exported
+prefixed zlib header selecting its internal 1.3.2 library. The embedding now stages
+the resolver's complete `zlib.h`/`zconf.h` pair and calls its actual 1.3.1 library,
+matching the embedding's dependency and native constants. Mozilla's own prefixed
+zlib remains separate. Neither failure is hidden by a copied version string.
+
+Twelve metadata controls pass on Node, Chromium, Firefox and WebKit using
+identical engine/kernel bytes. Four native reference controls verify property,
+constructor and collection behavior separately. The same engine passes all 275
+prior Node cases: 323 selected engine case observations, 98 process drivers and
+24 expected fatal exits overall. The browser harness reports a separate macOS
+permission warning cleaning its Firefox Downloads directory.
+
+Original `internal/util` now executes, including encoding normalization and
+actual crypto/TypeScript capability checks. Principal bootstrap reaches missing
+`icu` at `internal/util/inspect:2958`; original stack-limit policy reaches missing
+`mksnapshot` at `internal/v8/startup_snapshot:19`. Typed original Node errors still
+return. Empty/simple, CJS/ESM and browser startup acceptance remain unfinished.
+
+The metadata syntax index parses all 443 original JavaScript sources and records
+22 references with conservative alias handling. This is not complete dataflow,
+worker, lazy or exceptional-path reconciliation. Full process metadata, remaining
+native binding closure and the full backend catalog/roadmap remain open. No full
+product, image, successor-ABI rebuild or overall suite ran. See
+[process-versions-contracts.json](../tests/nodejs/upstream/process-versions-contracts.json),
+[process-versions-consumers.json](../tests/nodejs/upstream/process-versions-consumers.json)
+and [process-versions-engine-check.json](../tests/nodejs/upstream/process-versions-engine-check.json).
+
+
+## Complete original native ICU binding
+
+Revision 35 compiles the whole unchanged `src/node_i18n.cc` and
+`src/api/encoding.cc` against the private rooted SpiderMonkey API. The original
+per-isolate initializer installs all six binding exports and the actual
+Converter template; the original per-context initializer runs too. The width
+algorithm, encoding parser and streaming/BOM/error policy remain upstream C++.
+Five complete source/header additions bring the manifest to 532 files; all 527
+previous records and all 443 JavaScript sources remain unchanged. Original
+`util-inl.h` and `node_internals.h` are provenance for helper contracts, rather
+than claimed executed factories.
+
+Each Converter is a real engine object owning the original native
+`ConverterObject` and guest ICU `UConverter`. Its construction root becomes weak,
+its owning realm remains traced, and foreground finalization retires its pointer
+before deleting it and closing ICU state. Moving GC preserves live converters;
+a failed owner cannot be bypassed through another realm's active decode
+function. Binding callbacks retain their actual realm and template. Per-call
+buffer roots retain actual views, offsets and shared/resizable storage; previous
+pin states are restored. Logical stack-buffer lengths now follow the complete
+original helper contract. Callback return slots start as undefined after rooting
+the engine callee, preserving original early returns.
+
+Twenty-three controls pass on each of Node, Chromium, Firefox and WebKit using
+identical engine/kernel bytes. Fifteen shared controls, 68 selected width records
+and eight streaming records match the authenticated native reference. All 287
+prior Node cases pass on this artifact. The aggregate is 379 selected case
+observations, 104 process drivers and 27 expected fatal exits. Six source-stage
+integrity controls pass. The browser harness retains its separate macOS
+permission warning removing its owned Firefox Downloads directory.
+
+This is partial ICU binding support. Mozilla's selected ICU configuration sets
+`UCONFIG_NO_LEGACY_CONVERSION=1`: windows-1252, shift_jis, gb18030, koi8-r and big5
+are unavailable where the native reference supports them. These five differences
+are recorded as build gaps, not browser limits or matching controls. Successful
+transcode needs the missing original Buffer allocation/prototype backend and
+throws an explicit unsupported error; no Uint8Array substitutes for Buffer.
+Unexercised encoding helper paths, reentrant resize/detach, OOM/security/full
+teardown, data-version coverage and complete public TextDecoder/Buffer
+compatibility remain open. Snapshot external-reference serialization is not
+implemented by this source-mode embedding.
+
+The first build failed on missing declaration glue. Runtime checks then exposed
+an incorrect width expectation, an uninitialized callback return slot and a
+failed-owner admission bypass; the native comparison and pre-fix failures remain
+retained. Original `internal/util/inspect` now executes, including its ANSI/NFC
+width helper. Principal bootstrap stops honestly on missing `trace_events` at
+`internal/trace_events:8` through `internal/util/debuglog:25`; original stack-limit
+policy still stops on `mksnapshot` at `internal/v8/startup_snapshot:19`. Typed
+original Node errors return. Complete empty/simple and separate CJS/ESM startup,
+full graph catalog and ordered roadmap remain unfinished. No image, full product,
+successor-ABI campaign or overall suite ran. See
+[icu-contracts.json](../tests/nodejs/upstream/icu-contracts.json) and
+[icu-engine-check.json](../tests/nodejs/upstream/icu-engine-check.json).
+
+
+## Standalone tracing library prerequisite
+
+The missing trace-events binding needs a real controller, native agent and
+engine extra-binding functions. The new `v8-tracing` package provides the first
+prerequisite: seven complete original translation units for the Node-bundled V8
+controller, config, event object, ring buffer, JSON writer, fatal logging and
+abort mode. The component version 14.6.202.34 comes from the audited archive's
+V8 version header; it does not identify a running V8 JavaScript engine and does
+not add `process.versions.v8`.
+
+The native target-header patch recognizes Kandelo/wasm32 explicitly. Private
+clock, process/thread ID, printing and termination facilities call guest
+libc/kernel APIs. The mutex adapter uses the whole original Node `node_mutex.h`
+over resolved libuv. Category matching, enabled bytes, observer transitions,
+copy/convertable ownership, ring handles and JSON serialization remain original
+library algorithms. No upstream JavaScript changed, and the existing 532 source
+records remain identical.
+
+Nine controls pass on each of Node, Chromium, Firefox and WebKit with identical
+program/kernel bytes. Two compile-only checks verify actual target identity and
+precedence over the existing embedding Linux macro. The initial selector was
+placed in the feature-header block; the new check exposed that mistake, and the
+corrected OS detector now takes precedence. Relocated CMake and pkg-config consumers pass separately
+on Node: 54 selected case observations across six guest processes. The first
+relocation check exposed libuv's installed pkg-config file retaining its original
+cache prefix. Revision 4 fixes that metadata; its runtime archive is byte-identical
+to revision 3. The initial compiler-driver error, unsupported target/missing Abseil
+probe, incomplete private declarations and relocation failure remain retained.
+The first browser run retained storage because WebKit was still running; the
+final run reports a separate Firefox profile-cleanup permission warning.
+
+At this standalone checkpoint the library was not linked into SpiderMonkey.
+Original Node agent/writer/buffer classes, trace binding, engine intrinsics,
+per-environment handler and native external byte ownership were incomplete. The original controller uses
+process-global category storage, which must outlive every future guest JS view.
+Broader file/rotation/error, clocks, locking, cancellation, OOM/security and
+process/worker teardown behavior remain unproven. The existing engine was not
+rebuilt this phase: its identified ICU evidence remains separate, principal
+bootstrap still stops on trace_events and stack-limit policy on mksnapshot.
+No product images, full products, successor-ABI builds or overall suites ran.
+See [trace-events-contracts.json](../tests/nodejs/upstream/trace-events-contracts.json)
+and [v8-tracing-component-check.json](../tests/nodejs/upstream/v8-tracing-component-check.json).
+
+## Original native tracing agent integration
+
+The revision-36 engine links the resolved standalone tracing library and six
+complete original Node translation units: `agent.cc`, `agent_legacy.cc`,
+`node_trace_buffer.cc`, `node_trace_writer.cc`, `traced_value.cc` and
+`trace_event_helper.cc`. The import now contains 549 authenticated files;
+all 532 prior records and all 443 JavaScript sources remain unchanged. The
+native `node_trace_events.cc` and V8 `builtins-trace.cc` are imported for the
+next binding step, but are not compiled by this checkpoint.
+
+One process owner supplies actual dependency versions from the same native
+provider as `process.versions`, and tracing configuration from the complete
+original options parser. It never reads mutable JavaScript version properties.
+The source agent owns its real libuv worker, buffer, asynchronous writer and
+guest trace files. An explicit main-thread hook removes native observers and
+destroys the agent before destroying the JavaScript context, so finalizers
+cannot become responsible for joining a tracing worker. The process owner
+cannot be recreated after shutdown. Permission-policy adoption and changes to
+the process tracing profile remain explicit errors.
+
+Nine agent controls pass on Node, Chromium, Firefox and WebKit with identical
+engine/kernel bytes. They read actual guest trace files and cover metadata
+independent of mutable JS properties, category selection, moving GC, explicit
+shutdown, natural exit, quit status, uncaught errors, immutable options and
+failed-realm/permission admission. The final engine also passes all 310 prior
+Node cases: 346 selected engine observations across 128 guest processes,
+including 27 expected fatal assertion exits. Three pinned native CLI controls
+independently check trace metadata and exit/error flushing. These are native
+agent/engine controls; they do not execute the original trace-events binding.
+
+Failed attempts remain recorded. The first build exposed a C++20 header leaking
+into Mozilla's C++17 shell; the shutdown-only header fixes that boundary. The
+next build exposed include-order errors. Initial fixtures wrote to the read-only
+guest root, received EROFS and timed out during writer shutdown. The corrected
+fixtures explicitly select writable guest `/tmp`. File-open failure handling
+remains an open investigation, with its timeout and syscall evidence retained.
+Later checks caught the adapter's hardcoded platform label and incorrect test
+snapshot boolean: tracing now reads actual guest `uname`, and the test property
+uses a real JS boolean. Two fixture assumptions about repeated/empty options
+were corrected to match the actual parser. The final browser run reports a
+separate Firefox profile-cleanup permission warning; guest diagnostics and
+browser errors are empty.
+
+The original V8 trace builtin preserves lone UTF-16 surrogates as WTF-8.
+SpiderMonkey's usual UTF-8 helper replaces them. A separate guest probe compiles
+the complete original V8 encoder header and passes six encoding controls;
+three actual pinned native builtin/file-byte checks confirm surrogate encoding.
+This supplies a verified primitive for the next binding step, but is not yet
+adopted in the engine. No upstream algorithm was extracted or rewritten.
+
+This integration does not provide the original trace-events binding, V8 extra
+functions, `CategorySet` constructor, external category-byte views or the
+per-environment JavaScript observer. Principal upstream bootstrap still stops
+on `trace_events`; stack-limit policy still stops on `mksnapshot`. The broader
+backend catalog, public module compatibility and genuine CJS/ESM startup remain
+open.
+
+No product images, full products, successor-ABI builds or overall suites ran.
+See [trace-agent-engine-check.json](../tests/nodejs/upstream/trace-agent-engine-check.json)
+for exact inputs, artifacts, checks and retained failures.
+
+## Original tracing binding and engine intrinsics
+
+Revision 37 compiles complete, unchanged `node_trace_events.cc` and
+`builtins-trace.cc`. Three additional original Unicode/UTF-8 decoder headers
+bring the authenticated import to 552 files; all 549 prior records and all
+443 JavaScript sources remain unchanged. The encoder uses the complete
+original V8 implementation, including its WTF-8 policy. No upstream function
+body was extracted or rewritten.
+
+The shared native value bridge now supplies actual rooted functions, arrays,
+receivers, constructors and prototype methods. CategorySet objects retain
+their real native source owner and traced realm; weak finalization deletes
+that owner once. Actual external ArrayBuffers expose the controller's stable
+category bytes directly. Their deleters retain native process state, while
+foreground process shutdown remains responsible for removing observers,
+flushing the source writer and joining its worker. Collecting a view never
+joins a tracing thread.
+
+The original intrinsics validate their own arguments and emit their own
+TypeErrors. JSON traversal uses SpiderMonkey's actual ToJSON operation,
+preserving getters, toJSON, reentrancy, cycles, BigInt and thrown identities.
+The original trace payload owns the converted bytes. One traced environment
+observer retains the current handler across realm replacement and moving GC,
+checks actual principal/callback-owner state and invokes the real synchronous
+controller notifications. The privileged test teardown control rejects calls
+from an active tracing stack, preventing a JSON getter or observer from
+removing the agent beneath an original native call.
+
+Twenty-one shared controls and the trace file's category/name/phase/id/data
+projection match the pinned native Node reference. Twenty-nine binding and
+ownership controls, five source-fatal assertion drivers and three real exit
+flush/status drivers run on each host. They exercise long Unicode names,
+32-bit numeric conversions, original internal/trace_events execution,
+constructor/receiver shape, live flag aliases, cross-realm ownership, observer
+replacement, failed-owner retirement and native finalization. The same engine
+also passes the prior 310 Node controls and nine native-agent controls.
+Expected native aborts and browser Wasm-trap diagnostics remain recorded.
+
+The first build exposed libuv's NO_DATA macro colliding with SpiderMonkey's
+buffer enum. A declaration-order prelude loads the actual buffer types before
+libuv; no OS identity or upstream source change fixes this. Later builds
+caught a const override mismatch and include ordering. Test failures include
+an uninitialized private file reader, one added fixture syntax error, stale
+hasTracing metadata expectations, and browser-specific intentional-trap console
+text. Retained reports distinguish each attempt from the corrected checks.
+
+The original principal body now stops at `async_context_frame:10`, through
+`internal/timers:130`. The stack-limit policy still requires `mksnapshot`.
+Original public trace_events also depends on the unfinished worker closure;
+these controls do not establish public compatibility. Native verbose observer
+exception routing, permission-policy adoption, source writer open-failure
+shutdown, rotation/cancellation/partial writes, transfer edge behavior,
+heap snapshots and full security/OOM/worker teardown remain open. Normal Node
+mode still uses the legacy bootstrap; genuine empty/simple startup and CJS/ESM
+entrypaths are incomplete.
+
+No images, full products, successor ABI or overall suites were built or run.
+See [trace-binding-engine-check.json](../tests/nodejs/upstream/trace-binding-engine-check.json)
+for exact source/artifact identities, selected results and retained failures.
+
+## Continuation-preserved engine data
+
+Revision 38 adds actual continuation data to SpiderMonkey's JSContext and
+compiles the complete original `async_context_frame.cc` and header. The
+canonical native value bridge supplies the source's actual current/set/exchange
+operations and persistent `Global<Value>` root. The source Scope constructor
+and destructor exchange/restore the real value. Its setter reads the actual
+original async-context option under the original CLI mutex; the default stays
+true. Engine get/set intrinsics remain available independently of the optional
+Node library mode, matching the authenticated disabled-option reference.
+
+The existing engine JobQueue hook captures a real snapshot when a reaction is
+registered, including an undefined value. The typed FIFO traces each native
+job and its retained value. Promise reactions use their registration snapshot;
+direct native microtasks capture at enqueue. Each job installs its snapshot and
+restores the prior rooted value through scope exit, including throw and quit
+paths. Wrapping occurs at real realm boundaries. This uses adapted native
+snapshot/queue/restoration mechanisms from archived patch0040, without its old
+public JavaScript surface. Raw Promise lifecycle hooks, AsyncWrap IDs and common
+native callback scopes remain separate unfinished contracts.
+
+Twenty raw shared controls match native Node. Twenty-seven engine/native-scope
+controls plus seven additional drivers pass on each host with identical engine
+and kernel bytes. They exercise pending/settled reactions, undefined capture,
+thenables and errors, Promise combinators, async functions/generators, repeated
+await, actual native microtasks, arbitrary rooted values, moving GC, foreign
+realm values/jobs, original native Scope nesting/throw/async capture, actual
+option gating, error recovery, checkpoint restoration and real exit statuses.
+The same engine passes all 310 prior Node controls, nine native-agent controls
+and 37 tracing binding/exit/fatal observations. These selected checks do not
+establish complete async lifecycle or public AsyncLocalStorage compatibility.
+
+The first 28-case fixture reports four real failures from the original
+pre-bootstrap options guard. The engine cases passed; active original Frame,
+AsyncLocalStorage and RunScope checks attempted their actual upstream code and
+received ERR_OPTIONS_BEFORE_BOOTSTRAPPING. Their native counterparts pass after
+real native bootstrap. Those four guest consumer checks remain deferred and
+recorded until genuine startup completes. No completion flag or JavaScript
+module was substituted. The first expanded native-reference driver also had a
+duplicate binding declaration; its harness failure and corrected run are kept.
+
+Principal bootstrap now executes original internal/timers, original events and
+abort-listener dependencies, then stops at the missing buffer binding in
+setupBuffer. The stack-limit policy still stops at mksnapshot. The import has
+554 authenticated records, with all 552 prior records and all 443 JavaScript
+sources unchanged. Four-host startup, empty/simple evaluation, separate CJS/ESM
+entrypaths and the full backend catalog remain incomplete. No images, full
+products, successor ABI or overall suites were built or run.
+
+See [continuation-contracts.json](../tests/nodejs/upstream/continuation-contracts.json)
+and [continuation-engine-check.json](../tests/nodejs/upstream/continuation-engine-check.json)
+for exact coverage, retained failures, ownership limits and artifact identities.
+
+## Native Buffer memory prerequisites
+
+Revision 39 adds an engine-traced ArrayBuffer detach-key slot. Ordinary
+transfer, storage extraction, JSAPI detachment and structured-clone transfer
+reject protected storage. The native embedding detach entry checks actual
+SameValue identity, realm wrapping, Wasm/asm.js restrictions and existing
+length pins before invalidating the buffer and its views. Clearing a key
+releases its strong reference. Ordinary properties, frozen objects and
+serialization copies cannot forge or inherit that native state. Existing
+data/length/flag slot offsets are unchanged; reserved-slot counts, inline
+capacity and resizable-buffer metadata use the actual new layout.
+
+Twenty-three memory controls pass on each of Node, Chromium, Firefox and
+WebKit with identical engine and kernel bytes. Twelve shared observations
+match the authenticated native Node reference through its original buffer
+binding. Additional engine controls cover authorized detach, SameValue,
+moving GC, key collection after clearing, foreign realms, native pinning,
+ordinary JSAPI detach and three serialization scopes. These use privileged
+engine controls; they do not execute a replacement native Buffer binding.
+The same artifact passes the previous 492 selected engine observations,
+including 32 expected fatal assertion exits, across 142 guest processes.
+The new memory controls add 92 observations and four guest processes.
+
+The complete original 76,513-byte node_buffer.cc has been authenticated and
+reviewed, but is not yet imported or compiled. Its partial catalog records
+37 functions, two constants, eight direct binding consumers and 100 literal
+buffer/internal-buffer module references. Those references are a syntax
+index, not complete lazy/conditional/worker reachability. In particular,
+the original CallbackInfo retains an Environment and needs a genuine
+cleanup queue, weak ArrayBuffer handle and thread-safe foreground dispatch.
+At that checkpoint the frame-local codec Environment could not safely serve
+that owner; the stable ownership foundation below addresses that prerequisite.
+General Buffer allocation, stable alignment, principal-realm prototype,
+copy semantics and additional native string/number/handle contracts remain
+to be connected to the complete original source.
+
+The initial build-list ordering failure and a pinning-test error expectation
+are retained. SpiderMonkey's existing pinned-length error is RangeError;
+the first test incorrectly expected TypeError. Final browser guest errors
+are empty; separate run-owned Firefox Downloads/Library cleanup attempts
+reported EACCES and their storage was retained. No user permissions changed.
+Normal resolution reuses the tested revision-39 artifact. All 554 source
+records and all 443 JavaScript sources remain byte-identical. Bootstrap
+still stops at native buffer, with mksnapshot separately missing. Empty/simple
+startup, CJS/ESM entrypaths and the full backend catalog remain incomplete.
+No images, canonical products, successor-ABI builds or overall suites ran.
+
+See [buffer-contracts.json](../tests/nodejs/upstream/buffer-contracts.json)
+and [buffer-memory-engine-check.json](../tests/nodejs/upstream/buffer-memory-engine-check.json)
+for contract coverage, exact artifacts, retained attempts and remaining work.
+
+
+## Stable native Environment and foreground cleanup
+
+Revision 40 moves the native codec Environment from temporary call frames into
+one actual Isolate-bound runtime State. Frames borrow the same owner. The
+registered context owner keeps its native address, canonical runtime and loop
+alive until foreground shutdown. Existing native BaseObject construction
+validates that owner. This supplies infrastructure for the original Buffer
+allocation callbacks; the complete node_buffer.cc binding is still not compiled.
+
+Weak Global<ArrayBuffer> handles use actual engine weak-zone callbacks. They
+update moving pointers, return rooted values in the active realm and clear
+unreachable buffers. A foreground registry retains native records while
+background owners release their references, so those threads do not destroy
+JS roots. Strong continuation handles remain actual PersistentRooted values.
+Generic nursery-object weak semantics and the rest of the Global API remain
+unproven.
+
+The Environment owns a native cleanup queue and a move-only foreground work
+queue. Producers post native data under a mutex and signal the real async
+handle in the existing libuv loop. The foreground owns ref changes, callbacks
+and checkpoints. Error recovery preserves the queued tail and re-arms real
+async delivery on re-entry; an empty queue releases the handle reference.
+Metadata accounting accumulates actual amounts without a State ownership
+cycle and advises SpiderMonkey through Add/RemoveAssociatedMemory on the real
+codec-state object. Existing external-string payload accounting stays with
+the actual engine string allocation.
+
+Every ShellContext calls the shutdown hook before unregistering context data.
+Cleanup retires membership before callbacks, handles reentrant registrations,
+drains native posts, closes admission and removes weak edges before context
+destruction. The worker hook is installed, but worker/fork/cancellation
+lifecycle is not validated. Full native callback/resource-ID/fatal policy,
+independently owned delayed producers, OOM and native callbacks creating JS
+exceptions during shutdown remain incomplete.
+
+Fourteen ownership/weak-handle/queue controls plus three natural/quit/error
+exit drivers pass on each host with identical engine/kernel bytes. They
+exercise native producer threads, moving GC during background weak-handle
+disposal, cumulative real allocation accounting, reentrant cleanup, caught
+work errors, tail preservation and cleanup-time posts. All previous 584
+selected observations also pass: 652 observations across 162 guest processes,
+including 32 expected assertion traps. These are private embedding controls,
+not a native Node differential or proof of the original CallbackInfo protocol.
+
+Retained build failures cover an unrooted JSString argument and include
+ordering. Final browser guest errors are empty; separate run-owned Firefox
+Library cleanup EACCES warnings remain. An earlier run also retained storage
+because its cleanup check still saw WebKit. Normal resolution reuses the tested
+revision-40 artifact. All 554 source records and all 443 JavaScript sources
+remain unchanged. No image, canonical product, successor ABI or overall suite
+was built. Startup still fails on missing native buffer; mksnapshot, CJS/ESM
+entrypaths and the complete backend catalog remain unfinished.
+
+See [environment-contracts.json](../tests/nodejs/upstream/environment-contracts.json)
+and [environment-engine-check.json](../tests/nodejs/upstream/environment-engine-check.json)
+for the exact artifacts, controls, source contracts and retained limitations.
+
+
+## Complete original native Buffer integration
+
+Revision 41 imports and compiles all of `src/node_buffer.cc` unchanged. Its
+37 functions and two constants are initialized by the original source.
+Actual engine strings, numeric conversion, errors and escaped roots support
+the original algorithms; encoding, search, fill, mask, swap and copy bodies
+are not extracted or rewritten. Native function/signature metadata is retained,
+while ordinary SpiderMonkey calls execute the original slow callbacks.
+The original unnamed fast-method names are preserved. V8 fast JIT and native
+snapshot serialization remain unavailable.
+
+An engine-owned allocation reference keeps native byte spans alive while JS
+coercion detaches or resizes their original buffer. It materializes inline
+storage before exposing its actual address. Ownership follows same-size
+transfers; reallocating transfers and raw clone/steal transports copy when
+shared native ownership cannot be carried. Buffer methods use actual offsets,
+lengths and aliases; both-shared copies use the engine's racy atomic memmove.
+External ArrayBuffer bytes receive real engine cell credits. Transient native
+leases and queued free callbacks still need a complete GC-pressure audit.
+
+Original New/Copy/string/adoption overloads now install the actual principal
+Realm prototype. The original principal-only setter assertion remains fatal.
+Zero-fill reads the real parsed CLI option. This embedding builds live contexts
+and has no snapshot builder; ordinary execution does not pretend to be building
+one. Native empty views over detached backing support the original null-data
+constructor, while the JavaScript typed-array constructor keeps its normal
+rejection policy. Immutable ArrayBuffers are not an available engine kind.
+
+The whole original CallbackInfo now owns the real weak backing, cleanup queue,
+metadata credits and foreground post. Controls cover unreachable-backing GC,
+asynchronous null-data free callbacks, detaching live buffers during cleanup,
+and natural, quit and uncaught-error exits. A native addon built against the
+authenticated exact-version headers confirms the corresponding native Node
+null-data, GC and process cleanup behavior. Original internal/buffer.js and
+its numeric/string prototype methods execute against this binding; original
+ICU transcode also returns real native Buffers.
+
+There are 44 controls plus five option/assertion/exit drivers per host, using
+identical engine and kernel artifacts on Node, Chromium, Firefox and WebKit.
+Thirty native observation groups compare exactly. The initializer-only setter
+is compared separately because original node.js deletes it during bootstrap.
+One further native observation is retained as a discrepancy: a standalone
+Buffer.utf8Slice reproduction returned bytes different from its original input
+after index coercion detached the backing and forced GC in all eight native
+attempts. Kandelo's native allocation owner retains the original bytes.
+This is a finding in the ported Node package, excluded from the host-runtime
+workaround registry; no upstream source patch or external report was made.
+See [the standalone reproduction](../tests/nodejs/upstream/buffer-native-reentry-repro.cjs)
+and [its recorded result](../tests/nodejs/upstream/buffer-native-reentry-result.json).
+The discrepancy is not counted as exact native agreement.
+
+All prior selected controls also pass on the new artifact. The first browser
+harness run failed only because it rejected the deliberate assertion console
+message; final checks recognize that exact trap and retain every diagnostic.
+Separate Firefox Downloads cleanup EACCES warnings remain in retained logs.
+All 554 prior source records and 443 JS sources/10,993,403 bytes are unchanged;
+adding the complete native Buffer file brings the authenticated inventory to
+555 records. Normal package resolution reuses the tested revision-41 artifact.
+
+Startup now passes the native Buffer lookup and stops at the actual missing
+mksnapshot binding. Empty/simple upstream startup, CJS/ESM entrypaths and the
+complete backend catalog remain unfinished. Full callback/fatal policy,
+worker/fork/cancel/security/OOM, immutable/snapshot and nested guest Wasm paths
+are not established. No full product/image, successor-ABI or overall suite ran.
+See [buffer-contracts.json](../tests/nodejs/upstream/buffer-contracts.json) and
+[buffer-engine-check.json](../tests/nodejs/upstream/buffer-engine-check.json)
+for coverage, exact identities, retained failures and remaining obligations.
+
+
+## Original AliasedBuffer and snapshot boundary
+
+The complete original `src/aliased_buffer.h` and `src/aliased_buffer-inl.h`
+are imported without edits. They supply native mapped state used by Node's
+Environment and snapshot binding. The bridge allocates actual engine typed
+arrays for all ten original classes and supplies move-only strong Global
+handles, cleared weak handles and typed-array lengths. Before publishing a
+weak edge, it promotes a nursery target while the real strong root remains
+installed. Engine weak-zone callbacks update the edge through moving GC.
+The original allocation, alias, copy, reserve and release bodies stay in the
+original headers. Private controls require a valid live view before borrowed
+native pointer access and reject detached backing. Those controls are test
+admission checks, not a new public Node API or a general detached-pointer policy.
+
+Revision 42 passes 21 selected controls plus five assertion/exit drivers on
+Node, Chromium, Firefox and WebKit using identical engine/kernel bytes. Every
+host exercises an actual nursery target becoming tenured, weak collection,
+copy/growth/subview identity, all ten native element types and the original
+alignment/bounds CHECKs. These are engine ownership controls, not a native
+Node differential or full AliasedBuffer API audit. Exact identities, retained
+failed attempts and regression evidence are in
+[aliased-engine-check.json](../tests/nodejs/upstream/aliased-engine-check.json).
+
+The one-byte state required by `mksnapshot` uses this original class. The
+binding itself is still missing. Its complete C++ unit also contains V8 heap
+serialization, code-cache generation, snapshot configuration parsing and
+restoration of many native types. There is no actual snapshot builder or heap
+graph traversal in this embedding. Their native API boundaries fail explicitly;
+no creator instance, snapshot index, heap graph or restored object is fabricated.
+No patch to `node_snapshotable.cc` or native function excerpt has been applied.
+
+The reviewed contract inventory records seven binding exports, per-Realm state,
+three strong callback slots owned by the principal Realm, compiler/preload
+behavior and original JavaScript guards. Environment accessors forward to that
+principal Realm. Its native setter requires the principal context for nonempty
+assignment under the original debug assertion and accepts empty input to clear
+storage; the binding methods separately enforce their fatal single-assignment
+checks. The native adapter still needs that principal-versus-active context
+distinction and the callback accessors. The existing runtime principal owner
+and foreground shutdown are reuse foundations, not a complete implementation.
+See the [ownership review](../tests/nodejs/upstream/mksnapshot-ownership.md) for
+source locations, loop/teardown obligations and remaining four-host checks.
+A fresh ordinary native Node reference, run with
+`--no-node-snapshot`, passes eight controls. That flag matters: the first
+reference invocation used the default embedded snapshot and aborted at the
+original empty-deserialize-callback CHECK because restoration had already
+populated the slot. The failed invocation is retained; it is a reference-state
+mismatch, not a runtime defect. The reference runner checks the executable's
+exact identity immediately before execution. This evidence does not validate
+a Kandelo mksnapshot binding or V8 serialization.
+
+A user decision remains pending between reviewed C++ feature guards preserving
+original live-binding bodies, porting the entire snapshot unit and dependencies,
+or explicitly allowing direct Kandelo-native contract implementations. Continue
+independent required engine primitives while that choice is pending. Upstream
+JavaScript and the no-excerpts/no-rewritten-algorithms constraint remain intact.
+See [aliased-contracts.json](../tests/nodejs/upstream/aliased-contracts.json),
+[mksnapshot-contracts.json](../tests/nodejs/upstream/mksnapshot-contracts.json)
+and [the native reference](../tests/nodejs/upstream/mksnapshot-live-native-reference.json).
+
+The selected prior controls pass on the same revision-42 artifact: 310 named
+primitive cases, native tracing and agent controls, and four-host Buffer,
+continuation, memory and Environment checks. The combined evidence covers 210
+guest process drivers with 44 expected source assertion traps. The ordinary
+package resolver reuses the exact tested artifact. Separate Firefox storage
+cleanup EACCES warnings are retained without a cleanup guarantee. No full
+product/image, successor-ABI or overall conformance suite was run.
+
+
+## Native function-body compiler prerequisite
+
+Revision 43 adds an underlying compiler for a complete runtime-provided UTF-16
+function body with native-known C-string parameter and origin metadata. It uses
+SpiderMonkey's actual CompileFunction in the current global lexical environment.
+The existing unchanged builtin-source path shares that global-environment helper.
+No caller frame or separate dependency environment is captured, and the public
+Function constructor is not consulted. The engine owns the compiled source and
+function; original input strings can be collected and closures retain live values.
+The supplied body starts at diagnostic line one after the engine's own wrapper.
+
+This is engine/compiler support required by the reviewed live snapshot APIs
+under every pending native-source route. It does not implement the mksnapshot
+binding, a V8 snapshot builder, a public node:vm replacement or the complete
+V8 ScriptCompiler interface. Native formal-name metadata follows the engine's
+Latin-1 C-string contract, with three known names in the diagnostic. Origin
+metadata is a native UTF-8 C string; the private probe explicitly rejects NUL
+and unpaired-surrogate filenames. Arbitrary V8 ScriptOrigin/UTF-16 argument-name,
+context-extension/cache/security/deadline and module callback contracts remain
+separate work. The JavaScript source body itself preserves every UTF-16 unit,
+including NUL and unpaired-surrogate units inside literals.
+
+All four hosts pass 25 focused controls and three job/exit drivers on identical
+engine/kernel bytes. Twenty-one observation groups match the authenticated native
+Node vm/contextify function compiler exactly. Tests exercise target intrinsics,
+global lexical state, foreign parser exception identity and realm restoration,
+source lifetime, live closures, full GC, strict/sloppy/new-target behavior and
+actual Promise/await jobs. Existing selected binding controls also pass on the
+new artifact. These are bounded engine controls, not full VM or startup acceptance.
+Genuine bootstrap still fails on the missing mksnapshot binding, whose source
+architecture question remains pending; no snapshot C++ import/patch or function
+excerpt has been applied. Full products/images, successor ABI builds and overall
+suites remain deferred. See
+[function-compiler-contracts.json](../tests/nodejs/upstream/function-compiler-contracts.json)
+and [function-compiler-engine-check.json](../tests/nodejs/upstream/function-compiler-engine-check.json).
+
+## Live snapshot interface and native Context identities (revision 44)
+
+The user clarified that the required contract is Node's internal native
+interface implemented against SpiderMonkey/Kandelo. The earlier native-source
+architecture question is resolved. The port does not import, extract or rewrite
+`node_snapshotable.cc`, generate V8 bindings, link a V8 JavaScript engine or
+produce V8 heap snapshot data. The complete upstream JavaScript remains
+unchanged, including its callback queues, guards and public startupSnapshot API.
+
+The live `mksnapshot` binding now exposes its five functions, anonymous-main path
+and actual one-byte mode view. Function bodies compile through SpiderMonkey's
+native UTF-16 compiler in the binding's active realm. The state view uses the
+original AliasedUint8Array implementation and a native weak handle; it reports
+ordinary execution because no snapshot builder is attached. Requests for actual
+heap serialization/restoration are not supported. No builder, restored callback,
+snapshot index or completion flag is fabricated.
+
+Serialize, deserialize and main callbacks occupy traced native reserved slots
+on the existing principal realm. Registration preserves the empty-slot then
+Function assertions without calling the function or changing loop liveness.
+The native storage helper accepts clearing, and foreground Environment shutdown
+retires all three roots. The optional preload hook has actual nullable native
+storage; invoking the export without a hook preserves the fatal contract.
+Positive embedder-hook admission and its options integration remain unvalidated.
+
+Native Context handles now root actual global identities. Current-context lookup
+uses the active engine global; Environment context lookup uses the registered
+principal owner. Context scopes enter and restore real SpiderMonkey realms, and
+selected conversion/property APIs honor supplied contexts with compartment
+wrapping. Locals can escape a native handle scope without losing their roots.
+This is a bounded native adapter, not the full V8 Context, Global<Context>,
+ObjectTemplate or FunctionTemplate interface. Cross-context native function
+materialization, non-Node-context Environment lookup, snapshot persistence and
+wider security/worker/OOM behavior remain separate contracts.
+
+Focused controls pass on Node, Chromium, Firefox and WebKit using identical
+revision-44 engine/kernel bytes: eight live-binding groups match the recorded
+authenticated native Node reference, and seventeen additional controls exercise
+context identity, moving GC, reentrant scope entry, principal-root ownership,
+clearing, actual callback results/errors/jobs and explicit origin limitations.
+Seven assertion drivers preserve nonfunction/duplicate ordering and missing-hook
+failure. Three exit drivers retain callbacks without calling them or keeping the
+loop alive. A separate original principal-body attempt confirms the next failure:
+`TypeError: defineLazyProperties is not a function` at `node:buffer:1572`.
+That captured failure is not successful startup.
+
+Native filenames containing NUL or unpaired UTF-16 units fail explicitly because
+the present compiler-origin path accepts UTF-8 C-string metadata. Source bodies
+still preserve all UTF-16 units. Automatic snapshot callback invocation at the
+full Node beforeExit/entrypath lifecycle is not integrated; privileged invocation
+controls prove only actual native call mechanics and context restoration.
+The normal node mode still uses its legacy bootstrap. Empty/simple genuine
+startup, separate CJS/ESM and the complete backend catalog/roadmap remain open.
+The dispatcher survey now has eighteen routes and fifty-four literal binding
+names without routes; every full API contract remains incomplete. Route presence
+is not module compatibility. See
+[mksnapshot-contracts.json](../tests/nodejs/upstream/mksnapshot-contracts.json)
+and [mksnapshot-engine-check.json](../tests/nodejs/upstream/mksnapshot-engine-check.json).
+
+Selected prior controls also pass on that same artifact, including 310 named
+primitive cases, tracing/agent checks and four-host compiler, Buffer,
+AliasedBuffer, continuation, memory and Environment checks. The combined final
+reports cover 278 guest process drivers and 72 expected assertion traps. The
+initial Buffer regression expectation required an older missing-binding error;
+those failed reports remain retained, and the corrected exact next-error check
+passes on all four hosts. The normal resolver reuses the exact tested prefix.
+No kernel/host/libc/ABI change, image/full-product build or overall suite was
+performed for this native package phase.
+
+The next startup dependency has a separate
+[lazy-property contract review](../tests/nodejs/upstream/util-lazy-properties-contracts.json)
+and seven authenticated native-only controls. They establish that descriptor
+queries materialize real data properties, while writes, deletion and freezing
+can avoid loading. The getter must use the actual holder creation realm and
+its protected original builtin loader. This evidence guides the required engine
+and embedding support; it does not implement the missing export or justify an
+observable JavaScript accessor substitute.
+
+
+## Native lazy data-property integration (revision 45)
+
+The startup-required `util.defineLazyProperties` export now uses actual
+SpiderMonkey native property records. Descriptor queries materialize real data
+values without exposing JavaScript getter Functions. Assignment, deletion and
+freezing can avoid module loading. GC traces the actual callback data from its
+property slot. Computations cache only while their original record still owns
+the property, preserving reentrant mutations and current attributes.
+
+The callback enters the holder's creation realm and calls its protected original
+BuiltinRequire closure. Original Node JavaScript continues to own loader caching
+and exceptions. Principal-body admission now rejects secondary realms before
+compilation and retires their owned bindings. Older secondary-realm fixtures now
+test that actual admission contract; separate principal controls still execute
+the original body. The original Buffer principal-context assertion is unchanged.
+
+Twenty-nine controls and twelve process drivers pass on Node, Chromium, Firefox
+and WebKit with identical revision-45 engine/kernel bytes. Nineteen groups match
+the authenticated native Node reference exactly. Six fatal argument drivers per
+host preserve original assertion order. Selected prior regressions also pass;
+combined reports cover 326 guest processes and 96 expected assertion traps.
+All 557 imported identities, including 443 JavaScript files/10,993,403 bytes,
+remain unchanged. Normal resolution reuses the exact tested engine artifact.
+
+The native reference aborts for reentrant writes/deletions and recurses for
+redefinition of the currently computed property. Those retained cases are not
+included in exact differential agreement. The first expanded fixture also
+recursively redefined its own unresolved property; the corrected replacement
+control deletes before defining a new record. Initial build/fixture failures
+remain retained. Proxy targets fail explicitly. Full native interface
+conformance and wider exceptional/worker/cancellation coverage remain open.
+See [lazy-data-contracts.md](../tests/nodejs/upstream/lazy-data-contracts.md) and
+[lazy-data-engine-check.json](../tests/nodejs/upstream/lazy-data-engine-check.json).
+
+Original principal startup now stops at `JSONParse(binding.config)` in
+`internal/bootstrap/node:135` with the actual
+`ERR_KANDELO_NOT_IMPLEMENTED` metadata error. Its interface is serialized build
+configuration for frozen `process.config`; the next prerequisite must derive
+from Kandelo/SpiderMonkey build facts. No V8 binding generation, V8 configuration
+copy, empty metadata placeholder or upstream source rewrite is added.
+Empty/simple startup, output/errors/jobs/exit, separate CJS/ESM and the complete
+backend catalog/ordered roadmap remain unfinished. Normal node mode remains the
+legacy bootstrap. Full products/images, successor ABI builds and overall suites
+remain deferred; this phase used focused empty-filesystem guest fixtures.
+
+
+## Actual native build configuration (revision 46)
+
+`builtins.config` now provides a real frozen native data property containing JSON
+build metadata. The native getter uses Mozilla's JSON writer and actual UTF8
+string creation, without calling user JSON functions or prototype hooks. It
+uses the existing engine data-property record and preserves Node's readonly,
+enumerable, nonconfigurable descriptor with no exposed getter Function.
+
+The existing native options selection now has one shared profile header.
+Amaro's actual imported JavaScript and enabled option remain selected; metadata
+does not turn them off to avoid future execution gaps. FFI, inspector, full V8
+platform, DTLS/QUIC backends, snapshot builder and code cache remain absent from
+this embedding selection. Presence in metadata is build selection, not proof
+that every associated API works. Target architecture, byte order and pointer
+width come from the guest compiler; OpenSSL's numeric version comes from the
+actual linked library. Library paths come from the embedded source registry.
+
+A declared data-only generator serializes the recipe's actual mozconfig and
+CFLAGS/CXXFLAGS/LDFLAGS with logical path projection. It does not run host layout
+probes, copy native V8 configuration, invent a module ABI or reproduce Node's
+GYP algorithms. The descriptor records this Kandelo/SpiderMonkey producer; it
+is not complete GYP native-addon build configuration. Existing Mozilla Linux
+triplet targeting debt is recorded as an actual recipe input, not an assertion
+that Kandelo is Linux. All imported upstream sources remain unchanged.
+
+Fifteen controls and six drivers pass per host on Node, Chromium, Firefox and
+WebKit with the same revision-46 engine/kernel bytes. Nine property-control
+groups match an authenticated fresh native Node reference exactly. Actual build
+values intentionally describe this different binary. Eight generator controls
+pass. Selected lazy-property/snapshot four-host and options/process/realm Node
+regressions also pass: 141 guest processes and 55 expected assertion traps in
+these reports. Earlier wider regression reports remain historical evidence.
+The initial build's include-order failure and first native fixture marker error
+are retained; corrected checks pass. See
+[build-config-contracts.json](../tests/nodejs/upstream/build-config-contracts.json)
+and [build-config-engine-check.json](../tests/nodejs/upstream/build-config-engine-check.json).
+
+The source syntax inventory parses all 443 sources and retains seven read sites,
+one process.config definition, 49 config-member candidates and 32 dynamic
+process-member sites. It does not close alias/computed domains or complete the
+full backend catalog. The actual original principal body reads this metadata and
+recursively freezes process.config, variables and its library array. It next
+fails with `ERR_KANDELO_NOT_IMPLEMENTED: Native Node binding 'messaging' is not
+implemented` in `internal/worker/js_transferable:21`, called at bootstrap:149.
+This is a real next failure, not successful startup. Normal node mode stays
+legacy. Empty/simple startup, CJS/ESM and the complete catalog/ordered roadmap
+remain unfinished. Only focused empty-filesystem fixtures ran; full products,
+images, successor ABI builds and overall suites remain deferred.
+
+
+## Native messaging startup support (revision 47)
+
+The native messaging binding now registers the original JavaScript deserializer
+constructor callback in an actual traced principal-Realm slot. Registration
+returns undefined without invoking the function; replacement and native clearing
+are permitted. Native invocation checks the real target context, uses a null
+receiver and one actual UTF-16 info String, and preserves the result, Promise or
+exception. This is the constructor-call stage only. Full Message decoding, host
+object wrapping and transfer completion remain unimplemented.
+
+DOMException and QuotaExceededError are the original canonical per-context
+constructors. The util constants now expose the actual transfer-mode flags
+0, 1 and 2 alongside the existing canonical private key. The original setup
+closure resolves module:Constructor through the same original builtin require
+and cache. No upstream JavaScript or Node C++ function bodies were rewritten
+or excerpted. The native structuredClone entry fails explicitly with
+ERR_KANDELO_NOT_IMPLEMENTED; the original JavaScript primitive fast path works.
+No port handles, serialization results or worker delivery are fabricated.
+
+Twenty-seven controls and ten process drivers pass on each of Node, Chromium,
+Firefox and WebKit. Twelve bounded groups match the authenticated native Node
+reference exactly. Controls exercise real GC roots, replacement, reentrancy,
+wrong-context errors, original constructor/clone hooks, Promise draining and
+exit behavior. Foreground Environment shutdown clears the root; full retirement
+and cancellation remain unproved. Selected config/lazy/snapshot checks on four
+hosts and Environment/options/process/realm checks on Node also pass: 185 guest
+processes and 67 expected assertion traps in the retained reports. Initial
+stopped and failed builds are retained, followed by the successful normal
+revision-47 build. See [messaging-contracts.json](../tests/nodejs/upstream/messaging-contracts.json)
+and [messaging-engine-check.json](../tests/nodejs/upstream/messaging-engine-check.json).
+
+All 557 imported identities, including 443 JavaScript files and 10,993,403
+JavaScript bytes, remain unchanged. The source survey now records 19 dispatcher
+routes and 53 literal binding names without routes; route presence does not
+establish complete API support. The full 77-role native catalog is incomplete.
+
+The actual original principal bootstrap now fails on diagnostics_channel at
+diagnostics_channel:36, via internal/process/per_thread:57 and bootstrap:152.
+Genuine startup, empty/simple execution, output/error/exit acceptance and
+separate CJS/ESM entrypaths remain unfinished. Normal node mode still uses the
+legacy bootstrap. Structured clone/transfer, MessagePort/MessageChannel, worker
+transport, full native methods and lifecycle remain catalog gaps. Only focused
+empty-filesystem guest fixtures ran; full products/images, successor ABI builds
+and overall suites remain deferred.
+
+
+## Whole native diagnostics binding (revision 48)
+
+The complete original node_diagnostics_channel.cc/h now compiles over real
+SpiderMonkey/Kandelo primitives. Its indexing, growth, linking, publish caching
+and native callback algorithms remain intact. Four complete native files were
+added, including the original snapshotable and native object type headers. All
+557 previous imported records and all 443 JavaScript files/10,993,403 bytes are
+unchanged; the manifest now contains 561 authenticated records. No V8 binding
+generation, heap serialization or rewritten upstream algorithms are introduced.
+
+The embedding now provides actual per-global native Realm identities, weak
+binding-data lookup, GC-owned native wrappers and detached channel references.
+Native owners retain actual JS wrappers; the final native release clears the
+private pointer. Realm cleanup releases binding callbacks and native channels
+before weak-edge bookkeeping is removed. The engine's canonical owner accessor
+returns the real NodeRealmLibrary, never a diagnostic snapshot. Existing-object
+sharing pointers are rejected at compile time; their full pointer-cell contract
+remains unavailable. Outstanding external detached owners cannot be force-freed
+at shutdown. Full producer cleanup ordering remains a prerequisite.
+
+The original BindingData creates a real 1,024-entry AliasedUint32Array. Native
+growth preserves counts and publishes a replacement array; original JavaScript
+reads the current array. Native Channel instances link through the original JS
+callback and cache/call the actual publish method. Real source assertions,
+callback exceptions, receivers, status ordering and GC roots are preserved.
+Original internal/util WeakReference executes unchanged using the guest engine's
+WeakRef and an actual strong-reference count. Native channels are not simulated
+with a JS-only map or host Node builtins.
+
+Twenty-seven controls and ten drivers pass on each of Node, Chromium, Firefox
+and WebKit. Twelve bounded groups match an authenticated native Node reference
+exactly. The remaining controls exercise actual native early linking, source
+counters/status callbacks, GC, replacement, exception identity, publish caching,
+unlink/retry, UTF-8 names and growth to 2,048 entries. Selected messaging/config/
+lazy/snapshot/Buffer four-host and Environment/options/process/realm/ICU/trace
+Node regressions also pass: 264 guest processes and 91 expected assertion traps.
+See [diagnostics-contracts.json](../tests/nodejs/upstream/diagnostics-contracts.json)
+and [diagnostics-engine-check.json](../tests/nodejs/upstream/diagnostics-engine-check.json).
+Initial source ordering, missing native API details and include-style failures
+are retained. The first successful artifact's evidence is retained separately
+from the final pointer-interface build and its checks.
+
+This establishes bounded live diagnostics behavior. External crypto, SQLite and
+permission producer integration, non-detached pointer forms, full GC admission,
+reentrant mutation, active async stores/windows, subscriber fatal routing,
+worker/cancellation/security/OOM and full exceptional lifetime remain open.
+Original heap snapshot entrypoints compile but serialization/restoration and
+heap traversal remain unavailable. The source survey has 20 dispatcher routes
+and 52 literal binding names without routes; full 77-role contracts remain
+incomplete. Route presence is not complete support.
+
+Genuine principal bootstrap now fails on process_methods at per_thread:68,
+called by bootstrap:152. Startup, empty/simple execution and separate CJS/ESM
+acceptance remain unfinished. Normal node mode still uses the legacy bootstrap.
+Only focused empty-filesystem fixtures ran. Full products/images, successor ABI
+builds and overall suites remain deferred; broader backend implementation still
+requires the startup/catalog review gate.
+
+## Live native data-property prerequisite (revision 49)
+
+`process_methods` requires the complete process object unit, whose `title`,
+`ppid` and `debugPort` fields use live native data callbacks. They remain data
+properties in JavaScript descriptors, with no exposed getter/setter Functions.
+The earlier lazy property primitive caches a value once and cannot implement
+these fields. The owning SpiderMonkey property layer now supports live reads,
+optional native writes, traced callback data and the actual read receiver.
+Inherited writes create ordinary receiver properties. Own writes invoke the
+native setter when present; setterless writes become ordinary data properties.
+
+Descriptor value definitions preserve a native setter, applying new attributes
+before calling it. A throwing or reentrant setter keeps its actual effects:
+deleted/replaced properties are not resurrected. Attribute-only definitions,
+seal and freeze retain live callbacks and enforce data-property attributes.
+Frozen redundant definitions do not call a setter. Existing lazy records
+retain their previous materialization behavior. Hidden record/data roots keep
+callbacks and payloads alive across moving GC and reentrant deletion.
+
+The production change is an engine primitive. Privileged test thunks exercise
+it; the native process callback adapter and `process_methods` binding are not
+implemented by those thunks. Proxy targets are explicitly rejected. Full V8
+property/template/interceptor/security/side-effect semantics, arbitrary getter
+reentrant descriptor recursion, complete lifecycle and allocation-failure
+coverage remain unproved. No Node.js algorithms or JavaScript were rewritten.
+
+The normal revision-49 package build passed. Twenty-six property controls and
+five guest drivers pass per host on Node, Chromium, Firefox and WebKit, using
+identical engine/kernel artifacts and empty guest filesystems. Twelve bounded
+observable groups match separate authenticated native Node children. Selected
+diagnostics, messaging, configuration, lazy, snapshot and Buffer four-host
+regressions, plus Environment/options/process configuration/realm/ICU/trace
+Node regressions pass: 284 guest processes and 91 expected assertion traps.
+The engine is 59,293,549 bytes, SHA-256
+`d08a545cbf6fc0bb9ee1bddc0d1b92b80308061d403a7393b9728b29fac671b2`.
+See [native-data-engine-check.json](../tests/nodejs/upstream/native-data-engine-check.json).
+
+The first native comparison incorrectly assumed that a throwing conversion left
+`process.debugPort` unchanged. A fresh probe found that its original native
+setter stores zero while the conversion exception remains pending. The shared
+attribute-ordering check now compares attributes independently of payload
+changes, which belong to the binding. The failed comparison and probe are
+retained; no guest assertion was relaxed. Native process behavior will need
+its own implementation and validation. Browser cleanup permission warnings and
+Vite notices remain in the reports; no cleanup/quiescence guarantee is made.
+
+The partial [process contract inventory](../tests/nodejs/upstream/process-methods-contracts.json)
+records all 29 syntactically registered methods and nine literal JavaScript
+binding sites. Alias-based consumers, full signatures and exceptional paths
+still need reconciliation. It separates real native prerequisites from missing
+platform behavior: current `sys_getrusage` returns a zero-filled structure and
+`sys_sysinfo` supplies fixed uptime/memory/process values. These are Kandelo
+implementation gaps, not accepted measurements or proven browser boundaries.
+Missing libuv memory symbols and process-title support are also cataloged.
+No kernel, libc, libuv, ABI or host adapter change was made in this step.
+
+The 561 imported records, including all 443 JavaScript sources and 10,993,403
+JavaScript bytes, are unchanged. Source analysis passes 29 controls, canonical
+regeneration and same-count altered-edge rejection. Genuine principal startup
+still fails on `process_methods` at `internal/process/per_thread:68`, via
+bootstrap:152. This prerequisite does not advance that startup result. Normal
+`node` mode remains legacy; empty/simple execution, separate CJS/ESM entrypaths,
+complete catalog and ordered roadmap remain unfinished. Full products/images,
+successor-ABI builds and overall suites remain deferred. Broader backend
+implementation still requires the startup/catalog user review gate.
+
+## Native property callback interface (revision 50)
+
+The generic native embedding now supplies `Object::SetNativeDataProperty`,
+`PropertyCallbackInfo<Value/void>`, actual `Name` roots for strings/symbols,
+callback data, `HolderV2`, Environment lookup and return-value slots over the
+revision-49 engine primitive. Property callbacks use a separate rooted frame
+rather than a function's argument return slot. Nested native functions and
+property calls restore the previous frame. Default getter returns are
+undefined; setter returns default to success, with explicit false propagated
+as an operation failure. Attribute flags map to real engine descriptors.
+
+Native metadata holds callback pointers and side-effect classifications;
+actual traced slots hold the canonical creation-realm owner and callback data.
+No native closure captures a JS frame or hides persistent payload roots.
+Definition contexts must match target creation realms. Reads validate the
+owning realm, so a failed owner cannot enter through a live caller. Callback
+payloads, holders and return values remain rooted across moving GC, nested
+calls and reentrant deletion. These are the interfaces consumed by the original
+process callbacks, implemented on SpiderMonkey; no V8 binding generation or
+V8 implementation bodies are involved.
+
+`Value::Int32Value` now performs actual engine coercion in the selected native
+Context scope, preserving a conversion exception and returning an empty Maybe
+on failure. This is required for the original debug-port setter's existing
+`FromMaybe(0)` path. Its complete native body remains to be integrated; the
+adapter does not reproduce its range-validation or fallback algorithm.
+
+Thirty-five callback controls and five guest drivers pass per host on Node,
+Chromium, Firefox and WebKit. Twelve bounded groups match the existing
+actual native Node property observations. Checks cover data/holder/name/Context
+identity, default/typed/local returns, all eight attribute combinations,
+setter rejection, Int32 coercion, nested frame restoration, failed owners,
+GC, reentry and cross-compartment payload identity. Selected raw-data,
+diagnostics, messaging, configuration, lazy, snapshot and Buffer four-host
+regressions, plus Environment/options/process/realm/ICU/trace Node controls,
+pass on identical artifacts: 304 guest processes and 91 expected assertions.
+The engine is 59,315,932 bytes, SHA-256
+`7d52fdb1b3d011da7d9f084d572a517d34dad2382dc48252c23264d36f315cea`.
+See [property-callback-engine-check.json](../tests/nodejs/upstream/property-callback-engine-check.json).
+
+The first build failed because the new header was omitted from the normal
+source-staging list. Adding it to `prepare-build.sh` fixed that build failure;
+both logs are retained. New controls and selected regressions use empty guest
+filesystems. Full products/images, successor-ABI builds and overall suites remain
+deferred. Browser cleanup permission warnings and Vite notices remain retained.
+No host, kernel, libc, libuv or ABI surface changed. All 561 imported source
+records and 443 JavaScript files remain unchanged.
+
+The callback interface is partial. Proxy targets are explicitly rejected;
+`ShouldThrowOnError`/interceptor operation metadata and debugger side-effect
+enforcement are unavailable. Classifications are retained without claiming
+inspector support or optimization. Complete templates, arbitrary getter
+reentrant descriptor recursion, OOM/security/lifecycle and cross-runtime
+contracts remain unproved. Privileged test callbacks exercise native
+marshalling, not a substitute process binding.
+
+The bounded consumer alias review accounts for 28 of the 29 registered methods;
+`causeSegfault` is an exported native internal test operation with no consumer
+identified in that review. Original JavaScript adds `resetStdioForTesting` to
+the same shared binding object; it is not a missing C++ export. The actual
+`hrtimeBuffer` is read during module evaluation, and its backing buffer is
+shared with a `BigUint64Array`. Full alias/dataflow and transitive mutable
+process-method consumers remain open. See the updated
+[partial process inventory](../tests/nodejs/upstream/process-methods-contracts.json).
+
+The complete original process object and process-methods units are not yet
+compiled. Native templates/metadata, process state/permissions, HostPort/title,
+real request/handle registries, timer counts, warning roots, exit and time origin,
+resource accounting, full native addon/dotenv dependencies and honest unsupported
+contracts still need integration. Existing zero-filled `getrusage` and fixed
+`sysinfo` values remain platform gaps. Genuine principal startup still fails at
+`process_methods` in `internal/process/per_thread:68`; this callback prerequisite
+does not advance it. Empty/simple startup, output/errors/jobs/exit, separate
+CJS/ESM, the full catalog and ordered roadmap remain unfinished. The broader
+backend roadmap remains behind the startup/catalog user review gate.
+
+
+## Whole original process units (revision 51; link incomplete)
+
+The current source compiles complete unchanged `node_process_methods.cc` and
+`node_process_object.cc`, and captures/calls their actual original initializer
+callbacks through a cached `process_methods` source route. Final linking still
+fails on 35 unique symbols. There is **no runnable revision-51 artifact**, no new
+startup advancement, and no current four-host runtime evidence. Revision 50 is
+the last identified runnable artifact. The 35 symbols cover this link invocation;
+they are not the complete native interface catalog. The original
+`CreateProcessObject` factory is still unused and may require more contracts.
+
+Nine whole files were added to the authenticated import, bringing it to 570;
+all prior 561 records and all 443 JavaScript files (10,993,403 bytes) are unchanged.
+`node_process_object.cc` already existed as provenance and is newly compiled.
+The original formatting algorithms stay in complete `debug_utils.h` and
+`debug_utils-inl.h`; only declarative provider-name macros are staged separately
+from the already imported `async_wrap.h`. No function body is extracted and no
+upstream JavaScript or native algorithm is rewritten. A fresh import reproduces
+the manifest byte for byte.
+
+The compiled embedding definitions now connect the process Environment to the
+canonical libuv loop and actual live timer arrays, rooted/pinned for native frame
+borrows. They retain/clear the warning callback, read actual full-bootstrap
+completion, share inspector-port state with the original options parser, check
+native binding ownership/type, and supply rooted arrays, property definitions,
+string conversions and method registration. Formatting uses the original
+algorithms over guest libc byte writes and explicit-length UTF-8 engine strings.
+These definitions have compile evidence; runtime behavior remains untested.
+
+The final targeted normal build has zero compiler errors and fails linking.
+All seven build attempts and exact missing symbols are retained in
+[process-units-compile-check.json](../tests/nodejs/upstream/process-units-compile-check.json).
+Source-index controls, canonical regeneration and altered-edge rejection pass;
+a native-only raw-debug control preserves NUL/UTF-8/percent bytes. Neither is
+validation of the unlinked engine. Declaration-only backends remain missing,
+including resource queues, process ownership/arguments, exit/at-exit/signals,
+permissions, system errors, dotenv/path handling, heap/allocator accounting,
+native loading and three libuv memory functions. Known guest kernel rusage
+zeroes and fixed sysinfo values are implementation gaps, not real measurements
+or proven browser boundaries. Fixing them would require a deferred kernel build;
+no such change/build was made. Full products/images, successor-ABI builds and
+overall suites remain deferred; original assertions and async-context guards
+remain intact. Startup, separate CJS/ESM entrypaths and the full catalog/roadmap
+remain incomplete.
+
+
+## Process invocation and executable identity (revision 52; link incomplete)
+
+The native Environment now borrows the original options parser's successfully
+configured argument and exec-argument vectors. Its runtime root keeps the native
+options record alive, and shutdown clears the borrowed pointers before releasing
+that root. An unconfigured/failed profile rejects process binding initialization;
+no empty/default argument vector is manufactured. The existing once-only guest
+main invocation hook records the actual `uv_hrtime` epoch. Process-state ownership
+comes from the canonical shell runtime and its real main/worker context role.
+These embedding definitions compile, but remain untested in a runnable engine.
+
+The Environment snapshots its actual executable identity at initialization,
+before preload/native callbacks can rename the image. It retries a full libuv
+buffer rather than accepting a truncated identity. The original upstream
+`internal/process/pre_execution.js` still owns `argv0` preservation and `argv[0]`
+normalization. No upstream JavaScript or process algorithm was rewritten.
+Unavailable executable identity is an explicit initialization error; alternate
+embedding/failure/fallback paths remain incomplete contracts.
+
+Libuv revision 5 selects complete unchanged upstream `procfs-exepath.c` from the
+same authenticated Node archive. Its actual guest `/proc/self/exe` backend passes
+17 controls on each of Node, Chromium, Firefox and WebKit using identical probe
+and kernel artifacts. The added cases compare canonical procfs bytes, exercise
+invalid/small/exact buffers, and execute a real copied guest image from a new VFS
+name with an unrelated `argv[0]`. Existing loop/thread/pipe/filesystem controls
+also pass. The normal library and probe builds use the declared SDK/resolver,
+and the probe uses an empty guest filesystem. No kernel rebuild was needed.
+See [libuv-exepath-engine-check.json](../tests/nodejs/upstream/libuv-exepath-engine-check.json).
+Browser run-owned storage cleanup reported an EACCES warning; it is retained
+separately from the passing guest results. Rename/unlink/long/unicode paths and
+full libuv/process compatibility are not established by these controls.
+
+The final normal revision-52 engine build has zero compiler errors and still
+fails linking on 30 symbols, down from 35. Five native process-state symbols are
+now resolved. There is no new engine artifact or startup advancement. The first
+revision-52 build captured the path too late; source review moved that snapshot
+to Environment initialization, and the final normal build recompiles the corrected
+source. Both failed-link logs/keys are retained in
+[process-invocation-compile-check.json](../tests/nodejs/upstream/process-invocation-compile-check.json).
+Remaining dependencies include real request/handle owners, lifecycle/signals,
+permissions/system errors, heap/allocator accounting, parser/path/native loading
+and three libuv memory functions. The original process-object factory is still
+unused, so this linker list is not full interface closure. Revision 50 remains
+the last runnable engine; its runtime receipts remain historical. All 570 source
+records and 443 JavaScript files are unchanged this step. Full startup, separate
+CJS/ESM, full catalog/roadmap and user review remain outstanding. Full products,
+kernel/successor-ABI builds and overall suites remain deferred.
+
+
+## Whole original dotenv, environment and path units (revision 53; link incomplete)
+
+Revision 53 compiles complete unchanged `src/node_dotenv.cc`,
+`src/node_env_var.cc` and `src/path.cc`. The authenticated import adds those
+three files and the complete Ada header, bringing it to 574 records. All 570
+prior records and every one of the 443 JavaScript files remain byte-identical;
+a fresh full import reproduces the manifest exactly. Ada supplies types for
+compiling the original path unit; its parser implementation and Node URL
+conversion backend are not linked.
+
+The original dotenv parser and environment algorithms remain in their complete
+upstream files. Synchronous file access uses genuine `uv_fs_*` operations.
+The canonical Environment selects the original `RealEnvStore` and original
+mutex, whose `uv_os_*` calls use actual guest environment state. Worker store
+copy/share selection remains unfinished. The engine bridge now supplies typed
+independent roots for `LocalVector<Value/Name>`, indexed assignment, real object
+creation with an explicit prototype, enumerable own property names with numeric
+indices retained, and native string/view byte copies. Environment flags are
+read from original options under their mutex. The original POSIX timezone
+mutation calls `tzset`; the bridge then resets SpiderMonkey's actual timezone
+cache. These additions have compile evidence only.
+
+The environment proxy interceptor/template, property descriptor, warning,
+backtrace and URL conversion interfaces remain declarations. Their unused
+functions can be discarded by normal linking; this does not establish their
+support. No `process.env` proxy was created or tested, and no parser, timezone,
+worker environment or generic engine conformance result is claimed. The bounded
+[process-files catalog](../tests/nodejs/upstream/process-files-contracts.json)
+records these prerequisites, ownership and validation obligations. A lexical
+scan of all 460 original native source/header files records 116 related sites;
+it is not complete semantic consumer analysis.
+
+The final normal build reports zero C++ compiler errors and 26 unresolved
+symbols, down from 30. `BufferValue`, both consumed dotenv methods and the
+original POSIX namespaced-path method now resolve. The six attempt logs and
+exact build inputs are retained in
+[process-files-compile-check.json](../tests/nodejs/upstream/process-files-compile-check.json).
+Real resource-owner registries, native errors/permissions, lifecycle/signals,
+heap/allocator accounting, native loading and three libuv memory functions
+remain missing. The unused original process-object factory may require more
+interfaces than this linker list shows.
+
+There is no revision-53 runtime artifact, new guest test result or startup
+advancement. Revision 50 remains the last runnable engine and still stops at
+`process_methods`. Empty/simple execution, output/errors/jobs/exit, separate
+CJS/ESM entrypaths, the full catalog/roadmap and user review remain outstanding.
+Full products/images, kernel/successor-ABI builds and overall suites remain
+deferred; no kernel, libc, ABI or host adapter change was made in this phase.
+
+
+## Whole original API exception factories (revision 54; link incomplete)
+
+The consumed `UVException` and `ErrnoException` factories live in complete
+`src/api/exceptions.cc`, separately from the larger fatal/message error unit.
+Revision 54 imports and compiles that complete unchanged file. Upstream still
+owns message formatting, guest `strerror`/libuv metadata selection, UTF8 path
+conversion, property inclusion and write order. Native Environment throwing
+methods delegate construction to those factories and hand the result to the
+actual engine pending-exception primitive.
+
+The embedding supplies actual intrinsic Error creation and captured stacks,
+using SpiderMonkey's existing embedding stack policy. The original message's
+UTF16 units remain rooted without an encoding round trip. Object conversion
+enters the actual native Context and uses the engine's own conversion and
+exception behavior. All 295 original property-string declarations/getters
+expand from the complete original `env_properties.h` macro; getter results
+are real engine atoms with rooted handles. These definitions have compile
+evidence only, not full consumer or error compatibility evidence.
+
+The original POSIX errno-name algorithm belongs to `node_errors.cc` and
+remains unresolved. It is not replaced with libuv names, whose unknown and
+unmapped cases differ. The full fatal/uncaught dispatch remains unavailable;
+compiling the API unit's unreferenced `FatalException` entry does not implement
+that backend. The [bounded error catalog](../tests/nodejs/upstream/process-errors-contracts.json)
+records ownership, exceptional cases and four-host validation obligations.
+Its lexical source review records 74 sites in 14 original native files;
+semantic/alias/reachability coverage remains incomplete.
+
+Eight controls pass on the authenticated Darwin arm64 native reference. They
+record actual `chdir`, `loadEnvFile` and failed `execve` errors, including
+Unicode paths, property descriptors/order, errno sign and intrinsic prototype
+with a replaced global Error. They also demonstrate the separate original
+errno/libuv message formats. Each child rehashes the pinned reference before
+execution and uses the recorded PATH/LANG/TZ environment. This is native
+reference evidence only; no new guest/runtime comparison is claimed.
+
+The normal revision-54 build has zero C++ compiler errors and fails final
+linking on 25 symbols: both Environment exception methods resolve, while
+`errors::errno_string` is newly exposed. The log, exact inputs and missing
+contracts are in [process-errors-compile-check.json](../tests/nodejs/upstream/process-errors-compile-check.json).
+The manifest has 575 records; all 574 prior records and 443 JavaScript files
+remain byte-identical, and a fresh full import reproduces the manifest.
+No revision-54 runtime artifact or startup advancement exists. Revision 50
+remains the last runnable engine. Full startup, separate CJS/ESM entrypaths,
+complete catalog/roadmap and user review remain outstanding. Full products,
+images, kernel/successor-ABI builds and overall suites remain deferred.
+
+
+## Whole original errno-name/fatal error unit (revision 55; link incomplete)
+
+Revision 55 imports and compiles complete unchanged `src/node_errors.cc`.
+The original conditional errno-name algorithm now uses actual guest errno
+constants; its unknown-value result remains the original empty string.
+No switch or function body was extracted or rewritten. The original fatal
+initializer has its own unused adapter identity. The existing bounded native
+error-stack binding remains unchanged; full fatal/error initialization is
+not activated.
+
+The whole unit typechecks against consumed native Message, ScriptOrigin,
+StackTrace, TryCatch, report, policy and scheduling declarations. These
+operations remain unavailable. Dead stripping of unused functions is not
+support. Normal SetImmediate only erases its callback type and delegates to
+an undefined native scheduling backend; it does not post to a substitute
+queue or manufacture ref state. Fatal-only policy access/mutex ownership
+also remains a declaration; it must not recursively lock the general options
+snapshot accessor when implemented. Original trace/report option projections
+read the actual original flags under their mutex, with compile evidence only.
+See the [bounded fatal-error catalog](../tests/nodejs/upstream/fatal-errors-contracts.json).
+
+A separate [memory contract audit](../tests/nodejs/upstream/process-memory-contracts.json)
+found that existing external counters cover only explicitly registered
+allocations. Native backing stores, ordinary/shared engine buffers and retained
+storage require complete allocation-lifetime accounting. SpiderMonkey's standard
+object-element category combines ordinary object and ArrayBuffer storage;
+external backings are deliberately left to their owner, and shared backing
+reporting apportions ownership by reference counts. These categories cannot be
+silently relabeled as complete Node buffer/external totals. Retained native
+storage can outlive JavaScript detach, so a live-object traversal alone is also
+insufficient. No memory backend, guessed GC/RSS mapping, zero size callback,
+kernel change or deferred build was added. These are implementation gaps;
+no browser-specific impossibility is established by the source review.
+
+The first normal build failed on eight missing interface declarations. The
+corrected normal build has zero C++ compiler errors and fails linking on 24
+symbols, with the original errno-name dependency resolved. All three attempts and
+exact inputs are retained in
+[fatal-errors-compile-check.json](../tests/nodejs/upstream/fatal-errors-compile-check.json).
+The authenticated import has 576 records; all 575 prior records and all 443
+JavaScript files remain byte-identical, and a fresh complete import reproduces
+the manifest. No new native-reference or guest runtime controls were run.
+Revision 50 remains the last runnable engine, still stopped at process_methods.
+Full startup, empty/simple/error/jobs/exit and CJS/ESM on four hosts, full catalog
+and ordered roadmap remain unfinished. Full products/images,
+kernel/successor-ABI builds and overall suites remain deferred. Stop for explicit
+user review before implementing the broader backend roadmap.
+
+
+## Canonical native reference ownership (revision 56; normal link incomplete)
+
+Existing-object `BaseObjectPtr` acquisition now shares one canonical native
+reference cell. Derived/base acquisitions and copied references cannot install
+independent deleting owners. The cell strengthens the actual unwrapped
+SpiderMonkey wrapper while native references exist, then restores requested
+weak ownership after the last reference. Strengthening removes the weak registry
+record. `ClearWeak` persists across last release; repeated weakening/acquisition
+does not accumulate weak tracking records. `AsyncWrap` now inherits the real
+`BaseObject::persistent()` interface instead of declaring a second owner.
+
+Detach requires a native reference and is idempotent. The last detached release
+calls the virtual collection hook so a resource can finish actual `uv_close`
+before deletion. The default hook retires the JS native pointer before derived
+destruction, preserving reentry and real callback exceptions. Native callbacks
+can acquire/release owners without a JS marshalling Frame. This is a base
+ownership prerequisite, not full original AsyncWrap/HandleWrap/ReqWrap support.
+Those producers, async IDs/hooks, real intrusive queues, callback scopes and
+asynchronous resource shutdown/cancellation remain incomplete. Realm cleanup
+still rejects outstanding native owners rather than freeing behind them.
+
+An explicit `--check-native-owners` build requires a private work directory and
+refuses an install output directory. It compiles the same owning-engine code,
+explicitly rejects process_methods, and exits before package/alias/image
+installation. A dedicated browser fixture serves its exact private bytes without
+adding it to the resolver. Twelve ownership controls, four supporting drivers
+and the existing positive diagnostics, Buffer, AliasedBuffer and environment
+fixtures pass on Node, Chromium, Firefox and WebKit with one artifact/kernel.
+Actual uv_async_t resources use the canonical loop. Tests dispatch close through
+the real shell job drain, including a driver that leaves close pending at the end
+of evaluation. The removed direct uv_run test helper failed the timer dispatch
+assertion; that assertion remains intact. Initial construction/style/fixture
+failures and the preceding private-artifact preview are retained separately.
+
+The normal revision-56 build has zero C++ compiler errors but still fails linking
+on 23 native symbols. The private artifact is not a normal runnable package,
+startup success or module compatibility. All 576 imports and 443 JavaScript files
+remain unchanged. See [the bounded ownership catalog](../tests/nodejs/upstream/native-owner-contracts.json)
+and [identified evidence](../tests/nodejs/upstream/native-owner-engine-check.json).
+Full products/images, kernel/successor-ABI builds and overall suites remain
+deferred. The complete startup/CJS/ESM/catalog goal remains active.
+
+
+## Whole original AsyncWrap unit (revision 57; normal link incomplete)
+
+The complete original AsyncWrap class, inline header and C++ unit now compile
+unchanged. The missing inline header is imported with its original path/license;
+all 576 previous records and all 443 JavaScript files remain byte-identical,
+with 577 total imports. The original provider enum and existing canonical JS
+inventory are checked under the actual shared OpenSSL build selection.
+The provisional AsyncWrap declaration is replaced by the original class,
+including its actual init/provider/ID fields, virtual methods and object owner
+return type. BaseObject::env is inherited, including foreground ownership checks.
+The original initializer has a distinct unused adapter identity; the existing
+partial async_wrap binding and four active original async-context guards remain.
+
+The owning engine now supplies contextual Value::NumberValue through the real
+SpiderMonkey ToNumber operation, including roots, cross-realm wrapping, moving
+GC, user coercion, negative zero and actual TypeError/throw behavior. Environment
+owner/resource symbol accessors read the existing canonical inventory rather
+than creating keys or reproducing the original owner-chain algorithm. Eighteen
+number controls and four symbol controls pass on Node, Chromium, Firefox and
+WebKit in an explicit private diagnostic. The existing nine ownership/regression
+drivers pass on the same artifact: eleven drivers per host. That profile still
+rejects process_methods and cannot install or satisfy normal package resolution.
+
+Original owner traversal reaches the original TryCatchScope destructor and its
+complete exception/reporting closure. The normal build has zero C++ errors and
+64 unresolved symbols, including 43 newly exposed dependencies and two removed
+direct missing symbols. This increase records the real closure; it is not startup
+advancement. Scoped catches, messages/stack frames/source maps, fatal report
+policy and other backends remain unavailable. No dummy catch constructor,
+always-false caught state, fake frames or omitted original branches were added.
+
+AsyncHooks state/accessor, weak callback parameters, ordinary immediate flags,
+interrupt/microtask, constructor/inheritance, Private data and internal-field
+interfaces are declarations. The underlying backend must share the actual
+current async arrays and hooks, retain real callback/ref/cancel state and provide
+a traced third context-frame field. The present BaseObject template rejects
+unsupported field counts. Generic native inspection fails loudly; original
+AsyncWrap overrides use its actual source fields when producers become usable.
+Original HandleWrap/ReqWrap producers, queues and asynchronous shutdown remain
+incomplete. See [the bounded resource catalog](../tests/nodejs/upstream/async-resource-contracts.json)
+and [exact source/build/primitive evidence](../tests/nodejs/upstream/async-resource-engine-check.json).
+Full normal startup, empty/simple/errors/jobs/exit, separate CJS/ESM and the full
+catalog/roadmap are still unfinished. Full products/images, kernel/successor ABI
+and overall suites remain deferred; explicit broader-roadmap review is required.
+
+
+## Scoped exception prerequisites (revision 58; normal link incomplete)
+
+The native embedding now retains actual SpiderMonkey pending exception values,
+throw stacks and engine classifications in rooted catch scopes. API-depth
+tracking lets intervening JavaScript handlers run before an outer native handler
+can catch a failure. Nested scopes, reset and rethrow preserve value identity
+through moving GC, temporary native handles, foreign realms and reentry. Rethrow
+also retains the actual pending SavedFrame stack; reset after rethrow does not
+cancel the scheduled exception. Prior pending exceptions survive cleanup scopes.
+
+Actual shell quit and uncatchable interrupt events set terminal execution state
+independently of a pending JavaScript throw or numeric exit status. Native catch
+reset does not cancel termination. The covered JS-entry primitives and native
+function/property callbacks preserve its failure. Out-of-memory classification
+is retained for CanContinue, but forced-OOM behavior has not been validated.
+Default nonverbose handling is supported; enabling verbose reporting fails
+explicitly until message/listener ownership exists.
+
+Thirteen new private diagnostic drivers pass on Node, Chromium, Firefox and
+WebKit, including ten thrown-value identities, real quit status 17 and real
+uncatchable interrupt status 6. All eleven preceding ownership/number/symbol and
+original-library regression drivers pass on the same artifact and unchanged
+kernel: 24 drivers per host. The diagnostic still rejects process_methods and
+cannot install or satisfy normal package resolution. No normal startup or full
+original AsyncWrap lifecycle is established by these checks.
+
+The normal build has zero C++ errors and 58 unresolved symbols, down from 64 after
+six real scoped-catch dependencies resolve. Original TryCatchScope and
+PrinterTryCatch inline constructors must be integrated through the complete
+unchanged node_errors.h header, together with its original error templates.
+Message/StackTrace/StackFrame/ScriptOrigin, verbose/fatal/uncaught/report/source-map
+and scheduling support remain incomplete. The current explicit API entry list
+is bounded; full allocation/OOM, debugger and cancellation coverage remains an
+obligation. No constructor excerpt, guessed metadata or always-false caught or
+terminated state substitutes for those backends.
+
+See the [bounded catch catalog](../tests/nodejs/upstream/scoped-catch-contracts.json)
+and [identified source/build/runtime evidence](../tests/nodejs/upstream/scoped-catch-engine-check.json).
+All 577 imports and 443 JavaScript files/10,993,403 bytes remain unchanged. The full
+startup/CJS/ESM milestone and complete backend inventory/roadmap remain unfinished.
+Full products/images, kernel/successor-ABI builds and overall suites remain
+explicitly deferred; the broader backend roadmap requires user review.
+
+
+## Complete native error-policy header (revision 59; startup incomplete)
+
+The complete unchanged node_errors.h header is now staged with its original
+TryCatchScope/PrinterTryCatch constructors, deleted operations, coded error
+templates and predefined messages. Its complete original formatter and Buffer
+header remain in use. Thirteen provisional coded-error/throw helper definitions,
+conflicting declarations and extracted error-message metadata are removed.
+Macro aliases are preserved across the dedicated include boundary; the recipe
+explicitly stages its adapter and declares the three additional tracing include
+paths. Original policy branches and upstream JavaScript remain unchanged.
+
+Error, TypeError, RangeError and SyntaxError construction use actual SpiderMonkey
+intrinsics, rooted UTF16 strings and the existing real stack-capture policy.
+The original templates call the native conversion/property operations to set
+code/message fields. String::kMaxLength now has the consumed int interface type,
+with an assertion that the actual SpiderMonkey limit fits; it does not copy a V8
+limit. The original special messages render actual engine limits.
+
+Four new private diagnostic drivers validate all 97 coded templates, 49 predefined
+static messages, two special limit messages, original formatting, property
+descriptors and intrinsic prototypes despite replaced global constructors.
+UTF16/NUL/surrogate fidelity and a freshly thrown error with only native catch
+ownership during GC are also checked. The four drivers and all 24 prior drivers
+pass on Node, Chromium, Firefox and WebKit using identical program/kernel bytes:
+28 drivers per host. The diagnostic still rejects process_methods and cannot be
+installed or accepted as normal startup evidence.
+
+The normal build has zero C++ errors and 57 unresolved symbols, down from 58 after
+the original TryCatchScope constructor resolves. Message/StackTrace/StackFrame/
+ScriptOrigin, source-map/fatal/uncaught/report/scheduling and resource-producer
+backends remain incomplete. Full startup, empty/simple/errors/jobs/exit and
+separate CommonJS/ESM paths have not passed.
+
+A remaining source-policy gap is explicit: the existing ToUpper(std::string_view)
+adapter in codecs.cpp uses an own ASCII loop, while upstream supplies the range
+utility in util-inl.h. It must be replaced through complete util.h/util-inl.h
+integration, together with an audit of other provisional utilities. The selected
+formatter check does not establish complete unchanged native utility support.
+No function excerpt or hidden guard is an acceptable replacement.
+
+See the [bounded error-policy catalog](../tests/nodejs/upstream/error-policy-contracts.json)
+and [source/build/runtime evidence](../tests/nodejs/upstream/error-policy-engine-check.json).
+All 577 imports and 443 JavaScript files/10,993,403 bytes remain unchanged. Full
+products/images, kernel/successor-ABI builds and overall suites remain deferred;
+the complete backend catalog/roadmap and its explicit user-review gate remain
+unfinished.
+
+
+## Native persistent-handle prerequisites (revision 60; startup incomplete)
+
+The native handle layer now supplies PersistentBase and Global with an actual
+Local as the first member of a standard-layout base. Compile-time checks enforce
+the layout consumed by the unchanged util.h PersistentToLocal::Strong fast path.
+The Local points to a stable C++ wrapper whose Cell contains the real SpiderMonkey
+root; it does not point directly into the moving JavaScript heap. An opaque native
+record owns the canonical isolate/root. No V8 heap data or serialization is used.
+
+Each engine-created wrapper carries its actual typed clone factory. Retaining a
+root or reading a Global now preserves that C++ wrapper type across local scopes,
+including typed arrays, strings, symbols and templates. Symbols created through
+OwnValue now have actual Symbol wrappers. Strengthening a live weak handle
+re-registers the stable Cell's PersistentRootedValue; weakening unregisters it and
+uses the existing weak-zone callback to update or clear the real object edge.
+Nursery promotion, foreground checks and allocation-free finalizer reads remain.
+A collected handle stays empty when strengthened. Move/reset transfer or retire
+the actual native record; Get/Local::New retain independent roots during reentry.
+
+Four new private drivers cover native-only strong ownership, observed nursery-to-tenured movement, actual
+weak collection and strengthening, move/self-move/reset, callbacks that retire
+their own persistent, foreign realms and original thrown-value identity. These
+and the previous 28 drivers pass on Node, Chromium, Firefox and WebKit using
+identical program/kernel bytes: 32 drivers per host. Original Buffer,
+AliasedBuffer, diagnostics, environment, catch and error-policy controls repeat.
+The build retains an intentional self-move warning in the diagnostic control.
+
+The normal build still has zero C++ errors and the same 57 unresolved symbols.
+The private diagnostic links but rejects process_methods and cannot install a
+normal package or node alias. Full products/images, kernel/successor-ABI builds
+and overall suites remain deferred; ABI 56 and immutable ABI 55 are unchanged.
+
+Complete util.h/util-inl.h/util.cc integration remains unfinished. The original
+PersistentToLocal fast path has layout-prerequisite proof, not execution proof;
+the provisional Default adapter remains until whole utility integration. The
+existing ToUpper and other provisional Node utilities still require source-policy
+closure. Generic Private/Data/Context handle kinds and parameterized weak
+callbacks remain unavailable or unproven. Startup, CommonJS/ESM, the full backend
+catalog and its ordered roadmap remain incomplete.
+
+See the [bounded persistent-handle catalog](../tests/nodejs/upstream/persistent-handle-contracts.json)
+and [identified build/runtime evidence](../tests/nodejs/upstream/persistent-handle-engine-check.json).
+All 577 imported identities and 443 JavaScript files/10,993,403 bytes are unchanged.
+
+
+## Complete original native utilities (revision 61; no runnable artifact)
+
+The complete unchanged util.h, util-inl.h and util.cc now compile in the native
+engine build, together with the complete original node_concepts.h and
+node_union_bytes.h. Three whole files are newly imported; every prior imported
+identity and all 443 JavaScript files/10,993,403 bytes are unchanged. The import
+now has 580 files. The recipe stages these original files byte-identically.
+No constructor/function excerpt or rewritten upstream algorithm is introduced.
+
+The integration removes provisional stack-buffer/view/string wrapper classes,
+allocation/multiplication/endian/case helpers, scope cleanup, persistent
+conversion, duplicate KVStore declarations and native method-installation
+helpers. It also removes duplicate assertion/property/buffer macros. Original
+utility classes, assertions, templates and installation bodies now own those
+algorithms. Tracing's process-title adapter delegates to the original bounded
+retry helper. Namespace aliases route original assertions to the same original
+error-policy bodies without changing those macros.
+
+The engine API adds value-kind Data declarations, actual atom construction for
+internalized strings, external resource Dispose dispatch and a distinct Uint32
+constructor/wrapper. These changes have compilation evidence only. Native
+function/template/signature, scoped-rooted vector data, GC/initialization,
+byte-view and other required contracts still have undefined operations.
+There is no V8 heap data, serialization implementation or fabricated initialized
+state. The exploratory vector assignment hook was withdrawn because it did not
+satisfy copy-out/move/swap/retirement lifetime rules. Vector data methods remain
+undefined until the actual scoped-root implementation is supplied.
+
+The normal package compiles with zero C++ errors but fails linking on 70
+unique symbols. The private diagnostic also compiles but fails linking on
+13 symbols: neither profile produces a current executable. Revision 60's
+32-driver results on four hosts remain historical evidence and are not renewed
+for these inputs. No guest/browser/native-reference runtime tests ran this phase.
+The compiler failures, sorted-include mistake, recursive include-path mistake,
+unsigned constructor ambiguity and corrected style failures are retained.
+
+Utility source-policy closure is still incomplete. The pre-existing ICU
+Buffer::New(Environment*,MaybeStackBuffer*) ownership adapter corresponds to an
+original template in node_internals.h; it requires complete-header integration.
+Template parsing and selected instantiation do not establish complete template
+or engine-API conformance. Real original-helper execution and ownership/error/
+GC/reentry controls on all four hosts remain required before runtime acceptance.
+
+See the [bounded utility catalog](../tests/nodejs/upstream/utilities-contracts.json)
+and [identified source/build evidence](../tests/nodejs/upstream/utilities-engine-check.json).
+Startup, separate CJS/ESM, full backend inventory and ordered roadmap remain
+incomplete. Full products/images, kernel/successor-ABI rebuilds and overall suites
+remain deferred. ABI 56 and immutable ABI 55 are unchanged; broader roadmap work
+still requires explicit user review.
+
+
+## Native utility primitives (revision 62; no runnable artifact)
+
+Seven native utility contracts now compile and resolve. Normal builds reach
+final linking with zero C++ errors and 63 unique missing symbols, down from 70.
+The private diagnostic has zero C++ errors and six missing symbols, down from
+13. Neither build produces an executable. No guest, browser or native-reference
+runtime execution ran for revision 62; revision 60's four-host results remain
+historical. Compilation and link-symbol closure do not establish API conformance.
+
+LocalVector now stores contiguous trivial Local handles referring to stable
+cells owned by Frame/HandleScope. The pinned public interface explicitly
+supports this indirect-handle model: off-stack slots need no independent roots
+when their scope-owned cells already hold the roots. Removing the provisional
+vector-owned clones preserves same-scope copies across vector growth, movement,
+swap and retirement. A Local cannot outlive its owning handle scope; Global or
+an escaped handle supplies cross-scope ownership. The public V8 headers were
+reviewed as interface references only; no V8 implementation or heap data enters
+the build. Writable/const data access and trivial-layout assertions now compile
+with the unchanged original utility templates.
+
+ArrayBufferView.HasBuffer reads actual engine backing state. CopyContents
+roots and unwraps the view, bounds the copy by its current byte length and
+uses no-GC access to inline or backed bytes. Shared bytes use the engine's
+racy-copy operation. These operations do not materialize a buffer to answer
+the query or copy. TryGetCurrent returns the active native-frame isolate or
+null. LowMemoryNotification performs an actual full shrinking collection,
+preserving the pending exception value and saved throw stack. Function.SetName
+updates both the real JSFunction atom and its own name property.
+
+The original per_process.v8_initialized field is tied to actual shell lifecycle:
+false before initialization, true only after successful SpiderMonkey initialization,
+and false immediately before scope-exit shutdown. JS_IsInitialized alone cannot
+represent shutdown because its documented result stays true afterward. No V8
+heap serialization or fabricated initialized state is supplied.
+
+The remaining six private link contracts are FunctionTemplate.New,
+FunctionTemplate.PrototypeTemplate, Signature.New, Template.Set,
+DumpNativeBacktrace and DumpJavaScriptBacktrace. The prior 57 normal-process
+contracts remain unresolved as well. The backtrace bodies must come from whole
+original sources with real engine/platform dependencies. Function/template
+receiver brands, callback/realm/GC ownership and general naming behavior still
+need implementation or runtime validation. The existing node_internals.h Buffer
+ownership-template bridge remains an explicit source-policy gap.
+The existing FWrite byte/stream helper also corresponds to a function owned
+by the complete original debug_utils.cc and must retire during that integration.
+
+All 580 imported identities, including 443 JavaScript files/10,993,403 bytes,
+match the unchanged manifest. All 93 recipe-copied native adapter inputs and
+seven staged original utility files match their source bytes. Strict patch and
+style checks are recorded separately. An initial zero-fuzz preflight used the
+Mac host patch tool and failed; the canonical dev-shell GNU patch check passes
+with zero fuzz and matches the actual build file. Both package builds used the
+canonical toolchain and required no retry for that harness discrepancy.
+
+See the [native utility contracts](../tests/nodejs/upstream/utility-primitives-contracts.json)
+and [identified compilation evidence](../tests/nodejs/upstream/utility-primitives-compile-check.json).
+Startup, separate CJS/ESM, full backend catalog and ordered roadmap remain
+incomplete. Full products/images, kernel/successor-ABI rebuilds and overall
+suites remain deferred. ABI 56 and immutable ABI 55 are unchanged.
+
+
+## Native templates and typed Data roots (revision 63; no runnable artifact)
+
+Native FunctionTemplate.New/PrototypeTemplate, Signature.New and Template.Set
+now compile and resolve beneath the unchanged original Node installation
+helpers. Final normal/private builds have zero C++ errors and fail linking on
+59 and two symbols respectively, down from 63 and six. Neither produces an
+executable. The remaining private symbols are DumpNativeBacktrace and
+DumpJavaScriptBacktrace. The prior 57 normal process/metadata/report/lifecycle
+dependencies remain. There is no startup or current runtime acceptance.
+
+Template and Signature are real non-Value Data kinds. The shared Data base
+owns the actual root cell and concrete wrapper factory. Scope/global cloning
+preserves those kinds; ordinary JavaScript Value wrapping remains contextual.
+The original first-Local persistent layout and trivial Local layout remain
+intact. The compiled private probe consumes whole original PersistentToLocal,
+SetMethod and SetProtoMethod helpers; their bodies are not copied or rewritten.
+
+Opaque engine records hold native configuration and traced payload, signature,
+property, prototype, instance and cache edges. A private, debugger-invisible
+engine realm stores these records independently of Node contexts; it executes
+no Node module library. Persistent templates do not capture a Node realm or
+binding target. Only actual function invocation objects hold those edges.
+Per-context function caches use real WeakMaps, and the metadata realm's native
+root retires during environment shutdown. Generic roots canonicalize internal
+wrappers to avoid retaining a caller compartment accidentally. Explicit callback
+payloads retain their normal ownership.
+
+Native functions enforce constructor behavior, length, real names and receiver
+brands. Instances hold a traced, unforgeable template identity beyond their
+existing native fields. Cross-compartment instance/realm/payload edges are
+wrapped. Standalone binding templates apply their properties before the
+original per-context initializers. Native fast signatures and effect metadata
+are retained; original slow callbacks execute. No V8 implementation, heap data
+or serialization is generated.
+
+The interface remains incomplete. ObjectTemplate.New constructor association,
+FunctionTemplate.Inherit/inherited brands, recursive template instantiation,
+other native field layouts, generic Data weak handles, Private/Context kinds,
+fast JIT and inspector enforcement are unsupported or unvalidated. These are
+implementation gaps, not claimed engine/platform limits. Unsupported paths
+fail explicitly; no partially instantiated function is published as cached
+success. Full API, OOM, reentry, cross-realm and lifetime semantics need runtime
+validation.
+
+Four new controls cover original helper installation, scope/persistent roots,
+constructor/signature brands, per-context functions, explicit payload identity,
+getter reentry and thrown-value propagation. Their host-side syntax and
+registration pass; 36 drivers are registered. None executed against this revision.
+The 32-driver four-host results from revision 60 remain historical. One newly
+hashed native reference child records six ICU function names/lengths; tracing
+is unavailable through process.binding and is retained as unavailable. This
+is not a guest comparison or full native API reference result.
+
+All 580 imported identities and 443 JavaScript files/10,993,403 bytes remain
+unchanged. The final input snapshot and actual recipe-copied sources are
+recorded separately from runtime evidence. The first private attempt failed
+on an unavailable JS_WrapId helper; the corrected code uses real property-key
+values and destination-realm wrapping. All build/preflight results are retained.
+
+The backtrace functions and existing FWrite helper require whole original
+debug_utils.cc/header integration and real stack/report dependencies. The Buffer
+ownership bridge still requires complete node_internals.h integration. Source
+policy, startup, separate CJS/ESM, full catalog and roadmap remain incomplete.
+Full products/images, kernel/successor-ABI rebuilds and overall suites remain
+deferred; ABI 56 and immutable ABI 55 are unchanged.
+
+See the [native template contracts](../tests/nodejs/upstream/native-template-contracts.json)
+and [identified compile/link evidence](../tests/nodejs/upstream/native-template-compile-check.json).
+
+
+## Whole original debugging utilities and VM stacks (revision 64)
+
+The complete unchanged `debug_utils.cc` now owns diagnostic output and backtrace bodies; the provisional FWrite implementation has been removed. Native StackTrace and StackFrame are rooted non-Value Data kinds. The original GetCurrentStackTrace and PrintStackTrace bodies execute over actual SpiderMonkey SavedFrames. Names, source, line, UTF-16 column and source IDs come from the VM. Capture records actual eval/Function compiler provenance, and frame interning preserves distinct compilation identities. Filenames do not determine eval classification. No Node JavaScript or native algorithm body was rewritten.
+
+The private artifact links and passes 40 process drivers on each of Node, Chromium, Firefox and WebKit, using identical program and ABI56 kernel hashes. These include four new stack controls, four previously unexecuted template controls and 32 prior regressions. They cover source positions, eval/Function provenance, equal-filename compilation identity, capture limits, original printing, roots/GC, receiver brands, context identity and callback reentry. The program is 59,862,270 bytes, SHA-256 `3890b1951317430a26cd1849f9917361c55b8ea90cea0bf82d4213d66a976ee5`. It deliberately rejects process_methods and cannot satisfy normal package installation or startup. Selected native Error.CallSite observations support the position/eval expectations; they do not prove the complete native stack API.
+
+The targeted normal profile compiles but fails linking on 48 symbols, down from 59 with no additions. It has no current executable or renewed startup evidence. Both profiles reused the independently verified prepared Mozilla tree through the package recipe's dependency, toolchain, staging and build operations; clean staging/patch application were replaced by exact prepared-file verification. This targeted rebuild has no normal resolver cache key and is not a canonical product build. Initial C++/configuration/storage failures, intentional download cancellation and the exact transformation are retained in `.context/node-debug-backtraces/`.
+
+Capture stops at real asynchronous ancestry and skips self-hosted frames, so it may return fewer than the requested bound. Reconstructed or structured-cloned frames without captured provenance remain Unknown and fail IsEval explicitly. Wasm position conversion is unavailable; nested guest Wasm remains deferred. Native symbol lookup uses the complete original musl/Wasm unavailable-execinfo branch; no native host stack is substituted. Environment-aware credentials::SafeGetenv is declared but unimplemented. Full Message/source-line/origin/report, OOM/security/async/native-frame parity and lifetime conformance remain incomplete. The Buffer ownership bridge still requires whole node_internals.h integration, so overall source policy remains unsatisfied.
+
+All 581 imported identities match; the 443 JavaScript files and 10,993,403 bytes remain unchanged. Source-index validation and runtime acceptance are separate. No full product/image/kernel/successor-ABI rebuild or overall suite ran; immutable ABI55 and current ABI56 are unchanged. Genuine startup, CJS/ESM, the complete backend catalog and ordered roadmap remain unfinished.
+
+See the [native stack contracts](../tests/nodejs/upstream/native-stack-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-stack-engine-check.json).
+
+
+## Native messages and retained VM source (revision 65)
+
+Native Message and ScriptOrigin now snapshot actual error/report, saved-frame and compiler source data. Message is a rooted non-Value Data kind. TryCatch.Message uses the actual throw stack for the diagnostic location while preserving the Error creation stack separately; CreateMessage reconstructs that creation stack or uses its documented current-stack fallback. Engine report construction requests NoSideEffects, and transient report data is copied into owned strings/fields. Source/display URL, original filename, source-map URL and compiler offsets remain distinct.
+
+SavedFrame captures retain a ref-counted ScriptSource, release it at finalization and preserve it through async lookup copies. Lookup holds its own reference across allocations/GC. The retained source is independent of the executable JSScript, function and realm. Source extraction uses the actual engine source text and stable UTF-16 units, including Unicode and JavaScript line separators. There is no filename-indexed source substitute. Reconstructed/structured-cloned and Wasm frames without source ownership remain unavailable.
+
+The native interface's no-info line/column/script-ID constants are 0; the previous private -1 no-script-ID constant is corrected. The VM currently supplies point positions, not end ranges. GetEndColumn therefore returns the audited no-column sentinel rather than inventing an expression extent; original Node formatting may omit its underline. Compiler report line buffers are used directly, but an absent retained compilation origin fails origin access explicitly. Full compiler-origin/end-range capture, message text/capture-option parity, OOM/security/async and lifetime behavior remain incomplete. This is a partial native prerequisite, not full error-reporting compatibility.
+
+The private artifact passes 45 process drivers on each of Node, Chromium, Firefox and WebKit, using identical program and unchanged ABI56 kernel hashes. Five new controls cover source retention after GC, distinct creation/throw locations, original/display/source-map names and offsets, exotic thrown values without coercion and Unicode/line splitting. The previous 40 regressions pass too. The artifact is 59,892,350 bytes, SHA-256 `ee4c5607e1b02e6674c53efa5cecf10ec6b09f2db0cb06f3b3b1279d9a80e85a`. It rejects process_methods and cannot be installed as the normal package. Browser storage-cleanup EACCES is retained separately from guest results.
+
+The fresh, unmodified normal package recipe compiles but fails linking on 36 symbols, down from 48 by 12 with no additions. Clean source came from the authenticated Mozilla archive; the recipe applied its normal patch/staging/build flow. The standard resolver attempt was intentionally cancelled during a slow download after the verified cache replacement was ready; it supplied no compile evidence. Private builds reused the separately verified prepared source. Initial UTF8 API/include-order failures, the diagnostic Boolean correction and the fixture's one-based shell-column correction are retained with their exact artifacts/reports. There is no normal resolver cache publication or new normal executable.
+
+All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. The Buffer bridge still requires whole node_internals.h integration. Genuine startup, separate CJS/ESM, the full backend catalog and roadmap remain unfinished; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [native Message contracts](../tests/nodejs/upstream/native-message-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-message-engine-check.json).
+
+
+## Native private handles and error state (revision 66)
+
+Private handles are now non-Value Data over actual embedding-private VM symbols. Scope and persistent roots preserve that kind and validate the underlying symbol; Name reads its actual description. Native Object.GetPrivate and SetPrivate use the VM's hidden own-only property operations, including cross-compartment wrapping and engine exceptions. Environment arrow, decorated, exit, untransferable and async-context sentinel keys share the existing runtime inventory. Internal-field declarations now accept Data as required by the original async-context sentinel consumer; storage and complete layouts remain unimplemented. Private.New/ForApi and generic weak Data remain unavailable.
+
+Value.IsNativeError inspects the actual unwrapped engine ErrorObject kind, including subclasses, without public prototype or instanceof heuristics. NewFromUtf8Literal derives its byte length from the native array bound, preserving embedded NUL and UTF8. General Object.GetConstructorName remains undefined: mutable public prototypes do not supply genuine construction metadata.
+
+Native realm prepare/fatal callback setters share the existing per-context error-stack slots with the JavaScript binding. Environment fatal getters read the principal context even while another realm is active. Missing callbacks remain empty. Source-map source/cache callbacks have independent strong native roots, preserve identity, reentry and thrown values, and reset at shutdown. Source-map enable and printed-error state are independent foreground-owned fields, initially false as in the original Environment. These prerequisites do not activate the full original fatal/source-map initializer or prove full reporting behavior.
+
+The identified private artifact passes 53 process drivers on each of Node, Chromium, Firefox and WebKit: eight new state/private/callback drivers and all 45 previous regressions, 212 guest processes total. Controls cover hidden own storage and GC, proxy/revoked-proxy and foreign-realm access, native Error classification, NUL/Unicode literals, shared callback identity, principal-versus-active context, callback reentry/exceptions, independent flags, job draining and registered-root retirement. The artifact is 59,920,419 bytes, SHA-256 `8db6913a0b2562ec924c7c6281c7581498f5c92c0b667c58c70eade6022a34dd`, using the unchanged ABI56 kernel. It rejects process_methods and cannot be installed as the normal package. Browser storage cleanup diagnostics remain separate from guest verdicts.
+
+The targeted normal build has no C++ compile errors but fails final linking on 25 symbols, down from 36 by 11 with no additions. Its original recipe operations use the exact previously verified prepared source in place of source acquisition/patch application; this run does not establish a fresh resolver-cache publication or produce a normal executable. Initial Data/internal-field declaration and Private rooting failures are retained. The latter was a real bridge bug: a generic non-Value root assumed an object, while Private owns an actual symbol; the corrected factory preserves other Data object-root behavior.
+
+All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. Full OOM/security/lifecycle conformance, complete internal-field layouts, Buffer whole node_internals.h source-policy closure and remaining Message/source/report contracts remain incomplete. Genuine startup, separate CJS/ESM, the complete backend catalog and roadmap remain unfinished. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [native state contracts](../tests/nodejs/upstream/native-state-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-state-engine-check.json).
+
+
+## Complete native internals header (revision 67)
+
+The complete unchanged node_internals.h now owns the original Buffer stack-storage helper, allocator class and native helper declarations. The handwritten Buffer helper and duplicate allocator declaration are removed. The original body alone decides whether to copy stack bytes, transfer heap storage, preserve an invalidated empty result and release source ownership after the adoption call. Native engine allocation, backing-store and copy primitives remain the actual implementation below it.
+
+Two new process drivers cover stack-copy independence, heap pointer identity and transfer, invalidated and zero-length inputs, UTF16 byte length, source reuse/destruction and retention through repeated GC. All 53 prior driver source strings are unchanged and pass too: 55 drivers on each of Node, Chromium, Firefox and WebKit, 220 guest processes total. The identified private artifact is 59,927,676 bytes, SHA-256 `e52a7a4892ed3e9bf52c130e011b298555348d129a162f71b24a4d3ff66b55da`, using the unchanged ABI56 kernel. It rejects process_methods and is not a normal package or startup artifact. Host storage diagnostics remain separate from guest verdicts.
+
+The targeted normal build has no C++ compile errors but still fails final linking on 24 symbols, down from 25 with no additions. The original inline allocator total_mem_usage body now resolves; this does not establish an active Node allocator or correct process memory accounting. The selected allocator instance and its original out-of-line allocation/free bodies remain unavailable, as do complete isolate settings, callback/scheduling and heap/serialization interfaces. These unactivated interfaces have declarations without successful implementations. No V8 heap or serialization data is generated.
+
+Initial encoding-declaration, include/macro-order and style failures are retained. Bridge include cycles were removed. The new style patch exempts only the unchanged imported header and its generated declaration routing from Mozilla include conventions; bridge headers remain checked, and the final build passes the style, MacroAssembler and opcode checks. All previous patches are unchanged; no VM algorithm changed in this revision. Build operations reuse exactly verified prepared source in place of acquisition/patch application; there is no resolver-cache publication or new normal executable.
+
+All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. This closes the recorded handwritten Buffer-helper source-policy gap, while overall source-policy and conformance acceptance remain incomplete. Genuine startup, separate CJS/ESM and the complete backend catalog/roadmap remain unfinished; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred. See the [native internals contracts](../tests/nodejs/upstream/native-internals-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-internals-engine-check.json).
+
+
+## Actual isolate identity and shared option records (revision 68)
+
+Each native codec State now owns IsolateData bound to its actual Isolate. Environment returns that stable instance; native initializer adapters bind to the current actual Isolate, and access validates native-frame ownership and foreground use. The thread-local ambient facade is removed.
+
+The complete original node_options.h supplies the same parsed PerProcessOptions, PerIsolateOptions and EnvironmentOptions objects to both native adapters. Environment/isolate getters borrow the real shared owners from the principal realm-state record; process/fatal aliases reference the original parser's shared_ptr storage and actual canonical libuv-backed mutex. Buffer, error and environment consumers now read these original records. The handwritten value structures and Buffer snapshot accessor are removed. Owner-local pointer borrowing does not reacquire the process mutex, so callers may already hold it. Scoped preprocessor aliases preserve each adapter's marshalling and assertions.
+
+The identified private artifact passes 66 process drivers on each of Node, Chromium, Firefox and WebKit, 264 guest runs total. Three new drivers cover actual identity, configuration replacement with retained old records, callback reentry/GC, reads under the process mutex, foreign-active-context restoration and failed-profile errors. Eight added regression drivers execute the existing complete 14-group options fixture, five profile error controls and two expected source-assertion traps. All 55 prior driver source strings are unchanged and pass too. The program is 59,938,709 bytes, SHA-256 `fbb1cfd40f2db4fe22408c23074f714154d1cbc71fd4fccd2989b219a08b6c95`, using the unchanged ABI56 kernel. It rejects process_methods and cannot establish normal startup.
+
+The normal targeted build has no C++ compile errors but still fails linking on 23 symbols, down from 24 by the real IsolateData.options implementation, with no additions. There is no normal executable or resolver-cache publication. Recipe operations reuse exactly verified prepared source in place of acquisition/patch application. All 46 relevant patches and all seven prepared files are unchanged. The actual staged original options header/parser/inline definitions and canonical mutex match authenticated source bytes.
+
+Initial style failure and the real realm/global argument bug are retained: three new Node drivers asserted because the helper received a global instead of the canonical native realm-state object; the caller was corrected and the assertion preserved. Browser validation initially rejected the two deliberately triggered assertion console messages. The fixture now requires their already-validated source failure, exit132, exact worker diagnostic and expected native stack frames; every other console/page/request error remains rejected. Expected diagnostics are retained separately from unexpected failures.
+
+Shared parsed options do not implement the requested behaviors of all flags. Complete engine/config/security/report/permission adoption, failed-bootstrap/fatal/worker/fork lifecycle, actual allocator selection and allocation/free bodies remain incomplete. Healthy initialized ownership is the normal native caller precondition; failed profiles retain the existing error rather than manufacturing defaults. Full source policy, genuine startup/CJS/ESM and the complete backend catalog/roadmap remain unfinished. All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged; no V8 heap/serialization data or rewritten Node algorithms are used. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [native isolate/options contracts](../tests/nodejs/upstream/native-isolate-options-contracts.json) and [identified build/runtime evidence](../tests/nodejs/upstream/native-isolate-options-engine-check.json).
+
+
+## Constructor-name native reference and construction paths
+
+The normal revision68 profile still has 23 unresolved interfaces, including `Object.GetConstructorName`. A separate authenticated source and native-reference review now covers this interface's three direct native consumers: the original util binding, utility type diagnostics and stack-overflow classification. The unchanged JavaScript util inspection fallback also calls the binding.
+
+Forty native-reference controls produce 80 matching observations before and after explicit native GC with no user getter or proxy trap invocation. Replacing an instance's prototype or prototype constructor does not replace its original direct constructor identity. Redefining that original function's data name is observed, while a name getter is skipped. Different-new-target construction, objects used as prototypes, data-only Symbol.toStringTag, built-in types, foreign contexts and revoked proxies have separate outcomes. A cached immutable name or current `.constructor.name` is insufficient.
+
+The source review traces actual SpiderMonkey CreateThis, native construction, portable baseline and other JIT paths, existing realm allocation metadata and the native template bridge. An outer constructor can return an existing object, and allocation metadata already has a separate debugger owner; neither is a safe shortcut for recording construction identity. These are implementation gaps, with no demonstrated browser impossibility. No engine implementation, package revision, kernel or ABI change is made in this review. The revision68 artifact and its four-host evidence are unchanged; this phase adds no Kandelo runtime validation or startup acceptance.
+
+Run `scripts/dev-shell.sh python3 scripts/run-nodejs-constructor-name-reference.py <audited-native-node> <new-report-directory>` to reproduce the native-only controls. The runner authenticates the exact recorded executable immediately before the child, checks all expected outcomes and retains failures/timeouts. GC invocation is proven; compaction is not claimed. See the [constructor-name contracts](../tests/nodejs/upstream/constructor-name-contracts.json) and [source/reference receipt](../tests/nodejs/upstream/constructor-name-reference-check.json).
+
+
+## Actual construction identity prerequisite (revision 69)
+
+SpiderMonkey ObjectRealm now owns a construction-identity ephemeron table independent of debugger allocation metadata. Scripted base-receiver allocation records the actual constructor function when callee equals newTarget, while derived/newTarget and replacement-return objects retain their distinct allocation paths. The native template bridge records its actual materialized constructor at receiver allocation. These records preserve function identity through prototype mutation, instead of guessing from public properties or caching a name string.
+
+The actual receiver is rooted during fallible table insertion. GC tracing preserves constructors conditionally on live object keys, dead keys and constructor/instance cycles collect, realm retirement clears the table and table allocations are included in engine metadata-memory measurement. Selected controls prove nursery promotion, debugger metadata coexistence, mutation/freezing, original function identity, cross-compartment wrapping and native template allocation. OOM injection, workers/fork, other JIT inline paths and full exceptional/security/reentrant shutdown coverage remain unproven.
+
+The identified private artifact passes 72 drivers on each of Node, Chromium, Firefox and WebKit, 288 guest runs total: six new construction-identity controls and all 66 previous driver sources unchanged. This remains a private diagnostic profile that rejects process_methods. The normal targeted build compiles with the exact same 23 unresolved native interfaces and no additions. Object.GetConstructorName remains undefined while complete data-only name/tag/prototype selection and native built-in construction coverage are unfinished; this prerequisite does not establish normal startup.
+
+Initial failures are retained. The first link lacked the engine inline definition header in the embedding. Initial native-template identity tests then exposed reading CallArgs.callee after setting rval, which aliases the callee slot; the bridge now uses its actual callee rooted at function entry. All other new controls and prior Node regressions passed that initial run; final identified-artifact results are separate. No upstream Node JavaScript or C++ algorithm is changed or excerpted. All 581 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [construction-identity contracts](../tests/nodejs/upstream/construction-identity-contracts.json) and [build/runtime receipt](../tests/nodejs/upstream/construction-identity-engine-check.json).
+
+
+## Native constructor naming and utility values (revision 70)
+
+Object.GetConstructorName now uses real SpiderMonkey construction provenance and pure native data lookup. The engine records actual direct constructor functions and distinguishes prototype-based births for different newTarget and native typed-array API allocation. Native-call scopes preserve receiver ownership through nested calls and script reentry; actual native and array allocation paths consume the pending class record. Dynamic functions and selected alternate native receiver paths are recorded where the receiver actually exists. The independent ephemeron table retains the existing GC, retirement and memory-reporting hooks.
+
+Name selection uses actual retained or protected intrinsic constructor ownership, the real prototype-role flag, data function names and internal explicit/inferred debug atoms. Fallback traverses data-only tags and prototype constructor slots, checks compartment access and stops at user proxies. It does not invoke getters or proxy traps. The native typed-array API marks prototype-based births, allowing the complete original Buffer native implementation to install its actual Buffer prototype; no Buffer naming special case is added.
+
+Value.TypeOf uses the engine operation. JSON.Stringify uses actual JS::ToJSON and a native string builder, preserves getter exceptions/cycle errors and ignores replacement of the public JSON function. Value.ToDetailString implements primitives and symbol descriptions; object formatting explicitly fails ERR_KANDELO_NOT_IMPLEMENTED without user conversions. General no-side-effects object detail formatting remains unfinished.
+
+The identified private artifact passes 79 drivers on each of Node, Chromium, Firefox and WebKit, 316 guest runs total. Seven new drivers cover the 40-case/80-observation naming reference, 57 built-in/newTarget/subclass observations, Buffer factories, actual primitive utility consumers, hot allocation sites, reentrant construction, foreign prototypes and native templates. All 72 previous driver sources are byte-identical. Complete original util.cc and node_errors.cc compile, and the original DetermineSpecificErrorType consumer is exercised. The full node_util.cc native binding wrapper has not been imported/activated; these controls do not prove the complete internal util binding or public module compatibility.
+
+The normal targeted build has zero C++ compile errors and 22 unresolved native symbols, removing only Object.GetConstructorName from the previous 23. It has no normal runnable artifact. Initial compile/link/style failures and runtime Array mismatches are retained separately; Array allocation bypassed the generic native-object hook and now records its actual receiver path. The final identified artifact is independently rerun. Broader construction classes/API paths, other JIT configurations, workers/fork, security, fault-injected OOM, full exceptional shutdown and compaction-specific proof remain incomplete. All 581 imported identities and 443 JavaScript files/10,993,403 bytes are unchanged. Genuine startup, CJS/ESM, the complete backend catalog and ordered roadmap remain unfinished; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [constructor-name engine contracts](../tests/nodejs/upstream/constructor-name-engine-contracts.json) and [identified-artifact receipt](../tests/nodejs/upstream/constructor-name-engine-check.json).
+
+
+## Original request headers and intrusive queue (revision 71)
+
+The complete, unchanged req_wrap.h and req_wrap-inl.h are now imported and compiled over the existing real AsyncWrap/native-owner interfaces. The native environment owns the original intrusive ListHead keyed by the original ReqWrapBase member; the declaration-only class and separate std::list request type are removed. Original request construction registers nodes, original ListNode destruction removes them, and the process utility walks the actual head and original virtual AsyncWrap accessor. Foreground/initialized/closed owner checks guard access. Shutdown rejects an outstanding actual request head before retiring its roots; full request cancellation and completion during shutdown remains unfinished.
+
+This is compile integration, not positive request lifecycle validation. The original bootstrap assertion is preserved. The private diagnostic profile cannot finish principal bootstrap and no test fabricates that state. Original dispatch/cancel/completion bodies remain intact, but the consumed waiting-counter methods are still declarations and require real implementation before activation. HandleWrap/ref/close and the real handle queue remain separate unfinished work.
+
+The identified private artifact passes all 79 previous drivers on each of Node, Chromium, Firefox and WebKit, 316 guest runs, with every driver source byte-identical. These are regression results for the new artifact; no request dispatch, cancellation or shutdown success is inferred. The normal targeted build has zero C++ compile errors and 20 unresolved symbols, removing the request queue and declaration-only GetAsyncWrap symbols from the previous 22 with no additions. It still cannot produce a normal startup executable.
+
+All 581 previously imported identities are unchanged. The two complete authenticated request headers bring the total to 583; all 443 JavaScript files/10,993,403 bytes remain unchanged. Canonical source inventories are regenerated for the new manifest identity. The first command failed because my recipe-preparation check used the wrong spacing for build.toml and left the recipe absent; that harness failure is retained. The first actual build compiled/linked but failed Mozilla include checks; inline definitions now enter through a separate owned inline adapter, and a strict patch recognizes exactly the two new generated upstream header paths under the existing source classification. No upstream Node source is patched or excerpted. Full startup/CJS/ESM/catalog/roadmap and full source-policy acceptance remain incomplete. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [request-owner contracts](../tests/nodejs/upstream/request-owners-contracts.json) and [build/regression receipt](../tests/nodejs/upstream/request-owners-engine-check.json).
+
+
+## Original handle unit and embedding prerequisites (revision 72)
+
+The complete original handle_wrap.h and handle_wrap.cc now compile in the resource translation unit beside the original AsyncWrap unit. The original ref/unref/close/collection/state/queue/callback bodies remain unchanged. Native EnvironmentData owns the original intrusive handle head, and process consumers use the original inline HasRef(const HandleWrap*) predicate over real initialization/closed state and libuv reference state. Original constructor bootstrap assertions remain intact. Outstanding actual request or handle heads reject unsupported shutdown before owner retirement; full pending-resource cleanup remains unfinished.
+
+The embedding now supplies actual Object.Has through SpiderMonkey property-key conversion and JS_HasPropertyById, with real proxy traps, exceptions, GC reentry, symbol identity and inherited-property behavior. It also owns independent traced per-isolate FunctionTemplate caches for AsyncWrap and HandleWrap, with typed metadata roots, foreground/closed-owner checks and explicit clearing before private metadata realm retirement. The original handle_onclose symbol comes from the existing canonical symbol inventory. General BaseObject exit-leak classification explicitly remains unavailable; the original HandleWrap override is compiled rather than replaced with a default success.
+
+The identified private artifact passes 83 drivers on each of Node, Chromium, Firefox and WebKit, 332 guest runs. Four new controls validate property-existence and generic native-template cache primitives; all 79 previous driver sources are unchanged. Cache controls prove identity, independent clearing, retained payloads, completed-scope root retirement and foreign-context materialization. They use generic native fixture templates; the original full HandleWrap constructor factory and callback graph are not runtime-validated. FunctionTemplate.Inherit and InternalMakeCallback remain undefined on activation and expose further prerequisites. Positive actual handle construction/ref/close/cancellation/GC lifecycle remains gated on genuine bootstrap and missing callback/async-context backends. These results do not establish that lifecycle or normal startup.
+
+The normal targeted build has zero C++ compile errors and 18 unresolved symbols, removing only the handle queue and declaration-only HasRef references from the previous 20. It still cannot produce a normal startup executable. The first private build succeeded. Initial Node82of83 and all three browsers then exposed an overstrong collection assertion in the same active allocation/invocation frame. Isolated diagnostic variants show retained payloads collect after clearing once that setup frame completes; the corrected fixture preserves the retirement and independent-cache assertions. Final results rerun the same identified C++ artifact; no upstream assertions or source algorithms are changed. The initial reports and exact83driver sources remain retained separately.
+
+All 583 previous imported identities remain unchanged. Two complete authenticated handle files bring the total to 585; all 443 JavaScript files/10,993,403 bytes remain unchanged, and canonical selection/bytes match the pinned archive. Source inventories are regenerated for the new manifest identity. A strict generated-source-path patch recognizes only the two new upstream include paths under the existing classification. Overall source-policy/startup/CJS/ESM/catalog/roadmap acceptance remains incomplete; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [handle-owner contracts](../tests/nodejs/upstream/handle-owners-contracts.json) and [identified build/primitive/regression receipt](../tests/nodejs/upstream/handle-owners-engine-check.json).
+
+
+## Native template inheritance (revision 73)
+
+The SpiderMonkey embedding now implements FunctionTemplate.Inherit using actual traced parent-template records. Native signature checks follow the unforgeable instance brand and template ancestry, independently of mutable JavaScript prototype properties. Actual descendants and JavaScript subclasses retain parent-method access after prototype mutation; plain objects, forged prototypes and ordinary proxies remain rejected. Function materialization uses the parent function in the selected context and reads its current prototype. Only the instance-prototype chain inherits; constructor functions keep their context Function.prototype. Ordinary parent static and instance-template data are not copied, and only the selected native constructor callback runs.
+
+A textual scan of all 460 pinned native C++ source/header files records 45 inheritance and 162 internal-field candidate sites, with source hashes and imported-source status. This includes conditional and platform-specific files; it is not a parsed call graph or a complete binding contract. The partial inventory is retained in template-inheritance-consumers.json.
+
+The identified private artifact passes 88 controls on each of Node, Chromium, Firefox and WebKit, 352 guest runs. Five new controls exercise inheritance chains, signed receivers, context-local prototypes, mutable parent prototypes, constructor callback behavior, traced parent ownership/collection and reentrant GC with exact thrown-value identity. All 83 prior driver sources remain unchanged. A separately rehashed pinned native Node reference records actual Pipe/LibuvStreamWrap/HandleWrap/AsyncWrap behavior and two real close callbacks. This reference does not establish Kandelo Pipe support. The private artifact still rejects process_methods and is not a normal startup executable.
+
+Full original HandleWrap/AsyncWrap constructor factories and callback activation remain incomplete. InternalMakeCallback and async-context dependencies are missing; the existing zero-or-two native-field layouts also do not implement AsyncWrap's additional native field. General template attributes/accessors/security, recursive materialization, worker/fork and injected allocation-failure coverage remain incomplete. This implementation uses SpiderMonkey operations; it imports no V8 function bodies, heap or serialization and changes no upstream Node JavaScript or algorithms.
+
+The fresh normal build still has zero C++ errors and the same 18 unresolved symbols. Its linker set does not exercise every constructor factory and is not a complete backend-gap inventory. All 585 imported identities, including 443 JavaScript files/10,993,403 bytes, remain unchanged. All 20 prepared VM/build files and 74 declared patch inputs (71 SpiderMonkey and three libuv) are unchanged. The first browser command selected the wrong Playwright installation and failed before any tests; the retained harness failure was corrected by invoking the browser project's existing runner, without changing tests or timeouts. No full products, images, kernel, successor ABI or overall conformance suites were built. Startup, separate CommonJS/ESM entrypaths and the full catalog/ordered-roadmap review milestone remain incomplete.
+
+See the [template inheritance contracts](../tests/nodejs/upstream/template-inheritance-contracts.json) and [identified four-host receipt](../tests/nodejs/upstream/template-inheritance-engine-check.json).
+
+
+## Native internal fields (revision 74)
+
+The SpiderMonkey embedding now supplies actual variable-count internal fields for native template instances and standalone object templates. Existing hidden owner/realm slots, the private template brand and the API field store have separate storage. The original zero-or-two-field limit is removed; field counts come from actual template configuration and instance allocation. Generic controls exercise counts 0/1/2/3/7/17/65, independent instances, JavaScript subclasses, frozen wrappers and prototype mutation. API fields do not appear as ordinary JavaScript properties and cannot overwrite the native finalizer's owner pointer or signature brand.
+
+Data fields trace the actual payload in private engine records and retain only native root-factory/type information outside the traced graph. GetInternalField recreates the concrete C++ wrapper, preserving Value, Private, FunctionTemplate, ObjectTemplate and Signature kinds and identity. Values wrap to the active context; opaque Data records retain canonical identity. Tagged pointer fields retain the actual caller-owned aligned pointer or null and require the matching tag. They do not own or delete the pointee. Matching setters must precede getters; invalid field/type/tag/alignment uses remain checked native failures. General negative-assertion and injected allocation-failure coverage remains incomplete.
+
+The identified private artifact passes 93 controls on each of Node, Chromium, Firefox and WebKit, 372 guest runs: five new field controls and 88 byte-identical prior driver sources. Controls cover GC retention and release after overwrite/wrapper collection, typed opaque Data, real pointer aliasing/mutation/null/owner release, foreign values, reentrant GC and exact exceptions. A hostile public Array.prototype does not intercept hidden field storage. These are engine controls using real guest workers with an empty rootfs; the private profile rejects process_methods and cannot establish startup or original resource lifecycle.
+
+The full original BaseObject integration remains unfinished. The authenticated source defines API field 0 as the tagged embedder type and field 1 as the native BaseObject pointer; the existing adapter still uses separate hidden owner 0/realm 1 slots. This change supplies independent general field storage and does not replace original SetInternalFields, manufacture an embedder identifier or claim those original native methods are active. Whole original BaseObject class/inlines/unit, genuine owner integration, AsyncWrap/HandleWrap factories, InternalMakeCallback and further async-context prerequisites remain necessary. AsyncWrap's additional field 2 can now have distinct Data storage, but its complete producer/callback path is unvalidated.
+
+The fresh normal build still has zero C++ errors and the same 18 unresolved symbols; there is no normal executable. All 585 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. All 20 prepared engine/build files and 74 declared patch inputs are unchanged. The new owned header is copied by the actual recipe and covered by normal style checking, with no new ignore rule or source patch. Exact 796 declared inputs, 103 staged native inputs and the private configuration are retained. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred. Startup, separate CommonJS/ESM entrypaths and the complete catalog/ordered-roadmap review milestone remain incomplete.
+
+See the [internal-field contracts](../tests/nodejs/upstream/internal-field-contracts.json) and [identified four-host receipt](../tests/nodejs/upstream/internal-field-engine-check.json).
+
+
+## Original signal owner and native construction state (revision 75)
+
+The complete unchanged signal_wrap.cc now compiles beside the original AsyncWrap and HandleWrap units. Its actual mutex-protected process-wide map supplies HasSignalJSHandler to the original process Kill method. The original successful-start increment, stop/close decrement, zero-count erase, native callback dispatch, factory inheritance and constructor assertions remain intact. The new runtime control only observes the genuine empty map before any Node signal producer. Positive registration, signal delivery, ref/stop/close/cancel/GC and shutdown remain unvalidated; unrelated host or guest default signal dispositions are not substituted for Node JS handler state.
+
+The SpiderMonkey embedding supplies FunctionCallbackInfo.IsConstructCall from the actual native JS::CallArgs flag. One control checks ordinary calls, call/apply, new, JavaScript subclasses, Reflect.construct, nested reentry, shrinking GC, preserved outer construction state and exact thrown-hook identity. Boolean.New/Value uses genuine VM Boolean primitives; true and false round-trip through this control. The original constructor assertion is not weakened and no bootstrap flag is fabricated.
+
+The identified private artifact passes 95 controls on each of Node, Chromium, Firefox and WebKit, 380 guest runs: two new controls and 93 byte-identical prior sources. The private profile rejects process_methods and cannot establish normal startup. The fresh normal build has zero C++ errors and 17 unresolved symbols, removing only HasSignalJSHandler from the previous 18. The linker set remains an incomplete backend-gap inventory. Complete original BaseObject/type-tag/native owner integration, full resource factories, InternalMakeCallback/async context and positive signal producers still require actual backends.
+
+The first compile failed on the missing map include and IsConstructCall interface; after those were supplied, a second build exposed the missing native Boolean factory. Both failures, their exact staged native inputs and configurations are retained. No executable was produced by those attempts and no upstream function body/assertion was changed. The final primitive and regression runs use the same identified successful private artifact.
+
+All 585 previous imported identities remain unchanged. The complete authenticated signal unit brings the total to 586; all 443 JavaScript files/10,993,403 bytes remain unchanged. Canonical source indexes were regenerated; 29 source-control groups, three reproducible indexes and changed-edge rejection pass. A strict source-style patch recognizes only the exact generated signal unit include path under the existing original-source classification, with no new ignored directory or owned-adapter exemption. Of 20 prepared engine/build files, 19 are unchanged and only the checker changes. All 74 prior declared patch inputs remain unchanged; the new patch makes 75. Exact 798 declared/103 staged inputs and private configuration are retained. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred. Startup, separate CommonJS/ESM entrypaths and the full catalog/ordered-roadmap review milestone remain incomplete.
+
+See the [signal-owner contracts](../tests/nodejs/upstream/signal-owner-contracts.json) and [identified four-host receipt](../tests/nodejs/upstream/signal-owner-engine-check.json).

@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Stage immutable Node sources/native compiler in the recipe-owned Mozilla tree.
+# This helper prepares build inputs; it neither activates nor executes Node JS.
+set -euo pipefail
+
+if [ "$#" -ne 6 ]; then
+    echo "usage: prepare-build.sh <repository> <Mozilla-source> <object-dir> <host-SDK-or-empty> <zlib-include> <zstd-include>" >&2
+    exit 2
+fi
+repo_root="$1"
+mozilla_source="$2"
+object_dir="$3"
+host_sdk="${4:-}"
+node_import="$repo_root/third_party/nodejs"
+node_consumer="$repo_root/packages/registry/spidermonkey/node-upstream"
+shell_sources="$mozilla_source/js/src/shell/node-upstream"
+node_objects="$object_dir/node-upstream"
+
+mkdir -p "$shell_sources" "$node_objects"
+cp "$node_import/native/builtin-source-registry.cpp" \
+    "$node_consumer/build-profile.h" \
+    "$node_consumer/build-config-inl.h" \
+    "$node_consumer/builtin-compiler.cpp" \
+    "$node_consumer/builtin-compiler.h" \
+    "$node_consumer/buffer-memory.cpp" \
+    "$node_consumer/buffer-memory.h" \
+    "$node_consumer/private-key-test-api.cpp" \
+    "$node_consumer/private-key-test-api.h" \
+    "$node_consumer/process-versions.cpp" \
+    "$node_consumer/process-versions.h" \
+    "$node_consumer/per-context.cpp" \
+    "$node_consumer/module-wrap.cpp" \
+    "$node_consumer/module-wrap.h" \
+    "$node_consumer/error-stack.cpp" \
+    "$node_consumer/error-stack.h" \
+    "$node_consumer/realm.cpp" \
+    "$node_consumer/realm.h" \
+    "$node_consumer/timers.cpp" \
+    "$node_consumer/timers.h" \
+    "$node_consumer/task-queue.cpp" \
+    "$node_consumer/task-queue.h" \
+    "$node_consumer/async-wrap.cpp" \
+    "$node_consumer/async-resource-upstream.cpp" \
+    "$node_consumer/resource-native-api.h" \
+    "$node_consumer/request-native-api.h" \
+    "$node_consumer/request-codecs-inl.h" \
+    "$node_consumer/async-wrap.h" \
+    "$node_consumer/constants.cpp" \
+    "$node_consumer/constants.h" \
+    "$node_consumer/constants-builder.h" \
+    "$node_consumer/types.cpp" \
+    "$node_consumer/types.h" \
+    "$node_consumer/buffer-upstream.cpp" \
+    "$node_consumer/diagnostics-upstream.cpp" \
+    "$node_consumer/process-methods-upstream.cpp" \
+    "$node_consumer/process-object-upstream.cpp" \
+    "$node_consumer/process-native-api.h" \
+    "$node_consumer/internals-native-api.h" \
+    "$node_consumer/process-files-native-api.h" \
+    "$node_consumer/dotenv-upstream.cpp" \
+    "$node_consumer/env-var-upstream.cpp" \
+    "$node_consumer/exceptions-upstream.cpp" \
+    "$node_consumer/process-errors-native-api.h" \
+    "$node_consumer/fatal-errors-upstream.cpp" \
+    "$node_consumer/fatal-errors-native-api.h" \
+    "$node_consumer/debugging-native-api.h" \
+    "$node_consumer/debugging-upstream.cpp" \
+    "$node_consumer/error-policy-native-api.h" \
+    "$node_consumer/utility-native-api.h" \
+    "$node_consumer/utility-support-native-api.h" \
+    "$node_consumer/utility-upstream.cpp" \
+    "$node_consumer/path-upstream.cpp" \
+    "$node_consumer/native-object-api.h" \
+    "$node_consumer/native-object-codecs-inl.h" \
+    "$node_consumer/native-owner-probe-inl.h" \
+    "$node_consumer/property-codecs-inl.h" \
+    "$node_consumer/aliased-codecs-inl.h" \
+    "$node_consumer/buffer-codecs-inl.h" \
+    "$node_consumer/codecs.cpp" \
+    "$node_consumer/codecs.h" \
+    "$node_consumer/codec-native-api.h" \
+    "$node_consumer/continuation-native-api.h" \
+    "$node_consumer/continuation-upstream.cpp" \
+    "$node_consumer/continuation-codecs-inl.h" \
+    "$node_consumer/environment-codecs-inl.h" \
+    "$node_consumer/internal-field-codecs-inl.h" \
+    "$node_consumer/snapshot-codecs-inl.h" \
+    "$node_consumer/codec-agent-includes.h" \
+    "$node_consumer/codec-buffer-types.h" \
+    "$node_consumer/decoder-upstream.cpp" \
+    "$node_consumer/icu-upstream.cpp" \
+    "$node_consumer/encoding-upstream.cpp" \
+    "$node_consumer/string-bytes-upstream.cpp" \
+    "$node_consumer/trace-agent-native-api.h" \
+    "$node_consumer/trace-agent-platform.cpp" \
+    "$node_consumer/trace-agent-upstream.cpp" \
+    "$node_consumer/trace-agent-legacy-upstream.cpp" \
+    "$node_consumer/trace-node-trace-buffer-upstream.cpp" \
+    "$node_consumer/trace-node-trace-writer-upstream.cpp" \
+    "$node_consumer/trace-traced-value-upstream.cpp" \
+    "$node_consumer/trace-trace-event-helper-upstream.cpp" \
+    "$node_consumer/trace-native.cpp" \
+    "$node_consumer/trace-native.h" \
+    "$node_consumer/trace-binding-native-api.h" \
+    "$node_consumer/trace-binding-upstream.cpp" \
+    "$node_consumer/trace-builtin-native-api.h" \
+    "$node_consumer/trace-builtins-upstream.cpp" \
+    "$node_consumer/trace-unicode-native-api.h" \
+    "$node_consumer/trace-utf8-native.h" \
+    "$node_consumer/trace-utf8-native.cpp" \
+    "$node_consumer/stack-codecs-inl.h" \
+    "$node_consumer/message-codecs-inl.h" \
+    "$node_consumer/template-codecs-inl.h" \
+    "$node_consumer/trace-codecs-inl.h" \
+    "$node_consumer/trace-shutdown.h" \
+    "$node_consumer/trace-agent-test-api.cpp" \
+    "$node_consumer/trace-agent-test-api.h" \
+    "$node_consumer/options.cpp" \
+    "$node_consumer/options.h" \
+    "$node_consumer/options-native-api.h" \
+    "$node_consumer/options-shared-types.h" \
+    "$node_consumer/options-upstream.cpp" \
+    "$node_consumer/per-context.h" "$shell_sources/"
+# Keep the portable registry's include names independent of Mozilla shell paths.
+# Mozilla's checker treats js/src as the root of internal header include names.
+cp "$node_import/native/builtin-source-registry.h" "$mozilla_source/js/src/"
+python3 - "$node_import" "$mozilla_source/js/src" "$5" <<'PY'
+import hashlib, json, pathlib, sys
+root, output_dir, zlib_include = map(pathlib.Path, sys.argv[1:])
+records = json.loads((root/'sources.json').read_bytes())['files']
+for source_name, output_name in [('src/env_properties.h', 'node-env-properties.h'),
+                                 ('src/node_exit_code.h', 'node-exit-code.h'),
+                                 ('src/node_version.h', 'node-version.h')]:
+    record = next(r for r in records if r['path'] == source_name)
+    source = (root/'upstream'/record['path']).read_bytes()
+    if len(source) != record['bytes'] or hashlib.sha256(source).hexdigest() != record['sha256']:
+        raise ValueError('original Node header identity mismatch: ' + source_name)
+    (output_dir/output_name).write_bytes(source)
+# Mozilla exports a prefixed bundled zlib header ahead of consumer CFLAGS.
+# This embedding uses the resolver's library, so retain its complete header pair.
+headers = output_dir/'shell/node-upstream/process-versions-deps'
+headers.mkdir(parents=True, exist_ok=True)
+for name in ['zlib.h', 'zconf.h']:
+    source = (zlib_include/name).read_bytes()
+    (headers/name).write_bytes(source)
+    print(json.dumps({'resolvedHeader': str(zlib_include/name),
+                      'bytes': len(source), 'sha256': hashlib.sha256(source).hexdigest()}))
+PY
+python3 "$repo_root/scripts/generate-nodejs-async-metadata.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$mozilla_source/js/src/node-async-metadata.generated.h"
+python3 "$repo_root/scripts/generate-nodejs-types.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$mozilla_source/js/src/node-types.generated.h"
+python3 "$repo_root/scripts/prepare-nodejs-codecs.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$shell_sources/codecs-upstream"
+python3 "$repo_root/scripts/prepare-nodejs-options.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$shell_sources/options-upstream"
+python3 "$repo_root/scripts/prepare-nodejs-continuation.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$shell_sources/continuation-upstream"
+python3 "$repo_root/scripts/prepare-nodejs-tracing.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$shell_sources/tracing-upstream"
+python3 "$repo_root/scripts/prepare-nodejs-constants.py" \
+    --manifest "$node_import/sources.json" \
+    --output "$shell_sources/constants-upstream" \
+    --zlib-include "$5" --zstd-include "$6"
+
+host_sdk_flags=()
+if [ -n "$host_sdk" ]; then
+    if [ ! -d "$host_sdk" ]; then
+        echo "ERROR: Node metadata host SDK directory does not exist: $host_sdk" >&2
+        exit 1
+    fi
+    host_sdk_flags=(-isysroot "$host_sdk")
+fi
+# This tool consumes logical names/argument lists from the original Node C++
+# policy; it does not infer target layouts, host state or guest capabilities.
+clang++ -std=c++20 "${host_sdk_flags[@]}" \
+    -I "$node_import/upstream/src" \
+    "$repo_root/scripts/nodejs-builtin-metadata.cpp" \
+    "$node_import/upstream/src/builtin_info.cc" \
+    -o "$node_objects/nodejs-builtin-metadata"
+python3 "$repo_root/scripts/generate-nodejs-source-registry.py" \
+    --manifest "$node_import/sources.json" \
+    --metadata-tool "$node_objects/nodejs-builtin-metadata" \
+    --output "$mozilla_source/js/src/node-source-registry.generated.h"

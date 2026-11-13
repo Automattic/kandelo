@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Complete original request headers and real native environment intrusive queue; compile integration and prior-artifact regressions only. Positive request dispatch, cancellation, shutdown and startup remain unvalidated.",
+  "completeBindingContract": false,
+  "evidence": "request-owners-engine-check.json",
+  "wholeOriginalFiles": [
+    {
+      "path": "src/req_wrap-inl.h",
+      "role": "provenance",
+      "bytes": 5621,
+      "sha256": "ede34e6a3f999856a62284d1045deb2a6a2a578a321faf402c432a8605df75b1",
+      "builtinId": null
+    },
+    {
+      "path": "src/req_wrap.h",
+      "role": "provenance",
+      "bytes": 2315,
+      "sha256": "571212e6b7000aad7256fc3ad81398d3e75cb69c036bf87f4a6965b226bac5de",
+      "builtinId": null
+    }
+  ],
+  "nativeConsumers": [
+    {
+      "path": "src/node_process_methods.cc",
+      "entry": "GetActiveRequests/GetActiveResourcesInfo",
+      "behavior": "Walk actual environment request head, dispatch original virtual ReqWrapBase.GetAsyncWrap, skip empty persistent wrapper and ask original AsyncWrap for owner/provider diagnostic name."
+    },
+    {
+      "path": "src/req_wrap-inl.h",
+      "entry": "ReqWrapBase constructor/ReqWrap constructors and virtual GetAsyncWrap",
+      "behavior": "Original bootstrap assertion, actual intrusive PushBack, real AsyncWrap inheritance, weak initialization, request data/reset/dispatch/cancellation and completion adapter bodies preserved."
+    },
+    {
+      "path": "src/util-inl.h",
+      "entry": "ListHead/ListNode",
+      "behavior": "Complete original list implementation; node destruction removes membership, head lifetime belongs to EnvironmentData. No borrowed snapshot or separate std::list substitute."
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "Environment.req_wrap_queue()",
+      "signature": "RequestQueue*; nested Environment type derives original ListHead<ReqWrapBase,&ReqWrapBase::req_wrap_queue_>",
+      "owner": "Embedding foreground EnvironmentData storage; original class grants Environment friendship",
+      "errors": "Foreground, initialized and not-closed native owner invariants; actual outstanding queue rejects unsupported environment shutdown before root retirement",
+      "state": "One actual intrusive head per canonical environment; actual original constructor registers and ListNode destruction removes each node"
+    },
+    {
+      "name": "ReqWrapBase.GetAsyncWrap()",
+      "signature": "Original pure virtual AsyncWrap*; original ReqWrap<T> override returns its actual AsyncWrap base",
+      "owner": "Complete unchanged original request headers and original AsyncWrap class",
+      "errors": "Actual native object lifetime/vtable contract; no standalone fabricated AsyncWrap pointer"
+    },
+    {
+      "name": "ReqWrap<T>.Dispatch/Cancel/completion/Reset",
+      "signature": "Complete original templates over actual uv request functions and callback signatures",
+      "owner": "Original upstream native algorithms over Kandelo libuv/engine owner interfaces",
+      "errors": "Original return values, assertions, uv_cancel behavior and callback wrappers preserved",
+      "status": "Headers compile, positive paths not instantiated or runtime-validated in this phase; waiting-counter methods are declarations and fail linking if activated without a backend"
+    }
+  ],
+  "asynchronousAndOwnership": {
+    "dispatch": "Original ReqWrap.Dispatch marks actual req.data, adapts actual native callback, strengthens native wrapper only after accepted dispatch and increments waiting counter. Implementation of consumed waiting-counter interfaces remains missing.",
+    "completion": "Original callback acquires existing canonical BaseObjectPtr, detaches wrapper, decrements waiting count and calls original callback; no replacement owner.",
+    "cancellation": "Original Cancel acts only on dispatched actual req.data and calls real uv_cancel; cancellation is not assumed to imply immediate retirement.",
+    "gc": "Original weak/strong controls use existing canonical engine native owner; no new roots or fake wrapper metadata. Positive request/GC/dispatch lifecycle still unproven.",
+    "shutdown": "Embedding currently checks actual request head empty before closing native owner. Full cancellation/wait/completion/exceptional shutdown remains missing, not silently cleared."
+  },
+  "bootstrapBoundary": "Original ReqWrapBase requires has_run_bootstrapping_code. Private diagnostic profile rejects process_methods and cannot complete principal bootstrap; no fixture sets a fake completed flag or weakens that assertion to construct requests.",
+  "archivedReuse": [
+    "native-owner-contracts.json canonical BaseObjectPtr/uv_close ownership evidence",
+    "async-resource-contracts.json original AsyncWrap class/unit and owner traversal",
+    "environment-contracts.json foreground scheduling/cleanup ownership",
+    "backend-binding-survey.json historical19family/33PR salvage links"
+  ],
+  "runtime": {
+    "kind": "Prior79driver regression run against new artifact only; no positive request producer proof",
+    "driversPerHost": 79,
+    "newDrivers": 0,
+    "previousSourcesByteIdentical": true,
+    "hosts": [
+      "node",
+      "chromium",
+      "firefox",
+      "webkit"
+    ],
+    "totalGuestDrivers": 316,
+    "program": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-request-owners/native-owner-probe.wasm",
+      "bytes": 59981424,
+      "sha256": "a28691b17ec73d088cbccffdcb9ae1f2ebca3198c1507c6543d7a5f0e29963e1"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    }
+  },
+  "remaining": [
+    "Actual native waiting counters and complete original request producers activated only after genuine bootstrap",
+    "Accepted/rejected dispatch, completion/reset/reuse and cancellation races with native async context and wrapper GC",
+    "Original HandleWrap class/unit and real handle queue/ref/close lifecycle; not integrated here",
+    "Full environment request cleanup, workers/fork/security/reentry/OOM and exceptional shutdown",
+    "Remaining20 normal native dependencies, genuine startup/CJS/ESM/fourhosts, full backend catalog/ordered roadmap and explicit review"
+  ],
+  "requestQueueStorageImplemented": true,
+  "requestHeadersCompile": true,
+  "positiveRequestDispatchValidated": false,
+  "requestLifecycleComplete": false,
+  "handleWrapImplemented": false,
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamNodeAlgorithmsRewritten": false,
+  "functionExcerptsImported": false,
+  "sourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false,
+  "handleUnitFollowup": {
+    "packageRevision": 72,
+    "catalog": "handle-owners-contracts.json",
+    "evidence": "handle-owners-engine-check.json",
+    "scope": "Whole original HandleWrap class/unit and actual intrusive storage compile; HasProperty and generic class-cache primitives tested on four hosts. Positive original handle/request lifecycle and complete template factory/callback paths still incomplete."
+  }
+}

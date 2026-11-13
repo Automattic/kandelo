@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "packageRevision": 73,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Owning SpiderMonkey template inheritance interface and native receiver signature ancestry. Generic native controls only; original HandleWrap factory, variable internal-field layouts and full template API remain incomplete.",
+  "completeBindingContract": false,
+  "evidence": "template-inheritance-engine-check.json",
+  "staticConsumerCandidates": "template-inheritance-consumers.json",
+  "upstreamConsumers": [
+    {
+      "path": "src/handle_wrap.cc",
+      "entry": "HandleWrap.GetConstructorTemplate",
+      "contract": "Original HandleWrap template inherits the original AsyncWrap constructor template; cached per actual IsolateData. Full original factory remains unactivated."
+    },
+    {
+      "path": "src/async_wrap.cc",
+      "entry": "AsyncWrap.GetConstructorTemplate",
+      "contract": "Original parent class and signed native methods. Full factory requires AsyncWrap internal-field layout and callback/async-context prerequisites."
+    },
+    {
+      "path": "src/pipe_wrap.cc",
+      "entry": "PipeWrap.Initialize",
+      "contract": "Original Pipe inherits LibuvStreamWrap/HandleWrap/AsyncWrap; retained native oracle exercises actual Pipe hierarchy, native signatures and two real close callbacks. Reference only, no Kandelo Pipe support claim."
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "FunctionTemplate.Inherit(parent)",
+      "owner": "SpiderMonkey embedding opaque non-Value template records",
+      "contract": "Actual traced parent-template slot; child must not be published. Parent may already be materialized; unpublished child can be reparented. Cycles/self-parenting rejected by native invariants. No public prototype property is consulted for native ancestry."
+    },
+    {
+      "name": "FunctionTemplate.GetFunction(context)",
+      "owner": "SpiderMonkey function creation and JS prototype operations",
+      "contract": "Materialize parent in the same selected context, read its current prototype value and set child instance-prototype parent using actual engine operations. Child constructor function retains its context Function.prototype. Static data and ordinary parent instance data are not copied; only leaf native constructor callback executes."
+    },
+    {
+      "name": "Signature.New/native receiver validation",
+      "owner": "SpiderMonkey native instance class and traced template ancestry",
+      "contract": "Walk actual native brand/template parent graph. Accept true descendants and JavaScript subclasses even after public prototype mutation; reject ordinary objects, public-prototype forgeries, ordinary proxies and ancestor instances passed to descendant signatures."
+    }
+  ],
+  "ownershipAndErrors": {
+    "parents": "Live descendants trace actual parent records and payloads. Dropped unpublished hierarchy is collectible once actual handles and completed setup frames are gone. No native persistent JS-root graph is introduced.",
+    "contexts": "Existing WeakMap per-context instantiation cache and selected-context prototypes remain; rooted/wrapped metadata and signature ancestry are shared across context wrappers.",
+    "reentry": "Real callback property getters may reenter, drop persistent template tokens, run shrinking GC and throw the exact original object. Native callback frames preserve roots and exception identity.",
+    "errors": "Original API mutation assertions and checked object-or-null parent prototype remain. Receiver mismatch raises actual callee-context TypeError. No parent callback is synthesized."
+  },
+  "runtime": {
+    "driversPerHost": 88,
+    "newPrimitiveDriversPerHost": 5,
+    "previousDriversPerHost": 83,
+    "previousSourcesByteIdentical": true,
+    "hosts": [
+      "node",
+      "chromium",
+      "firefox",
+      "webkit"
+    ],
+    "totalGuestDrivers": 352,
+    "program": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-template-inheritance/native-owner-probe.wasm",
+      "bytes": 59998444,
+      "sha256": "1b336e7aa32a04a01e1ca402ec5b5364f1a6e04a0cabc81d25664d84d4fee442"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "scope": "Focused inheritance/GC/context/receiver controls and unchanged prior regressions; private profile rejects process_methods."
+  },
+  "nativeReference": {
+    "evidence": ".context/node-template-inheritance/inheritance-reference.json",
+    "controls": 8,
+    "realCloseCallbacks": 2,
+    "identityVerifiedImmediatelyBeforeChild": true,
+    "scope": "Pinned native Node Pipe inheritance behavior only; no V8 implementation or heap used by Kandelo."
+  },
+  "remaining": [
+    "Full original constructor factory and callback activation: InternalMakeCallback/async context and further dependencies remain missing",
+    "Variable internal-field layouts: only0or2fields currently supported; AsyncWrap requires its additional field, distinct from the engine brand slot",
+    "Template accessor/attribute/security/recursive/OOM/worker/fork and complete lifetime coverage remains incomplete",
+    "Positive original handle/request producer/ref/close/cancel/callback lifecycle and full pending-resource shutdown after genuine bootstrap",
+    "Remaining18 normal linker symbols, genuine startup/CJS/ESM/fourhosts, complete backend catalog/ordered roadmap and explicit review"
+  ],
+  "nativeTemplateInheritanceImplemented": true,
+  "originalConstructorFactoryRuntimeValidated": false,
+  "positiveHandleLifecycleValidated": false,
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamNodeAlgorithmsRewritten": false,
+  "functionExcerptsImported": false,
+  "nativeV8HeapOrSerializationUsed": false,
+  "sourcePolicySatisfied": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false,
+  "internalFieldFollowup": {
+    "packageRevision": 74,
+    "catalog": "internal-field-contracts.json",
+    "evidence": "internal-field-engine-check.json",
+    "scope": "Actual independent per-instance field storage, traced concrete Data kinds and tagged native pointers validated with generic native fixtures on four hosts. Whole original BaseObject class/unit and its field layout, full resource factories and callback graph remain incomplete."
+  }
+}

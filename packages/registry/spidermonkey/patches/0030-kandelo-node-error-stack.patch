@@ -1,0 +1,236 @@
+--- a/js/public/Stack.h
++++ b/js/public/Stack.h
+@@ -143,7 +143,25 @@
+ extern JS_PUBLIC_API bool CaptureCurrentStack(
+     JSContext* cx, MutableHandleObject stackp,
+     StackCapture&& capture = StackCapture(AllFrames()),
++    HandleObject startAfter = nullptr, bool countAfterStart = false);
++
++/**
++ * Optional embedding policy for Error stacks. A limit hook sets handled only
++ * for realms it owns; zero then captures no frames. The created hook can
++ * install real lazy preparation/accessors using the captured SavedFrame chain.
++ * Other realms keep the original engine behavior. Hooks must preserve pending
++ * exceptions and return false on failure; they must not fabricate frame data.
++ */
++using ErrorStackLimitHook = bool (*)(JSContext*, uint32_t* limit, bool* handled);
++using ErrorStackCreatedHook = bool (*)(JSContext*, HandleObject target,
++                                      HandleObject stack, bool* handled);
++extern JS_PUBLIC_API void SetEmbeddingErrorStackHooks(
++    JSRuntime* rt, ErrorStackLimitHook limit, ErrorStackCreatedHook created);
++extern JS_PUBLIC_API bool CaptureCurrentStackForError(
++    JSContext* cx, MutableHandleObject stack, uint32_t fallbackLimit,
+     HandleObject startAfter = nullptr);
++extern JS_PUBLIC_API bool InitEmbeddingErrorStack(
++    JSContext* cx, HandleObject target, HandleObject stack, bool* handled);
+ 
+ /**
+  * Returns true if capturing stack trace data to associate with an asynchronous
+--- a/js/src/vm/Runtime.h
++++ b/js/src/vm/Runtime.h
+@@ -1072,6 +1072,8 @@
+ 
+   // A hook that implements the abstract operations
+   // HostGetImportMetaProperties and HostFinalizeImportMeta.
++  js::MainThreadData<JS::ErrorStackLimitHook> embeddingErrorStackLimit{nullptr};
++  js::MainThreadData<JS::ErrorStackCreatedHook> embeddingErrorStackCreated{nullptr};
+   js::MainThreadData<JS::ModuleMetadataHook> moduleMetadataHook;
+ 
+   // A hook that implements the abstract operation
+--- a/js/src/vm/SavedStacks.cpp
++++ b/js/src/vm/SavedStacks.cpp
+@@ -1046,6 +1046,40 @@
+          (lastFrame || sb.append('\n'));
+ }
+ 
++JS_PUBLIC_API void SetEmbeddingErrorStackHooks(
++    JSRuntime* rt, ErrorStackLimitHook limit, ErrorStackCreatedHook created) {
++  js::AssertHeapIsIdle();
++  rt->embeddingErrorStackLimit = limit;
++  rt->embeddingErrorStackCreated = created;
++}
++
++JS_PUBLIC_API bool CaptureCurrentStackForError(
++    JSContext* cx, MutableHandleObject stack, uint32_t fallbackLimit,
++    HandleObject startAfter) {
++  js::AssertHeapIsIdle();
++  CHECK_THREAD(cx);
++  bool handled = false;
++  uint32_t limit = fallbackLimit;
++  auto hook = cx->runtime()->embeddingErrorStackLimit.ref();
++  if (hook && !hook(cx, &limit, &handled)) return false;
++  // MaxFrames(0) means unlimited to SavedStacks, not an empty error stack.
++  if (handled && limit == 0) {
++    stack.set(nullptr);
++    return true;
++  }
++  return CaptureCurrentStack(cx, stack, StackCapture(MaxFrames(limit)), startAfter,
++                             handled);
++}
++
++JS_PUBLIC_API bool InitEmbeddingErrorStack(
++    JSContext* cx, HandleObject target, HandleObject stack, bool* handled) {
++  js::AssertHeapIsIdle();
++  CHECK_THREAD(cx);
++  *handled = false;
++  auto hook = cx->runtime()->embeddingErrorStackCreated.ref();
++  return !hook || hook(cx, target, stack, handled);
++}
++
+ JS_PUBLIC_API bool BuildStackString(JSContext* cx, JSPrincipals* principals,
+                                     HandleObject stack,
+                                     MutableHandleString stringp, size_t indent,
+@@ -1325,7 +1359,7 @@
+ bool SavedStacks::saveCurrentStack(
+     JSContext* cx, MutableHandle<SavedFrame*> frame,
+     JS::StackCapture&& capture /* = JS::StackCapture(JS::AllFrames()) */,
+-    HandleObject startAt /* nullptr */) {
++    HandleObject startAt /* nullptr */, bool countAfterStart /* = false */) {
+   MOZ_RELEASE_ASSERT(cx->realm());
+   MOZ_DIAGNOSTIC_ASSERT(&cx->realm()->savedStacks() == this);
+ 
+@@ -1336,7 +1370,7 @@
+   }
+ 
+   AutoGeckoProfilerEntry labelFrame(cx, "js::SavedStacks::saveCurrentStack");
+-  return insertFrames(cx, frame, std::move(capture), startAt);
++  return insertFrames(cx, frame, std::move(capture), startAt, countAfterStart);
+ }
+ 
+ bool SavedStacks::copyAsyncStack(JSContext* cx, HandleObject asyncStack,
+@@ -1413,7 +1447,7 @@
+ 
+ bool SavedStacks::insertFrames(JSContext* cx, MutableHandle<SavedFrame*> frame,
+                                JS::StackCapture&& capture,
+-                               HandleObject startAtObj) {
++                               HandleObject startAtObj, bool countAfterStart) {
+   MOZ_ASSERT_IF(startAtObj, startAtObj->isCallable());
+ 
+   // In order to look up a cached SavedFrame object, we need to have its parent
+@@ -1564,7 +1598,11 @@
+       }
+     }
+ 
+-    if (captureIsSatisfied(cx, principals, location.source(), capture)) {
++    // Node's error limit counts frames after constructor trimming. Original
++    // callers retain the engine's existing pre-trim budgeting policy.
++    bool countThisFrame = !countAfterStart || seenStartAt;
++    if (countThisFrame &&
++        captureIsSatisfied(cx, principals, location.source(), capture)) {
+       break;
+     }
+ 
+@@ -1655,7 +1693,7 @@
+       seenCached = false;
+     }
+ 
+-    if (capture.is<JS::MaxFrames>()) {
++    if (countThisFrame && capture.is<JS::MaxFrames>()) {
+       capture.as<JS::MaxFrames>().maxFrames--;
+     }
+   }
+--- a/js/src/jsexn.cpp
++++ b/js/src/jsexn.cpp
+@@ -222,8 +222,7 @@
+ };
+ 
+ bool js::CaptureStack(JSContext* cx, MutableHandleObject stack) {
+-  return CaptureCurrentStack(
+-      cx, stack, JS::StackCapture(JS::MaxFrames(MAX_REPORTED_STACK_DEPTH)));
++  return JS::CaptureCurrentStackForError(cx, stack, MAX_REPORTED_STACK_DEPTH);
+ }
+ 
+ JSString* js::ComputeStackString(JSContext* cx) {
+--- a/js/src/vm/ErrorObject.cpp
++++ b/js/src/vm/ErrorObject.cpp
+@@ -674,6 +674,8 @@
+     return nullptr;
+   }
+ 
++  bool handled;
++  if (!JS::InitEmbeddingErrorStack(cx, errObject, stack, &handled)) return nullptr;
+   return errObject;
+ }
+ 
+@@ -1103,10 +1105,15 @@
+   }
+ 
+   RootedObject stack(cx);
+-  if (!CaptureCurrentStack(
+-          cx, &stack, JS::StackCapture(JS::MaxFrames(MAX_REPORTED_STACK_DEPTH)),
+-          caller)) {
+-    return false;
++  if (!JS::CaptureCurrentStackForError(cx, &stack, MAX_REPORTED_STACK_DEPTH,
++                                       caller)) {
++    return false;
++  }
++  bool handled;
++  if (!JS::InitEmbeddingErrorStack(cx, obj, stack, &handled)) return false;
++  if (handled) {
++    args.rval().setUndefined();
++    return true;
+   }
+ 
+   RootedString stackString(cx);
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -30,6 +30,7 @@
+ SOURCES += [
+     "node-upstream/builtin-compiler.cpp",
+     "node-upstream/builtin-source-registry.cpp",
++    "node-upstream/error-stack.cpp",
+     "node-upstream/module-wrap.cpp",
+     "node-upstream/per-context.cpp",
+     "node-upstream/private-key-test-api.cpp",
+--- a/js/src/shell/jsshell.h
++++ b/js/src/shell/jsshell.h
+@@ -215,6 +215,7 @@
+   // External owner root released with this runtime, never by a JS finalizer.
+   JS::PersistentRootedObject upstreamNodeRuntime;
+   bool upstreamModuleHooksInstalled = false;
++  bool upstreamErrorStackPreparing = false;
+   JS::ModuleResolveHook upstreamPreviousModuleResolve = nullptr;
+   JS::ModuleMetadataHook upstreamPreviousModuleMetadata = nullptr;
+   JS::ModuleDynamicImportHook upstreamPreviousModuleDynamicImport = nullptr;
+--- a/js/src/vm/SavedStacks.h
++++ b/js/src/vm/SavedStacks.h
+@@ -168,7 +168,7 @@
+   [[nodiscard]] bool saveCurrentStack(
+       JSContext* cx, MutableHandle<SavedFrame*> frame,
+       JS::StackCapture&& capture = JS::StackCapture(JS::AllFrames()),
+-      HandleObject startAt = nullptr);
++      HandleObject startAt = nullptr, bool countAfterStart = false);
+   [[nodiscard]] bool copyAsyncStack(
+       JSContext* cx, HandleObject asyncStack, HandleString asyncCause,
+       MutableHandle<SavedFrame*> adoptedStack,
+@@ -220,7 +220,8 @@
+   [[nodiscard]] bool insertFrames(JSContext* cx,
+                                   MutableHandle<SavedFrame*> frame,
+                                   JS::StackCapture&& capture,
+-                                  HandleObject startAt);
++                                  HandleObject startAt,
++                                  bool countAfterStart);
+   [[nodiscard]] bool adoptAsyncStack(
+       JSContext* cx, MutableHandle<SavedFrame*> asyncStack,
+       Handle<JSAtom*> asyncCause, const mozilla::Maybe<size_t>& maxFrameCount);
+--- a/js/src/jsapi.cpp
++++ b/js/src/jsapi.cpp
+@@ -4984,7 +4984,8 @@
+ JS_PUBLIC_API bool JS::CaptureCurrentStack(
+     JSContext* cx, JS::MutableHandleObject stackp,
+     JS::StackCapture&& capture /* = JS::StackCapture(JS::AllFrames()) */,
+-    JS::HandleObject startAt /* = nullptr*/) {
++    JS::HandleObject startAt /* = nullptr*/,
++    bool countAfterStart /* = false */) {
+   AssertHeapIsIdle();
+   CHECK_THREAD(cx);
+   MOZ_RELEASE_ASSERT(cx->realm());
+@@ -4992,7 +4993,7 @@
+   Realm* realm = cx->realm();
+   Rooted<SavedFrame*> frame(cx);
+   if (!realm->savedStacks().saveCurrentStack(cx, &frame, std::move(capture),
+-                                             startAt)) {
++                                             startAt, countAfterStart)) {
+     return false;
+   }
+   stackp.set(frame.get());

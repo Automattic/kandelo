@@ -1,0 +1,123 @@
+--- a/js/src/vm/ArrayBufferObject.h
++++ b/js/src/vm/ArrayBufferObject.h
+@@ -194,7 +194,8 @@
+   static const uint8_t FIRST_VIEW_SLOT = 2;
+   static const uint8_t FLAGS_SLOT = 3;
+ 
+-  static const uint8_t RESERVED_SLOTS = 4;
++  static const uint8_t DETACH_KEY_SLOT = 4;
++  static const uint8_t RESERVED_SLOTS = 5;
+ 
+   // Alignment for ArrayBuffer objects. Must match the largest possible
+   // TypedArray scalar to ensure TypedArray and Atomics accesses are always
+@@ -572,10 +573,15 @@
+   bool isLengthPinned() const { return flags() & PINNED_LENGTH; }
+   bool isPreparedForAsmJS() const { return flags() & FOR_ASMJS; }
+ 
+-  // Only WASM and asm.js buffers have a non-undefined [[ArrayBufferDetachKey]].
+-  //
+-  // https://tc39.es/ecma262/#sec-properties-of-the-arraybuffer-instances
+-  bool hasDefinedDetachKey() const { return isWasm() || isPreparedForAsmJS(); }
++  // Preserve native embedding keys independently of ordinary JS properties.
++  // Existing buffer kinds and fixed flag/data offsets retain their meanings.
++  JS::Value kandeloDetachKey() const { return getFixedSlot(DETACH_KEY_SLOT); }
++  void setKandeloDetachKey(JS::HandleValue key) {
++    setFixedSlot(DETACH_KEY_SLOT, key);
++  }
++  bool hasDefinedDetachKey() const {
++    return isWasm() || isPreparedForAsmJS() || !kandeloDetachKey().isUndefined();
++  }
+ 
+   // WebAssembly support:
+ 
+@@ -642,6 +648,7 @@
+     MOZ_ASSERT(contents.isAligned(byteLength));
+     setByteLength(byteLength);
+     setFlags(0);
++    setFixedSlot(DETACH_KEY_SLOT, JS::UndefinedValue());
+     setFirstView(nullptr);
+     setDataPointer(contents);
+   }
+--- a/js/src/vm/ArrayBufferObject.cpp
++++ b/js/src/vm/ArrayBufferObject.cpp
+@@ -472,7 +472,9 @@
+   // Step 8.
+   if (arrayBuffer->hasDefinedDetachKey()) {
+     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+-                              JSMSG_WASM_NO_TRANSFER);
++                              arrayBuffer->kandeloDetachKey().isUndefined()
++                                  ? JSMSG_WASM_NO_TRANSFER
++                                  : JSMSG_ARRAYBUFFER_DETACH_KEY);
+     return nullptr;
+   }
+ 
+@@ -2671,6 +2673,13 @@
+ /* static */ ArrayBufferObject::BufferContents
+ ArrayBufferObject::extractStructuredCloneContents(
+     JSContext* cx, Handle<ArrayBufferObject*> buffer) {
++  if (buffer->hasDefinedDetachKey()) {
++    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
++                              buffer->kandeloDetachKey().isUndefined()
++                                  ? JSMSG_WASM_NO_TRANSFER
++                                  : JSMSG_ARRAYBUFFER_DETACH_KEY);
++    return BufferContents::createFailed();
++  }
+   if (buffer->isLengthPinned()) {
+     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+                               JSMSG_ARRAYBUFFER_LENGTH_PINNED);
+@@ -3256,7 +3265,9 @@
+ 
+   if (unwrappedBuffer->hasDefinedDetachKey()) {
+     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+-                              JSMSG_WASM_NO_TRANSFER);
++                              unwrappedBuffer->kandeloDetachKey().isUndefined()
++                                  ? JSMSG_WASM_NO_TRANSFER
++                                  : JSMSG_ARRAYBUFFER_DETACH_KEY);
+     return false;
+   }
+   if (unwrappedBuffer->isLengthPinned()) {
+@@ -3431,7 +3442,9 @@
+ 
+   if (unwrappedBuffer->hasDefinedDetachKey()) {
+     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
+-                              JSMSG_WASM_NO_TRANSFER);
++                              unwrappedBuffer->kandeloDetachKey().isUndefined()
++                                  ? JSMSG_WASM_NO_TRANSFER
++                                  : JSMSG_ARRAYBUFFER_DETACH_KEY);
+     return nullptr;
+   }
+ 
+--- a/js/src/vm/StructuredClone.cpp
++++ b/js/src/vm/StructuredClone.cpp
+@@ -2349,6 +2349,11 @@
+         return false;
+       }
+ 
++      if (!arrayBuffer->kandeloDetachKey().isUndefined()) {
++        JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
++                                  JSMSG_ARRAYBUFFER_DETACH_KEY);
++        return false;
++      }
+       if (arrayBuffer->isPreparedForAsmJS()) {
+         reportDataCloneError(JS_SCERR_WASM_NO_TRANSFER);
+         return false;
+--- a/js/public/friend/ErrorNumbers.msg
++++ b/js/public/friend/ErrorNumbers.msg
+@@ -496,6 +496,7 @@
+ MSG_DEF(JSMSG_WASM_BAD_COMPILE_OPTIONS, 0, JSEXN_TYPEERR,    "argument cannot be converted to a CompileOptions")
+ MSG_DEF(JSMSG_WASM_DUPLICATE_BUILTIN,   0, JSEXN_TYPEERR,    "duplicate builtin")
+ MSG_DEF(JSMSG_WASM_BAD_CODEPOINT,       0, JSEXN_WASMRUNTIMEERROR,     "bad codepoint")
++MSG_DEF(JSMSG_ARRAYBUFFER_DETACH_KEY, 0, JSEXN_TYPEERR, "ArrayBuffer detach key does not match")
+ MSG_DEF(JSMSG_WASM_NO_TRANSFER,        0, JSEXN_TYPEERR,     "cannot transfer WebAssembly/asm.js ArrayBuffer")
+ MSG_DEF(JSMSG_WASM_TEXT_FAIL,          1, JSEXN_SYNTAXERR,   "wasm text error: {0}")
+ MSG_DEF(JSMSG_WASM_MISSING_MAXIMUM,    0, JSEXN_TYPEERR,     "'shared' is true but maximum is not specified")
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -29,6 +29,7 @@
+ # registry outside unified translation units.
+ SOURCES += [
+     "node-upstream/async-wrap.cpp",
++    "node-upstream/buffer-memory.cpp",
+     "node-upstream/builtin-compiler.cpp",
+     "node-upstream/builtin-source-registry.cpp",
+     "node-upstream/codecs.cpp",

@@ -1,0 +1,76 @@
+{
+  "completedAt": "2026-11-10T20:36:49.673137+00:00",
+  "scope": "pinned native Node reference only; no Kandelo guest/host conformance",
+  "executableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "controlPath": "tests/nodejs/upstream/private-key-native-controls.cjs",
+  "controlSha256": "b58d13fdff1ea0658f935b239e1fc6b8493da5258fa069b543a15bd00ee26c26",
+  "exitCode": 0,
+  "stderrSha256": "e9402f880a75eb18502f8562377ffc3cd7e639ff1da91047d61cef3a284dc870",
+  "nativeResult": {
+    "kind": "native-reference-only",
+    "version": "v26.13.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "execArgv": [
+      "--expose-internals"
+    ],
+    "v8": "14.6.202.34-node.40",
+    "cases": 11,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "native-private-key-identity",
+        "status": "pass"
+      },
+      {
+        "name": "hidden-from-normal-reflection",
+        "status": "pass"
+      },
+      {
+        "name": "private-state-is-not-inherited",
+        "status": "pass"
+      },
+      {
+        "name": "new-private-write-after-prevent-extensions",
+        "status": "pass"
+      },
+      {
+        "name": "private-write-and-update-after-freeze",
+        "status": "pass"
+      },
+      {
+        "name": "private-default-descriptor",
+        "status": "pass"
+      },
+      {
+        "name": "missing-private-proxy-read-bypasses-trap",
+        "status": "pass"
+      },
+      {
+        "name": "first-private-proxy-write-rejects-without-trap",
+        "status": "pass"
+      },
+      {
+        "name": "absent-private-proxy-delete-bypasses-trap",
+        "status": "pass"
+      },
+      {
+        "name": "public-untransferable-marker-is-own-only",
+        "status": "pass"
+      },
+      {
+        "name": "public-untransferable-marker-on-frozen-object",
+        "status": "pass"
+      }
+    ],
+    "limits": [
+      "No SpiderMonkey execution",
+      "No native SetPrivate or initialized-proxy delete coverage",
+      "No cross-realm/security-wrapper/revoked-proxy/GC coverage",
+      "Not full private-key or core-module conformance"
+    ]
+  },
+  "guestStartupRun": false,
+  "fourHostConformance": false
+}

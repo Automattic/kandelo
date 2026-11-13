@@ -1,0 +1,3115 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T07:45:22.253651+00:00",
+  "scope": "Partial native task_queue binding/checkpoint integration on four hosts, native enum constants and prior Node controls; not upstream Node startup or full async/fatal policy compatibility",
+  "sourceHeadAtBuild": "98e46e5ee6c6f46351a68d9c7ab52652d611f4c6",
+  "testedInputsWereUncommitted": true,
+  "package": {
+    "name": "spidermonkey",
+    "version": "140.11.0esr",
+    "revision": 28,
+    "kernelAbiFloor": 56,
+    "cacheKey": "881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe"
+  },
+  "libuv": {
+    "version": "1.52.1",
+    "revision": 3,
+    "cacheKey": "353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a",
+    "archive": {
+      "path": "/Users/brandon/.cache/kandelo/libs/libuv-1.52.1-rev3-wasm32-abi56-353eefe0acc41c0e528759fa56f4778cc819a88a902c4f36023210870cc0102a/lib/libuv.a",
+      "bytes": 579198,
+      "sha256": "6f792478cf73eecad95b5bfd2ad1c29625e8983f3c66d113d68e132266a4d9bd"
+    },
+    "sameArchiveBytesAsStandaloneRevision2": true,
+    "kandeloHeaderSelectionPrecedesLegacyLinuxMacros": true,
+    "widerSpiderMonkeyLinuxTargetingDebtUnchanged": true
+  },
+  "artifacts": {
+    "program": {
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+      "bytes": 51311732,
+      "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "retainedProgram": {
+      "path": ".context/node-task-queue-impl/engine-final.wasm.gz",
+      "bytes": 16789705,
+      "sha256": "f211765ae5921d6693b26820ba938bd56fc5496d5e858b8af2d9a46dffd49dca"
+    },
+    "retainedPriorProgram": {
+      "path": ".context/node-task-queue-impl/engine-before-exit-code.wasm.gz",
+      "bytes": 16789408,
+      "sha256": "c29cd750eb7f414fdde471ebd6f87f8f7f20937e5059ec6f098f445533f0fb0d"
+    }
+  },
+  "testedInputs": [
+    {
+      "path": "packages/registry/libuv/README.md",
+      "bytes": 4705,
+      "sha256": "204356fd106850fa4a58b39b3b2d699bcce978e8b5a92da1fc7888f46ca37c5c"
+    },
+    {
+      "path": "packages/registry/libuv/build-libuv.sh",
+      "bytes": 1412,
+      "sha256": "d5bc6c00fb33a48eb2974420471d5f690ac7846a7f4b428b7f8a8a5fe7ddf6c7"
+    },
+    {
+      "path": "packages/registry/libuv/build.toml",
+      "bytes": 536,
+      "sha256": "6e89a6a5c594d7fc4cba62c656983763772b6b10baf7efc2e9b4758119ebdfc6"
+    },
+    {
+      "path": "packages/registry/libuv/package.toml",
+      "bytes": 1833,
+      "sha256": "8d2febf060cc5cc646d6a6edd12889fdf0d337b0edebfb7b4098da28ba6872fa"
+    },
+    {
+      "path": "packages/registry/libuv/patches/0001-kandelo-posix-backend.patch",
+      "bytes": 1730,
+      "sha256": "214265144499c42db0769900c44561282592e73785b2f010b2cdfd9a771631f0"
+    },
+    {
+      "path": "packages/registry/libuv/patches/0002-typed-pthread-entry.patch",
+      "bytes": 1710,
+      "sha256": "f67cf80f289d7f101134de83d27262f09fb87c39936aa903a1d3dde45354d346"
+    },
+    {
+      "path": "packages/registry/libuv/src/kandelo-proctitle.c",
+      "bytes": 600,
+      "sha256": "06dc646f327c3895860cfdf7f892cfe4aed69d3cf19392c524e1259424c710d8"
+    },
+    {
+      "path": "packages/registry/libuv/test/CMakeLists.txt",
+      "bytes": 329,
+      "sha256": "e74af959942f623ddf83b7908bc233bbb2b79d7bf7c687630c616c74f382df2d"
+    },
+    {
+      "path": "packages/registry/libuv/test/backend-controls.c",
+      "bytes": 10519,
+      "sha256": "c746b6617a614a7f946de46b0105171f4e16299b2c90edd89ec523d05edc8318"
+    },
+    {
+      "path": "packages/registry/libuv/test/build-controls.sh",
+      "bytes": 1102,
+      "sha256": "c740a257084465bc466577b5f2be51bc9bb8089aaf2c41a626d51da347638151"
+    },
+    {
+      "path": "packages/registry/spidermonkey/.gitignore",
+      "bytes": 70,
+      "sha256": "5e9787e198e5bac6127ab218beed5eadda6ac1177333c39f5576e45d0d2677d2"
+    },
+    {
+      "path": "packages/registry/spidermonkey/README.md",
+      "bytes": 2073,
+      "sha256": "6711d677c77cd8843325b4b017c3a16fe47783f2ccf51c9633e92a39f966850e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/VERSION",
+      "bytes": 12,
+      "sha256": "10e5db40f954d0308271def097e400231bc0ddb190d96c655dad60531974b7a3"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build-spidermonkey.sh",
+      "bytes": 21313,
+      "sha256": "752573d6ba11363c146d7f3eebb5a58afd8c52e2f2aa968758a8309b1f886523"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build.toml",
+      "bytes": 769,
+      "sha256": "38b9316159193790135bca887f07bf0af65fdb820b85b905cef2d18afd102606"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-compat/adapter.js",
+      "bytes": 20349,
+      "sha256": "ef4422f073687abbd5dbd0099f59204b8733c86b0261cb3017f2d57c1e22801f"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-compat/suffix.js",
+      "bytes": 6,
+      "sha256": "49fac5a3039bbad287ac815d533cf3abd4b4217920cbe2c93bb34a6e30003142"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/README.md",
+      "bytes": 5687,
+      "sha256": "1981126d668b4ebc4e13d60e7407e04f0193f5c62a8929c5f361631963bb6e35"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.cpp",
+      "bytes": 3597,
+      "sha256": "276bb35c7e077939924671f1ddd86037c6a0ec2addd47dbae93b877605fd7faa"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.h",
+      "bytes": 870,
+      "sha256": "1edb63c5fdd933ab1d0466e079803d47f7e3fd747ccc2f59469cf900c5c1a409"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/error-stack.cpp",
+      "bytes": 21947,
+      "sha256": "637050953634ce7a2beac283f7db88bde274dc07205beaa41d0e7e40d9051a2e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/error-stack.h",
+      "bytes": 486,
+      "sha256": "1fe75f2166a86f7127cc25ffcd560e5e909af934320961454220c872df15b40b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/module-wrap.cpp",
+      "bytes": 32778,
+      "sha256": "27e52a5e7ba0550febfec9f4968e607983321dec44e516c0b20541a86763ebf5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/module-wrap.h",
+      "bytes": 394,
+      "sha256": "e13bd86550d609cf28634511414e3d7ea708234c11a2dbd751952120ba367575"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/per-context.cpp",
+      "bytes": 19489,
+      "sha256": "c49361bc21d2b19f55b637eb74ef5e6886ca33bd1cf149cdcbfa9de68bd283bd"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/per-context.h",
+      "bytes": 2515,
+      "sha256": "c2faeea5d31ffb83eaf80be2ca3d940ab7b01da68569cd54870523eaeba2622d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/prepare-build.sh",
+      "bytes": 3194,
+      "sha256": "8699dbf7e9d3986e01df4663d48dbac42a52b8338127ae19950dee46abb4e16c"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/private-key-test-api.cpp",
+      "bytes": 11163,
+      "sha256": "ebf3dd6ea1f877e2ca77e0c5868e4c8750ec1e82025f832f1f98ef260fe3b13b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/private-key-test-api.h",
+      "bytes": 383,
+      "sha256": "62f4b86bcb98b3c7c5fdf7053ef567199040c5e64fb1274a94d859d5fd9deaa8"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
+      "bytes": 23594,
+      "sha256": "1206c2a608a8a94402dd10a79178d092080b73f282d088c9dfde697f0792db42"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/realm.h",
+      "bytes": 819,
+      "sha256": "e13e1be2827585feaec1f6c584038fc1d8724e003fdd20a510dd40de70d9d36d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/task-queue.cpp",
+      "bytes": 16975,
+      "sha256": "fc486c7947e233db28812521500d2c4af68acf842d7c8d066c9e7b9d1f9830a0"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/task-queue.h",
+      "bytes": 959,
+      "sha256": "424bcd4a85fcba5065011cac7a2baccb043641ff4dc1c0c2b71ffee3de40c740"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/timers.cpp",
+      "bytes": 22377,
+      "sha256": "4ffd586c98ace235fd4fcbb4680a24195a2c6a2a75a4f3333e6e2dabdd75ade5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/timers.h",
+      "bytes": 918,
+      "sha256": "6e3ebef72177dc9acf643e1ecd5822c84105c13ab0302c6d9b7f99ea61d9775d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/package.toml",
+      "bytes": 2570,
+      "sha256": "6fb426565d6805e5a4ed931185b8d273ccd846e110b66e394fd6f6641c072b58"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0001-allow-static-cxx-runtime-for-wasm-linux.patch",
+      "bytes": 718,
+      "sha256": "d0c2ccf64c46d11cc512011b8b1b3b72af2e7f6e3bf65b96bd93d41c2c6c9e2e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0002-map-kandelo-wasm-linux-rust-target.patch",
+      "bytes": 1878,
+      "sha256": "7deeacd2052e7a964aa5ac0147bc313c1d28b5bda7e817fda705660203eecbcf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0003-jsonprinter-size-t-wasm32.patch",
+      "bytes": 1188,
+      "sha256": "e259107555c745cff184092667548679f9e7e8993e6ab329e3e3afb65c946ff4"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0004-disable-wasm32-return-address-stackwalk.patch",
+      "bytes": 865,
+      "sha256": "d075352ab5f8ab76620a964891a81063e44543dda10d4b1235da681a9c1c1ea6"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0005-getrandom-custom-backend-wasm32.patch",
+      "bytes": 1342,
+      "sha256": "615eb35b13d9ee74c5bcb5d3b8e4768dd817be71e9f57f310cbe6234c4437aa9"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0006-randomnum-use-sys-random-on-wasm32.patch",
+      "bytes": 489,
+      "sha256": "03c2496b0e6ddc4bafd8f3b1e84a0034eb0c8228517a9a3b8c3dc921326ae8c7"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0007-skip-elf-network-check-for-wasm-target.patch",
+      "bytes": 704,
+      "sha256": "778bc6bc2817ed36de9c325f1c20d06b412f45b8ac6e6da94c9c6120a6395ef6"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0008-use-wasm-trap-for-moz-crash.patch",
+      "bytes": 2072,
+      "sha256": "59a87abf141cc4bf40acf11c48ab662ec1ac9e5be896b997bebcf42904d6b95e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0009-use-wasm-frame-address-for-native-stack-base.patch",
+      "bytes": 1095,
+      "sha256": "5e954b61c692e799e216c8f732cc936ad3be1b8e0aef0db2459f68748cf99cc0"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0010-use-wasm-icu-data-section-syntax.patch",
+      "bytes": 567,
+      "sha256": "d655d6fc1b13e1b892c01be43ccf421524d8bf45fa0bea17dc3a51967f6309bf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0011-heap-autorunparallel-task-on-wasm32.patch",
+      "bytes": 2616,
+      "sha256": "62147693a4932d0f431ea4739d9bb73bc51126dceda735dec5314e306ad78637"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0012-kandelo-node-compat-shell-entry.patch",
+      "bytes": 68730,
+      "sha256": "ab3eaea6ceffed9c752cac4f176bec517608f695f274f93e4cb4c9c252ec4d1f"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0013-kandelo-join-shell-workers.patch",
+      "bytes": 1670,
+      "sha256": "f0aa3c64bddba28865089c5796fff310050380e6b7cc85239e6e8b55ccfe9923"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0014-disable-mozglue-interposers-on-wasm32.patch",
+      "bytes": 617,
+      "sha256": "f0926fbbcbf085fea29057db1b377ca3e77e740bc84028acda06164be5e9dd46"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0015-kandelo-esm-bare-specifier.patch",
+      "bytes": 4832,
+      "sha256": "31b055317dda2d7c76a443f3d20bb3809a3ed2397ae880dc3c871df600b9e08d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0016-kandelo-import-meta.patch",
+      "bytes": 3208,
+      "sha256": "90f58982f04d7edcf56cef14870d9138eff29c3b1e7f04dc7a11c90ef3f7698e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0017-kandelo-default-explicit-resource-management.patch",
+      "bytes": 1598,
+      "sha256": "4efa7ee65d052ba90e24f5d0ee2a2a21791a0754b4a631a44bd826591dfea68a"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0018-kandelo-require-module.patch",
+      "bytes": 8092,
+      "sha256": "0b232f54d09dafb92f0ddf294adbad8e0771eb0cde7c3a0832618a6519649f59"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0019-kandelo-link-evaluating-cycle.patch",
+      "bytes": 1248,
+      "sha256": "77a223da83d68b9c09cb5359cf67bfb1ab8aad23b16ee0112c32f81a3da540a3"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0020-kandelo-vm-context.patch",
+      "bytes": 15754,
+      "sha256": "36f574011dea2deaf6211078c01332c3f10c3b534ff8b515f89c3a8daa827182"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0021-kandelo-zstd-decompress.patch",
+      "bytes": 5365,
+      "sha256": "a1bf725dd8150de5f40aab4d402474e337c511a1abd0180daf293440e8113bb1"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0022-kandelo-async-subprocess.patch",
+      "bytes": 22294,
+      "sha256": "49a9945ce4c1ec2870456be43bea20d4bc120e99af487b6653bac4972d52eade"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0023-kandelo-upstream-node-compiler-build.patch",
+      "bytes": 510,
+      "sha256": "25c9cc588291a31290b213bf1be4b4457627f8aabe58bfa0301264bc91ff562d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0024-kandelo-embedding-private-keys.patch",
+      "bytes": 22700,
+      "sha256": "8e4953df9f64be060696d470c4ed8ca1ca3cc245514262b1630be986301800e7"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0025-kandelo-upstream-test-controls.patch",
+      "bytes": 1577,
+      "sha256": "59792e25d914a05677c209e216e498ffe445505231953b6658f1350af7b38783"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0026-kandelo-node-context-owner.patch",
+      "bytes": 1028,
+      "sha256": "fa6303afdbbf37dc14aaea7d45f6bb000a203ab3548623649d82d59401be7631"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0027-kandelo-synthetic-modules.patch",
+      "bytes": 19313,
+      "sha256": "4adaba274a9081f562e20aed2831742ada77a72d9ae184ec8645ead51fff829d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0028-kandelo-node-module-wrap.patch",
+      "bytes": 5255,
+      "sha256": "10035a5cdf3a6f880b77385cc27b382ef3f0fbcf8d9b215b7d5ce8987e7bd9b8"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0029-kandelo-node-dynamic-import.patch",
+      "bytes": 8467,
+      "sha256": "023ff05c740243d7b3d39d789ce2d13c9ff50be24502fa03e59c4a08be9079cc"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0030-kandelo-node-error-stack.patch",
+      "bytes": 9285,
+      "sha256": "99e983f4539411b5b97d48eeddad5ff9b7a8886d15c11b66517ba687893bf4f1"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0031-kandelo-node-realm.patch",
+      "bytes": 270,
+      "sha256": "e3529daa83f3435358566a80d2d241d59977c4c3bc3f092c8e1156dd8178c821"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0032-kandelo-node-timers.patch",
+      "bytes": 3223,
+      "sha256": "47584dbe8f655f307275023e1b79be2a1e5f2e9db44d685ba3c22ca2856f0ec5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0033-kandelo-libuv-loop.patch",
+      "bytes": 1941,
+      "sha256": "0bfe5d40e573fe7946315004c54921a4a443fa05dd9e8f0208fc2e0c6583e3da"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0034-kandelo-node-task-queue.patch",
+      "bytes": 2600,
+      "sha256": "d3ce8e7eff25276e8d2d00f643799a2f65379168adff7ff4ea03d2f63a120c5f"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/README.md",
+      "bytes": 2434,
+      "sha256": "a3f8b7d23ae10a3bccfeb1ab3120ba23bb450c30dbe13d9675e5c189d7ff1ce0"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/browser/index.html",
+      "bytes": 322,
+      "sha256": "6b7d852ea43ef70f3ca5d54c7b9a8a49c4d69aebab39aa66936de3f64204be40"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/browser/playwright.config.ts",
+      "bytes": 1234,
+      "sha256": "515d4e3566814342faaa91421e5cd357d63d9c7e0a8e12138a33633c7f664953"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/browser/run-spidermonkey-stress.ts",
+      "bytes": 5894,
+      "sha256": "353af0b2d2b182ce406881231f714d7fce6e8aa5ada31ea57172c1c4d3562cb9"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/browser/spidermonkey-browser-stress.spec.ts",
+      "bytes": 2702,
+      "sha256": "9c3fb1e6abeb46fa60878e8dd7250acc9cc413daed56f3b890b6a1811e61d0ea"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/browser/vite.config.ts",
+      "bytes": 2860,
+      "sha256": "683170cdbc59da04055640bbb64b6b5c7b9690f3c04ff41e71052e62acd08f55"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/spidermonkey-node-compat.test.ts",
+      "bytes": 28881,
+      "sha256": "3e19a8869c0222081aed3423499485b65db92d5bc7419dcd7f710c7068938947"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/spidermonkey-node-parity.test.ts",
+      "bytes": 13400,
+      "sha256": "f14b1d51aaa977ba854b163e9eb2ce8613b8bcef4e6b37ac8b819e794f155cb2"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/spidermonkey-tls-source.test.ts",
+      "bytes": 1351,
+      "sha256": "30225ee75c6c1bbc4a9fd22012523aa19b8f1fda8f40aab2f325abdaa2dd34e5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/spidermonkey.test.ts",
+      "bytes": 15098,
+      "sha256": "a6c47d8ad4e1a030b53a694134b1d77575f59cd0c8007e1c75f327b61da0f558"
+    },
+    {
+      "path": "scripts/generate-nodejs-source-registry.py",
+      "bytes": 11468,
+      "sha256": "c4a23b02b681a8c7ee0119b002ff3eff3adfa01bac9e08a42f7d2101e61ce165"
+    },
+    {
+      "path": "scripts/import-nodejs-library.py",
+      "bytes": 6789,
+      "sha256": "5dfd39ad2887c29ae0bfeccf2da335de292a4eee2cb21a0f605b3fc7bdcc8b77"
+    },
+    {
+      "path": "scripts/install-local-binary.sh",
+      "bytes": 31462,
+      "sha256": "610ee0943a61319ce8a030270365fe05af76441bd464995f1d858d9f096e9e88"
+    },
+    {
+      "path": "scripts/nodejs-builtin-metadata.cpp",
+      "bytes": 1972,
+      "sha256": "74a60d09dce591adf01c779a8788ccabccdbe498f93b0487f54a609428324348"
+    },
+    {
+      "path": "scripts/package-build-roots.sh",
+      "bytes": 43483,
+      "sha256": "a6ef104ebdf8a88edff4467d039c710730f47a0029777638a619250b56a2a384"
+    },
+    {
+      "path": "scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 15360,
+      "sha256": "e91078efde0efd6bb56020c2af372116408f3cc0e4c69f920b6b5e869fba66d3"
+    },
+    {
+      "path": "sdk/cmake/Platform/Kandelo.cmake",
+      "bytes": 624,
+      "sha256": "f5e71eccc2d9555bd732dbcc2e8362a5cba04da663f2603c35c035f8009db831"
+    },
+    {
+      "path": "sdk/cmake/kandelo-toolchain.cmake",
+      "bytes": 770,
+      "sha256": "77ec98d46ec471804385953298526d450891c796b05d6793fbca4d4523d26f44"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/libuv-backend.spec.ts",
+      "bytes": 3777,
+      "sha256": "dcd76bb4852c773941dfa1bfd56f2bec535a1d17540f764db450cb5b55ab7b74"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/playwright.config.ts",
+      "bytes": 1180,
+      "sha256": "d719ac6799f745bf416dc9740e6ca47dd3862c10cd100d63a8b6d32ed88040d6"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/storage-setup.ts",
+      "bytes": 1813,
+      "sha256": "4622b5c753c5828fe1c3b99647cb3ca8820b4c1ff9a852c23fefca606107484e"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/vite.config.ts",
+      "bytes": 665,
+      "sha256": "464cb617c9eabf71a697941b98e13b330beccae04ed1c77b7366ef063f3e9d25"
+    },
+    {
+      "path": "tests/nodejs/upstream/process-config-engine-controls.js",
+      "bytes": 8830,
+      "sha256": "df61ca920a2ee51b971b5afb528a29b70406f4d9273cc2e0eea11d11243cfaff"
+    },
+    {
+      "path": "tests/nodejs/upstream/realm-bootstrap-gap-probe.js",
+      "bytes": 1758,
+      "sha256": "50e2db218a7e80bc565592fd692f3de2e83eb09373ae311e0ab60e4d71542021"
+    },
+    {
+      "path": "tests/nodejs/upstream/task-queue-browser/artifact-url.ts",
+      "bytes": 157,
+      "sha256": "f032dcec8075ac00c0b4a2b2bea5d81d7a5bc16e9a0046b83116dc7215526209"
+    },
+    {
+      "path": "tests/nodejs/upstream/task-queue-browser/playwright.config.ts",
+      "bytes": 221,
+      "sha256": "64b8645b78322328607d68c67ed1a8585898a8725f6409098de400973d6ecb27"
+    },
+    {
+      "path": "tests/nodejs/upstream/task-queue-browser/task-queue.spec.ts",
+      "bytes": 6202,
+      "sha256": "1d5f7c918c3994920f55ac6dcd1f66677c37e3d8dfbaea2f6be93cd16b76adeb"
+    },
+    {
+      "path": "tests/nodejs/upstream/task-queue-engine-controls.js",
+      "bytes": 10823,
+      "sha256": "18c4582ab62f405db3e9224645262011a62b52db3bc7f5cbde52a6939110355e"
+    },
+    {
+      "path": "tests/nodejs/upstream/task-queue-native-controls.cjs",
+      "bytes": 4126,
+      "sha256": "ad05756dfcfa64fbf12d05f80ad4f9a8b101a7111cafc6c8db0768924654c0cc"
+    },
+    {
+      "path": "third_party/nodejs/sources.json",
+      "bytes": 116975,
+      "sha256": "b56ad78b6ec775979c808f83a39daeb537abe32a6c645bafafbfbe7fb9686056"
+    },
+    {
+      "path": "third_party/nodejs/target.json",
+      "bytes": 1187,
+      "sha256": "89102b1877ac810caf73b3e1fa2fe1e165434286528fc409a5fd63549e18a4d7"
+    }
+  ],
+  "runs": [
+    {
+      "host": "Node",
+      "mode": "task-queue",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/engine-result.json",
+        "bytes": 83437,
+        "sha256": "0c36b2bf3bfbef88ac4f88f8710efd386523641646c1da5812a0581e2e9aa4ab"
+      },
+      "cases": 26,
+      "driverRuns": 13,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "task-queue-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"native-task-queue-controls\",\"cases\":26,\"failures\":0,\"observations\":[{\"name\":\"binding-layout-cache-and-native-method-lengths\",\"status\":\"pass\"},{\"name\":\"native-exit-code-enum-is-complete-and-readonly\",\"status\":\"pass\"},{\"name\":\"enqueue-is-deferred-and-shares-promise-fifo\",\"status\":\"pass\"},{\"name\":\"callable-receiver-arguments-and-method-owner\",\"status\":\"pass\"},{\"name\":\"bound-and-proxy-callables-use-real-engine-jobs\",\"status\":\"pass\"},{\"name\":\"native-and-shell-nested-checkpoints-do-not-reenter\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-keeps-current-job-weakref-target\",\"status\":\"pass\"},{\"name\":\"queued-native-adapter-retains-callback-through-moving-gc\",\"status\":\"pass\"},{\"name\":\"microtask-only-entry-does-not-dispatch-live-ticks\",\"status\":\"pass\"},{\"name\":\"outer-checkpoint-runs-scheduled-tick-before-microtasks\",\"status\":\"pass\"},{\"name\":\"microtask-can-schedule-tick-in-the-same-outer-checkpoint\",\"status\":\"pass\"},{\"name\":\"rejection-flag-triggers-original-registered-tick-callback\",\"status\":\"pass\"},{\"name\":\"native-live-flags-match-exact-one-semantics\",\"status\":\"pass\"},{\"name\":\"public-binding-fields-do-not-replace-protected-state\",\"status\":\"pass\"},{\"name\":\"nested-tick-checkpoint-keeps-outer-owner-entered\",\"status\":\"pass\"},{\"name\":\"real-promise-rejection-events-and-original-reason\",\"status\":\"pass\"},{\"name\":\"promise-callback-replacement-retains-the-actual-latest-function\",\"status\":\"pass\"},{\"name\":\"cross-realm-binding-shares-flags-and-principal-process\",\"status\":\"pass\"},{\"name\":\"cross-realm-promise-and-reason-identity-survive-notification\",\"status\":\"pass\"},{\"name\":\"handled-job-error-enters-real-principal-process-policy\",\"status\":\"pass\"},{\"name\":\"native-fatal-policy-accepts-every-result-except-exact-false\",\"status\":\"pass\"},{\"name\":\"throwing-error-policy-preserves-actual-replacement-error\",\"status\":\"pass\"},{\"name\":\"missing-fatal-policy-preserves-failure-and-pending-jobs\",\"status\":\"pass\"},{\"name\":\"false-fatal-policy-remains-an-explicit-exit-backend-gap\",\"status\":\"pass\"},{\"name\":\"libuv-callback-checkpoint-drains-real-jobs-and-live-ticks\",\"status\":\"pass\"},{\"name\":\"failed-realm-methods-retire-without-mutating-shared-state\",\"status\":\"pass\"}],\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'async_wrap' is not implemented\"},\"exitCodes\":{\"kNoFailure\":0,\"kGenericUserError\":1,\"kInternalJSParseError\":3,\"kInternalJSEvaluationFailure\":4,\"kV8FatalError\":5,\"kInvalidFatalExceptionMonkeyPatching\":6,\"kExceptionInFatalExceptionHandler\":7,\"kInvalidCommandLineArgument\":9,\"kBootstrapFailure\":10,\"kInvalidCommandLineArgument2\":12,\"kUnsettledTopLevelAwait\":13,\"kStartupSnapshotFailure\":14,\"kProcessTimeout\":124,\"kAbort\":134},\"limits\":[\"Raw binding/checkpoint controls, not original public task queue modules or successful Node startup\",\"Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete\",\"Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures\",\"Per-host artifact identities and fatal/diagnostic controls belong to the external runner\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "native-task-queue-controls",
+            "cases": 26,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "binding-layout-cache-and-native-method-lengths",
+                "status": "pass"
+              },
+              {
+                "name": "native-exit-code-enum-is-complete-and-readonly",
+                "status": "pass"
+              },
+              {
+                "name": "enqueue-is-deferred-and-shares-promise-fifo",
+                "status": "pass"
+              },
+              {
+                "name": "callable-receiver-arguments-and-method-owner",
+                "status": "pass"
+              },
+              {
+                "name": "bound-and-proxy-callables-use-real-engine-jobs",
+                "status": "pass"
+              },
+              {
+                "name": "native-and-shell-nested-checkpoints-do-not-reenter",
+                "status": "pass"
+              },
+              {
+                "name": "nested-checkpoint-keeps-current-job-weakref-target",
+                "status": "pass"
+              },
+              {
+                "name": "queued-native-adapter-retains-callback-through-moving-gc",
+                "status": "pass"
+              },
+              {
+                "name": "microtask-only-entry-does-not-dispatch-live-ticks",
+                "status": "pass"
+              },
+              {
+                "name": "outer-checkpoint-runs-scheduled-tick-before-microtasks",
+                "status": "pass"
+              },
+              {
+                "name": "microtask-can-schedule-tick-in-the-same-outer-checkpoint",
+                "status": "pass"
+              },
+              {
+                "name": "rejection-flag-triggers-original-registered-tick-callback",
+                "status": "pass"
+              },
+              {
+                "name": "native-live-flags-match-exact-one-semantics",
+                "status": "pass"
+              },
+              {
+                "name": "public-binding-fields-do-not-replace-protected-state",
+                "status": "pass"
+              },
+              {
+                "name": "nested-tick-checkpoint-keeps-outer-owner-entered",
+                "status": "pass"
+              },
+              {
+                "name": "real-promise-rejection-events-and-original-reason",
+                "status": "pass"
+              },
+              {
+                "name": "promise-callback-replacement-retains-the-actual-latest-function",
+                "status": "pass"
+              },
+              {
+                "name": "cross-realm-binding-shares-flags-and-principal-process",
+                "status": "pass"
+              },
+              {
+                "name": "cross-realm-promise-and-reason-identity-survive-notification",
+                "status": "pass"
+              },
+              {
+                "name": "handled-job-error-enters-real-principal-process-policy",
+                "status": "pass"
+              },
+              {
+                "name": "native-fatal-policy-accepts-every-result-except-exact-false",
+                "status": "pass"
+              },
+              {
+                "name": "throwing-error-policy-preserves-actual-replacement-error",
+                "status": "pass"
+              },
+              {
+                "name": "missing-fatal-policy-preserves-failure-and-pending-jobs",
+                "status": "pass"
+              },
+              {
+                "name": "false-fatal-policy-remains-an-explicit-exit-backend-gap",
+                "status": "pass"
+              },
+              {
+                "name": "libuv-callback-checkpoint-drains-real-jobs-and-live-ticks",
+                "status": "pass"
+              },
+              {
+                "name": "failed-realm-methods-retire-without-mutating-shared-state",
+                "status": "pass"
+              }
+            ],
+            "bootstrapFailure": {
+              "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+              "message": "Native Node binding 'async_wrap' is not implemented"
+            },
+            "exitCodes": {
+              "kNoFailure": 0,
+              "kGenericUserError": 1,
+              "kInternalJSParseError": 3,
+              "kInternalJSEvaluationFailure": 4,
+              "kV8FatalError": 5,
+              "kInvalidFatalExceptionMonkeyPatching": 6,
+              "kExceptionInFatalExceptionHandler": 7,
+              "kInvalidCommandLineArgument": 9,
+              "kBootstrapFailure": 10,
+              "kInvalidCommandLineArgument2": 12,
+              "kUnsettledTopLevelAwait": 13,
+              "kStartupSnapshotFailure": 14,
+              "kProcessTimeout": 124,
+              "kAbort": 134
+            },
+            "limits": [
+              "Raw binding/checkpoint controls, not original public task queue modules or successful Node startup",
+              "Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete",
+              "Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures",
+              "Per-host artifact identities and fatal/diagnostic controls belong to the external runner"
+            ]
+          }
+        },
+        {
+          "name": "enqueue-function-invariant",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: args.get(0).isObject() && JS::IsCallable(&args[0].toObject()) (Node microtask function invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/task-queue.cpp:144\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[230]:0x7939a\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+              "status": 132
+            }
+          ]
+        },
+        {
+          "name": "tick-function-invariant",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: args.get(0).isObject() && JS::IsCallable(&args[0].toObject()) (Node task queue callback function invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/task-queue.cpp:122\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[236]:0x7a694\n    at wasm://wasm/0c3bd1d2:wasm-function[235]:0x7a094\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)",
+              "status": 132
+            }
+          ]
+        },
+        {
+          "name": "reject-function-invariant",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: args.get(0).isObject() && JS::IsCallable(&args[0].toObject()) (Node task queue callback function invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/task-queue.cpp:122\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[236]:0x7a694\n    at wasm://wasm/0c3bd1d2:wasm-function[237]:0x7a724\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)",
+              "status": 132
+            }
+          ]
+        },
+        {
+          "name": "unregistered-tick-invariant",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: JS::GetReservedSlot(state, TickCallback).isObject() (Node tick callback was not registered), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/task-queue.cpp:249\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[239]:0x7ae90\n    at wasm://wasm/0c3bd1d2:wasm-function[354]:0x984b3\n    at wasm://wasm/0c3bd1d2:wasm-function[613]:0xd2118\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)",
+              "status": 132
+            }
+          ]
+        },
+        {
+          "name": "unregistered-rejection-invariant",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: JS::GetReservedSlot(state, RejectCallback).isObject() (Node promise rejection callback was not registered), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/task-queue.cpp:320\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[333]:0x8fe20\n    at wasm://wasm/0c3bd1d2:wasm-function[22714]:0x1382991\n    at wasm://wasm/0c3bd1d2:wasm-function[9244]:0x6f8b24\n    at wasm://wasm/0c3bd1d2:wasm-function[9281]:0x703d0a\n    at wasm://wasm/0c3bd1d2:wasm-function[9312]:0x70c526\n    at wasm://wasm/0c3bd1d2:wasm-function[9367]:0x71f91d\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb",
+              "status": 132
+            }
+          ]
+        },
+        {
+          "name": "queued-job-natural-exit",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "MICROTASK_DONE\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "queued-job-quit-status",
+          "status": "pass",
+          "exitCode": 23,
+          "stdout": "",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "detached-live-tick-state-is-an-explicit-failure",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "DETACHED_TICK_STATE_REJECTED\n",
+          "stderr": "Error: Native tickInfo backing array was detached or has invalid length\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "promise-handler-exceptions-are-reported-without-false-exit",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "REJECTION_DIAGNOSTIC_ONLY\n",
+          "stderr": "Exception in PromiseRejectCallback:\n-e:1:205 Error: PROMISE_REJECT_HANDLER_SENTINEL\nException in PromiseRejectCallback:\n-e:1:205 Error: PROMISE_REJECT_HANDLER_SENTINEL\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "assigned-promise-async-context-remains-explicit",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "ASSIGNED_ASYNC_CONTEXT_GAP\n",
+          "stderr": "Exception in PromiseRejectCallback:\n-e:1:410 Error: Native promise async-context entry is not implemented\nException in PromiseRejectCallback:\n-e:1:423 Error: Native promise async-context entry is not implemented\n",
+          "hostDiagnostics": []
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "timers",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/timers-regression.json",
+        "bytes": 71769,
+        "sha256": "54e41dc80e3cd11f16be0ac3fb3e4dcef6ab72f50cef3d98cd103b7569a55d3e"
+      },
+      "cases": 27,
+      "driverRuns": 8,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "timers-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"native-timers-controls\",\"plannedCases\":27,\"cases\":27,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"native-binding-and-live-info-layout\",\"status\":\"pass\"},{\"name\":\"guest-monotonic-environment-clock-is-shared\",\"status\":\"pass\"},{\"name\":\"reference-toggles-use-true-without-coercing\",\"status\":\"pass\"},{\"name\":\"schedule-converts-once-and-keeps-exact-uint64-deadline\",\"status\":\"pass\"},{\"name\":\"schedule-conversion-errors-preserve-original-state-and-exception\",\"status\":\"pass\"},{\"name\":\"actual-referenced-deadline-blocks-and-invokes-native-callback\",\"status\":\"pass\"},{\"name\":\"rescheduling-replaces-the-existing-native-deadline\",\"status\":\"pass\"},{\"name\":\"positive-expiry-return-rearms-a-referenced-one-shot\",\"status\":\"pass\"},{\"name\":\"negative-expiry-return-leaves-a-real-unreferenced-pending-timer\",\"status\":\"pass\"},{\"name\":\"zero-expiry-does-not-discard-reentrant-rescheduling\",\"status\":\"pass\"},{\"name\":\"unreferenced-even-due-timer-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"referenced-immediate-uses-live-counters-and-principal-process\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-does-not-keep-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive\",\"status\":\"pass\"},{\"name\":\"real-engine-microtasks-run-between-timer-and-immediate-phases\",\"status\":\"pass\"},{\"name\":\"native-method-ownership-does-not-depend-on-a-javascript-receiver\",\"status\":\"pass\"},{\"name\":\"callback-replacement-and-gc-retain-the-real-latest-function\",\"status\":\"pass\"},{\"name\":\"other-realm-binding-shares-environment-state-and-principal-receiver\",\"status\":\"pass\"},{\"name\":\"original-callback-exception-is-not-cleared-or-replaced\",\"status\":\"pass\"},{\"name\":\"reentrant-loop-dispatch-is-rejected-without-losing-outer-state\",\"status\":\"pass\"},{\"name\":\"diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state\",\"status\":\"pass\"},{\"name\":\"owned-loop-does-not-call-public-compatibility-timer-hooks\",\"status\":\"pass\"},{\"name\":\"fresh-loop-does-not-retain-a-previous-check-phase\",\"status\":\"pass\"},{\"name\":\"fresh-default-loop-services-reentrant-zero-deadline-before-exit\",\"status\":\"pass\"},{\"name\":\"actual-libuv-version-and-public-layout-match\",\"status\":\"pass\"},{\"name\":\"outstanding-immediates-drain-with-engine-checkpoints\",\"status\":\"pass\"},{\"name\":\"moving-gc-during-callback-checkpoint-preserves-libuv-owner\",\"status\":\"pass\"}],\"state\":{\"armed\":false,\"timerReferenced\":false,\"immediateReferenced\":false,\"deadline\":\"49841063\"},\"limits\":[\"Native binding/scheduler controls, not public timers or successful Node bootstrap\",\"No task_queue/async callback-scope/tick/fatal recovery integration\",\"Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete\",\"Per-host execution is recorded by the external runner\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "native-timers-controls",
+            "plannedCases": 27,
+            "cases": 27,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "native-binding-and-live-info-layout",
+                "status": "pass"
+              },
+              {
+                "name": "guest-monotonic-environment-clock-is-shared",
+                "status": "pass"
+              },
+              {
+                "name": "reference-toggles-use-true-without-coercing",
+                "status": "pass"
+              },
+              {
+                "name": "schedule-converts-once-and-keeps-exact-uint64-deadline",
+                "status": "pass"
+              },
+              {
+                "name": "schedule-conversion-errors-preserve-original-state-and-exception",
+                "status": "pass"
+              },
+              {
+                "name": "actual-referenced-deadline-blocks-and-invokes-native-callback",
+                "status": "pass"
+              },
+              {
+                "name": "rescheduling-replaces-the-existing-native-deadline",
+                "status": "pass"
+              },
+              {
+                "name": "positive-expiry-return-rearms-a-referenced-one-shot",
+                "status": "pass"
+              },
+              {
+                "name": "negative-expiry-return-leaves-a-real-unreferenced-pending-timer",
+                "status": "pass"
+              },
+              {
+                "name": "zero-expiry-does-not-discard-reentrant-rescheduling",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-even-due-timer-does-not-keep-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "referenced-immediate-uses-live-counters-and-principal-process",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-immediate-does-not-keep-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "unreferenced-immediate-runs-while-a-real-timer-keeps-the-loop-alive",
+                "status": "pass"
+              },
+              {
+                "name": "real-engine-microtasks-run-between-timer-and-immediate-phases",
+                "status": "pass"
+              },
+              {
+                "name": "native-method-ownership-does-not-depend-on-a-javascript-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "callback-replacement-and-gc-retain-the-real-latest-function",
+                "status": "pass"
+              },
+              {
+                "name": "other-realm-binding-shares-environment-state-and-principal-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "original-callback-exception-is-not-cleared-or-replaced",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-loop-dispatch-is-rejected-without-losing-outer-state",
+                "status": "pass"
+              },
+              {
+                "name": "diagnostic-snapshots-and-public-binding-properties-do-not-own-native-state",
+                "status": "pass"
+              },
+              {
+                "name": "owned-loop-does-not-call-public-compatibility-timer-hooks",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-loop-does-not-retain-a-previous-check-phase",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-default-loop-services-reentrant-zero-deadline-before-exit",
+                "status": "pass"
+              },
+              {
+                "name": "actual-libuv-version-and-public-layout-match",
+                "status": "pass"
+              },
+              {
+                "name": "outstanding-immediates-drain-with-engine-checkpoints",
+                "status": "pass"
+              },
+              {
+                "name": "moving-gc-during-callback-checkpoint-preserves-libuv-owner",
+                "status": "pass"
+              }
+            ],
+            "state": {
+              "armed": false,
+              "timerReferenced": false,
+              "immediateReferenced": false,
+              "deadline": "49841063"
+            },
+            "limits": [
+              "Native binding/scheduler controls, not public timers or successful Node bootstrap",
+              "No task_queue/async callback-scope/tick/fatal recovery integration",
+              "Real libuv phase machinery; full Node callback-scope/native differential/security/OOM/finalization proof incomplete",
+              "Per-host execution is recorded by the external runner"
+            ]
+          }
+        },
+        {
+          "name": "timer-callback-quit-preserves-requested-shell-exit",
+          "status": "pass",
+          "exitCode": 23,
+          "stdout": "",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "unreferenced-native-timer-permits-natural-guest-exit",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UNREFERENCED_NATIVE_PENDING\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "unreferenced-native-immediate-permits-natural-guest-exit",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UNREFERENCED_NATIVE_PENDING\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "Node immediate callback invariant-remains-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: args.get(0).isObject() && JS::IsCallable(&args[0].toObject()) (Node immediate callback invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/timers.cpp:164\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[248]:0x7d37c\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+              "status": 132
+            }
+          ]
+        },
+        {
+          "name": "Node timers callback invariant-remains-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: args.get(1).isObject() && JS::IsCallable(&args[1].toObject()) (Node timers callback invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/timers.cpp:165\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[248]:0x7d3da\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+              "status": 132
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "process-config",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/process-config-regression.json",
+        "bytes": 47705,
+        "sha256": "47663ec78992e6e91ad5c9a4e24af13a346c892709122e8ba88cbdc7f88ec894"
+      },
+      "cases": 13,
+      "driverRuns": 3,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "process-config-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"native-process-config-controls\",\"plannedCases\":13,\"cases\":13,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"config-identity-and-readonly-real-build-fields\",\"status\":\"pass\"},{\"name\":\"config-does-not-copy-unimplemented-native-feature-metadata\",\"status\":\"pass\"},{\"name\":\"default-locale-comes-from-the-native-engine\",\"status\":\"pass\"},{\"name\":\"actual-process-has-a-distinct-mutable-native-class-prototype\",\"status\":\"pass\"},{\"name\":\"native-process-constructor-creates-empty-instances-and-honors-new-target\",\"status\":\"pass\"},{\"name\":\"changing-process-ancestry-does-not-mutate-object-prototype\",\"status\":\"pass\"},{\"name\":\"exit-info-is-a-real-hidden-live-int32-array\",\"status\":\"pass\"},{\"name\":\"one-runtime-shares-exit-state-across-distinct-realm-processes\",\"status\":\"pass\"},{\"name\":\"config-and-process-prototypes-remain-per-realm\",\"status\":\"pass\"},{\"name\":\"native-node-stage-requires-existing-context-and-realm-ownership\",\"status\":\"pass\"},{\"name\":\"native-node-stage-uses-protected-state-and-preserves-actual-missing-backend\",\"status\":\"pass\"},{\"name\":\"failed-node-body-is-terminal-and-diagnostics-do-not-expose-partial-loaders\",\"status\":\"pass\"},{\"name\":\"failed-principal-body-does-not-retire-another-realms-library-owner\",\"status\":\"pass\"}],\"configSnapshot\":{\"isDebugBuild\":false,\"openSSLIsBoringSSL\":false,\"hasOpenSSL\":true,\"hasIntl\":true,\"hasInspector\":false,\"noBrowserGlobals\":false,\"bits\":32},\"locale\":\"en-US-POSIX\",\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'async_wrap' is not implemented\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\",\"internal/bootstrap/node\",\"internal/timers\",\"internal/async_hooks\"]},\"limits\":[\"Native state/failed-stage controls; not successful principal bootstrap or user CJS/ESM entry\",\"No browser proof\",\"No exit dispatch or full process/config/util implementation\",\"FIPS configuration remains explicit Missing\",\"No full differential/security/OOM/lifecycle proof\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "native-process-config-controls",
+            "plannedCases": 13,
+            "cases": 13,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "config-identity-and-readonly-real-build-fields",
+                "status": "pass"
+              },
+              {
+                "name": "config-does-not-copy-unimplemented-native-feature-metadata",
+                "status": "pass"
+              },
+              {
+                "name": "default-locale-comes-from-the-native-engine",
+                "status": "pass"
+              },
+              {
+                "name": "actual-process-has-a-distinct-mutable-native-class-prototype",
+                "status": "pass"
+              },
+              {
+                "name": "native-process-constructor-creates-empty-instances-and-honors-new-target",
+                "status": "pass"
+              },
+              {
+                "name": "changing-process-ancestry-does-not-mutate-object-prototype",
+                "status": "pass"
+              },
+              {
+                "name": "exit-info-is-a-real-hidden-live-int32-array",
+                "status": "pass"
+              },
+              {
+                "name": "one-runtime-shares-exit-state-across-distinct-realm-processes",
+                "status": "pass"
+              },
+              {
+                "name": "config-and-process-prototypes-remain-per-realm",
+                "status": "pass"
+              },
+              {
+                "name": "native-node-stage-requires-existing-context-and-realm-ownership",
+                "status": "pass"
+              },
+              {
+                "name": "native-node-stage-uses-protected-state-and-preserves-actual-missing-backend",
+                "status": "pass"
+              },
+              {
+                "name": "failed-node-body-is-terminal-and-diagnostics-do-not-expose-partial-loaders",
+                "status": "pass"
+              },
+              {
+                "name": "failed-principal-body-does-not-retire-another-realms-library-owner",
+                "status": "pass"
+              }
+            ],
+            "configSnapshot": {
+              "isDebugBuild": false,
+              "openSSLIsBoringSSL": false,
+              "hasOpenSSL": true,
+              "hasIntl": true,
+              "hasInspector": false,
+              "noBrowserGlobals": false,
+              "bits": 32
+            },
+            "locale": "en-US-POSIX",
+            "bootstrapFailure": {
+              "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+              "message": "Native Node binding 'async_wrap' is not implemented",
+              "compiledBuiltinIds": [
+                "internal/bootstrap/realm",
+                "internal/errors",
+                "internal/assert",
+                "internal/bootstrap/node",
+                "internal/timers",
+                "internal/async_hooks"
+              ]
+            },
+            "limits": [
+              "Native state/failed-stage controls; not successful principal bootstrap or user CJS/ESM entry",
+              "No browser proof",
+              "No exit dispatch or full process/config/util implementation",
+              "FIPS configuration remains explicit Missing",
+              "No full differential/security/OOM/lifecycle proof"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "realm-library",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/realm-library-regression.json",
+        "bytes": 46535,
+        "sha256": "7142f8caa11953c16075d4f9a81b37e3bdde25da7e1127811f3265132d124578"
+      },
+      "cases": 16,
+      "driverRuns": 4,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "guestPid": 100
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": [],
+          "guestPid": 100
+        },
+        {
+          "name": "realm-library-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"upstream-realm-library-controls\",\"plannedCases\":16,\"cases\":16,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"complete-original-realm-script-registers-real-loaders\",\"status\":\"pass\"},{\"name\":\"original-loader-self-require-and-native-retention-agree\",\"status\":\"pass\"},{\"name\":\"native-source-registry-ids-are-complete-fresh-and-frozen-binding-owned\",\"status\":\"pass\"},{\"name\":\"native-process-reads-actual-guest-kernel-metadata\",\"status\":\"pass\"},{\"name\":\"original-internal-binding-cache-uses-canonical-native-owners\",\"status\":\"pass\"},{\"name\":\"upstream-module-cache-and-complete-assert-body-execute\",\"status\":\"pass\"},{\"name\":\"module-load-list-is-produced-by-the-original-js-loader\",\"status\":\"pass\"},{\"name\":\"unknown-js-module-and-missing-native-backend-fail-honestly\",\"status\":\"pass\"},{\"name\":\"original-exposure-policy-and-native-builtin-esm-facade-work\",\"status\":\"pass\"},{\"name\":\"original-error-preparation-and-native-frames-are-connected\",\"status\":\"pass\"},{\"name\":\"original-error-module-uses-the-canonical-private-arrow-symbol\",\"status\":\"pass\"},{\"name\":\"snapshot-mutation-and-repeat-initialization-cannot-replace-the-owner\",\"status\":\"pass\"},{\"name\":\"fresh-realm-requires-original-context-and-library-initialization\",\"status\":\"pass\"},{\"name\":\"original-js-exception-is-preserved-and-failure-is-terminal\",\"status\":\"pass\"},{\"name\":\"reentrant-original-js-bootstrap-cannot-create-another-owner\",\"status\":\"pass\"},{\"name\":\"other-realm-has-distinct-loaders-process-and-module-cache\",\"status\":\"pass\"}],\"processMetadata\":{\"pid\":100,\"ppid\":0,\"platform\":\"wasm-posix\",\"arch\":\"wasm32\"},\"limits\":[\"Complete original realm.js executes, not principal bootstrap/node or user CJS/ESM startup\",\"No browser proof\",\"Only eager native binding closure implemented; process/util/builtins remain partial\",\"No complete backend catalog/native security/OOM/lifecycle differential\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "upstream-realm-library-controls",
+            "plannedCases": 16,
+            "cases": 16,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "complete-original-realm-script-registers-real-loaders",
+                "status": "pass"
+              },
+              {
+                "name": "original-loader-self-require-and-native-retention-agree",
+                "status": "pass"
+              },
+              {
+                "name": "native-source-registry-ids-are-complete-fresh-and-frozen-binding-owned",
+                "status": "pass"
+              },
+              {
+                "name": "native-process-reads-actual-guest-kernel-metadata",
+                "status": "pass"
+              },
+              {
+                "name": "original-internal-binding-cache-uses-canonical-native-owners",
+                "status": "pass"
+              },
+              {
+                "name": "upstream-module-cache-and-complete-assert-body-execute",
+                "status": "pass"
+              },
+              {
+                "name": "module-load-list-is-produced-by-the-original-js-loader",
+                "status": "pass"
+              },
+              {
+                "name": "unknown-js-module-and-missing-native-backend-fail-honestly",
+                "status": "pass"
+              },
+              {
+                "name": "original-exposure-policy-and-native-builtin-esm-facade-work",
+                "status": "pass"
+              },
+              {
+                "name": "original-error-preparation-and-native-frames-are-connected",
+                "status": "pass"
+              },
+              {
+                "name": "original-error-module-uses-the-canonical-private-arrow-symbol",
+                "status": "pass"
+              },
+              {
+                "name": "snapshot-mutation-and-repeat-initialization-cannot-replace-the-owner",
+                "status": "pass"
+              },
+              {
+                "name": "fresh-realm-requires-original-context-and-library-initialization",
+                "status": "pass"
+              },
+              {
+                "name": "original-js-exception-is-preserved-and-failure-is-terminal",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-original-js-bootstrap-cannot-create-another-owner",
+                "status": "pass"
+              },
+              {
+                "name": "other-realm-has-distinct-loaders-process-and-module-cache",
+                "status": "pass"
+              }
+            ],
+            "processMetadata": {
+              "pid": 100,
+              "ppid": 0,
+              "platform": "wasm-posix",
+              "arch": "wasm32"
+            },
+            "limits": [
+              "Complete original realm.js executes, not principal bootstrap/node or user CJS/ESM startup",
+              "No browser proof",
+              "Only eager native binding closure implemented; process/util/builtins remain partial",
+              "No complete backend catalog/native security/OOM/lifecycle differential"
+            ]
+          },
+          "guestPid": 100
+        },
+        {
+          "name": "once-only-loaders-registration-invariant-is-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: JS::GetReservedSlot(state, InternalLoader).isUndefined() && JS::GetReservedSlot(state, BuiltinRequire).isUndefined() (Node internal loaders registration invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/realm.cpp:132\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[221]:0x780e3\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+              "status": 132
+            }
+          ],
+          "guestPid": 100
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "error-stack",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/error-stack-regression.json",
+        "bytes": 48384,
+        "sha256": "30b72ed4bd9d6223455ce2782eab74d02fe49daf77229c2439662b1d76c71109"
+      },
+      "cases": 21,
+      "driverRuns": 3,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "error-stack-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"native-error-stack-controls\",\"plannedCases\":21,\"cases\":21,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"original-native-capture-survives-primordials-initialization\",\"status\":\"pass\"},{\"name\":\"preparation-is-lazy-cached-and-has-real-own-accessors\",\"status\":\"pass\"},{\"name\":\"zero-negative-fractional-and-nan-limits\",\"status\":\"pass\"},{\"name\":\"non-numeric-and-accessor-limits-disable-without-getters\",\"status\":\"pass\"},{\"name\":\"capture-limit-is-fixed-at-creation\",\"status\":\"pass\"},{\"name\":\"constructor-opt-trims-real-captured-frames\",\"status\":\"pass\"},{\"name\":\"thrown-preparation-is-retried-with-original-exception\",\"status\":\"pass\"},{\"name\":\"undefined-return-is-cached-as-a-real-result\",\"status\":\"pass\"},{\"name\":\"stack-assignment-replaces-pending-and-prepared-values\",\"status\":\"pass\"},{\"name\":\"frozen-error-retains-functional-internal-cache\",\"status\":\"pass\"},{\"name\":\"recapture-replaces-original-capture-and-cache\",\"status\":\"pass\"},{\"name\":\"recursive-preparation-uses-real-default-frames\",\"status\":\"pass\"},{\"name\":\"borrowed-stack-accessor-reads-only-real-target-captures\",\"status\":\"pass\"},{\"name\":\"proxy-capture-refuses-without-running-property-traps\",\"status\":\"pass\"},{\"name\":\"inherited-data-limit-is-read-without-coercion\",\"status\":\"pass\"},{\"name\":\"saved-callsite-methods-use-actual-module-source-and-survive-gc\",\"status\":\"pass\"},{\"name\":\"unowned-realm-keeps-original-engine-capture-path\",\"status\":\"pass\"},{\"name\":\"foreign-owned-error-prepares-in-its-original-realm\",\"status\":\"pass\"},{\"name\":\"native-fatal-enhancers-retain-and-invoke-real-callbacks\",\"status\":\"pass\"},{\"name\":\"error-binding-requires-successful-original-context-initialization\",\"status\":\"pass\"},{\"name\":\"registered-bootstrap-preparation-receives-global-error-and-trace\",\"status\":\"pass\"}],\"limits\":[\"No upstream realm/bootstrap/startup\",\"No browser proof\",\"Saved-frame CallSite core only; receiver/function/eval/native/async/constructor/Wasm metadata remains explicit gaps\",\"No full security/OOM/finalization/native differential\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "native-error-stack-controls",
+            "plannedCases": 21,
+            "cases": 21,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "original-native-capture-survives-primordials-initialization",
+                "status": "pass"
+              },
+              {
+                "name": "preparation-is-lazy-cached-and-has-real-own-accessors",
+                "status": "pass"
+              },
+              {
+                "name": "zero-negative-fractional-and-nan-limits",
+                "status": "pass"
+              },
+              {
+                "name": "non-numeric-and-accessor-limits-disable-without-getters",
+                "status": "pass"
+              },
+              {
+                "name": "capture-limit-is-fixed-at-creation",
+                "status": "pass"
+              },
+              {
+                "name": "constructor-opt-trims-real-captured-frames",
+                "status": "pass"
+              },
+              {
+                "name": "thrown-preparation-is-retried-with-original-exception",
+                "status": "pass"
+              },
+              {
+                "name": "undefined-return-is-cached-as-a-real-result",
+                "status": "pass"
+              },
+              {
+                "name": "stack-assignment-replaces-pending-and-prepared-values",
+                "status": "pass"
+              },
+              {
+                "name": "frozen-error-retains-functional-internal-cache",
+                "status": "pass"
+              },
+              {
+                "name": "recapture-replaces-original-capture-and-cache",
+                "status": "pass"
+              },
+              {
+                "name": "recursive-preparation-uses-real-default-frames",
+                "status": "pass"
+              },
+              {
+                "name": "borrowed-stack-accessor-reads-only-real-target-captures",
+                "status": "pass"
+              },
+              {
+                "name": "proxy-capture-refuses-without-running-property-traps",
+                "status": "pass"
+              },
+              {
+                "name": "inherited-data-limit-is-read-without-coercion",
+                "status": "pass"
+              },
+              {
+                "name": "saved-callsite-methods-use-actual-module-source-and-survive-gc",
+                "status": "pass"
+              },
+              {
+                "name": "unowned-realm-keeps-original-engine-capture-path",
+                "status": "pass"
+              },
+              {
+                "name": "foreign-owned-error-prepares-in-its-original-realm",
+                "status": "pass"
+              },
+              {
+                "name": "native-fatal-enhancers-retain-and-invoke-real-callbacks",
+                "status": "pass"
+              },
+              {
+                "name": "error-binding-requires-successful-original-context-initialization",
+                "status": "pass"
+              },
+              {
+                "name": "registered-bootstrap-preparation-receives-global-error-and-trace",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No upstream realm/bootstrap/startup",
+              "No browser proof",
+              "Saved-frame CallSite core only; receiver/function/eval/native/async/constructor/Wasm metadata remains explicit gaps",
+              "No full security/OOM/finalization/native differential"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "dynamic-import",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/dynamic-import-regression.json",
+        "bytes": 34999,
+        "sha256": "f909813a35d121c3cb2065eacb1d0bdad7d33cec798d878df64c888260bfde41"
+      },
+      "cases": 14,
+      "driverRuns": 3,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "dynamic-import-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"native-dynamic-import-controls\",\"plannedCases\":14,\"cases\":14,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"five-original-callback-arguments-and-frozen-attributes\",\"status\":\"pass\"},{\"name\":\"ordinary-values-and-referrer-promise\",\"status\":\"pass\"},{\"name\":\"thenable-adoption-is-asynchronous-and-once\",\"status\":\"pass\"},{\"name\":\"pending-promise-owns-real-completion-through-gc\",\"status\":\"pass\"},{\"name\":\"callback-promise-rejection-preserves-original-value\",\"status\":\"pass\"},{\"name\":\"throwing-then-getter-rejects-import-with-original-value\",\"status\":\"pass\"},{\"name\":\"synchronous-callback-exception-stops-importing-module\",\"status\":\"pass\"},{\"name\":\"invalid-options-reject-before-callback\",\"status\":\"pass\"},{\"name\":\"specifier-coercion-options-order-and-numeric-attribute-keys\",\"status\":\"pass\"},{\"name\":\"actual-namespace-and-top-level-await-use-one-engine-graph\",\"status\":\"pass\"},{\"name\":\"top-level-await-remains-pending-until-callback-settles\",\"status\":\"pass\"},{\"name\":\"foreign-promise-is-adopted-in-referrer-realm\",\"status\":\"pass\"},{\"name\":\"realm-callback-registration-and-pending-replacement-are-distinct\",\"status\":\"pass\"},{\"name\":\"ordinary-shell-record-dynamic-import-keeps-original-loader\",\"status\":\"pass\"}],\"limits\":[\"No upstream realm/bootstrap/CJS/ESM startup\",\"No browser proof\",\"Only ModuleWrap-owned evaluation-phase imports covered\",\"Default metadata/contextify/cache/facade/interrupt backends remain unfinished\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "native-dynamic-import-controls",
+            "plannedCases": 14,
+            "cases": 14,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "five-original-callback-arguments-and-frozen-attributes",
+                "status": "pass"
+              },
+              {
+                "name": "ordinary-values-and-referrer-promise",
+                "status": "pass"
+              },
+              {
+                "name": "thenable-adoption-is-asynchronous-and-once",
+                "status": "pass"
+              },
+              {
+                "name": "pending-promise-owns-real-completion-through-gc",
+                "status": "pass"
+              },
+              {
+                "name": "callback-promise-rejection-preserves-original-value",
+                "status": "pass"
+              },
+              {
+                "name": "throwing-then-getter-rejects-import-with-original-value",
+                "status": "pass"
+              },
+              {
+                "name": "synchronous-callback-exception-stops-importing-module",
+                "status": "pass"
+              },
+              {
+                "name": "invalid-options-reject-before-callback",
+                "status": "pass"
+              },
+              {
+                "name": "specifier-coercion-options-order-and-numeric-attribute-keys",
+                "status": "pass"
+              },
+              {
+                "name": "actual-namespace-and-top-level-await-use-one-engine-graph",
+                "status": "pass"
+              },
+              {
+                "name": "top-level-await-remains-pending-until-callback-settles",
+                "status": "pass"
+              },
+              {
+                "name": "foreign-promise-is-adopted-in-referrer-realm",
+                "status": "pass"
+              },
+              {
+                "name": "realm-callback-registration-and-pending-replacement-are-distinct",
+                "status": "pass"
+              },
+              {
+                "name": "ordinary-shell-record-dynamic-import-keeps-original-loader",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No upstream realm/bootstrap/CJS/ESM startup",
+              "No browser proof",
+              "Only ModuleWrap-owned evaluation-phase imports covered",
+              "Default metadata/contextify/cache/facade/interrupt backends remain unfinished"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "module-wrap",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/module-wrap-regression.json",
+        "bytes": 46768,
+        "sha256": "9320e45906ea927f3f1d37b8f95a6ba94b7329ee7e221ecaafc5e5d3875c5604"
+      },
+      "cases": 19,
+      "driverRuns": 5,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "module-wrap-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"native-module-wrap-controls\",\"plannedCases\":19,\"cases\":19,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"canonical-realm-binding-and-original-prototype-operation\",\"status\":\"pass\"},{\"name\":\"synthetic-constructor-real-namespace-and-wrapper-receiver\",\"status\":\"pass\"},{\"name\":\"has-async-graph-is-own-lazy-writable-data\",\"status\":\"pass\"},{\"name\":\"live-synthetic-exports-and-reference-error\",\"status\":\"pass\"},{\"name\":\"synthetic-first-failure-throws-later-evaluation-rejects\",\"status\":\"pass\"},{\"name\":\"source-requests-have-real-frozen-attributes\",\"status\":\"pass\"},{\"name\":\"native-source-links-synthetic-dependency-and-live-reexport\",\"status\":\"pass\"},{\"name\":\"source-module-cycles-use-actual-engine-graph\",\"status\":\"pass\"},{\"name\":\"linked-dependencies-cannot-be-mutated-through-caller-array\",\"status\":\"pass\"},{\"name\":\"top-level-await-and-synchronous-refusal\",\"status\":\"pass\"},{\"name\":\"synchronous-evaluation-and-rejection-identity\",\"status\":\"pass\"},{\"name\":\"dependency-failure-stops-source-body\",\"status\":\"pass\"},{\"name\":\"custom-import-meta-callback-uses-original-id-and-wrapper\",\"status\":\"pass\"},{\"name\":\"source-bytes-unicode-surrogates-offsets-and-pragmas\",\"status\":\"pass\"},{\"name\":\"native-source-object-storage-is-real-and-missing-source-errors\",\"status\":\"pass\"},{\"name\":\"wrong-receiver-and-unimplemented-backends-fail-honestly\",\"status\":\"pass\"},{\"name\":\"new-realm-gets-distinct-binding-and-constructors\",\"status\":\"pass\"},{\"name\":\"wrapper-and-graph-identity-survive-gc\",\"status\":\"pass\"},{\"name\":\"previous-shell-module-hooks-still-own-non-node-records\",\"status\":\"pass\"}],\"limits\":[\"No upstream Node realm/bootstrap/CJS/ESM startup\",\"No browser execution\",\"Default import.meta/contextify/cache/deadline/signal backends still missing\",\"No complete native differential/security/OOM/finalization proof\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "native-module-wrap-controls",
+            "plannedCases": 19,
+            "cases": 19,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "canonical-realm-binding-and-original-prototype-operation",
+                "status": "pass"
+              },
+              {
+                "name": "synthetic-constructor-real-namespace-and-wrapper-receiver",
+                "status": "pass"
+              },
+              {
+                "name": "has-async-graph-is-own-lazy-writable-data",
+                "status": "pass"
+              },
+              {
+                "name": "live-synthetic-exports-and-reference-error",
+                "status": "pass"
+              },
+              {
+                "name": "synthetic-first-failure-throws-later-evaluation-rejects",
+                "status": "pass"
+              },
+              {
+                "name": "source-requests-have-real-frozen-attributes",
+                "status": "pass"
+              },
+              {
+                "name": "native-source-links-synthetic-dependency-and-live-reexport",
+                "status": "pass"
+              },
+              {
+                "name": "source-module-cycles-use-actual-engine-graph",
+                "status": "pass"
+              },
+              {
+                "name": "linked-dependencies-cannot-be-mutated-through-caller-array",
+                "status": "pass"
+              },
+              {
+                "name": "top-level-await-and-synchronous-refusal",
+                "status": "pass"
+              },
+              {
+                "name": "synchronous-evaluation-and-rejection-identity",
+                "status": "pass"
+              },
+              {
+                "name": "dependency-failure-stops-source-body",
+                "status": "pass"
+              },
+              {
+                "name": "custom-import-meta-callback-uses-original-id-and-wrapper",
+                "status": "pass"
+              },
+              {
+                "name": "source-bytes-unicode-surrogates-offsets-and-pragmas",
+                "status": "pass"
+              },
+              {
+                "name": "native-source-object-storage-is-real-and-missing-source-errors",
+                "status": "pass"
+              },
+              {
+                "name": "wrong-receiver-and-unimplemented-backends-fail-honestly",
+                "status": "pass"
+              },
+              {
+                "name": "new-realm-gets-distinct-binding-and-constructors",
+                "status": "pass"
+              },
+              {
+                "name": "wrapper-and-graph-identity-survive-gc",
+                "status": "pass"
+              },
+              {
+                "name": "previous-shell-module-hooks-still-own-non-node-records",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No upstream Node realm/bootstrap/CJS/ESM startup",
+              "No browser execution",
+              "Default import.meta/contextify/cache/deadline/signal backends still missing",
+              "No complete native differential/security/OOM/finalization proof"
+            ]
+          }
+        },
+        {
+          "name": "module-constructor-invariant-remains-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: args.isConstructing() && argc >= 3 (Node ModuleWrap constructor invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/module-wrap.cpp:264\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[134]:0x600aa\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+              "status": 132
+            }
+          ]
+        },
+        {
+          "name": "module-source-object-invariant-remains-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: JS::GetReservedSlot(wrap, SourceObject).isUndefined() (Node module source object initialization invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/module-wrap.cpp:551\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[156]:0x6642a\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+              "status": 132
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "synthetic-modules",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/synthetic-modules-regression.json",
+        "bytes": 34427,
+        "sha256": "d47fad254ab09bdcadbda78ce3e6b0213fbebb004a00a65301426dfa5ebd3ae4"
+      },
+      "cases": 15,
+      "driverRuns": 3,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "synthetic-modules-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"engine-synthetic-module-controls\",\"plannedCases\":15,\"cases\":15,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"real-module-record-link-and-synchronous-evaluation\",\"status\":\"pass\"},{\"name\":\"live-native-exports-and-real-namespace\",\"status\":\"pass\"},{\"name\":\"source-importer-evaluates-synthetic-dependency-first\",\"status\":\"pass\"},{\"name\":\"source-imports-observe-live-binding-updates\",\"status\":\"pass\"},{\"name\":\"callback-exception-becomes-cached-rejected-promise\",\"status\":\"pass\"},{\"name\":\"dependency-failure-prevents-importer-body\",\"status\":\"pass\"},{\"name\":\"synthetic-dependency-under-real-top-level-await\",\"status\":\"pass\"},{\"name\":\"reentrant-evaluate-returns-published-promise\",\"status\":\"pass\"},{\"name\":\"reentrant-dependent-graph-cannot-use-incomplete-evaluation\",\"status\":\"pass\"},{\"name\":\"arbitrary-export-names-do-not-alias-engine-bindings\",\"status\":\"pass\"},{\"name\":\"empty-module-has-no-fabricated-exports\",\"status\":\"pass\"},{\"name\":\"invalid-names-and-unknown-exports-fail-honestly\",\"status\":\"pass\"},{\"name\":\"native-private-callback-and-export-values-survive-gc\",\"status\":\"pass\"},{\"name\":\"json-module-path-preserves-real-parser-and-type\",\"status\":\"pass\"},{\"name\":\"shared-synthetic-dependency-runs-once-across-importers\",\"status\":\"pass\"}],\"limits\":[\"No Node ModuleWrap binding or upstream realm/bootstrap execution\",\"No browser execution\",\"No OOM/security-wrapper/complete finalization proof\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "engine-synthetic-module-controls",
+            "plannedCases": 15,
+            "cases": 15,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "real-module-record-link-and-synchronous-evaluation",
+                "status": "pass"
+              },
+              {
+                "name": "live-native-exports-and-real-namespace",
+                "status": "pass"
+              },
+              {
+                "name": "source-importer-evaluates-synthetic-dependency-first",
+                "status": "pass"
+              },
+              {
+                "name": "source-imports-observe-live-binding-updates",
+                "status": "pass"
+              },
+              {
+                "name": "callback-exception-becomes-cached-rejected-promise",
+                "status": "pass"
+              },
+              {
+                "name": "dependency-failure-prevents-importer-body",
+                "status": "pass"
+              },
+              {
+                "name": "synthetic-dependency-under-real-top-level-await",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-evaluate-returns-published-promise",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-dependent-graph-cannot-use-incomplete-evaluation",
+                "status": "pass"
+              },
+              {
+                "name": "arbitrary-export-names-do-not-alias-engine-bindings",
+                "status": "pass"
+              },
+              {
+                "name": "empty-module-has-no-fabricated-exports",
+                "status": "pass"
+              },
+              {
+                "name": "invalid-names-and-unknown-exports-fail-honestly",
+                "status": "pass"
+              },
+              {
+                "name": "native-private-callback-and-export-values-survive-gc",
+                "status": "pass"
+              },
+              {
+                "name": "json-module-path-preserves-real-parser-and-type",
+                "status": "pass"
+              },
+              {
+                "name": "shared-synthetic-dependency-runs-once-across-importers",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No Node ModuleWrap binding or upstream realm/bootstrap execution",
+              "No browser execution",
+              "No OOM/security-wrapper/complete finalization proof"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "per-context",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/per-context-regression.json",
+        "bytes": 32937,
+        "sha256": "7d8b6fe8ade1e6681fdd4364211095063908731eb6b16839ddadf795bbec219e"
+      },
+      "cases": 14,
+      "driverRuns": 4,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "per-context-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"upstream-per-context-controls\",\"plannedCases\":14,\"cases\":14,\"notRun\":0,\"failures\":0,\"observations\":[{\"name\":\"three-original-initializers-complete\",\"status\":\"pass\"},{\"name\":\"primordials-and-export-descriptors\",\"status\":\"pass\"},{\"name\":\"complete-native-symbol-inventories-and-descriptors\",\"status\":\"pass\"},{\"name\":\"runtime-identities-shared-with-fresh-realm-tables\",\"status\":\"pass\"},{\"name\":\"exports-and-constructors-owned-by-their-realms\",\"status\":\"pass\"},{\"name\":\"original-domexception-and-real-hidden-clone-marker\",\"status\":\"pass\"},{\"name\":\"original-quotaexceedederror-class-private-state\",\"status\":\"pass\"},{\"name\":\"original-messageport-dispatch\",\"status\":\"pass\"},{\"name\":\"canonical-exports-and-no-repeat-initialization\",\"status\":\"pass\"},{\"name\":\"uninitialized-context-does-not-return-success\",\"status\":\"pass\"},{\"name\":\"original-exception-preserved-and-failure-terminal\",\"status\":\"pass\"},{\"name\":\"reentrant-initialization-refused-without-second-execution\",\"status\":\"pass\"},{\"name\":\"non-global-and-scripted-proxy-targets-refused\",\"status\":\"pass\"},{\"name\":\"canonical-state-and-shared-identities-survive-gc\",\"status\":\"pass\"}],\"limits\":[\"No Node realm/bootstrap loader or CJS/ESM entrypath\",\"No browser execution\",\"No OOM/finalization or complete native differential proof\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "upstream-per-context-controls",
+            "plannedCases": 14,
+            "cases": 14,
+            "notRun": 0,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "three-original-initializers-complete",
+                "status": "pass"
+              },
+              {
+                "name": "primordials-and-export-descriptors",
+                "status": "pass"
+              },
+              {
+                "name": "complete-native-symbol-inventories-and-descriptors",
+                "status": "pass"
+              },
+              {
+                "name": "runtime-identities-shared-with-fresh-realm-tables",
+                "status": "pass"
+              },
+              {
+                "name": "exports-and-constructors-owned-by-their-realms",
+                "status": "pass"
+              },
+              {
+                "name": "original-domexception-and-real-hidden-clone-marker",
+                "status": "pass"
+              },
+              {
+                "name": "original-quotaexceedederror-class-private-state",
+                "status": "pass"
+              },
+              {
+                "name": "original-messageport-dispatch",
+                "status": "pass"
+              },
+              {
+                "name": "canonical-exports-and-no-repeat-initialization",
+                "status": "pass"
+              },
+              {
+                "name": "uninitialized-context-does-not-return-success",
+                "status": "pass"
+              },
+              {
+                "name": "original-exception-preserved-and-failure-terminal",
+                "status": "pass"
+              },
+              {
+                "name": "reentrant-initialization-refused-without-second-execution",
+                "status": "pass"
+              },
+              {
+                "name": "non-global-and-scripted-proxy-targets-refused",
+                "status": "pass"
+              },
+              {
+                "name": "canonical-state-and-shared-identities-survive-gc",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No Node realm/bootstrap loader or CJS/ESM entrypath",
+              "No browser execution",
+              "No OOM/finalization or complete native differential proof"
+            ]
+          }
+        },
+        {
+          "name": "fresh-exports-invariant-remains-fatal",
+          "status": "pass",
+          "exitCode": 132,
+          "stdout": "",
+          "stderr": "[100] Assertion failure: !hasPrimordials (Node per-context exports invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/per-context.cpp:223\nMOZ_REALLY_CRASH\n",
+          "hostDiagnostics": [
+            {
+              "pid": 100,
+              "source": "worker-main error message",
+              "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[195]:0x71dca\n    at wasm://wasm/0c3bd1d2:wasm-function[194]:0x6d519\n    at wasm://wasm/0c3bd1d2:wasm-function[21632]:0x137f798\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bd6\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)",
+              "status": 132
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "host": "Node",
+      "mode": "private-keys",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/private-keys-regression.json",
+        "bytes": 42229,
+        "sha256": "71b8c0b73f9591c959edad30d9f8e643d8711bacccb61b32f2d0ddfbe297256b"
+      },
+      "cases": 23,
+      "driverRuns": 3,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "ordinary-shell-does-not-expose-native-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+          "stderr": "",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "node-mode-refuses-native-test-controls",
+          "status": "pass",
+          "exitCode": 3,
+          "stdout": "",
+          "stderr": "Error: upstream test controls require JS-shell mode\n",
+          "hostDiagnostics": []
+        },
+        {
+          "name": "private-keys-controls",
+          "status": "pass",
+          "exitCode": 0,
+          "stdout": "{\"kind\":\"engine-private-key-controls-only\",\"cases\":23,\"failures\":0,\"observations\":[{\"name\":\"fresh-hidden-symbol-identity\",\"status\":\"pass\"},{\"name\":\"hidden-from-reflection-and-copy\",\"status\":\"pass\"},{\"name\":\"missing-native-read\",\"status\":\"pass\"},{\"name\":\"own-only-read-has-and-write\",\"status\":\"pass\"},{\"name\":\"own-only-lookup-ignores-prototype-proxy\",\"status\":\"pass\"},{\"name\":\"new-write-after-prevent-extensions\",\"status\":\"pass\"},{\"name\":\"existing-write-after-prevent-extensions\",\"status\":\"pass\"},{\"name\":\"new-write-after-seal\",\"status\":\"pass\"},{\"name\":\"existing-write-after-seal\",\"status\":\"pass\"},{\"name\":\"new-write-after-freeze\",\"status\":\"pass\"},{\"name\":\"existing-write-after-freeze\",\"status\":\"pass\"},{\"name\":\"ordinary-assignment-descriptor\",\"status\":\"pass\"},{\"name\":\"native-initialization-on-frozen-object\",\"status\":\"pass\"},{\"name\":\"missing-proxy-read-has-delete-bypass-traps\",\"status\":\"pass\"},{\"name\":\"first-ordinary-proxy-write-rejected\",\"status\":\"pass\"},{\"name\":\"native-proxy-initialize-read-update-descriptor-has-delete\",\"status\":\"pass\"},{\"name\":\"proxy-private-entry-is-not-a-target-property\",\"status\":\"pass\"},{\"name\":\"native-private-on-revoked-scripted-proxy\",\"status\":\"pass\"},{\"name\":\"cross-compartment-forwarding-retains-target-ownership\",\"status\":\"pass\"},{\"name\":\"hidden-proxy-value-survives-gc\",\"status\":\"pass\"},{\"name\":\"ordinary-symbol-semantics-preserved\",\"status\":\"pass\"},{\"name\":\"language-class-private-semantics-preserved\",\"status\":\"pass\"},{\"name\":\"native-initializer-refuses-public-symbol\",\"status\":\"pass\"}],\"limits\":[\"No upstream startup\",\"No complete native-V8 differential proof\",\"No security-wrapper policy or OOM/GC-finalization proof\",\"No per-runtime symbol owner or per-context initializer coverage\"]}\n",
+          "stderr": "",
+          "hostDiagnostics": [],
+          "detail": {
+            "kind": "engine-private-key-controls-only",
+            "cases": 23,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "fresh-hidden-symbol-identity",
+                "status": "pass"
+              },
+              {
+                "name": "hidden-from-reflection-and-copy",
+                "status": "pass"
+              },
+              {
+                "name": "missing-native-read",
+                "status": "pass"
+              },
+              {
+                "name": "own-only-read-has-and-write",
+                "status": "pass"
+              },
+              {
+                "name": "own-only-lookup-ignores-prototype-proxy",
+                "status": "pass"
+              },
+              {
+                "name": "new-write-after-prevent-extensions",
+                "status": "pass"
+              },
+              {
+                "name": "existing-write-after-prevent-extensions",
+                "status": "pass"
+              },
+              {
+                "name": "new-write-after-seal",
+                "status": "pass"
+              },
+              {
+                "name": "existing-write-after-seal",
+                "status": "pass"
+              },
+              {
+                "name": "new-write-after-freeze",
+                "status": "pass"
+              },
+              {
+                "name": "existing-write-after-freeze",
+                "status": "pass"
+              },
+              {
+                "name": "ordinary-assignment-descriptor",
+                "status": "pass"
+              },
+              {
+                "name": "native-initialization-on-frozen-object",
+                "status": "pass"
+              },
+              {
+                "name": "missing-proxy-read-has-delete-bypass-traps",
+                "status": "pass"
+              },
+              {
+                "name": "first-ordinary-proxy-write-rejected",
+                "status": "pass"
+              },
+              {
+                "name": "native-proxy-initialize-read-update-descriptor-has-delete",
+                "status": "pass"
+              },
+              {
+                "name": "proxy-private-entry-is-not-a-target-property",
+                "status": "pass"
+              },
+              {
+                "name": "native-private-on-revoked-scripted-proxy",
+                "status": "pass"
+              },
+              {
+                "name": "cross-compartment-forwarding-retains-target-ownership",
+                "status": "pass"
+              },
+              {
+                "name": "hidden-proxy-value-survives-gc",
+                "status": "pass"
+              },
+              {
+                "name": "ordinary-symbol-semantics-preserved",
+                "status": "pass"
+              },
+              {
+                "name": "language-class-private-semantics-preserved",
+                "status": "pass"
+              },
+              {
+                "name": "native-initializer-refuses-public-symbol",
+                "status": "pass"
+              }
+            ],
+            "limits": [
+              "No upstream startup",
+              "No complete native-V8 differential proof",
+              "No security-wrapper policy or OOM/GC-finalization proof",
+              "No per-runtime symbol owner or per-context initializer coverage"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "host": "chromium",
+      "hostVersion": "153.0.8010.12",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/browser/task-queue-chromium.json",
+        "bytes": 15514,
+        "sha256": "266dab1e21623120bad9af04dcf28cbd4991b44002022d225e0eb053269b2b48"
+      },
+      "cases": 26,
+      "driverRuns": 4,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "binding-controls",
+          "result": {
+            "exitCode": 0,
+            "stdout": "{\"kind\":\"native-task-queue-controls\",\"cases\":26,\"failures\":0,\"observations\":[{\"name\":\"binding-layout-cache-and-native-method-lengths\",\"status\":\"pass\"},{\"name\":\"native-exit-code-enum-is-complete-and-readonly\",\"status\":\"pass\"},{\"name\":\"enqueue-is-deferred-and-shares-promise-fifo\",\"status\":\"pass\"},{\"name\":\"callable-receiver-arguments-and-method-owner\",\"status\":\"pass\"},{\"name\":\"bound-and-proxy-callables-use-real-engine-jobs\",\"status\":\"pass\"},{\"name\":\"native-and-shell-nested-checkpoints-do-not-reenter\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-keeps-current-job-weakref-target\",\"status\":\"pass\"},{\"name\":\"queued-native-adapter-retains-callback-through-moving-gc\",\"status\":\"pass\"},{\"name\":\"microtask-only-entry-does-not-dispatch-live-ticks\",\"status\":\"pass\"},{\"name\":\"outer-checkpoint-runs-scheduled-tick-before-microtasks\",\"status\":\"pass\"},{\"name\":\"microtask-can-schedule-tick-in-the-same-outer-checkpoint\",\"status\":\"pass\"},{\"name\":\"rejection-flag-triggers-original-registered-tick-callback\",\"status\":\"pass\"},{\"name\":\"native-live-flags-match-exact-one-semantics\",\"status\":\"pass\"},{\"name\":\"public-binding-fields-do-not-replace-protected-state\",\"status\":\"pass\"},{\"name\":\"nested-tick-checkpoint-keeps-outer-owner-entered\",\"status\":\"pass\"},{\"name\":\"real-promise-rejection-events-and-original-reason\",\"status\":\"pass\"},{\"name\":\"promise-callback-replacement-retains-the-actual-latest-function\",\"status\":\"pass\"},{\"name\":\"cross-realm-binding-shares-flags-and-principal-process\",\"status\":\"pass\"},{\"name\":\"cross-realm-promise-and-reason-identity-survive-notification\",\"status\":\"pass\"},{\"name\":\"handled-job-error-enters-real-principal-process-policy\",\"status\":\"pass\"},{\"name\":\"native-fatal-policy-accepts-every-result-except-exact-false\",\"status\":\"pass\"},{\"name\":\"throwing-error-policy-preserves-actual-replacement-error\",\"status\":\"pass\"},{\"name\":\"missing-fatal-policy-preserves-failure-and-pending-jobs\",\"status\":\"pass\"},{\"name\":\"false-fatal-policy-remains-an-explicit-exit-backend-gap\",\"status\":\"pass\"},{\"name\":\"libuv-callback-checkpoint-drains-real-jobs-and-live-ticks\",\"status\":\"pass\"},{\"name\":\"failed-realm-methods-retire-without-mutating-shared-state\",\"status\":\"pass\"}],\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'async_wrap' is not implemented\"},\"exitCodes\":{\"kNoFailure\":0,\"kGenericUserError\":1,\"kInternalJSParseError\":3,\"kInternalJSEvaluationFailure\":4,\"kV8FatalError\":5,\"kInvalidFatalExceptionMonkeyPatching\":6,\"kExceptionInFatalExceptionHandler\":7,\"kInvalidCommandLineArgument\":9,\"kBootstrapFailure\":10,\"kInvalidCommandLineArgument2\":12,\"kUnsettledTopLevelAwait\":13,\"kStartupSnapshotFailure\":14,\"kProcessTimeout\":124,\"kAbort\":134},\"limits\":[\"Raw binding/checkpoint controls, not original public task queue modules or successful Node startup\",\"Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete\",\"Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures\",\"Per-host artifact identities and fatal/diagnostic controls belong to the external runner\"]}\n",
+            "stderr": "",
+            "combined": "{\"kind\":\"native-task-queue-controls\",\"cases\":26,\"failures\":0,\"observations\":[{\"name\":\"binding-layout-cache-and-native-method-lengths\",\"status\":\"pass\"},{\"name\":\"native-exit-code-enum-is-complete-and-readonly\",\"status\":\"pass\"},{\"name\":\"enqueue-is-deferred-and-shares-promise-fifo\",\"status\":\"pass\"},{\"name\":\"callable-receiver-arguments-and-method-owner\",\"status\":\"pass\"},{\"name\":\"bound-and-proxy-callables-use-real-engine-jobs\",\"status\":\"pass\"},{\"name\":\"native-and-shell-nested-checkpoints-do-not-reenter\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-keeps-current-job-weakref-target\",\"status\":\"pass\"},{\"name\":\"queued-native-adapter-retains-callback-through-moving-gc\",\"status\":\"pass\"},{\"name\":\"microtask-only-entry-does-not-dispatch-live-ticks\",\"status\":\"pass\"},{\"name\":\"outer-checkpoint-runs-scheduled-tick-before-microtasks\",\"status\":\"pass\"},{\"name\":\"microtask-can-schedule-tick-in-the-same-outer-checkpoint\",\"status\":\"pass\"},{\"name\":\"rejection-flag-triggers-original-registered-tick-callback\",\"status\":\"pass\"},{\"name\":\"native-live-flags-match-exact-one-semantics\",\"status\":\"pass\"},{\"name\":\"public-binding-fields-do-not-replace-protected-state\",\"status\":\"pass\"},{\"name\":\"nested-tick-checkpoint-keeps-outer-owner-entered\",\"status\":\"pass\"},{\"name\":\"real-promise-rejection-events-and-original-reason\",\"status\":\"pass\"},{\"name\":\"promise-callback-replacement-retains-the-actual-latest-function\",\"status\":\"pass\"},{\"name\":\"cross-realm-binding-shares-flags-and-principal-process\",\"status\":\"pass\"},{\"name\":\"cross-realm-promise-and-reason-identity-survive-notification\",\"status\":\"pass\"},{\"name\":\"handled-job-error-enters-real-principal-process-policy\",\"status\":\"pass\"},{\"name\":\"native-fatal-policy-accepts-every-result-except-exact-false\",\"status\":\"pass\"},{\"name\":\"throwing-error-policy-preserves-actual-replacement-error\",\"status\":\"pass\"},{\"name\":\"missing-fatal-policy-preserves-failure-and-pending-jobs\",\"status\":\"pass\"},{\"name\":\"false-fatal-policy-remains-an-explicit-exit-backend-gap\",\"status\":\"pass\"},{\"name\":\"libuv-callback-checkpoint-drains-real-jobs-and-live-ticks\",\"status\":\"pass\"},{\"name\":\"failed-realm-methods-retire-without-mutating-shared-state\",\"status\":\"pass\"}],\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'async_wrap' is not implemented\"},\"exitCodes\":{\"kNoFailure\":0,\"kGenericUserError\":1,\"kInternalJSParseError\":3,\"kInternalJSEvaluationFailure\":4,\"kV8FatalError\":5,\"kInvalidFatalExceptionMonkeyPatching\":6,\"kExceptionInFatalExceptionHandler\":7,\"kInvalidCommandLineArgument\":9,\"kBootstrapFailure\":10,\"kInvalidCommandLineArgument2\":12,\"kUnsettledTopLevelAwait\":13,\"kStartupSnapshotFailure\":14,\"kProcessTimeout\":124,\"kAbort\":134},\"limits\":[\"Raw binding/checkpoint controls, not original public task queue modules or successful Node startup\",\"Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete\",\"Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures\",\"Per-host artifact identities and fatal/diagnostic controls belong to the external runner\"]}\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass",
+          "detail": {
+            "kind": "native-task-queue-controls",
+            "cases": 26,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "binding-layout-cache-and-native-method-lengths",
+                "status": "pass"
+              },
+              {
+                "name": "native-exit-code-enum-is-complete-and-readonly",
+                "status": "pass"
+              },
+              {
+                "name": "enqueue-is-deferred-and-shares-promise-fifo",
+                "status": "pass"
+              },
+              {
+                "name": "callable-receiver-arguments-and-method-owner",
+                "status": "pass"
+              },
+              {
+                "name": "bound-and-proxy-callables-use-real-engine-jobs",
+                "status": "pass"
+              },
+              {
+                "name": "native-and-shell-nested-checkpoints-do-not-reenter",
+                "status": "pass"
+              },
+              {
+                "name": "nested-checkpoint-keeps-current-job-weakref-target",
+                "status": "pass"
+              },
+              {
+                "name": "queued-native-adapter-retains-callback-through-moving-gc",
+                "status": "pass"
+              },
+              {
+                "name": "microtask-only-entry-does-not-dispatch-live-ticks",
+                "status": "pass"
+              },
+              {
+                "name": "outer-checkpoint-runs-scheduled-tick-before-microtasks",
+                "status": "pass"
+              },
+              {
+                "name": "microtask-can-schedule-tick-in-the-same-outer-checkpoint",
+                "status": "pass"
+              },
+              {
+                "name": "rejection-flag-triggers-original-registered-tick-callback",
+                "status": "pass"
+              },
+              {
+                "name": "native-live-flags-match-exact-one-semantics",
+                "status": "pass"
+              },
+              {
+                "name": "public-binding-fields-do-not-replace-protected-state",
+                "status": "pass"
+              },
+              {
+                "name": "nested-tick-checkpoint-keeps-outer-owner-entered",
+                "status": "pass"
+              },
+              {
+                "name": "real-promise-rejection-events-and-original-reason",
+                "status": "pass"
+              },
+              {
+                "name": "promise-callback-replacement-retains-the-actual-latest-function",
+                "status": "pass"
+              },
+              {
+                "name": "cross-realm-binding-shares-flags-and-principal-process",
+                "status": "pass"
+              },
+              {
+                "name": "cross-realm-promise-and-reason-identity-survive-notification",
+                "status": "pass"
+              },
+              {
+                "name": "handled-job-error-enters-real-principal-process-policy",
+                "status": "pass"
+              },
+              {
+                "name": "native-fatal-policy-accepts-every-result-except-exact-false",
+                "status": "pass"
+              },
+              {
+                "name": "throwing-error-policy-preserves-actual-replacement-error",
+                "status": "pass"
+              },
+              {
+                "name": "missing-fatal-policy-preserves-failure-and-pending-jobs",
+                "status": "pass"
+              },
+              {
+                "name": "false-fatal-policy-remains-an-explicit-exit-backend-gap",
+                "status": "pass"
+              },
+              {
+                "name": "libuv-callback-checkpoint-drains-real-jobs-and-live-ticks",
+                "status": "pass"
+              },
+              {
+                "name": "failed-realm-methods-retire-without-mutating-shared-state",
+                "status": "pass"
+              }
+            ],
+            "bootstrapFailure": {
+              "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+              "message": "Native Node binding 'async_wrap' is not implemented"
+            },
+            "exitCodes": {
+              "kNoFailure": 0,
+              "kGenericUserError": 1,
+              "kInternalJSParseError": 3,
+              "kInternalJSEvaluationFailure": 4,
+              "kV8FatalError": 5,
+              "kInvalidFatalExceptionMonkeyPatching": 6,
+              "kExceptionInFatalExceptionHandler": 7,
+              "kInvalidCommandLineArgument": 9,
+              "kBootstrapFailure": 10,
+              "kInvalidCommandLineArgument2": 12,
+              "kUnsettledTopLevelAwait": 13,
+              "kStartupSnapshotFailure": 14,
+              "kProcessTimeout": 124,
+              "kAbort": 134
+            },
+            "limits": [
+              "Raw binding/checkpoint controls, not original public task queue modules or successful Node startup",
+              "Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete",
+              "Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures",
+              "Per-host artifact identities and fatal/diagnostic controls belong to the external runner"
+            ]
+          }
+        },
+        {
+          "name": "queued-job-natural-exit",
+          "result": {
+            "exitCode": 0,
+            "stdout": "MICROTASK_DONE\n",
+            "stderr": "",
+            "combined": "MICROTASK_DONE\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "queued-job-quit-status",
+          "result": {
+            "exitCode": 23,
+            "stdout": "",
+            "stderr": "",
+            "combined": "",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "original-unhandled-job-error-is-preserved",
+          "result": {
+            "exitCode": 3,
+            "stdout": "",
+            "stderr": "-e:1:177 Error: UNHANDLED_JOB_FAILURE_BOUNDARY\nStack:\n  @-e:1:177\n",
+            "combined": "-e:1:177 Error: UNHANDLED_JOB_FAILURE_BOUNDARY\nStack:\n  @-e:1:177\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        }
+      ],
+      "consumedArtifactHashes": [
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+          "status": 200,
+          "bytes": 2958224,
+          "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/conductor/workspaces/kandelo/port-vila/local-binaries/kandelo_image_module32.wasm",
+          "status": 200,
+          "bytes": 403950,
+          "sha256": "85bf98b36b2229d30a8f36d8bb238170c124e09937acc6824a8e0560ab94d4ec"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        }
+      ]
+    },
+    {
+      "host": "firefox",
+      "hostVersion": "155.0",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/browser/task-queue-firefox.json",
+        "bytes": 15505,
+        "sha256": "dd326afc84fb14d80632bda5831a55b1ea4418deb9199ec0535d7f00cb20026d"
+      },
+      "cases": 26,
+      "driverRuns": 4,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "binding-controls",
+          "result": {
+            "exitCode": 0,
+            "stdout": "{\"kind\":\"native-task-queue-controls\",\"cases\":26,\"failures\":0,\"observations\":[{\"name\":\"binding-layout-cache-and-native-method-lengths\",\"status\":\"pass\"},{\"name\":\"native-exit-code-enum-is-complete-and-readonly\",\"status\":\"pass\"},{\"name\":\"enqueue-is-deferred-and-shares-promise-fifo\",\"status\":\"pass\"},{\"name\":\"callable-receiver-arguments-and-method-owner\",\"status\":\"pass\"},{\"name\":\"bound-and-proxy-callables-use-real-engine-jobs\",\"status\":\"pass\"},{\"name\":\"native-and-shell-nested-checkpoints-do-not-reenter\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-keeps-current-job-weakref-target\",\"status\":\"pass\"},{\"name\":\"queued-native-adapter-retains-callback-through-moving-gc\",\"status\":\"pass\"},{\"name\":\"microtask-only-entry-does-not-dispatch-live-ticks\",\"status\":\"pass\"},{\"name\":\"outer-checkpoint-runs-scheduled-tick-before-microtasks\",\"status\":\"pass\"},{\"name\":\"microtask-can-schedule-tick-in-the-same-outer-checkpoint\",\"status\":\"pass\"},{\"name\":\"rejection-flag-triggers-original-registered-tick-callback\",\"status\":\"pass\"},{\"name\":\"native-live-flags-match-exact-one-semantics\",\"status\":\"pass\"},{\"name\":\"public-binding-fields-do-not-replace-protected-state\",\"status\":\"pass\"},{\"name\":\"nested-tick-checkpoint-keeps-outer-owner-entered\",\"status\":\"pass\"},{\"name\":\"real-promise-rejection-events-and-original-reason\",\"status\":\"pass\"},{\"name\":\"promise-callback-replacement-retains-the-actual-latest-function\",\"status\":\"pass\"},{\"name\":\"cross-realm-binding-shares-flags-and-principal-process\",\"status\":\"pass\"},{\"name\":\"cross-realm-promise-and-reason-identity-survive-notification\",\"status\":\"pass\"},{\"name\":\"handled-job-error-enters-real-principal-process-policy\",\"status\":\"pass\"},{\"name\":\"native-fatal-policy-accepts-every-result-except-exact-false\",\"status\":\"pass\"},{\"name\":\"throwing-error-policy-preserves-actual-replacement-error\",\"status\":\"pass\"},{\"name\":\"missing-fatal-policy-preserves-failure-and-pending-jobs\",\"status\":\"pass\"},{\"name\":\"false-fatal-policy-remains-an-explicit-exit-backend-gap\",\"status\":\"pass\"},{\"name\":\"libuv-callback-checkpoint-drains-real-jobs-and-live-ticks\",\"status\":\"pass\"},{\"name\":\"failed-realm-methods-retire-without-mutating-shared-state\",\"status\":\"pass\"}],\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'async_wrap' is not implemented\"},\"exitCodes\":{\"kNoFailure\":0,\"kGenericUserError\":1,\"kInternalJSParseError\":3,\"kInternalJSEvaluationFailure\":4,\"kV8FatalError\":5,\"kInvalidFatalExceptionMonkeyPatching\":6,\"kExceptionInFatalExceptionHandler\":7,\"kInvalidCommandLineArgument\":9,\"kBootstrapFailure\":10,\"kInvalidCommandLineArgument2\":12,\"kUnsettledTopLevelAwait\":13,\"kStartupSnapshotFailure\":14,\"kProcessTimeout\":124,\"kAbort\":134},\"limits\":[\"Raw binding/checkpoint controls, not original public task queue modules or successful Node startup\",\"Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete\",\"Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures\",\"Per-host artifact identities and fatal/diagnostic controls belong to the external runner\"]}\n",
+            "stderr": "",
+            "combined": "{\"kind\":\"native-task-queue-controls\",\"cases\":26,\"failures\":0,\"observations\":[{\"name\":\"binding-layout-cache-and-native-method-lengths\",\"status\":\"pass\"},{\"name\":\"native-exit-code-enum-is-complete-and-readonly\",\"status\":\"pass\"},{\"name\":\"enqueue-is-deferred-and-shares-promise-fifo\",\"status\":\"pass\"},{\"name\":\"callable-receiver-arguments-and-method-owner\",\"status\":\"pass\"},{\"name\":\"bound-and-proxy-callables-use-real-engine-jobs\",\"status\":\"pass\"},{\"name\":\"native-and-shell-nested-checkpoints-do-not-reenter\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-keeps-current-job-weakref-target\",\"status\":\"pass\"},{\"name\":\"queued-native-adapter-retains-callback-through-moving-gc\",\"status\":\"pass\"},{\"name\":\"microtask-only-entry-does-not-dispatch-live-ticks\",\"status\":\"pass\"},{\"name\":\"outer-checkpoint-runs-scheduled-tick-before-microtasks\",\"status\":\"pass\"},{\"name\":\"microtask-can-schedule-tick-in-the-same-outer-checkpoint\",\"status\":\"pass\"},{\"name\":\"rejection-flag-triggers-original-registered-tick-callback\",\"status\":\"pass\"},{\"name\":\"native-live-flags-match-exact-one-semantics\",\"status\":\"pass\"},{\"name\":\"public-binding-fields-do-not-replace-protected-state\",\"status\":\"pass\"},{\"name\":\"nested-tick-checkpoint-keeps-outer-owner-entered\",\"status\":\"pass\"},{\"name\":\"real-promise-rejection-events-and-original-reason\",\"status\":\"pass\"},{\"name\":\"promise-callback-replacement-retains-the-actual-latest-function\",\"status\":\"pass\"},{\"name\":\"cross-realm-binding-shares-flags-and-principal-process\",\"status\":\"pass\"},{\"name\":\"cross-realm-promise-and-reason-identity-survive-notification\",\"status\":\"pass\"},{\"name\":\"handled-job-error-enters-real-principal-process-policy\",\"status\":\"pass\"},{\"name\":\"native-fatal-policy-accepts-every-result-except-exact-false\",\"status\":\"pass\"},{\"name\":\"throwing-error-policy-preserves-actual-replacement-error\",\"status\":\"pass\"},{\"name\":\"missing-fatal-policy-preserves-failure-and-pending-jobs\",\"status\":\"pass\"},{\"name\":\"false-fatal-policy-remains-an-explicit-exit-backend-gap\",\"status\":\"pass\"},{\"name\":\"libuv-callback-checkpoint-drains-real-jobs-and-live-ticks\",\"status\":\"pass\"},{\"name\":\"failed-realm-methods-retire-without-mutating-shared-state\",\"status\":\"pass\"}],\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'async_wrap' is not implemented\"},\"exitCodes\":{\"kNoFailure\":0,\"kGenericUserError\":1,\"kInternalJSParseError\":3,\"kInternalJSEvaluationFailure\":4,\"kV8FatalError\":5,\"kInvalidFatalExceptionMonkeyPatching\":6,\"kExceptionInFatalExceptionHandler\":7,\"kInvalidCommandLineArgument\":9,\"kBootstrapFailure\":10,\"kInvalidCommandLineArgument2\":12,\"kUnsettledTopLevelAwait\":13,\"kStartupSnapshotFailure\":14,\"kProcessTimeout\":124,\"kAbort\":134},\"limits\":[\"Raw binding/checkpoint controls, not original public task queue modules or successful Node startup\",\"Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete\",\"Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures\",\"Per-host artifact identities and fatal/diagnostic controls belong to the external runner\"]}\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass",
+          "detail": {
+            "kind": "native-task-queue-controls",
+            "cases": 26,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "binding-layout-cache-and-native-method-lengths",
+                "status": "pass"
+              },
+              {
+                "name": "native-exit-code-enum-is-complete-and-readonly",
+                "status": "pass"
+              },
+              {
+                "name": "enqueue-is-deferred-and-shares-promise-fifo",
+                "status": "pass"
+              },
+              {
+                "name": "callable-receiver-arguments-and-method-owner",
+                "status": "pass"
+              },
+              {
+                "name": "bound-and-proxy-callables-use-real-engine-jobs",
+                "status": "pass"
+              },
+              {
+                "name": "native-and-shell-nested-checkpoints-do-not-reenter",
+                "status": "pass"
+              },
+              {
+                "name": "nested-checkpoint-keeps-current-job-weakref-target",
+                "status": "pass"
+              },
+              {
+                "name": "queued-native-adapter-retains-callback-through-moving-gc",
+                "status": "pass"
+              },
+              {
+                "name": "microtask-only-entry-does-not-dispatch-live-ticks",
+                "status": "pass"
+              },
+              {
+                "name": "outer-checkpoint-runs-scheduled-tick-before-microtasks",
+                "status": "pass"
+              },
+              {
+                "name": "microtask-can-schedule-tick-in-the-same-outer-checkpoint",
+                "status": "pass"
+              },
+              {
+                "name": "rejection-flag-triggers-original-registered-tick-callback",
+                "status": "pass"
+              },
+              {
+                "name": "native-live-flags-match-exact-one-semantics",
+                "status": "pass"
+              },
+              {
+                "name": "public-binding-fields-do-not-replace-protected-state",
+                "status": "pass"
+              },
+              {
+                "name": "nested-tick-checkpoint-keeps-outer-owner-entered",
+                "status": "pass"
+              },
+              {
+                "name": "real-promise-rejection-events-and-original-reason",
+                "status": "pass"
+              },
+              {
+                "name": "promise-callback-replacement-retains-the-actual-latest-function",
+                "status": "pass"
+              },
+              {
+                "name": "cross-realm-binding-shares-flags-and-principal-process",
+                "status": "pass"
+              },
+              {
+                "name": "cross-realm-promise-and-reason-identity-survive-notification",
+                "status": "pass"
+              },
+              {
+                "name": "handled-job-error-enters-real-principal-process-policy",
+                "status": "pass"
+              },
+              {
+                "name": "native-fatal-policy-accepts-every-result-except-exact-false",
+                "status": "pass"
+              },
+              {
+                "name": "throwing-error-policy-preserves-actual-replacement-error",
+                "status": "pass"
+              },
+              {
+                "name": "missing-fatal-policy-preserves-failure-and-pending-jobs",
+                "status": "pass"
+              },
+              {
+                "name": "false-fatal-policy-remains-an-explicit-exit-backend-gap",
+                "status": "pass"
+              },
+              {
+                "name": "libuv-callback-checkpoint-drains-real-jobs-and-live-ticks",
+                "status": "pass"
+              },
+              {
+                "name": "failed-realm-methods-retire-without-mutating-shared-state",
+                "status": "pass"
+              }
+            ],
+            "bootstrapFailure": {
+              "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+              "message": "Native Node binding 'async_wrap' is not implemented"
+            },
+            "exitCodes": {
+              "kNoFailure": 0,
+              "kGenericUserError": 1,
+              "kInternalJSParseError": 3,
+              "kInternalJSEvaluationFailure": 4,
+              "kV8FatalError": 5,
+              "kInvalidFatalExceptionMonkeyPatching": 6,
+              "kExceptionInFatalExceptionHandler": 7,
+              "kInvalidCommandLineArgument": 9,
+              "kBootstrapFailure": 10,
+              "kInvalidCommandLineArgument2": 12,
+              "kUnsettledTopLevelAwait": 13,
+              "kStartupSnapshotFailure": 14,
+              "kProcessTimeout": 124,
+              "kAbort": 134
+            },
+            "limits": [
+              "Raw binding/checkpoint controls, not original public task queue modules or successful Node startup",
+              "Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete",
+              "Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures",
+              "Per-host artifact identities and fatal/diagnostic controls belong to the external runner"
+            ]
+          }
+        },
+        {
+          "name": "queued-job-natural-exit",
+          "result": {
+            "exitCode": 0,
+            "stdout": "MICROTASK_DONE\n",
+            "stderr": "",
+            "combined": "MICROTASK_DONE\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "queued-job-quit-status",
+          "result": {
+            "exitCode": 23,
+            "stdout": "",
+            "stderr": "",
+            "combined": "",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "original-unhandled-job-error-is-preserved",
+          "result": {
+            "exitCode": 3,
+            "stdout": "",
+            "stderr": "-e:1:177 Error: UNHANDLED_JOB_FAILURE_BOUNDARY\nStack:\n  @-e:1:177\n",
+            "combined": "-e:1:177 Error: UNHANDLED_JOB_FAILURE_BOUNDARY\nStack:\n  @-e:1:177\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        }
+      ],
+      "consumedArtifactHashes": [
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+          "status": 200,
+          "bytes": 2958224,
+          "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/conductor/workspaces/kandelo/port-vila/local-binaries/kandelo_image_module32.wasm",
+          "status": 200,
+          "bytes": 403950,
+          "sha256": "85bf98b36b2229d30a8f36d8bb238170c124e09937acc6824a8e0560ab94d4ec"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        }
+      ]
+    },
+    {
+      "host": "webkit",
+      "hostVersion": "26.6",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/browser/task-queue-webkit.json",
+        "bytes": 15503,
+        "sha256": "d5ec6294195bf8d7b195762e53d6541a97845665a8564a3e7acd79ff90b4afd1"
+      },
+      "cases": 26,
+      "driverRuns": 4,
+      "failures": 0,
+      "runs": [
+        {
+          "name": "binding-controls",
+          "result": {
+            "exitCode": 0,
+            "stdout": "{\"kind\":\"native-task-queue-controls\",\"cases\":26,\"failures\":0,\"observations\":[{\"name\":\"binding-layout-cache-and-native-method-lengths\",\"status\":\"pass\"},{\"name\":\"native-exit-code-enum-is-complete-and-readonly\",\"status\":\"pass\"},{\"name\":\"enqueue-is-deferred-and-shares-promise-fifo\",\"status\":\"pass\"},{\"name\":\"callable-receiver-arguments-and-method-owner\",\"status\":\"pass\"},{\"name\":\"bound-and-proxy-callables-use-real-engine-jobs\",\"status\":\"pass\"},{\"name\":\"native-and-shell-nested-checkpoints-do-not-reenter\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-keeps-current-job-weakref-target\",\"status\":\"pass\"},{\"name\":\"queued-native-adapter-retains-callback-through-moving-gc\",\"status\":\"pass\"},{\"name\":\"microtask-only-entry-does-not-dispatch-live-ticks\",\"status\":\"pass\"},{\"name\":\"outer-checkpoint-runs-scheduled-tick-before-microtasks\",\"status\":\"pass\"},{\"name\":\"microtask-can-schedule-tick-in-the-same-outer-checkpoint\",\"status\":\"pass\"},{\"name\":\"rejection-flag-triggers-original-registered-tick-callback\",\"status\":\"pass\"},{\"name\":\"native-live-flags-match-exact-one-semantics\",\"status\":\"pass\"},{\"name\":\"public-binding-fields-do-not-replace-protected-state\",\"status\":\"pass\"},{\"name\":\"nested-tick-checkpoint-keeps-outer-owner-entered\",\"status\":\"pass\"},{\"name\":\"real-promise-rejection-events-and-original-reason\",\"status\":\"pass\"},{\"name\":\"promise-callback-replacement-retains-the-actual-latest-function\",\"status\":\"pass\"},{\"name\":\"cross-realm-binding-shares-flags-and-principal-process\",\"status\":\"pass\"},{\"name\":\"cross-realm-promise-and-reason-identity-survive-notification\",\"status\":\"pass\"},{\"name\":\"handled-job-error-enters-real-principal-process-policy\",\"status\":\"pass\"},{\"name\":\"native-fatal-policy-accepts-every-result-except-exact-false\",\"status\":\"pass\"},{\"name\":\"throwing-error-policy-preserves-actual-replacement-error\",\"status\":\"pass\"},{\"name\":\"missing-fatal-policy-preserves-failure-and-pending-jobs\",\"status\":\"pass\"},{\"name\":\"false-fatal-policy-remains-an-explicit-exit-backend-gap\",\"status\":\"pass\"},{\"name\":\"libuv-callback-checkpoint-drains-real-jobs-and-live-ticks\",\"status\":\"pass\"},{\"name\":\"failed-realm-methods-retire-without-mutating-shared-state\",\"status\":\"pass\"}],\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'async_wrap' is not implemented\"},\"exitCodes\":{\"kNoFailure\":0,\"kGenericUserError\":1,\"kInternalJSParseError\":3,\"kInternalJSEvaluationFailure\":4,\"kV8FatalError\":5,\"kInvalidFatalExceptionMonkeyPatching\":6,\"kExceptionInFatalExceptionHandler\":7,\"kInvalidCommandLineArgument\":9,\"kBootstrapFailure\":10,\"kInvalidCommandLineArgument2\":12,\"kUnsettledTopLevelAwait\":13,\"kStartupSnapshotFailure\":14,\"kProcessTimeout\":124,\"kAbort\":134},\"limits\":[\"Raw binding/checkpoint controls, not original public task queue modules or successful Node startup\",\"Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete\",\"Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures\",\"Per-host artifact identities and fatal/diagnostic controls belong to the external runner\"]}\n",
+            "stderr": "",
+            "combined": "{\"kind\":\"native-task-queue-controls\",\"cases\":26,\"failures\":0,\"observations\":[{\"name\":\"binding-layout-cache-and-native-method-lengths\",\"status\":\"pass\"},{\"name\":\"native-exit-code-enum-is-complete-and-readonly\",\"status\":\"pass\"},{\"name\":\"enqueue-is-deferred-and-shares-promise-fifo\",\"status\":\"pass\"},{\"name\":\"callable-receiver-arguments-and-method-owner\",\"status\":\"pass\"},{\"name\":\"bound-and-proxy-callables-use-real-engine-jobs\",\"status\":\"pass\"},{\"name\":\"native-and-shell-nested-checkpoints-do-not-reenter\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-keeps-current-job-weakref-target\",\"status\":\"pass\"},{\"name\":\"queued-native-adapter-retains-callback-through-moving-gc\",\"status\":\"pass\"},{\"name\":\"microtask-only-entry-does-not-dispatch-live-ticks\",\"status\":\"pass\"},{\"name\":\"outer-checkpoint-runs-scheduled-tick-before-microtasks\",\"status\":\"pass\"},{\"name\":\"microtask-can-schedule-tick-in-the-same-outer-checkpoint\",\"status\":\"pass\"},{\"name\":\"rejection-flag-triggers-original-registered-tick-callback\",\"status\":\"pass\"},{\"name\":\"native-live-flags-match-exact-one-semantics\",\"status\":\"pass\"},{\"name\":\"public-binding-fields-do-not-replace-protected-state\",\"status\":\"pass\"},{\"name\":\"nested-tick-checkpoint-keeps-outer-owner-entered\",\"status\":\"pass\"},{\"name\":\"real-promise-rejection-events-and-original-reason\",\"status\":\"pass\"},{\"name\":\"promise-callback-replacement-retains-the-actual-latest-function\",\"status\":\"pass\"},{\"name\":\"cross-realm-binding-shares-flags-and-principal-process\",\"status\":\"pass\"},{\"name\":\"cross-realm-promise-and-reason-identity-survive-notification\",\"status\":\"pass\"},{\"name\":\"handled-job-error-enters-real-principal-process-policy\",\"status\":\"pass\"},{\"name\":\"native-fatal-policy-accepts-every-result-except-exact-false\",\"status\":\"pass\"},{\"name\":\"throwing-error-policy-preserves-actual-replacement-error\",\"status\":\"pass\"},{\"name\":\"missing-fatal-policy-preserves-failure-and-pending-jobs\",\"status\":\"pass\"},{\"name\":\"false-fatal-policy-remains-an-explicit-exit-backend-gap\",\"status\":\"pass\"},{\"name\":\"libuv-callback-checkpoint-drains-real-jobs-and-live-ticks\",\"status\":\"pass\"},{\"name\":\"failed-realm-methods-retire-without-mutating-shared-state\",\"status\":\"pass\"}],\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'async_wrap' is not implemented\"},\"exitCodes\":{\"kNoFailure\":0,\"kGenericUserError\":1,\"kInternalJSParseError\":3,\"kInternalJSEvaluationFailure\":4,\"kV8FatalError\":5,\"kInvalidFatalExceptionMonkeyPatching\":6,\"kExceptionInFatalExceptionHandler\":7,\"kInvalidCommandLineArgument\":9,\"kBootstrapFailure\":10,\"kInvalidCommandLineArgument2\":12,\"kUnsettledTopLevelAwait\":13,\"kStartupSnapshotFailure\":14,\"kProcessTimeout\":124,\"kAbort\":134},\"limits\":[\"Raw binding/checkpoint controls, not original public task queue modules or successful Node startup\",\"Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete\",\"Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures\",\"Per-host artifact identities and fatal/diagnostic controls belong to the external runner\"]}\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass",
+          "detail": {
+            "kind": "native-task-queue-controls",
+            "cases": 26,
+            "failures": 0,
+            "observations": [
+              {
+                "name": "binding-layout-cache-and-native-method-lengths",
+                "status": "pass"
+              },
+              {
+                "name": "native-exit-code-enum-is-complete-and-readonly",
+                "status": "pass"
+              },
+              {
+                "name": "enqueue-is-deferred-and-shares-promise-fifo",
+                "status": "pass"
+              },
+              {
+                "name": "callable-receiver-arguments-and-method-owner",
+                "status": "pass"
+              },
+              {
+                "name": "bound-and-proxy-callables-use-real-engine-jobs",
+                "status": "pass"
+              },
+              {
+                "name": "native-and-shell-nested-checkpoints-do-not-reenter",
+                "status": "pass"
+              },
+              {
+                "name": "nested-checkpoint-keeps-current-job-weakref-target",
+                "status": "pass"
+              },
+              {
+                "name": "queued-native-adapter-retains-callback-through-moving-gc",
+                "status": "pass"
+              },
+              {
+                "name": "microtask-only-entry-does-not-dispatch-live-ticks",
+                "status": "pass"
+              },
+              {
+                "name": "outer-checkpoint-runs-scheduled-tick-before-microtasks",
+                "status": "pass"
+              },
+              {
+                "name": "microtask-can-schedule-tick-in-the-same-outer-checkpoint",
+                "status": "pass"
+              },
+              {
+                "name": "rejection-flag-triggers-original-registered-tick-callback",
+                "status": "pass"
+              },
+              {
+                "name": "native-live-flags-match-exact-one-semantics",
+                "status": "pass"
+              },
+              {
+                "name": "public-binding-fields-do-not-replace-protected-state",
+                "status": "pass"
+              },
+              {
+                "name": "nested-tick-checkpoint-keeps-outer-owner-entered",
+                "status": "pass"
+              },
+              {
+                "name": "real-promise-rejection-events-and-original-reason",
+                "status": "pass"
+              },
+              {
+                "name": "promise-callback-replacement-retains-the-actual-latest-function",
+                "status": "pass"
+              },
+              {
+                "name": "cross-realm-binding-shares-flags-and-principal-process",
+                "status": "pass"
+              },
+              {
+                "name": "cross-realm-promise-and-reason-identity-survive-notification",
+                "status": "pass"
+              },
+              {
+                "name": "handled-job-error-enters-real-principal-process-policy",
+                "status": "pass"
+              },
+              {
+                "name": "native-fatal-policy-accepts-every-result-except-exact-false",
+                "status": "pass"
+              },
+              {
+                "name": "throwing-error-policy-preserves-actual-replacement-error",
+                "status": "pass"
+              },
+              {
+                "name": "missing-fatal-policy-preserves-failure-and-pending-jobs",
+                "status": "pass"
+              },
+              {
+                "name": "false-fatal-policy-remains-an-explicit-exit-backend-gap",
+                "status": "pass"
+              },
+              {
+                "name": "libuv-callback-checkpoint-drains-real-jobs-and-live-ticks",
+                "status": "pass"
+              },
+              {
+                "name": "failed-realm-methods-retire-without-mutating-shared-state",
+                "status": "pass"
+              }
+            ],
+            "bootstrapFailure": {
+              "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+              "message": "Native Node binding 'async_wrap' is not implemented"
+            },
+            "exitCodes": {
+              "kNoFailure": 0,
+              "kGenericUserError": 1,
+              "kInternalJSParseError": 3,
+              "kInternalJSEvaluationFailure": 4,
+              "kV8FatalError": 5,
+              "kInvalidFatalExceptionMonkeyPatching": 6,
+              "kExceptionInFatalExceptionHandler": 7,
+              "kInvalidCommandLineArgument": 9,
+              "kBootstrapFailure": 10,
+              "kInvalidCommandLineArgument2": 12,
+              "kUnsettledTopLevelAwait": 13,
+              "kStartupSnapshotFailure": 14,
+              "kProcessTimeout": 124,
+              "kAbort": 134
+            },
+            "limits": [
+              "Raw binding/checkpoint controls, not original public task queue modules or successful Node startup",
+              "Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete",
+              "Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures",
+              "Per-host artifact identities and fatal/diagnostic controls belong to the external runner"
+            ]
+          }
+        },
+        {
+          "name": "queued-job-natural-exit",
+          "result": {
+            "exitCode": 0,
+            "stdout": "MICROTASK_DONE\n",
+            "stderr": "",
+            "combined": "MICROTASK_DONE\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "queued-job-quit-status",
+          "result": {
+            "exitCode": 23,
+            "stdout": "",
+            "stderr": "",
+            "combined": "",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        },
+        {
+          "name": "original-unhandled-job-error-is-preserved",
+          "result": {
+            "exitCode": 3,
+            "stdout": "",
+            "stderr": "-e:1:177 Error: UNHANDLED_JOB_FAILURE_BOUNDARY\nStack:\n  @-e:1:177\n",
+            "combined": "-e:1:177 Error: UNHANDLED_JOB_FAILURE_BOUNDARY\nStack:\n  @-e:1:177\n",
+            "hostDiagnostics": []
+          },
+          "status": "pass"
+        }
+      ],
+      "consumedArtifactHashes": [
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+          "status": 200,
+          "bytes": 2958224,
+          "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/conductor/workspaces/kandelo/port-vila/local-binaries/kandelo_image_module32.wasm",
+          "status": 200,
+          "bytes": 403950,
+          "sha256": "85bf98b36b2229d30a8f36d8bb238170c124e09937acc6824a8e0560ab94d4ec"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        },
+        {
+          "url": "http://127.0.0.1:58057/@fs/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+          "bytes": 51311732,
+          "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+        }
+      ]
+    }
+  ],
+  "guestCaseObservations": 266,
+  "guestProcessDrivers": 61,
+  "taskQueueCasesPerHost": 26,
+  "priorNodeCases": 162,
+  "expectedFatalNodeControls": 11,
+  "expectedFatalDiagnosticsEach": 1,
+  "verificationFailures": 0,
+  "nativeReference": {
+    "report": {
+      "path": ".context/node-task-queue-impl/native-reference.json",
+      "bytes": 5047,
+      "sha256": "9beb07c1288f90ca95e7d1baf533631367fce2babc91a4bfdfda6e399b6295d7"
+    },
+    "cases": 6,
+    "failures": 0,
+    "exitCodeConstantsCompared": 14,
+    "bindingPropertyConfigurable": true,
+    "constantEntriesConfigurable": false
+  },
+  "bootstrapGap": {
+    "rawReport": {
+      "path": ".context/node-task-queue-impl/bootstrap-gap-probe.json",
+      "bytes": 45770,
+      "sha256": "8906e31cadeb6538656ba4aba7811b9412845eec672220c35f3081df342e22fd"
+    },
+    "detail": {
+      "kind": "upstream-realm-bootstrap-gap-probe",
+      "observations": [
+        {
+          "operation": "principal-bootstrap-node",
+          "status": "missing-backend",
+          "name": "Error",
+          "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+          "message": "Native Node binding 'async_wrap' is not implemented",
+          "stack": "Error: Native Node binding 'async_wrap' is not implemented\n    at internalBinding (node:internal/bootstrap/realm:172:34)\n    at node:internal/async_hooks:14:35\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/timers:106:12\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/bootstrap/node:69:31\n    at -e:12:11",
+          "compiledBuiltinIds": [
+            "internal/bootstrap/realm",
+            "internal/errors",
+            "internal/assert",
+            "internal/bootstrap/node",
+            "internal/timers",
+            "internal/async_hooks"
+          ]
+        },
+        {
+          "operation": "original-typed-node-error",
+          "status": "returned",
+          "compiledBuiltinIds": [
+            "internal/bootstrap/realm",
+            "internal/errors",
+            "internal/assert"
+          ]
+        },
+        {
+          "operation": "original-stack-limit-policy",
+          "status": "missing-backend",
+          "name": "Error",
+          "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+          "message": "Native Node binding 'constants' is not implemented",
+          "stack": "Error: Native Node binding 'constants' is not implemented\n    at internalBinding (node:internal/bootstrap/realm:172:34)\n    at node:internal/util:62:36\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/validators:35:38\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)\n    at node:internal/v8/startup_snapshot:5:12\n    at compileForInternalLoader (node:internal/bootstrap/realm:440:9)\n    at requireBuiltin (node:internal/bootstrap/realm:471:14)",
+          "compiledBuiltinIds": [
+            "internal/bootstrap/realm",
+            "internal/errors",
+            "internal/assert",
+            "internal/v8/startup_snapshot",
+            "internal/validators",
+            "internal/util"
+          ]
+        }
+      ],
+      "upstreamStartup": false,
+      "emptyEvaluation": "not run",
+      "simpleScript": "not run",
+      "commonJsEntry": "not run",
+      "esmEntry": "not run"
+    },
+    "observerExitZeroIsStartupSuccess": false
+  },
+  "sourceIdentity": {
+    "manifestSha256": "b56ad78b6ec775979c808f83a39daeb537abe32a6c645bafafbfbe7fb9686056",
+    "nodeSourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+    "importedFiles": 494,
+    "allImportedFilesMatch": true,
+    "prior493RecordsUnchanged": true,
+    "registeredJsFiles": 443,
+    "registeredJsBytes": 10993403,
+    "allUpstreamJsUnchanged": true,
+    "addedNativeHeader": {
+      "path": "src/node_exit_code.h",
+      "role": "provenance",
+      "bytes": 3271,
+      "sha256": "7f1429f80db6bf171f1b17133268a141b4dcef7cc4dcb33483fa9e3f24f7957d",
+      "builtinId": null
+    },
+    "importEvidence": {
+      "path": ".context/node-task-queue-impl/exit-code-import.json",
+      "bytes": 518,
+      "sha256": "620f70842d6a5329ec89cd55b0ea0139034952e0e1b8001478f45bee183d7baa"
+    }
+  },
+  "attempts": [
+    {
+      "id": "node-task-queue-engine-1111-022359-86f0",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh spidermonkey",
+      "exitCode": 1,
+      "durationSeconds": 171.0,
+      "log": {
+        "path": ".context/node-task-queue-impl/job-logs/node-task-queue-engine-1111-022359-86f0.log",
+        "bytes": 1968,
+        "sha256": "06047ba21af847d3b226a7c76b5d610831fead13f5d3b893c8502981fff2f41a"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-task-queue-impl/job-logs/node-task-queue-engine-1111-022359-86f0-package-0.log",
+          "bytes": 249824,
+          "sha256": "468bfd5c992842232f21a690a4622f2a2e8df61286675877b89ba502794873e2"
+        }
+      ]
+    },
+    {
+      "id": "node-task-queue-engine-typed-owner-1111-022714-d014",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh spidermonkey",
+      "exitCode": 0,
+      "durationSeconds": 204.1,
+      "log": {
+        "path": ".context/node-task-queue-impl/job-logs/node-task-queue-engine-typed-owner-1111-022714-d014.log",
+        "bytes": 381,
+        "sha256": "ad2ee2bd3518024853f7654585bb41dec9ae01776925c4580bd2e218b30bdb06"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-task-queue-impl/job-logs/node-task-queue-engine-typed-owner-1111-022714-d014-package-0.log",
+          "bytes": 258558,
+          "sha256": "66f89c9cf814b4692d98f6e756c18811c5faff122461dcb08096b2a3ffcaf1b9"
+        }
+      ]
+    },
+    {
+      "id": "node-task-queue-native-reference-1111-023001-692e",
+      "command": "scripts/dev-shell.sh python3 .context/node-task-queue-impl/native-reference.py",
+      "exitCode": 0,
+      "durationSeconds": 6.8,
+      "log": {
+        "path": ".context/node-task-queue-impl/job-logs/node-task-queue-native-reference-1111-023001-692e.log",
+        "bytes": 471,
+        "sha256": "d55c570aa5781c6b81d92acd471e88cd26a4528adc34a9985e50c0ca9ac16d35"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-task-queue-first-controls-1111-023140-e84b",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx scripts/run-nodejs-private-key-controls.ts /Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-e57bf076a43971c4a090125780f5729a1c1c68cbbb807e9f386b555772b21eb5/js.wasm .context/node-task-queue-impl/first-engine-result.json task-queue",
+      "exitCode": 1,
+      "durationSeconds": 17.1,
+      "log": {
+        "path": ".context/node-task-queue-impl/job-logs/node-task-queue-first-controls-1111-023140-e84b.log",
+        "bytes": 4495,
+        "sha256": "ae84678823b7a63303eee277429e1eb6638bd891084da7a4500708ad5f878fb6"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-task-queue-startup-gap-1111-023140-bc33",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx .context/node-task-queue-impl/run-gap-probe.ts",
+      "exitCode": 0,
+      "durationSeconds": 5.3,
+      "log": {
+        "path": ".context/node-task-queue-impl/job-logs/node-task-queue-startup-gap-1111-023140-bc33.log",
+        "bytes": 2543,
+        "sha256": "f9c637006e7d2afc9f410333b9e879abc68d078bfd5ead4837ba5895049b4a42"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-task-queue-native-enum-1111-023443-5f40",
+      "command": "scripts/dev-shell.sh python3 .context/node-task-queue-impl/native-reference.py",
+      "exitCode": 0,
+      "durationSeconds": 2.7,
+      "log": {
+        "path": ".context/node-task-queue-impl/job-logs/node-task-queue-native-enum-1111-023443-5f40.log",
+        "bytes": 471,
+        "sha256": "d55c570aa5781c6b81d92acd471e88cd26a4528adc34a9985e50c0ca9ac16d35"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-task-queue-engine-exit-enum-1111-023532-639d",
+      "command": "bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh spidermonkey",
+      "exitCode": 0,
+      "durationSeconds": 224.9,
+      "log": {
+        "path": ".context/node-task-queue-impl/job-logs/node-task-queue-engine-exit-enum-1111-023532-639d.log",
+        "bytes": 379,
+        "sha256": "1ca86f11a44c0a2e43d03af8f6e5c157220367a1b83c073858acf1e78d45f08f"
+      },
+      "packageLogs": [
+        {
+          "path": ".context/node-task-queue-impl/job-logs/node-task-queue-engine-exit-enum-1111-023532-639d-package-0.log",
+          "bytes": 258412,
+          "sha256": "2e330614adef4afbc435c1c10ea614e53bfda2204c027a9998bfdb1be047e736"
+        }
+      ]
+    },
+    {
+      "id": "node-task-queue-enum-startup-gap-1111-024023-d6c3",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx .context/node-task-queue-impl/run-gap-probe.ts",
+      "exitCode": 0,
+      "durationSeconds": 5.9,
+      "log": {
+        "path": ".context/node-task-queue-impl/job-logs/node-task-queue-enum-startup-gap-1111-024023-d6c3.log",
+        "bytes": 2775,
+        "sha256": "e47108682a0b216e3245fe7ef4216ba77b3bca294b2241471678806317b32712"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-task-queue-enum-controls-1111-024024-df0e",
+      "command": "scripts/dev-shell.sh node_modules/.bin/tsx scripts/run-nodejs-private-key-controls.ts /Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm .context/node-task-queue-impl/engine-result.json task-queue",
+      "exitCode": 0,
+      "durationSeconds": 16.6,
+      "log": {
+        "path": ".context/node-task-queue-impl/job-logs/node-task-queue-enum-controls-1111-024024-df0e.log",
+        "bytes": 4362,
+        "sha256": "bc4032313890ab97d6905ef638ec06aae6898c84d456d95741e9041c3fdc087a"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-task-queue-regressions-1111-024147-8f41",
+      "command": "scripts/dev-shell.sh bash .context/node-task-queue-impl/run-regressions.sh /Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+      "exitCode": 0,
+      "durationSeconds": 45.2,
+      "log": {
+        "path": ".context/node-task-queue-impl/job-logs/node-task-queue-regressions-1111-024147-8f41.log",
+        "bytes": 6757,
+        "sha256": "0d7754a06a4e7661f22dfcda69dba449e5cec09131638608e42f6e3ec2155ded"
+      },
+      "packageLogs": []
+    },
+    {
+      "id": "node-task-queue-browser-controls-1111-024147-a7f8",
+      "command": "scripts/dev-shell.sh bash .context/node-task-queue-impl/run-browsers.sh /Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+      "exitCode": 0,
+      "durationSeconds": 45.1,
+      "log": {
+        "path": ".context/node-task-queue-impl/job-logs/node-task-queue-browser-controls-1111-024147-a7f8.log",
+        "bytes": 6239,
+        "sha256": "b7f7850208c01f7a64306515251ca03a1eafaddf2fb151a2cc53e8831ef29ac4"
+      },
+      "packageLogs": []
+    }
+  ],
+  "failureHistory": [
+    {
+      "scope": "First build",
+      "result": "C++ protected pointer assertion needed .ref(); build failed, corrected before rebuilding",
+      "job": "node-task-queue-engine-1111-022359-86f0"
+    },
+    {
+      "scope": "First identified engine run",
+      "result": "24of25controls passed; final retirement control expected former explicit binding error but unchanged startup reached missing errors.exitCodes and raised TypeError. Added complete pinned exit enum header/constants rather than hiding the next backend gap.",
+      "rawReport": {
+        "path": ".context/node-task-queue-impl/first-engine-result.json",
+        "bytes": 78304,
+        "sha256": "6db985eee88368245daabf6cb8cdd70f97aa09cac7ea1919460fba8659be124e"
+      },
+      "fixture": {
+        "path": ".context/node-task-queue-impl/first-engine-controls.js",
+        "bytes": 10006,
+        "sha256": "e4dfc78d54e2fd793005c8c9270700a1107f90d18852dd3d452d4f77ed151a39"
+      },
+      "gapReport": {
+        "path": ".context/node-task-queue-impl/bootstrap-gap-before-exit-enum.json",
+        "bytes": 43619,
+        "sha256": "65fe208509a54c89121567461759580033581c349687e8e5582ba17124bd7e36"
+      },
+      "program": {
+        "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-e57bf076a43971c4a090125780f5729a1c1c68cbbb807e9f386b555772b21eb5/js.wasm",
+        "bytes": 51310678,
+        "sha256": "91ac54e16fe53a09b1cf8ea603cebe118a3a7a04685d223ed335b063166a380a"
+      }
+    }
+  ],
+  "warnings": {
+    "compilerWarnings": 16,
+    "mozillaSourceChecksPassed": 3,
+    "instrumentation": "Existing compiler facts/code hash mismatch after optimization; bounded native baseline used, no fork proof",
+    "legacyPatchFuzz": "Existing older patches retain their recipe fuzz; new0034 applied without fuzz",
+    "browserStorageCleanup": {
+      "status": "warning",
+      "message": "EACCES: permission denied, rmdir '/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/validation-scratch/d44e4c2b-a946-40d2-a234-c8dc3138e371/tmp/kandelo-playwright-storage-enpmt7/firefox/Downloads'",
+      "root": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/validation-scratch/d44e4c2b-a946-40d2-a234-c8dc3138e371/tmp/kandelo-playwright-storage-enpmt7"
+    }
+  },
+  "limits": [
+    "No successful original Node empty/simple/CJS/ESM startup, full backend catalog or complete public module equivalence",
+    "Actual native state/queue/checkpoints and process callback seam; full AsyncWrap IDs/resources/frames and native callback scopes incomplete",
+    "Assigned promise async contexts report explicit missing behavior; active module-evaluation checkpoints explicitly fail",
+    "Missing/throwing/exact-false fatal policy preserves an actual error; full native fatal exit/at-exit still incomplete and no Node exit equivalence claimed",
+    "Unregistered/invalid callback assertions remain fatal. Detached tick storage and unhandled job boundaries retain error exits; promise handler/missing async-context diagnostics remain visible",
+    "Current four-host cases are26taskqueue controls; previous27timer browser evidence is historical on rev27. Current rev28 timer/prior regression cases were run on Node",
+    "Moving GC selected paths only; full lifecycle/security/OOM/thread/fork/cancellation proof incomplete",
+    "Empty guest filesystems only; no partial/canonical image, full product, successor-ABI campaign or overall suite; kernel/libc/SDK/host sources and ABI55 history unchanged",
+    "Source import adds one unchanged native enum header; Node target and all registered JS bytes unchanged"
+  ],
+  "next": "Implement actual async_wrap/shared hook/ID/resource/frame and common callback-scope prerequisites, then execute original bootstrap again; complete startup/catalog before user review of broader roadmap"
+}

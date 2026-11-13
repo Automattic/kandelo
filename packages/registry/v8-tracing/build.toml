@@ -1,0 +1,19 @@
+script_path = "packages/registry/v8-tracing/build-v8-tracing.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "11279f76bce19f5cfc17c049ba581d826b3fdabd"
+revision = 1
+inputs = [
+  "packages/registry/v8-tracing/build-v8-tracing.sh",
+  "packages/registry/v8-tracing/cmake/CMakeLists.txt",
+  "packages/registry/v8-tracing/cmake/v8-tracingConfig.cmake.in",
+  "packages/registry/v8-tracing/cmake/v8-tracing.pc.in",
+  "packages/registry/v8-tracing/patches/0001-kandelo-wasm32-config.patch",
+  "packages/registry/v8-tracing/src/platform.cpp",
+  "packages/registry/v8-tracing/src/include/util.h",
+  "packages/registry/v8-tracing/src/include/src/base/platform/mutex.h",
+  "packages/registry/v8-tracing/src/include/src/base/platform/platform.h",
+  "packages/registry/v8-tracing/src/include/src/base/platform/time.h",
+  "scripts/package-build-roots.sh",
+  "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/Platform/Kandelo.cmake",
+]

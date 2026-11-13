@@ -1,0 +1,595 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Startup-required messaging registration and native constructor-callback call stage only; full messaging/transfer/native interface audit incomplete",
+  "completeBindingContract": false,
+  "nativeSources": {
+    "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+    "files": [
+      {
+        "path": "src/node_messaging.cc",
+        "bytes": 62006,
+        "sha256": "49d5cf1e5d5319a932a2bf378b53a7f2c584d960383043b75c199726598d3697"
+      },
+      {
+        "path": "src/node_messaging.h",
+        "bytes": 15283,
+        "sha256": "ea3cb5c12fae90b87b0f01f33371d6747c9300c94611231c74f58af91587967f"
+      },
+      {
+        "path": "src/env_properties.h",
+        "bytes": 42469,
+        "sha256": "891cb90ba1164eecc1ae5eef69ef3102369eeebc7630dccda2ca5737a2a097ad"
+      },
+      {
+        "path": "src/env.h",
+        "bytes": 53128,
+        "sha256": "2727db70801cd3d154790795f52aac30909279cfbbec5beab1c0b463a4aa55b8"
+      },
+      {
+        "path": "src/env-inl.h",
+        "bytes": 31879,
+        "sha256": "f1849fd70267de7467ad49f06b67fb63bddd29f01cfc208e01c9776b54be8f41"
+      },
+      {
+        "path": "src/node_realm.h",
+        "bytes": 7461,
+        "sha256": "6f69832d201a93647cae0889091556c14015d50a23a8a7022d56746c78daa319"
+      },
+      {
+        "path": "src/node_realm-inl.h",
+        "bytes": 4537,
+        "sha256": "756b6de214ee58ca5df5bd0961fcf00eb5bee7cb67548b05dd42914ff5b2b223"
+      },
+      {
+        "path": "src/node_realm.cc",
+        "bytes": 14435,
+        "sha256": "f3c7636f85409e09cc2c1a34781f51e7144aec04d1dd71e2512f01b2b1f48fda"
+      },
+      {
+        "path": "src/node_util.cc",
+        "bytes": 22384,
+        "sha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae"
+      },
+      {
+        "path": "src/base_object.h",
+        "bytes": 14837,
+        "sha256": "cb4dbc336992f12f915adc0064c29fa116d39f00f0f9a8e1789eead796ed2655"
+      },
+      {
+        "path": "src/base_object-inl.h",
+        "bytes": 10097,
+        "sha256": "cf890bf4723cb7b9ecbeb2662e98344ae81af0937abd4b214413885f6450d6d2"
+      },
+      {
+        "path": "src/node_contextify.cc",
+        "bytes": 72731,
+        "sha256": "f053ef316b1b1d6d1e3f42cb431f9742c00cf1a71a381fb6bdab079e48cfb145"
+      },
+      {
+        "path": "src/node_process_methods.cc",
+        "bytes": 29912,
+        "sha256": "909b412cc5fa20de7eb1a0de081849edd98dbe4a239ae412e48551eb2deb0b39"
+      },
+      {
+        "path": "src/node_errors.cc",
+        "bytes": 45641,
+        "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d"
+      },
+      {
+        "path": "src/node_errors.h",
+        "bytes": 23299,
+        "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8"
+      },
+      {
+        "path": "src/node_binding.cc",
+        "bytes": 39660,
+        "sha256": "921f6c1d198a9921101fa45d2bcb9cd36509883758a3abb5a77f2f20857bd410"
+      },
+      {
+        "path": "src/node_context_data.h",
+        "bytes": 7498,
+        "sha256": "50115fd0a719880adfd15bebc4a446135a5204038a34c23c939bfb480f1e3271"
+      }
+    ]
+  },
+  "consumerSyntax": {
+    "graph": "dependency-graph.json",
+    "binding": {
+      "name": "messaging",
+      "siteIds": [
+        "lib/internal/abort_controller.js:1187:internalBinding",
+        "lib/internal/bootstrap/web/exposed-wildcard.js:416:internalBinding",
+        "lib/internal/crypto/random.js:10321:internalBinding",
+        "lib/internal/util.js:19024:internalBinding",
+        "lib/internal/util.js:19161:internalBinding",
+        "lib/internal/webstreams/readablestream.js:900:internalBinding",
+        "lib/internal/webstreams/transfer.js:192:internalBinding",
+        "lib/internal/webstreams/transformstream.js:416:internalBinding",
+        "lib/internal/webstreams/writablestream.js:478:internalBinding",
+        "lib/internal/worker/clone_dom_exception.js:107:internalBinding",
+        "lib/internal/worker/io.js:911:internalBinding",
+        "lib/internal/worker/js_transferable.js:447:internalBinding"
+      ],
+      "contractStatus": "incomplete",
+      "directRequestedExportPaths": [
+        [
+          "DOMException"
+        ],
+        [
+          "MessageChannel"
+        ],
+        [
+          "MessagePort"
+        ],
+        [
+          "QuotaExceededError"
+        ],
+        [
+          "broadcastChannel"
+        ],
+        [
+          "drainMessagePort"
+        ],
+        [
+          "exposeLazyDOMExceptionProperty"
+        ],
+        [
+          "moveMessagePortToContext"
+        ],
+        [
+          "receiveMessageOnPort"
+        ],
+        [
+          "setDeserializerCreateObjectFunction"
+        ],
+        [
+          "stopMessagePort"
+        ],
+        [
+          "structuredClone"
+        ]
+      ]
+    },
+    "sites": [
+      {
+        "id": "lib/internal/abort_controller.js:1187:internalBinding",
+        "path": "lib/internal/abort_controller.js",
+        "start": 1187,
+        "end": 1215,
+        "line": 59,
+        "column": 4,
+        "builtinId": "internal/abort_controller",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "DOMException"
+          ]
+        ],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      },
+      {
+        "id": "lib/internal/bootstrap/web/exposed-wildcard.js:416:internalBinding",
+        "path": "lib/internal/bootstrap/web/exposed-wildcard.js",
+        "start": 416,
+        "end": 444,
+        "line": 19,
+        "column": 43,
+        "builtinId": "internal/bootstrap/web/exposed-wildcard",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "exposeLazyDOMExceptionProperty"
+          ]
+        ],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      },
+      {
+        "id": "lib/internal/crypto/random.js:10321:internalBinding",
+        "path": "lib/internal/crypto/random.js",
+        "start": 10321,
+        "end": 10349,
+        "line": 372,
+        "column": 35,
+        "builtinId": "internal/crypto/random",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "QuotaExceededError"
+          ]
+        ],
+        "contextIds": [
+          "lib/internal/crypto/random.js:9739:FunctionDeclaration:",
+          "lib/internal/crypto/random.js:10260:IfStatement:consequent"
+        ],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      },
+      {
+        "id": "lib/internal/util.js:19024:internalBinding",
+        "path": "lib/internal/util.js",
+        "start": 19024,
+        "end": 19052,
+        "line": 680,
+        "column": 20,
+        "builtinId": "internal/util",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "DOMException"
+          ]
+        ],
+        "contextIds": [
+          "lib/internal/util.js:18996:ArrowFunctionExpression:"
+        ],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      },
+      {
+        "id": "lib/internal/util.js:19161:internalBinding",
+        "path": "lib/internal/util.js",
+        "start": 19161,
+        "end": 19189,
+        "line": 685,
+        "column": 20,
+        "builtinId": "internal/util",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "DOMException"
+          ]
+        ],
+        "contextIds": [
+          "lib/internal/util.js:19120:ArrowFunctionExpression:"
+        ],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      },
+      {
+        "id": "lib/internal/webstreams/readablestream.js:900:internalBinding",
+        "path": "lib/internal/webstreams/readablestream.js",
+        "start": 900,
+        "end": 928,
+        "line": 48,
+        "column": 4,
+        "builtinId": "internal/webstreams/readablestream",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "DOMException"
+          ]
+        ],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      },
+      {
+        "id": "lib/internal/webstreams/transfer.js:192:internalBinding",
+        "path": "lib/internal/webstreams/transfer.js",
+        "start": 192,
+        "end": 220,
+        "line": 15,
+        "column": 4,
+        "builtinId": "internal/webstreams/transfer",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "DOMException"
+          ]
+        ],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      },
+      {
+        "id": "lib/internal/webstreams/transformstream.js:416:internalBinding",
+        "path": "lib/internal/webstreams/transformstream.js",
+        "start": 416,
+        "end": 444,
+        "line": 26,
+        "column": 4,
+        "builtinId": "internal/webstreams/transformstream",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "DOMException"
+          ]
+        ],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      },
+      {
+        "id": "lib/internal/webstreams/writablestream.js:478:internalBinding",
+        "path": "lib/internal/webstreams/writablestream.js",
+        "start": 478,
+        "end": 506,
+        "line": 29,
+        "column": 4,
+        "builtinId": "internal/webstreams/writablestream",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "DOMException"
+          ]
+        ],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      },
+      {
+        "id": "lib/internal/worker/clone_dom_exception.js:107:internalBinding",
+        "path": "lib/internal/worker/clone_dom_exception.js",
+        "start": 107,
+        "end": 135,
+        "line": 4,
+        "column": 18,
+        "builtinId": "internal/worker/clone_dom_exception",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      },
+      {
+        "id": "lib/internal/worker/io.js:911:internalBinding",
+        "path": "lib/internal/worker/io.js",
+        "start": 911,
+        "end": 939,
+        "line": 49,
+        "column": 4,
+        "builtinId": "internal/worker/io",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "MessagePort"
+          ],
+          [
+            "MessageChannel"
+          ],
+          [
+            "broadcastChannel"
+          ],
+          [
+            "drainMessagePort"
+          ],
+          [
+            "moveMessagePortToContext"
+          ],
+          [
+            "receiveMessageOnPort"
+          ],
+          [
+            "stopMessagePort"
+          ],
+          [
+            "DOMException"
+          ]
+        ],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      },
+      {
+        "id": "lib/internal/worker/js_transferable.js:447:internalBinding",
+        "path": "lib/internal/worker/js_transferable.js",
+        "start": 447,
+        "end": 475,
+        "line": 21,
+        "column": 4,
+        "builtinId": "internal/worker/js_transferable",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "messaging",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [
+          [
+            "setDeserializerCreateObjectFunction"
+          ],
+          [
+            "structuredClone"
+          ]
+        ],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "messaging"
+        }
+      }
+    ],
+    "completeAliasAndDynamicCoverage": false,
+    "originalSetup": "lib/internal/worker/js_transferable.js:34-50 registers the original module:Constructor resolver through original require/cache",
+    "originalCloneClasses": "lib/internal/worker/clone_dom_exception.js exports actual canonical per-context classes",
+    "transferMetadataInventory": "dependency-graph.json transferSites contains 18 source syntax sites; not a runtime delivery trace"
+  },
+  "sourceContracts": [
+    {
+      "source": "src/node_messaging.cc:1596-1601",
+      "contract": "setDeserializerCreateObjectFunction takes a Function, fatal CHECK on absent/noncallable; stores without invoking, returns undefined; replacement allowed"
+    },
+    {
+      "source": "src/env_properties.h:515; src/env-inl.h:948-957; src/node_realm.cc:295-304",
+      "contract": "Strong per-principal-Realm value; Environment forwards to principal. Nonempty native setter DCHECKs current principal context; Reset permits replacement/clearing"
+    },
+    {
+      "source": "src/node_messaging.cc:1451-1482",
+      "contract": "JSTransferable constructor call requires actual principal target context, nonempty callback, null receiver and one info String; actual JS exception propagates. Complete Deserialize additionally checks returned object/private mode and wraps native BaseObject, which is not implemented here"
+    },
+    {
+      "source": "src/node_messaging.cc:272-285, 1758-1784",
+      "contract": "Actual canonical per-context DOMException must be callable; QuotaExceededError read from same exports. Original uses target Set semantics for these values"
+    },
+    {
+      "source": "src/base_object.h:165-169; src/node_util.cc:605-610",
+      "contract": "Actual transfer-mode flags are 0, 1 and 2; original JS combines flags. Canonical private transfer-mode key is not an enumerable user Symbol"
+    }
+  ],
+  "implemented": {
+    "nativeBindingOwner": "packages/registry/spidermonkey/node-upstream/realm.cpp",
+    "sharedPrincipalState": "Traced NodeRealmLibrary reserved slot with actual runtime principal lookup and realm admission; callback replacement and native clear",
+    "functions": {
+      "setDeserializerCreateObjectFunction": {
+        "length": 0,
+        "returns": "undefined",
+        "fatalOn": "missing or noncallable argument",
+        "callsInput": false
+      },
+      "structuredClone": {
+        "length": 0,
+        "implemented": false,
+        "failure": "Error/ERR_KANDELO_NOT_IMPLEMENTED: Native structured clone/transfer backend is not implemented"
+      }
+    },
+    "properties": "Actual DOMException/QuotaExceededError constructors from canonical exports; mutable WEC properties and native functions",
+    "utilConstants": {
+      "kDisallowCloneAndTransfer": 0,
+      "kTransferable": 1,
+      "kCloneable": 2
+    },
+    "constructorCallStage": "Native helper validates actual principal global, calls actual rooted callback with null receiver and one UTF16 String; returns actual JS value/exception/Promise",
+    "wrongTarget": "Error/ERR_MESSAGE_TARGET_CONTEXT_UNAVAILABLE: A message object could not be deserialized successfully in the target vm.Context",
+    "gcAndLifetime": "Actual reserved-slot root survives GC. Replacement/clear release previous root; foreground Environment shutdown explicitly clears. Context destruction naturally destroys traced slots. Full retirement/cancellation is not proved",
+    "diagnostics": "Privileged --kandelo-test-upstream messagingNative bridge only; production loader remains original",
+    "javascriptRewritten": false,
+    "nodeCppBodiesImportedOrExcerpted": false,
+    "v8SerializationGenerated": false
+  },
+  "validation": {
+    "engineEvidence": "messaging-engine-check.json",
+    "nativeReference": "messaging-native-reference.json",
+    "exactSharedGroups": 12,
+    "engineControlsPerHost": 27,
+    "driversPerHost": 10,
+    "hosts": [
+      "Node",
+      "Chromium",
+      "Firefox",
+      "WebKit"
+    ],
+    "nativeInvalidFunction": "Separate authenticated native probe aborts with SIGABRT; guest invalid registration retains native assertion traps",
+    "boundedCoverage": [
+      "descriptors/constants/private modes/original DOM clone hooks and primitive fast path",
+      "actual principal root/GC/replacement/reentrancy/clear/exception identity",
+      "foreign function creation realm and actual wrong target context",
+      "original setup callback constructing actual DOM/Quota wrappers through original require",
+      "native result Promise jobs and rooted natural/explicit/error exits",
+      "real foreground Environment cleanup with no constructor invocation"
+    ],
+    "notProved": [
+      "full Message deserialize/wrap/serialize round trip",
+      "full worker/process cancellation and retirement",
+      "allocation failure/security/concurrency and all native methods"
+    ]
+  },
+  "remainingNativeSurface": [
+    "MessagePort/MessageChannel native classes and all prototype/native ownership methods",
+    "broadcastChannel/stopMessagePort/drainMessagePort/receiveMessageOnPort/moveMessagePortToContext",
+    "exposeLazyDOMExceptionProperty",
+    "Message/SerializerDelegate/JSTransferable encoding, reference/cycle identity, private host wrappers and retained backing",
+    "transfer validation and publication ordering, rollback, locks and worker transport",
+    "full lifetime, cancellation, ref/unref, close, worker exit and OOM/security contracts"
+  ],
+  "archivedReuse": {
+    "index": ".context/davao-handoff/BACKEND-SALVAGE.md",
+    "familySurvey": "backend-binding-survey.json",
+    "scope": "19-family and 33-PR audit indexes; native ownership/transfer publication/retained backing mechanisms are candidates requiring actual upstream contract validation, not authorization to reuse old JS shims"
+  },
+  "dependencyRoadmap": [
+    "Startup: audit actual diagnostics_channel binding/storage/callback ownership and all source consumers",
+    "Catalog gate: reconcile full native interface graph before broader backend implementation",
+    "Messaging later: actual shared serialization/host wrapper/cycle identity, validated transfer ownership and publication, then worker/port transport and lifecycle on four hosts"
+  ],
+  "currentFailure": {
+    "binding": "process_methods",
+    "name": "Error",
+    "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+    "message": "Native Node binding 'process_methods' is not implemented",
+    "location": "node:internal/process/per_thread:68; node:internal/bootstrap/node:152",
+    "evidence": "diagnostics-engine-check.json",
+    "startupAccepted": false
+  },
+  "normalNodeMode": "legacy",
+  "upstreamStartup": false,
+  "historicalFailures": [
+    {
+      "binding": "diagnostics_channel",
+      "name": "Error",
+      "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+      "message": "Native Node binding 'diagnostics_channel' is not implemented",
+      "location": "node:diagnostics_channel:36; node:internal/process/per_thread:57; node:internal/bootstrap/node:152",
+      "evidence": "messaging-engine-check.json",
+      "startupAccepted": false
+    }
+  ]
+}

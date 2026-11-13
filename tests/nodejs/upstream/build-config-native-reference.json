@@ -1,0 +1,132 @@
+{
+  "native": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixtures": [
+    {
+      "path": "tests/nodejs/upstream/build-config-native-prefix.cjs",
+      "bytes": 361,
+      "sha256": "af4f2269eda7ebc38f267fb9d509dc8c1b58b84eee2ec425bedb18b2694dd41d"
+    },
+    {
+      "path": "tests/nodejs/upstream/build-config-shared-controls.js",
+      "bytes": 3241,
+      "sha256": "053cc61155be799dff86d3ad289ecfcf607cff72f544711cc1f396053762f6c2"
+    }
+  ],
+  "generatedFixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-build-config-native.irxig52i/reference.cjs",
+    "bytes": 3570,
+    "sha256": "20932040df469b1ec93febbbac1e2f85bc6d69d85355683f2b19e615b0f4d18d"
+  },
+  "flags": [
+    "--no-warnings",
+    "--no-node-snapshot",
+    "--expose-internals",
+    "--expose-gc"
+  ],
+  "result": {
+    "exitCode": 0,
+    "stdout": "{\"kind\":\"native-build-config-reference\",\"cases\":9,\"failures\":0,\"observations\":[{\"name\":\"native-read-does-not-call-user-json-or-prototype-hooks\",\"status\":\"pass\",\"detail\":{\"calls\":0,\"type\":\"string\"}},{\"name\":\"builtin-binding-is-frozen\",\"status\":\"pass\",\"detail\":{\"frozen\":true,\"extensible\":false}},{\"name\":\"configuration-is-native-readonly-data-without-getter-function\",\"status\":\"pass\",\"detail\":{\"keys\":[\"value\",\"writable\",\"enumerable\",\"configurable\"],\"valueType\":\"string\",\"getType\":\"undefined\",\"writable\":false,\"enumerable\":true,\"configurable\":false}},{\"name\":\"configuration-parses-with-real-build-variable-types\",\"status\":\"pass\",\"detail\":{\"target_arch\":\"string\",\"node_byteorder\":\"string\",\"node_use_amaro\":\"boolean\",\"node_use_ffi\":\"boolean\",\"node_use_dtls\":\"boolean\",\"node_use_quic\":\"boolean\",\"node_use_openssl\":\"boolean\",\"node_use_bundled_v8\":\"boolean\",\"node_use_v8_platform\":\"boolean\",\"node_use_node_snapshot\":\"boolean\",\"node_use_node_code_cache\":\"boolean\",\"openssl_version\":\"number\"}},{\"name\":\"native-string-value-is-stable-across-collection\",\"status\":\"pass\",\"detail\":{\"equal\":true,\"type\":\"string\",\"lengthPositive\":true}},{\"name\":\"strict-assignment-does-not-change-frozen-configuration\",\"status\":\"pass\",\"detail\":{\"same\":true}},{\"name\":\"strict-deletion-does-not-remove-frozen-configuration\",\"status\":\"pass\",\"detail\":{\"own\":true}},{\"name\":\"descriptor-replacement-does-not-change-configuration\",\"status\":\"pass\",\"detail\":{\"same\":true}},{\"name\":\"parsed-objects-are-isolated-from-native-build-metadata\",\"status\":\"pass\",\"detail\":{\"separate\":true,\"unchanged\":true,\"parsedMutable\":true}}]}\n",
+    "stderr": ""
+  },
+  "detail": {
+    "kind": "native-build-config-reference",
+    "cases": 9,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "native-read-does-not-call-user-json-or-prototype-hooks",
+        "status": "pass",
+        "detail": {
+          "calls": 0,
+          "type": "string"
+        }
+      },
+      {
+        "name": "builtin-binding-is-frozen",
+        "status": "pass",
+        "detail": {
+          "frozen": true,
+          "extensible": false
+        }
+      },
+      {
+        "name": "configuration-is-native-readonly-data-without-getter-function",
+        "status": "pass",
+        "detail": {
+          "keys": [
+            "value",
+            "writable",
+            "enumerable",
+            "configurable"
+          ],
+          "valueType": "string",
+          "getType": "undefined",
+          "writable": false,
+          "enumerable": true,
+          "configurable": false
+        }
+      },
+      {
+        "name": "configuration-parses-with-real-build-variable-types",
+        "status": "pass",
+        "detail": {
+          "target_arch": "string",
+          "node_byteorder": "string",
+          "node_use_amaro": "boolean",
+          "node_use_ffi": "boolean",
+          "node_use_dtls": "boolean",
+          "node_use_quic": "boolean",
+          "node_use_openssl": "boolean",
+          "node_use_bundled_v8": "boolean",
+          "node_use_v8_platform": "boolean",
+          "node_use_node_snapshot": "boolean",
+          "node_use_node_code_cache": "boolean",
+          "openssl_version": "number"
+        }
+      },
+      {
+        "name": "native-string-value-is-stable-across-collection",
+        "status": "pass",
+        "detail": {
+          "equal": true,
+          "type": "string",
+          "lengthPositive": true
+        }
+      },
+      {
+        "name": "strict-assignment-does-not-change-frozen-configuration",
+        "status": "pass",
+        "detail": {
+          "same": true
+        }
+      },
+      {
+        "name": "strict-deletion-does-not-remove-frozen-configuration",
+        "status": "pass",
+        "detail": {
+          "own": true
+        }
+      },
+      {
+        "name": "descriptor-replacement-does-not-change-configuration",
+        "status": "pass",
+        "detail": {
+          "same": true
+        }
+      },
+      {
+        "name": "parsed-objects-are-isolated-from-native-build-metadata",
+        "status": "pass",
+        "detail": {
+          "separate": true,
+          "unchanged": true,
+          "parsedMutable": true
+        }
+      }
+    ]
+  }
+}

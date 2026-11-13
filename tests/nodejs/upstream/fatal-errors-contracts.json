@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Complete original node_errors.cc and node_errors.h compile; original error templates replace provisional helpers and original TryCatchScope constructor resolves. Full fatal/uncaught/message/stack/report interfaces remain unavailable and initializer is not routed.",
+  "completeBindingContract": false,
+  "runtimeValidated": false,
+  "startupAccepted": false,
+  "compileEvidence": "fatal-errors-compile-check.json",
+  "sourceIdentity": {
+    "path": "src/node_errors.cc",
+    "role": "provenance",
+    "bytes": 45641,
+    "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d",
+    "builtinId": null
+  },
+  "originalAlgorithmsPreserved": [
+    "full conditional POSIX errno-name switch using actual guest errno constants, unknown returns original empty string",
+    "original error decoration/source/stack formatting",
+    "fatal/uncaught recursion guard and policy flow",
+    "message listener and callback registration",
+    "original error binding initialization and exit-code metadata"
+  ],
+  "sourceInitializerConnected": false,
+  "existingErrorsBinding": "Existing bounded native error-stack backend unchanged; full original initializer has a separate unused adapter identity",
+  "noRuntimeSupportFromDeadStripping": true,
+  "nativeInterfaceDeclarations": {
+    "path": "packages/registry/spidermonkey/node-upstream/fatal-errors-native-api.h",
+    "bytes": 3249,
+    "sha256": "dbf60d9da04300620660cabc7fc8ae9f6f6215d5c33644df22012da9fbd61576"
+  },
+  "unimplementedContracts": [
+    "actual engine Message/ScriptOrigin/StackFrame/StackTrace metadata and capture",
+    "Detailed Message/report ownership and full original policy execution; complete TryCatchScope/PrinterTryCatch header classes are now compiled unchanged",
+    "private-key/error constructor identity and literal conversion operations",
+    "source-map callback ownership and native Context embedder fields/index",
+    "fatal callback/report/abort/backtrace and actual exit flow",
+    "original process policy mutex and fatal-only options view (declarations only; no independent default flags)",
+    "normal SetImmediate ownership/ref state/scheduling and warning path",
+    "native Realm callback slots and actual fatal process object/policy state"
+  ],
+  "declarationCautions": [
+    "Private bridge StackTrace flags are representations, not V8 data or evidence of a working capture API",
+    "ABORT/report interfaces remain unimplemented. Backtrace location and abort-handler invariants require validation before activation",
+    "Normal SetImmediate is a type-erasure wrapper around an undefined SetImmediateNative backend; it does not fake posting or reuse an incompatible queue",
+    "Fatal options access is a separate unimplemented view; before activation it must use the original policy mutex without recursively locking the general snapshot accessor"
+  ],
+  "compiledNativeFlagProjection": "Original trace_uncaught/extra_info_on_fatal_exception/report_on_fatalerror values read under actual original options mutex; compile evidence only",
+  "sourceImport": {
+    "files": 576,
+    "all575PriorRecordsAndBytesUnchanged": true,
+    "javascriptFiles": 443,
+    "javascriptBytes": 10993403
+  },
+  "validationObligations": [
+    "guest errno mappings/unknown/alias handling via original process errors on all4hosts",
+    "actual Error/Message/source position/stack/constructor/private-state semantics",
+    "caught versus fatal/reentrant/stack-overflow/termination behavior and correct exit status",
+    "real scheduling/ref/unref/cleanup, worker realms, cancellation and GC/OOM",
+    "native diagnostic output/report/backtrace policy and failure ordering"
+  ],
+  "memoryPrerequisiteCatalog": "process-memory-contracts.json",
+  "fullRoadmapImplementationAuthorized": false,
+  "scopedCatchPrerequisiteCatalog": "scoped-catch-contracts.json",
+  "scopedCatchPrerequisiteEvidence": "scoped-catch-engine-check.json",
+  "originalPolicyHeaderIntegrated": true,
+  "errorPolicyCatalog": "error-policy-contracts.json",
+  "errorPolicyEvidence": "error-policy-engine-check.json"
+}

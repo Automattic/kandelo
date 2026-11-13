@@ -1,0 +1,137 @@
+--- a/js/src/vm/SavedFrame.h
++++ b/js/src/vm/SavedFrame.h
+@@ -17,6 +17,8 @@
+ #include "vm/NativeObject.h"
+
+ namespace js {
++
++class ScriptSource;
+
+ class SavedFrame : public NativeObject {
+   friend class SavedStacks;
+@@ -53,6 +55,7 @@
+   // without this metadata remain explicitly Unknown.
+   enum class KandeloSourceKind : uint32_t { Unknown, Script, Eval, Function, Wasm };
+   KandeloSourceKind getKandeloSourceKind();
++  ScriptSource* getKandeloScriptSource();
+   // Line number (1-origin).
+   uint32_t getLine();
+   // Column number in UTF-16 code units.
+@@ -128,6 +131,7 @@
+   void initSource(JSAtom* source);
+   void initSourceId(uint32_t id);
+   void initKandeloSourceKind(KandeloSourceKind);
++  void initKandeloScriptSource(ScriptSource*);
+   void initLine(uint32_t line);
+   void initColumn(JS::TaggedColumnNumberOneOrigin column);
+   void initFunctionDisplayName(JSAtom* maybeName);
+@@ -142,6 +146,7 @@
+     JSSLOT_SOURCE,
+     JSSLOT_SOURCEID,
+     JSSLOT_KANDELO_SOURCE_KIND,
++    JSSLOT_KANDELO_SCRIPT_SOURCE,
+     JSSLOT_LINE,
+     JSSLOT_COLUMN,
+     JSSLOT_FUNCTIONDISPLAYNAME,
+--- a/js/src/vm/SavedStacks.cpp
++++ b/js/src/vm/SavedStacks.cpp
+@@ -8,6 +8,7 @@
+
+ #include "mozilla/Attributes.h"
+ #include "mozilla/DebugOnly.h"
++#include "mozilla/RefPtr.h"
+
+ #include <algorithm>
+ #include <utility>
+@@ -179,10 +180,12 @@
+          bool mutedErrors,
+          const Maybe<LiveSavedFrameCache::FramePtr>& framePtr = Nothing(),
+          jsbytecode* pc = nullptr, Activation* activation = nullptr,
+-         KandeloSourceKind sourceKind = KandeloSourceKind::Unknown)
++         KandeloSourceKind sourceKind = KandeloSourceKind::Unknown,
++         ScriptSource* scriptSource = nullptr)
+       : source(source),
+         sourceId(sourceId),
+         sourceKind(sourceKind),
++        scriptSource(scriptSource),
+         line(line),
+         column(column),
+         functionDisplayName(functionDisplayName),
+@@ -204,6 +207,7 @@
+       : source(savedFrame.getSource()),
+         sourceId(savedFrame.getSourceId()),
+         sourceKind(savedFrame.getKandeloSourceKind()),
++        scriptSource(savedFrame.getKandeloScriptSource()),
+         line(savedFrame.getLine()),
+         column(savedFrame.getColumn()),
+         functionDisplayName(savedFrame.getFunctionDisplayName()),
+@@ -220,6 +224,7 @@
+   JSAtom* source;
+   uint32_t sourceId;
+   KandeloSourceKind sourceKind;
++  RefPtr<ScriptSource> scriptSource;
+
+   // Line number (1-origin).
+   uint32_t line;
+@@ -261,6 +266,7 @@
+   JSAtom* source() { return value().source; }
+   uint32_t sourceId() { return value().sourceId; }
+   SavedFrame::KandeloSourceKind sourceKind() { return value().sourceKind; }
++  ScriptSource* scriptSource() { return value().scriptSource; }
+   uint32_t line() { return value().line; }
+   JS::TaggedColumnNumberOneOrigin column() { return value().column; }
+   JSAtom* functionDisplayName() { return value().functionDisplayName; }
+@@ -447,6 +453,9 @@
+ /* static */
+ void SavedFrame::finalize(JS::GCContext* gcx, JSObject* obj) {
+   MOZ_ASSERT(gcx->onMainThread());
++  if (auto* source = obj->as<SavedFrame>().getKandeloScriptSource()) {
++    source->Release();
++  }
+   JSPrincipals* p = obj->as<SavedFrame>().getPrincipals();
+   if (p) {
+     JSRuntime* rt = obj->runtimeFromMainThread();
+@@ -466,6 +475,12 @@
+                              : KandeloSourceKind(value.toPrivateUint32());
+ }
+
++ScriptSource* SavedFrame::getKandeloScriptSource() {
++  auto value = getReservedSlot(JSSLOT_KANDELO_SCRIPT_SOURCE);
++  return value.isUndefined() ? nullptr
++                             : static_cast<ScriptSource*>(value.toPrivate());
++}
++
+ uint32_t SavedFrame::getSourceId() {
+   const Value& v = getReservedSlot(JSSLOT_SOURCEID);
+   return v.toPrivateUint32();
+@@ -531,6 +546,12 @@
+
+ void SavedFrame::initKandeloSourceKind(KandeloSourceKind kind) {
+   initReservedSlot(JSSLOT_KANDELO_SOURCE_KIND, PrivateUint32Value(uint32_t(kind)));
++}
++
++void SavedFrame::initKandeloScriptSource(ScriptSource* source) {
++  // Retain immutable source ownership without retaining a script or its realm.
++  if (source) source->AddRef();
++  initReservedSlot(JSSLOT_KANDELO_SCRIPT_SOURCE, PrivateValue(source));
+ }
+
+ void SavedFrame::initLine(uint32_t line) {
+@@ -593,6 +614,7 @@
+   initSource(lookup.source());
+   initSourceId(lookup.sourceId());
+   initKandeloSourceKind(lookup.sourceKind());
++  initKandeloScriptSource(lookup.scriptSource());
+   initLine(lookup.line());
+   initColumn(lookup.column());
+   initFunctionDisplayName(lookup.functionDisplayName());
+@@ -1635,7 +1657,8 @@
+                                   nullptr,  // asyncCause
+                                   nullptr,  // parent (not known yet)
+                                   principals, iter.mutedErrors(), framePtr,
+-                                  iter.pc(), &activation, sourceKind)) {
++                                  iter.pc(), &activation, sourceKind,
++                                  iter.isWasm() ? nullptr : iter.script()->scriptSource())) {
+         return false;
+       }
+     }

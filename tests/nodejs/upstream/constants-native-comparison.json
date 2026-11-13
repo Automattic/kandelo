@@ -1,0 +1,548 @@
+{
+  "guestPrimitiveDefinitions": 425,
+  "nativePrimitiveDefinitions": 432,
+  "equalValues": 348,
+  "differences": [
+    {
+      "path": "crypto.ENGINE_METHOD_ALL",
+      "guest": "<absent>",
+      "native": 65535,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "crypto.ENGINE_METHOD_CIPHERS",
+      "guest": "<absent>",
+      "native": 64,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "crypto.ENGINE_METHOD_DH",
+      "guest": "<absent>",
+      "native": 4,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "crypto.ENGINE_METHOD_DIGESTS",
+      "guest": "<absent>",
+      "native": 128,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "crypto.ENGINE_METHOD_DSA",
+      "guest": "<absent>",
+      "native": 2,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "crypto.ENGINE_METHOD_EC",
+      "guest": "<absent>",
+      "native": 2048,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "crypto.ENGINE_METHOD_NONE",
+      "guest": "<absent>",
+      "native": 0,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "crypto.ENGINE_METHOD_PKEY_ASN1_METHS",
+      "guest": "<absent>",
+      "native": 1024,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "crypto.ENGINE_METHOD_PKEY_METHS",
+      "guest": "<absent>",
+      "native": 512,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "crypto.ENGINE_METHOD_RAND",
+      "guest": "<absent>",
+      "native": 8,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "crypto.ENGINE_METHOD_RSA",
+      "guest": "<absent>",
+      "native": 1,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "crypto.OPENSSL_VERSION_NUMBER",
+      "guest": 808452128,
+      "native": 810549392,
+      "classification": "Declared target OpenSSL3.3.2 build/version/no-engine configuration versus pinned native dependency"
+    },
+    {
+      "path": "fs.O_APPEND",
+      "guest": 1024,
+      "native": 8,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_CREAT",
+      "guest": 64,
+      "native": 512,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_DIRECT",
+      "guest": 16384,
+      "native": "<absent>",
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_DIRECTORY",
+      "guest": 65536,
+      "native": 1048576,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_DSYNC",
+      "guest": 4096,
+      "native": 4194304,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_EXCL",
+      "guest": 128,
+      "native": 2048,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_NOATIME",
+      "guest": 262144,
+      "native": "<absent>",
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_NOCTTY",
+      "guest": 256,
+      "native": 131072,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_NOFOLLOW",
+      "guest": 131072,
+      "native": 256,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_NONBLOCK",
+      "guest": 2048,
+      "native": 4,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_SYMLINK",
+      "guest": "<absent>",
+      "native": 2097152,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_SYNC",
+      "guest": 1052672,
+      "native": 128,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "fs.O_TRUNC",
+      "guest": 512,
+      "native": 1024,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.dlopen.RTLD_GLOBAL",
+      "guest": 256,
+      "native": 8,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.dlopen.RTLD_LOCAL",
+      "guest": 0,
+      "native": 4,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EADDRINUSE",
+      "guest": 98,
+      "native": 48,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EADDRNOTAVAIL",
+      "guest": 99,
+      "native": 49,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EAFNOSUPPORT",
+      "guest": 97,
+      "native": 47,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EAGAIN",
+      "guest": 11,
+      "native": 35,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EALREADY",
+      "guest": 114,
+      "native": 37,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EBADMSG",
+      "guest": 74,
+      "native": 94,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ECANCELED",
+      "guest": 125,
+      "native": 89,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ECONNABORTED",
+      "guest": 103,
+      "native": 53,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ECONNREFUSED",
+      "guest": 111,
+      "native": 61,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ECONNRESET",
+      "guest": 104,
+      "native": 54,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EDEADLK",
+      "guest": 35,
+      "native": 11,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EDESTADDRREQ",
+      "guest": 89,
+      "native": 39,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EDQUOT",
+      "guest": 122,
+      "native": 69,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EHOSTUNREACH",
+      "guest": 113,
+      "native": 65,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EIDRM",
+      "guest": 43,
+      "native": 90,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EILSEQ",
+      "guest": 84,
+      "native": 92,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EINPROGRESS",
+      "guest": 115,
+      "native": 36,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EISCONN",
+      "guest": 106,
+      "native": 56,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ELOOP",
+      "guest": 40,
+      "native": 62,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EMSGSIZE",
+      "guest": 90,
+      "native": 40,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EMULTIHOP",
+      "guest": 72,
+      "native": 95,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENAMETOOLONG",
+      "guest": 36,
+      "native": 63,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENETDOWN",
+      "guest": 100,
+      "native": 50,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENETRESET",
+      "guest": 102,
+      "native": 52,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENETUNREACH",
+      "guest": 101,
+      "native": 51,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOBUFS",
+      "guest": 105,
+      "native": 55,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENODATA",
+      "guest": 61,
+      "native": 96,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOLCK",
+      "guest": 37,
+      "native": 77,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOLINK",
+      "guest": 67,
+      "native": 97,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOMSG",
+      "guest": 42,
+      "native": 91,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOPROTOOPT",
+      "guest": 92,
+      "native": 42,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOSR",
+      "guest": 63,
+      "native": 98,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOSTR",
+      "guest": 60,
+      "native": 99,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOSYS",
+      "guest": 38,
+      "native": 78,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOTCONN",
+      "guest": 107,
+      "native": 57,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOTEMPTY",
+      "guest": 39,
+      "native": 66,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOTSOCK",
+      "guest": 88,
+      "native": 38,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ENOTSUP",
+      "guest": 95,
+      "native": 45,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EOPNOTSUPP",
+      "guest": 95,
+      "native": 102,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EOVERFLOW",
+      "guest": 75,
+      "native": 84,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EPROTO",
+      "guest": 71,
+      "native": 100,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EPROTONOSUPPORT",
+      "guest": 93,
+      "native": 43,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EPROTOTYPE",
+      "guest": 91,
+      "native": 41,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ESTALE",
+      "guest": 116,
+      "native": 70,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ETIME",
+      "guest": 62,
+      "native": 101,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.ETIMEDOUT",
+      "guest": 110,
+      "native": 60,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.errno.EWOULDBLOCK",
+      "guest": 11,
+      "native": 35,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGBUS",
+      "guest": 7,
+      "native": 10,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGCHLD",
+      "guest": 17,
+      "native": 20,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGCONT",
+      "guest": 18,
+      "native": 19,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGINFO",
+      "guest": "<absent>",
+      "native": 29,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGIO",
+      "guest": 29,
+      "native": 23,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGPOLL",
+      "guest": 29,
+      "native": "<absent>",
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGPWR",
+      "guest": 30,
+      "native": "<absent>",
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGSTKFLT",
+      "guest": 16,
+      "native": "<absent>",
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGSTOP",
+      "guest": 19,
+      "native": 17,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGSYS",
+      "guest": 31,
+      "native": 12,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGTSTP",
+      "guest": 20,
+      "native": 18,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGUNUSED",
+      "guest": 31,
+      "native": "<absent>",
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGURG",
+      "guest": 23,
+      "native": 16,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGUSR1",
+      "guest": 10,
+      "native": 30,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "os.signals.SIGUSR2",
+      "guest": 12,
+      "native": 31,
+      "classification": "Actual Kandelo target headers versus Darwin platform headers"
+    },
+    {
+      "path": "zlib.ZLIB_VERNUM",
+      "guest": 4880,
+      "native": 4897,
+      "classification": "Declared target zlib1.3.1 header versus pinned native zlib version; target probe independently agrees"
+    }
+  ],
+  "scope": "Header/API data only; not operational backend conformance"
+}

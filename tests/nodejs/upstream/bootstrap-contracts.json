@@ -1,0 +1,1324 @@
+{
+  "schema": 1,
+  "scope": "read-only source embedding/bootstrap contract inventory, not implementation or conformance",
+  "sourceRoot": "upstream source archive at recorded commit; selected files vendored in third_party/nodejs/upstream",
+  "preservedVersion": "26.13.0",
+  "pinVerification": "See sibling pin-verification.json owned by coordinator; not independently re-verified by this worker.",
+  "sourceInputs": [
+    {
+      "path": "lib/internal/bootstrap/node.js",
+      "sha256": "02a0489fb6713fc59e8fc95582ebd44a50b0f4c4a48d6e1c7879724ac6b93332",
+      "bytes": 16325
+    },
+    {
+      "path": "lib/internal/bootstrap/realm.js",
+      "sha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b",
+      "bytes": 16939
+    },
+    {
+      "path": "lib/internal/bootstrap/shadow_realm.js",
+      "sha256": "4301acd3b518be9687aa17b289e6dc7d1df8461d0b41d3738e65188ff450e804",
+      "bytes": 579
+    },
+    {
+      "path": "lib/internal/bootstrap/switches/does_not_own_process_state.js",
+      "sha256": "3cc0d582c196f255992cd6733eafc9a30b0b27b176b1aaf811e416a4cb482800",
+      "bytes": 1285
+    },
+    {
+      "path": "lib/internal/bootstrap/switches/does_own_process_state.js",
+      "sha256": "eab185e4a26a807d21da8f3addba046b7a91e5ba2ca0bba86ef062663dd6f4aa",
+      "bytes": 3835
+    },
+    {
+      "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+      "sha256": "da6d9350b7f2284dfc3613e43fd295c521d51aacc3674d79df76290f74cd55ab",
+      "bytes": 9468
+    },
+    {
+      "path": "lib/internal/bootstrap/switches/is_not_main_thread.js",
+      "sha256": "dd18ff133e8fe9216687a76b073feb666e1fc886c7f1bb2a36349d839509643d",
+      "bytes": 1747
+    },
+    {
+      "path": "lib/internal/bootstrap/web/exposed-wildcard.js",
+      "sha256": "0a3d80f3062ec263b08ae7cfb4d477946d915b6c7368f02e44b51363c26c81bf",
+      "bytes": 3277
+    },
+    {
+      "path": "lib/internal/bootstrap/web/exposed-window-or-worker.js",
+      "sha256": "71be83894cb75264ca62839408c575ac8acd2c91765ff3e0ecc3d27765f2c810",
+      "bytes": 4691
+    },
+    {
+      "path": "lib/internal/errors.js",
+      "sha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+      "bytes": 74146
+    },
+    {
+      "path": "lib/internal/main/bench_runner.js",
+      "sha256": "d5e91a035e2e79228f1a6f5fc86a7552df2a4973f9881ced282d7749dad55762",
+      "bytes": 860
+    },
+    {
+      "path": "lib/internal/main/check_syntax.js",
+      "sha256": "85010bc6b79d3d87a8a2b7de1850f0c09c972599e7cecacbf8e9ca0abb9593cb",
+      "bytes": 2708
+    },
+    {
+      "path": "lib/internal/main/embedding.js",
+      "sha256": "db2f969ff24c8e1bec9c5f629eaf8f77a398c3a34bab4a6fe8a122c0e7f9c4bc",
+      "bytes": 6880
+    },
+    {
+      "path": "lib/internal/main/eval_stdin.js",
+      "sha256": "bb35771904d2b6ad67af911d362d5501e38c0202d9ec857ce343d165f6028e1e",
+      "bytes": 1586
+    },
+    {
+      "path": "lib/internal/main/eval_string.js",
+      "sha256": "1346e229e2d1e7a8355bd5c4e6768655b8e67e661a48671e3f4e0ba2ae6d3ca2",
+      "bytes": 2570
+    },
+    {
+      "path": "lib/internal/main/inspect.js",
+      "sha256": "d7bd34ebcd04dd47a1ae5cff2f01a3a4d2a64f90345f3d818c5cea00cb8fab9a",
+      "bytes": 333
+    },
+    {
+      "path": "lib/internal/main/mksnapshot.js",
+      "sha256": "1e5b7fee8614594864b53035f761a1e6358cc8c90200e7c51a5f3d14cf137a47",
+      "bytes": 6324
+    },
+    {
+      "path": "lib/internal/main/print_help.js",
+      "sha256": "8ef0eee336acc15c12d7d38bd3acb7404a3b375a15633f8ea35fdf57051103a4",
+      "bytes": 8638
+    },
+    {
+      "path": "lib/internal/main/prof_process.js",
+      "sha256": "fc253aa81174e4b33eab0e8d2683ddbc33bb1ecd3f9d8f5f6773e670bed64019",
+      "bytes": 1406
+    },
+    {
+      "path": "lib/internal/main/repl.js",
+      "sha256": "88884e7770e4e0ae031a57c62634177e612daa347e4d8e623626f5ae757aa951",
+      "bytes": 2061
+    },
+    {
+      "path": "lib/internal/main/run_main_module.js",
+      "sha256": "b7fea2ff72d8f90801535f598cc3dd7ade6f1991d4946a9d1515e69e224684a2",
+      "bytes": 1232
+    },
+    {
+      "path": "lib/internal/main/test_runner.js",
+      "sha256": "351ce585c9d7b504691637223b77295fada44d42839a27766e6a327983c258c3",
+      "bytes": 1382
+    },
+    {
+      "path": "lib/internal/main/watch_mode.js",
+      "sha256": "26ab8cc6ce22cc847bbdf816b3fece2851313b9875931532ed8083ba4b526c14",
+      "bytes": 9264
+    },
+    {
+      "path": "lib/internal/main/worker_thread.js",
+      "sha256": "747b4d8fb9df3452bde13c5647daa6d39d879c2d71d6f5bdd602c6e710c74eeb",
+      "bytes": 10688
+    },
+    {
+      "path": "lib/internal/options.js",
+      "sha256": "2e49d6f205a2e70dd73682ff84542d739fb1a5c6895ae0322738f715c8e2c7ec",
+      "bytes": 6389
+    },
+    {
+      "path": "lib/internal/per_context/domexception.js",
+      "sha256": "3c920df8a551ca84bcc571dd70df334cb10bd0f3088fa423a784f9f608cef6f7",
+      "bytes": 9452
+    },
+    {
+      "path": "lib/internal/per_context/messageport.js",
+      "sha256": "28bf223a668ddaa3ac43fdc84b7196e3c8e689d9d6c5d845d0d525a2fcb5410c",
+      "bytes": 995
+    },
+    {
+      "path": "lib/internal/per_context/primordials.js",
+      "sha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+      "bytes": 22777
+    },
+    {
+      "path": "lib/internal/process/pre_execution.js",
+      "sha256": "b87b010a0f42b40bc7af93195b520193e49dd1ac80a30ece13642978737c351c",
+      "bytes": 29504
+    },
+    {
+      "path": "lib/internal/process/promises.js",
+      "sha256": "71664086abbc69a14af10a216bd2066fdff28046888bca3ec04df5f6d1b6fe24",
+      "bytes": 11922
+    },
+    {
+      "path": "lib/internal/process/task_queues.js",
+      "sha256": "71fac2b5855102504d67fd228e3466a46aacbf9cd44126320b677fd31d53a472",
+      "bytes": 5224
+    },
+    {
+      "path": "lib/internal/v8/startup_snapshot.js",
+      "sha256": "4eee95d7fa66dff0d64e84da2511bdfc2edd42ed3ebec99590618004c1c2701c",
+      "bytes": 4451
+    },
+    {
+      "path": "lib/internal/worker/js_transferable.js",
+      "sha256": "c2c798c77deccdf13dbbd526650755d9ea0670782278530f053885cf2d960366",
+      "bytes": 4186
+    },
+    {
+      "path": "src/api/environment.cc",
+      "sha256": "9c80f4adda1ed6ee32d90818841aba2484e3fc366916dcbb6298289f484ce8dc",
+      "bytes": 41700
+    },
+    {
+      "path": "src/builtin_info.h",
+      "sha256": "f81573ce5068e4d2d36a7b46b3ff58c0c86d2832814424b3216ef8ef89cdedc5",
+      "bytes": 1899
+    },
+    {
+      "path": "src/node.cc",
+      "sha256": "5c04920541a06ef404d98eb0089f7947cbb72ab44ab612b207e735f9daa9f6ef",
+      "bytes": 63148
+    },
+    {
+      "path": "src/node_builtins.cc",
+      "sha256": "e96508e01765d9f89cefb8e6508d87025e6ded4dc8bafc4a8c46a6e5c02305d2",
+      "bytes": 37013
+    },
+    {
+      "path": "src/node_messaging.cc",
+      "sha256": "49d5cf1e5d5319a932a2bf378b53a7f2c584d960383043b75c199726598d3697",
+      "bytes": 62006
+    },
+    {
+      "path": "src/node_process_object.cc",
+      "sha256": "301c1819a6cd59a48bd28f4c2252298137b6631cc33dda0ddb55dd8067d48957",
+      "bytes": 8595
+    },
+    {
+      "path": "src/node_realm.cc",
+      "sha256": "f3c7636f85409e09cc2c1a34781f51e7144aec04d1dd71e2512f01b2b1f48fda",
+      "bytes": 14435
+    }
+  ],
+  "wrapperContractSource": [
+    {
+      "path": "src/builtin_info.h",
+      "line": 29,
+      "endLine": 47
+    },
+    {
+      "path": "src/node_builtins.cc",
+      "line": 487,
+      "endLine": 563
+    }
+  ],
+  "wrappers": [
+    {
+      "type": "kPerContextScript",
+      "parameters": [
+        "exports",
+        "primordials",
+        "privateSymbols",
+        "perIsolateSymbols"
+      ],
+      "caller": "InitializePrimordials, same four values for all three files"
+    },
+    {
+      "type": "kBootstrapRealm",
+      "parameters": [
+        "process",
+        "getLinkedBinding",
+        "getInternalBinding",
+        "primordials"
+      ],
+      "caller": "BuiltinLoader::CompileAndCall, undefined receiver"
+    },
+    {
+      "type": "kBootstrapScript / kMainScript",
+      "parameters": [
+        "process",
+        "require",
+        "internalBinding",
+        "primordials"
+      ],
+      "caller": "BuiltinLoader::CompileAndCall, undefined receiver"
+    },
+    {
+      "type": "kFunction ordinary builtin",
+      "parameters": [
+        "exports",
+        "require",
+        "module",
+        "process",
+        "internalBinding",
+        "primordials"
+      ],
+      "caller": "BuiltinModule.compileForInternalLoader invokes compiled function; JS owns cache/cycles/exports"
+    },
+    {
+      "type": "kSourceTextModule",
+      "parameters": [],
+      "caller": "CompileModule then ImportBuiltinSourceTextModule; actual module semantics, not six-argument CJS wrapper"
+    }
+  ],
+  "orderedBootstrap": [
+    {
+      "order": 0,
+      "stage": "Fresh realm and private per-context export store",
+      "owner": "embedding/native",
+      "contract": "Create the engine realm with its real intrinsics before any user mutation. Retain per-context exports privately, initialize once, and share its primordials and symbol identities with all later builtin calls. This store is distinct from ordinary global properties.",
+      "sourceReferences": [
+        {
+          "path": "src/api/environment.cc",
+          "line": 808,
+          "endLine": 831
+        },
+        {
+          "path": "src/api/environment.cc",
+          "line": 1025,
+          "endLine": 1057
+        }
+      ]
+    },
+    {
+      "order": 1,
+      "stage": "Run per_context/primordials",
+      "owner": "upstream JS unchanged",
+      "contract": "Call body with (exports, primordials, privateSymbols, perIsolateSymbols). primordials starts null-prototype and mutable. Source copies native descriptors, creates safe collection/iterator/promise helpers, then sets null prototype and freezes the result. Do not substitute a hand-picked primordials map.",
+      "sourceReferences": [
+        {
+          "path": "src/api/environment.cc",
+          "line": 1059,
+          "endLine": 1084
+        },
+        {
+          "path": "lib/internal/per_context/primordials.js",
+          "line": 145,
+          "endLine": 310
+        },
+        {
+          "path": "lib/internal/per_context/primordials.js",
+          "line": 785,
+          "endLine": 786
+        }
+      ]
+    },
+    {
+      "order": 2,
+      "stage": "Run per_context/domexception, then messageport",
+      "owner": "upstream JS unchanged",
+      "contract": "Reuse the same four arguments in this exact order. DOMException and QuotaExceededError live in private exports; emitMessage is the per-context callback used by native messaging. DOMException requires shared transfer-mode and messaging clone/deserialization symbols. No require/internalBinding arguments exist in these wrappers.",
+      "sourceReferences": [
+        {
+          "path": "src/api/environment.cc",
+          "line": 1059,
+          "endLine": 1084
+        },
+        {
+          "path": "lib/internal/per_context/domexception.js",
+          "line": 18,
+          "endLine": 24
+        },
+        {
+          "path": "lib/internal/per_context/domexception.js",
+          "line": 208
+        },
+        {
+          "path": "lib/internal/per_context/domexception.js",
+          "line": 296
+        },
+        {
+          "path": "lib/internal/per_context/messageport.js",
+          "line": 19,
+          "endLine": 39
+        },
+        {
+          "path": "src/node_messaging.cc",
+          "line": 256,
+          "endLine": 269
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "stage": "Create principal Realm state and initial process object",
+      "owner": "embedding/native",
+      "contract": "Retrieve the existing primordials, retain its SafeMap/Set/WeakMap/WeakSet prototypes, create process with a distinct mutable prototype chain, exit-info backing state, truthful version/arch/platform/release, and early _rawDebug. argv/execArgv/runtime process properties are patched later. Never report V8/libuv/platform capabilities merely because upstream JS expects them.",
+      "sourceReferences": [
+        {
+          "path": "src/node_realm.cc",
+          "line": 46,
+          "endLine": 97
+        },
+        {
+          "path": "src/node_process_object.cc",
+          "line": 96,
+          "endLine": 157
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "stage": "Run internal/bootstrap/realm",
+      "owner": "upstream JS unchanged + native bindings",
+      "contract": "Call (process,getLinkedBinding,getInternalBinding,primordials) with undefined receiver. Source owns internalBinding cache, process.binding/_linkedBinding, moduleLoadList, BuiltinModule map, builtin exposure policy, cycles/loading state, dependency fallback and ESM facades. It immediately loads builtins and module_wrap, registers internal loaders exactly once, then loads internal/errors and installs stack callbacks.",
+      "sourceReferences": [
+        {
+          "path": "src/node_builtins.cc",
+          "line": 513,
+          "endLine": 531
+        },
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 123,
+          "endLine": 187
+        },
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 245,
+          "endLine": 276
+        },
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 425,
+          "endLine": 517
+        },
+        {
+          "path": "src/node_builtins.cc",
+          "line": 853,
+          "endLine": 860
+        }
+      ]
+    },
+    {
+      "order": 5,
+      "stage": "Run internal/bootstrap/node",
+      "owner": "upstream JS unchanged + native bindings",
+      "contract": "Call (process,requireBuiltin,internalBinding,primordials). Source installs EventEmitter ancestry, global.process/global/Buffer, exitCode accessors, frozen process.config, transferable deserializer factory, process methods and credentials, async_hooks callbacks, error/warning hooks, task queue and timer callbacks, source-map handler and process.getBuiltinModule. Preserve ordering: tick/timer registration occurs near the end so bootstrap stays synchronous.",
+      "sourceReferences": [
+        {
+          "path": "src/node_realm.cc",
+          "line": 326,
+          "endLine": 331
+        },
+        {
+          "path": "lib/internal/bootstrap/node.js",
+          "line": 68,
+          "endLine": 149
+        },
+        {
+          "path": "lib/internal/bootstrap/node.js",
+          "line": 151,
+          "endLine": 242
+        },
+        {
+          "path": "lib/internal/bootstrap/node.js",
+          "line": 311,
+          "endLine": 420
+        },
+        {
+          "path": "lib/internal/bootstrap/node.js",
+          "line": 423,
+          "endLine": 471
+        }
+      ]
+    },
+    {
+      "order": 6,
+      "stage": "Run web/exposed-wildcard, then exposed-window-or-worker",
+      "owner": "upstream JS unchanged + native bindings",
+      "contract": "Run both only if actual noBrowserGlobals is false. Console, URL, URLSearchParams, DOMException and Event/EventTarget are eager; encoding, streams, Blob/File, messaging, performance, crypto and Undici objects are mostly lazy. Register wasm streaming callback eagerly. These are Node public implementations/dependencies, not the embedding browser globals.",
+      "sourceReferences": [
+        {
+          "path": "src/node_realm.cc",
+          "line": 333,
+          "endLine": 339
+        },
+        {
+          "path": "lib/internal/bootstrap/web/exposed-wildcard.js",
+          "line": 18,
+          "endLine": 110
+        },
+        {
+          "path": "lib/internal/bootstrap/web/exposed-window-or-worker.js",
+          "line": 30,
+          "endLine": 131
+        }
+      ]
+    },
+    {
+      "order": 7,
+      "stage": "Run exactly one thread switch",
+      "owner": "upstream JS unchanged",
+      "contract": "Main uses is_main_thread; worker uses is_not_main_thread. Main installs lazy fd-type-sensitive stdio and signal listeners, and EAGERLY requires fs, CJS loader, ESM utils, perf utils, run_main and pre_execution. More modules preload only while building a snapshot. Worker installs message-based stdio and removes main signal listeners. Browser host is not synonymous with guest worker thread.",
+      "sourceReferences": [
+        {
+          "path": "src/node_realm.cc",
+          "line": 342,
+          "endLine": 348
+        },
+        {
+          "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+          "line": 24,
+          "endLine": 43
+        },
+        {
+          "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+          "line": 50,
+          "endLine": 111
+        },
+        {
+          "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+          "line": 293,
+          "endLine": 332
+        },
+        {
+          "path": "lib/internal/bootstrap/switches/is_not_main_thread.js",
+          "line": 25,
+          "endLine": 64
+        }
+      ]
+    },
+    {
+      "order": 8,
+      "stage": "Run exactly one process-state ownership switch",
+      "owner": "upstream JS unchanged + native process state",
+      "contract": "Choose does_own_process_state or does_not_own_process_state from the guest execution role. Owning process uses native cwd/chdir/umask/abort and validated credential setters; worker restrictions are upstream JS behavior. Ownership must describe guest process authority, not host OS authority.",
+      "sourceReferences": [
+        {
+          "path": "src/node_realm.cc",
+          "line": 350,
+          "endLine": 356
+        },
+        {
+          "path": "lib/internal/bootstrap/switches/does_own_process_state.js",
+          "line": 3,
+          "endLine": 37
+        },
+        {
+          "path": "lib/internal/bootstrap/switches/does_not_own_process_state.js",
+          "line": 3,
+          "endLine": 38
+        }
+      ]
+    },
+    {
+      "order": 9,
+      "stage": "Attach env proxy and mark Realm bootstrapped",
+      "owner": "embedding/native",
+      "contract": "Install process.env backed by actual guest environment after switches. Mark bootstrap once; no live request or handle may have been created during synchronous bootstrap. Runtime options cannot be queried before this phase: upstream internal/options defers getCLIOptionsValues for this reason.",
+      "sourceReferences": [
+        {
+          "path": "src/node_realm.cc",
+          "line": 358,
+          "endLine": 367
+        },
+        {
+          "path": "src/node_realm.cc",
+          "line": 190,
+          "endLine": 224
+        },
+        {
+          "path": "lib/internal/options.js",
+          "line": 29,
+          "endLine": 35
+        }
+      ]
+    },
+    {
+      "order": 10,
+      "stage": "Choose and run exactly one internal/main entry",
+      "owner": "embedding/native dispatch + upstream JS unchanged",
+      "contract": "Use the same four arguments as bootstrap scripts. Native dispatch distinguishes embedder callback, worker, inspector/help/prof/check/bench/test/watch, positional/VFS file, REPL and stdin; eval takes priority over check in native order. For ordinary node CLI, run upstream run_main_module/eval_string/eval_stdin rather than embedding.js. embedding.js is for the special embedder API and intentionally uses a builtin-only require.",
+      "sourceReferences": [
+        {
+          "path": "src/node.cc",
+          "line": 289,
+          "endLine": 413
+        },
+        {
+          "path": "src/node_builtins.cc",
+          "line": 533,
+          "endLine": 539
+        },
+        {
+          "path": "lib/internal/main/embedding.js",
+          "line": 3,
+          "endLine": 10
+        },
+        {
+          "path": "lib/internal/main/embedding.js",
+          "line": 107,
+          "endLine": 109
+        }
+      ]
+    },
+    {
+      "order": 11,
+      "stage": "Run pre_execution initialization through selected main",
+      "owner": "upstream JS unchanged + native state callbacks",
+      "contract": "prepareExecution refreshes options; patches runtime process/argv; initializes trace/inspector/warnings, real gated web facilities, diagnostics/permission/source maps/deprecations; conditionally DNS, signals/report/IPC/cluster; deserialize callbacks; ESM formats/VM; CJS+ESM initialization, embedder and --require preloads, optional frozen intrinsics; VFS mounts and HTTP proxy. Worker delays user loader initialization until LOAD_SCRIPT. Preserve exact conditionals and ordering in source.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/process/pre_execution.js",
+          "line": 47,
+          "endLine": 76
+        },
+        {
+          "path": "lib/internal/process/pre_execution.js",
+          "line": 107,
+          "endLine": 189
+        },
+        {
+          "path": "lib/internal/process/pre_execution.js",
+          "line": 292,
+          "endLine": 322
+        },
+        {
+          "path": "lib/internal/process/pre_execution.js",
+          "line": 336,
+          "endLine": 394
+        },
+        {
+          "path": "lib/internal/main/worker_thread.js",
+          "line": 92,
+          "endLine": 162
+        }
+      ]
+    },
+    {
+      "order": 12,
+      "stage": "Main-specific bootstrap completion, then user execution",
+      "owner": "upstream JS unchanged + event-loop embedding",
+      "contract": "run_main_module prepares argv, markBootstrapComplete, resets RegExp statics, calls upstream Module.runMain. eval_string prepares globals and dispatches input format; eval_stdin reads real stdin and dispatches. embedding.js RETURNS [process,embedderRequire,embedderRunEntryPoint]; native C++ consumes this array and invokes embedder callback. This return is function-body syntax, not a source-file script.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/main/run_main_module.js",
+          "line": 14,
+          "endLine": 33
+        },
+        {
+          "path": "lib/internal/main/eval_string.js",
+          "line": 26,
+          "endLine": 77
+        },
+        {
+          "path": "lib/internal/main/eval_stdin.js",
+          "line": 21,
+          "endLine": 56
+        },
+        {
+          "path": "lib/internal/main/embedding.js",
+          "line": 185
+        },
+        {
+          "path": "src/node.cc",
+          "line": 263,
+          "endLine": 325
+        },
+        {
+          "path": "lib/internal/process/pre_execution.js",
+          "line": 827,
+          "endLine": 830
+        }
+      ]
+    }
+  ],
+  "nativeContracts": [
+    {
+      "bindingOrState": "builtins",
+      "contract": "builtinIds; compileFunction(id); setInternalLoaders; config JSON; hasCachedBuiltins; categories/natives/cache usage/importBuiltinSourceTextModule when consumers require them. Frozen binding; compile body in its own proper parameter scope and propagate compile errors.",
+      "sourceReferences": [
+        {
+          "path": "src/node_builtins.cc",
+          "line": 870,
+          "endLine": 917
+        }
+      ]
+    },
+    {
+      "bindingOrState": "module_wrap",
+      "contract": "A constructor with a prototype exists already at realm bootstrap. Builtin ESM facades later need synthetic export-name constructor, setExport, instantiate, evaluate and namespace semantics; later ESM files need actual source modules/linking, not object-shaped substitutes.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 186,
+          "endLine": 187
+        }
+      ]
+    },
+    {
+      "bindingOrState": "errors/stack",
+      "contract": "setPrepareStackTraceCallback; setEnhanceStackForFatalException; real capture/CallSite stack protocol used by internal/errors; uncaught/rejection dispatch. Later source-map callback.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 485,
+          "endLine": 510
+        }
+      ]
+    },
+    {
+      "bindingOrState": "util/process",
+      "contract": "Exit-info indexed backing store and consistent private symbols/constants must exist before node.js reads them. Process mutable prototype is distinct from Object.prototype; process.config contains truthful build features. Native process runtime patch must read guest argv/pid/ppid/execPath/env, not embedding machine identity.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/bootstrap/node.js",
+          "line": 74,
+          "endLine": 147
+        }
+      ]
+    },
+    {
+      "bindingOrState": "buffer",
+      "contract": "Upstream buffer implementation and its full native dependency surface are eager, including setBufferPrototype(Buffer.prototype), after which upstream deletes this installer. Cannot defer buffer backend until first user require.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/bootstrap/node.js",
+          "line": 464,
+          "endLine": 472
+        }
+      ]
+    },
+    {
+      "bindingOrState": "messaging/symbols",
+      "contract": "Shared identities for per-context DOMException and binding consumers; real JS-transferable deserializer registration and native structured clone. Public JS source owns constructor lookup and symbol methods.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/worker/js_transferable.js",
+          "line": 12,
+          "endLine": 49
+        }
+      ]
+    },
+    {
+      "bindingOrState": "async_wrap/task_queue/timers",
+      "contract": "Native hooks; actual tickInfo shared state, runMicrotasks/enqueueMicrotask, setTickCallback, setPromiseRejectCallback/events; timer/immediate callback scheduling, referenced liveness, callback/async-context and rejection ordering. JS task queue algorithm stays upstream.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/process/task_queues.js",
+          "line": 9,
+          "endLine": 24
+        }
+      ]
+    },
+    {
+      "bindingOrState": "process_methods/credentials/trace_events",
+      "contract": "All names used by bootstrap and per-thread wrappers need owning semantics; config gates truthful unavailable capabilities. setEmitWarningSync and trace-state callback registration are eager. Cwd/credentials refer to guest.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/bootstrap/node.js",
+          "line": 151,
+          "endLine": 242
+        }
+      ]
+    },
+    {
+      "bindingOrState": "snapshot state",
+      "contract": "No V8 startup snapshot is necessary to follow the non-snapshot bootstrap path, but mksnapshot.isBuildingSnapshotBuffer and startup_snapshot callback contracts are still read eagerly. An honest false normal-execution state is required; do not falsely claim snapshot support.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/v8/startup_snapshot.js",
+          "line": 14,
+          "endLine": 23
+        }
+      ]
+    },
+    {
+      "bindingOrState": "fs/CJS/ESM/options/performance",
+      "contract": "Main switch eagerly requires fs, both loader foundations, perf and pre_execution. Complete startup dependency closure is wider than primordials/events/assert; a bootstrap smoke result cannot establish public module compatibility.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+          "line": 293,
+          "endLine": 332
+        }
+      ]
+    },
+    {
+      "bindingOrState": "wasm_web_api/worker",
+      "contract": "Main switch eagerly loads both and web bootstrap installs wasm streaming implementation. A guest engine lacking nested Wasm cannot honestly replace the callback with successful no-op; capability/boundary design remains explicit.",
+      "sourceReferences": [
+        {
+          "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+          "line": 323,
+          "endLine": 326
+        }
+      ]
+    }
+  ],
+  "mainEntries": [
+    {
+      "path": "lib/internal/main/bench_runner.js",
+      "initializationAnchors": [
+        {
+          "line": 17,
+          "text": "prepareTestRunnerMainExecution();"
+        },
+        {
+          "line": 18,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/check_syntax.js",
+      "initializationAnchors": [
+        {
+          "line": 25,
+          "text": "prepareMainThreadExecution(true);"
+        },
+        {
+          "line": 38,
+          "text": "markBootstrapComplete();"
+        },
+        {
+          "line": 42,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/embedding.js",
+      "initializationAnchors": [
+        {
+          "line": 35,
+          "text": "prepareMainThreadExecution(false, true);"
+        },
+        {
+          "line": 185,
+          "text": "return [process, embedderRequire, embedderRunEntryPoint];"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/eval_stdin.js",
+      "initializationAnchors": [
+        {
+          "line": 21,
+          "text": "prepareMainThreadExecution();"
+        },
+        {
+          "line": 22,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/eval_string.js",
+      "initializationAnchors": [
+        {
+          "line": 26,
+          "text": "prepareMainThreadExecution();"
+        },
+        {
+          "line": 28,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/inspect.js",
+      "initializationAnchors": [
+        {
+          "line": 10,
+          "text": "prepareMainThreadExecution();"
+        },
+        {
+          "line": 13,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/mksnapshot.js",
+      "initializationAnchors": [
+        {
+          "line": 134,
+          "text": "prepareMainThreadExecution(false, false);"
+        },
+        {
+          "line": 212,
+          "text": "return main();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/print_help.js",
+      "initializationAnchors": [
+        {
+          "line": 249,
+          "text": "prepareMainThreadExecution();"
+        },
+        {
+          "line": 251,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/prof_process.js",
+      "initializationAnchors": [
+        {
+          "line": 23,
+          "text": "prepareMainThreadExecution();"
+        },
+        {
+          "line": 24,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/repl.js",
+      "initializationAnchors": [
+        {
+          "line": 21,
+          "text": "prepareMainThreadExecution();"
+        },
+        {
+          "line": 23,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/run_main_module.js",
+      "initializationAnchors": [
+        {
+          "line": 15,
+          "text": "const mainEntry = prepareMainThreadExecution(!isEntryURL);"
+        },
+        {
+          "line": 17,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/test_runner.js",
+      "initializationAnchors": [
+        {
+          "line": 23,
+          "text": "prepareTestRunnerMainExecution(!isTestIsolationDisabled);"
+        },
+        {
+          "line": 24,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/watch_mode.js",
+      "initializationAnchors": [
+        {
+          "line": 35,
+          "text": "prepareMainThreadExecution(false, false);"
+        },
+        {
+          "line": 36,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    },
+    {
+      "path": "lib/internal/main/worker_thread.js",
+      "initializationAnchors": [
+        {
+          "line": 63,
+          "text": "prepareWorkerThreadExecution();"
+        },
+        {
+          "line": 337,
+          "text": "markBootstrapComplete();"
+        }
+      ]
+    }
+  ],
+  "directLiteralInternalBindingCalls": [
+    {
+      "binding": "config",
+      "path": "lib/internal/bootstrap/node.js",
+      "line": 68,
+      "lineText": "const config = internalBinding('config');"
+    },
+    {
+      "binding": "util",
+      "path": "lib/internal/bootstrap/node.js",
+      "line": 83,
+      "lineText": "} = internalBinding('util');"
+    },
+    {
+      "binding": "builtins",
+      "path": "lib/internal/bootstrap/node.js",
+      "line": 133,
+      "lineText": "const binding = internalBinding('builtins');"
+    },
+    {
+      "binding": "process_methods",
+      "path": "lib/internal/bootstrap/node.js",
+      "line": 153,
+      "lineText": "const rawMethods = internalBinding('process_methods');"
+    },
+    {
+      "binding": "credentials",
+      "path": "lib/internal/bootstrap/node.js",
+      "line": 213,
+      "lineText": "const credentials = internalBinding('credentials');"
+    },
+    {
+      "binding": "async_wrap",
+      "path": "lib/internal/bootstrap/node.js",
+      "line": 227,
+      "lineText": "internalBinding('async_wrap').setupHooks(nativeHooks);"
+    },
+    {
+      "binding": "trace_events",
+      "path": "lib/internal/bootstrap/node.js",
+      "line": 241,
+      "lineText": "const { setTraceCategoryStateUpdateHandler } = internalBinding('trace_events');"
+    },
+    {
+      "binding": "process_methods",
+      "path": "lib/internal/bootstrap/node.js",
+      "line": 357,
+      "lineText": "internalBinding('process_methods').setEmitWarningSync(emitWarningSync);"
+    },
+    {
+      "binding": "timers",
+      "path": "lib/internal/bootstrap/node.js",
+      "line": 371,
+      "lineText": "const { setupTimers } = internalBinding('timers');"
+    },
+    {
+      "binding": "errors",
+      "path": "lib/internal/bootstrap/node.js",
+      "line": 392,
+      "lineText": "} = internalBinding('errors');"
+    },
+    {
+      "binding": "buffer",
+      "path": "lib/internal/bootstrap/node.js",
+      "line": 468,
+      "lineText": "const bufferBinding = internalBinding('buffer');"
+    },
+    {
+      "binding": "builtins",
+      "path": "lib/internal/bootstrap/realm.js",
+      "line": 184,
+      "lineText": "} = internalBinding('builtins');"
+    },
+    {
+      "binding": "module_wrap",
+      "path": "lib/internal/bootstrap/realm.js",
+      "line": 186,
+      "lineText": "const { ModuleWrap } = internalBinding('module_wrap');"
+    },
+    {
+      "binding": "errors",
+      "path": "lib/internal/bootstrap/realm.js",
+      "line": 489,
+      "lineText": "} = internalBinding('errors');"
+    },
+    {
+      "binding": "credentials",
+      "path": "lib/internal/bootstrap/switches/does_not_own_process_state.js",
+      "line": 3,
+      "lineText": "const credentials = internalBinding('credentials');"
+    },
+    {
+      "binding": "process_methods",
+      "path": "lib/internal/bootstrap/switches/does_not_own_process_state.js",
+      "line": 4,
+      "lineText": "const rawMethods = internalBinding('process_methods');"
+    },
+    {
+      "binding": "credentials",
+      "path": "lib/internal/bootstrap/switches/does_own_process_state.js",
+      "line": 3,
+      "lineText": "const credentials = internalBinding('credentials');"
+    },
+    {
+      "binding": "process_methods",
+      "path": "lib/internal/bootstrap/switches/does_own_process_state.js",
+      "line": 4,
+      "lineText": "const rawMethods = internalBinding('process_methods');"
+    },
+    {
+      "binding": "process_methods",
+      "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+      "line": 7,
+      "lineText": "const rawMethods = internalBinding('process_methods');"
+    },
+    {
+      "binding": "module_wrap",
+      "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+      "line": 295,
+      "lineText": "internalBinding('module_wrap');"
+    },
+    {
+      "binding": "config",
+      "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+      "line": 320,
+      "lineText": "if (internalBinding('config').hasInspector) {"
+    },
+    {
+      "binding": "wasm_web_api",
+      "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+      "line": 324,
+      "lineText": "internalBinding('wasm_web_api');"
+    },
+    {
+      "binding": "worker",
+      "path": "lib/internal/bootstrap/switches/is_main_thread.js",
+      "line": 326,
+      "lineText": "internalBinding('worker');"
+    },
+    {
+      "binding": "config",
+      "path": "lib/internal/bootstrap/web/exposed-wildcard.js",
+      "line": 18,
+      "lineText": "const config = internalBinding('config');"
+    },
+    {
+      "binding": "messaging",
+      "path": "lib/internal/bootstrap/web/exposed-wildcard.js",
+      "line": 19,
+      "lineText": "const { exposeLazyDOMExceptionProperty } = internalBinding('messaging');"
+    },
+    {
+      "binding": "inspector",
+      "path": "lib/internal/bootstrap/web/exposed-wildcard.js",
+      "line": 64,
+      "lineText": "const { setConsoleExtensionInstaller } = internalBinding('inspector');"
+    },
+    {
+      "binding": "wasm_web_api",
+      "path": "lib/internal/bootstrap/web/exposed-window-or-worker.js",
+      "line": 103,
+      "lineText": "internalBinding('wasm_web_api').setImplementation((streamState, source) => {"
+    },
+    {
+      "binding": "config",
+      "path": "lib/internal/bootstrap/web/exposed-window-or-worker.js",
+      "line": 108,
+      "lineText": "if (internalBinding('config').hasOpenSSL) {"
+    },
+    {
+      "binding": "errors",
+      "path": "lib/internal/main/bench_runner.js",
+      "line": 15,
+      "lineText": "} = internalBinding('errors');"
+    },
+    {
+      "binding": "contextify",
+      "path": "lib/internal/main/check_syntax.js",
+      "line": 76,
+      "lineText": "const { containsModuleSyntax } = internalBinding('contextify');"
+    },
+    {
+      "binding": "module_wrap",
+      "path": "lib/internal/main/check_syntax.js",
+      "line": 83,
+      "lineText": "const { ModuleWrap } = internalBinding('module_wrap');"
+    },
+    {
+      "binding": "sea",
+      "path": "lib/internal/main/embedding.js",
+      "line": 20,
+      "lineText": "} = internalBinding('sea');"
+    },
+    {
+      "binding": "contextify",
+      "path": "lib/internal/main/embedding.js",
+      "line": 24,
+      "lineText": "const { compileFunctionForCJSLoader } = internalBinding('contextify');"
+    },
+    {
+      "binding": "modules",
+      "path": "lib/internal/main/embedding.js",
+      "line": 29,
+      "lineText": "const { moduleFormats } = internalBinding('modules');"
+    },
+    {
+      "binding": "config",
+      "path": "lib/internal/main/eval_string.js",
+      "line": 44,
+      "lineText": "const shouldDefineCrypto = isUsingCryptoIdentifier && internalBinding('config').hasOpenSSL;"
+    },
+    {
+      "binding": "mksnapshot",
+      "path": "lib/internal/main/mksnapshot.js",
+      "line": 16,
+      "lineText": "} = internalBinding('mksnapshot');"
+    },
+    {
+      "binding": "sea",
+      "path": "lib/internal/main/mksnapshot.js",
+      "line": 18,
+      "lineText": "const { isExperimentalSeaWarningNeeded } = internalBinding('sea');"
+    },
+    {
+      "binding": "options",
+      "path": "lib/internal/main/print_help.js",
+      "line": 19,
+      "lineText": "const { types } = internalBinding('options');"
+    },
+    {
+      "binding": "config",
+      "path": "lib/internal/main/print_help.js",
+      "line": 40,
+      "lineText": "const { hasIntl, hasSmallICU, hasNodeOptions } = internalBinding('config');"
+    },
+    {
+      "binding": "builtins",
+      "path": "lib/internal/main/prof_process.js",
+      "line": 20,
+      "lineText": "const { importBuiltinSourceTextModule } = internalBinding('builtins');"
+    },
+    {
+      "binding": "errors",
+      "path": "lib/internal/main/prof_process.js",
+      "line": 21,
+      "lineText": "const { triggerUncaughtException } = internalBinding('errors');"
+    },
+    {
+      "binding": "errors",
+      "path": "lib/internal/main/repl.js",
+      "line": 19,
+      "lineText": "const { exitCodes: { kInvalidCommandLineArgument } } = internalBinding('errors');"
+    },
+    {
+      "binding": "errors",
+      "path": "lib/internal/main/test_runner.js",
+      "line": 14,
+      "lineText": "const { exitCodes: { kGenericUserError } } = internalBinding('errors');"
+    },
+    {
+      "binding": "errors",
+      "path": "lib/internal/main/watch_mode.js",
+      "line": 23,
+      "lineText": "} = internalBinding('errors');"
+    },
+    {
+      "binding": "worker",
+      "path": "lib/internal/main/worker_thread.js",
+      "line": 26,
+      "lineText": "} = internalBinding('worker');"
+    },
+    {
+      "binding": "errors",
+      "path": "lib/internal/main/worker_thread.js",
+      "line": 61,
+      "lineText": "const { exitCodes: { kGenericUserError } } = internalBinding('errors');"
+    }
+  ],
+  "obstaclesAndQuestions": [
+    {
+      "kind": "actual wrapper parsing constraint",
+      "finding": "embedding.js:185 and mksnapshot.js:212 contain top-level return. They are legal function bodies under upstream wrapper, invalid if naively evaluated as Scripts. Ordinary builtins also need isolated function lexical scope. Do not concatenate raw bodies or strip imports to force execution.",
+      "refs": [
+        {
+          "path": "src/builtin_info.h",
+          "line": 29,
+          "endLine": 47
+        },
+        {
+          "path": "src/node_builtins.cc",
+          "line": 387,
+          "endLine": 403
+        },
+        {
+          "path": "lib/internal/main/embedding.js",
+          "line": 185
+        },
+        {
+          "path": "lib/internal/main/mksnapshot.js",
+          "line": 212
+        }
+      ]
+    },
+    {
+      "kind": "actual intrinsic prerequisites; SpiderMonkey availability unverified",
+      "finding": "primordials unconditionally dereferences Float16Array and Iterator constructor/prototype; immediately calls Iterator.prototype.drop and Iterator.from to obtain helper prototypes. Atomics, WeakRef, FinalizationRegistry, BigInt typed arrays and standard builtins are also unconditional. A missing constructor/method fails during primordial construction; no optional-source fallback exists. Source scan alone does not prove which are absent in the rebuilt guest engine.",
+      "refs": [
+        {
+          "path": "lib/internal/per_context/primordials.js",
+          "line": 173,
+          "endLine": 231
+        },
+        {
+          "path": "lib/internal/per_context/primordials.js",
+          "line": 284,
+          "endLine": 305
+        }
+      ]
+    },
+    {
+      "kind": "actual nonstandard engine contract",
+      "finding": "Error.captureStackTrace is copied by primordials when present and internal/errors destructures ErrorCaptureStackTrace; real Error.prepareStackTrace/stack limits/CallSite callback behavior is supplied by the embedding engine in Node. Merely attaching Error.prepareStackTrace does not make SpiderMonkey call it or supply CallSites. No runtime availability check was performed here.",
+      "refs": [
+        {
+          "path": "lib/internal/errors.js",
+          "line": 20,
+          "endLine": 27
+        },
+        {
+          "path": "lib/internal/errors.js",
+          "line": 123,
+          "endLine": 159
+        },
+        {
+          "path": "lib/internal/errors.js",
+          "line": 546
+        },
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 485,
+          "endLine": 510
+        }
+      ]
+    },
+    {
+      "kind": "source syntax findings, bounded negative",
+      "finding": "No %Name(...) V8 intrinsic invocation found in the requested per_context/bootstrap/main JS directories by textual scan. These files contain standard classes/private fields, async/generator functions and optional chaining/nullish syntax. This is NOT a parse test nor a scan of all transitive lib/deps files, and does not prove SpiderMonkey syntax compatibility.",
+      "refs": [
+        {
+          "path": "lib/internal/per_context/primordials.js",
+          "line": 268,
+          "endLine": 281
+        },
+        {
+          "path": "lib/internal/per_context/primordials.js",
+          "line": 641,
+          "endLine": 655
+        }
+      ]
+    },
+    {
+      "kind": "actual identity tension requiring design",
+      "finding": "Upstream node.js unconditionally creates process.features.uv=true and ipv6=true, while capability flags gate other features. Keep source unchanged but do not use that assignment as proof of real libuv identity or IPv6 support. Truthful Kandelo identity/feature behavior must be explicitly resolved in the backend/policy design before claiming unchanged-source compatibility.",
+      "refs": [
+        {
+          "path": "lib/internal/bootstrap/node.js",
+          "line": 269,
+          "endLine": 300
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "No runtime tests, probes, syntax compilation, package generation, builds or tracked/Git mutations.",
+    "Exact execution order is conditional as recorded; lazy getters and snapshot/worker paths change dependency loading.",
+    "Direct literal binding inventory is complete for reviewed startup directories only; transitive binding member/API closure is not audited exhaustively here.",
+    "Reusing all JS requires importing pinned lib plus pinned deps sources and implementing their real internalBinding/engine contracts; this report is startup order, not complete core API coverage.",
+    "All four outer hosts run a guest SpiderMonkey backend; they are not four different Node builtin implementations. No host conformance is claimed."
+  ],
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+}

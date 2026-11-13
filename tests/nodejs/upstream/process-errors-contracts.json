@@ -1,0 +1,138 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Bounded original API exception factories and consumed embedding primitives; current engine is not linked or runtime validated. Full errors binding/fatal exception catalog remains incomplete.",
+  "completeBindingContract": false,
+  "runtimeValidated": false,
+  "startupAccepted": false,
+  "compileEvidence": "process-errors-compile-check.json",
+  "sourceIdentity": {
+    "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+    "wholeOriginalFactoryUnit": {
+      "path": "src/api/exceptions.cc",
+      "role": "provenance",
+      "bytes": 8256,
+      "sha256": "36cd3250e4c7a957a32548d403b5e9e4c3014bc4a13adf17f69d5e30a9fa8ce5",
+      "builtinId": null
+    },
+    "originalJavaScriptChanged": false,
+    "reviewedWholeNativeSources": [
+      {
+        "path": ".context/node-process-errors/source/exceptions.cc",
+        "bytes": 8256,
+        "sha256": "36cd3250e4c7a957a32548d403b5e9e4c3014bc4a13adf17f69d5e30a9fa8ce5"
+      },
+      {
+        "path": ".context/node-process-errors/source/node_errors.cc",
+        "bytes": 45641,
+        "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d"
+      },
+      {
+        "path": ".context/node-process-errors/source/node_errors.h",
+        "bytes": 23299,
+        "sha256": "21f8a42ddc8374ef1fefc4d9b948cfedbe439621c361791fab80c6bc5835e3d8"
+      },
+      {
+        "path": ".context/node-process-errors/source/env-inl.h",
+        "bytes": 31879,
+        "sha256": "f1849fd70267de7467ad49f06b67fb63bddd29f01cfc208e01c9776b54be8f41"
+      }
+    ]
+  },
+  "consumers": {
+    "lexicalSites": 74,
+    "files": 14,
+    "scope": "Lexical matches for UVException/ErrnoException/Environment throwing wrappers across the authenticated upstream src/*.cc and *.h set; declarations/comments retained, no complete semantic or alias analysis claim",
+    "evidence": {
+      "path": ".context/node-process-errors/error-call-sites.json",
+      "bytes": 10699,
+      "sha256": "10e65f77cc5fbb5ac650c3cd90fe4e8283fd0dcd1c81e4d2038cef67e98d52d3"
+    },
+    "immediateStartupClosure": "Whole node_process_methods.cc references Environment ThrowUVException and ThrowErrnoException from chdir/cwd, memory/resource/thread accounting, kill/execve and env-file operations"
+  },
+  "factories": [
+    {
+      "name": "ErrnoException",
+      "signature": "Local<Value>(Isolate*,int errorno,const char* syscall,const char* msg,const char* path)",
+      "algorithmOwner": "Complete unchanged src/api/exceptions.cc",
+      "behavior": "Uses original errors::errno_string and guest strerror for null/empty msg. Original one-byte message/code strings; UTF8 path conversion. Null path/syscall omit those properties; empty path remains an explicit empty string. Own errno/code/path/syscall properties are set in original order on a real engine Error.",
+      "nativePrimitiveStatus": "Original errno-name algorithm now compiles in complete node_errors.cc over actual guest errno constants; no current runtime validation."
+    },
+    {
+      "name": "UVException",
+      "signature": "Local<Value>(Isolate*,int errorno,const char* syscall,const char* msg,const char* path,const char* dest)",
+      "algorithmOwner": "Complete unchanged src/api/exceptions.cc",
+      "behavior": "Original uv_err_name/uv_strerror delegation; original message punctuation/order and path/destination inclusion. errno retains the native libuv integer. syscall is required by the consumed native calls; null/empty msg selects uv_strerror. Path/dest null omit fields, empty strings remain explicit values.",
+      "backend": "Actual resolved libuv and guest libc error metadata; genuine engine Error plus original property writes."
+    },
+    {
+      "name": "FatalException",
+      "signature": "void(Isolate*,const TryCatch&)",
+      "algorithmOwner": "Complete unchanged src/api/exceptions.cc",
+      "status": "Whole unit compiles this entry, but TriggerUncaughtException remains a declaration. No uncaught/fatal dispatch integration or runtime support claimed."
+    }
+  ],
+  "genericEngineContracts": [
+    {
+      "name": "Exception::Error(Local<String>)",
+      "owner": "SpiderMonkey embedding",
+      "implementation": "Capture real engine Error stack through js::CaptureStack and existing embedding policy; create actual intrinsic Error through JS::CreateError with rooted original UTF16 message. No encoding round trip, replacement global Error call, fabricated stack or metadata. Existing engine creation hook owns lazy preparation.",
+      "errors": "Preserve pending exception or propagate actual allocation/capture failure as empty local. OOM behavior of original checked factory callers remains unvalidated."
+    },
+    {
+      "name": "Value::ToObject(Local<Context>)",
+      "owner": "SpiderMonkey embedding",
+      "implementation": "Enter actual native Context scope, wrap original value, use JS::ToObject and root actual resulting object. No new object for existing objects; actual primitive boxing/nullish exceptions.",
+      "errors": "Existing pending exception preserved; actual conversion/wrapper failures return empty MaybeLocal."
+    },
+    {
+      "name": "Environment property-string accessors",
+      "owner": "Embedding using complete original src/env_properties.h macro metadata",
+      "implementation": "Expand all295 original PER_ISOLATE_STRING_PROPERTIES declarations and getters; actual JS_AtomizeString creates/interns original ASCII property names with frame-owned roots. This supplies real keys for the original factory property writes and other activated consumers.",
+      "lifecycle": "No borrowed temporary string bytes or fabricated string identities; actual engine roots/atom lifecycle. These are generic compiled getters, not proof of all295 consumer paths."
+    },
+    {
+      "name": "Environment::ThrowUVException/ThrowErrnoException",
+      "owner": "Native embedding interface",
+      "implementation": "Check actual foreground owner, delegate construction to complete original factory unit, pass original result to existing isolate pending-exception primitive. No copied message/property algorithms.",
+      "errors": "Existing pending exception remains owned by actual engine; null/error allocation and original checked-call failure paths need runtime validation."
+    }
+  ],
+  "sharedStateSchedulingOwnership": {
+    "environment": "Actual canonical Environment/current native Context and foreground thread. Factory arguments are borrowed C strings used synchronously; JS strings/Error are independently rooted by frame/locals.",
+    "asynchronous": "Factories do not schedule work or create handles; fatal/uncaught routing is a separate unavailable prerequisite.",
+    "gc": "Message/saved stack/Error/property keys/converted object rooted during real engine allocation. Stress-GC hooks remain available but no new runtime test exists.",
+    "workerAndRealm": "Principal/active-context crossing and worker startup require runtime validation; no host Error or host Node APIs are used."
+  },
+  "remainingNativeContracts": [
+    "errors::TriggerUncaughtException and full fatal/message/source-map/stack/report/inspector interfaces",
+    "all other process-methods lifecycle/permissions/owner registry/heap/native loading/libuv memory backends",
+    "additional unused process-object factory contracts"
+  ],
+  "validationObligations": [
+    "exact pinned native-reference comparisons for code/errno/syscall/path/dest/message/own descriptors and property order",
+    "positive/negative/zero/unknown errno values with actual guest errno and libuv tables",
+    "null/empty/nonempty messages and absent/empty/unicode/malformed UTF8 paths and destinations",
+    "one-byte message decoding versus UTF8 path decoding, UTF16/lone-surrogate Error primitive controls",
+    "actual Error intrinsic despite global replacement; creation realm/prototype and primitive boxing",
+    "existing object identity, nullish conversion errors and pending exception preservation",
+    "stack limits/capture/preparation, throwing preparation/reentry and source metadata",
+    "GC/compaction, OOM/capture/property failure and frame/Context escape ownership",
+    "actual system-call failures through original process_methods, correct native/JS exception dispatch and exit",
+    "identical engine/kernel artifacts on Node, Chromium, Firefox and WebKit"
+  ],
+  "fullRoadmapImplementationAuthorized": false,
+  "knownKernelAccountingGap": "rusage/sysinfo implementations remain placeholders. No kernel/libc/ABI change or deferred rebuild this phase.",
+  "lastRunnableEngineEvidence": "property-callback-engine-check.json",
+  "lastRunnableEvidenceIsHistorical": true,
+  "nativeReferenceOnly": {
+    "evidence": {
+      "path": ".context/node-process-errors/integration/native-reference.json",
+      "bytes": 22923,
+      "sha256": "1be6544753038652192aac90e8cb8175e183b1ccd2ff4a761da27de6082626d9"
+    },
+    "controls": 8,
+    "scope": "Darwin arm64 chdir/loadEnvFile/failed-execve native Error shape/property order and intrinsic prototype, including Unicode paths and replaced global Error. Not guest validation."
+  },
+  "errnoNameCompileEvidence": "fatal-errors-compile-check.json"
+}

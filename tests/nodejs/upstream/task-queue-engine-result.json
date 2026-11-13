@@ -1,0 +1,322 @@
+{
+  "rawReport": {
+    "path": ".context/node-task-queue-impl/engine-result.json",
+    "bytes": 83437,
+    "sha256": "0c36b2bf3bfbef88ac4f88f8710efd386523641646c1da5812a0581e2e9aa4ab"
+  },
+  "report": {
+    "schema": 1,
+    "completedAt": "2026-11-11T07:40:40.671Z",
+    "scope": "Focused SpiderMonkey guest-engine task-queue controls on the Node host; no upstream Node startup",
+    "host": {
+      "version": "v24.15.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    },
+    "program": {
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev28-wasm32-abi56-881de5d8b309afd7b6a3facf348a0fd7ecf94280eace9046b655bf97426a91fe/js.wasm",
+      "bytes": 51311732,
+      "sha256": "fa767db4651980c86581aa9a8c19f81ede3ca95440be81f9f2a56ca44bd16af3"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "fixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/task-queue-engine-controls.js",
+      "bytes": 10823,
+      "sha256": "18c4582ab62f405db3e9224645262011a62b52db3bc7f5cbde52a6939110355e"
+    },
+    "runner": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 15360,
+      "sha256": "e91078efde0efd6bb56020c2af372116408f3cc0e4c69f920b6b5e869fba66d3"
+    },
+    "runs": [
+      {
+        "name": "ordinary-shell-does-not-expose-native-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "node-mode-refuses-native-test-controls",
+        "status": "pass",
+        "exitCode": 3,
+        "stdout": "",
+        "stderr": "Error: upstream test controls require JS-shell mode\n",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "task-queue-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "{\"kind\":\"native-task-queue-controls\",\"cases\":26,\"failures\":0,\"observations\":[{\"name\":\"binding-layout-cache-and-native-method-lengths\",\"status\":\"pass\"},{\"name\":\"native-exit-code-enum-is-complete-and-readonly\",\"status\":\"pass\"},{\"name\":\"enqueue-is-deferred-and-shares-promise-fifo\",\"status\":\"pass\"},{\"name\":\"callable-receiver-arguments-and-method-owner\",\"status\":\"pass\"},{\"name\":\"bound-and-proxy-callables-use-real-engine-jobs\",\"status\":\"pass\"},{\"name\":\"native-and-shell-nested-checkpoints-do-not-reenter\",\"status\":\"pass\"},{\"name\":\"nested-checkpoint-keeps-current-job-weakref-target\",\"status\":\"pass\"},{\"name\":\"queued-native-adapter-retains-callback-through-moving-gc\",\"status\":\"pass\"},{\"name\":\"microtask-only-entry-does-not-dispatch-live-ticks\",\"status\":\"pass\"},{\"name\":\"outer-checkpoint-runs-scheduled-tick-before-microtasks\",\"status\":\"pass\"},{\"name\":\"microtask-can-schedule-tick-in-the-same-outer-checkpoint\",\"status\":\"pass\"},{\"name\":\"rejection-flag-triggers-original-registered-tick-callback\",\"status\":\"pass\"},{\"name\":\"native-live-flags-match-exact-one-semantics\",\"status\":\"pass\"},{\"name\":\"public-binding-fields-do-not-replace-protected-state\",\"status\":\"pass\"},{\"name\":\"nested-tick-checkpoint-keeps-outer-owner-entered\",\"status\":\"pass\"},{\"name\":\"real-promise-rejection-events-and-original-reason\",\"status\":\"pass\"},{\"name\":\"promise-callback-replacement-retains-the-actual-latest-function\",\"status\":\"pass\"},{\"name\":\"cross-realm-binding-shares-flags-and-principal-process\",\"status\":\"pass\"},{\"name\":\"cross-realm-promise-and-reason-identity-survive-notification\",\"status\":\"pass\"},{\"name\":\"handled-job-error-enters-real-principal-process-policy\",\"status\":\"pass\"},{\"name\":\"native-fatal-policy-accepts-every-result-except-exact-false\",\"status\":\"pass\"},{\"name\":\"throwing-error-policy-preserves-actual-replacement-error\",\"status\":\"pass\"},{\"name\":\"missing-fatal-policy-preserves-failure-and-pending-jobs\",\"status\":\"pass\"},{\"name\":\"false-fatal-policy-remains-an-explicit-exit-backend-gap\",\"status\":\"pass\"},{\"name\":\"libuv-callback-checkpoint-drains-real-jobs-and-live-ticks\",\"status\":\"pass\"},{\"name\":\"failed-realm-methods-retire-without-mutating-shared-state\",\"status\":\"pass\"}],\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'async_wrap' is not implemented\"},\"exitCodes\":{\"kNoFailure\":0,\"kGenericUserError\":1,\"kInternalJSParseError\":3,\"kInternalJSEvaluationFailure\":4,\"kV8FatalError\":5,\"kInvalidFatalExceptionMonkeyPatching\":6,\"kExceptionInFatalExceptionHandler\":7,\"kInvalidCommandLineArgument\":9,\"kBootstrapFailure\":10,\"kInvalidCommandLineArgument2\":12,\"kUnsettledTopLevelAwait\":13,\"kStartupSnapshotFailure\":14,\"kProcessTimeout\":124,\"kAbort\":134},\"limits\":[\"Raw binding/checkpoint controls, not original public task queue modules or successful Node startup\",\"Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete\",\"Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures\",\"Per-host artifact identities and fatal/diagnostic controls belong to the external runner\"]}\n",
+        "stderr": "",
+        "hostDiagnostics": [],
+        "detail": {
+          "kind": "native-task-queue-controls",
+          "cases": 26,
+          "failures": 0,
+          "observations": [
+            {
+              "name": "binding-layout-cache-and-native-method-lengths",
+              "status": "pass"
+            },
+            {
+              "name": "native-exit-code-enum-is-complete-and-readonly",
+              "status": "pass"
+            },
+            {
+              "name": "enqueue-is-deferred-and-shares-promise-fifo",
+              "status": "pass"
+            },
+            {
+              "name": "callable-receiver-arguments-and-method-owner",
+              "status": "pass"
+            },
+            {
+              "name": "bound-and-proxy-callables-use-real-engine-jobs",
+              "status": "pass"
+            },
+            {
+              "name": "native-and-shell-nested-checkpoints-do-not-reenter",
+              "status": "pass"
+            },
+            {
+              "name": "nested-checkpoint-keeps-current-job-weakref-target",
+              "status": "pass"
+            },
+            {
+              "name": "queued-native-adapter-retains-callback-through-moving-gc",
+              "status": "pass"
+            },
+            {
+              "name": "microtask-only-entry-does-not-dispatch-live-ticks",
+              "status": "pass"
+            },
+            {
+              "name": "outer-checkpoint-runs-scheduled-tick-before-microtasks",
+              "status": "pass"
+            },
+            {
+              "name": "microtask-can-schedule-tick-in-the-same-outer-checkpoint",
+              "status": "pass"
+            },
+            {
+              "name": "rejection-flag-triggers-original-registered-tick-callback",
+              "status": "pass"
+            },
+            {
+              "name": "native-live-flags-match-exact-one-semantics",
+              "status": "pass"
+            },
+            {
+              "name": "public-binding-fields-do-not-replace-protected-state",
+              "status": "pass"
+            },
+            {
+              "name": "nested-tick-checkpoint-keeps-outer-owner-entered",
+              "status": "pass"
+            },
+            {
+              "name": "real-promise-rejection-events-and-original-reason",
+              "status": "pass"
+            },
+            {
+              "name": "promise-callback-replacement-retains-the-actual-latest-function",
+              "status": "pass"
+            },
+            {
+              "name": "cross-realm-binding-shares-flags-and-principal-process",
+              "status": "pass"
+            },
+            {
+              "name": "cross-realm-promise-and-reason-identity-survive-notification",
+              "status": "pass"
+            },
+            {
+              "name": "handled-job-error-enters-real-principal-process-policy",
+              "status": "pass"
+            },
+            {
+              "name": "native-fatal-policy-accepts-every-result-except-exact-false",
+              "status": "pass"
+            },
+            {
+              "name": "throwing-error-policy-preserves-actual-replacement-error",
+              "status": "pass"
+            },
+            {
+              "name": "missing-fatal-policy-preserves-failure-and-pending-jobs",
+              "status": "pass"
+            },
+            {
+              "name": "false-fatal-policy-remains-an-explicit-exit-backend-gap",
+              "status": "pass"
+            },
+            {
+              "name": "libuv-callback-checkpoint-drains-real-jobs-and-live-ticks",
+              "status": "pass"
+            },
+            {
+              "name": "failed-realm-methods-retire-without-mutating-shared-state",
+              "status": "pass"
+            }
+          ],
+          "bootstrapFailure": {
+            "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+            "message": "Native Node binding 'async_wrap' is not implemented"
+          },
+          "exitCodes": {
+            "kNoFailure": 0,
+            "kGenericUserError": 1,
+            "kInternalJSParseError": 3,
+            "kInternalJSEvaluationFailure": 4,
+            "kV8FatalError": 5,
+            "kInvalidFatalExceptionMonkeyPatching": 6,
+            "kExceptionInFatalExceptionHandler": 7,
+            "kInvalidCommandLineArgument": 9,
+            "kBootstrapFailure": 10,
+            "kInvalidCommandLineArgument2": 12,
+            "kUnsettledTopLevelAwait": 13,
+            "kStartupSnapshotFailure": 14,
+            "kProcessTimeout": 124,
+            "kAbort": 134
+          },
+          "limits": [
+            "Raw binding/checkpoint controls, not original public task queue modules or successful Node startup",
+            "Complete AsyncWrap/resource/frame/native callback scopes and fatal exit/at-exit remain incomplete",
+            "Assigned promise async contexts and active module-evaluation checkpoints remain explicit failures",
+            "Per-host artifact identities and fatal/diagnostic controls belong to the external runner"
+          ]
+        }
+      },
+      {
+        "name": "enqueue-function-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: args.get(0).isObject() && JS::IsCallable(&args[0].toObject()) (Node microtask function invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/task-queue.cpp:144\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[230]:0x7939a\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "tick-function-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: args.get(0).isObject() && JS::IsCallable(&args[0].toObject()) (Node task queue callback function invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/task-queue.cpp:122\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[236]:0x7a694\n    at wasm://wasm/0c3bd1d2:wasm-function[235]:0x7a094\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "reject-function-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: args.get(0).isObject() && JS::IsCallable(&args[0].toObject()) (Node task queue callback function invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/task-queue.cpp:122\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[236]:0x7a694\n    at wasm://wasm/0c3bd1d2:wasm-function[237]:0x7a724\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "unregistered-tick-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: JS::GetReservedSlot(state, TickCallback).isObject() (Node tick callback was not registered), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/task-queue.cpp:249\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[239]:0x7ae90\n    at wasm://wasm/0c3bd1d2:wasm-function[354]:0x984b3\n    at wasm://wasm/0c3bd1d2:wasm-function[613]:0xd2118\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb\n    at wasm://wasm/0c3bd1d2:wasm-function[8266]:0x608deb\n    at wasm://wasm/0c3bd1d2:wasm-function[87]:0x518f9\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "unregistered-rejection-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: JS::GetReservedSlot(state, RejectCallback).isObject() (Node promise rejection callback was not registered), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/task-queue.cpp:320\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3bd1d2:wasm-function[333]:0x8fe20\n    at wasm://wasm/0c3bd1d2:wasm-function[22714]:0x1382991\n    at wasm://wasm/0c3bd1d2:wasm-function[9244]:0x6f8b24\n    at wasm://wasm/0c3bd1d2:wasm-function[9281]:0x703d0a\n    at wasm://wasm/0c3bd1d2:wasm-function[9312]:0x70c526\n    at wasm://wasm/0c3bd1d2:wasm-function[9367]:0x71f91d\n    at wasm://wasm/0c3bd1d2:wasm-function[7405]:0x538bc0\n    at wasm://wasm/0c3bd1d2:wasm-function[7404]:0x52658e\n    at wasm://wasm/0c3bd1d2:wasm-function[7413]:0x53ab4e\n    at wasm://wasm/0c3bd1d2:wasm-function[7414]:0x53adbb",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "queued-job-natural-exit",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "MICROTASK_DONE\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "queued-job-quit-status",
+        "status": "pass",
+        "exitCode": 23,
+        "stdout": "",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "detached-live-tick-state-is-an-explicit-failure",
+        "status": "pass",
+        "exitCode": 3,
+        "stdout": "DETACHED_TICK_STATE_REJECTED\n",
+        "stderr": "Error: Native tickInfo backing array was detached or has invalid length\n",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "promise-handler-exceptions-are-reported-without-false-exit",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "REJECTION_DIAGNOSTIC_ONLY\n",
+        "stderr": "Exception in PromiseRejectCallback:\n-e:1:205 Error: PROMISE_REJECT_HANDLER_SENTINEL\nException in PromiseRejectCallback:\n-e:1:205 Error: PROMISE_REJECT_HANDLER_SENTINEL\n",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "assigned-promise-async-context-remains-explicit",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "ASSIGNED_ASYNC_CONTEXT_GAP\n",
+        "stderr": "Exception in PromiseRejectCallback:\n-e:1:410 Error: Native promise async-context entry is not implemented\nException in PromiseRejectCallback:\n-e:1:423 Error: Native promise async-context entry is not implemented\n",
+        "hostDiagnostics": []
+      }
+    ],
+    "failures": 0,
+    "limits": [
+      "No Chromium/Firefox/WebKit execution",
+      "No upstream startup or module compatibility evidence",
+      "No complete native-V8 differential proof",
+      "No security-wrapper/OOM or complete symbol-owner teardown/finalization proof"
+    ]
+  }
+}

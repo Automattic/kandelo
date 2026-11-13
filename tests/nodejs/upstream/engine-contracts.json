@@ -1,0 +1,873 @@
+{
+  "schema": 1,
+  "purpose": "Read-only engine-boundary planning for unchanged full Node core JS + JS dependency reuse",
+  "sourceRoot": "verified upstream source archive at recorded commit; selected files in third_party/nodejs/upstream",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "sourceVersion": "26.13.0",
+  "sourceIdentityEvidence": "pin-verification.json and third_party/nodejs/sources.json",
+  "scope": "Guest SpiderMonkey embedding shared across outer Node, Chromium, Firefox and WebKit hosts; not the outer hosts native engines",
+  "runtimeTestsRun": false,
+  "probesRun": false,
+  "buildsRun": false,
+  "trackedEdits": false,
+  "syntaxScan": {
+    "productionFilesTextuallyScanned": 443,
+    "pattern": "%\\s*[A-Z][A-Za-z0-9_$]*\\s*\\(",
+    "matches": 0,
+    "inputs": "all lib/**/*.js; selected shipped deps listed by node.gyp plus configure.py bundled Undici/Amaro",
+    "limitation": "Text search is not parser validation. A broader scan found lowercase %s logging placeholders/comments only in lib and nonproduction V8 fuzz intrinsics outside the shipped dependency list. No universal claim about every feature syntax or future upstream pin."
+  },
+  "findings": [
+    {
+      "id": "E01",
+      "area": "Builtin compiler and per-realm bootstrap",
+      "staticReachability": "Startup: realm.js precedes node.js; builtin dependencies load on demand.",
+      "classification": "Implementable embedding/binding contract, not special JS syntax.",
+      "requiredContract": "Native bootstrap must create fresh primordials and process objects, pass the real getInternalBinding/getLinkedBinding callbacks, and compile complete source files with upstream parameter lists and names. The builtin compiler returns functions receiving exports, require, module, process, internalBinding, primordials; modules share the upstream cache and cycle semantics. Dependency aliases must come from the real builtins/deps loader rather than isolated subsystem-specific require maps.",
+      "resetDisposition": "Make unchanged primordials + realm.js a first milestone. Implement builtins.compileFunction/builtinIds/setInternalLoaders and bootstrap ownership natively. A normal compilation wrapper matching Node is allowed embedding; substring extraction or body replacement is not.",
+      "sourceAnchors": [
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 11,
+          "text": "// This file is compiled and run by node.cc before bootstrap/node.js",
+          "fileSha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b",
+          "requirement": "Upstream bootstrap order",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/bootstrap/realm.js#L11"
+        },
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 180,
+          "text": "const {",
+          "fileSha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b",
+          "requirement": "builtins binding",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/bootstrap/realm.js#L180"
+        },
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 437,
+          "text": "      const fn = compileFunction(id);",
+          "fileSha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b",
+          "requirement": "Whole module factory compiler and six arguments",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/bootstrap/realm.js#L437"
+        },
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 476,
+          "text": "function requireWithFallbackInDeps(request) {",
+          "fileSha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b",
+          "requirement": "Shipped JS dependency fallback",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/bootstrap/realm.js#L476"
+        },
+        {
+          "path": "src/node_builtins.cc",
+          "line": 515,
+          "text": "  switch (builtin_source->type) {",
+          "fileSha256": "e96508e01765d9f89cefb8e6508d87025e6ded4dc8bafc4a8c46a6e5c02305d2",
+          "requirement": "Native bootstrap argument shapes",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/node_builtins.cc#L515"
+        }
+      ],
+      "evidenceLimits": "Static required contract only. This report does not prove the current Kandelo loaders satisfy it or that all bindings are inventoried."
+    },
+    {
+      "id": "E02",
+      "area": "Standard intrinsic globals and primordials",
+      "staticReachability": "Before realm bootstrap, on every guest realm.",
+      "classification": "Engine standard-library prerequisite; absence would be an engine implementation gap, not a V8 syntax problem.",
+      "requiredContract": "Primordials enumerates actual property descriptors from constructors/prototypes, including Float16Array, Iterator, WeakRef and FinalizationRegistry; it calls Iterator.prototype.drop and Iterator.from to discover hidden iterator prototypes. Error.captureStackTrace and Symbol disposal members must be available before capture if later upstream code consumes their primordial aliases. Do not silently omit missing globals or substitute fake constructors.",
+      "resetDisposition": "Retain unchanged primordials and explicitly inspect the configured SpiderMonkey standard intrinsic inventory. Implement missing real intrinsics in the engine or make an explicit API boundary decision. A handwritten truncated primordials list cannot establish unchanged execution.",
+      "sourceAnchors": [
+        {
+          "path": "lib/internal/per_context/primordials.js",
+          "line": 185,
+          "text": "// Create copies of intrinsic objects",
+          "fileSha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "requirement": "Constructor and prototype descriptor capture",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/per_context/primordials.js#L185"
+        },
+        {
+          "path": "lib/internal/per_context/primordials.js",
+          "line": 199,
+          "text": "  'Float16Array',",
+          "fileSha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "requirement": "Float16Array required by eager loop",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/per_context/primordials.js#L199"
+        },
+        {
+          "path": "lib/internal/per_context/primordials.js",
+          "line": 206,
+          "text": "  'Iterator',",
+          "fileSha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "requirement": "Iterator required by eager loop",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/per_context/primordials.js#L206"
+        },
+        {
+          "path": "lib/internal/per_context/primordials.js",
+          "line": 284,
+          "text": "    name: 'IteratorHelperPrototype',",
+          "fileSha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "requirement": "Iterator helper prototype discovery",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/per_context/primordials.js#L284"
+        },
+        {
+          "path": "lib/internal/per_context/primordials.js",
+          "line": 304,
+          "text": "    name: 'WrapForValidIteratorPrototype',",
+          "fileSha256": "c5bd695fc5a09d206acb917862411694a12c696f9063d982ccf1a25787ee3622",
+          "requirement": "Iterator.from prototype discovery",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/per_context/primordials.js#L304"
+        }
+      ],
+      "evidenceLimits": "No engine runtime capability probe run; this is not a claim that any listed standard intrinsic is currently missing."
+    },
+    {
+      "id": "E03",
+      "area": "Private engine keys and shared internal symbols",
+      "staticReachability": "Startup: process exit state/errors; later CJS, VM, source maps, clone and messaging.",
+      "classification": "Implementable engine property-key semantics plus one shared native symbol registry.",
+      "requiredContract": "Node creates V8 Private keys and exports the exact same identities through util.privateSymbols and per-context arguments. Upstream JS uses ordinary bracket syntax with these engine keys; native owners use GetPrivate/SetPrivate. Keys must remain hidden from ordinary reflection, consistent between JS/native, and coherent for object lifecycle, realms, proxies and transfer admission. Ordinary Symbol values are not equivalent. Internal public-ish symbols from symbols binding are a separate registry and need exact sharing.",
+      "resetDisposition": "Implement the native private-name registry in SpiderMonkey and use genuine hidden private names; the old createCloneModeSymbol uses NewPrivateName already and is a reusable foothold. Replace per-adapter ordinary Symbol/WeakMap substitutions by the owning engine/binding contract, preserving unmodified JS.",
+      "sourceAnchors": [
+        {
+          "path": "src/env.cc",
+          "line": 504,
+          "text": "#define V(PropertyName, StringValue)                                           \\",
+          "fileSha256": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8",
+          "requirement": "Private::New creation",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/env.cc#L504"
+        },
+        {
+          "path": "src/env_properties.h",
+          "line": 20,
+          "text": "#define PER_ISOLATE_PRIVATE_SYMBOL_PROPERTIES(V)                               \\",
+          "fileSha256": "891cb90ba1164eecc1ae5eef69ef3102369eeebc7630dccda2ca5737a2a097ad",
+          "requirement": "Authoritative private key list",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/env_properties.h#L20"
+        },
+        {
+          "path": "src/node_util.cc",
+          "line": 542,
+          "text": "  {",
+          "fileSha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae",
+          "requirement": "Private identities exported to JS",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/node_util.cc#L542"
+        },
+        {
+          "path": "lib/internal/bootstrap/node.js",
+          "line": 94,
+          "text": "  const fields = process[exit_info_private_symbol];",
+          "fileSha256": "02a0489fb6713fc59e8fc95582ebd44a50b0f4c4a48d6e1c7879724ac6b93332",
+          "requirement": "Process state consumes private key at startup",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/bootstrap/node.js#L94"
+        },
+        {
+          "path": "lib/internal/errors.js",
+          "line": 951,
+          "text": "const {",
+          "fileSha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+          "requirement": "Errors consume shared private key",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/errors.js#L951"
+        },
+        {
+          "path": "lib/internal/modules/esm/utils.js",
+          "line": 11,
+          "text": "const {",
+          "fileSha256": "7892cf3cf2b094d47a48d9c55429f91e48fd1fea1f7836404a79eea6921a3ad0",
+          "requirement": "Host-defined/module-source private keys",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/esm/utils.js#L11"
+        },
+        {
+          "path": "lib/internal/per_context/domexception.js",
+          "line": 18,
+          "text": "const {",
+          "fileSha256": "3c920df8a551ca84bcc571dd70df334cb10bd0f3088fa423a784f9f608cef6f7",
+          "requirement": "Per-context privateSymbols argument",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/per_context/domexception.js#L18"
+        }
+      ],
+      "evidenceLimits": "Existing Kandelo private-name implementation is source reuse evidence only: packages/registry/spidermonkey/patches/0042-kandelo-node-clone-boundary.patch:30. Full V8 Private equivalence, including proxy/frozen object edges, remains unvalidated."
+    },
+    {
+      "id": "E04",
+      "area": "Error capture, CallSites and lazy stack formatting",
+      "staticReachability": "Startup: realm installs formatter; error construction/formatting widely reachable.",
+      "classification": "Engine hooks required, with unchanged JS formatting policy above them.",
+      "requiredContract": "Node installs a prepareStackTrace callback during realm bootstrap. Engine error creation/capture must retain actual frame identities, implement Error.captureStackTrace(error, boundary), stackTraceLimit and structured CallSite methods, then invoke the callback with the correct error realm/global when stack is accessed. JS formatter/source-map helpers do not produce missing engine frames or capture semantics. Cross-realm policy, hidden frames, source positions, async frames, descriptors and reentrancy are observable.",
+      "resetDisposition": "Implement the native errors binding and actual SpiderMonkey Error/stack hooks before replacing guarded internal/errors source with its unchanged body. The existing assertion-only native source capture is useful input, not public Error.captureStackTrace. Never invent frames or keep the guard that suppresses required upstream behavior.",
+      "sourceAnchors": [
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 485,
+          "text": "function setupPrepareStackTrace() {",
+          "fileSha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b",
+          "requirement": "Mandatory per-realm formatter installation",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/bootstrap/realm.js#L485"
+        },
+        {
+          "path": "lib/internal/errors.js",
+          "line": 123,
+          "text": " * Every realm has its own prepareStackTraceCallback. When `error.stack` is",
+          "fileSha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+          "requirement": "Realm selection and CallSite contract",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/errors.js#L123"
+        },
+        {
+          "path": "lib/internal/errors.js",
+          "line": 189,
+          "text": "      ErrorCaptureStackTrace(err, aggregateTwoErrors);",
+          "fileSha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+          "requirement": "Public capture API needed for aggregate error boundary",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/errors.js#L189"
+        },
+        {
+          "path": "lib/internal/errors.js",
+          "line": 546,
+          "text": "      Error.stackTraceLimit && ErrorCaptureStackTrace(error, wrappedFn);",
+          "fileSha256": "f87c71eea57dc87b23bf9b3fbf35b03326f933ed59fc18dd0c320d468dd27967",
+          "requirement": "Recapture wrapped error at actual function boundary",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/errors.js#L546"
+        },
+        {
+          "path": "src/api/environment.cc",
+          "line": 250,
+          "text": "    auto* prepare_stack_trace_cb = s.prepare_stack_trace_callback ?",
+          "fileSha256": "9c80f4adda1ed6ee32d90818841aba2484e3fc366916dcbb6298289f484ce8dc",
+          "requirement": "V8-native callback integration",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/api/environment.cc#L250"
+        },
+        {
+          "path": "src/node_errors.cc",
+          "line": 1150,
+          "text": "void SetPrepareStackTraceCallback(const FunctionCallbackInfo<Value>& args) {",
+          "fileSha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d",
+          "requirement": "Binding callback registration",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/node_errors.cc#L1150"
+        }
+      ],
+      "evidenceLimits": "Current source explicitly lacks this: third_party/node-core/native-error-source.cpp:1-2; third_party/node-core/build.py:231-242 rewrites internal/errors with capability guards. Source evidence does not validate a replacement engine design."
+    },
+    {
+      "id": "E05",
+      "area": "Microtasks, nextTick and rejection event ownership",
+      "staticReachability": "Startup: node.js installs task queue; every asynchronous API.",
+      "classification": "Implementable engine/job queue + callback-scope contract.",
+      "requiredContract": "task_queue binding owns actual microtask enqueue/checkpoint, mutable tickInfo shared state, tick callback and promise rejection callback. Upstream task_queues.js interleaves nextTicks, microtasks and rejection delivery in a specified loop. Native callback scopes must cooperate with that loop; draining the outer browser queue is not equivalent. Promise reject events must refer to actual guest promises and correct handler-added timing.",
+      "resetDisposition": "Implement the full binding using the guest engine job queue and native callback entry/exit scopes. Keep upstream task_queues.js and process/promises.js unchanged. Audit exception unwinding and nested checkpoints before any broad module support claim.",
+      "sourceAnchors": [
+        {
+          "path": "lib/internal/bootstrap/node.js",
+          "line": 365,
+          "text": "  // Used to emulate a tick manually in the JS land.",
+          "fileSha256": "02a0489fb6713fc59e8fc95582ebd44a50b0f4c4a48d6e1c7879724ac6b93332",
+          "requirement": "Tick/timer callback setup",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/bootstrap/node.js#L365"
+        },
+        {
+          "path": "lib/internal/process/task_queues.js",
+          "line": 9,
+          "text": "const {",
+          "fileSha256": "71fac2b5855102504d67fd228e3466a46aacbf9cd44126320b677fd31d53a472",
+          "requirement": "Required native job queue binding",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/process/task_queues.js#L9"
+        },
+        {
+          "path": "lib/internal/process/task_queues.js",
+          "line": 62,
+          "text": "// Should be in sync with RunNextTicksNative in node_task_queue.cc",
+          "fileSha256": "71fac2b5855102504d67fd228e3466a46aacbf9cd44126320b677fd31d53a472",
+          "requirement": "Ordering policy",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/process/task_queues.js#L62"
+        },
+        {
+          "path": "lib/internal/process/promises.js",
+          "line": 14,
+          "text": "  promiseRejectEvents: {",
+          "fileSha256": "71664086abbc69a14af10a216bd2066fdff28046888bca3ec04df5f6d1b6fe24",
+          "requirement": "Promise rejection event registry",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/process/promises.js#L14"
+        },
+        {
+          "path": "lib/internal/process/promises.js",
+          "line": 419,
+          "text": "  setPromiseRejectCallback(promiseRejectHandler);",
+          "fileSha256": "71664086abbc69a14af10a216bd2066fdff28046888bca3ec04df5f6d1b6fe24",
+          "requirement": "Native callback installed",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/process/promises.js#L419"
+        },
+        {
+          "path": "src/node_task_queue.cc",
+          "line": 140,
+          "text": "static void RunMicrotasks(const FunctionCallbackInfo<Value>& args) {",
+          "fileSha256": "f4f00a90ad1f4e0520b86b19c9f13538c25d3badb9d342d8792b5cd5e4aca951",
+          "requirement": "Actual native microtask checkpoint",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/node_task_queue.cc#L140"
+        }
+      ],
+      "evidenceLimits": "No queue ordering or rejection differential executed. Existing custom async adapter/native patch work is potential reuse, not proof it is the exact upstream binding."
+    },
+    {
+      "id": "E06",
+      "area": "Promise hooks and continuation-preserved context",
+      "staticReachability": "Queue module imports at startup; active ALS/async_hooks/Promise hooks are conditional.",
+      "classification": "Implementable engine lifecycle hooks; cannot be recreated with Promise.then wrappers.",
+      "requiredContract": "Native async_wrap.setPromiseHooks feeds real promise init(parent), before, after and settled events into unchanged internal/promise_hooks. Async hooks adds separate resource ID/context policy. async_context_frame get/setContinuationPreservedEmbedderData must persist across actual promise jobs and await continuations, not just synchronous callbacks. Binding exports are imported even if optional behavior is inactive.",
+      "resetDisposition": "Preserve raw Promise lifecycle and async-ID admission separation from later campaign engine patches; bind it to the complete upstream registries. Upstream inactive optional paths are legitimate when the real option is disabled; fabricated active support or silent loss of await context is not.",
+      "sourceAnchors": [
+        {
+          "path": "lib/internal/promise_hooks.js",
+          "line": 11,
+          "text": "const { setPromiseHooks } = internalBinding('async_wrap');",
+          "fileSha256": "1b2d7268017e67bbde07b27d51e80ff90385505b003876ee0ebc49411e7f1ae8",
+          "requirement": "Native raw hook registration",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/promise_hooks.js#L11"
+        },
+        {
+          "path": "lib/internal/promise_hooks.js",
+          "line": 79,
+          "text": "  setPromiseHooks(init, before, after, settled);",
+          "fileSha256": "1b2d7268017e67bbde07b27d51e80ff90385505b003876ee0ebc49411e7f1ae8",
+          "requirement": "Shared hooks composed once",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/promise_hooks.js#L79"
+        },
+        {
+          "path": "lib/internal/async_hooks.js",
+          "line": 385,
+          "text": "function updatePromiseHookMode() {",
+          "fileSha256": "cd790a1bd161d5979d15c7a250fc540931e6170ffb06948b76acb77a8ea28533",
+          "requirement": "AsyncWrap hooks consume raw engine lifecycle",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/async_hooks.js#L385"
+        },
+        {
+          "path": "lib/internal/async_context_frame.js",
+          "line": 7,
+          "text": "const {",
+          "fileSha256": "d8f8b52582fed7e01207e6a541b057a60ef05d78128b1f5c540cc4bb1bb4a667",
+          "requirement": "Continuation data binding",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/async_context_frame.js#L7"
+        },
+        {
+          "path": "lib/internal/async_context_frame.js",
+          "line": 55,
+          "text": "function checkEnabled() {",
+          "fileSha256": "d8f8b52582fed7e01207e6a541b057a60ef05d78128b1f5c540cc4bb1bb4a667",
+          "requirement": "Real optional flag selects active behavior",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/async_context_frame.js#L55"
+        },
+        {
+          "path": "src/async_context_frame.cc",
+          "line": 37,
+          "text": "  return isolate->GetContinuationPreservedEmbedderDataV2().As<Value>();",
+          "fileSha256": "6de1a1e6c0eb2abf910628ffcb5722e5e33234d3725a2df27ce36349e091f9cc",
+          "requirement": "V8 native continuation data owner",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/async_context_frame.cc#L37"
+        }
+      ],
+      "evidenceLimits": "Existing source engine patches contain relevant lifecycle work, including 0195-node-mapping-curves-promise-fetch.patch. Parent audit covers its exact artifact limitations; no runtime inference made here."
+    },
+    {
+      "id": "E07",
+      "area": "Side-effect-free engine introspection",
+      "staticReachability": "Inspect/util/errors dependencies loaded broadly; detailed inspection usually lazy.",
+      "classification": "Implementable native inspection bindings, with some engine-model-specific presentation.",
+      "requiredContract": "util binding must inspect actual promise state/result, proxy target/handler, collection iterator entries and own properties without executing user getters, consuming iterators or triggering proxy traps. types binding needs real engine brands across realms. Call-site/source information must come from real frames. JS-level duck typing is insufficient.",
+      "resetDisposition": "Reuse genuine SpiderMonkey Promise/Proxy/iterator inspection owners (0039 source patch is a foothold). Expose the exact util/types binding contracts to unchanged inspect/errors/util modules; retain explicit unresolved differences rather than string heuristics.",
+      "sourceAnchors": [
+        {
+          "path": "lib/internal/util/inspect.js",
+          "line": 136,
+          "text": "const {",
+          "fileSha256": "55d054a4f96e664558a0271e2029a31da6e644edca9a224ce05a4de73b425ca9",
+          "requirement": "Native inspection dependencies",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/util/inspect.js#L136"
+        },
+        {
+          "path": "src/node_util.cc",
+          "line": 105,
+          "text": "static void GetPromiseDetails(const FunctionCallbackInfo<Value>& args) {",
+          "fileSha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae",
+          "requirement": "Promise state/result without reaction",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/node_util.cc#L105"
+        },
+        {
+          "path": "src/node_util.cc",
+          "line": 123,
+          "text": "static void GetProxyDetails(const FunctionCallbackInfo<Value>& args) {",
+          "fileSha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae",
+          "requirement": "Proxy target/handler without traps",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/node_util.cc#L123"
+        },
+        {
+          "path": "src/node_util.cc",
+          "line": 172,
+          "text": "static void PreviewEntries(const FunctionCallbackInfo<Value>& args) {",
+          "fileSha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae",
+          "requirement": "Iterator PreviewEntries without consumption",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/node_util.cc#L172"
+        },
+        {
+          "path": "src/node_util.cc",
+          "line": 629,
+          "text": "  SetMethodNoSideEffect(context, target, \"getCallSites\", GetCallSites);",
+          "fileSha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae",
+          "requirement": "Native call-site exposure",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/node_util.cc#L629"
+        }
+      ],
+      "evidenceLimits": "No complete type/iterator/proxy inventory or new runtime verification performed. V8-specific inspection text and full CallSite parity need separate exact assertions."
+    },
+    {
+      "id": "E08",
+      "area": "CJS compiler and source metadata",
+      "staticReachability": "Normal CJS program loading; builtins use separate E01 compiler.",
+      "classification": "Implementable contextify compiler contract with engine-specific cache boundaries.",
+      "requiredContract": "Unchanged CJS loader uses contextify.compileFunctionForCJSLoader and module_wrap status/facade helpers, not a generic global eval. Compiler must provide real wrapper execution, source positions/URL/maps, module-syntax detection, cache result shape and dynamic-import host-defined identity. CJS cycles and errors stay in upstream loader; required synchronous ESM handoff must share the real module graph.",
+      "resetDisposition": "Implement contextify and required module_wrap native contracts. Existing CJS source capture/compiler native work can be reused if its result and metadata contracts match. Reject source rewrites to split/recreate the loader.",
+      "sourceAnchors": [
+        {
+          "path": "lib/internal/modules/cjs/loader.js",
+          "line": 67,
+          "text": "  privateSymbols: {",
+          "fileSha256": "67b2bdc0180626e308aa6dca723696398b5db965b44e2df6060762b6d4f6a199",
+          "requirement": "Shared hidden CJS bookkeeping",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/cjs/loader.js#L67"
+        },
+        {
+          "path": "lib/internal/modules/cjs/loader.js",
+          "line": 78,
+          "text": "const { kEvaluated, createRequiredModuleFacade } = internalBinding('module_wrap');",
+          "fileSha256": "67b2bdc0180626e308aa6dca723696398b5db965b44e2df6060762b6d4f6a199",
+          "requirement": "Native ESM facade contract",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/cjs/loader.js#L78"
+        },
+        {
+          "path": "lib/internal/modules/cjs/loader.js",
+          "line": 155,
+          "text": "  compileFunctionForCJSLoader,",
+          "fileSha256": "67b2bdc0180626e308aa6dca723696398b5db965b44e2df6060762b6d4f6a199",
+          "requirement": "CJS compiler binding",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/cjs/loader.js#L155"
+        },
+        {
+          "path": "lib/internal/modules/cjs/loader.js",
+          "line": 1900,
+          "text": "  const result = compileFunctionForCJSLoader(content, filename, false /* is_sea_main */, shouldDetectModule);",
+          "fileSha256": "67b2bdc0180626e308aa6dca723696398b5db965b44e2df6060762b6d4f6a199",
+          "requirement": "Real compile invocation",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/cjs/loader.js#L1900"
+        },
+        {
+          "path": "src/node_contextify.cc",
+          "line": 1651,
+          "text": "static MaybeLocal<Function> CompileFunctionForCJSLoader(",
+          "fileSha256": "f053ef316b1b1d6d1e3f42cb431f9742c00cf1a71a381fb6bdab079e48cfb145",
+          "requirement": "Native CJS compile implementation reference",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/node_contextify.cc#L1651"
+        }
+      ],
+      "evidenceLimits": "Need a binding-by-binding implementation inventory; line presence does not demonstrate current compatibility. V8 bytecode cache identity is separate from source-level CJS behavior."
+    },
+    {
+      "id": "E09",
+      "area": "ModuleWrap, synthetic builtins and real ESM graph",
+      "staticReachability": "ModuleWrap constructor/prototype needed at startup; synthetic builtin facades and source modules used on import.",
+      "classification": "Engine module embedding contract, including potentially missing language features.",
+      "requiredContract": "realm.js imports ModuleWrap unconditionally and nulls its prototype. Builtin ESM facades require real synthetic modules, named live exports, instantiate and immediate evaluate; full ESM requires source module requests, attributes, source/defer/evaluation phases, namespace identity, link/evaluation status, dynamic import/import.meta callbacks, graph cycles and TLA rejection. Node require(ESM) requires synchronous evaluateSync behavior for admissible graphs.",
+      "resetDisposition": "Provide one genuine SpiderMonkey module-record owner with exact binding-facing shape; existing engine source graph/synthetic builtin work is a starting point. If the guest parser lacks a standardized phase syntax requested by user code, it is an engine feature gap to implement or explicitly review\u2014not permission to rewrite upstream loader source.",
+      "sourceAnchors": [
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 186,
+          "text": "const { ModuleWrap } = internalBinding('module_wrap');",
+          "fileSha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b",
+          "requirement": "Unconditional constructor dependency",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/bootstrap/realm.js#L186"
+        },
+        {
+          "path": "lib/internal/bootstrap/realm.js",
+          "line": 397,
+          "text": "    this.module = new ModuleWrap(",
+          "fileSha256": "f51986bc14359d5330af082f75714bf08b0f13fb7377be32dcbb9c123fdcd85b",
+          "requirement": "Synthetic builtin facade creation",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/bootstrap/realm.js#L397"
+        },
+        {
+          "path": "lib/internal/modules/esm/utils.js",
+          "line": 26,
+          "text": "const {",
+          "fileSha256": "7892cf3cf2b094d47a48d9c55429f91e48fd1fea1f7836404a79eea6921a3ad0",
+          "requirement": "Native import and import.meta callbacks",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/esm/utils.js#L26"
+        },
+        {
+          "path": "lib/internal/modules/esm/utils.js",
+          "line": 304,
+          "text": "function initializeESM(shouldSpawnLoaderHookWorker = true) {",
+          "fileSha256": "7892cf3cf2b094d47a48d9c55429f91e48fd1fea1f7836404a79eea6921a3ad0",
+          "requirement": "Callback registration",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/esm/utils.js#L304"
+        },
+        {
+          "path": "lib/internal/modules/esm/module_job.js",
+          "line": 518,
+          "text": "  runSync(parent) {",
+          "fileSha256": "0433651066d78b2fdb91ceff11fafdb928e3b1c438506782c26c766601528fc6",
+          "requirement": "Synchronous ESM execution policy",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/esm/module_job.js#L518"
+        },
+        {
+          "path": "src/module_wrap.cc",
+          "line": 1612,
+          "text": "  SetProtoMethod(isolate, tpl, \"getModuleRequests\", GetModuleRequests);",
+          "fileSha256": "ef6d3f20a46aaa844d9471b32e489bf60b7539681d6d9e3f7e230e1abddcb051",
+          "requirement": "Native method inventory",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/module_wrap.cc#L1612"
+        },
+        {
+          "path": "src/module_wrap.cc",
+          "line": 1673,
+          "text": "  V(ModulePhase, kDeferPhase);",
+          "fileSha256": "ef6d3f20a46aaa844d9471b32e489bf60b7539681d6d9e3f7e230e1abddcb051",
+          "requirement": "Source/defer phase constants",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/module_wrap.cc#L1673"
+        }
+      ],
+      "evidenceLimits": "No parser/module execution probes run. Full phase, synthetic module and sync/TLA parity has not been established by static inspection."
+    },
+    {
+      "id": "E10",
+      "area": "VM contexts, compilation and watchdog control",
+      "staticReachability": "Public node:vm and loader customization; not required to execute every basic builtin.",
+      "classification": "Implementable realms/native embedding with substantive lifecycle and safety requirements.",
+      "requiredContract": "contextify must create real context/global proxy identity, native ContextifyScript, compileFunction contextExtensions/parsingContext, return cachedData acceptance truthfully, own microtask queues/modes, support interruption/timeouts/breakOnSigint/code-generation policy, and preserve dynamic import callbacks. Returning the main global or using JS eval does not implement VM isolation or native constructor behavior.",
+      "resetDisposition": "Port contextify behavior to real SpiderMonkey realms/compartments plus native callback/watchdog ownership; reuse unchanged vm.js/internal/vm.js/internal/vm/module.js. Cache formats may be engine-specific but must be truthful and validated.",
+      "sourceAnchors": [
+        {
+          "path": "lib/vm.js",
+          "line": 38,
+          "text": "} = internalBinding('contextify');",
+          "fileSha256": "774a31123f8ca83e7bc1d3966d1e738d9034ec2b3f8e98791fa5d40d058a9cdf",
+          "requirement": "Contextify binding import",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/vm.js#L38"
+        },
+        {
+          "path": "lib/vm.js",
+          "line": 100,
+          "text": "      importModuleDynamically,",
+          "fileSha256": "774a31123f8ca83e7bc1d3966d1e738d9034ec2b3f8e98791fa5d40d058a9cdf",
+          "requirement": "Script compile options",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/vm.js#L100"
+        },
+        {
+          "path": "lib/vm.js",
+          "line": 238,
+          "text": "    importModuleDynamically,",
+          "fileSha256": "774a31123f8ca83e7bc1d3966d1e738d9034ec2b3f8e98791fa5d40d058a9cdf",
+          "requirement": "Context creation options",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/vm.js#L238"
+        },
+        {
+          "path": "lib/vm.js",
+          "line": 321,
+          "text": "function compileFunction(code, params, options = kEmptyObject) {",
+          "fileSha256": "774a31123f8ca83e7bc1d3966d1e738d9034ec2b3f8e98791fa5d40d058a9cdf",
+          "requirement": "CompileFunction API",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/vm.js#L321"
+        },
+        {
+          "path": "lib/internal/vm.js",
+          "line": 46,
+          "text": " * @returns {boolean} - Returns true if the object is a context object, else false.",
+          "fileSha256": "4a3048ab5892370c7fdf184e47aab7bf0f905b0f30282f27706d964d3044240a",
+          "requirement": "Native context identity key",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/vm.js#L46"
+        },
+        {
+          "path": "lib/internal/vm/module.js",
+          "line": 325,
+          "text": "    this.#moduleRequests = ObjectFreeze(ArrayPrototypeMap(this[kWrap].getModuleRequests(), (request) => {",
+          "fileSha256": "577f18d85d67c5a80c46bd3e5880f8ab5b360edeff76e1c8f65c471b04e87eee",
+          "requirement": "Native VM Module requests",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/vm/module.js#L325"
+        }
+      ],
+      "evidenceLimits": "Specific limits such as V8 cachedData interchange require explicit per-API decisions. No claim of security isolation or timeout correctness is supported by this audit."
+    },
+    {
+      "id": "E11",
+      "area": "Backing stores, hidden clone brands and transfer",
+      "staticReachability": "Buffer startup uses untransferable marker; structuredClone/messaging/workers lazy.",
+      "classification": "Implementable engine memory/clone contract; JS source reuse is insufficient.",
+      "requiredContract": "Native backing stores must remain real engine ArrayBuffers with correct detached/shared/resizable semantics, external allocation lifetime and detach keys. Buffer markAsUntransferable writes a hidden private marker and native detach protection. messaging uses hidden clone/transfer modes plus symbol callbacks, typed native objects and ownership transfer with atomic failure rollback. Guest object graphs cannot be replaced by outer-host objects.",
+      "resetDisposition": "Keep unchanged Buffer/clone/Worker JS source and provide buffer/util/messaging/worker bindings plus engine clone ownership. Reuse existing private marker, retained backing, clone and host-sender pieces only against their final coherent contracts.",
+      "sourceAnchors": [
+        {
+          "path": "lib/internal/buffer.js",
+          "line": 1086,
+          "text": "const kDetachKey = Symbol('detach_key_for_untransferable_arraybuffer');",
+          "fileSha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f",
+          "requirement": "Real detach-key/private marker ownership",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/buffer.js#L1086"
+        },
+        {
+          "path": "lib/internal/worker/js_transferable.js",
+          "line": 14,
+          "text": "  messaging_transfer_symbol,",
+          "fileSha256": "c2c798c77deccdf13dbbd526650755d9ea0670782278530f053885cf2d960366",
+          "requirement": "Shared transfer method symbols",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/worker/js_transferable.js#L14"
+        },
+        {
+          "path": "lib/internal/worker/js_transferable.js",
+          "line": 91,
+          "text": "function markTransferMode(obj, cloneable = false, transferable = false) {",
+          "fileSha256": "c2c798c77deccdf13dbbd526650755d9ea0670782278530f053885cf2d960366",
+          "requirement": "Hidden clone/transfer admission",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/worker/js_transferable.js#L91"
+        },
+        {
+          "path": "lib/internal/worker/io.js",
+          "line": 34,
+          "text": "    transfer_mode_private_symbol,",
+          "fileSha256": "2ea7672fa2a7b32ad536ff0bf9ce64b467415a948b9b39a2116782b3f7b7bd32",
+          "requirement": "Native messaging shared mode identity",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/worker/io.js#L34"
+        },
+        {
+          "path": "src/node_messaging.cc",
+          "line": 1296,
+          "text": "  return object->HasPrivate(context, env->transfer_mode_private_symbol())",
+          "fileSha256": "49d5cf1e5d5319a932a2bf378b53a7f2c584d960383043b75c199726598d3697",
+          "requirement": "Native recognition of actual private marker",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/src/node_messaging.cc#L1296"
+        }
+      ],
+      "evidenceLimits": "No transfer, GC, cross-realm or Worker transport tests run. Existing native clone APIs and markers do not establish full structuredClone or wire compatibility."
+    },
+    {
+      "id": "E12",
+      "area": "V8 serialization wire format",
+      "staticReachability": "node:v8 import consumes serdes constructors; test/bench/error transport can pull it indirectly.",
+      "classification": "Implementable cross-engine codec contract, not simply a permanent V8-only exclusion.",
+      "requiredContract": "Unchanged v8.js requires real Serializer/Deserializer constructors and prototype behavior; serialize/deserialize uses V8 wire headers/types plus Node custom host-object encodings. SpiderMonkey structured clone has different bytes and cannot be silently substituted. Partial benchmark/test transport therefore also depends on this even when no application explicitly imports node:v8.",
+      "resetDisposition": "Implement the required serdes wire/API contract in a native backend or explicitly defer its dependent modules. Separate achievable stable serialization behavior from V8 heap/optimizer-only APIs below.",
+      "sourceAnchors": [
+        {
+          "path": "lib/v8.js",
+          "line": 45,
+          "text": "  Serializer,",
+          "fileSha256": "941a60534478888ed612ded3f2eb541903246d1b5de9bae18dd5aea9d3111f45",
+          "requirement": "Serializer/Deserializer native import",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/v8.js#L45"
+        },
+        {
+          "path": "lib/v8.js",
+          "line": 388,
+          "text": "Serializer.prototype._getDataCloneError = Error;",
+          "fileSha256": "941a60534478888ed612ded3f2eb541903246d1b5de9bae18dd5aea9d3111f45",
+          "requirement": "Native prototype integration",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/v8.js#L388"
+        },
+        {
+          "path": "lib/v8.js",
+          "line": 441,
+          "text": "class DefaultSerializer extends Serializer {",
+          "fileSha256": "941a60534478888ed612ded3f2eb541903246d1b5de9bae18dd5aea9d3111f45",
+          "requirement": "Node custom host-object serialization",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/v8.js#L441"
+        },
+        {
+          "path": "lib/v8.js",
+          "line": 513,
+          "text": "  const ser = new DefaultSerializer();",
+          "fileSha256": "941a60534478888ed612ded3f2eb541903246d1b5de9bae18dd5aea9d3111f45",
+          "requirement": "Public serialize uses V8 serializer",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/v8.js#L513"
+        },
+        {
+          "path": "lib/v8.js",
+          "line": 526,
+          "text": "  const der = new DefaultDeserializer(buffer);",
+          "fileSha256": "941a60534478888ed612ded3f2eb541903246d1b5de9bae18dd5aea9d3111f45",
+          "requirement": "Public deserialize uses V8 deserializer",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/v8.js#L526"
+        }
+      ],
+      "evidenceLimits": "No codec compatibility evidence collected; exact supported wire versions, host objects, cycles, transfer flags and errors remain contract work."
+    },
+    {
+      "id": "E13",
+      "area": "Snapshots, V8 caches, heap/optimizer and inspector",
+      "staticReachability": "Snapshot state binding startup-reachable; heap/profiler/inspector public APIs lazy/config-dependent.",
+      "classification": "Mixed: truthful startup state is implementable; exact V8-specific observability needs explicit boundary decisions.",
+      "requiredContract": "startup_snapshot always imports mksnapshot binding and reads actual isBuildingSnapshotBuffer, even when snapshot creation is off. Heap space names, V8 optimizer flags, CPU/heap profiler protocols, cachedDataVersionTag and serialized V8 snapshots reflect a concrete engine and cannot be fabricated for SpiderMonkey. Inspector exposes real protocol session and debugger semantics; declaring hasInspector=false is truthful only if capability genuinely absent and remains a documented non-pass.",
+      "resetDisposition": "Supply truthful snapshot-disabled state for an ordinary non-snapshot build while preserving upstream namespace/errors. Decompose node:v8 and inspector into API-specific implementable equivalents/protocols vs literal V8 artifacts that need user-reviewed exclusions or much larger backends. Never exempt all node:v8, because E06/E12 contain implementable behavior.",
+      "sourceAnchors": [
+        {
+          "path": "lib/internal/process/pre_execution.js",
+          "line": 40,
+          "text": "  namespace: {",
+          "fileSha256": "b87b010a0f42b40bc7af93195b520193e49dd1ac80a30ece13642978737c351c",
+          "requirement": "Early startup_snapshot import",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/process/pre_execution.js#L40"
+        },
+        {
+          "path": "lib/internal/v8/startup_snapshot.js",
+          "line": 15,
+          "text": "  setSerializeCallback,",
+          "fileSha256": "4eee95d7fa66dff0d64e84da2511bdfc2edd42ed3ebec99590618004c1c2701c",
+          "requirement": "Always-required mksnapshot binding state",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/v8/startup_snapshot.js#L15"
+        },
+        {
+          "path": "lib/v8.js",
+          "line": 118,
+          "text": "  cachedDataVersionTag,",
+          "fileSha256": "941a60534478888ed612ded3f2eb541903246d1b5de9bae18dd5aea9d3111f45",
+          "requirement": "V8 cache/flags/profiler dependencies",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/v8.js#L118"
+        },
+        {
+          "path": "lib/v8.js",
+          "line": 277,
+          "text": "function getHeapStatistics() {",
+          "fileSha256": "941a60534478888ed612ded3f2eb541903246d1b5de9bae18dd5aea9d3111f45",
+          "requirement": "Heap statistics public API",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/v8.js#L277"
+        },
+        {
+          "path": "lib/internal/heap_utils.js",
+          "line": 84,
+          "text": "  const objects = _queryObjects(ctor.prototype);",
+          "fileSha256": "da187e8e9f2833160b9168f26c2fd6a93ccae91e8dd5f0f6cf78fe590e328cfb",
+          "requirement": "Actual heap object traversal",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/heap_utils.js#L84"
+        },
+        {
+          "path": "lib/inspector.js",
+          "line": 24,
+          "text": "if (!hasInspector)",
+          "fileSha256": "0b967712491f7ce3330529c5dd64deac8c91a7b1c894628258e1e32225e73d39",
+          "requirement": "Truthful inspector capability gate",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/inspector.js#L24"
+        },
+        {
+          "path": "lib/inspector.js",
+          "line": 45,
+          "text": "  MainThreadConnection,",
+          "fileSha256": "0b967712491f7ce3330529c5dd64deac8c91a7b1c894628258e1e32225e73d39",
+          "requirement": "Actual inspector session binding",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/inspector.js#L45"
+        }
+      ],
+      "evidenceLimits": "These are engine architecture differences, not claims of SpiderMonkey defects. Exact API exclusions are proposed decisions, not authorized omissions or conformance passes."
+    },
+    {
+      "id": "E14",
+      "area": "Nested WebAssembly required by unchanged shipped JS dependencies",
+      "staticReachability": "Lazy fetch HTTP/1 parser and TypeScript transform; module Wasm imports; node:wasi.",
+      "classification": "Real execution backend prerequisite; cannot be replaced by repointing an existing native HTTP parser under unchanged bytes.",
+      "requiredContract": "configure.py includes bundled Undici/Amaro. Unchanged Undici HTTP/1 lazyllhttp throws without WebAssembly, compiles SIMD module with scalar fallback, and instantiates module/import callbacks synchronously. Amaro bundles Wasm bytes then creates Module/Instance synchronously. ESM translators also use WebAssembly.Module/Instance and source-phase module behavior. An outer host supports WebAssembly, but the guest JS global/API still needs its own correct execution boundary.",
+      "resetDisposition": "Keep a genuine guest nested-Wasm backend in scope and reflect its dependencies explicitly. It can be last for an initial CJS/streams/fs slice, but complete unchanged fetch HTTP/1 and TypeScript cannot be marked done before it. Native llhttp work remains useful for Node internal http_parser and cannot silently replace Undici own Wasm engine calls.",
+      "sourceAnchors": [
+        {
+          "path": "configure.py",
+          "line": 61,
+          "text": "shareable_builtins = {'undici/undici': 'deps/undici/undici.js',",
+          "fileSha256": "1237f185de628bf45d9e773168ec4dec6f77d4e776c89932bbf3a8f8dd9bf792",
+          "requirement": "Shipped JS dependency selection",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/configure.py#L61"
+        },
+        {
+          "path": "lib/internal/bootstrap/web/exposed-window-or-worker.js",
+          "line": 82,
+          "text": "      const undiciModule = require('internal/deps/undici/undici');",
+          "fileSha256": "71be83894cb75264ca62839408c575ac8acd2c91765ff3e0ecc3d27765f2c810",
+          "requirement": "Lazy unchanged Undici fetch loading",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/bootstrap/web/exposed-window-or-worker.js#L82"
+        },
+        {
+          "path": "deps/undici/undici.js",
+          "line": 7275,
+          "text": "      if (typeof WebAssembly === \"undefined\") {",
+          "fileSha256": "a7a17a877d9d72e3a2cab0cefd93569682040a089d54daaaaed5a014fb29c2dc",
+          "requirement": "Honest WebAssembly absence error",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/deps/undici/undici.js#L7275"
+        },
+        {
+          "path": "deps/undici/undici.js",
+          "line": 7294,
+          "text": "          mod = new WebAssembly.Module(require_llhttp_simd_wasm());",
+          "fileSha256": "a7a17a877d9d72e3a2cab0cefd93569682040a089d54daaaaed5a014fb29c2dc",
+          "requirement": "SIMD module creation",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/deps/undici/undici.js#L7294"
+        },
+        {
+          "path": "deps/undici/undici.js",
+          "line": 7299,
+          "text": "        mod = new WebAssembly.Module(llhttpWasmData || require_llhttp_wasm());",
+          "fileSha256": "a7a17a877d9d72e3a2cab0cefd93569682040a089d54daaaaed5a014fb29c2dc",
+          "requirement": "Scalar fallback and instance creation",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/deps/undici/undici.js#L7299"
+        },
+        {
+          "path": "deps/amaro/dist/index.js",
+          "line": 549,
+          "text": "    var wasmModule = new WebAssembly.Module(bytes);",
+          "fileSha256": "5b0ab7d67ded7ebf38e62cca22e2f464c6ea9eb0deed7cab32fd9169efcf9286",
+          "requirement": "Amaro actual Module/Instance creation",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/deps/amaro/dist/index.js#L549"
+        },
+        {
+          "path": "lib/internal/modules/esm/translators.js",
+          "line": 560,
+          "text": "  // WebAssembly global is not available during snapshot building, so we need to get it lazily.",
+          "fileSha256": "79de8ef5b1747eac5d3714b88c1d1093134fb504a7596c51b69815fd0a8b08b1",
+          "requirement": "Guest WebAssembly module import owner",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/esm/translators.js#L560"
+        }
+      ],
+      "evidenceLimits": "Recipe selects --disable-jit at packages/registry/spidermonkey/build-spidermonkey.sh:524; that line alone does not prove the complete configured guest Wasm feature matrix. Parent retained evidence identifies missing nested execution. No new engine runtime query executed."
+    },
+    {
+      "id": "E15",
+      "area": "Native addon imports are a distinct ABI boundary",
+      "staticReachability": "Only native .node addon import/load; regular builtin JS execution unaffected.",
+      "classification": "Native machine-code/addon ABI and embedding integration, not JS parser syntax.",
+      "requiredContract": "Unchanged CJS .node extension calls process.dlopen; ESM addon translation delegates to the same actual loader. Host native .node binaries and V8-linked addons cannot execute as Kandelo wasm guest code simply because JS modules are reused. N-API portability still needs a genuine supported guest side-module ABI, loader and object/lifetime implementation.",
+      "resetDisposition": "Preserve upstream loader code, report real loader failures, and make native addon format/ABI support an explicit scoped roadmap/boundary. Do not infer an addon capability from implementing core internalBinding exports.",
+      "sourceAnchors": [
+        {
+          "path": "lib/internal/modules/cjs/loader.js",
+          "line": 2133,
+          "text": "Module._extensions['.node'] = function(module, filename) {",
+          "fileSha256": "67b2bdc0180626e308aa6dca723696398b5db965b44e2df6060762b6d4f6a199",
+          "requirement": "Native extension loader",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/cjs/loader.js#L2133"
+        },
+        {
+          "path": "lib/internal/modules/cjs/loader.js",
+          "line": 2135,
+          "text": "  return process.dlopen(module, path.toNamespacedPath(filename));",
+          "fileSha256": "67b2bdc0180626e308aa6dca723696398b5db965b44e2df6060762b6d4f6a199",
+          "requirement": "Actual dlopen contract",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/cjs/loader.js#L2135"
+        },
+        {
+          "path": "lib/internal/modules/esm/translators.js",
+          "line": 656,
+          "text": "  emitExperimentalWarning('Importing addons');",
+          "fileSha256": "79de8ef5b1747eac5d3714b88c1d1093134fb504a7596c51b69815fd0a8b08b1",
+          "requirement": "ESM addon loader path",
+          "upstreamUrl": "https://github.com/nodejs/node/blob/18b32a3b1552e199a01f1a8d9fd64aa756d3b75b/lib/internal/modules/esm/translators.js#L656"
+        }
+      ],
+      "evidenceLimits": "No native addon compatibility matrix or loader validation performed; this row prevents conflating C++ internal bindings with loading third-party native addons."
+    }
+  ],
+  "unresolvedQuestions": [
+    "Exact configured SpiderMonkey standard globals and ModuleWrap phase/sync behavior need later authorized runtime evidence.",
+    "Decide API-specific treatment of literal V8 heap spaces/optimizer flags/snapshots/cache interoperability and unsupported inspector protocol features.",
+    "Determine required Serializer/Deserializer wire versions and native addon ABI scope explicitly.",
+    "Map all internalBinding exports to current final native owners before selectively moving backend commits; this report is not that full mapping."
+  ]
+}

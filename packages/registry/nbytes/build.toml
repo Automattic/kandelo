@@ -1,0 +1,10 @@
+script_path = "packages/registry/nbytes/build-nbytes.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = [
+  "packages/registry/nbytes/build-nbytes.sh",
+  "scripts/package-build-roots.sh",
+  "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/Platform/Kandelo.cmake",
+]

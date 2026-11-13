@@ -1,0 +1,30 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -33,0 +34 @@
++    "node-upstream/codecs.cpp",
+@@ -35,0 +37 @@
++    "node-upstream/decoder-upstream.cpp",
+@@ -42,0 +45 @@
++    "node-upstream/string-bytes-upstream.cpp",
+@@ -94,0 +98,5 @@
++
++# Complete original native codecs and their engine API use C++20.
++SOURCES["node-upstream/codecs.cpp"].flags += ["-std=c++20"]
++SOURCES["node-upstream/decoder-upstream.cpp"].flags += ["-std=c++20"]
++SOURCES["node-upstream/string-bytes-upstream.cpp"].flags += ["-std=c++20"]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -45,2 +45,3 @@
+ ignored_js_src_dirs = [
++    "js/src/shell/node-upstream/codecs-upstream/",  # complete verified Node native sources
+     "js/src/shell/node-upstream/options-upstream/",  # complete verified Node native sources
+@@ -59,2 +60,9 @@
+     [
++        "shell/node-upstream/codecs-upstream/errors.generated.h",
++        "shell/node-upstream/codecs-upstream/string_decoder.cc",
++        "shell/node-upstream/codecs-upstream/string_decoder.h",
++        "shell/node-upstream/codecs-upstream/string_decoder-inl.h",
++        "shell/node-upstream/codecs-upstream/string_bytes.cc",
++        "shell/node-upstream/codecs-upstream/string_bytes.h",
++        "shell/node-upstream/codecs-upstream/node_buffer.h",
+         "shell/node-upstream/options-upstream/node_options.cc",

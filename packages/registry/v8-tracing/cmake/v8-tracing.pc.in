@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/../..
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: v8-tracing
+Description: Node-bundled standalone V8 tracing library for Kandelo
+Version: @PROJECT_VERSION@
+Requires.private: libuv-static
+Libs: -L${libdir} -lv8-tracing
+Libs.private: -lc++ -lc++abi
+Cflags: -I${includedir} -DV8_PLATFORM_KANDELO=1

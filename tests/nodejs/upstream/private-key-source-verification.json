@@ -1,0 +1,146 @@
+{
+  "scope": "reviewed file content only; no runtime behavior proved",
+  "verifiedFileIdentities": [
+    {
+      "owner": "node",
+      "path": "src/env_properties.h",
+      "sha256": "891cb90ba1164eecc1ae5eef69ef3102369eeebc7630dccda2ca5737a2a097ad"
+    },
+    {
+      "owner": "node",
+      "path": "src/env.cc",
+      "sha256": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8"
+    },
+    {
+      "owner": "node",
+      "path": "src/node_util.cc",
+      "sha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae"
+    },
+    {
+      "owner": "node",
+      "path": "lib/internal/buffer.js",
+      "sha256": "066f6cec5e6ea81e376005cf8102bf944828903e8441eece0be2149ca809f14f"
+    },
+    {
+      "owner": "node",
+      "path": "deps/v8/include/v8-object.h",
+      "sha256": "d0fba4db8ee994b3d431ba3a432dfcb3d6cea832fe0013e79d2dd4a51ad515a0"
+    },
+    {
+      "owner": "node",
+      "path": "deps/v8/src/api/api.cc",
+      "sha256": "147e419129137728659555cdb7866823e0ee7bc005e81ff5206c9f064e094f86"
+    },
+    {
+      "owner": "node",
+      "path": "deps/v8/src/heap/factory.cc",
+      "sha256": "e16d2ccca327ccacff24ecf783b451562f1a162784f6f284dc83a4cecf20b663"
+    },
+    {
+      "owner": "node",
+      "path": "deps/v8/src/objects/name.h",
+      "sha256": "1fb429660fb357927c5980d3510cb255f2fb2e2612b4e684c1d1514319fe31c3"
+    },
+    {
+      "owner": "node",
+      "path": "deps/v8/src/objects/name-inl.h",
+      "sha256": "a6faac3698a61b9a8665c33ee862739a535c3119083a95e96d4a2741dc961af6"
+    },
+    {
+      "owner": "node",
+      "path": "deps/v8/src/objects/keys.cc",
+      "sha256": "7d70731b33def3bfe1913de76fc4619e07e53cf1fca4303a59c6eac780d0f517"
+    },
+    {
+      "owner": "node",
+      "path": "deps/v8/src/objects/lookup-inl.h",
+      "sha256": "004c63d1533640a84bccf24a93edb186d7ab5323d0015543d5a64fd486d54324"
+    },
+    {
+      "owner": "node",
+      "path": "deps/v8/src/objects/lookup.cc",
+      "sha256": "a932af97555b9801ee38a770fd818ec1a88b8a779dbf6460c2354072bef7bbf3"
+    },
+    {
+      "owner": "node",
+      "path": "deps/v8/src/objects/objects.cc",
+      "sha256": "17ddead52e49c1a5967cbafacd35cbbc3e7c504730ed94789663367866c8ef9c"
+    },
+    {
+      "owner": "node",
+      "path": "deps/v8/src/objects/js-objects.cc",
+      "sha256": "b9b77eec122059b1408f35cc3122d72e01375a784af4d6cb019ad0df83b00bff"
+    },
+    {
+      "owner": "node",
+      "path": "deps/v8/src/flags/flag-definitions.h",
+      "sha256": "9ca9821c2d9b29477cea1cb4d0686024be384ae6a4585e8586629017d557dac4"
+    },
+    {
+      "owner": "engine",
+      "path": "js/src/vm/Interpreter-inl.h",
+      "sha256": "e700318d5129a54e6fcc52d1ff89e82a8690dbf0041efc811f1cf833a54c4f32"
+    },
+    {
+      "owner": "engine",
+      "path": "js/src/vm/NativeObject.cpp",
+      "sha256": "ca4498f0aecd2ed132e2ad821c537f35f313107f3a1256c135cff4df7f3efbc9"
+    },
+    {
+      "owner": "engine",
+      "path": "js/src/vm/NativeObject-inl.h",
+      "sha256": "f4598a6c9cda32f0a052683be38dd4bd757f527d1094ac6d3ebb0953d7607c30"
+    },
+    {
+      "owner": "engine",
+      "path": "js/src/vm/PropertyInfo.h",
+      "sha256": "26a16a2b4c80e41eee7ef095982128d37e05f3946621e46b8537c3989188cce4"
+    },
+    {
+      "owner": "engine",
+      "path": "js/src/vm/Iteration.cpp",
+      "sha256": "73afc8924cefccda86cc778135e04778b4a720c0c86e62cd41d939e74228c53d"
+    },
+    {
+      "owner": "engine",
+      "path": "js/src/vm/PropMap.cpp",
+      "sha256": "9756e7c6398253cc65b6a44b531ed8a2cd9f750cb88ce2377ed008d286b8ccc3"
+    },
+    {
+      "owner": "engine",
+      "path": "js/src/vm/JSObject.cpp",
+      "sha256": "dd6db4cca2928018a449629caf5d6f423ca6fd0a1d803807658f207dee1dc8dc"
+    },
+    {
+      "owner": "engine",
+      "path": "js/src/builtin/Reflect.cpp",
+      "sha256": "1bbb7cf2117977a00a43bd3d6e1c8b19f61a78886b2540d0699bb5785f403981"
+    },
+    {
+      "owner": "engine",
+      "path": "js/src/builtin/Object.cpp",
+      "sha256": "fcecaf6b25d85b471efb64ddcd356e3f14f7aa875b75b395be6eccc5e31e0241"
+    },
+    {
+      "owner": "engine",
+      "path": "js/src/proxy/Proxy.cpp",
+      "sha256": "a5513201d159e3b5abbaa00a51ce6f97eb236c95ec37878784110856c2a54648"
+    },
+    {
+      "owner": "engine",
+      "path": "js/public/Proxy.h",
+      "sha256": "636ad3f079207365d0b4b0f4cf86ad00cbb9db99450776be0b34c9ac8d808d83"
+    },
+    {
+      "owner": "engine",
+      "path": "js/public/Wrapper.h",
+      "sha256": "9253517fa372dde76beb1edf805f113155e31ea930125670a7bca9ed64ef6c45"
+    },
+    {
+      "owner": "candidate",
+      "path": "packages/registry/spidermonkey/patches/0042-kandelo-node-clone-boundary.patch",
+      "sha256": "e0800939d1db4aa4b5cc9794ddda95211fc9677f958d2529959a7b8673c5ba6e"
+    }
+  ],
+  "runtimeValidated": false
+}

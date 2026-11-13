@@ -1,0 +1,98 @@
+{
+  "scope": "Native reference controls only; no guest lazy-property implementation or startup acceptance",
+  "native": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixture": {
+    "path": "tests/nodejs/upstream/util-lazy-properties-native-controls.cjs",
+    "bytes": 2095,
+    "sha256": "47d0ca366bdd89782a8343afb2d33184088d3ce4412ab82c5fb89f08fef37232"
+  },
+  "flags": [
+    "--no-warnings",
+    "--no-node-snapshot",
+    "--expose-internals"
+  ],
+  "environment": {
+    "PATH": "/usr/bin:/bin",
+    "LANG": "C",
+    "TZ": "UTC"
+  },
+  "result": {
+    "exitCode": 0,
+    "stdout": "{\"kind\":\"native-lazy-data-property-probe\",\"cases\":7,\"failures\":0,\"rows\":[{\"operation\":\"keys\",\"result\":{\"value\":[\"value\"]}},{\"operation\":\"descriptor\",\"result\":{\"error\":{\"name\":\"TypeError\",\"message\":\"Missing internal module 'internal/kandelo_missing_lazy_probe'\"}}},{\"operation\":\"read\",\"result\":{\"error\":{\"name\":\"TypeError\",\"message\":\"Missing internal module 'internal/kandelo_missing_lazy_probe'\"}}},{\"operation\":\"write\",\"result\":{\"value\":{\"value\":37,\"writable\":true,\"enumerable\":true,\"configurable\":true}}},{\"operation\":\"delete\",\"result\":{\"value\":true}},{\"operation\":\"freeze\",\"result\":{\"value\":true}},{\"operation\":\"valid-nonenumerable-descriptor\",\"result\":{\"value\":{\"writable\":true,\"enumerable\":false,\"configurable\":true,\"valueType\":\"function\",\"getType\":\"undefined\",\"same\":true,\"works\":true}}}]}\n",
+    "stderr": ""
+  },
+  "detail": {
+    "kind": "native-lazy-data-property-probe",
+    "cases": 7,
+    "failures": 0,
+    "rows": [
+      {
+        "operation": "keys",
+        "result": {
+          "value": [
+            "value"
+          ]
+        }
+      },
+      {
+        "operation": "descriptor",
+        "result": {
+          "error": {
+            "name": "TypeError",
+            "message": "Missing internal module 'internal/kandelo_missing_lazy_probe'"
+          }
+        }
+      },
+      {
+        "operation": "read",
+        "result": {
+          "error": {
+            "name": "TypeError",
+            "message": "Missing internal module 'internal/kandelo_missing_lazy_probe'"
+          }
+        }
+      },
+      {
+        "operation": "write",
+        "result": {
+          "value": {
+            "value": 37,
+            "writable": true,
+            "enumerable": true,
+            "configurable": true
+          }
+        }
+      },
+      {
+        "operation": "delete",
+        "result": {
+          "value": true
+        }
+      },
+      {
+        "operation": "freeze",
+        "result": {
+          "value": true
+        }
+      },
+      {
+        "operation": "valid-nonenumerable-descriptor",
+        "result": {
+          "value": {
+            "writable": true,
+            "enumerable": false,
+            "configurable": true,
+            "valueType": "function",
+            "getType": "undefined",
+            "same": true,
+            "works": true
+          }
+        }
+      }
+    ]
+  }
+}

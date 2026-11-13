@@ -1,0 +1,115 @@
+{
+  "verifiedAt": "2026-11-10T19:44:42.288350+00:00",
+  "pin": {
+    "schema": 1,
+    "version": "26.13.0",
+    "lts": "Lithium",
+    "verifiedOn": "2026-10-31",
+    "releaseIndex": "https://nodejs.org/dist/index.json",
+    "source": {
+      "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+      "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+      "tag": "v26.13.0",
+      "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+    },
+    "references": {
+      "darwin-arm64": {
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz",
+        "sha256": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6"
+      },
+      "darwin-x64": {
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-x64.tar.gz",
+        "sha256": "525c9b29bb0263d687de60a4cec0e2a6db876a8eb032369e5795eca71e7c358e"
+      },
+      "linux-arm64": {
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.gz",
+        "sha256": "439e9c438acdf6a6ffe47418da709153d66c4bed812e30a473faacb107dd2791"
+      },
+      "linux-x64": {
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.gz",
+        "sha256": "5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455"
+      }
+    }
+  },
+  "official": {
+    "index": {
+      "url": "https://nodejs.org/dist/index.json",
+      "sha256": "6b27fe5766e87929d16ccdde05c516cbdd12200eab62b28d4b2f31d34e21481a",
+      "bytes": 336201
+    },
+    "checksums": {
+      "url": "https://nodejs.org/dist/v26.13.0/SHASUMS256.txt",
+      "sha256": "9b0d4aa4d20a4f1afaf2cdcf99175ad90d1856d24c7d31dc46f72369b73e2d35",
+      "bytes": 3171
+    },
+    "schedule": {
+      "url": "https://raw.githubusercontent.com/nodejs/Release/main/schedule.json",
+      "sha256": "50fe35a4df02398f741fdffbc666aceca323fcdb7f46d05af93145bf610d0049",
+      "bytes": 3254
+    }
+  },
+  "release": {
+    "version": "v26.13.0",
+    "date": "2026-10-28",
+    "files": [
+      "aix-ppc64",
+      "headers",
+      "linux-arm64",
+      "linux-ppc64le",
+      "linux-s390x",
+      "linux-x64",
+      "linux-x64-musl",
+      "osx-arm64-tar",
+      "osx-x64-pkg",
+      "osx-x64-tar",
+      "src",
+      "win-arm64-7z",
+      "win-arm64-zip",
+      "win-x64-7z",
+      "win-x64-exe",
+      "win-x64-msi",
+      "win-x64-zip"
+    ],
+    "npm": "11.20.0",
+    "v8": "14.6.202.34",
+    "uv": "1.52.1",
+    "zlib": "1.3.2.1-motley",
+    "openssl": "3.5.9",
+    "modules": "147",
+    "lts": "Lithium",
+    "security": false
+  },
+  "tagCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "localArchives": [
+    {
+      "kind": "source",
+      "path": ".context/nodejs-lts-cache-v2/node-v26.13.0.tar.gz",
+      "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+      "bytes": 127162302
+    },
+    {
+      "kind": "darwin-arm64",
+      "path": ".context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64.tar.gz",
+      "sha256": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6",
+      "bytes": 58334661
+    }
+  ],
+  "retainedSource": {
+    "path": ".context/nodejs-lts-cache-v2/node-v26.13.0",
+    "verifiedRegularFiles": 38413,
+    "directories": 4271,
+    "mismatches": [],
+    "extraRegularFiles": []
+  },
+  "nativeReference": {
+    "platform": "darwin-arm64",
+    "path": ".context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node",
+    "executableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+    "matchesArchive": true,
+    "executed": false
+  },
+  "otherReferenceArchives": "official checksum pins verified; local contents not inspected",
+  "targetChanged": false,
+  "runtimeTestsRun": false,
+  "buildsRun": false
+}

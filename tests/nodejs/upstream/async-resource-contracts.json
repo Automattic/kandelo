@@ -1,0 +1,214 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Complete original AsyncWrap class/unit compile integration and owning-engine number/symbol primitives. Original async_wrap binding initializer remains inactive; not resource-family or startup acceptance.",
+  "completeBindingContract": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamAlgorithmsRewritten": false,
+  "functionBodiesExtracted": false,
+  "wholeOriginalFiles": [
+    {
+      "path": "src/async_wrap.cc",
+      "role": "provenance",
+      "bytes": 27422,
+      "sha256": "ef1d64d5a062d3f752086ab85334c96a017e1f6fc01a96d71f00adc9584d2709",
+      "builtinId": null
+    },
+    {
+      "path": "src/async_wrap.h",
+      "role": "provenance",
+      "bytes": 12578,
+      "sha256": "642127776d476e65d3ac2634565bfae1e431691d400f71131fa99aaf95f6aae6",
+      "builtinId": null
+    },
+    {
+      "path": "src/async_wrap-inl.h",
+      "role": "provenance",
+      "bytes": 4023,
+      "sha256": "ef01e968d801f04679043e57eb8be51c6fbc8c4748f05e74ed5d5e36711473ed",
+      "builtinId": null
+    },
+    {
+      "path": "src/async_context_frame.h",
+      "role": "provenance",
+      "bytes": 903,
+      "sha256": "e2f173c35a8ea6b9afb670b1bbfb126890e29b8188108aa60c572bfe68345e92",
+      "builtinId": null
+    }
+  ],
+  "definitionNameSyntaxIndex": [
+    "AsyncReset",
+    "AsyncWrap",
+    "ClearAsyncIdStack",
+    "CreatePerContextProperties",
+    "CreatePerIsolateProperties",
+    "DestroyAsyncIdsCallback",
+    "EmitAfter",
+    "EmitAsyncInit",
+    "EmitBefore",
+    "EmitDestroy",
+    "EmitPromiseResolve",
+    "EmitTraceAsyncStart",
+    "EmitTraceEventAfter",
+    "EmitTraceEventBefore",
+    "EmitTraceEventDestroy",
+    "ExecutionAsyncResource",
+    "GetAsyncContextFrame",
+    "GetAsyncId",
+    "GetConstructorTemplate",
+    "GetOwner",
+    "GetProviderType",
+    "IsDoneInitializing",
+    "MakeCallback",
+    "MemoryInfoName",
+    "PopAsyncContext",
+    "PushAsyncContext",
+    "QueueDestroyAsyncId",
+    "RegisterExternalReferences",
+    "SetCallbackTrampoline",
+    "WeakCallback",
+    "diagnostic_name",
+    "~AsyncWrap"
+  ],
+  "syntaxIndexIsSemanticCoverage": false,
+  "existingBinding": "async-wrap-contracts.json; current native canonical state/binding remains active until original initializer has real backends. No duplicate state is allocated by declarations.",
+  "nativeAPI": "packages/registry/spidermonkey/node-upstream/resource-native-api.h",
+  "upstreamConsumers": [
+    {
+      "source": "src/node_process_methods.cc",
+      "paths": [
+        "GetActiveHandles -> AsyncWrap::GetOwner",
+        "GetActiveResourcesInfo -> original virtual MemoryInfoName"
+      ],
+      "status": "Original owner walk is now compiled/reachable; original catch-scope destructor exposes full exception/report dependency closure. No real producer/queue or startup proof."
+    },
+    {
+      "source": "src/handle_wrap.cc",
+      "paths": [
+        "AsyncWrap constructor/provider/init state",
+        "GetConstructorTemplate and callback scopes",
+        "OnClose detached canonical reference/destruction"
+      ],
+      "status": "Reviewed full source; unit not integrated in this phase."
+    },
+    {
+      "source": "src/req_wrap-inl.h",
+      "paths": [
+        "AsyncWrap constructors and dispatch/completion",
+        "real cancellation and waiting counters",
+        "existing canonical native references"
+      ],
+      "status": "Reviewed full source; producers/queue integration pending."
+    },
+    {
+      "source": "lib/internal/async_hooks.js and transitive consumers",
+      "catalog": "async-wrap-contracts.json",
+      "status": "Original JavaScript unchanged. Complete alias/lazy/worker/exceptional consumption remains open."
+    }
+  ],
+  "implementedOwningPrimitives": [
+    {
+      "interface": "Value::NumberValue(Local<Context>)",
+      "owner": "SpiderMonkey embedding",
+      "behavior": "Enters the actual context, roots/wraps input and uses real JS::ToNumber. Coercion may enter user code, move objects or throw; failure remains an empty Maybe with the actual pending exception.",
+      "validation": "18 focused number controls planned through private diagnostic; no binding activation."
+    },
+    {
+      "interface": "Environment::owner_symbol/resource_symbol",
+      "owner": "Canonical per-runtime symbol inventory",
+      "behavior": "Read the existing actual symbol identity through GetRuntimeSymbol; no new symbol, table, process metadata or owner-chain algorithm.",
+      "validation": "4 symbol identity/alias/foreign-realm/GC controls planned through private diagnostic."
+    }
+  ],
+  "compileOnlyInterfaces": [
+    {
+      "surface": "Original AsyncWrap class, providers and lifecycle fields",
+      "contract": "Original provider_type_, init_hook_ran_, async_id_ and trigger_async_id_ bodies remain whole. Original IsDoneInitializing returns actual init flag, not unconditional success. Original metadata and current JS provider inventory must share real OpenSSL profile.",
+      "gap": "Constructors require a traced third field and general native class/template support; cannot be activated on the present two-slot wrapper."
+    },
+    {
+      "surface": "AsyncHooks fields/IDs/stack/resources/hooks",
+      "contract": "Return original AliasedBuffer interfaces that must adopt or jointly own the same canonical async arrays consumed by unchanged JS. Original hook callbacks and realm setters must use the current shared owner.",
+      "gap": "All new AsyncHooks accessors are declarations. No independent counters, copied arrays, hook state or empty callback/resource lists supplied."
+    },
+    {
+      "surface": "Global::SetWeak(parameter,callback,type) and WeakCallbackInfo",
+      "contract": "Actual weak target plus native callback ownership; DestroyParam cleanup and RemoveCleanupHook must be exactly once. Arbitrary JS in weak callback must run in an allowed foreground phase after GC, not inside a collecting finalizer.",
+      "gap": "Declarations only. Plain weak rooting is implemented historically; parameter callbacks/cleanup registration are not."
+    },
+    {
+      "surface": "Context::GetMicrotaskQueue, Environment::SetImmediate(flags)/RequestInterrupt",
+      "contract": "Original destroy list uses unreferenced native immediates; threshold16384 requests an engine interrupt before posting a real microtask. Actual flag/ref state, cancellation, contexts and exceptions must survive GC/retirement.",
+      "gap": "Declarations only; do not reuse the threadsafe queue while discarding ordinary callback flags. CallbackFlags::Flags exactly retains original0/1 declarations."
+    },
+    {
+      "surface": "Object internal fields, Private data, FunctionTemplate inheritance and constructor cache",
+      "contract": "AsyncWrap adds one traced context-frame field after BaseObject fields, uses actual embedding-private sentinel when empty, actual creation realm and inheritance/prototype identity. Correct typed native roots must distinguish public Symbol and Private data.",
+      "gap": "Fields/inheritance/private-name API declarations only. BaseObject template rejects unsupported field counts rather than inventing a three-slot instance. Env constructor currently uses Diagnostic domain for realm ownership; general native resource class ownership must replace that restriction before producers activate."
+    },
+    {
+      "surface": "InternalMakeCallback and original GetOwner TryCatchScope",
+      "contract": "Original callback keeps provider/ID values before JS can delete this; restores callback frame/async context, jobs, exception policy. Owner walk ignores property-get exceptions under original normal catch scope.",
+      "gap": "Complete original policy header/constructors and scoped catch primitives now compile. Message/stack/source metadata, full callback/error/report/scheduling/resource closure remain incomplete. Native utility ToUpper source integration remains a known gap; see error-policy-contracts.json."
+    },
+    {
+      "surface": "General BaseObject inspection",
+      "contract": "New virtual slots permit original AsyncWrap overrides. Generic native inspection remains explicitly unavailable.",
+      "gap": "General MemoryInfoName/IsDoneInitializing fail loudly; no invented name or always-initialized value is supplied."
+    }
+  ],
+  "owningLayers": [
+    "SpiderMonkey compilation/context/roots/private fields, promises/microtasks/interrupts/errors",
+    "Canonical native Environment/Realm resource and callback ownership",
+    "Existing guest libuv event loop and actual ref/close/cancel state",
+    "Guest/kernel memory/process accounting remains a separate known implementation gap"
+  ],
+  "archivedReuseCandidates": {
+    "catalog": "native-owner-contracts.json",
+    "indexes": [
+      ".context/davao-handoff/BACKEND-SALVAGE.md",
+      "backend-binding-survey.json"
+    ],
+    "frozenCommit": "5f19f5f1c61cc80adb8e39e1f8470b497f34e9c8",
+    "uses": [
+      "callback-execution-stack.h/callback-scope.h/native-callback.cpp for exact native execution/exception scope ownership",
+      "socket-owner/socket-stream-state/native-socket-owner for actual resource cancellation/close",
+      "sqlite native pointer retirement and reentry patterns"
+    ],
+    "historicalCoverageIsCurrentRuntimeProof": false,
+    "archivedCodeCopied": false
+  },
+  "newControls": {
+    "number": 18,
+    "symbols": 4,
+    "runtimeStatus": "All22 new primitive controls pass on Node/Chromium/Firefox/WebKit in a private diagnostic, alongside12ownership controls and9prior drivers total11perhost.",
+    "normalStartupAccepted": false
+  },
+  "prerequisiteOrderForStartup": [
+    "Owning-engine scoped catch/exception/message and original error policy closure exposed by real GetOwner; no dummy constructor or always-false HasCaught.",
+    "General native wrapper class family and typed traced internal fields, Private sentinel and constructor/inheritance/cache primitives.",
+    "Canonical AsyncHooks field/root/state bridge and real provider/ID/init/destroy callbacks; unify with existing JS state rather than parallel state.",
+    "Whole original HandleWrap/ReqWrap producers and actual intrusive queues, libuv ref/cancel/close and waiting-count transitions.",
+    "Native callback scope/async context and asynchronous shutdown/cancellation; preserve actual exception and exit statuses.",
+    "Close remaining ordinary startup dependencies, prove unchanged-source startup/empty/simple/errors/jobs/exit and separate CJS/ESM on4hosts.",
+    "Finish full77-role graph-wide catalog/roadmap, nested Wasm last unless startup needs it; stop for explicit broader-roadmap user review."
+  ],
+  "compileEvidence": "async-resource-engine-check.json",
+  "originalInitializerConnected": false,
+  "scopedCatchPrerequisiteCatalog": "scoped-catch-contracts.json",
+  "scopedCatchPrerequisiteEvidence": "scoped-catch-engine-check.json",
+  "errorPolicyCatalog": "error-policy-contracts.json",
+  "errorPolicyEvidence": "error-policy-engine-check.json",
+  "requestHeaderFollowup": {
+    "packageRevision": 71,
+    "catalog": "request-owners-contracts.json",
+    "evidence": "request-owners-engine-check.json",
+    "scope": "Complete original request headers and real environment intrusive head now compile; prior79drivers perhost are regression evidence only. Positive request dispatch/cancellation/shutdown and HandleWrap remain unimplemented/unvalidated."
+  },
+  "handleUnitFollowup": {
+    "packageRevision": 72,
+    "catalog": "handle-owners-contracts.json",
+    "evidence": "handle-owners-engine-check.json",
+    "scope": "Whole original HandleWrap class/unit and actual intrusive storage compile; HasProperty and generic class-cache primitives tested on four hosts. Positive original handle/request lifecycle and complete template factory/callback paths still incomplete."
+  }
+}

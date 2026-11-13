@@ -1,0 +1,1582 @@
+{
+  "schema": 1,
+  "scope": "Textual candidate inventory across all pinned src C++ headers/units, including platform/conditional consumers; not a parsed complete call graph or runtime support claim. No source bodies copied into implementation.",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+  "nativeFilesScanned": 460,
+  "candidateFiles": [
+    {
+      "upstreamPath": "src/async_wrap-inl.h",
+      "bytes": 4023,
+      "sha256": "ef01e968d801f04679043e57eb8be51c6fbc8c4748f05e74ed5d5e36711473ed",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 53,
+          "expression": "auto as_data = object()->GetInternalField(kAsyncContextFrame);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 67,
+          "expression": "object()->SetInternalField(kAsyncContextFrame,"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 70,
+          "expression": "object()->SetInternalField(kAsyncContextFrame, value);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 115,
+          "expression": "t->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": true
+    },
+    {
+      "upstreamPath": "src/base_object-inl.h",
+      "bytes": 10097,
+      "sha256": "cf890bf4723cb7b9ecbeb2662e98344ae81af0937abd4b214413885f6450d6d2",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 78,
+          "expression": "static_cast<uint16_t*>(obj->GetAlignedPointerFromInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 86,
+          "expression": "object->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 96,
+          "expression": "object->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 103,
+          "expression": "return static_cast<BaseObject*>(obj->GetAlignedPointerFromInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 135,
+          "expression": "args.This()->GetInternalField(Field).As<v8::Value>());"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 144,
+          "expression": "args.This()->SetInternalField(Field, value);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/base_object.cc",
+      "bytes": 5666,
+      "sha256": "48ca52d7d1e16d7cec5c08c77d4b348f83909c1a22a5a2cafe35b715480da804",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 48,
+          "expression": "object()->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 94,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(internal_field_count);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/cares_wrap.cc",
+      "bytes": 73425,
+      "sha256": "e0d762ed6161dd9f1e8ff732050f8886bdfff2d86a84cde377d6962cd69a1c63",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 2355,
+          "expression": "channel_wrap->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 2357,
+          "expression": "channel_wrap->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/cppgc_helpers-inl.h",
+      "bytes": 2533,
+      "sha256": "a9d10ea77477f8f7bda0452a33d31bf9ae19b5f64466920a9e8aaf70acf8597b",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 20,
+          "expression": "obj->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 24,
+          "expression": "obj->SetAlignedPointerInInternalField(kSlot, ptr, EmbedderDataTag::kDefault);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 45,
+          "expression": "T* ptr = static_cast<T*>(obj->GetAlignedPointerFromInternalField("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_cipher.cc",
+      "bytes": 33620,
+      "sha256": "d3d9e716d8398244bb4782f030c3bebfc35e640807669034ee5a243616d55b32",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 245,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(CipherBase::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_context.cc",
+      "bytes": 102005,
+      "sha256": "a21a5d88feba3ce99c0723acdd076c2a373b19dc4bb36cc97a77ca9a141dc606",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 1315,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_dh.cc",
+      "bytes": 19060,
+      "sha256": "af3a25e8b8c4fc061973097d4bf5cbf56c370ed1f40301503fe789d1462d4dc4",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 527,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_ec.cc",
+      "bytes": 19598,
+      "sha256": "526b35c048d2d82ac07b761c65d4b4a8c4079351c1bdf4815b48d81cef176123",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 55,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(ECDH::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_hash.cc",
+      "bytes": 28538,
+      "sha256": "69b047e9d45fe8fb266a8df8f7f14caffa926772a3e887605fa4e08ef2527d22",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 552,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(Hash::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_hmac.cc",
+      "bytes": 7941,
+      "sha256": "795d65a13eb7cabd6bfbff1b756fd31da111eb0aae1a2034e884c765d123b9b1",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 45,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(Hmac::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_keys.cc",
+      "bytes": 78558,
+      "sha256": "0810e7ce7e506806e79dddfd779f72cf9e34c6700c9a405a022efae99a189c8a",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 1115,
+          "expression": "templ->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1680,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1900,
+          "expression": "args.This()->SetInternalField(kAlgorithmField, args[1]);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1918,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1985,
+          "expression": "Local<Value> algorithm = obj->GetInternalField(kAlgorithmField).As<Value>();"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 2007,
+          "expression": "Local<Value> algorithm_v = obj->GetInternalField(kAlgorithmField).As<Value>();"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 2030,
+          "expression": "CHECK(obj->GetInternalField(kAlgorithmField).As<Value>()->IsUndefined());"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 2037,
+          "expression": "obj->SetInternalField(kAlgorithmField, algorithm_v);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_mac.cc",
+      "bytes": 21155,
+      "sha256": "14367ebc13307436693216e233818e5fbcb0ebb70de1cd7ddeec377c99ba9f74",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 543,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(Mac::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_sig.cc",
+      "bytes": 28830,
+      "sha256": "4419bf054a4d8c400ee8af6a41f88fbcd8edf9e76261ab5f4dca1a595cb172a4",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 359,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(Sign::kInternalFieldCount);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 487,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(Verify::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_tls.cc",
+      "bytes": 80026,
+      "sha256": "e92c9f7221b8f17fc200416a05945b31dcf570d67da43e367103a155e3da1662",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 2325,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(TLSWrap::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 2338,
+          "expression": "t->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_util.h",
+      "bytes": 27445,
+      "sha256": "17ef1d34245c0c4eac4b4b9a154e3350dcb3ad8fcbbfb2673a43472afde6a78f",
+      "sites": [
+        {
+          "kind": "templateInheritance",
+          "line": 498,
+          "expression": "job->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 499,
+          "expression": "job->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/crypto/crypto_x509.cc",
+      "bytes": 40167,
+      "sha256": "9ee4a24d1b467e77ce247ec6f6b664f0a81357f47b751df81b99c4ca15fcac15",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 893,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/dtls/dtls_context.cc",
+      "bytes": 44033,
+      "sha256": "58407aa3c1e239dbb059e8d41b1664f381d9da9d64b0943ee6774ddd9b2ae266",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 149,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/dtls/dtls_endpoint.cc",
+      "bytes": 33024,
+      "sha256": "5fa879a801f3a39bd449f6c1ba63b45c761f02665ce10bf08bcb54e29d1d1931",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 86,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/dtls/dtls_session.cc",
+      "bytes": 47896,
+      "sha256": "f024a43f32db68d4643682ef43e118eb7c0bdea8d8c500249fd56302f404442b",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 176,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/env.cc",
+      "bytes": 99205,
+      "sha256": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 578,
+          "expression": "templ->SetInternalFieldCount(BaseObject::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/fs_event_wrap.cc",
+      "bytes": 8343,
+      "sha256": "2589e91baa440efdee9b491611365dd8f123c7ede8640d25166a1f662167ceae",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 104,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 107,
+          "expression": "t->Inherit(HandleWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/handle_wrap.cc",
+      "bytes": 5823,
+      "sha256": "20f94b3dc1569f2b90116500dc6c7546b0b92b38f1398281f7b90d5b37f6751b",
+      "sites": [
+        {
+          "kind": "templateInheritance",
+          "line": 170,
+          "expression": "tmpl->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        }
+      ],
+      "importedSource": true
+    },
+    {
+      "upstreamPath": "src/heap_utils.cc",
+      "bytes": 16130,
+      "sha256": "7de51631ccb0540b5014d2a4caee439e322b4d4c07cc90fce26c6f4b0f6f2c66",
+      "sites": [
+        {
+          "kind": "templateInheritance",
+          "line": 409,
+          "expression": "os->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 411,
+          "expression": "ost->SetInternalFieldCount(HeapSnapshotStream::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/histogram.cc",
+      "bytes": 122975,
+      "sha256": "e79ac3b14457338718b8d15f0b338a78e534d3f0a3fca06a71c3a403ce067038",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 2095,
+          "expression": "wrap->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 2107,
+          "expression": "wrap->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 2293,
+          "expression": "instance->SetInternalFieldCount(HistogramBase::kInternalFieldCount);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 2573,
+          "expression": "instance->SetInternalFieldCount(BaseObject::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 2599,
+          "expression": "tmpl->Inherit(HandleWrap::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 2627,
+          "expression": "wrap->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 2695,
+          "expression": "tmpl->Inherit(HandleWrap::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 2720,
+          "expression": "wrap->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 3344,
+          "expression": "return static_cast<HistogramImpl*>(obj->GetAlignedPointerFromInternalField("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/histogram.h",
+      "bytes": 22023,
+      "sha256": "66bee7d06bf4a2423f67860c3dd94490a87ba098bb02fddda9ea945f6a8a04a8",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 475,
+          "expression": "instance->SetInternalFieldCount(internal_field_count);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/inspector_js_api.cc",
+      "bytes": 15824,
+      "sha256": "b5de7ed99efbf4c14b263b50240ab2b98dde9f38c2883362adf192a040cd2714",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 103,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/js_stream.cc",
+      "bytes": 6253,
+      "sha256": "6f780c41e544e35092a51512ca5f9f10db5856857d985c01b911a0a1fe0286d0",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 209,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(JSStream::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 210,
+          "expression": "t->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/module_wrap.cc",
+      "bytes": 59918,
+      "sha256": "ef6d3f20a46aaa844d9471b32e489bf60b7539681d6d9e3f7e230e1abddcb051",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 151,
+          "expression": "object->SetInternalField(kModuleSlot, module);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 152,
+          "expression": "object->SetInternalField(kModuleSourceObjectSlot,"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 154,
+          "expression": "object->SetInternalField(kSyntheticEvaluationStepsSlot,"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 156,
+          "expression": "object->SetInternalField(kContextObjectSlot, context_object);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 157,
+          "expression": "object->SetInternalField(kLinkedRequestsSlot,"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 180,
+          "expression": "Local<Value> obj = object()->GetInternalField(kContextObjectSlot).As<Value>();"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 727,
+          "expression": "args.This()->SetInternalField(kLinkedRequestsSlot, modules);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 974,
+          "expression": "->GetInternalField(kModuleSourceObjectSlot)"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 978,
+          "expression": "obj->object()->SetInternalField(kModuleSourceObjectSlot, args[0]);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 989,
+          "expression": "obj->object()->GetInternalField(kModuleSourceObjectSlot).As<Value>();"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1061,
+          "expression": "->GetInternalField(ModuleWrap::kModuleSourceObjectSlot)"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1455,
+          "expression": "->GetInternalField(kSyntheticEvaluationStepsSlot)"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1458,
+          "expression": "obj->object()->SetInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1608,
+          "expression": "tpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_binding.cc",
+      "bytes": 39660,
+      "sha256": "921f6c1d198a9921101fa45d2bcb9cd36509883758a3abb5a77f2f20857bd410",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 955,
+          "expression": "templ->SetInternalFieldCount(BaseObject::kInternalFieldCount);             \\"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_blob.cc",
+      "bytes": 21463,
+      "sha256": "d93ef602bfc3ff73a163d301f4ec4ca65a44bba799e6c6c4b01f29c6a09ba091",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 161,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount(Blob::kInternalFieldCount);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 319,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_contextify.cc",
+      "bytes": 72731,
+      "sha256": "f053ef316b1b1d6d1e3f42cb431f9742c00cf1a71a381fb6bdab079e48cfb145",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 943,
+          "expression": "script_tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_dir.cc",
+      "bytes": 15339,
+      "sha256": "5faf2ee79ff224548801e2ff8bc11a96a5757bdcf00e580b813b913513f9469c",
+      "sites": [
+        {
+          "kind": "templateInheritance",
+          "line": 434,
+          "expression": "dir->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 438,
+          "expression": "dirt->SetInternalFieldCount(DirHandle::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_ffi.cc",
+      "bytes": 51094,
+      "sha256": "0471b7f61da97c36a2e8a1b4fa91640d81d9edc6e15c052d6e25940abe2de8f3",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 233,
+          "expression": "object->SetInternalField(FFIFunctionInfo::kLibrary, library->object());"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 246,
+          "expression": "instance->SetInternalFieldCount(FFIFunctionInfo::kInternalFieldCount);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1310,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_file.cc",
+      "bytes": 199159,
+      "sha256": "33e4be5acc25b44ba4f532564220a721b645416da4e9fa26d58e14011c66a450",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 473,
+          "expression": "object()->GetInternalField(FileHandle::kClosingPromiseSlot).As<Value>();"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 496,
+          "expression": "object()->SetInternalField(FileHandle::kClosingPromiseSlot, promise);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 5689,
+          "expression": "cpj->InstanceTemplate()->SetInternalFieldCount(CpDirJob::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 5690,
+          "expression": "cpj->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 5704,
+          "expression": "rfj->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 5706,
+          "expression": "rfj->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 5711,
+          "expression": "wfj->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 5713,
+          "expression": "wfj->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 5719,
+          "expression": "fst->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 5721,
+          "expression": "fst->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 5728,
+          "expression": "fh_rw->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 5730,
+          "expression": "fh_rw->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 5738,
+          "expression": "fpt->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 5742,
+          "expression": "fpo->SetInternalFieldCount(FSReqBase::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 5747,
+          "expression": "fd->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 5752,
+          "expression": "fdt->SetInternalFieldCount(FileHandle::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 5760,
+          "expression": "fdclose->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 5762,
+          "expression": "fdcloset->SetInternalFieldCount(FSReqBase::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_http2.cc",
+      "bytes": 134750,
+      "sha256": "10c3fa807b6dcb84374687104615a356ad6dbffb02858822cba4899fe307d459",
+      "sites": [
+        {
+          "kind": "templateInheritance",
+          "line": 3586,
+          "expression": "ping->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 3588,
+          "expression": "pingt->SetInternalFieldCount(Http2Ping::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 3594,
+          "expression": "setting->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 3596,
+          "expression": "settingt->SetInternalFieldCount(Http2Settings::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 3612,
+          "expression": "stream->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 3614,
+          "expression": "stream->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 3624,
+          "expression": "session->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 3626,
+          "expression": "session->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_http_parser.cc",
+      "bytes": 46838,
+      "sha256": "ea44194feb93cd94da8b1ff8faa76d32d90f00561a9ad1cffd93ebf79411f4ea",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 989,
+          "expression": "object()->SetInternalField(kOnHeadersCompleteCallback, undefined);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 990,
+          "expression": "object()->SetInternalField(kOnBodyCallback, undefined);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 991,
+          "expression": "object()->SetInternalField(kOnMessageCompleteCallback, undefined);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 998,
+          "expression": "Local<Value> cb = obj->GetInternalField(field).As<Value>();"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1002,
+          "expression": "if (cb->IsFunction()) obj->SetInternalField(field, cb);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1386,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(Parser::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 1443,
+          "expression": "t->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1461,
+          "expression": "->SetInternalFieldCount(ConnectionsList::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_i18n.cc",
+      "bytes": 24681,
+      "sha256": "92609fad1107071d39f8211ccac9536257a63752db95e1160ae345d6618f76ff",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 700,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": true
+    },
+    {
+      "upstreamPath": "src/node_locks.cc",
+      "bytes": 30874,
+      "sha256": "28f2a9cbffb561a4535031331025bcab15a9065ca1432800c2d8f9b5875c4666",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 876,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_messaging.cc",
+      "bytes": 62006,
+      "sha256": "49d5cf1e5d5319a932a2bf378b53a7f2c584d960383043b75c199726598d3697",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 1239,
+          "expression": "m->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 1241,
+          "expression": "m->Inherit(HandleWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1727,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_object_wrap.h",
+      "bytes": 4301,
+      "sha256": "388ec1ec65215ccfd90d5a48ca50e5cdc88a37f9614b7d6e7ad5fd26cca850ed",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 53,
+          "expression": "void* ptr = handle->GetAlignedPointerFromInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 80,
+          "expression": "handle->SetAlignedPointerInInternalField("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_process_methods.cc",
+      "bytes": 29912,
+      "sha256": "909b412cc5fa20de7eb1a0de081849edd98dbe4a239ae412e48551eb2deb0b39",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 701,
+          "expression": "v8_object->GetAlignedPointerFromInternalField(BaseObject::kSlot,"
+        }
+      ],
+      "importedSource": true
+    },
+    {
+      "upstreamPath": "src/node_serdes.cc",
+      "bytes": 18173,
+      "sha256": "958660fbdc217fbd669cae85074c4ec1f8b6db2c8f5daf6eeb383a9fb9a3c0f8",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 474,
+          "expression": "ser->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 501,
+          "expression": "des->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_snapshotable.cc",
+      "bytes": 63084,
+      "sha256": "8cf7a64854d3b55c0eb6413c4205779db1e4043c3bf63b1161825430985e99c0",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 1498,
+          "expression": "CHECK_NULL(holder->GetAlignedPointerFromInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1519,
+          "expression": "static_cast<BaseObject*>(holder->GetAlignedPointerFromInternalField("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_sockaddr.cc",
+      "bytes": 45525,
+      "sha256": "a798d7d6bc77b448adade53af85b4d523fdd1c754a838dded7361cf5c0301cea",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 1132,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount(kInternalFieldCount);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1196,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_sqlite.cc",
+      "bytes": 184688,
+      "sha256": "04842a02b6a6d10d14d56549e992a6f8bf9658fc5be66345b2ee0dd9fe4df327",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 890,
+          "expression": "tmpl->SetInternalFieldCount(DatabaseLimits::kInternalFieldCount);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1716,
+          "expression": "object()->GetInternalField(kAuthorizerCallback).template As<Value>();"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 2156,
+          "expression": "db->object()->GetInternalField(kLimitsObject).template As<Value>();"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 2162,
+          "expression": "db->object()->SetInternalField(kLimitsObject, limits->object());"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 3615,
+          "expression": "db->object()->SetInternalField(kAuthorizerCallback, Null(isolate));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 3627,
+          "expression": "db->object()->SetInternalField(kAuthorizerCallback, fn);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 3652,
+          "expression": "db->object()->GetInternalField(kAuthorizerCallback).template As<Value>();"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 4629,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 4655,
+          "expression": "obj->SetInternalField(kDatabaseObject, database->object());"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 4667,
+          "expression": "args.This()->GetInternalField(kDatabaseObject).As<Value>());"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 4938,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 5007,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 5185,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 5359,
+          "expression": "db_tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_stat_watcher.cc",
+      "bytes": 4631,
+      "sha256": "58d48a36f5773de273b65c248a77077853123fe9bdce25cd8df6470456c5a8f7",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 53,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 55,
+          "expression": "t->Inherit(HandleWrap::GetConstructorTemplate(isolate_data));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_trace_events.cc",
+      "bytes": 8004,
+      "sha256": "d49d2ee967961a72bc879fb4eb228f2670b58559a03619800fad6650b6efdc5e",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 180,
+          "expression": "category_set->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": true
+    },
+    {
+      "upstreamPath": "src/node_url_pattern.cc",
+      "bytes": 26613,
+      "sha256": "94ec4e5c41a86148604d33991e5541b09017e039899bcf5fc472f0c31dfcaf66",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 701,
+          "expression": "instance_template->SetInternalFieldCount(URLPattern::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_v8.cc",
+      "bytes": 34971,
+      "sha256": "6b0e6f3b7f1cb0fcc47dd73086f20755e52e1a6b0f095ebf79b2c24d5f23f03d",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 838,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(GCProfiler::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_wasi.cc",
+      "bytes": 45690,
+      "sha256": "8d7b319186e7bc86ecfc91f3e57304cca4c997fd44cb301747b6c39037ba5d12",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 1303,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount(WASI::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_wasm_web_api.cc",
+      "bytes": 7335,
+      "sha256": "2098159f83c434dbfc981379c06c9e86caddb5d6143e10619b6f4eb4ba6b2343",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 31,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_watchdog.cc",
+      "bytes": 30476,
+      "sha256": "96e0f250e6deaa33288b064605c325742f4fe7d2747e7fa6eb43dae9b780f7a1",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 612,
+          "expression": "constructor->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 614,
+          "expression": "constructor->Inherit(HandleWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_webstorage.cc",
+      "bytes": 28241,
+      "sha256": "867ec31bfaea3fe28ff5057a4f0beda45b5954200fe6e7c34c1c70dc60d86220",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 770,
+          "expression": "inst_tmpl->SetInternalFieldCount(Storage::kInternalFieldCount);"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_worker.cc",
+      "bytes": 60273,
+      "sha256": "947f09b9626c3657fb9e1c314a5d2ba17404f29cba36da08d9c19ba439f9c042",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 1519,
+          "expression": "w->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 1521,
+          "expression": "w->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1545,
+          "expression": "wst->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 1547,
+          "expression": "wst->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1559,
+          "expression": "wst->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 1561,
+          "expression": "wst->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1573,
+          "expression": "wst->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 1575,
+          "expression": "wst->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1586,
+          "expression": "wst->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 1588,
+          "expression": "wst->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 1600,
+          "expression": "wst->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 1602,
+          "expression": "wst->Inherit(AsyncWrap::GetConstructorTemplate(isolate_data));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/node_zlib.cc",
+      "bytes": 79780,
+      "sha256": "aa23343f3d6740eade97d6ddae8988b030bfd0ef82e6597da172c7234c5dc96e",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 668,
+          "expression": "object()->GetInternalField(kWriteJSCallback).template As<Value>();"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 735,
+          "expression": "object()->SetInternalField(kWriteJSCallback, write_js_callback);"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 2063,
+          "expression": "z->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 2065,
+          "expression": "z->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": true
+    },
+    {
+      "upstreamPath": "src/pipe_wrap.cc",
+      "bytes": 9614,
+      "sha256": "e46590ec6d56628629b880ecbdf43f1219e595a465cb802fee1df3390a20d619",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 77,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(PipeWrap::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 79,
+          "expression": "t->Inherit(LibuvStreamWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/process_wrap.cc",
+      "bytes": 13744,
+      "sha256": "58f83bfee42569184975982841666dc6e5dfae1bb96dbe957b56f072c56e4da2",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 73,
+          "expression": "constructor->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 76,
+          "expression": "constructor->Inherit(HandleWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/quic/defs.h",
+      "bytes": 15669,
+      "sha256": "7ce825f149eaf187410d92e334fc13d2922eb232f2643c35f2d8c13c4f99f517",
+      "sites": [
+        {
+          "kind": "templateInheritance",
+          "line": 226,
+          "expression": "#define JS_INHERIT(name) tmpl->Inherit(name::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 229,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount(kInternalFieldCount);        \\"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 233,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount(fields);                     \\"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/signal_wrap.cc",
+      "bytes": 5887,
+      "sha256": "d7dd9888ebb0fddb0fc5e350c36ea02c018eb71cb410a01c6fecbf5a3a7b5bbe",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 58,
+          "expression": "constructor->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 60,
+          "expression": "constructor->Inherit(HandleWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/stream_base-inl.h",
+      "bytes": 5373,
+      "sha256": "5b25202a2b4eac9b374add0f1c2e4422ee1b16a836e983b144b40ff1d7959387",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 21,
+          "expression": "CHECK_EQ(req_wrap_obj->GetAlignedPointerFromInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 24,
+          "expression": "req_wrap_obj->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 30,
+          "expression": "req_wrap_obj->GetAlignedPointerFromInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 36,
+          "expression": "object()->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 117,
+          "expression": "obj->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 122,
+          "expression": "if (obj->GetAlignedPointerFromInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 126,
+          "expression": "return static_cast<StreamBase*>(obj->GetAlignedPointerFromInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 160,
+          "expression": "obj->SetAlignedPointerInInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 162,
+          "expression": "obj->SetAlignedPointerInInternalField("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/stream_base.cc",
+      "bytes": 31490,
+      "sha256": "01fec064aec0edb72ee9577ac10c7351b56e0e6159a7a456635d0330dcff6704",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 511,
+          "expression": "->GetInternalField(StreamBase::kOnReadFunctionField)"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/stream_pipe.cc",
+      "bytes": 11076,
+      "sha256": "10ffea0f4e23f04e4c1e4bc199055678a860eff344595bb24445266b56139e80",
+      "sites": [
+        {
+          "kind": "templateInheritance",
+          "line": 327,
+          "expression": "pipe->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 328,
+          "expression": "pipe->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/stream_wrap.cc",
+      "bytes": 16194,
+      "sha256": "78cd88f8de6d6b8b238fea051f0bd285aab77cab1f84b86f0dda62de9fdd241c",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 77,
+          "expression": "sw->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 92,
+          "expression": "sw->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 103,
+          "expression": "wwt->SetInternalFieldCount(WriteWrap::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 116,
+          "expression": "ww->Inherit(AsyncWrap::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 165,
+          "expression": "tmpl->Inherit(HandleWrap::GetConstructorTemplate(env));"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 166,
+          "expression": "tmpl->InstanceTemplate()->SetInternalFieldCount("
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/tcp_wrap.cc",
+      "bytes": 24110,
+      "sha256": "a91fcb66061e14752073c93065458444e73fca5e373eb4bf549762acdb9ff727",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 94,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(TCPWrap::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 102,
+          "expression": "t->Inherit(LibuvStreamWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/tty_wrap.cc",
+      "bytes": 5998,
+      "sha256": "09de3d949b5ad557e3ca1167a2e87a0a4f4fa4dd20c049d53eba9a1026764428",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 65,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount(TTYWrap::kInternalFieldCount);"
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 66,
+          "expression": "t->Inherit(LibuvStreamWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    },
+    {
+      "upstreamPath": "src/udp_wrap.cc",
+      "bytes": 27325,
+      "sha256": "270de282c7855996c43865f34727208216d894ce20359241433ad870ecc03200",
+      "sites": [
+        {
+          "kind": "internalFieldLayout",
+          "line": 130,
+          "expression": "return static_cast<UDPWrapBase*>(obj->GetAlignedPointerFromInternalField("
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 150,
+          "expression": "object->SetAlignedPointerInInternalField(UDPWrapBase::kUDPWrapBaseField,"
+        },
+        {
+          "kind": "internalFieldLayout",
+          "line": 169,
+          "expression": "t->InstanceTemplate()->SetInternalFieldCount("
+        },
+        {
+          "kind": "templateInheritance",
+          "line": 223,
+          "expression": "t->Inherit(HandleWrap::GetConstructorTemplate(env));"
+        }
+      ],
+      "importedSource": false
+    }
+  ],
+  "inheritanceSites": 45,
+  "internalFieldSites": 162
+}

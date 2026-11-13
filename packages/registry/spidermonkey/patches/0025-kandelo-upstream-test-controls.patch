@@ -1,0 +1,46 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -186,6 +186,7 @@
+ #include "shell/jsoptparse.h"
+ #include "shell/jsshell.h"
+ #include "shell/kandelo-node-bootstrap.h"
++#include "shell/node-upstream/private-key-test-api.h"
+ #include "shell/OSObject.h"
+ #include "shell/ShellModuleObjectWrapper.h"
+ #include "shell/WasmTesting.h"
+@@ -14133,6 +14134,16 @@
+   /* |scriptArgs| gets bound on the global before any code is run. */
+   if (!BindScriptArgs(cx, op)) {
+     return false;
++  }
++
++  if (op->getBoolOption("kandelo-test-upstream")) {
++    if (IsKandeloNodeMode()) {
++      JS_ReportErrorASCII(cx, "upstream test controls require JS-shell mode");
++      return false;
++    }
++    if (!kandelo::node::DefinePrivateKeyTestAPI(cx)) {
++      return false;
++    }
+   }
+ 
+   if (IsKandeloNodeMode() && !RunKandeloNodeBootstrap(cx)) {
+@@ -15282,6 +15293,8 @@
+       !op.addBoolOption('\0', "disable-oom-functions",
+                         "Disable functions that cause "
+                         "artificial OOMs") ||
++      !op.addBoolOption('\0', "kandelo-test-upstream",
++                        "Expose privileged native controls for upstream integration tests") ||
+       !op.addBoolOption('\0', "no-threads", "Disable helper threads") ||
+       !op.addBoolOption(
+           '\0', "no-jit-backend",
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -30,6 +30,7 @@
+ SOURCES += [
+     "node-upstream/builtin-compiler.cpp",
+     "node-upstream/builtin-source-registry.cpp",
++    "node-upstream/private-key-test-api.cpp",
+ ]
+ 
+ if CONFIG["FUZZING_INTERFACES"]:

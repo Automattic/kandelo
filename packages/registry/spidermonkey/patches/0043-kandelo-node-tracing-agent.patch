@@ -1,0 +1,124 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -48,6 +48,15 @@
+     "node-upstream/string-bytes-upstream.cpp",
+     "node-upstream/task-queue.cpp",
+     "node-upstream/timers.cpp",
++    "node-upstream/trace-agent-legacy-upstream.cpp",
++    "node-upstream/trace-agent-platform.cpp",
++    "node-upstream/trace-agent-test-api.cpp",
++    "node-upstream/trace-agent-upstream.cpp",
++    "node-upstream/trace-native.cpp",
++    "node-upstream/trace-node-trace-buffer-upstream.cpp",
++    "node-upstream/trace-node-trace-writer-upstream.cpp",
++    "node-upstream/trace-trace-event-helper-upstream.cpp",
++    "node-upstream/trace-traced-value-upstream.cpp",
+     "node-upstream/types.cpp",
+ ]
+ 
+@@ -106,3 +115,48 @@
+ SOURCES["node-upstream/process-versions.cpp"].flags += ["-std=c++20"]
+ SOURCES["node-upstream/encoding-upstream.cpp"].flags += ["-std=c++20"]
+ SOURCES["node-upstream/icu-upstream.cpp"].flags += ["-std=c++20"]
++
++SOURCES["node-upstream/trace-agent-legacy-upstream.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++]
++
++SOURCES["node-upstream/trace-agent-platform.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++]
++
++SOURCES["node-upstream/trace-agent-test-api.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++]
++
++SOURCES["node-upstream/trace-agent-upstream.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++]
++
++SOURCES["node-upstream/trace-native.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++]
++
++SOURCES["node-upstream/trace-node-trace-buffer-upstream.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++]
++
++SOURCES["node-upstream/trace-node-trace-writer-upstream.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++]
++
++SOURCES["node-upstream/trace-trace-event-helper-upstream.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++]
++
++SOURCES["node-upstream/trace-traced-value-upstream.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++]
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -191,6 +191,7 @@
+ #include "shell/node-upstream/private-key-test-api.h"
+ #include "shell/node-upstream/task-queue.h"
+ #include "shell/node-upstream/timers.h"
++#include "shell/node-upstream/trace-shutdown.h"
+ #include "shell/OSObject.h"
+ #include "shell/ShellModuleObjectWrapper.h"
+ #include "shell/WasmTesting.h"
+@@ -14916,7 +14917,10 @@
+   JS_SetAccumulateTelemetryCallback(cx, AccumulateTelemetryDataCallback);
+   JS_SetSetUseCounterCallback(cx, SetUseCounterCallback);
+ 
+-  auto destroyCx = MakeScopeExit([cx] { JS_DestroyContext(cx); });
++  auto destroyCx = MakeScopeExit([cx] {
++    kandelo::node::ShutdownTraceProcess();
++    JS_DestroyContext(cx);
++  });
+ 
+   UniquePtr<ShellContext> sc =
+       MakeUnique<ShellContext>(cx, ShellContext::MainThread);
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -43,6 +43,7 @@
+ # We don't bother checking files in these directories, because they're (a) auxiliary or (b)
+ # imported code that doesn't follow our coding style.
+ ignored_js_src_dirs = [
++    "js/src/shell/node-upstream/tracing-upstream/",  # complete verified Node native sources
+     "js/src/shell/node-upstream/process-versions-deps/",  # complete resolved library headers
+     "js/src/shell/node-upstream/codecs-upstream/",  # complete verified Node native sources
+     "js/src/shell/node-upstream/options-upstream/",  # complete verified Node native sources
+@@ -60,6 +61,24 @@
+ # We ignore #includes of these files, because they don't follow the usual rules.
+ included_inclnames_to_ignore = set(
+     [
++        "shell/node-upstream/tracing-upstream/node_mutex.h",
++        "shell/node-upstream/tracing-upstream/node_trace_events.cc",
++        "shell/node-upstream/tracing-upstream/node_version.h",
++        "shell/node-upstream/tracing-upstream/tracing/agent.cc",
++        "shell/node-upstream/tracing-upstream/tracing/agent.h",
++        "shell/node-upstream/tracing-upstream/tracing/agent_legacy.cc",
++        "shell/node-upstream/tracing-upstream/tracing/agent_legacy.h",
++        "shell/node-upstream/tracing-upstream/tracing/node_trace_buffer.cc",
++        "shell/node-upstream/tracing-upstream/tracing/node_trace_buffer.h",
++        "shell/node-upstream/tracing-upstream/tracing/node_trace_writer.cc",
++        "shell/node-upstream/tracing-upstream/tracing/node_trace_writer.h",
++        "shell/node-upstream/tracing-upstream/tracing/trace_event.h",
++        "shell/node-upstream/tracing-upstream/tracing/trace_event_helper.cc",
++        "shell/node-upstream/tracing-upstream/tracing/trace_event_helper.h",
++        "shell/node-upstream/tracing-upstream/tracing/trace_event_legacy.h",
++        "shell/node-upstream/tracing-upstream/tracing/trace_event_legacy_inl.h",
++        "shell/node-upstream/tracing-upstream/tracing/traced_value.cc",
++        "shell/node-upstream/tracing-upstream/tracing/traced_value.h",
+         "shell/node-upstream/codecs-upstream/encoding.cc",
+         "shell/node-upstream/codecs-upstream/node_i18n.cc",
+         "shell/node-upstream/codecs-upstream/node_i18n.h",

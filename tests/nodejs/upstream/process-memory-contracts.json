@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "scope": "Startup-required process memory prerequisites; source ownership audit only, no memory backend implementation or runtime support",
+  "completeBindingContract": false,
+  "runtimeValidated": false,
+  "upstreamConsumers": [
+    "src/node_process_methods.cc: MemoryUsage/Rss/GetConstrainedMemory/GetAvailableMemory",
+    "lib/internal/process/per_thread.js: memoryUsage/resourceUsage/availableMemory/constrainedMemory"
+  ],
+  "nativeInterfaces": [
+    "HeapStatistics ctor/dtor/total_heap_size/used_heap_size/external_memory",
+    "Isolate::GetHeapStatistics(HeapStatistics*)",
+    "IsolateData::node_allocator()",
+    "NodeArrayBufferAllocator::total_mem_usage()",
+    "uv_resident_set_memory/uv_get_constrained_memory/uv_get_available_memory"
+  ],
+  "sourceReview": {
+    "scope": "Source-only owning-layer memory review; no backend implementation, build or runtime proof",
+    "sources": [
+      {
+        "path": ".context/node-process-memory/source/node/node_internals.h",
+        "bytes": 18334,
+        "sha256": "3674f02a2b459ee579815761816bc450349aef9ff231349f39bca7b6c19ae0c7"
+      },
+      {
+        "path": ".context/node-process-memory/source/node/src/env.cc",
+        "bytes": 99205,
+        "sha256": "1b300917d1ec6e7c93d67638f28e88eda68157f08c22f884e6c4e464750cede8"
+      },
+      {
+        "path": ".context/node-process-memory/source/node/src/api/environment.cc",
+        "bytes": 41700,
+        "sha256": "9c80f4adda1ed6ee32d90818841aba2484e3fc366916dcbb6298289f484ce8dc"
+      },
+      {
+        "path": ".context/node-process-memory/source/mozilla/js/public/GCAPI.h",
+        "bytes": 50769,
+        "sha256": "1431c08b2afe3ec6d76a962b573b8885c691baab7be839997b963d531d40bcb7"
+      },
+      {
+        "path": ".context/node-process-memory/source/mozilla/js/public/MemoryFunctions.h",
+        "bytes": 3148,
+        "sha256": "4f4d66fdf6cd73df78dd74b8a036e5085b51c0f9e472a635bbb1398b26aa9b1b"
+      },
+      {
+        "path": ".context/node-process-memory/source/mozilla/js/public/MemoryMetrics.h",
+        "bytes": 30266,
+        "sha256": "7a48a8b1584ef30cf1f09fa89d50cd085b75121f173e2ea9d49923bf75024dab"
+      },
+      {
+        "path": ".context/node-process-memory/source/mozilla/js/public/Utility.h",
+        "bytes": 24538,
+        "sha256": "45792b988d7e8fcc8ba79f9720826a1f381292a74d7f89582fb4732434893ab4"
+      },
+      {
+        "path": ".context/node-process-memory/source/mozilla/js/src/vm/ArrayBufferObject.h",
+        "bytes": 36237,
+        "sha256": "17baf1d92d08f2bd97ba6ac00a90be917456b2281c61b5219cc7281663689687"
+      },
+      {
+        "path": ".context/node-process-memory/source/mozilla/js/src/vm/SharedArrayObject.cpp",
+        "bytes": 36169,
+        "sha256": "06b8461b69227afb322b9d36546f28203d9199b566f24762badd36546be3c5b3"
+      },
+      {
+        "path": ".context/node-process-memory/source/mozilla/js/src/vm/NativeObject.cpp",
+        "bytes": 99814,
+        "sha256": "b05464990eae563947ef7581b3b14e8b2a4f0335e5f0a704675dfb664da90b32"
+      },
+      {
+        "path": ".context/node-process-memory/source/mozilla/js/src/vm/MemoryMetrics.cpp",
+        "bytes": 29966,
+        "sha256": "ee09adda24ede81073cc0763cd94b65a036fb174b9f27cecbb3bbd2c8361bb72"
+      },
+      {
+        "path": ".context/node-process-memory/source/mozilla/js/src/vm/ArrayBufferObject.cpp",
+        "bytes": 122868,
+        "sha256": "41ce324ccec7b12d86589db3494259b2a5046480c9a070ad0609c44bd8a750b6"
+      },
+      {
+        "path": ".context/node-process-memory/source/mozilla/js/src/gc/GCRuntime.h",
+        "bytes": 54589,
+        "sha256": "09a6fee356b220ff802f09b6cb6bebc757ba5a03f0b5824d35d9c2afbf7b17bd"
+      },
+      {
+        "path": ".context/node-process-memory/source/mozilla/js/src/gc/GC.cpp",
+        "bytes": 174426,
+        "sha256": "db94ae2fb046edc5758c5a64bb6ce1b9e2b83080e86e20a9d82c2ce43b3e2892"
+      }
+    ],
+    "findings": [
+      "Current State.externalBytes only counts explicit ExternalMemoryAccounter users; native BackingStore and ordinary engine buffers are not a complete unified owner account",
+      "Original NodeArrayBufferAllocator tracks actual Allocate/Free/RegisterPointer/UnregisterPointer lifetime, not arbitrary buffer view lengths",
+      "SM ClassInfo combines ordinary object element storage with ArrayBuffer storage in objectsMallocHeapElementsNormal; cannot equate it to arrayBuffers",
+      "SM external buffers are deliberately omitted from standard object memory reporting because their owner must account them",
+      "Existing retained native contents may outlive JavaScript detach; a live-object traversal alone would miss those surviving allocations",
+      "SharedArrayBuffer standard report apportions byteLength/max among refcount holders; this is distinct from origin-allocator ownership",
+      "Raw GC allocation bytes are not RSS or a complete JavaScript/native buffer total",
+      "SM CollectRuntimeStats finishes ongoing GC and helper tasks, traverses whole heap and can fail allocation; mapping its result into a void-style HeapStatistics API requires explicit failure handling",
+      "malloc_usable_size exists in actual musl mallocng/oldmalloc; current SpiderMonkey recipe disables jemalloc. No zero-returning size callback should be used."
+    ],
+    "remaining": [
+      "Design actual allocation-lifetime counters across engine ordinary/shared/native/retained/transferred backings before reporting arrayBuffers/external memory",
+      "Define owning-engine heap categories using genuine SM measurements rather than copying V8 values or equating unrelated counters",
+      "Preserve worker origin ownership, detach/resize/transfer/GC release, shared deduplication and failure semantics",
+      "Kernel rusage/sysinfo gaps remain independent; no kernel/libc or ABI change made"
+    ],
+    "implementationChanged": false,
+    "runtimeValidation": false,
+    "sourceArchives": {
+      "mozillaSha256": "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028",
+      "nodeSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191"
+    }
+  },
+  "measurementContract": {
+    "heapTotal": "Actual owning-engine heap capacity; must account engine allocation categories rather than alias unrelated GC/linear-memory counters",
+    "heapUsed": "Actual occupied owning-engine heap with explicit inclusion/exclusion of out-of-line data; cannot silently substitute allocated arena capacity",
+    "external": "Complete actual native allocations associated with JS ownership, including supported external strings/backings and their lifetimes; current narrow State.externalBytes alone is insufficient",
+    "arrayBuffers": "Actual allocator-owned backing allocations across ordinary/shared/retained/transferred lifetimes; avoid counting views or losing storage after detach",
+    "rss": "Actual guest process resident accounting; GC bytes, Wasm reservation and engine heap are not interchangeable",
+    "systemMemory": "Guest accounting/constrained limits; existing fixed sysinfo values are not truthful totals"
+  },
+  "ownershipValidationRequired": [
+    "ordinary JS ArrayBuffer and typed-array lazy backing allocation",
+    "native Buffer/external/adopted allocation registration and deletion",
+    "shared-origin ownership and exact de-duplication across realms/workers",
+    "detach/native retention, transfer, resizable/growable buffers and final release",
+    "accounting survives JS owner collection until actual backing is freed",
+    "allocation/resize/copy/finalizer/OOM failure and concurrent counter snapshots",
+    "GC/compaction and byte-account balances for all4hosts"
+  ],
+  "layerClassification": {
+    "engineEmbedding": "Incomplete instrumentation and contracts; not a demonstrated SpiderMonkey defect or browser impossibility",
+    "libc": "Actual musl malloc_usable_size available; no fabricated zero callback",
+    "guestKernel": "rusage/sysinfo remain recorded implementation gaps; fixes require reporting deferred-build need before proceeding",
+    "hosts": "No per-host boundary established by this source-only audit; identical-artifact validation needed on Node/Chromium/Firefox/WebKit"
+  },
+  "dependencyOrder": [
+    "reconcile allocation owners/producers/consumers and memory categories",
+    "implement genuine owning-layer counters or supported engine measurements with honest failure handling",
+    "bind native HeapStatistics/allocator/libuv interfaces only to those real owners",
+    "validate on all4hosts through original process methods"
+  ],
+  "broaderRoadmapExecutionAuthorized": false
+}

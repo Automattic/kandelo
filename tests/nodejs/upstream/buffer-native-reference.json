@@ -1,0 +1,1888 @@
+{
+  "native": {
+    "path": ".scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "code": 0,
+  "stdout": "{\"cases\":31,\"failures\":0,\"observations\":[{\"name\":\"shared-native-export-descriptors-after-principal-setter-removal\",\"status\":\"pass\",\"detail\":{\"atob\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"atob\",\"length\":0,\"type\":\"function\"}},\"btoa\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"btoa\",\"length\":0,\"type\":\"function\"}},\"byteLengthUtf8\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"copy\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"compare\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"compareOffset\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"compareOffset\",\"length\":0,\"type\":\"function\"}},\"fill\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"fill\",\"length\":0,\"type\":\"function\"}},\"indexOfBuffer\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"indexOfBuffer\",\"length\":0,\"type\":\"function\"}},\"indexOfNumber\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"indexOfString\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"indexOfString\",\"length\":0,\"type\":\"function\"}},\"copyArrayBuffer\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"createUnsafeArrayBuffer\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"createUnsafeArrayBuffer\",\"length\":0,\"type\":\"function\"}},\"arrayBufferAlignedOffset\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"arrayBufferAlignedOffset\",\"length\":0,\"type\":\"function\"}},\"swap16\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"swap32\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"swap64\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"isUtf8\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"isAscii\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"isLatin1\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"mask\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"stringLengthUtf8\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"kMaxLength\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"type\":\"number\"}},\"kStringMaxLength\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"type\":\"number\"}},\"asciiSlice\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"asciiSlice\",\"length\":0,\"type\":\"function\"}},\"base64Slice\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"base64Slice\",\"length\":0,\"type\":\"function\"}},\"base64urlSlice\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"base64urlSlice\",\"length\":0,\"type\":\"function\"}},\"latin1Slice\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"latin1Slice\",\"length\":0,\"type\":\"function\"}},\"hexSlice\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"hexSlice\",\"length\":0,\"type\":\"function\"}},\"ucs2Slice\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"ucs2Slice\",\"length\":0,\"type\":\"function\"}},\"utf8Slice\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"utf8Slice\",\"length\":0,\"type\":\"function\"}},\"base64Write\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"base64Write\",\"length\":0,\"type\":\"function\"}},\"base64urlWrite\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"base64urlWrite\",\"length\":0,\"type\":\"function\"}},\"hexWrite\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"hexWrite\",\"length\":0,\"type\":\"function\"}},\"ucs2Write\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"ucs2Write\",\"length\":0,\"type\":\"function\"}},\"asciiWriteStatic\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"latin1WriteStatic\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"utf8WriteStatic\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"\",\"length\":0,\"type\":\"function\"}},\"setDetachKey\":{\"writable\":true,\"enumerable\":true,\"configurable\":true,\"value\":{\"name\":\"setDetachKey\",\"length\":0,\"type\":\"function\"}}}},{\"name\":\"asciiSlice-real-offset-views-and-defaults\",\"status\":\"pass\",\"detail\":[\"AC)p\\u001f\\u0018\\u0000\\u0000\u007f\",\"C)p\\u001f\\u0018\\u0000\",\"\",{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}},{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}}]},{\"name\":\"base64Slice-real-offset-views-and-defaults\",\"status\":\"pass\",\"detail\":[\"QcOp8J+YgAD/\",\"w6nwn5iA\",\"\",{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}},{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}}]},{\"name\":\"base64urlSlice-real-offset-views-and-defaults\",\"status\":\"pass\",\"detail\":[\"QcOp8J-YgAD_\",\"w6nwn5iA\",\"\",{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}},{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}}]},{\"name\":\"latin1Slice-real-offset-views-and-defaults\",\"status\":\"pass\",\"detail\":[\"A\u00c3\u00a9\u00f0\u009f\u0098\u0080\\u0000\u00ff\",\"\u00c3\u00a9\u00f0\u009f\u0098\u0080\",\"\",{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}},{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}}]},{\"name\":\"hexSlice-real-offset-views-and-defaults\",\"status\":\"pass\",\"detail\":[\"41c3a9f09f988000ff\",\"c3a9f09f9880\",\"\",{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}},{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}}]},{\"name\":\"ucs2Slice-real-offset-views-and-defaults\",\"status\":\"pass\",\"detail\":[\"\uc341\uf0a9\u989f\u0080\",\"\ua9c3\u9ff0\u8098\",\"\",{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}},{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}}]},{\"name\":\"utf8Slice-real-offset-views-and-defaults\",\"status\":\"pass\",\"detail\":[\"A\u00e9\ud83d\ude00\\u0000\ufffd\",\"\u00e9\ud83d\ude00\",\"\",{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}},{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"Index out of range\"}}]},{\"name\":\"asciiWriteStatic-bounded-writes-and-native-errors\",\"status\":\"pass\",\"detail\":{\"written\":4,\"bytes\":[170,170,170,65,233,61,0,170,170,170,170,170,170,170,170,170,170,170],\"empty\":0,\"past\":{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_BUFFER_OUT_OF_BOUNDS\",\"message\":\"\\\"offset\\\" is outside of buffer bounds\"}},\"type\":{\"error\":{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\",\"message\":\"argument must be a string\"}}}},{\"name\":\"latin1WriteStatic-bounded-writes-and-native-errors\",\"status\":\"pass\",\"detail\":{\"written\":4,\"bytes\":[170,170,170,65,233,61,0,170,170,170,170,170,170,170,170,170,170,170],\"empty\":0,\"past\":{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_BUFFER_OUT_OF_BOUNDS\",\"message\":\"\\\"offset\\\" is outside of buffer bounds\"}},\"type\":{\"error\":{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\",\"message\":\"argument must be a string\"}}}},{\"name\":\"utf8WriteStatic-bounded-writes-and-native-errors\",\"status\":\"pass\",\"detail\":{\"written\":7,\"bytes\":[170,170,170,65,195,169,240,159,152,128,170,170,170,170,170,170,170,170],\"empty\":0,\"past\":{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_BUFFER_OUT_OF_BOUNDS\",\"message\":\"\\\"offset\\\" is outside of buffer bounds\"}},\"type\":{\"error\":{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\",\"message\":\"argument must be a string\"}}}},{\"name\":\"ucs2Write-bounded-writes-and-native-errors\",\"status\":\"pass\",\"detail\":{\"written\":8,\"bytes\":[170,170,170,65,0,233,0,61,216,0,222,170,170,170,170,170,170,170],\"empty\":0,\"past\":{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_BUFFER_OUT_OF_BOUNDS\",\"message\":\"\\\"offset\\\" is outside of buffer bounds\"}},\"type\":{\"error\":{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\",\"message\":\"argument must be a string\"}}}},{\"name\":\"base64Write-bounded-writes-and-native-errors\",\"status\":\"pass\",\"detail\":{\"written\":7,\"bytes\":[170,170,170,65,195,169,240,159,152,128,170,170,170,170,170,170,170,170],\"empty\":0,\"past\":{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_BUFFER_OUT_OF_BOUNDS\",\"message\":\"\\\"offset\\\" is outside of buffer bounds\"}},\"type\":{\"error\":{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\",\"message\":\"argument must be a string\"}}}},{\"name\":\"base64urlWrite-bounded-writes-and-native-errors\",\"status\":\"pass\",\"detail\":{\"written\":7,\"bytes\":[170,170,170,65,195,169,240,159,152,128,170,170,170,170,170,170,170,170],\"empty\":0,\"past\":{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_BUFFER_OUT_OF_BOUNDS\",\"message\":\"\\\"offset\\\" is outside of buffer bounds\"}},\"type\":{\"error\":{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\",\"message\":\"argument must be a string\"}}}},{\"name\":\"hexWrite-bounded-writes-and-native-errors\",\"status\":\"pass\",\"detail\":{\"written\":7,\"bytes\":[170,170,170,65,195,169,240,159,152,128,170,170,170,170,170,170,170,170],\"empty\":0,\"past\":{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_BUFFER_OUT_OF_BOUNDS\",\"message\":\"\\\"offset\\\" is outside of buffer bounds\"}},\"type\":{\"error\":{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\",\"message\":\"argument must be a string\"}}}},{\"name\":\"utf8-byte-length-real-codeunits-and-long-strings\",\"status\":\"pass\",\"detail\":[0,3,2,4,7,5400]},{\"name\":\"native-fill-encoding-buffer-alias-and-invalid-results\",\"status\":\"pass\",\"detail\":[{\"result\":{\"value\":\"undefined\"},\"bytes\":[170,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,170]},{\"result\":{\"value\":\"undefined\"},\"bytes\":[170,195,169,240,159,152,128,195,169,240,159,152,128,195,169,240,170]},{\"result\":{\"value\":\"undefined\"},\"bytes\":[170,65,0,45,78,65,0,45,78,65,0,45,78,65,0,45,170]},{\"result\":{\"value\":\"undefined\"},\"bytes\":[170,255,1,255,1,255,1,255,1,255,1,255,1,255,1,255,170]},{\"result\":{\"value\":\"undefined\"},\"bytes\":[170,1,2,3,1,2,3,1,2,3,1,2,3,1,2,3,170]},{\"result\":{\"value\":-1},\"bytes\":[170,170,170,170,170,170,170,170,170,170,170,170,170,170,170,170,170]},{\"result\":{\"value\":-1},\"bytes\":[170,170,170,170,170,170,170,170,170,170,170,170,170,170,170,170,170]},{\"result\":\"undefined\",\"bytes\":[1,2,1,2,1,2,1,2]},{\"value\":-2},{\"error\":{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\",\"message\":\"argument must be a buffer\"}}]},{\"name\":\"copy-overlap-view-offset-and-shared-combinations\",\"status\":\"pass\",\"detail\":[{\"copied\":4,\"bytes\":[170,170,170,4,5,6,7,170,170,170]},{\"copied\":4,\"bytes\":[170,170,170,4,5,6,7,170,170,170]},{\"copied\":4,\"bytes\":[170,170,170,4,5,6,7,170,170,170]},{\"copied\":4,\"bytes\":[170,170,170,4,5,6,7,170,170,170]},{\"copied\":6,\"bytes\":[1,2,1,2,3,4,5,6]},0,0]},{\"name\":\"copy-arraybuffer-uses-real-backing-bytes\",\"status\":\"pass\",\"detail\":[170,170,2,3,4,170,170,170]},{\"name\":\"compare-whole-and-offset-ranges\",\"status\":\"pass\",\"detail\":[-1,1,0,-1,0,{\"error\":{\"name\":\"RangeError\",\"code\":\"ERR_OUT_OF_RANGE\",\"message\":\"The value of \\\"targetStart\\\" is out of range.\"}},{\"error\":{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\",\"message\":\"argument must be a buffer\"}}]},{\"name\":\"search-buffer-string-and-number-with-range-and-direction\",\"status\":\"pass\",\"detail\":[[0,0,0],[-1,-1,-1],[0,0,0],[2,2,2],[-1,-1,-1],[-1,-1,-1],[2,2,2],[0,0,0],[0,0,0],[2,2,2],[4,4],[4,4]]},{\"name\":\"swap16-mutates-actual-shared-and-offset-bytes\",\"status\":\"pass\",\"detail\":[[0,1,3,2,5,4,7,6,9,8,11,10,13,12,15,14,17,16,18,19],[0,1,3,2,5,4,7,6,9,8,11,10,13,12,15,14,17,16,18,19]]},{\"name\":\"swap32-mutates-actual-shared-and-offset-bytes\",\"status\":\"pass\",\"detail\":[[0,1,5,4,3,2,9,8,7,6,13,12,11,10,17,16,15,14,18,19],[0,1,5,4,3,2,9,8,7,6,13,12,11,10,17,16,15,14,18,19]]},{\"name\":\"swap64-mutates-actual-shared-and-offset-bytes\",\"status\":\"pass\",\"detail\":[[0,1,9,8,7,6,5,4,3,2,17,16,15,14,13,12,11,10,18,19],[0,1,9,8,7,6,5,4,3,2,17,16,15,14,13,12,11,10,18,19]]},{\"name\":\"utf8-ascii-latin1-validation-and-replacement-length\",\"status\":\"pass\",\"detail\":[[true,true,0],[true,true,0],[true,true,2],[true,true,2],[true,false,1],[true,false,1],[true,false,2],[true,false,2],[false,false,3],[false,false,3],[false,false,3],[false,false,3],[true,false,1],[true,true,true,false,false,true]]},{\"name\":\"mask-overlapping-and-shared-real-memory\",\"status\":\"pass\",\"detail\":[{\"done\":true,\"bytes\":[239,191,175,221,235,187,171,217,231,183,167,213,227,179,163,209,255,175,191,205,251,171,187,201,247,167,183,197,243,163,179,193,207,159,143,253,203,155,139,249,40,41,42,43,44,45,46,47]},{\"done\":true,\"bytes\":[0,239,191,175,221,235,187,171,217,231,183,167,213,227,179,163,209,255,175,191,205,251,171,187,201,247,167,183,197,243,163,179,193,207,159,143,253,203,155,139,249,41,42,43,44,45,46,47]},{\"done\":true,\"bytes\":[0,1,2,3,239,191,175,221,235,187,171,217,231,183,167,213,227,179,163,209,255,175,191,205,251,171,187,201,247,167,183,197,243,163,179,193,207,159,143,253,203,155,139,249,44,45,46,47]},{\"done\":true,\"bytes\":[239,191,175,221,235,187,171,217,231,183,167,213,227,179,163,209,255,175,191,205,251,171,187,201,247,167,183,197,243,163,179,193,207,159,143,253,203,155,139,249,40,41,42,43,44,45,46,47]},{\"done\":true,\"bytes\":[0,239,191,175,221,235,187,171,217,231,183,167,213,227,179,163,209,255,175,191,205,251,171,187,201,247,167,183,197,243,163,179,193,207,159,143,253,203,155,139,249,41,42,43,44,45,46,47]},{\"done\":true,\"bytes\":[0,1,2,3,239,191,175,221,235,187,171,217,231,183,167,213,227,179,163,209,255,175,191,205,251,171,187,201,247,167,183,197,243,163,179,193,207,159,143,253,203,155,139,249,44,45,46,47]}]},{\"name\":\"atob-btoa-native-positive-negative-and-codeunit-results\",\"status\":\"pass\",\"detail\":{\"decoded\":[\"\",\"a\",\"a\",\"a\",-1,-2,-2,-2],\"encoded\":[\"\",\"YWJj\",\"6f8=\",-1,-1,\"YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh\"],\"type\":{\"error\":{\"name\":\"TypeError\",\"code\":\"ERR_INVALID_ARG_TYPE\",\"message\":\"argument must be a string\"}}}},{\"name\":\"unsafe-allocation-real-length-writable-bytes-and-argument-errors\",\"status\":\"pass\",\"detail\":{\"lengths\":[0,1,4096],\"missing\":{\"error\":{\"name\":\"RangeError\",\"message\":\"Invalid array buffer length\"}},\"extra\":{\"error\":{\"name\":\"RangeError\",\"message\":\"Invalid array buffer length\"}}}},{\"name\":\"aligned-offset-uses-stable-storage-through-moving-gc\",\"status\":\"pass\",\"detail\":true},{\"name\":\"coercion-reentry-can-detach-buffer-without-pinning\",\"status\":\"pass\",\"detail\":{\"result\":\"\\r\\u0015\\u0002\ufffd\",\"reads\":1}},{\"name\":\"coercion-reentry-keeps-original-resizable-allocation-live\",\"status\":\"pass\",\"detail\":{\"result\":\"aaaa\",\"reads\":1,\"length\":32}}]}\n",
+  "stderr": "",
+  "detail": {
+    "cases": 31,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "shared-native-export-descriptors-after-principal-setter-removal",
+        "status": "pass",
+        "detail": {
+          "atob": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "atob",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "btoa": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "btoa",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "byteLengthUtf8": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "copy": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "compare": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "compareOffset": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "compareOffset",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "fill": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "fill",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "indexOfBuffer": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "indexOfBuffer",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "indexOfNumber": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "indexOfString": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "indexOfString",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "copyArrayBuffer": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "createUnsafeArrayBuffer": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "createUnsafeArrayBuffer",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "arrayBufferAlignedOffset": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "arrayBufferAlignedOffset",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "swap16": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "swap32": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "swap64": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "isUtf8": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "isAscii": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "isLatin1": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "mask": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "stringLengthUtf8": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "kMaxLength": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "type": "number"
+            }
+          },
+          "kStringMaxLength": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "type": "number"
+            }
+          },
+          "asciiSlice": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "asciiSlice",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "base64Slice": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "base64Slice",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "base64urlSlice": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "base64urlSlice",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "latin1Slice": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "latin1Slice",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "hexSlice": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "hexSlice",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "ucs2Slice": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "ucs2Slice",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "utf8Slice": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "utf8Slice",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "base64Write": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "base64Write",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "base64urlWrite": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "base64urlWrite",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "hexWrite": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "hexWrite",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "ucs2Write": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "ucs2Write",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "asciiWriteStatic": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "latin1WriteStatic": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "utf8WriteStatic": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "",
+              "length": 0,
+              "type": "function"
+            }
+          },
+          "setDetachKey": {
+            "writable": true,
+            "enumerable": true,
+            "configurable": true,
+            "value": {
+              "name": "setDetachKey",
+              "length": 0,
+              "type": "function"
+            }
+          }
+        }
+      },
+      {
+        "name": "asciiSlice-real-offset-views-and-defaults",
+        "status": "pass",
+        "detail": [
+          "AC)p\u001f\u0018\u0000\u0000\u007f",
+          "C)p\u001f\u0018\u0000",
+          "",
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          },
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          }
+        ]
+      },
+      {
+        "name": "base64Slice-real-offset-views-and-defaults",
+        "status": "pass",
+        "detail": [
+          "QcOp8J+YgAD/",
+          "w6nwn5iA",
+          "",
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          },
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          }
+        ]
+      },
+      {
+        "name": "base64urlSlice-real-offset-views-and-defaults",
+        "status": "pass",
+        "detail": [
+          "QcOp8J-YgAD_",
+          "w6nwn5iA",
+          "",
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          },
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          }
+        ]
+      },
+      {
+        "name": "latin1Slice-real-offset-views-and-defaults",
+        "status": "pass",
+        "detail": [
+          "A\u00c3\u00a9\u00f0\u009f\u0098\u0080\u0000\u00ff",
+          "\u00c3\u00a9\u00f0\u009f\u0098\u0080",
+          "",
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          },
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          }
+        ]
+      },
+      {
+        "name": "hexSlice-real-offset-views-and-defaults",
+        "status": "pass",
+        "detail": [
+          "41c3a9f09f988000ff",
+          "c3a9f09f9880",
+          "",
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          },
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          }
+        ]
+      },
+      {
+        "name": "ucs2Slice-real-offset-views-and-defaults",
+        "status": "pass",
+        "detail": [
+          "\uc341\uf0a9\u989f\u0080",
+          "\ua9c3\u9ff0\u8098",
+          "",
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          },
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          }
+        ]
+      },
+      {
+        "name": "utf8Slice-real-offset-views-and-defaults",
+        "status": "pass",
+        "detail": [
+          "A\u00e9\ud83d\ude00\u0000\ufffd",
+          "\u00e9\ud83d\ude00",
+          "",
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          },
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "Index out of range"
+            }
+          }
+        ]
+      },
+      {
+        "name": "asciiWriteStatic-bounded-writes-and-native-errors",
+        "status": "pass",
+        "detail": {
+          "written": 4,
+          "bytes": [
+            170,
+            170,
+            170,
+            65,
+            233,
+            61,
+            0,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170
+          ],
+          "empty": 0,
+          "past": {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_BUFFER_OUT_OF_BOUNDS",
+              "message": "\"offset\" is outside of buffer bounds"
+            }
+          },
+          "type": {
+            "error": {
+              "name": "TypeError",
+              "code": "ERR_INVALID_ARG_TYPE",
+              "message": "argument must be a string"
+            }
+          }
+        }
+      },
+      {
+        "name": "latin1WriteStatic-bounded-writes-and-native-errors",
+        "status": "pass",
+        "detail": {
+          "written": 4,
+          "bytes": [
+            170,
+            170,
+            170,
+            65,
+            233,
+            61,
+            0,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170
+          ],
+          "empty": 0,
+          "past": {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_BUFFER_OUT_OF_BOUNDS",
+              "message": "\"offset\" is outside of buffer bounds"
+            }
+          },
+          "type": {
+            "error": {
+              "name": "TypeError",
+              "code": "ERR_INVALID_ARG_TYPE",
+              "message": "argument must be a string"
+            }
+          }
+        }
+      },
+      {
+        "name": "utf8WriteStatic-bounded-writes-and-native-errors",
+        "status": "pass",
+        "detail": {
+          "written": 7,
+          "bytes": [
+            170,
+            170,
+            170,
+            65,
+            195,
+            169,
+            240,
+            159,
+            152,
+            128,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170
+          ],
+          "empty": 0,
+          "past": {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_BUFFER_OUT_OF_BOUNDS",
+              "message": "\"offset\" is outside of buffer bounds"
+            }
+          },
+          "type": {
+            "error": {
+              "name": "TypeError",
+              "code": "ERR_INVALID_ARG_TYPE",
+              "message": "argument must be a string"
+            }
+          }
+        }
+      },
+      {
+        "name": "ucs2Write-bounded-writes-and-native-errors",
+        "status": "pass",
+        "detail": {
+          "written": 8,
+          "bytes": [
+            170,
+            170,
+            170,
+            65,
+            0,
+            233,
+            0,
+            61,
+            216,
+            0,
+            222,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170
+          ],
+          "empty": 0,
+          "past": {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_BUFFER_OUT_OF_BOUNDS",
+              "message": "\"offset\" is outside of buffer bounds"
+            }
+          },
+          "type": {
+            "error": {
+              "name": "TypeError",
+              "code": "ERR_INVALID_ARG_TYPE",
+              "message": "argument must be a string"
+            }
+          }
+        }
+      },
+      {
+        "name": "base64Write-bounded-writes-and-native-errors",
+        "status": "pass",
+        "detail": {
+          "written": 7,
+          "bytes": [
+            170,
+            170,
+            170,
+            65,
+            195,
+            169,
+            240,
+            159,
+            152,
+            128,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170
+          ],
+          "empty": 0,
+          "past": {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_BUFFER_OUT_OF_BOUNDS",
+              "message": "\"offset\" is outside of buffer bounds"
+            }
+          },
+          "type": {
+            "error": {
+              "name": "TypeError",
+              "code": "ERR_INVALID_ARG_TYPE",
+              "message": "argument must be a string"
+            }
+          }
+        }
+      },
+      {
+        "name": "base64urlWrite-bounded-writes-and-native-errors",
+        "status": "pass",
+        "detail": {
+          "written": 7,
+          "bytes": [
+            170,
+            170,
+            170,
+            65,
+            195,
+            169,
+            240,
+            159,
+            152,
+            128,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170
+          ],
+          "empty": 0,
+          "past": {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_BUFFER_OUT_OF_BOUNDS",
+              "message": "\"offset\" is outside of buffer bounds"
+            }
+          },
+          "type": {
+            "error": {
+              "name": "TypeError",
+              "code": "ERR_INVALID_ARG_TYPE",
+              "message": "argument must be a string"
+            }
+          }
+        }
+      },
+      {
+        "name": "hexWrite-bounded-writes-and-native-errors",
+        "status": "pass",
+        "detail": {
+          "written": 7,
+          "bytes": [
+            170,
+            170,
+            170,
+            65,
+            195,
+            169,
+            240,
+            159,
+            152,
+            128,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170,
+            170
+          ],
+          "empty": 0,
+          "past": {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_BUFFER_OUT_OF_BOUNDS",
+              "message": "\"offset\" is outside of buffer bounds"
+            }
+          },
+          "type": {
+            "error": {
+              "name": "TypeError",
+              "code": "ERR_INVALID_ARG_TYPE",
+              "message": "argument must be a string"
+            }
+          }
+        }
+      },
+      {
+        "name": "utf8-byte-length-real-codeunits-and-long-strings",
+        "status": "pass",
+        "detail": [
+          0,
+          3,
+          2,
+          4,
+          7,
+          5400
+        ]
+      },
+      {
+        "name": "native-fill-encoding-buffer-alias-and-invalid-results",
+        "status": "pass",
+        "detail": [
+          {
+            "result": {
+              "value": "undefined"
+            },
+            "bytes": [
+              170,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              170
+            ]
+          },
+          {
+            "result": {
+              "value": "undefined"
+            },
+            "bytes": [
+              170,
+              195,
+              169,
+              240,
+              159,
+              152,
+              128,
+              195,
+              169,
+              240,
+              159,
+              152,
+              128,
+              195,
+              169,
+              240,
+              170
+            ]
+          },
+          {
+            "result": {
+              "value": "undefined"
+            },
+            "bytes": [
+              170,
+              65,
+              0,
+              45,
+              78,
+              65,
+              0,
+              45,
+              78,
+              65,
+              0,
+              45,
+              78,
+              65,
+              0,
+              45,
+              170
+            ]
+          },
+          {
+            "result": {
+              "value": "undefined"
+            },
+            "bytes": [
+              170,
+              255,
+              1,
+              255,
+              1,
+              255,
+              1,
+              255,
+              1,
+              255,
+              1,
+              255,
+              1,
+              255,
+              1,
+              255,
+              170
+            ]
+          },
+          {
+            "result": {
+              "value": "undefined"
+            },
+            "bytes": [
+              170,
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              1,
+              2,
+              3,
+              170
+            ]
+          },
+          {
+            "result": {
+              "value": -1
+            },
+            "bytes": [
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170
+            ]
+          },
+          {
+            "result": {
+              "value": -1
+            },
+            "bytes": [
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170,
+              170
+            ]
+          },
+          {
+            "result": "undefined",
+            "bytes": [
+              1,
+              2,
+              1,
+              2,
+              1,
+              2,
+              1,
+              2
+            ]
+          },
+          {
+            "value": -2
+          },
+          {
+            "error": {
+              "name": "TypeError",
+              "code": "ERR_INVALID_ARG_TYPE",
+              "message": "argument must be a buffer"
+            }
+          }
+        ]
+      },
+      {
+        "name": "copy-overlap-view-offset-and-shared-combinations",
+        "status": "pass",
+        "detail": [
+          {
+            "copied": 4,
+            "bytes": [
+              170,
+              170,
+              170,
+              4,
+              5,
+              6,
+              7,
+              170,
+              170,
+              170
+            ]
+          },
+          {
+            "copied": 4,
+            "bytes": [
+              170,
+              170,
+              170,
+              4,
+              5,
+              6,
+              7,
+              170,
+              170,
+              170
+            ]
+          },
+          {
+            "copied": 4,
+            "bytes": [
+              170,
+              170,
+              170,
+              4,
+              5,
+              6,
+              7,
+              170,
+              170,
+              170
+            ]
+          },
+          {
+            "copied": 4,
+            "bytes": [
+              170,
+              170,
+              170,
+              4,
+              5,
+              6,
+              7,
+              170,
+              170,
+              170
+            ]
+          },
+          {
+            "copied": 6,
+            "bytes": [
+              1,
+              2,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          },
+          0,
+          0
+        ]
+      },
+      {
+        "name": "copy-arraybuffer-uses-real-backing-bytes",
+        "status": "pass",
+        "detail": [
+          170,
+          170,
+          2,
+          3,
+          4,
+          170,
+          170,
+          170
+        ]
+      },
+      {
+        "name": "compare-whole-and-offset-ranges",
+        "status": "pass",
+        "detail": [
+          -1,
+          1,
+          0,
+          -1,
+          0,
+          {
+            "error": {
+              "name": "RangeError",
+              "code": "ERR_OUT_OF_RANGE",
+              "message": "The value of \"targetStart\" is out of range."
+            }
+          },
+          {
+            "error": {
+              "name": "TypeError",
+              "code": "ERR_INVALID_ARG_TYPE",
+              "message": "argument must be a buffer"
+            }
+          }
+        ]
+      },
+      {
+        "name": "search-buffer-string-and-number-with-range-and-direction",
+        "status": "pass",
+        "detail": [
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            -1,
+            -1,
+            -1
+          ],
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            2,
+            2,
+            2
+          ],
+          [
+            -1,
+            -1,
+            -1
+          ],
+          [
+            -1,
+            -1,
+            -1
+          ],
+          [
+            2,
+            2,
+            2
+          ],
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            2,
+            2,
+            2
+          ],
+          [
+            4,
+            4
+          ],
+          [
+            4,
+            4
+          ]
+        ]
+      },
+      {
+        "name": "swap16-mutates-actual-shared-and-offset-bytes",
+        "status": "pass",
+        "detail": [
+          [
+            0,
+            1,
+            3,
+            2,
+            5,
+            4,
+            7,
+            6,
+            9,
+            8,
+            11,
+            10,
+            13,
+            12,
+            15,
+            14,
+            17,
+            16,
+            18,
+            19
+          ],
+          [
+            0,
+            1,
+            3,
+            2,
+            5,
+            4,
+            7,
+            6,
+            9,
+            8,
+            11,
+            10,
+            13,
+            12,
+            15,
+            14,
+            17,
+            16,
+            18,
+            19
+          ]
+        ]
+      },
+      {
+        "name": "swap32-mutates-actual-shared-and-offset-bytes",
+        "status": "pass",
+        "detail": [
+          [
+            0,
+            1,
+            5,
+            4,
+            3,
+            2,
+            9,
+            8,
+            7,
+            6,
+            13,
+            12,
+            11,
+            10,
+            17,
+            16,
+            15,
+            14,
+            18,
+            19
+          ],
+          [
+            0,
+            1,
+            5,
+            4,
+            3,
+            2,
+            9,
+            8,
+            7,
+            6,
+            13,
+            12,
+            11,
+            10,
+            17,
+            16,
+            15,
+            14,
+            18,
+            19
+          ]
+        ]
+      },
+      {
+        "name": "swap64-mutates-actual-shared-and-offset-bytes",
+        "status": "pass",
+        "detail": [
+          [
+            0,
+            1,
+            9,
+            8,
+            7,
+            6,
+            5,
+            4,
+            3,
+            2,
+            17,
+            16,
+            15,
+            14,
+            13,
+            12,
+            11,
+            10,
+            18,
+            19
+          ],
+          [
+            0,
+            1,
+            9,
+            8,
+            7,
+            6,
+            5,
+            4,
+            3,
+            2,
+            17,
+            16,
+            15,
+            14,
+            13,
+            12,
+            11,
+            10,
+            18,
+            19
+          ]
+        ]
+      },
+      {
+        "name": "utf8-ascii-latin1-validation-and-replacement-length",
+        "status": "pass",
+        "detail": [
+          [
+            true,
+            true,
+            0
+          ],
+          [
+            true,
+            true,
+            0
+          ],
+          [
+            true,
+            true,
+            2
+          ],
+          [
+            true,
+            true,
+            2
+          ],
+          [
+            true,
+            false,
+            1
+          ],
+          [
+            true,
+            false,
+            1
+          ],
+          [
+            true,
+            false,
+            2
+          ],
+          [
+            true,
+            false,
+            2
+          ],
+          [
+            false,
+            false,
+            3
+          ],
+          [
+            false,
+            false,
+            3
+          ],
+          [
+            false,
+            false,
+            3
+          ],
+          [
+            false,
+            false,
+            3
+          ],
+          [
+            true,
+            false,
+            1
+          ],
+          [
+            true,
+            true,
+            true,
+            false,
+            false,
+            true
+          ]
+        ]
+      },
+      {
+        "name": "mask-overlapping-and-shared-real-memory",
+        "status": "pass",
+        "detail": [
+          {
+            "done": true,
+            "bytes": [
+              239,
+              191,
+              175,
+              221,
+              235,
+              187,
+              171,
+              217,
+              231,
+              183,
+              167,
+              213,
+              227,
+              179,
+              163,
+              209,
+              255,
+              175,
+              191,
+              205,
+              251,
+              171,
+              187,
+              201,
+              247,
+              167,
+              183,
+              197,
+              243,
+              163,
+              179,
+              193,
+              207,
+              159,
+              143,
+              253,
+              203,
+              155,
+              139,
+              249,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47
+            ]
+          },
+          {
+            "done": true,
+            "bytes": [
+              0,
+              239,
+              191,
+              175,
+              221,
+              235,
+              187,
+              171,
+              217,
+              231,
+              183,
+              167,
+              213,
+              227,
+              179,
+              163,
+              209,
+              255,
+              175,
+              191,
+              205,
+              251,
+              171,
+              187,
+              201,
+              247,
+              167,
+              183,
+              197,
+              243,
+              163,
+              179,
+              193,
+              207,
+              159,
+              143,
+              253,
+              203,
+              155,
+              139,
+              249,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47
+            ]
+          },
+          {
+            "done": true,
+            "bytes": [
+              0,
+              1,
+              2,
+              3,
+              239,
+              191,
+              175,
+              221,
+              235,
+              187,
+              171,
+              217,
+              231,
+              183,
+              167,
+              213,
+              227,
+              179,
+              163,
+              209,
+              255,
+              175,
+              191,
+              205,
+              251,
+              171,
+              187,
+              201,
+              247,
+              167,
+              183,
+              197,
+              243,
+              163,
+              179,
+              193,
+              207,
+              159,
+              143,
+              253,
+              203,
+              155,
+              139,
+              249,
+              44,
+              45,
+              46,
+              47
+            ]
+          },
+          {
+            "done": true,
+            "bytes": [
+              239,
+              191,
+              175,
+              221,
+              235,
+              187,
+              171,
+              217,
+              231,
+              183,
+              167,
+              213,
+              227,
+              179,
+              163,
+              209,
+              255,
+              175,
+              191,
+              205,
+              251,
+              171,
+              187,
+              201,
+              247,
+              167,
+              183,
+              197,
+              243,
+              163,
+              179,
+              193,
+              207,
+              159,
+              143,
+              253,
+              203,
+              155,
+              139,
+              249,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47
+            ]
+          },
+          {
+            "done": true,
+            "bytes": [
+              0,
+              239,
+              191,
+              175,
+              221,
+              235,
+              187,
+              171,
+              217,
+              231,
+              183,
+              167,
+              213,
+              227,
+              179,
+              163,
+              209,
+              255,
+              175,
+              191,
+              205,
+              251,
+              171,
+              187,
+              201,
+              247,
+              167,
+              183,
+              197,
+              243,
+              163,
+              179,
+              193,
+              207,
+              159,
+              143,
+              253,
+              203,
+              155,
+              139,
+              249,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47
+            ]
+          },
+          {
+            "done": true,
+            "bytes": [
+              0,
+              1,
+              2,
+              3,
+              239,
+              191,
+              175,
+              221,
+              235,
+              187,
+              171,
+              217,
+              231,
+              183,
+              167,
+              213,
+              227,
+              179,
+              163,
+              209,
+              255,
+              175,
+              191,
+              205,
+              251,
+              171,
+              187,
+              201,
+              247,
+              167,
+              183,
+              197,
+              243,
+              163,
+              179,
+              193,
+              207,
+              159,
+              143,
+              253,
+              203,
+              155,
+              139,
+              249,
+              44,
+              45,
+              46,
+              47
+            ]
+          }
+        ]
+      },
+      {
+        "name": "atob-btoa-native-positive-negative-and-codeunit-results",
+        "status": "pass",
+        "detail": {
+          "decoded": [
+            "",
+            "a",
+            "a",
+            "a",
+            -1,
+            -2,
+            -2,
+            -2
+          ],
+          "encoded": [
+            "",
+            "YWJj",
+            "6f8=",
+            -1,
+            -1,
+            "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh"
+          ],
+          "type": {
+            "error": {
+              "name": "TypeError",
+              "code": "ERR_INVALID_ARG_TYPE",
+              "message": "argument must be a string"
+            }
+          }
+        }
+      },
+      {
+        "name": "unsafe-allocation-real-length-writable-bytes-and-argument-errors",
+        "status": "pass",
+        "detail": {
+          "lengths": [
+            0,
+            1,
+            4096
+          ],
+          "missing": {
+            "error": {
+              "name": "RangeError",
+              "message": "Invalid array buffer length"
+            }
+          },
+          "extra": {
+            "error": {
+              "name": "RangeError",
+              "message": "Invalid array buffer length"
+            }
+          }
+        }
+      },
+      {
+        "name": "aligned-offset-uses-stable-storage-through-moving-gc",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "coercion-reentry-can-detach-buffer-without-pinning",
+        "status": "pass",
+        "detail": {
+          "result": "\r\u0015\u0002\ufffd",
+          "reads": 1
+        }
+      },
+      {
+        "name": "coercion-reentry-keeps-original-resizable-allocation-live",
+        "status": "pass",
+        "detail": {
+          "result": "aaaa",
+          "reads": 1,
+          "length": 32
+        }
+      }
+    ]
+  },
+  "scope": "31 original native Buffer observation groups; 30 eligible for exact comparison and one reentrant-detachment native-reference discrepancy retained separately. Post-bootstrap descriptors exclude the initializer-only setter deleted by original node.js.",
+  "inputs": [
+    {
+      "path": "tests/nodejs/upstream/buffer-shared-controls.js",
+      "bytes": 8585,
+      "sha256": "d090a0ea4074ad7710ac63641bf5a36c8784eef1d10cec575655557ab38cd8ea"
+    },
+    {
+      "path": ".context/node-buffer/integration/native-controls.cjs",
+      "bytes": 482,
+      "sha256": "33573029656740836208959a23b9d1eacf1314ff7053fd4dc5bbded4d32ec85a"
+    }
+  ]
+}

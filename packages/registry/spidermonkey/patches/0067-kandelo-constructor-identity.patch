@@ -1,0 +1,116 @@
+--- a/js/src/vm/Realm.h
++++ b/js/src/vm/Realm.h
+@@ -241,6 +241,10 @@
+   // need to use the same lexical environment to persist lexical bindings.
+   js::UniquePtr<js::ObjectWeakMap> nonSyntacticLexicalEnvironments_;
+ 
++  // Construction identity is independent of debugger allocation metadata.
++  // The object key is weak; its actual constructor is live only with that key.
++  js::UniquePtr<js::ObjectWeakMap> constructorIdentity_;
++
+   ObjectRealm(const ObjectRealm&) = delete;
+   void operator=(const ObjectRealm&) = delete;
+ 
+@@ -260,6 +264,10 @@
+   static inline ObjectRealm& get(const JSObject* obj);
+ 
+   explicit ObjectRealm(JS::Zone* zone);
++
++  [[nodiscard]] bool recordConstructorIdentity(JSContext* cx, HandleObject obj,
++                                               HandleObject constructor);
++  JSObject* getConstructorIdentity(JSObject* obj);
+ 
+   void finishRoots();
+   void trace(JSTracer* trc);
+--- a/js/src/vm/Realm.cpp
++++ b/js/src/vm/Realm.cpp
+@@ -256,7 +256,36 @@
+   }
+ }
+ 
++bool ObjectRealm::recordConstructorIdentity(JSContext* cx, HandleObject obj,
++                                            HandleObject constructor) {
++  MOZ_ASSERT(&ObjectRealm::get(obj) == this);
++  MOZ_ASSERT(&ObjectRealm::get(constructor) == this);
++  cx->check(obj, constructor);
++  if (!constructorIdentity_) {
++    auto map = cx->make_unique<ObjectWeakMap>(cx);
++    if (!map) {
++      return false;
++    }
++    constructorIdentity_ = std::move(map);
++  }
++  MOZ_RELEASE_ASSERT(!constructorIdentity_->lookup(obj));
++  if (!constructorIdentity_->put(obj, constructor)) {
++    ReportOutOfMemory(cx);
++    return false;
++  }
++  return true;
++}
++
++JSObject* ObjectRealm::getConstructorIdentity(JSObject* obj) {
++  MOZ_ASSERT(&ObjectRealm::get(obj) == this);
++  return constructorIdentity_ ? constructorIdentity_->get(obj) : nullptr;
++}
++
+ void ObjectRealm::trace(JSTracer* trc) {
++  if (constructorIdentity_) {
++    constructorIdentity_->trace(trc);
++  }
++
+   if (objectMetadataTable) {
+     objectMetadataTable->trace(trc);
+   }
+@@ -306,6 +335,10 @@
+ }
+ 
+ void ObjectRealm::finishRoots() {
++  if (constructorIdentity_) {
++    constructorIdentity_->clear();
++  }
++
+   if (objectMetadataTable) {
+     objectMetadataTable->clear();
+   }
+@@ -542,6 +575,11 @@
+     size_t* nonSyntacticLexicalEnvironmentsArg) {
+   *innerViewsArg += innerViews.sizeOfExcludingThis(mallocSizeOf);
+ 
++  if (constructorIdentity_) {
++    *objectMetadataTablesArg +=
++        constructorIdentity_->shallowSizeOfIncludingThis(mallocSizeOf);
++  }
++
+   if (objectMetadataTable) {
+     *objectMetadataTablesArg +=
+         objectMetadataTable->shallowSizeOfIncludingThis(mallocSizeOf);
+--- a/js/src/vm/PlainObject-inl.h
++++ b/js/src/vm/PlainObject-inl.h
+@@ -18,6 +18,7 @@
+ #include "vm/JSFunction.h"    // JSFunction
+ #include "vm/JSObject.h"      // js::GenericObject, js::NewObjectKind
+ #include "vm/NativeObject.h"  // js::NativeObject::create
++#include "vm/Realm.h"         // js::ObjectRealm
+ #include "vm/Shape.h"         // js::Shape
+ 
+ #include "gc/ObjectKind-inl.h"  // js::gc::GetGCObjectKind
+@@ -75,12 +76,18 @@
+     return false;
+   }
+ 
+-  PlainObject* obj = PlainObject::createWithShape(cx, shape, newKind);
++  Rooted<PlainObject*> obj(cx, PlainObject::createWithShape(cx, shape, newKind));
+   if (!obj) {
+     return false;
+   }
+ 
+   MOZ_ASSERT(obj->nonCCWRealm() == callee->realm());
++  // Record the function that actually allocated this base receiver. Derived
++  // construction and returned replacement objects have distinct identities.
++  if (callee == newTarget &&
++      !ObjectRealm::get(obj).recordConstructorIdentity(cx, obj, callee)) {
++    return false;
++  }
+   thisv.setObject(*obj);
+   return true;
+ }

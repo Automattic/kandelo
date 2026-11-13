@@ -1,0 +1,66 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -52,11 +52,14 @@
+     "node-upstream/trace-agent-platform.cpp",
+     "node-upstream/trace-agent-test-api.cpp",
+     "node-upstream/trace-agent-upstream.cpp",
++    "node-upstream/trace-binding-upstream.cpp",
++    "node-upstream/trace-builtins-upstream.cpp",
+     "node-upstream/trace-native.cpp",
+     "node-upstream/trace-node-trace-buffer-upstream.cpp",
+     "node-upstream/trace-node-trace-writer-upstream.cpp",
+     "node-upstream/trace-trace-event-helper-upstream.cpp",
+     "node-upstream/trace-traced-value-upstream.cpp",
++    "node-upstream/trace-utf8-native.cpp",
+     "node-upstream/types.cpp",
+ ]
+ 
+@@ -160,3 +163,26 @@
+     "-std=c++20",
+     "-I%s/node-upstream/tracing-upstream" % SRCDIR,
+ ]
++
++SOURCES["node-upstream/trace-binding-upstream.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++    "-I%s/node-upstream/trace-builtins-upstream" % SRCDIR,
++]
++
++SOURCES["node-upstream/trace-builtins-upstream.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++    "-I%s/node-upstream/trace-builtins-upstream" % SRCDIR,
++]
++
++SOURCES["node-upstream/trace-utf8-native.cpp"].flags += [
++    "-std=c++20",
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++    "-I%s/node-upstream/trace-builtins-upstream" % SRCDIR,
++]
++
++SOURCES["node-upstream/codecs.cpp"].flags += [
++    "-I%s/node-upstream/tracing-upstream" % SRCDIR,
++    "-I%s/node-upstream/trace-builtins-upstream" % SRCDIR,
++]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -43,6 +43,8 @@
+ # We don't bother checking files in these directories, because they're (a) auxiliary or (b)
+ # imported code that doesn't follow our coding style.
+ ignored_js_src_dirs = [
++    "js/src/shell/node-upstream/trace-binding-upstream/",  # complete original Node binding
++    "js/src/shell/node-upstream/trace-builtins-upstream/",  # complete original V8 units
+     "js/src/shell/node-upstream/tracing-upstream/",  # complete verified Node native sources
+     "js/src/shell/node-upstream/process-versions-deps/",  # complete resolved library headers
+     "js/src/shell/node-upstream/codecs-upstream/",  # complete verified Node native sources
+@@ -61,6 +63,10 @@
+ # We ignore #includes of these files, because they don't follow the usual rules.
+ included_inclnames_to_ignore = set(
+     [
++        "shell/node-upstream/trace-binding-upstream/node_trace_events.cc",
++        "shell/node-upstream/trace-builtins-upstream/src/builtins/builtins-trace.cc",
++        "shell/node-upstream/trace-builtins-upstream/src/strings/unicode-inl.h",
++        "shell/node-upstream/trace-builtins-upstream/messages.generated.h",
+         "shell/node-upstream/tracing-upstream/node_mutex.h",
+         "shell/node-upstream/tracing-upstream/node_trace_events.cc",
+         "shell/node-upstream/tracing-upstream/node_version.h",

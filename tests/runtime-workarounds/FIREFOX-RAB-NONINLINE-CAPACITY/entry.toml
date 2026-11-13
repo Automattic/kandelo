@@ -1,0 +1,6 @@
+id = "FIREFOX-RAB-NONINLINE-CAPACITY"
+kind = "bug"
+status = "suspected"
+runtimes = ["firefox-stable"]
+summary = "SpiderMonkey non-inline stabilization appears to lose resizable ArrayBuffer capacity"
+reports = "human-only"

@@ -1,0 +1,2212 @@
+{
+  "schema": 1,
+  "verifiedAt": "2026-11-12T03:28:01.308474+00:00",
+  "sourceHeadAtBuild": "d35538aa2174533a520db08b8ba2e3541ea7c94a",
+  "testedInputsWereUncommitted": true,
+  "scope": "Direct live Node mksnapshot interface and selected real native Context/principal-root mechanics; no full snapshot interface or Node startup acceptance",
+  "packageRevision": 44,
+  "program": {
+    "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev44-wasm32-abi56-7087c71a8caf6e9fe3dea440efa3ad10a3a0c9cd79b5b57430ff05a21b2b9d1e/js.wasm",
+    "bytes": 59154297,
+    "sha256": "64f3aca30c587944b1b1b9888ae2fe8673cada9baa719f8817f9afb2fe2bed1b"
+  },
+  "kernel": {
+    "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+    "bytes": 2958224,
+    "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+  },
+  "retainedProgram": {
+    "path": ".context/node-snapshot/integration/runtime/js.wasm.gz",
+    "bytes": 17958778,
+    "sha256": "9997baba087cb8634dcb53cfd39df87aef4095ff111ce44694d876de53c4bfa0"
+  },
+  "testedInputs": [
+    {
+      "path": "docs/nodejs-upstream-runtime.md",
+      "bytes": 109717,
+      "sha256": "9b8ab6478246f1b9f53a5180c47251ea54a8966a7378069eeff77a9685fbeeb1"
+    },
+    {
+      "path": "packages/registry/spidermonkey/.gitignore",
+      "bytes": 70,
+      "sha256": "5e9787e198e5bac6127ab218beed5eadda6ac1177333c39f5576e45d0d2677d2"
+    },
+    {
+      "path": "packages/registry/spidermonkey/README.md",
+      "bytes": 2237,
+      "sha256": "b084caa69fd36e36e6f51a3c434881da120d1064b822f17bd6ef125e026e5954"
+    },
+    {
+      "path": "packages/registry/spidermonkey/VERSION",
+      "bytes": 12,
+      "sha256": "10e5db40f954d0308271def097e400231bc0ddb190d96c655dad60531974b7a3"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build-spidermonkey.sh",
+      "bytes": 22692,
+      "sha256": "3f8ecdaf87b84b6d4d368195662fcc9d0b9489099ca4edd0f676be58f1e6d119"
+    },
+    {
+      "path": "packages/registry/spidermonkey/build.toml",
+      "bytes": 1055,
+      "sha256": "2d498d6af936a4fcc4e7bed8897ccf4ae5a12bca5eed57fe32d83db97ae75cb7"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-compat/adapter.js",
+      "bytes": 20349,
+      "sha256": "ef4422f073687abbd5dbd0099f59204b8733c86b0261cb3017f2d57c1e22801f"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-compat/suffix.js",
+      "bytes": 6,
+      "sha256": "49fac5a3039bbad287ac815d533cf3abd4b4217920cbe2c93bb34a6e30003142"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/README.md",
+      "bytes": 6315,
+      "sha256": "7239b959a0f89717558a4f453a44eccac292cd17734292c863fcc1b23e3939d2"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/aliased-codecs-inl.h",
+      "bytes": 8345,
+      "sha256": "f56dfc37a727f62f628faebf3c93be5e11e0d76f45d3bf5c488622da63f3e1b2"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/async-wrap.cpp",
+      "bytes": 19462,
+      "sha256": "e670ddf3a1b56d1e79f114526dd4bc61f0ac94d0743c98c859d31a92aa3df55c"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/async-wrap.h",
+      "bytes": 817,
+      "sha256": "1cb2b7482659589b56047f9e15c74d5a09b74b2b41aaa2ec906d1d28102bd322"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/buffer-codecs-inl.h",
+      "bytes": 20395,
+      "sha256": "3a9304fac90db86811f29e0d1a560ecb7df74adceaa58774a3d84897e853999b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/buffer-memory.cpp",
+      "bytes": 4869,
+      "sha256": "7bda4435bcc29bf64edd728d4555d9a7bea07a1498d5750e23ab6390577a98b9"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/buffer-memory.h",
+      "bytes": 588,
+      "sha256": "ecb1e05c812adbbb01ab1ddc5230a0531b6d712dbe4184cb489ac46efc7ca028"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/buffer-upstream.cpp",
+      "bytes": 548,
+      "sha256": "b651dfdd942884263ac59a58cd5ede8c2efe990d41e6234940b453947f8b2ac9"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.cpp",
+      "bytes": 5119,
+      "sha256": "fb80f69b71945a741efe65785ed78e34e96d136e2ac9df1d3180de947b989348"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/builtin-compiler.h",
+      "bytes": 1428,
+      "sha256": "a49fa4578d895f9533b1f40aad9ca4a303dcc136522e493a8188d54037ef807f"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/codec-agent-includes.h",
+      "bytes": 569,
+      "sha256": "13eeb7ecc96366f2b766e1895447005b3706bf688bfe6b2dc38f5049a5132ae3"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/codec-buffer-types.h",
+      "bytes": 216,
+      "sha256": "0252d146bfea2eaf8aa12ed2e10b65bf843a398f5aea7fb34f5107a29f406b53"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/codec-native-api.h",
+      "bytes": 28683,
+      "sha256": "3f830e256829ba33535bcf7c7a05b3c06ff1246c96049ead383e96710c8d1bc2"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/codecs.cpp",
+      "bytes": 48481,
+      "sha256": "e647f072f1b201ccb718113dc2f7b40a49dc2ba5d70b7eee336b8f66a42856a2"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/codecs.h",
+      "bytes": 1140,
+      "sha256": "71dc3a718f50841aff0f46eacf543f7c43442b230ba7ae31a374f6d07f366375"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/constants-builder.h",
+      "bytes": 3717,
+      "sha256": "254afd11b3839245d553c28addf22f0373b2fa1e7a7053244f24c7ca3f925080"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/constants.cpp",
+      "bytes": 2515,
+      "sha256": "1f123d14f1b82d04adaf8771db490569dc78fe6fcea81d8faf97ecfccf3d839a"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/constants.h",
+      "bytes": 176,
+      "sha256": "0c8af55f62fd3afd65b0dfc188046a5623532479ef3e3e63dfd2b902aa6a12a7"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/continuation-codecs-inl.h",
+      "bytes": 3247,
+      "sha256": "217842927c8edd46e59e163ebf22dcb28d52b49e754b01dca93c8448be5b7076"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/continuation-native-api.h",
+      "bytes": 151,
+      "sha256": "b66cbca7b5097a020762f3b15669f38a534d7ef017f83055b69fb0fa688d2eb6"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/continuation-upstream.cpp",
+      "bytes": 641,
+      "sha256": "8dca51325c9b7dfd33fedf14f9482b001c989a1b759d8c8df3dd62cd3181ad34"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/decoder-upstream.cpp",
+      "bytes": 267,
+      "sha256": "621dd4a22688277f7135bfac3d21cc30f1c0502c163d8e1aeb55a36557b7551b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/encoding-upstream.cpp",
+      "bytes": 257,
+      "sha256": "ac1097ea82145c8e3f75fe97147a7466be0fd1c5208a17abb3e1d9fd180917f4"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/environment-codecs-inl.h",
+      "bytes": 18567,
+      "sha256": "b0886d7f32b860bf939d40428995ea9256c03ea66adb3dc4bc3a289b724155b4"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/error-stack.cpp",
+      "bytes": 21947,
+      "sha256": "637050953634ce7a2beac283f7db88bde274dc07205beaa41d0e7e40d9051a2e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/error-stack.h",
+      "bytes": 486,
+      "sha256": "1fe75f2166a86f7127cc25ffcd560e5e909af934320961454220c872df15b40b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/icu-upstream.cpp",
+      "bytes": 609,
+      "sha256": "71590d008ee24f760a8030c537f392b37eba5b06c140ed653b22dfc89e4708dd"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/module-wrap.cpp",
+      "bytes": 32778,
+      "sha256": "27e52a5e7ba0550febfec9f4968e607983321dec44e516c0b20541a86763ebf5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/module-wrap.h",
+      "bytes": 394,
+      "sha256": "e13bd86550d609cf28634511414e3d7ea708234c11a2dbd751952120ba367575"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/options-native-api.h",
+      "bytes": 7548,
+      "sha256": "aec235dc3e761f87b4347fe3e3bc2b97c37b4cac67c35c75166f5df78c7cacd6"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/options-upstream.cpp",
+      "bytes": 528,
+      "sha256": "ebc54f4c99b904ee0f4277a7abc1480ab4098260d094d957b408ae210472ec41"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/options.cpp",
+      "bytes": 23705,
+      "sha256": "ed816125ee0d5701640fbb633aaaafafd634dea8717cba4acf80b3733e12a81e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/options.h",
+      "bytes": 956,
+      "sha256": "9d8157fab33e67e1116fc4b3b588be45e490536fa264175d30261ba4a50b3684"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/per-context.cpp",
+      "bytes": 22778,
+      "sha256": "acf786d8086890f461a4c7349daa00e86ce4cc8acddd463053ddd6041cab2a2f"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/per-context.h",
+      "bytes": 3080,
+      "sha256": "31dd23277559091919f2b09d0d922a87c5dc16a71dcc3ccd1c203b91840f3345"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/prepare-build.sh",
+      "bytes": 7344,
+      "sha256": "ba02dbacf267967f9c316214450261dee11826d8016cdbb047d92ea320b85769"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/private-key-test-api.cpp",
+      "bytes": 17536,
+      "sha256": "049c3865ea6151e1dd2c94eca2753ee996a9af079637c3155e312c49c332820b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/private-key-test-api.h",
+      "bytes": 383,
+      "sha256": "62f4b86bcb98b3c7c5fdf7053ef567199040c5e64fb1274a94d859d5fd9deaa8"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/process-versions.cpp",
+      "bytes": 3784,
+      "sha256": "314eadde7ebdf6b3bd22813c41a7ee5fcbc0a1186b9f9e08e9da8fc39c93e3fa"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/process-versions.h",
+      "bytes": 577,
+      "sha256": "74039dcba05040c48c2371609fd4b84f5ca94a2c3ceef3f747262d2f841afaca"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/realm.cpp",
+      "bytes": 31741,
+      "sha256": "98084fd639bc0dd66b7edb777b6710772f8b460b2cfa1ab1fdfba89b17c98e55"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/realm.h",
+      "bytes": 1474,
+      "sha256": "b7f3e3cfad1707c9c10569ea922cec94190f488caa3bbff6e4634ce5c8c6e546"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/snapshot-codecs-inl.h",
+      "bytes": 9600,
+      "sha256": "43c40ed9ea693dc26f0d9f28679778e81d98071c4553106e7c93ce36ff54ae6c"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/string-bytes-upstream.cpp",
+      "bytes": 184,
+      "sha256": "db347a60b2571e4b59b5080fa70c4cc09bfd0e3fb5829100b8b9085fc88f977d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/task-queue.cpp",
+      "bytes": 17498,
+      "sha256": "0400a48a66b74e99d0d76d49e6a10b115e42d32e86bc04b732cd18ec9bb8ce4e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/task-queue.h",
+      "bytes": 959,
+      "sha256": "424bcd4a85fcba5065011cac7a2baccb043641ff4dc1c0c2b71ffee3de40c740"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/timers.cpp",
+      "bytes": 25147,
+      "sha256": "0587ddd857cb25451e4667d91c928d4ca2c9e9ea08e2f263c7d32337f1238a10"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/timers.h",
+      "bytes": 1440,
+      "sha256": "249571c94ac5f025d1c0b2889ee1e87705d27b295f0c500a9486b639b56875b4"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-agent-legacy-upstream.cpp",
+      "bytes": 128,
+      "sha256": "5176c379c763ec7324712a3664ae2101b916583d511db188e02cfe6534de2d19"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-agent-native-api.h",
+      "bytes": 2463,
+      "sha256": "1fff658950cf8fdca0fa3f3f03f2d58fec2c999d85087c277c081c7417d84780"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-agent-platform.cpp",
+      "bytes": 1197,
+      "sha256": "3db5d9a4edb2a2229f99ea39f3155a18924638b2c64c4f86c5a338740c1b7fdf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-agent-test-api.cpp",
+      "bytes": 5117,
+      "sha256": "e37494592c09a6f5cb6b35807b30c4678cbb4f8a3356fab1e8a4c402ff199dc5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-agent-test-api.h",
+      "bytes": 316,
+      "sha256": "70ad29f4fc5d29d3585b291b304c52b3467f2c89da4d4844bcbcaa36581e02f2"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-agent-upstream.cpp",
+      "bytes": 121,
+      "sha256": "f0d2a309a84dcb122bd6ae36ddd28775df6e40e6ebd0edc08d3b61041bd1a310"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-binding-native-api.h",
+      "bytes": 607,
+      "sha256": "b6d34b1aaf63cf74028c5799cedde78f5d6c7de677dc885ab3ee0b512d764b5d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-binding-upstream.cpp",
+      "bytes": 351,
+      "sha256": "3d9cac6e71b836ce6736175a07298509b370606404cb488f703f9fb9e050f592"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-builtin-native-api.h",
+      "bytes": 2620,
+      "sha256": "eeadb55afb4fcfaa05d93eb945b598ca1236b4dbd84b147db66817b1b7c986a9"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-builtins-upstream.cpp",
+      "bytes": 613,
+      "sha256": "843a1c0e8a08bdf6b9f3d9d51715788d534167f729e348bb4843b7110e98829e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-codecs-inl.h",
+      "bytes": 15768,
+      "sha256": "47790b4d63318acaa275183653cba0c402588fbd7a7607af9e5d99f189fdd0b8"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-native.cpp",
+      "bytes": 4276,
+      "sha256": "940bca93ce6c4120b50780ccd1bc3683832f9fc3cb8d3c29878ac490bceb5bd6"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-native.h",
+      "bytes": 814,
+      "sha256": "c1af3e8dd3433f56ecbed53eb20c69c1e5c9ed9caf2cf738a45db022d02babd0"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-node-trace-buffer-upstream.cpp",
+      "bytes": 133,
+      "sha256": "e17c5681a736c8ee033648c4081ffc3ac7af4d9f5eb226aae7c83d42b5ad2e34"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-node-trace-writer-upstream.cpp",
+      "bytes": 133,
+      "sha256": "17db26e0c08ee1219d60918c0a5eb8ab57677e6f3568eb666ce442440d53bc37"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-shutdown.h",
+      "bytes": 213,
+      "sha256": "30a9ccc24e7a804be5f5164b139c94a0b1c9b4d5a4e4b12e51a561afe756da9d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-trace-event-helper-upstream.cpp",
+      "bytes": 134,
+      "sha256": "e43acdc0e3b8a42df658cf47c8f8a7dcf3ac0830ad1df20b633bd20e65526141"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-traced-value-upstream.cpp",
+      "bytes": 128,
+      "sha256": "8a72c2f04ae5e138c67ae5dde29aa99185f0eb33f232ed6e94ae7b105667711f"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-unicode-native-api.h",
+      "bytes": 1021,
+      "sha256": "fe6193086d826b41b2fab34aa4ee578b6aef331633067291b69d92b9f760da5d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-utf8-native.cpp",
+      "bytes": 864,
+      "sha256": "717f6b1b66382afd270f4bbbd75a2ebdc4cbbe19dc8904f9fc1775b5be95ea7a"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/trace-utf8-native.h",
+      "bytes": 315,
+      "sha256": "6ff5f1585fd5dfafa7b37c3b126d12c1c47ff57382fa9e00a70099b72291131b"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/types.cpp",
+      "bytes": 5797,
+      "sha256": "1e9a3fb2ce2f7fb6c5f167f455d955842ba5d0a7fb30a5b31c78d657e1c6bf33"
+    },
+    {
+      "path": "packages/registry/spidermonkey/node-upstream/types.h",
+      "bytes": 474,
+      "sha256": "a373d791188b957c6bef32d7fb22e2cf60ea4f6e81f61d16b9a45f30c674628e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/package.toml",
+      "bytes": 2629,
+      "sha256": "639e4b201b0e0d6f9dd76638392a4085586d7fe9cb877833a558647f64cea14a"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0001-allow-static-cxx-runtime-for-wasm-linux.patch",
+      "bytes": 718,
+      "sha256": "d0c2ccf64c46d11cc512011b8b1b3b72af2e7f6e3bf65b96bd93d41c2c6c9e2e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0002-map-kandelo-wasm-linux-rust-target.patch",
+      "bytes": 1878,
+      "sha256": "7deeacd2052e7a964aa5ac0147bc313c1d28b5bda7e817fda705660203eecbcf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0003-jsonprinter-size-t-wasm32.patch",
+      "bytes": 1188,
+      "sha256": "e259107555c745cff184092667548679f9e7e8993e6ab329e3e3afb65c946ff4"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0004-disable-wasm32-return-address-stackwalk.patch",
+      "bytes": 865,
+      "sha256": "d075352ab5f8ab76620a964891a81063e44543dda10d4b1235da681a9c1c1ea6"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0005-getrandom-custom-backend-wasm32.patch",
+      "bytes": 1342,
+      "sha256": "615eb35b13d9ee74c5bcb5d3b8e4768dd817be71e9f57f310cbe6234c4437aa9"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0006-randomnum-use-sys-random-on-wasm32.patch",
+      "bytes": 489,
+      "sha256": "03c2496b0e6ddc4bafd8f3b1e84a0034eb0c8228517a9a3b8c3dc921326ae8c7"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0007-skip-elf-network-check-for-wasm-target.patch",
+      "bytes": 704,
+      "sha256": "778bc6bc2817ed36de9c325f1c20d06b412f45b8ac6e6da94c9c6120a6395ef6"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0008-use-wasm-trap-for-moz-crash.patch",
+      "bytes": 2072,
+      "sha256": "59a87abf141cc4bf40acf11c48ab662ec1ac9e5be896b997bebcf42904d6b95e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0009-use-wasm-frame-address-for-native-stack-base.patch",
+      "bytes": 1095,
+      "sha256": "5e954b61c692e799e216c8f732cc936ad3be1b8e0aef0db2459f68748cf99cc0"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0010-use-wasm-icu-data-section-syntax.patch",
+      "bytes": 567,
+      "sha256": "d655d6fc1b13e1b892c01be43ccf421524d8bf45fa0bea17dc3a51967f6309bf"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0011-heap-autorunparallel-task-on-wasm32.patch",
+      "bytes": 2616,
+      "sha256": "62147693a4932d0f431ea4739d9bb73bc51126dceda735dec5314e306ad78637"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0012-kandelo-node-compat-shell-entry.patch",
+      "bytes": 68730,
+      "sha256": "ab3eaea6ceffed9c752cac4f176bec517608f695f274f93e4cb4c9c252ec4d1f"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0013-kandelo-join-shell-workers.patch",
+      "bytes": 1670,
+      "sha256": "f0aa3c64bddba28865089c5796fff310050380e6b7cc85239e6e8b55ccfe9923"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0014-disable-mozglue-interposers-on-wasm32.patch",
+      "bytes": 617,
+      "sha256": "f0926fbbcbf085fea29057db1b377ca3e77e740bc84028acda06164be5e9dd46"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0015-kandelo-esm-bare-specifier.patch",
+      "bytes": 4832,
+      "sha256": "31b055317dda2d7c76a443f3d20bb3809a3ed2397ae880dc3c871df600b9e08d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0016-kandelo-import-meta.patch",
+      "bytes": 3208,
+      "sha256": "90f58982f04d7edcf56cef14870d9138eff29c3b1e7f04dc7a11c90ef3f7698e"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0017-kandelo-default-explicit-resource-management.patch",
+      "bytes": 1598,
+      "sha256": "4efa7ee65d052ba90e24f5d0ee2a2a21791a0754b4a631a44bd826591dfea68a"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0018-kandelo-require-module.patch",
+      "bytes": 8092,
+      "sha256": "0b232f54d09dafb92f0ddf294adbad8e0771eb0cde7c3a0832618a6519649f59"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0019-kandelo-link-evaluating-cycle.patch",
+      "bytes": 1248,
+      "sha256": "77a223da83d68b9c09cb5359cf67bfb1ab8aad23b16ee0112c32f81a3da540a3"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0020-kandelo-vm-context.patch",
+      "bytes": 15754,
+      "sha256": "36f574011dea2deaf6211078c01332c3f10c3b534ff8b515f89c3a8daa827182"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0021-kandelo-zstd-decompress.patch",
+      "bytes": 5365,
+      "sha256": "a1bf725dd8150de5f40aab4d402474e337c511a1abd0180daf293440e8113bb1"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0022-kandelo-async-subprocess.patch",
+      "bytes": 22294,
+      "sha256": "49a9945ce4c1ec2870456be43bea20d4bc120e99af487b6653bac4972d52eade"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0023-kandelo-upstream-node-compiler-build.patch",
+      "bytes": 510,
+      "sha256": "25c9cc588291a31290b213bf1be4b4457627f8aabe58bfa0301264bc91ff562d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0024-kandelo-embedding-private-keys.patch",
+      "bytes": 22700,
+      "sha256": "8e4953df9f64be060696d470c4ed8ca1ca3cc245514262b1630be986301800e7"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0025-kandelo-upstream-test-controls.patch",
+      "bytes": 1577,
+      "sha256": "59792e25d914a05677c209e216e498ffe445505231953b6658f1350af7b38783"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0026-kandelo-node-context-owner.patch",
+      "bytes": 1028,
+      "sha256": "fa6303afdbbf37dc14aaea7d45f6bb000a203ab3548623649d82d59401be7631"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0027-kandelo-synthetic-modules.patch",
+      "bytes": 19313,
+      "sha256": "4adaba274a9081f562e20aed2831742ada77a72d9ae184ec8645ead51fff829d"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0028-kandelo-node-module-wrap.patch",
+      "bytes": 5255,
+      "sha256": "10035a5cdf3a6f880b77385cc27b382ef3f0fbcf8d9b215b7d5ce8987e7bd9b8"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0029-kandelo-node-dynamic-import.patch",
+      "bytes": 8467,
+      "sha256": "023ff05c740243d7b3d39d789ce2d13c9ff50be24502fa03e59c4a08be9079cc"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0030-kandelo-node-error-stack.patch",
+      "bytes": 9285,
+      "sha256": "99e983f4539411b5b97d48eeddad5ff9b7a8886d15c11b66517ba687893bf4f1"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0031-kandelo-node-realm.patch",
+      "bytes": 270,
+      "sha256": "e3529daa83f3435358566a80d2d241d59977c4c3bc3f092c8e1156dd8178c821"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0032-kandelo-node-timers.patch",
+      "bytes": 3223,
+      "sha256": "47584dbe8f655f307275023e1b79be2a1e5f2e9db44d685ba3c22ca2856f0ec5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0033-kandelo-libuv-loop.patch",
+      "bytes": 1941,
+      "sha256": "0bfe5d40e573fe7946315004c54921a4a443fa05dd9e8f0208fc2e0c6583e3da"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0034-kandelo-node-task-queue.patch",
+      "bytes": 2600,
+      "sha256": "d3ce8e7eff25276e8d2d00f643799a2f65379168adff7ff4ea03d2f63a120c5f"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0035-kandelo-node-async-wrap.patch",
+      "bytes": 385,
+      "sha256": "320e287d1859359a37c462a3d69c6d557412c92bcb395e740e04006b46c2e672"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0036-kandelo-node-constants.patch",
+      "bytes": 1639,
+      "sha256": "afc4722cdb40b5998ffb0abd9bc5acc5b403e0f8f4b4cd9b6581b89f942eb1c6"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0037-kandelo-node-types.patch",
+      "bytes": 144,
+      "sha256": "ffdb86dc77990e691208e7a09966920fa70c2ad74126d72f39d835dd26f6d040"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0038-kandelo-node-options.patch",
+      "bytes": 1575,
+      "sha256": "df7db7cb4d769ffedb7af45109c3ac6cddc5c688050d5f6ff9ab199113bec26c"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0039-kandelo-node-codecs.patch",
+      "bytes": 1383,
+      "sha256": "327c7384434e886b70b3588aa9a40fb9aaa4e5c54faff959759332595931cb40"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0040-kandelo-resizable-buffer-stabilization.patch",
+      "bytes": 652,
+      "sha256": "cd0984ba2c58aaf2cad26323b523269f433e8be0e9af91c82ffa80168c40fdaa"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0041-kandelo-node-process-versions.patch",
+      "bytes": 1149,
+      "sha256": "6997253bc4943a810e6a8581016967ac35f12da64f3efc6dffa3f926d4d51091"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0042-kandelo-node-icu.patch",
+      "bytes": 817,
+      "sha256": "506f65a8f5a9cef6980df175e863d2e8ee5be996e75e8034146a1cb04668608a"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0043-kandelo-node-tracing-agent.patch",
+      "bytes": 5327,
+      "sha256": "e47d4879b2f83885a39dbcd42b4ea6a865e3871550a900ebde676ab2bf58da13"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0044-kandelo-node-trace-binding.patch",
+      "bytes": 2932,
+      "sha256": "076617b91a34ce381e0e207b771e190c0d456ae77143085029138a04828a2526"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0045-kandelo-continuation-data.patch",
+      "bytes": 6354,
+      "sha256": "bb27790ff5b9f7d6ed357d29844f82d8b997e1dca9f44d918e58b056c7c368d6"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0046-kandelo-arraybuffer-detach-key.patch",
+      "bytes": 5303,
+      "sha256": "0a1aa7fd458222a787ee4b93e3fe865441d6a40ba4d7f3c41c79fe07f967a651"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0047-kandelo-native-environment-shutdown.patch",
+      "bytes": 556,
+      "sha256": "81c635f3e0614c2458e3be3633a992b6c41ff41d3e2030328d64a3c7c7cdbfa3"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0048-kandelo-node-buffer.patch",
+      "bytes": 8667,
+      "sha256": "5645403c4e3f228a2f393e343accca9b26cbe59f0448cd3cc0e1a1add0c8336f"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/0049-kandelo-native-aliased-buffer.patch",
+      "bytes": 645,
+      "sha256": "d284c44badcbe8521aa6f91993df94a094f5730dbba0660aff9db578d54ed6b3"
+    },
+    {
+      "path": "packages/registry/spidermonkey/patches/README.md",
+      "bytes": 2434,
+      "sha256": "a3f8b7d23ae10a3bccfeb1ab3120ba23bb450c30dbe13d9675e5c189d7ff1ce0"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/browser/index.html",
+      "bytes": 322,
+      "sha256": "6b7d852ea43ef70f3ca5d54c7b9a8a49c4d69aebab39aa66936de3f64204be40"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/browser/playwright.config.ts",
+      "bytes": 1234,
+      "sha256": "515d4e3566814342faaa91421e5cd357d63d9c7e0a8e12138a33633c7f664953"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/browser/run-spidermonkey-stress.ts",
+      "bytes": 5894,
+      "sha256": "353af0b2d2b182ce406881231f714d7fce6e8aa5ada31ea57172c1c4d3562cb9"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/browser/spidermonkey-browser-stress.spec.ts",
+      "bytes": 2702,
+      "sha256": "9c3fb1e6abeb46fa60878e8dd7250acc9cc413daed56f3b890b6a1811e61d0ea"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/browser/vite.config.ts",
+      "bytes": 2860,
+      "sha256": "683170cdbc59da04055640bbb64b6b5c7b9690f3c04ff41e71052e62acd08f55"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/spidermonkey-node-compat.test.ts",
+      "bytes": 28881,
+      "sha256": "3e19a8869c0222081aed3423499485b65db92d5bc7419dcd7f710c7068938947"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/spidermonkey-node-parity.test.ts",
+      "bytes": 13400,
+      "sha256": "f14b1d51aaa977ba854b163e9eb2ce8613b8bcef4e6b37ac8b819e794f155cb2"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/spidermonkey-tls-source.test.ts",
+      "bytes": 1351,
+      "sha256": "30225ee75c6c1bbc4a9fd22012523aa19b8f1fda8f40aab2f325abdaa2dd34e5"
+    },
+    {
+      "path": "packages/registry/spidermonkey/test/spidermonkey.test.ts",
+      "bytes": 15098,
+      "sha256": "a6c47d8ad4e1a030b53a694134b1d77575f59cd0c8007e1c75f327b61da0f558"
+    },
+    {
+      "path": "scripts/import-nodejs-library.py",
+      "bytes": 9590,
+      "sha256": "2f71c1d96a7ce44534e35bab6260e2373f2698c806af5a2c252e5added24a499"
+    },
+    {
+      "path": "scripts/prepare-nodejs-codecs.py",
+      "bytes": 3883,
+      "sha256": "b19afbf492414288f6d98787abfd76ec64e3912a4119c38bd07e1544caa3137d"
+    },
+    {
+      "path": "scripts/prepare-nodejs-continuation.py",
+      "bytes": 1570,
+      "sha256": "7d7048c1901f7303c22d9e617789dc680bd47b8f1519195a97fda8d43e6515ca"
+    },
+    {
+      "path": "scripts/prepare-nodejs-tracing.py",
+      "bytes": 5428,
+      "sha256": "19a081758fcad46cd799393467444a5e0adef0e3499608878e29d43b137bd741"
+    },
+    {
+      "path": "scripts/reconcile-nodejs-backend-survey.py",
+      "bytes": 10438,
+      "sha256": "bf74b94f2047be558efa4e9b740df2aefa012484c62f51d6fb6abc8486a3394c"
+    },
+    {
+      "path": "scripts/run-nodejs-aliased-controls.ts",
+      "bytes": 1786,
+      "sha256": "f51eac562ca419a4c81aaced85a7dae753dd4a7512f456d25ffbf77df875d586"
+    },
+    {
+      "path": "scripts/run-nodejs-buffer-controls.ts",
+      "bytes": 1803,
+      "sha256": "285965a82e0f66852f0a857162953c182505c4c531070ef05a67c8dcad0dc16e"
+    },
+    {
+      "path": "scripts/run-nodejs-buffer-memory-controls.ts",
+      "bytes": 1701,
+      "sha256": "440463d6270cf6f8729525793dc13e8698f412cfde4dd036306d77c035739f6a"
+    },
+    {
+      "path": "scripts/run-nodejs-buffer-memory-native-controls.py",
+      "bytes": 1933,
+      "sha256": "2de920adbdf248106cbbf3d499e86fd29175b4a4b7e5b49a09679ea39fe3cc85"
+    },
+    {
+      "path": "scripts/run-nodejs-continuation-controls.ts",
+      "bytes": 1937,
+      "sha256": "13b3161fb4543564a7e87dfa7e5a0226b3ef29e6a91286337585ec0bc15aac7b"
+    },
+    {
+      "path": "scripts/run-nodejs-continuation-native-controls.py",
+      "bytes": 3181,
+      "sha256": "7dcb6cccbcd42fa3933874fb7176bdb90bac1ab310522cf02612baa92ee270a4"
+    },
+    {
+      "path": "scripts/run-nodejs-environment-controls.ts",
+      "bytes": 1878,
+      "sha256": "54b797b36b96fa66947514cd98300cf80d150cf8fb68ac98a5ec00692aae3692"
+    },
+    {
+      "path": "scripts/run-nodejs-function-compiler-controls.ts",
+      "bytes": 1892,
+      "sha256": "8ede6f12e3a5ce37cd63684ad381efd7c36a50f1f5c8f592bb0f0955c924a2aa"
+    },
+    {
+      "path": "scripts/run-nodejs-function-compiler-native-controls.py",
+      "bytes": 2117,
+      "sha256": "70c78f725abf62d00cd1fd3e6acbdffedd5207dc8caf5827c3ad750b025c5079"
+    },
+    {
+      "path": "scripts/run-nodejs-mksnapshot-controls.ts",
+      "bytes": 1851,
+      "sha256": "31e5a563f5e44f609dea97dd2cff33990857f0c921a7d1b289550ef550c22676"
+    },
+    {
+      "path": "scripts/run-nodejs-mksnapshot-native-controls.py",
+      "bytes": 1398,
+      "sha256": "bb3e22e6ba4c69c74e5ad722aee3241169b682b93339ed34c4a36072d59b9549"
+    },
+    {
+      "path": "scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 27853,
+      "sha256": "4b76a0794ffca4a8e054dfb476dee92ed6552f2943a02f8962cd9a5f56858eb7"
+    },
+    {
+      "path": "scripts/run-nodejs-trace-agent-controls.ts",
+      "bytes": 2056,
+      "sha256": "7b8b137ce07a86e99e86afb42a8d887406a9fc4b606dc152a15a2e1b3892d652"
+    },
+    {
+      "path": "scripts/run-nodejs-trace-binding-controls.ts",
+      "bytes": 1952,
+      "sha256": "24adcad980504850e8c15797569012a6f2c2f5965db6a0f6f1057ac950e90c40"
+    },
+    {
+      "path": "scripts/run-nodejs-trace-binding-native-controls.py",
+      "bytes": 3480,
+      "sha256": "037d3fdc5daba3ba41e7b59259a30ff978d94ee524557e0f21cf194863aa470d"
+    },
+    {
+      "path": "scripts/run-nodejs-util-lazy-native-controls.py",
+      "bytes": 1652,
+      "sha256": "04cdb197370c6d98b059d55f4f597fbe44ec27229418e43a3cff31045a694307"
+    },
+    {
+      "path": "scripts/verify-nodejs-backend-survey.py",
+      "bytes": 8074,
+      "sha256": "211d8b0cb030616f81741b0400f6bdab3ebf71b56b15b3c3b63a17bce51fc59c"
+    },
+    {
+      "path": "tests/nodejs/upstream/aliased-browser/aliased.spec.ts",
+      "bytes": 4918,
+      "sha256": "d936dbe0189042a248d925386fac63f3913b585ddf671f965512c99435501c58"
+    },
+    {
+      "path": "tests/nodejs/upstream/aliased-browser/artifact-url.ts",
+      "bytes": 82,
+      "sha256": "1ffb469390a7c8a8d09863fc617da366fd56ba3275ccdcf8d2b1f4c1b3a302f8"
+    },
+    {
+      "path": "tests/nodejs/upstream/aliased-browser/playwright.config.ts",
+      "bytes": 215,
+      "sha256": "ccb966cd78277c8feb9e3441f78b941ccfaff488464808a5e8da850a97b90ab1"
+    },
+    {
+      "path": "tests/nodejs/upstream/aliased-contracts.json",
+      "bytes": 5682,
+      "sha256": "67414fed2bb0dcf08245e822a6ea289c745ffb97a52a6059dea347d5540c40bb"
+    },
+    {
+      "path": "tests/nodejs/upstream/aliased-controls.ts",
+      "bytes": 2437,
+      "sha256": "7413282042ab1e33991116b68f003f7e9cfba239e32c54193ef704d28ef1e682"
+    },
+    {
+      "path": "tests/nodejs/upstream/aliased-engine-controls.js",
+      "bytes": 6060,
+      "sha256": "fc284da5acb0530499803ecd026ef4a106330be3aff9925fdf5fc1007c0f1b69"
+    },
+    {
+      "path": "tests/nodejs/upstream/async-wrap-browser/artifact-url.ts",
+      "bytes": 157,
+      "sha256": "f032dcec8075ac00c0b4a2b2bea5d81d7a5bc16e9a0046b83116dc7215526209"
+    },
+    {
+      "path": "tests/nodejs/upstream/async-wrap-browser/async-wrap.spec.ts",
+      "bytes": 6433,
+      "sha256": "eba1a2b727b8334d063f7f854dd4395331ba30fe6b98eb78e1881f6801afd148"
+    },
+    {
+      "path": "tests/nodejs/upstream/async-wrap-browser/playwright.config.ts",
+      "bytes": 221,
+      "sha256": "165a870eed60cdc0adbb95b9cdb0e753d6cb5613ff11657a59cd0a8fa159480a"
+    },
+    {
+      "path": "tests/nodejs/upstream/async-wrap-engine-controls.js",
+      "bytes": 7670,
+      "sha256": "477562dc9ca7640576b7c437c9cacc4622876e9a1cecba13940ffae9e80c7d8a"
+    },
+    {
+      "path": "tests/nodejs/upstream/async-wrap-native-controls.cjs",
+      "bytes": 1033,
+      "sha256": "81c4bc7ac6a59b66e3e352aee7de92c5c5d5e035a04df99210cd872f388bc98a"
+    },
+    {
+      "path": "tests/nodejs/upstream/async-wrap-shared-controls.js",
+      "bytes": 5962,
+      "sha256": "085efa299943bf60348c90c953151d09bb4727c07265c63857b436f53bf1c8dc"
+    },
+    {
+      "path": "tests/nodejs/upstream/backend-binding-reviews.json",
+      "bytes": 15995,
+      "sha256": "3d92287ab583a900d625c409f7522252614b45561144b10de3fb5a726a35096d"
+    },
+    {
+      "path": "tests/nodejs/upstream/backend-binding-survey.json",
+      "bytes": 166782,
+      "sha256": "a2e6cc754b5b856426247087d6c2dfccfb0e4906c69ed639629c7df869970295"
+    },
+    {
+      "path": "tests/nodejs/upstream/backend-graph.md",
+      "bytes": 6877,
+      "sha256": "93a3001bf297bce352b3138b0d810b0751daad6436550da7c6265f9b7d91dfd1"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-browser/artifact-url.ts",
+      "bytes": 82,
+      "sha256": "1ffb469390a7c8a8d09863fc617da366fd56ba3275ccdcf8d2b1f4c1b3a302f8"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-browser/buffer.spec.ts",
+      "bytes": 4913,
+      "sha256": "629927fba1cda243c33c0e9f49dac72b0cfe2b37c871078eefc8919f1d5687cf"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-browser/playwright.config.ts",
+      "bytes": 214,
+      "sha256": "7fa2f6c7780e9dabe11d6c8e91804e0aa5970b402329e215c9ec9d6bbf00bed8"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-contracts.json",
+      "bytes": 73320,
+      "sha256": "cbd9721a6dffcc4ee7569267bf0c2f638b440ad7b33ab24b21e96cea658a1536"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-controls.ts",
+      "bytes": 4302,
+      "sha256": "592a4ac146f8b1df059c7ec038c172e11c4d5aa240047492824a6398c9deb967"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-detach-shared-controls.js",
+      "bytes": 5753,
+      "sha256": "73445f6921248e22e19c7884955b35ca1039f89bd6933b3f56f7ba5f9325fbab"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-engine-controls.js",
+      "bytes": 6906,
+      "sha256": "980ea0c66408cbd7792633f929ef94c1b4a18070866e3d248ba40be7a9898637"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-memory-browser/artifact-url.ts",
+      "bytes": 82,
+      "sha256": "1ffb469390a7c8a8d09863fc617da366fd56ba3275ccdcf8d2b1f4c1b3a302f8"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-memory-browser/buffer-memory.spec.ts",
+      "bytes": 3918,
+      "sha256": "ea589e0aaaec365c781436e54639c386b2b89396fa756b9e732e1c90ad93e43a"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-memory-browser/playwright.config.ts",
+      "bytes": 207,
+      "sha256": "a8b2d7ed72bc8e883e0a3c63b8d612c57279ca7e8946fc18c01434abb431d139"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-memory-controls.ts",
+      "bytes": 1460,
+      "sha256": "8a31522e34afa603b5087eb3e1144b52f7092235154187497e4ddf35aa4b8bad"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-memory-engine-controls.js",
+      "bytes": 4986,
+      "sha256": "b88af2fe607b716f622b28dc2c8fc80048c968a9ff701e84423aeea02ab1d302"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-memory-native-reference.json",
+      "bytes": 3719,
+      "sha256": "0a21846648857e05b87a36fcefce1c0e7a5e03eed21c03a2c833ef9dc50d8865"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-native-reentry-repro.cjs",
+      "bytes": 602,
+      "sha256": "41d0d6f7ff3205b507df960b7b75b877c34008d6bfce0e1b7c080d67dd698281"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-native-reentry-result.json",
+      "bytes": 1159,
+      "sha256": "68c9028ac00e368f7818b8b8192e88f779135f9376b15217c84c4bc31d1031d9"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-native-reference.json",
+      "bytes": 61400,
+      "sha256": "0ef5ecdf8cfc4e83c6cfc5cd3dc5047f2f4c55a874365940b7b2ee28fe52b994"
+    },
+    {
+      "path": "tests/nodejs/upstream/buffer-shared-controls.js",
+      "bytes": 8585,
+      "sha256": "d090a0ea4074ad7710ac63641bf5a36c8784eef1d10cec575655557ab38cd8ea"
+    },
+    {
+      "path": "tests/nodejs/upstream/constants-browser/artifact-url.ts",
+      "bytes": 157,
+      "sha256": "f032dcec8075ac00c0b4a2b2bea5d81d7a5bc16e9a0046b83116dc7215526209"
+    },
+    {
+      "path": "tests/nodejs/upstream/constants-browser/constants.spec.ts",
+      "bytes": 7815,
+      "sha256": "a31f5bb888d34627d6fe416af8cb911eb6545860073be754c4739778e90aedc0"
+    },
+    {
+      "path": "tests/nodejs/upstream/constants-browser/playwright.config.ts",
+      "bytes": 220,
+      "sha256": "a813385c0c2017cddbba927c23337dd5217bd3107ae863e523dbb6ca1b7c654b"
+    },
+    {
+      "path": "tests/nodejs/upstream/constants-engine-controls.js",
+      "bytes": 2720,
+      "sha256": "a61bfc6f7ab07957cbc21caf5cd678e9c0cab2ed140b5630cae714105c19b401"
+    },
+    {
+      "path": "tests/nodejs/upstream/constants-native-controls.cjs",
+      "bytes": 947,
+      "sha256": "e8c155714dd5708ead9285ed14c95744d66e9ebc42dbab64eb1c510bd76ff617"
+    },
+    {
+      "path": "tests/nodejs/upstream/constants-shared-controls.js",
+      "bytes": 2895,
+      "sha256": "8850752a266e51ec9c05f66e2bdac59cf9054ee4378aa94865e085b679dbd283"
+    },
+    {
+      "path": "tests/nodejs/upstream/continuation-browser/artifact-url.ts",
+      "bytes": 82,
+      "sha256": "1ffb469390a7c8a8d09863fc617da366fd56ba3275ccdcf8d2b1f4c1b3a302f8"
+    },
+    {
+      "path": "tests/nodejs/upstream/continuation-browser/continuation.spec.ts",
+      "bytes": 4244,
+      "sha256": "f6757dc46593cb35c246084a035e5d01a37c46bea5aeceb3f3eecbd517b7d084"
+    },
+    {
+      "path": "tests/nodejs/upstream/continuation-browser/playwright.config.ts",
+      "bytes": 220,
+      "sha256": "6dafb4880cae569b47473653a648df27fcab2377996504a1f4163032ae311b51"
+    },
+    {
+      "path": "tests/nodejs/upstream/continuation-controls.ts",
+      "bytes": 5307,
+      "sha256": "e6e2deb71773e8fafb85ff24ed901778a501de8644934dc18f1b7bd8992e424a"
+    },
+    {
+      "path": "tests/nodejs/upstream/continuation-engine-controls.js",
+      "bytes": 4125,
+      "sha256": "81db96f773b56ee3c15883547a7558b7cc94a88a2ba5174e7a9e222f07c513bc"
+    },
+    {
+      "path": "tests/nodejs/upstream/continuation-native-reference.json",
+      "bytes": 8118,
+      "sha256": "d7a2ac65b5caa313e9b6c93314d1ec6f2165478ec0d4807d9e3e27ae76cfb7f7"
+    },
+    {
+      "path": "tests/nodejs/upstream/continuation-shared-controls.js",
+      "bytes": 9365,
+      "sha256": "5112031978cc530c17e395765f14dc4d6a8429f1cb50ff4c4416c3503cb97a5d"
+    },
+    {
+      "path": "tests/nodejs/upstream/decoder-browser/artifact-url.ts",
+      "bytes": 157,
+      "sha256": "f032dcec8075ac00c0b4a2b2bea5d81d7a5bc16e9a0046b83116dc7215526209"
+    },
+    {
+      "path": "tests/nodejs/upstream/decoder-browser/decoder.spec.ts",
+      "bytes": 6926,
+      "sha256": "c3cc9eda92ff517ebdeffc9545f344f82195e885e776b2bb545339ff8c0e1247"
+    },
+    {
+      "path": "tests/nodejs/upstream/decoder-browser/playwright.config.ts",
+      "bytes": 218,
+      "sha256": "70943ee92aa93e371252f722c6927fced1a82d00cc29c341384dfa4b40c7df33"
+    },
+    {
+      "path": "tests/nodejs/upstream/decoder-engine-controls.js",
+      "bytes": 3663,
+      "sha256": "248b833b9843165603d23193455397fe71e6b4f45b61ae983d64010dee6f2ee8"
+    },
+    {
+      "path": "tests/nodejs/upstream/decoder-native-controls.cjs",
+      "bytes": 491,
+      "sha256": "112c1d35414a860ab3977d685ece513a8238e4e5fe971c611926424c5a26ced6"
+    },
+    {
+      "path": "tests/nodejs/upstream/decoder-shared-controls.js",
+      "bytes": 6555,
+      "sha256": "9fc6db7db3a1f9de2ba56a7bdea7ffd5657da8509703ec0ea430d5e86814618c"
+    },
+    {
+      "path": "tests/nodejs/upstream/dynamic-import-engine-controls.js",
+      "bytes": 8965,
+      "sha256": "bc966680f890d9daaa6fa90e98a4d478c3056349a67506530b519458c688490a"
+    },
+    {
+      "path": "tests/nodejs/upstream/dynamic-import-native-controls.cjs",
+      "bytes": 7879,
+      "sha256": "e12aadd283a5be8aaab402a5eff4063154e3170261d8ebefc47c463edd5622e4"
+    },
+    {
+      "path": "tests/nodejs/upstream/environment-browser/artifact-url.ts",
+      "bytes": 82,
+      "sha256": "1ffb469390a7c8a8d09863fc617da366fd56ba3275ccdcf8d2b1f4c1b3a302f8"
+    },
+    {
+      "path": "tests/nodejs/upstream/environment-browser/environment.spec.ts",
+      "bytes": 4176,
+      "sha256": "96dfb91ed046f758e9dc83802b04c9374b468b9f5ff52895785a800515caf166"
+    },
+    {
+      "path": "tests/nodejs/upstream/environment-browser/playwright.config.ts",
+      "bytes": 219,
+      "sha256": "89c960829754ceb1753b0f75f21cd1084da1425b9d171a0ecd31ef6fab918b12"
+    },
+    {
+      "path": "tests/nodejs/upstream/environment-contracts.json",
+      "bytes": 5276,
+      "sha256": "14d54d7c497f2430c4275515bdec0503d5c1258d122c8cb1a68ec66b3b8068f2"
+    },
+    {
+      "path": "tests/nodejs/upstream/environment-controls.ts",
+      "bytes": 2026,
+      "sha256": "9051d47b0a0ebac17d135b150471713a80fade78c5be1f01118ed408825d773e"
+    },
+    {
+      "path": "tests/nodejs/upstream/environment-engine-controls.js",
+      "bytes": 6311,
+      "sha256": "507fe07dda4b71c7377073c84dacb9cb01a2eefec370cedc597f3c1c10b13922"
+    },
+    {
+      "path": "tests/nodejs/upstream/error-stack-engine-controls.js",
+      "bytes": 10782,
+      "sha256": "063ac0317a6b4f02540b93430a553202288da58c6570d878fbed93f5331541a8"
+    },
+    {
+      "path": "tests/nodejs/upstream/error-stack-native-controls.cjs",
+      "bytes": 8771,
+      "sha256": "05356e4e6b54945daf3d871436a85fb162372efd0df4c0cb57eb1a0a8584e9d6"
+    },
+    {
+      "path": "tests/nodejs/upstream/function-compiler-browser/artifact-url.ts",
+      "bytes": 82,
+      "sha256": "1ffb469390a7c8a8d09863fc617da366fd56ba3275ccdcf8d2b1f4c1b3a302f8"
+    },
+    {
+      "path": "tests/nodejs/upstream/function-compiler-browser/function-compiler.spec.ts",
+      "bytes": 4174,
+      "sha256": "fbf138762129d1177b09639550cbdde974f9d4a0a8ea02e9cc6ab4d281d2c674"
+    },
+    {
+      "path": "tests/nodejs/upstream/function-compiler-browser/playwright.config.ts",
+      "bytes": 211,
+      "sha256": "02031c8225caf65f94d90c3684e30b3e5b48c06f56b673055dad0e048585f8d9"
+    },
+    {
+      "path": "tests/nodejs/upstream/function-compiler-contracts.json",
+      "bytes": 5185,
+      "sha256": "d7b7b870eb9c2cdcb9890c0721d9e066699125b2d60ae0bfb3b3abf0437917cf"
+    },
+    {
+      "path": "tests/nodejs/upstream/function-compiler-controls.ts",
+      "bytes": 2650,
+      "sha256": "709fd0a05df740d7771bb28e3fbf7e92930d9390307ca2a5336a5c8e8b6c2c47"
+    },
+    {
+      "path": "tests/nodejs/upstream/function-compiler-engine-controls.js",
+      "bytes": 2856,
+      "sha256": "cc2e14cd12210322f74a6d9f6525a82e795648c6da0a903a98e5320431437aed"
+    },
+    {
+      "path": "tests/nodejs/upstream/function-compiler-native-prefix.cjs",
+      "bytes": 814,
+      "sha256": "4fd94025320208dc7b3007ef6d2dd8c973ed2d4a5d397a40c8cb339df55c47b9"
+    },
+    {
+      "path": "tests/nodejs/upstream/function-compiler-native-reference.json",
+      "bytes": 6958,
+      "sha256": "7600f0f64158bf0f112d3852a977064f09aac7fc819743c0fe2513a0bb6652c9"
+    },
+    {
+      "path": "tests/nodejs/upstream/function-compiler-shared-controls.js",
+      "bytes": 7254,
+      "sha256": "206a595715c7d5a0a687c5e2af691bbd10dfd87a2651cb0c1d3c96ddfba8afcd"
+    },
+    {
+      "path": "tests/nodejs/upstream/icu-browser/artifact-url.ts",
+      "bytes": 157,
+      "sha256": "f032dcec8075ac00c0b4a2b2bea5d81d7a5bc16e9a0046b83116dc7215526209"
+    },
+    {
+      "path": "tests/nodejs/upstream/icu-browser/icu.spec.ts",
+      "bytes": 7053,
+      "sha256": "aea278c038d79d5497f13026981e6b336a66bd50d7128def787a02365bbc1507"
+    },
+    {
+      "path": "tests/nodejs/upstream/icu-browser/playwright.config.ts",
+      "bytes": 214,
+      "sha256": "3e2fb1820003e520a55dcb42a5156ffb904fb0b476b47f91f46ab9e4908c8d91"
+    },
+    {
+      "path": "tests/nodejs/upstream/icu-contracts.json",
+      "bytes": 11547,
+      "sha256": "80f4fed326250d152d03070d4fde9476df9ae287ae9458b414fc061edef62127"
+    },
+    {
+      "path": "tests/nodejs/upstream/icu-engine-controls.js",
+      "bytes": 4691,
+      "sha256": "0c35d55cd9aab803818d5f64fa9440a451df2ff26b878d626eb1b95ac92e7846"
+    },
+    {
+      "path": "tests/nodejs/upstream/icu-native-controls.cjs",
+      "bytes": 461,
+      "sha256": "d6bc3e4437b0a5a31f240d2bc5611215deb4fd9c29d4c3da3aba384feceb6aba"
+    },
+    {
+      "path": "tests/nodejs/upstream/icu-shared-controls.js",
+      "bytes": 6594,
+      "sha256": "8825bbdb8b5dcaeff29a6fd96ada0ee6c4b09e073dce090d31ef2f3c76b35507"
+    },
+    {
+      "path": "tests/nodejs/upstream/implementation-ledger.json",
+      "bytes": 67153,
+      "sha256": "b3b982d178b9c593be23dd1519f686223c35d58e035dc00ce3b4a768a90c0ac7"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/libuv-backend.spec.ts",
+      "bytes": 3777,
+      "sha256": "dcd76bb4852c773941dfa1bfd56f2bec535a1d17540f764db450cb5b55ab7b74"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/playwright.config.ts",
+      "bytes": 1180,
+      "sha256": "d719ac6799f745bf416dc9740e6ca47dd3862c10cd100d63a8b6d32ed88040d6"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/storage-setup.ts",
+      "bytes": 1813,
+      "sha256": "4622b5c753c5828fe1c3b99647cb3ca8820b4c1ff9a852c23fefca606107484e"
+    },
+    {
+      "path": "tests/nodejs/upstream/libuv-browser/vite.config.ts",
+      "bytes": 665,
+      "sha256": "464cb617c9eabf71a697941b98e13b330beccae04ed1c77b7366ef063f3e9d25"
+    },
+    {
+      "path": "tests/nodejs/upstream/mksnapshot-browser/artifact-url.ts",
+      "bytes": 82,
+      "sha256": "1ffb469390a7c8a8d09863fc617da366fd56ba3275ccdcf8d2b1f4c1b3a302f8"
+    },
+    {
+      "path": "tests/nodejs/upstream/mksnapshot-browser/mksnapshot.spec.ts",
+      "bytes": 4876,
+      "sha256": "8f0526634cddde85e8e122aa5d34b7c2a346c0d05724fc1488ae1015c4022ccb"
+    },
+    {
+      "path": "tests/nodejs/upstream/mksnapshot-browser/playwright.config.ts",
+      "bytes": 204,
+      "sha256": "1a7edac03c48d356d6fe4c403bdb66284069a5d852729acb89740b28640e4460"
+    },
+    {
+      "path": "tests/nodejs/upstream/mksnapshot-contracts.json",
+      "bytes": 19805,
+      "sha256": "2c41dc83b17095ddcba6103c612bcd8472cca76416e859a5eb68f63fde1b0acf"
+    },
+    {
+      "path": "tests/nodejs/upstream/mksnapshot-controls.ts",
+      "bytes": 3907,
+      "sha256": "0f6071b7d5d6539e037b410ad12c922f4e5192dda1a19cf3881ddc491bf3ca90"
+    },
+    {
+      "path": "tests/nodejs/upstream/mksnapshot-engine-controls.js",
+      "bytes": 4307,
+      "sha256": "e4f8988d2551231e42e892b6dd203d5532c68aef7848cfda6be01511968dc7fd"
+    },
+    {
+      "path": "tests/nodejs/upstream/mksnapshot-live-native-controls.cjs",
+      "bytes": 4310,
+      "sha256": "525d53c3fbf073b985b8d7e34ec0234cf0a7fff65ee42dbcf8db7799b233cd12"
+    },
+    {
+      "path": "tests/nodejs/upstream/mksnapshot-live-native-reference.json",
+      "bytes": 7795,
+      "sha256": "8d1bda72dd9175c2f75f4066e99e344f30138164c264151f4b93d28d4381f046"
+    },
+    {
+      "path": "tests/nodejs/upstream/mksnapshot-ownership.md",
+      "bytes": 7492,
+      "sha256": "6f907a718c295c1085176fce7a01e136ba8a2ce4471ccd16cd1799fc6c20f79a"
+    },
+    {
+      "path": "tests/nodejs/upstream/module-wrap-engine-controls.js",
+      "bytes": 13263,
+      "sha256": "6e01b0424910b1b79326eb3e6e1a920235ba782490992c22b92f27fd1cf64627"
+    },
+    {
+      "path": "tests/nodejs/upstream/module-wrap-native-controls.cjs",
+      "bytes": 5209,
+      "sha256": "a8f13f24e5df9047daf52967448cdc92b6cff70d17e4c6f38ee4089acc04f15d"
+    },
+    {
+      "path": "tests/nodejs/upstream/native-codec-browser/native-codec.spec.ts",
+      "bytes": 3830,
+      "sha256": "bcd8660621f2d75852d7630e361fa0b4c060b2ddcc9a2b715f3cfb8fa0e76e07"
+    },
+    {
+      "path": "tests/nodejs/upstream/native-codec-browser/playwright.config.ts",
+      "bytes": 1199,
+      "sha256": "b3d4b568a1692ebf50b694f101aeef69553361da7e1ecdcbc6599c2a67c4c6ac"
+    },
+    {
+      "path": "tests/nodejs/upstream/native-codec-browser/storage-setup.ts",
+      "bytes": 1820,
+      "sha256": "207f24e1c796dc0fd9c19ac72f0bad85d68f5c483f7432d3a309446caf038086"
+    },
+    {
+      "path": "tests/nodejs/upstream/native-codec-browser/vite.config.ts",
+      "bytes": 665,
+      "sha256": "464cb617c9eabf71a697941b98e13b330beccae04ed1c77b7366ef063f3e9d25"
+    },
+    {
+      "path": "tests/nodejs/upstream/native-context-engine-controls.js",
+      "bytes": 6381,
+      "sha256": "53699860347162b36595da8baf287891bd0388e749f9724dd806c193bb6958c8"
+    },
+    {
+      "path": "tests/nodejs/upstream/options-browser/artifact-url.ts",
+      "bytes": 157,
+      "sha256": "f032dcec8075ac00c0b4a2b2bea5d81d7a5bc16e9a0046b83116dc7215526209"
+    },
+    {
+      "path": "tests/nodejs/upstream/options-browser/options.spec.ts",
+      "bytes": 6426,
+      "sha256": "7e28a334c270adafebbd6af12d28fd1e14b30173194fd1448166e34268f2b9eb"
+    },
+    {
+      "path": "tests/nodejs/upstream/options-browser/playwright.config.ts",
+      "bytes": 218,
+      "sha256": "b5e1ea145a6485fa67d04fb9ae7f9c32ff3b7b7c9c6f0fa4116c329af033469c"
+    },
+    {
+      "path": "tests/nodejs/upstream/options-engine-controls.js",
+      "bytes": 5137,
+      "sha256": "727a296ab9f1d5af175fcbe31762e7e87b495d845bb471e15e898700ed6423dd"
+    },
+    {
+      "path": "tests/nodejs/upstream/options-native-controls.cjs",
+      "bytes": 779,
+      "sha256": "b57445749834833e72aea66633c56146c36326de816d84898080b420376660a9"
+    },
+    {
+      "path": "tests/nodejs/upstream/options-shared-controls.js",
+      "bytes": 3077,
+      "sha256": "1a9bec3768d3d8c8738301d35cd47f156b23543c5a96219364dd0e40d7864b50"
+    },
+    {
+      "path": "tests/nodejs/upstream/per-context-engine-controls.js",
+      "bytes": 9898,
+      "sha256": "62e1fac223138750d8da88568a2afd5bcb214a8180fabb1099ccd7c3888a0998"
+    },
+    {
+      "path": "tests/nodejs/upstream/private-key-engine-controls.js",
+      "bytes": 9022,
+      "sha256": "2448424edbbed3eb2776eb64148ac6a8e42fa372d357a133910b2c5c3b20210c"
+    },
+    {
+      "path": "tests/nodejs/upstream/private-key-native-controls.cjs",
+      "bytes": 3976,
+      "sha256": "b58d13fdff1ea0658f935b239e1fc6b8493da5258fa069b543a15bd00ee26c26"
+    },
+    {
+      "path": "tests/nodejs/upstream/process-config-engine-controls.js",
+      "bytes": 8840,
+      "sha256": "cfb8a310f4b52ed8dceb3fd93c08108a180b668f36cfcda6dcaced276462ec41"
+    },
+    {
+      "path": "tests/nodejs/upstream/process-config-native-controls.cjs",
+      "bytes": 4414,
+      "sha256": "0cf43a2bc4ac46dbc4ba993f796b22a034ec028d39a46a4a416c67763430ac3c"
+    },
+    {
+      "path": "tests/nodejs/upstream/process-versions-browser/artifact-url.ts",
+      "bytes": 157,
+      "sha256": "f032dcec8075ac00c0b4a2b2bea5d81d7a5bc16e9a0046b83116dc7215526209"
+    },
+    {
+      "path": "tests/nodejs/upstream/process-versions-browser/playwright.config.ts",
+      "bytes": 227,
+      "sha256": "8d9d0efdf6cc5909b662edb7105a7b5a51525bc8005aa9255a9116ec61b87aff"
+    },
+    {
+      "path": "tests/nodejs/upstream/process-versions-browser/process-versions.spec.ts",
+      "bytes": 6296,
+      "sha256": "7c1b4c7a4b3447036116e6fba8a5c9dec96dd5ad229f2c49e337735c67d41926"
+    },
+    {
+      "path": "tests/nodejs/upstream/process-versions-engine-controls.js",
+      "bytes": 5383,
+      "sha256": "571f1af8679e6671bc2d1f93bf6bc00698ba1f7302ccc99f30392dc66ef041a1"
+    },
+    {
+      "path": "tests/nodejs/upstream/process-versions-native-controls.cjs",
+      "bytes": 2037,
+      "sha256": "f3f4a718d82fb8300be8622961f14085c047341be05184aea8daccb61295bc90"
+    },
+    {
+      "path": "tests/nodejs/upstream/realm-bootstrap-gap-probe.js",
+      "bytes": 1758,
+      "sha256": "50e2db218a7e80bc565592fd692f3de2e83eb09373ae311e0ab60e4d71542021"
+    },
+    {
+      "path": "tests/nodejs/upstream/realm-library-engine-controls.js",
+      "bytes": 10199,
+      "sha256": "a6e633e835239661989bdbd0ce815a9e3fe1c1fa818eef8584630a6f770fe622"
+    },
+    {
+      "path": "tests/nodejs/upstream/realm-library-native-controls.cjs",
+      "bytes": 5193,
+      "sha256": "0016ae12044d167ddd3ae81c3366cade5cd5604c4e7ce6147db0d9176e25521f"
+    },
+    {
+      "path": "tests/nodejs/upstream/string-decoder-native-controls.cjs",
+      "bytes": 5268,
+      "sha256": "38e361a60360296641152c579031b410cbe086505806fb2650155b9e9cbb8c74"
+    },
+    {
+      "path": "tests/nodejs/upstream/synthetic-module-engine-controls.js",
+      "bytes": 11076,
+      "sha256": "a8d5f8aa3a041eb0bd21c65d504f3190a76589a83bc36307f7f61955da3d1a81"
+    },
+    {
+      "path": "tests/nodejs/upstream/synthetic-module-native-controls.cjs",
+      "bytes": 3675,
+      "sha256": "069defdf65e1701a9a04007b8f579b40be07cdd8ef90eede351fa76de232223d"
+    },
+    {
+      "path": "tests/nodejs/upstream/task-queue-browser/artifact-url.ts",
+      "bytes": 157,
+      "sha256": "f032dcec8075ac00c0b4a2b2bea5d81d7a5bc16e9a0046b83116dc7215526209"
+    },
+    {
+      "path": "tests/nodejs/upstream/task-queue-browser/playwright.config.ts",
+      "bytes": 221,
+      "sha256": "64b8645b78322328607d68c67ed1a8585898a8725f6409098de400973d6ecb27"
+    },
+    {
+      "path": "tests/nodejs/upstream/task-queue-browser/task-queue.spec.ts",
+      "bytes": 6202,
+      "sha256": "1d5f7c918c3994920f55ac6dcd1f66677c37e3d8dfbaea2f6be93cd16b76adeb"
+    },
+    {
+      "path": "tests/nodejs/upstream/task-queue-engine-controls.js",
+      "bytes": 10942,
+      "sha256": "3ad8f2a5dc37db19d9a7a55e387888a12222a36dd708c050841106d2b7bf2e35"
+    },
+    {
+      "path": "tests/nodejs/upstream/task-queue-gap-controls.js",
+      "bytes": 2777,
+      "sha256": "08b2edd56fc56855928d90921a7c59f7ee18e52878bb02864aa2df8b85351e80"
+    },
+    {
+      "path": "tests/nodejs/upstream/task-queue-native-controls.cjs",
+      "bytes": 4126,
+      "sha256": "ad05756dfcfa64fbf12d05f80ad4f9a8b101a7111cafc6c8db0768924654c0cc"
+    },
+    {
+      "path": "tests/nodejs/upstream/timers-browser/artifact-url.ts",
+      "bytes": 163,
+      "sha256": "236501fb0f71bdf102dbf31519168d452b7cac096be6e220a7aaea90e7de80dc"
+    },
+    {
+      "path": "tests/nodejs/upstream/timers-browser/playwright.config.ts",
+      "bytes": 223,
+      "sha256": "2bfdf8c2954680e319c90e6bc724c137a4fdbdceeb00b8021156cbfab460bc86"
+    },
+    {
+      "path": "tests/nodejs/upstream/timers-browser/timers-libuv.spec.ts",
+      "bytes": 6561,
+      "sha256": "5fac10c22ec26592643a871e50bb4b799847e6df9d88652a9b2713b8234c9fe9"
+    },
+    {
+      "path": "tests/nodejs/upstream/timers-engine-controls.js",
+      "bytes": 12787,
+      "sha256": "58c67589b084a2d9a95b6ee3a3e1376cb4e6ddf12829d7432339cbbc08f009b8"
+    },
+    {
+      "path": "tests/nodejs/upstream/timers-native-controls.cjs",
+      "bytes": 7829,
+      "sha256": "23dfa30a1cca5d176992908305000e97252e5e186794ab469888038d26f02469"
+    },
+    {
+      "path": "tests/nodejs/upstream/trace-agent-browser/artifact-url.ts",
+      "bytes": 82,
+      "sha256": "1ffb469390a7c8a8d09863fc617da366fd56ba3275ccdcf8d2b1f4c1b3a302f8"
+    },
+    {
+      "path": "tests/nodejs/upstream/trace-agent-browser/playwright.config.ts",
+      "bytes": 219,
+      "sha256": "751b637e17463859cadae79012e5943cf630730bfd2dad486825b5700bb1da5b"
+    },
+    {
+      "path": "tests/nodejs/upstream/trace-agent-browser/trace-agent.spec.ts",
+      "bytes": 4160,
+      "sha256": "1cf8316cf6e98294fe77ff4426ff2b0ceb78b18acd1e9f44393c1e9eefe87c90"
+    },
+    {
+      "path": "tests/nodejs/upstream/trace-agent-controls.ts",
+      "bytes": 6326,
+      "sha256": "068e21c954a3c68cd7d42cd345045cd2e565f42d074d6d9f85f8b96b6e526319"
+    },
+    {
+      "path": "tests/nodejs/upstream/trace-binding-browser/artifact-url.ts",
+      "bytes": 82,
+      "sha256": "1ffb469390a7c8a8d09863fc617da366fd56ba3275ccdcf8d2b1f4c1b3a302f8"
+    },
+    {
+      "path": "tests/nodejs/upstream/trace-binding-browser/playwright.config.ts",
+      "bytes": 221,
+      "sha256": "24dd26290f522ff45b674eb189de6b4133dc4c33ab3a0419553b40f3ad65005b"
+    },
+    {
+      "path": "tests/nodejs/upstream/trace-binding-browser/trace-binding.spec.ts",
+      "bytes": 5007,
+      "sha256": "eff3cd7879d2efc4482708706caa70c25e6759197c2f486fb1057e2bb8e2bc77"
+    },
+    {
+      "path": "tests/nodejs/upstream/trace-binding-controls.ts",
+      "bytes": 4669,
+      "sha256": "862167a0d5001c329128ff4f7910888bab88984c9f88f661c3fe5549a826198b"
+    },
+    {
+      "path": "tests/nodejs/upstream/trace-binding-engine-controls.js",
+      "bytes": 5273,
+      "sha256": "23dc5f576570010aafcd19ae67abb44dd95443eda87a592343d3b24ba61628f7"
+    },
+    {
+      "path": "tests/nodejs/upstream/trace-binding-native-reference.json",
+      "bytes": 45121,
+      "sha256": "b075cca720360f128796cf1f3ca408aa354d1af934b5f65cab85b0c0d2c667a8"
+    },
+    {
+      "path": "tests/nodejs/upstream/trace-binding-shared-controls.js",
+      "bytes": 8127,
+      "sha256": "e95326b6ac232f4b756dec0e853bf7c540ace556533e72b422931622ba7ff5d3"
+    },
+    {
+      "path": "tests/nodejs/upstream/types-browser/artifact-url.ts",
+      "bytes": 157,
+      "sha256": "f032dcec8075ac00c0b4a2b2bea5d81d7a5bc16e9a0046b83116dc7215526209"
+    },
+    {
+      "path": "tests/nodejs/upstream/types-browser/playwright.config.ts",
+      "bytes": 216,
+      "sha256": "09fbb9e210e71a44cfb3b4c38b2d0287650617b8af5a6352c661696ddc0086df"
+    },
+    {
+      "path": "tests/nodejs/upstream/types-browser/types.spec.ts",
+      "bytes": 6404,
+      "sha256": "32093006ba3136c2aae1e9ef4bc30c0b007e66500ef6c2101cf86c39d648bcdf"
+    },
+    {
+      "path": "tests/nodejs/upstream/types-engine-controls.js",
+      "bytes": 5425,
+      "sha256": "62501f1bb60a146a614a97bf90c1be883456a50c665611accd02ec53949b8676"
+    },
+    {
+      "path": "tests/nodejs/upstream/types-native-controls.cjs",
+      "bytes": 1158,
+      "sha256": "e1eb9d16d4dead9e6995c362e0574dba44a00657273d4315f70d619a8273fddf"
+    },
+    {
+      "path": "tests/nodejs/upstream/types-shared-controls.js",
+      "bytes": 6465,
+      "sha256": "0ba4b83dd6ab77a2f91862b44019d2844c1114ed588f8950c74ed862c91c5d31"
+    },
+    {
+      "path": "tests/nodejs/upstream/util-lazy-properties-contracts.json",
+      "bytes": 7114,
+      "sha256": "f4d0e854de95c23da0cba6f3c6ea7a625f0c02db7f278a2786bfd4d729044ed2"
+    },
+    {
+      "path": "tests/nodejs/upstream/util-lazy-properties-native-controls.cjs",
+      "bytes": 2095,
+      "sha256": "47d0ca366bdd89782a8343afb2d33184088d3ce4412ab82c5fb89f08fef37232"
+    },
+    {
+      "path": "tests/nodejs/upstream/util-lazy-properties-native-reference.json",
+      "bytes": 3203,
+      "sha256": "1fa1747f051c2980fb901caee7b59d902d04e966117958c5e352c5cd6c4f0a15"
+    },
+    {
+      "path": "tests/nodejs/upstream/v8-tracing-browser/playwright.config.ts",
+      "bytes": 209,
+      "sha256": "e4b7f4d827e589da63253a8aff12b6a19a230707ec9ccb22a8ddf401965c5604"
+    },
+    {
+      "path": "tests/nodejs/upstream/v8-tracing-browser/v8-tracing.spec.ts",
+      "bytes": 3754,
+      "sha256": "ffbac72719df7ba2306e7c137157edaa7948c88cf99df2cd086d23f31f06c757"
+    },
+    {
+      "path": "tests/nodejs/upstream/v8-tracing-component-assertions.ts",
+      "bytes": 2648,
+      "sha256": "56197da9ffe3ba60b7546eb3841f54916c6a5410ed476b17a3d7ea5e94f19593"
+    },
+    {
+      "path": "third_party/nodejs/sources.json",
+      "bytes": 130353,
+      "sha256": "bca37a1dff2dead5e0f9a6bd68c56e714c7f14634361bd53b613c2f3de3ca33f"
+    },
+    {
+      "path": "third_party/nodejs/target.json",
+      "bytes": 1187,
+      "sha256": "89102b1877ac810caf73b3e1fa2fe1e165434286528fc409a5fd63549e18a4d7"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/aliased_buffer-inl.h",
+      "bytes": 8694,
+      "sha256": "056df681ed699aa07b06b4e9adec470d5dd12c6cfdb5f4dacf4edae3dea06769"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/aliased_buffer.h",
+      "bytes": 6468,
+      "sha256": "a374d00816da192d44e45b1566c986081b26ad0dbea73401405682fd2b4434ec"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_buffer.cc",
+      "bytes": 76513,
+      "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2"
+    }
+  ],
+  "sourceIdentity": {
+    "manifest": {
+      "path": "third_party/nodejs/sources.json",
+      "bytes": 130353,
+      "sha256": "bca37a1dff2dead5e0f9a6bd68c56e714c7f14634361bd53b613c2f3de3ca33f"
+    },
+    "records": 557,
+    "all557PriorRecordsAndBytesUnchanged": true,
+    "javascriptFiles": 443,
+    "javascriptBytes": 10993403,
+    "sourcePinChanged": false,
+    "upstreamJavascriptChanged": false,
+    "snapshotCppUnitImportedOrExcerpted": false
+  },
+  "architectureDecision": "User clarified: implement the same native interface directly against SpiderMonkey/Kandelo; no V8 binding generation or V8 heap snapshot port",
+  "implementation": {
+    "nativeInterface": "five live functions, anonymous main path and actual original AliasedUint8Array ordinary-mode view",
+    "compilation": "actual SpiderMonkey global UTF16 function-body compiler, with explicit unsupported NUL/unpaired origin metadata",
+    "callbacks": "actual principal-realm traced slots, original registration assertion order, native clearing and foreground root retirement",
+    "context": "actual rooted globals, equality, scoped engine realm entry/restoration and selected context-taking APIs with compartment wrapping",
+    "preload": "actual nullable native hook; only absent-hook assertion tested",
+    "fullNativeSnapshotInterfaceConformance": false,
+    "automaticSnapshotCallbackLoopAndEntrypathLifecycleComplete": false,
+    "snapshotSerializationAndRestorationSupported": false,
+    "upstreamBootstrapCompleted": false,
+    "normalNodeMode": "legacy bootstrap"
+  },
+  "fourHostControls": [
+    {
+      "host": "node",
+      "bindingControls": 8,
+      "contextControls": 17,
+      "drivers": 13,
+      "expectedNativeContractAssertionTraps": 7,
+      "nativeExactGroups": 8,
+      "startupAccepted": false,
+      "report": {
+        "path": ".context/node-snapshot/integration/engine-final.json",
+        "bytes": 142043,
+        "sha256": "ba496e24cbe64469de835a97f4d6994f76214db436800056783419d8cc44053e"
+      }
+    },
+    {
+      "host": "chromium",
+      "bindingControls": 8,
+      "contextControls": 17,
+      "drivers": 13,
+      "expectedNativeContractAssertionTraps": 7,
+      "nativeExactGroups": 8,
+      "startupAccepted": false,
+      "report": {
+        "path": ".context/node-snapshot/integration/browser/mksnapshot-chromium.json",
+        "bytes": 112221,
+        "sha256": "4f3cbbcae1ca9fa5f1357b72516794c5faea3a49837119e58a10df2f6e16f532"
+      },
+      "browserVersion": "153.0.8010.12"
+    },
+    {
+      "host": "firefox",
+      "bindingControls": 8,
+      "contextControls": 17,
+      "drivers": 13,
+      "expectedNativeContractAssertionTraps": 7,
+      "nativeExactGroups": 8,
+      "startupAccepted": false,
+      "report": {
+        "path": ".context/node-snapshot/integration/browser/mksnapshot-firefox.json",
+        "bytes": 200996,
+        "sha256": "e4e1a0b8f0980e4e0e0032e704e9e8caa3f4591e0d542d338839f1a668189f64"
+      },
+      "browserVersion": "155.0"
+    },
+    {
+      "host": "webkit",
+      "bindingControls": 8,
+      "contextControls": 17,
+      "drivers": 13,
+      "expectedNativeContractAssertionTraps": 7,
+      "nativeExactGroups": 8,
+      "startupAccepted": false,
+      "report": {
+        "path": ".context/node-snapshot/integration/browser/mksnapshot-webkit.json",
+        "bytes": 126042,
+        "sha256": "03e28acfb456549fb6f9adba06b72539b867dbfa77c046f30afd23bc62c3cd45"
+      },
+      "browserVersion": "26.6"
+    }
+  ],
+  "nativeReference": {
+    "report": {
+      "path": "tests/nodejs/upstream/mksnapshot-live-native-reference.json",
+      "bytes": 7795,
+      "sha256": "8d1bda72dd9175c2f75f4066e99e344f30138164c264151f4b93d28d4381f046"
+    },
+    "exactGroups": 8,
+    "scope": "Authenticated native fresh live reference; no snapshots"
+  },
+  "sourceControls": {
+    "controls": 29,
+    "reports": [
+      {
+        "path": ".context/node-snapshot/integration/dependency-controls.json",
+        "bytes": 1829,
+        "sha256": "6518817d331c3e582c973957845c6b4582091d6e1b3e53a94185aff0b6d1eab9"
+      },
+      {
+        "path": ".context/node-snapshot/integration/native-registration-controls.json",
+        "bytes": 1607,
+        "sha256": "0300f79653c6d019e671bc3cecf3b324eef3c934f7ef419cce856fde3ec20ca1"
+      }
+    ],
+    "survey": {
+      "path": "tests/nodejs/upstream/backend-binding-survey.json",
+      "bytes": 166782,
+      "sha256": "a2e6cc754b5b856426247087d6c2dfccfb0e4906c69ed639629c7df869970295"
+    },
+    "currentDispatcherRoutes": 18,
+    "literalNamesWithoutRoute": 54,
+    "fullNativeContractCatalogComplete": false
+  },
+  "nextStartupDependency": {
+    "interface": "util.defineLazyProperties",
+    "catalog": {
+      "path": "tests/nodejs/upstream/util-lazy-properties-contracts.json",
+      "bytes": 7114,
+      "sha256": "f4d0e854de95c23da0cba6f3c6ea7a625f0c02db7f278a2786bfd4d729044ed2"
+    },
+    "nativeReference": {
+      "path": "tests/nodejs/upstream/util-lazy-properties-native-reference.json",
+      "bytes": 3203,
+      "sha256": "1fa1747f051c2980fb901caee7b59d902d04e966117958c5e352c5cd6c4f0a15"
+    },
+    "nativeControls": 7,
+    "guestImplementationAdded": false,
+    "nativeDataPropertyEvidence": "Descriptor access materializes actual data, while assignment/delete/freeze can avoid loading; an observable JS accessor would not match"
+  },
+  "priorNodeRegressions": {
+    "namedFixtureCases": 310,
+    "drivers": 92,
+    "expectedAssertions": 27,
+    "reports": [
+      {
+        "path": ".context/node-snapshot/integration/icu-regression.json",
+        "bytes": 256283,
+        "sha256": "a735dba1f02aef6dca474dcc0ed726a82d9a91c2ddd10d1f6bb79df7fcc9f74d"
+      },
+      {
+        "path": ".context/node-snapshot/integration/process-versions-regression.json",
+        "bytes": 45647,
+        "sha256": "f1aa8bd02dcc6699067c3053f21f35738d2dc0ad9845e04407ad7e7a6c1b76bf"
+      },
+      {
+        "path": ".context/node-snapshot/integration/decoder-regression.json",
+        "bytes": 1712724,
+        "sha256": "b00247551375d341dae5e769d970cebaabddf035ec852e79079970277d664efe"
+      },
+      {
+        "path": ".context/node-snapshot/integration/options-regression.json",
+        "bytes": 62587,
+        "sha256": "ab739be0ee8f59a2217b77cb442c10af37df6d0c07411e7610ede7a39be699e9"
+      },
+      {
+        "path": ".context/node-snapshot/integration/types-regression.json",
+        "bytes": 175737,
+        "sha256": "e36ea75e44ecafe5fe8a9d1e16065afa2fc7c75bae8d7de5297dda5a7036e840"
+      },
+      {
+        "path": ".context/node-snapshot/integration/constants-regression.json",
+        "bytes": 281185,
+        "sha256": "2c55fd800af7a153cde97dcf2b2e84679233a2f2cbd9005525fc767f827cde95"
+      },
+      {
+        "path": ".context/node-snapshot/integration/async-wrap-regression.json",
+        "bytes": 113768,
+        "sha256": "f79bce7f1a8c508303b2f75f18080bccc75cca128323fd4b6b99080fed6083ec"
+      },
+      {
+        "path": ".context/node-snapshot/integration/task-queue-regression.json",
+        "bytes": 86653,
+        "sha256": "9f5806e28ff56953106781e5122af49e1bbf40b7393817c8aee8b7296154da6c"
+      },
+      {
+        "path": ".context/node-snapshot/integration/timers-regression.json",
+        "bytes": 72889,
+        "sha256": "2eb4e8a1889927bc5da53e8989684519c73b7d0df8e842a5763b328d7b2d4d16"
+      },
+      {
+        "path": ".context/node-snapshot/integration/process-config-regression.json",
+        "bytes": 55540,
+        "sha256": "d050c2caa9e411ea215bf33db3e1a24e13b2149f84460f1edfe64ae2c6121e3d"
+      },
+      {
+        "path": ".context/node-snapshot/integration/realm-library-regression.json",
+        "bytes": 47084,
+        "sha256": "8e63cc5931a3b3d89277960f5bc274f4d83ec737092720effe4f0889b135e8c6"
+      },
+      {
+        "path": ".context/node-snapshot/integration/error-stack-regression.json",
+        "bytes": 48384,
+        "sha256": "1212ff4ff7c6c9ed119f70a417e0ec82a5a3f13abe8397aa11d2fd22b8de69dd"
+      },
+      {
+        "path": ".context/node-snapshot/integration/dynamic-import-regression.json",
+        "bytes": 34999,
+        "sha256": "00067f44e77ff6b4424553f3804764ec364023c96835bba1974fd388e546f225"
+      },
+      {
+        "path": ".context/node-snapshot/integration/module-wrap-regression.json",
+        "bytes": 47856,
+        "sha256": "f24d1cba2e8fded8865c11cdc75539ef74196c0b854bf1ec40d991fc156bd95a"
+      },
+      {
+        "path": ".context/node-snapshot/integration/synthetic-modules-regression.json",
+        "bytes": 34427,
+        "sha256": "48ed04e8f8245c69291f55a0fed4af0243c62f7df9162c814842f7eea004bb09"
+      },
+      {
+        "path": ".context/node-snapshot/integration/per-context-regression.json",
+        "bytes": 33790,
+        "sha256": "071ef60afd1d0d91012360b54106d9831272bad7d5342fc6a10d32983a36a7cd"
+      },
+      {
+        "path": ".context/node-snapshot/integration/private-keys-regression.json",
+        "bytes": 42229,
+        "sha256": "e2eccf3772825628fd6f95fff165a2102d9bd3e614a752f0c50f6bcec1c599f2"
+      }
+    ],
+    "agentReport": {
+      "path": ".context/node-snapshot/integration/agent-regression.json",
+      "bytes": 336332,
+      "sha256": "1104bbb1251787dd96fb4d732ece5f8e19708d35a7a2a69a2a63010003505680"
+    },
+    "traceReport": {
+      "path": ".context/node-snapshot/integration/trace-binding-regression.json",
+      "bytes": 2162290,
+      "sha256": "97b469c18dacaaa1029cfdf34a1c2dbce078ecb2ce6ab17522e882642da3486b"
+    }
+  },
+  "priorFourHostRegressions": [
+    {
+      "family": "aliased",
+      "host": "node",
+      "controls": 21,
+      "drivers": 6,
+      "report": {
+        "path": ".context/node-snapshot/integration/aliased-regression.json",
+        "bytes": 69400,
+        "sha256": "cc63f78457034950be4c4af1b44d499cf2ebc0ac22258231f2c5b3515630f14b"
+      }
+    },
+    {
+      "family": "aliased",
+      "host": "chromium",
+      "controls": 21,
+      "drivers": 6,
+      "report": {
+        "path": ".context/node-snapshot/integration/aliased-browser/aliased-chromium.json",
+        "bytes": 39804,
+        "sha256": "5e96c3bd1e9a5dd527338acf9eafd98449f9e7518f27278bc6d123fd431ba9f4"
+      }
+    },
+    {
+      "family": "aliased",
+      "host": "firefox",
+      "controls": 21,
+      "drivers": 6,
+      "report": {
+        "path": ".context/node-snapshot/integration/aliased-browser/aliased-firefox.json",
+        "bytes": 63083,
+        "sha256": "11bad34975527b5357078e733fc43552536c91f793e18d52afdbd4b2844238eb"
+      }
+    },
+    {
+      "family": "aliased",
+      "host": "webkit",
+      "controls": 21,
+      "drivers": 6,
+      "report": {
+        "path": ".context/node-snapshot/integration/aliased-browser/aliased-webkit.json",
+        "bytes": 42697,
+        "sha256": "474ac82da5d064174d3385d927c5c0db97d74cc06bbf5ed0da2395f9a434e4d8"
+      }
+    },
+    {
+      "family": "buffer",
+      "host": "node",
+      "controls": 44,
+      "drivers": 6,
+      "report": {
+        "path": ".context/node-snapshot/integration/buffer-regression.json",
+        "bytes": 535015,
+        "sha256": "3feb26c4d374d77565602ea828e8eddbd9f090346eebbd663cc297b422c59729"
+      }
+    },
+    {
+      "family": "buffer",
+      "host": "chromium",
+      "controls": 44,
+      "drivers": 6,
+      "report": {
+        "path": ".context/node-snapshot/integration/buffer-browser/buffer-chromium.json",
+        "bytes": 115982,
+        "sha256": "d4fc63edbaaa85229d26feb98deb49cf6e110c4f82e191596e5c00e82bf1e780"
+      }
+    },
+    {
+      "family": "buffer",
+      "host": "firefox",
+      "controls": 44,
+      "drivers": 6,
+      "report": {
+        "path": ".context/node-snapshot/integration/buffer-browser/buffer-firefox.json",
+        "bytes": 135109,
+        "sha256": "536143d6ab294e6b6d3a01db4c3fa35e96a6a8e80d0d90c61ebe9a3c7c8406bf"
+      }
+    },
+    {
+      "family": "buffer",
+      "host": "webkit",
+      "controls": 44,
+      "drivers": 6,
+      "report": {
+        "path": ".context/node-snapshot/integration/buffer-browser/buffer-webkit.json",
+        "bytes": 119539,
+        "sha256": "e9f58456b88df8a0b908b4eeb426aadc8c5abcaa277989919766dbdf875db91f"
+      }
+    },
+    {
+      "family": "continuation",
+      "host": "node",
+      "controls": 27,
+      "drivers": 8,
+      "report": {
+        "path": ".context/node-snapshot/integration/continuation-regression.json",
+        "bytes": 112507,
+        "sha256": "d7bf557ec7619084e114af8aeb63cc2be89ad3f1ef4a083e609906de39c78f1c"
+      }
+    },
+    {
+      "family": "continuation",
+      "host": "chromium",
+      "controls": 27,
+      "drivers": 8,
+      "report": {
+        "path": ".context/node-snapshot/integration/continuation-browser/continuation-chromium.json",
+        "bytes": 23291,
+        "sha256": "1a74c8c7ba5d820352683c5a429505364f2c013371fbd07d27180443ba228143"
+      }
+    },
+    {
+      "family": "continuation",
+      "host": "firefox",
+      "controls": 27,
+      "drivers": 8,
+      "report": {
+        "path": ".context/node-snapshot/integration/continuation-browser/continuation-firefox.json",
+        "bytes": 23282,
+        "sha256": "7d6f38853f78c93ff2b602c1798f6e75f5543a8b80259315db5d0ddddb887182"
+      }
+    },
+    {
+      "family": "continuation",
+      "host": "webkit",
+      "controls": 27,
+      "drivers": 8,
+      "report": {
+        "path": ".context/node-snapshot/integration/continuation-browser/continuation-webkit.json",
+        "bytes": 23280,
+        "sha256": "fa1f576f55842483fb214a716dd3fa370ae7565850c803d5e331ed1eedd906c0"
+      }
+    },
+    {
+      "family": "environment",
+      "host": "node",
+      "controls": 14,
+      "drivers": 4,
+      "report": {
+        "path": ".context/node-snapshot/integration/environment-regression.json",
+        "bytes": 48326,
+        "sha256": "d6220e43103144914ceabe252c6595ecbbd04cd1aa8cc7be8fce609991870c19"
+      }
+    },
+    {
+      "family": "environment",
+      "host": "chromium",
+      "controls": 14,
+      "drivers": 4,
+      "report": {
+        "path": ".context/node-snapshot/integration/environment-browser/environment-chromium.json",
+        "bytes": 11304,
+        "sha256": "5208882ccf225aa059e384a136b0d36aafdd3d0bb2e9ce93c2e47c7cbbe5989f"
+      }
+    },
+    {
+      "family": "environment",
+      "host": "firefox",
+      "controls": 14,
+      "drivers": 4,
+      "report": {
+        "path": ".context/node-snapshot/integration/environment-browser/environment-firefox.json",
+        "bytes": 11295,
+        "sha256": "daf619e9e456d02ef62ffd5de00ca385ac70f1ff7143942bb26ff0f0473d73fc"
+      }
+    },
+    {
+      "family": "environment",
+      "host": "webkit",
+      "controls": 14,
+      "drivers": 4,
+      "report": {
+        "path": ".context/node-snapshot/integration/environment-browser/environment-webkit.json",
+        "bytes": 11293,
+        "sha256": "2f3efbea76cf8bce55887ad345835110d0e6569294a3acfcab221ad0f53d5dd0"
+      }
+    },
+    {
+      "family": "memory",
+      "host": "node",
+      "controls": 23,
+      "drivers": 1,
+      "report": {
+        "path": ".context/node-snapshot/integration/buffer-memory-regression.json",
+        "bytes": 51092,
+        "sha256": "be7d2e8d40909184d0a7819144ccf06724a2b7281f634464adf89a91b6fee0f0"
+      }
+    },
+    {
+      "family": "memory",
+      "host": "chromium",
+      "controls": 23,
+      "drivers": 1,
+      "report": {
+        "path": ".context/node-snapshot/integration/memory-browser/buffer-memory-chromium.json",
+        "bytes": 11291,
+        "sha256": "5ac4ee34391ce25fa147ce73914c71a452979f3d6fb24d66389c7053920e58aa"
+      }
+    },
+    {
+      "family": "memory",
+      "host": "firefox",
+      "controls": 23,
+      "drivers": 1,
+      "report": {
+        "path": ".context/node-snapshot/integration/memory-browser/buffer-memory-firefox.json",
+        "bytes": 11282,
+        "sha256": "1e5ad177fdfe0280a7f69d7a4c6f431d829ab0b7aefd398ab8d88600029fc879"
+      }
+    },
+    {
+      "family": "memory",
+      "host": "webkit",
+      "controls": 23,
+      "drivers": 1,
+      "report": {
+        "path": ".context/node-snapshot/integration/memory-browser/buffer-memory-webkit.json",
+        "bytes": 11280,
+        "sha256": "8fcd0b364eeb7202e2e99a9f61093f302568904fdb242c339a0d6d1d18079863"
+      }
+    },
+    {
+      "family": "compiler",
+      "host": "node",
+      "controls": 25,
+      "drivers": 4,
+      "report": {
+        "path": ".context/node-snapshot/integration/compiler-regression.json",
+        "bytes": 74376,
+        "sha256": "92160154c2d1e72d67005bb18eb0ffb486116caa49ef6491b3b89af840afbe0b"
+      }
+    },
+    {
+      "family": "compiler",
+      "host": "chromium",
+      "controls": 25,
+      "drivers": 4,
+      "report": {
+        "path": ".context/node-snapshot/integration/compiler-browser/function-compiler-chromium.json",
+        "bytes": 16924,
+        "sha256": "6ad83033658105ab426f3714580ea36da0a96c0a2261055dc687b76ce888a517"
+      }
+    },
+    {
+      "family": "compiler",
+      "host": "firefox",
+      "controls": 25,
+      "drivers": 4,
+      "report": {
+        "path": ".context/node-snapshot/integration/compiler-browser/function-compiler-firefox.json",
+        "bytes": 16915,
+        "sha256": "8a3872821f67795b8257b0a22b08ddce35fed90ccf3f6d7088def1a47b8ab65e"
+      }
+    },
+    {
+      "family": "compiler",
+      "host": "webkit",
+      "controls": 25,
+      "drivers": 4,
+      "report": {
+        "path": ".context/node-snapshot/integration/compiler-browser/function-compiler-webkit.json",
+        "bytes": 16913,
+        "sha256": "b92588e2e3e06d13de480a556ec5aa3df3324f6f9022aa4114899ff87839b3c4"
+      }
+    }
+  ],
+  "selectedGuestTotals": {
+    "currentComponentGuestProcesses": 52,
+    "priorSelectedGuestProcesses": 226,
+    "allGuestProcesses": 278,
+    "priorExpectedAssertionTraps": 44,
+    "newNativeContractAssertionTraps": 28,
+    "allExpectedAssertionTraps": 72,
+    "fullConformance": false
+  },
+  "initialFailuresRetained": {
+    "builds": [
+      "EscapeRoot overload ambiguity fixed before linking",
+      "include order fixed; no upstream source modification"
+    ],
+    "runtimeFixtures": "Prior Buffer expectation required ERR_KANDELO_NOT_IMPLEMENTED; actual next failure is TypeError defineLazyProperties; exact expectation corrected, Node and all3browsers rerun successfully",
+    "firstEngineReport": {
+      "path": ".context/node-snapshot/integration/engine-first.json",
+      "bytes": 124822,
+      "sha256": "41818eb303ccf02644a63a7c0c0b073e87b98f07dba5a7472bbad081d5ddfe0a"
+    },
+    "firstBufferReport": {
+      "path": ".context/node-snapshot/integration/buffer-regression-first.json",
+      "bytes": 977035,
+      "sha256": "41a6f6c78e9db022601fe02c7b94b015b96ec54650c72e99bf373fe21099e60b"
+    },
+    "logs": [
+      {
+        "path": ".context/node-snapshot/integration/runtime/job-logs/browser-regressions-fixed.log",
+        "bytes": 23383,
+        "sha256": "08ed5ca46bd02fc3da3ee6c9af5de66e0102b21edb9ae0253e450db4cb3f7bac"
+      },
+      {
+        "path": ".context/node-snapshot/integration/runtime/job-logs/browsers-first.log",
+        "bytes": 154164,
+        "sha256": "c6eea795c276facad19f003b5b7a8f9e9bd1410e432f5e89a5c7288a085e73d4"
+      },
+      {
+        "path": ".context/node-snapshot/integration/runtime/job-logs/build-first-failed.log",
+        "bytes": 257767,
+        "sha256": "68c714b6839ffac8109d125f37d2181b84e273f6bab4975ab56159570d1276f3"
+      },
+      {
+        "path": ".context/node-snapshot/integration/runtime/job-logs/build-full.log",
+        "bytes": 266643,
+        "sha256": "75b9dc8ed2faefd84bf1f1d614060094ba4914c0914b0b1971d14a9ee5c39b09"
+      },
+      {
+        "path": ".context/node-snapshot/integration/runtime/job-logs/build-order-failed.log",
+        "bytes": 267769,
+        "sha256": "5b43f12af64e9a49ba1739732299e4aac1602e57e9a9ffd3716f5636e4a0c286"
+      },
+      {
+        "path": ".context/node-snapshot/integration/runtime/job-logs/regressions-first.log",
+        "bytes": 53576,
+        "sha256": "5db0556403fba7a905640a348a5da671566651c85ac3912eedc5eb76fd89f40b"
+      }
+    ]
+  },
+  "normalResolverReuse": {
+    "path": ".context/node-snapshot/integration/resolver-reuse.log",
+    "bytes": 308,
+    "sha256": "1da3b57d29e37338ac16e8e8cc680a80a3dcbee836111ff5e80cb28e55d9660b"
+  },
+  "validationTool": {
+    "path": ".context/node-snapshot/integration/make-receipt.py",
+    "bytes": 11893,
+    "sha256": "eb412b673e9941259e62148eb64c1c5c4e250ef31777e0106b2c2f89c28219aa"
+  },
+  "whitespaceCheckPassed": true,
+  "browserCleanup": "Firefox storage EACCES warnings and Vite import warnings retained; no permission changes or cleanup/quiescence guarantee",
+  "remaining": [
+    "genuine empty/simple startup with output/errors/jobs/exit and separate CJS/ESM on all4hosts",
+    "complete public/internal/lazy/conditional/worker/platform/exceptional backend contracts and ordered roadmap",
+    "native lazy data-property engine/embedding support for actual holder creation realm and original protected loader",
+    "automatic snapshot callback beforeExit/entrypath lifecycle, positive preload hook admission/options integration",
+    "full native origin/context/template APIs, OOM/security/concurrent/worker/fork/cancellation and snapshot contracts"
+  ],
+  "deferred": [
+    "full products/images",
+    "successor ABI builds; immutable ABI55 history preserved",
+    "overall conformance suites",
+    "broader backend roadmap implementation until user review gate"
+  ]
+}

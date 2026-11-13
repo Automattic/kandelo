@@ -24,4 +24,4 @@ script_path = "packages/registry/libzstd/build-libzstd.sh"
 
 [outputs]
 libs = ["lib/libzstd.a"]
-headers = ["include/zstd.h"]
+headers = ["include/zstd.h", "include/zstd_errors.h"]

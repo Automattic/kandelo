@@ -1,0 +1,535 @@
+{
+  "program": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/types-native-controls.cjs",
+    "bytes": 1158,
+    "sha256": "e1eb9d16d4dead9e6995c362e0574dba44a00657273d4315f70d619a8273fddf"
+  },
+  "sharedFixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/types-shared-controls.js",
+    "bytes": 6465,
+    "sha256": "0ba4b83dd6ab77a2f91862b44019d2844c1114ed588f8950c74ed862c91c5d31"
+  },
+  "addon": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-types-native.9vfFhI/types-external.node",
+    "bytes": 50672,
+    "sha256": "99dc54daba1a5b115037938e445382d958b5d1589aa4e6334907d875aa2e0ced"
+  },
+  "addonSource": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-types/native-external.c",
+    "bytes": 786,
+    "sha256": "cd18f9618daed7a4f938047550bd525ee292b71b33f253143b855264acd4d3a1"
+  },
+  "exitCode": 0,
+  "stdout": "{\"kind\":\"native-types-reference\",\"cases\":13,\"failures\":0,\"observations\":[{\"name\":\"all-native-method-attributes-and-call-signatures\",\"status\":\"pass\"},{\"name\":\"primitive-and-ordinary-values-have-no-native-object-tags\",\"status\":\"pass\"},{\"name\":\"boxed-primitives-use-real-internal-slots\",\"status\":\"pass\"},{\"name\":\"real-collections-iterators-and-buffers-are-distinguished\",\"status\":\"pass\"},{\"name\":\"native-error-tags-ignore-javascript-inheritance\",\"status\":\"pass\"},{\"name\":\"function-and-generator-flags-match-original-node\",\"status\":\"pass\"},{\"name\":\"mapped-and-unmapped-arguments-use-engine-tags\",\"status\":\"pass\"},{\"name\":\"builtin-prototypes-retain-their-actual-native-types\",\"status\":\"pass\"},{\"name\":\"scripted-and-revoked-proxies-do-not-unwrap-or-run-traps\",\"status\":\"pass\"},{\"name\":\"spoofed-tags-and-prototypes-do-not-invoke-user-code\",\"status\":\"pass\"},{\"name\":\"detached-buffer-and-modified-prototypes-preserve-native-identity\",\"status\":\"pass\"},{\"name\":\"module-namespace-is-genuine-and-is-not-a-scripted-proxy\",\"status\":\"pass\"},{\"name\":\"opaque-external-retains-real-native-pointer-through-gc\",\"status\":\"pass\"}],\"classificationMatrix\":[{\"name\":\"undefined\",\"matches\":[]},{\"name\":\"null\",\"matches\":[]},{\"name\":\"false\",\"matches\":[]},{\"name\":\"zero\",\"matches\":[]},{\"name\":\"nan\",\"matches\":[]},{\"name\":\"string\",\"matches\":[]},{\"name\":\"symbol\",\"matches\":[]},{\"name\":\"bigint\",\"matches\":[]},{\"name\":\"object\",\"matches\":[]},{\"name\":\"null-prototype\",\"matches\":[]},{\"name\":\"array\",\"matches\":[]},{\"name\":\"function\",\"matches\":[]},{\"name\":\"class\",\"matches\":[]},{\"name\":\"typed-array\",\"matches\":[]},{\"name\":\"data-view\",\"matches\":[]},{\"name\":\"string-iterator\",\"matches\":[]},{\"name\":\"array-iterator\",\"matches\":[]},{\"name\":\"number-object\",\"matches\":[\"isNumberObject\",\"isBoxedPrimitive\"]},{\"name\":\"boolean-object\",\"matches\":[\"isBooleanObject\",\"isBoxedPrimitive\"]},{\"name\":\"string-object\",\"matches\":[\"isStringObject\",\"isBoxedPrimitive\"]},{\"name\":\"bigint-object\",\"matches\":[\"isBigIntObject\",\"isBoxedPrimitive\"]},{\"name\":\"symbol-object\",\"matches\":[\"isSymbolObject\",\"isBoxedPrimitive\"]},{\"name\":\"map\",\"matches\":[\"isMap\"]},{\"name\":\"set\",\"matches\":[\"isSet\"]},{\"name\":\"weak-map\",\"matches\":[\"isWeakMap\"]},{\"name\":\"weak-set\",\"matches\":[\"isWeakSet\"]},{\"name\":\"map-iterator\",\"matches\":[\"isMapIterator\"]},{\"name\":\"set-iterator\",\"matches\":[\"isSetIterator\"]},{\"name\":\"date\",\"matches\":[\"isDate\"]},{\"name\":\"regexp\",\"matches\":[\"isRegExp\"]},{\"name\":\"promise\",\"matches\":[\"isPromise\"]},{\"name\":\"array-buffer\",\"matches\":[\"isArrayBuffer\",\"isAnyArrayBuffer\"]},{\"name\":\"shared-array-buffer\",\"matches\":[\"isSharedArrayBuffer\",\"isAnyArrayBuffer\"]},{\"name\":\"error\",\"matches\":[\"isNativeError\"]},{\"name\":\"type-error\",\"matches\":[\"isNativeError\"]},{\"name\":\"aggregate-error\",\"matches\":[\"isNativeError\"]},{\"name\":\"error-subclass\",\"matches\":[\"isNativeError\"]},{\"name\":\"domexception\",\"matches\":[\"isNativeError\"]},{\"name\":\"fake-error-prototype\",\"matches\":[]},{\"name\":\"async-function\",\"matches\":[\"isAsyncFunction\"]},{\"name\":\"generator-function\",\"matches\":[\"isGeneratorFunction\"]},{\"name\":\"async-generator-function\",\"matches\":[\"isAsyncFunction\",\"isGeneratorFunction\"]},{\"name\":\"generator-object\",\"matches\":[\"isGeneratorObject\"]},{\"name\":\"async-generator-object\",\"matches\":[\"isGeneratorObject\"]},{\"name\":\"bound-async-function\",\"matches\":[]},{\"name\":\"bound-generator-function\",\"matches\":[]},{\"name\":\"generator-prototype\",\"matches\":[]},{\"name\":\"mapped-arguments\",\"matches\":[\"isArgumentsObject\"]},{\"name\":\"unmapped-arguments\",\"matches\":[\"isArgumentsObject\"]},{\"name\":\"date-prototype\",\"matches\":[]},{\"name\":\"regexp-prototype\",\"matches\":[]},{\"name\":\"map-prototype\",\"matches\":[]},{\"name\":\"set-prototype\",\"matches\":[]},{\"name\":\"weak-map-prototype\",\"matches\":[]},{\"name\":\"weak-set-prototype\",\"matches\":[]},{\"name\":\"symbol-prototype\",\"matches\":[]},{\"name\":\"bigint-prototype\",\"matches\":[]},{\"name\":\"error-prototype\",\"matches\":[]},{\"name\":\"async-function-prototype\",\"matches\":[]},{\"name\":\"generator-function-prototype\",\"matches\":[]},{\"name\":\"number-prototype\",\"matches\":[\"isNumberObject\",\"isBoxedPrimitive\"]},{\"name\":\"boolean-prototype\",\"matches\":[\"isBooleanObject\",\"isBoxedPrimitive\"]},{\"name\":\"string-prototype\",\"matches\":[\"isStringObject\",\"isBoxedPrimitive\"]},{\"name\":\"proxy-63\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-64\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-65\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-66\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-67\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-68\",\"matches\":[\"isProxy\"]},{\"name\":\"proxy-69\",\"matches\":[\"isProxy\"]},{\"name\":\"revoked-proxy\",\"matches\":[\"isProxy\"]},{\"name\":\"spoofed-Date\",\"matches\":[]},{\"name\":\"spoofed-Map\",\"matches\":[]},{\"name\":\"spoofed-Set\",\"matches\":[]},{\"name\":\"spoofed-Promise\",\"matches\":[]},{\"name\":\"spoofed-Number\",\"matches\":[]},{\"name\":\"spoofed-Generator\",\"matches\":[]},{\"name\":\"spoofed-Module\",\"matches\":[]},{\"name\":\"spoofed-External\",\"matches\":[]},{\"name\":\"inherited-map\",\"matches\":[]},{\"name\":\"inherited-date\",\"matches\":[]},{\"name\":\"detached-array-buffer\",\"matches\":[\"isArrayBuffer\",\"isAnyArrayBuffer\"]},{\"name\":\"prototype-cleared-map\",\"matches\":[\"isMap\"]},{\"name\":\"module-namespace\",\"matches\":[\"isModuleNamespaceObject\"]},{\"name\":\"module-namespace-proxy\",\"matches\":[\"isProxy\"]},{\"name\":\"native-external\",\"matches\":[\"isExternal\"]}]}\n",
+  "stderr": "",
+  "detail": {
+    "kind": "native-types-reference",
+    "cases": 13,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "all-native-method-attributes-and-call-signatures",
+        "status": "pass"
+      },
+      {
+        "name": "primitive-and-ordinary-values-have-no-native-object-tags",
+        "status": "pass"
+      },
+      {
+        "name": "boxed-primitives-use-real-internal-slots",
+        "status": "pass"
+      },
+      {
+        "name": "real-collections-iterators-and-buffers-are-distinguished",
+        "status": "pass"
+      },
+      {
+        "name": "native-error-tags-ignore-javascript-inheritance",
+        "status": "pass"
+      },
+      {
+        "name": "function-and-generator-flags-match-original-node",
+        "status": "pass"
+      },
+      {
+        "name": "mapped-and-unmapped-arguments-use-engine-tags",
+        "status": "pass"
+      },
+      {
+        "name": "builtin-prototypes-retain-their-actual-native-types",
+        "status": "pass"
+      },
+      {
+        "name": "scripted-and-revoked-proxies-do-not-unwrap-or-run-traps",
+        "status": "pass"
+      },
+      {
+        "name": "spoofed-tags-and-prototypes-do-not-invoke-user-code",
+        "status": "pass"
+      },
+      {
+        "name": "detached-buffer-and-modified-prototypes-preserve-native-identity",
+        "status": "pass"
+      },
+      {
+        "name": "module-namespace-is-genuine-and-is-not-a-scripted-proxy",
+        "status": "pass"
+      },
+      {
+        "name": "opaque-external-retains-real-native-pointer-through-gc",
+        "status": "pass"
+      }
+    ],
+    "classificationMatrix": [
+      {
+        "name": "undefined",
+        "matches": []
+      },
+      {
+        "name": "null",
+        "matches": []
+      },
+      {
+        "name": "false",
+        "matches": []
+      },
+      {
+        "name": "zero",
+        "matches": []
+      },
+      {
+        "name": "nan",
+        "matches": []
+      },
+      {
+        "name": "string",
+        "matches": []
+      },
+      {
+        "name": "symbol",
+        "matches": []
+      },
+      {
+        "name": "bigint",
+        "matches": []
+      },
+      {
+        "name": "object",
+        "matches": []
+      },
+      {
+        "name": "null-prototype",
+        "matches": []
+      },
+      {
+        "name": "array",
+        "matches": []
+      },
+      {
+        "name": "function",
+        "matches": []
+      },
+      {
+        "name": "class",
+        "matches": []
+      },
+      {
+        "name": "typed-array",
+        "matches": []
+      },
+      {
+        "name": "data-view",
+        "matches": []
+      },
+      {
+        "name": "string-iterator",
+        "matches": []
+      },
+      {
+        "name": "array-iterator",
+        "matches": []
+      },
+      {
+        "name": "number-object",
+        "matches": [
+          "isNumberObject",
+          "isBoxedPrimitive"
+        ]
+      },
+      {
+        "name": "boolean-object",
+        "matches": [
+          "isBooleanObject",
+          "isBoxedPrimitive"
+        ]
+      },
+      {
+        "name": "string-object",
+        "matches": [
+          "isStringObject",
+          "isBoxedPrimitive"
+        ]
+      },
+      {
+        "name": "bigint-object",
+        "matches": [
+          "isBigIntObject",
+          "isBoxedPrimitive"
+        ]
+      },
+      {
+        "name": "symbol-object",
+        "matches": [
+          "isSymbolObject",
+          "isBoxedPrimitive"
+        ]
+      },
+      {
+        "name": "map",
+        "matches": [
+          "isMap"
+        ]
+      },
+      {
+        "name": "set",
+        "matches": [
+          "isSet"
+        ]
+      },
+      {
+        "name": "weak-map",
+        "matches": [
+          "isWeakMap"
+        ]
+      },
+      {
+        "name": "weak-set",
+        "matches": [
+          "isWeakSet"
+        ]
+      },
+      {
+        "name": "map-iterator",
+        "matches": [
+          "isMapIterator"
+        ]
+      },
+      {
+        "name": "set-iterator",
+        "matches": [
+          "isSetIterator"
+        ]
+      },
+      {
+        "name": "date",
+        "matches": [
+          "isDate"
+        ]
+      },
+      {
+        "name": "regexp",
+        "matches": [
+          "isRegExp"
+        ]
+      },
+      {
+        "name": "promise",
+        "matches": [
+          "isPromise"
+        ]
+      },
+      {
+        "name": "array-buffer",
+        "matches": [
+          "isArrayBuffer",
+          "isAnyArrayBuffer"
+        ]
+      },
+      {
+        "name": "shared-array-buffer",
+        "matches": [
+          "isSharedArrayBuffer",
+          "isAnyArrayBuffer"
+        ]
+      },
+      {
+        "name": "error",
+        "matches": [
+          "isNativeError"
+        ]
+      },
+      {
+        "name": "type-error",
+        "matches": [
+          "isNativeError"
+        ]
+      },
+      {
+        "name": "aggregate-error",
+        "matches": [
+          "isNativeError"
+        ]
+      },
+      {
+        "name": "error-subclass",
+        "matches": [
+          "isNativeError"
+        ]
+      },
+      {
+        "name": "domexception",
+        "matches": [
+          "isNativeError"
+        ]
+      },
+      {
+        "name": "fake-error-prototype",
+        "matches": []
+      },
+      {
+        "name": "async-function",
+        "matches": [
+          "isAsyncFunction"
+        ]
+      },
+      {
+        "name": "generator-function",
+        "matches": [
+          "isGeneratorFunction"
+        ]
+      },
+      {
+        "name": "async-generator-function",
+        "matches": [
+          "isAsyncFunction",
+          "isGeneratorFunction"
+        ]
+      },
+      {
+        "name": "generator-object",
+        "matches": [
+          "isGeneratorObject"
+        ]
+      },
+      {
+        "name": "async-generator-object",
+        "matches": [
+          "isGeneratorObject"
+        ]
+      },
+      {
+        "name": "bound-async-function",
+        "matches": []
+      },
+      {
+        "name": "bound-generator-function",
+        "matches": []
+      },
+      {
+        "name": "generator-prototype",
+        "matches": []
+      },
+      {
+        "name": "mapped-arguments",
+        "matches": [
+          "isArgumentsObject"
+        ]
+      },
+      {
+        "name": "unmapped-arguments",
+        "matches": [
+          "isArgumentsObject"
+        ]
+      },
+      {
+        "name": "date-prototype",
+        "matches": []
+      },
+      {
+        "name": "regexp-prototype",
+        "matches": []
+      },
+      {
+        "name": "map-prototype",
+        "matches": []
+      },
+      {
+        "name": "set-prototype",
+        "matches": []
+      },
+      {
+        "name": "weak-map-prototype",
+        "matches": []
+      },
+      {
+        "name": "weak-set-prototype",
+        "matches": []
+      },
+      {
+        "name": "symbol-prototype",
+        "matches": []
+      },
+      {
+        "name": "bigint-prototype",
+        "matches": []
+      },
+      {
+        "name": "error-prototype",
+        "matches": []
+      },
+      {
+        "name": "async-function-prototype",
+        "matches": []
+      },
+      {
+        "name": "generator-function-prototype",
+        "matches": []
+      },
+      {
+        "name": "number-prototype",
+        "matches": [
+          "isNumberObject",
+          "isBoxedPrimitive"
+        ]
+      },
+      {
+        "name": "boolean-prototype",
+        "matches": [
+          "isBooleanObject",
+          "isBoxedPrimitive"
+        ]
+      },
+      {
+        "name": "string-prototype",
+        "matches": [
+          "isStringObject",
+          "isBoxedPrimitive"
+        ]
+      },
+      {
+        "name": "proxy-63",
+        "matches": [
+          "isProxy"
+        ]
+      },
+      {
+        "name": "proxy-64",
+        "matches": [
+          "isProxy"
+        ]
+      },
+      {
+        "name": "proxy-65",
+        "matches": [
+          "isProxy"
+        ]
+      },
+      {
+        "name": "proxy-66",
+        "matches": [
+          "isProxy"
+        ]
+      },
+      {
+        "name": "proxy-67",
+        "matches": [
+          "isProxy"
+        ]
+      },
+      {
+        "name": "proxy-68",
+        "matches": [
+          "isProxy"
+        ]
+      },
+      {
+        "name": "proxy-69",
+        "matches": [
+          "isProxy"
+        ]
+      },
+      {
+        "name": "revoked-proxy",
+        "matches": [
+          "isProxy"
+        ]
+      },
+      {
+        "name": "spoofed-Date",
+        "matches": []
+      },
+      {
+        "name": "spoofed-Map",
+        "matches": []
+      },
+      {
+        "name": "spoofed-Set",
+        "matches": []
+      },
+      {
+        "name": "spoofed-Promise",
+        "matches": []
+      },
+      {
+        "name": "spoofed-Number",
+        "matches": []
+      },
+      {
+        "name": "spoofed-Generator",
+        "matches": []
+      },
+      {
+        "name": "spoofed-Module",
+        "matches": []
+      },
+      {
+        "name": "spoofed-External",
+        "matches": []
+      },
+      {
+        "name": "inherited-map",
+        "matches": []
+      },
+      {
+        "name": "inherited-date",
+        "matches": []
+      },
+      {
+        "name": "detached-array-buffer",
+        "matches": [
+          "isArrayBuffer",
+          "isAnyArrayBuffer"
+        ]
+      },
+      {
+        "name": "prototype-cleared-map",
+        "matches": [
+          "isMap"
+        ]
+      },
+      {
+        "name": "module-namespace",
+        "matches": [
+          "isModuleNamespaceObject"
+        ]
+      },
+      {
+        "name": "module-namespace-proxy",
+        "matches": [
+          "isProxy"
+        ]
+      },
+      {
+        "name": "native-external",
+        "matches": [
+          "isExternal"
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,769 @@
+#include "shell/node-upstream/realm.h"
+
+#include "mozilla/Assertions.h"
+#include "mozilla/Maybe.h"
+
+#include <cerrno>
+#include <cstdint>
+#include <cstring>
+#include <openssl/opensslv.h>
+#include <string_view>
+#include <sys/utsname.h>
+#include <unistd.h>
+#include <utility>
+
+#include "builtin-source-registry.h"
+#include "jsapi.h"
+#include "jsfriendapi.h"
+#include "js/Array.h"
+#include "js/CallAndConstruct.h"
+#include "js/CallArgs.h"
+#include "js/CharacterEncoding.h"
+#include "js/Conversions.h"
+#include "js/Exception.h"
+#include "js/friend/WindowProxy.h"
+#include "js/GlobalObject.h"
+#include "js/LocaleSensitive.h"
+#include "js/Object.h"
+#include "js/PropertyAndElement.h"
+#include "js/Realm.h"
+#include "js/Stack.h"
+#include "js/String.h"
+#include "js/ValueArray.h"
+#include "js/Wrapper.h"
+#include "shell/jsshell.h"
+#include "shell/node-upstream/async-wrap.h"
+#include "shell/node-upstream/builtin-compiler.h"
+#include "shell/node-upstream/codecs.h"
+#include "shell/node-upstream/constants.h"
+#include "shell/node-upstream/error-stack.h"
+#include "shell/node-upstream/options.h"
+#include "shell/node-upstream/per-context.h"
+#include "shell/node-upstream/process-versions.h"
+#include "shell/node-upstream/task-queue.h"
+#include "shell/node-upstream/timers.h"
+#include "shell/node-upstream/types.h"
+#include "vm/NativeObject.h"
+
+#include "shell/node-upstream/build-config-inl.h"
+
+namespace kandelo::node {
+namespace {
+
+enum Phase { Initializing = 1, LibraryReady = 2, Failed = 3 };
+enum NodePhase { NodeNotStarted = 0, NodeRunning = 1, NodeBodyDone = 2, NodeFailed = 3, NodeComplete = 4 };
+enum Slot { Status, Global, Process, Primordials, SafeMapPrototype, Builtins, Util, Config, Constants, Types, Options, StringDecoder, Icu, TraceEvents, Continuation, Timers, TaskQueue, AsyncWrap, Symbols, Buffer, BufferPrototype, Messaging, MessagingDeserializer, Diagnostics, Snapshot, SerializeCallback, DeserializeCallback, DeserializeMain, InternalLoader,
+            BuiltinRequire, LinkedLookup, InternalLookup, CompiledIds, NodeStatus, ProcessMethods, Slots };
+const JSClass kRealm = {"NodeRealmLibrary", JSCLASS_HAS_RESERVED_SLOTS(Slots)};
+const JSClass kProcess = {"process", 0};
+
+bool Report(JSContext* cx, const char* message) {
+  if (!JS_IsExceptionPending(cx)) JS_ReportErrorASCII(cx, "%s", message);
+  return false;
+}
+bool Throw(JSContext* cx, const char* code, const char* message) {
+  JS::RootedObject stack(cx);
+  if (!JS::CaptureCurrentStack(cx, &stack)) return false;
+  JS::RootedString filename(cx, JS_NewStringCopyZ(cx, ""));
+  JS::RootedString text(cx, JS_NewStringCopyZ(cx, message));
+  JS::RootedValue error(cx);
+  JS::Rooted<mozilla::Maybe<JS::Value>> cause(cx, mozilla::Nothing());
+  if (!filename || !text || !JS::CreateError(cx, JSEXN_ERR, stack, filename, 0,
+      JS::ColumnNumberOneOrigin(1), nullptr, text, cause, &error)) return false;
+  JS::RootedObject object(cx, &error.toObject());
+  if (code) {
+    JS::RootedString name(cx, JS_NewStringCopyZ(cx, code));
+    if (!name || !JS_DefineProperty(cx, object, "code", name, JSPROP_ENUMERATE)) return false;
+  }
+  JS_SetPendingException(cx, error); return false;
+}
+bool Missing(JSContext* cx, const char* message) {
+  return Throw(cx, "ERR_KANDELO_NOT_IMPLEMENTED", message);
+}
+bool PendingCode(JSContext* cx, const char* name) {
+  JS::RootedValue error(cx);
+  if (!JS_GetPendingException(cx, &error)) return false;
+  JS_ClearPendingException(cx);
+  JS::RootedObject object(cx, &error.toObject());
+  JS::RootedString code(cx, JS_NewStringCopyZ(cx, name));
+  if (!code || !JS_DefineProperty(cx, object, "code", code, JSPROP_ENUMERATE)) return false;
+  JS_SetPendingException(cx, error); return false;
+}
+JSObject* Runtime(JSContext* cx) {
+  return js::shell::GetShellContext(cx)->upstreamNodeRuntime.get();
+}
+JSObject* Owner(JSContext* cx, const JS::CallArgs& args) {
+  JSObject* state = &js::GetFunctionNativeReserved(&args.callee(), 0).toObject();
+  MOZ_RELEASE_ASSERT(JS::GetClass(state) == &kRealm);
+  if (JS::GetObjectRealmOrNull(state) != JS::GetCurrentRealmOrNull(cx) ||
+      JS::GetReservedSlot(state, Global) != JS::ObjectValue(*JS::CurrentGlobalOrNull(cx))) {
+    Report(cx, "Native Node realm function belongs to another context"); return nullptr;
+  }
+  if (JS::GetReservedSlot(state, Status) == JS::Int32Value(Failed)) {
+    Report(cx, "Previous Node realm initialization failed"); return nullptr;
+  }
+  return state;
+}
+JSObject* Function(JSContext* cx, JS::HandleObject state, JSNative native,
+                   unsigned nargs, const char* name) {
+  JS::RootedFunction function(cx, js::NewFunctionWithReserved(cx, native, nargs, 0, name));
+  if (!function) return nullptr;
+  JS::RootedObject object(cx, JS_GetFunctionObject(function));
+  js::SetFunctionNativeReserved(object, 0, JS::ObjectValue(*state)); return object;
+}
+bool StringView(JSContext* cx, JS::HandleValue value, JS::UniqueChars& bytes,
+                std::string_view* view) {
+  MOZ_RELEASE_ASSERT(value.isString(), "Node binding name invariant");
+  JS::RootedString string(cx, value.toString());
+  bytes = JS_EncodeStringToUTF8(cx, string);
+  if (!bytes) return false;
+  JSLinearString* linear = JS_EnsureLinearString(cx, string);
+  if (!linear) return false;
+  *view = std::string_view(bytes.get(), JS::GetDeflatedUTF8StringLength(linear)); return true;
+}
+bool Compile(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject state(cx, Owner(cx, args)); if (!state) return false;
+  JS::UniqueChars bytes; std::string_view id;
+  if (!StringView(cx, args.get(0), bytes, &id)) return false;
+  JS::RootedFunction function(cx, CompileBuiltinFunction(cx, id));
+  if (!function) return false;
+  JS::RootedObject records(cx, &JS::GetReservedSlot(state, CompiledIds).toObject());
+  uint32_t count;
+  if (!JS::GetArrayLength(cx, records, &count) || !JS_DefineElement(cx, records, count, args[0], JSPROP_ENUMERATE)) return false;
+  args.rval().setObject(*JS_GetFunctionObject(function)); return true;
+}
+bool SetLoaders(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject state(cx, Owner(cx, args)); if (!state) return false;
+  MOZ_RELEASE_ASSERT(args.get(0).isObject() && JS::IsCallable(&args[0].toObject()), "Node internal loader invariant");
+  MOZ_RELEASE_ASSERT(args.get(1).isObject() && JS::IsCallable(&args[1].toObject()), "Node builtin require invariant");
+  MOZ_RELEASE_ASSERT(JS::GetReservedSlot(state, InternalLoader).isUndefined() &&
+                     JS::GetReservedSlot(state, BuiltinRequire).isUndefined(), "Node internal loaders registration invariant");
+  JS::SetReservedSlot(state, InternalLoader, args[0]);
+  JS::SetReservedSlot(state, BuiltinRequire, args[1]); args.rval().setUndefined(); return true;
+}
+bool LazyBuiltinValue(JSContext* cx,JS::HandleObject holder,JS::HandleId id,
+                      JS::HandleValue module,JS::MutableHandleValue result) {
+  JS::RootedValue value(cx);
+  {
+    // Native lazy data callbacks have no JS Function creation realm. The
+    // holder's actual creation realm owns the protected original loader.
+    JSAutoRealm home(cx,holder);
+    JS::RootedObject runtime(cx,Runtime(cx));JS::RootedValue exports(cx);
+    if(!RequireCurrentRealmBuiltin(cx,runtime,module,&exports))return false;
+    MOZ_RELEASE_ASSERT(exports.isObject(),"Builtin exports must be objects");
+    JS::RootedObject object(cx,&exports.toObject());
+    if(!JS_GetPropertyById(cx,object,id,&value))return false;
+  }
+  if(!JS_WrapValue(cx,&value))return false;result.set(value);return true;
+}
+bool DefineLazyProperties(JSContext* cx,unsigned argc,JS::Value* vp) {
+  auto args=JS::CallArgsFromVp(argc,vp);JS::RootedObject owner(cx,Owner(cx,args));if(!owner)return false;
+  MOZ_RELEASE_ASSERT(argc>=3,"Lazy property argument count");
+  MOZ_RELEASE_ASSERT(args[0].isObject(),"Lazy property target Object");
+  MOZ_RELEASE_ASSERT(args[1].isString(),"Lazy property module String");
+  bool array;if(!JS::IsArrayObject(cx,args[2],&array))return false;
+  MOZ_RELEASE_ASSERT(array,"Lazy property keys Array");
+  MOZ_RELEASE_ASSERT(argc==3||args[3].isBoolean(),"Lazy property enumerability Boolean");
+  JS::RootedObject keys(cx,&args[2].toObject());uint32_t length;if(!JS::GetArrayLength(cx,keys,&length))return false;
+  const unsigned attributes=argc==3||args[3].toBoolean()?JSPROP_ENUMERATE:0;
+  for(uint32_t index=0;index<length;++index){
+    JS::RootedValue key(cx);if(!JS_GetElement(cx,keys,index,&key))return false;
+    MOZ_RELEASE_ASSERT(key.isString(),"Lazy property key String");
+    JS::RootedId id(cx);if(!JS_ValueToId(cx,key,&id))return false;
+    JS::RootedObject target(cx,js::CheckedUnwrapDynamic(&args[0].toObject(),cx,false));if(!target)return false;
+    JSAutoRealm home(cx,target);JS::RootedValue module(cx,args[1]);if(!JS_WrapValue(cx,&module))return false;
+    JS::ObjectOpResult result;
+    if(!js::DefineKandeloLazyDataProperty(cx,target,id,LazyBuiltinValue,module,attributes,result)||!result.checkStrict(cx,target,id))return false;
+  }
+  args.rval().setUndefined();return true;
+}
+bool Ids(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject array(cx, JS::NewArrayObject(cx, BuiltinSourceCount()));
+  if (!array) return false;
+  for (size_t i = 0; i < BuiltinSourceCount(); i++) {
+    auto source = BuiltinSourceAt(i); MOZ_RELEASE_ASSERT(source);
+    JS::RootedString id(cx, JS_NewStringCopyZ(cx, source->id));
+    if (!id || !JS_DefineElement(cx, array, i, id, JSPROP_ENUMERATE)) return false;
+  }
+  args.rval().setObject(*array); return true;
+}
+bool Unimplemented(JSContext* cx, unsigned argc, JS::Value* vp) {
+  return Missing(cx, "Requested native builtin metadata/cache/source-text backend is not implemented");
+}
+bool FipsConfig(JSContext* cx, unsigned argc, JS::Value* vp) {
+  return Missing(cx, "Native FIPS configuration integration is not implemented");
+}
+bool DefaultLocale(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::UniqueChars locale = JS_GetDefaultLocale(cx);
+  if (!locale) return Report(cx, "Guest engine default locale is unavailable");
+  JS::RootedString result(cx, JS_NewStringCopyZ(cx, locale.get()));
+  if (!result) return false;
+  args.rval().setString(result); return true;
+}
+JSObject* ConfigBinding(JSContext* cx, JS::HandleObject state) {
+  JS::Value cached = JS::GetReservedSlot(state, Config);
+  if (cached.isObject()) return &cached.toObject();
+  JS::RootedObject binding(cx, JS_NewPlainObject(cx));
+  if (!binding) return nullptr;
+  auto flag = [&](const char* name, bool enabled) {
+    JS::RootedValue value(cx, JS::BooleanValue(enabled));
+    return JS_DefineProperty(cx, binding, name, value, JSPROP_ENUMERATE | JSPROP_READONLY);
+  };
+#if defined(DEBUG) && DEBUG
+  if (!flag("isDebugBuild", true)) return nullptr;
+#else
+  if (!flag("isDebugBuild", false)) return nullptr;
+#endif
+#ifdef OPENSSL_IS_BORINGSSL
+  if (!flag("openSSLIsBoringSSL", true)) return nullptr;
+#else
+  if (!flag("openSSLIsBoringSSL", false)) return nullptr;
+#endif
+#ifdef OPENSSL_VERSION_NUMBER
+  if (!flag("hasOpenSSL", true)) return nullptr;
+#else
+  if (!flag("hasOpenSSL", false)) return nullptr;
+#endif
+#if JS_HAS_INTL_API
+  if (!flag("hasIntl", true)) return nullptr;
+#endif
+  // Capability adoption requires its native binding and engine primitives,
+  // independently of which third-party libraries happen to be linked.
+  if (!flag("hasTracing", true) || !flag("hasInspector", false) || !flag("noBrowserGlobals", false) ||
+      !JS_DefineProperty(cx, binding, "bits", int32_t(8 * sizeof(intptr_t)), JSPROP_ENUMERATE | JSPROP_READONLY) ||
+      !JS_DefineProperty(cx, binding, "fipsMode", FipsConfig, nullptr, JSPROP_ENUMERATE) ||
+      !JS_DefineFunction(cx, binding, "getDefaultLocale", DefaultLocale, 0, 0)) return nullptr;
+  JS::SetReservedSlot(state, Config, JS::ObjectValue(*binding)); return binding;
+}
+JSObject* BuiltinsBinding(JSContext* cx, JS::HandleObject state) {
+  JS::Value cached = JS::GetReservedSlot(state, Builtins);
+  if (cached.isObject()) return &cached.toObject();
+  JS::RootedObject binding(cx, JS_NewPlainObject(cx));
+  JS::RootedObject compile(cx, Function(cx, state, Compile, 1, "compileFunction"));
+  JS::RootedObject loaders(cx, Function(cx, state, SetLoaders, 2, "setInternalLoaders"));
+  if (!binding || !compile || !loaders ||
+      !JS_DefineProperty(cx, binding, "compileFunction", compile, JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx, binding, "setInternalLoaders", loaders, JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx, binding, "builtinIds", Ids, nullptr, JSPROP_ENUMERATE)) return nullptr;
+  JS::RootedId configuration(cx);
+  JS::RootedString configurationName(cx, JS_NewStringCopyZ(cx, "config"));
+  if (!configurationName || !JS_StringToId(cx, configurationName, &configuration)) return nullptr;
+  JS::ObjectOpResult defined;
+  if (!js::DefineKandeloLazyDataProperty(cx, binding, configuration,
+          NativeBuildConfiguration, JS::UndefinedHandleValue, JSPROP_ENUMERATE, defined) ||
+      !defined.checkStrict(cx, binding, configuration)) return nullptr;
+  for (const char* property : {"builtinCategories", "natives"})
+    if (!JS_DefineProperty(cx, binding, property, Unimplemented, nullptr, JSPROP_ENUMERATE)) return nullptr;
+  static const JSFunctionSpec methods[] = {
+      JS_FN("getCacheUsage", Unimplemented, 0, 0), JS_FN("hasCachedBuiltins", Unimplemented, 0, 0),
+      JS_FN("importBuiltinSourceTextModule", Unimplemented, 1, 0), JS_FS_END};
+  if (!JS_DefineFunctions(cx, binding, methods) || !JS_FreezeObject(cx, binding)) return nullptr;
+  JS::SetReservedSlot(state, Builtins, JS::ObjectValue(*binding)); return binding;
+}
+bool RegisterMessagingDeserializer(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject state(cx, Owner(cx, args));
+  if (!state) return false;
+  MOZ_RELEASE_ASSERT(args.get(0).isObject() && JS::IsCallable(&args[0].toObject()),
+                     "Messaging deserializer must be a Function");
+  JS::RootedObject runtime(cx, Runtime(cx));
+  if (!SetMessagingDeserializer(cx, runtime, args[0])) return false;
+  args.rval().setUndefined();
+  return true;
+}
+bool UnavailableStructuredClone(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject state(cx, Owner(cx, args));
+  if (!state) return false;
+  return Missing(cx, "Native structured clone/transfer backend is not implemented");
+}
+JSObject* MessagingBinding(JSContext* cx, JS::HandleObject state) {
+  JS::Value cached = JS::GetReservedSlot(state, Messaging);
+  if (cached.isObject()) return &cached.toObject();
+  JS::RootedObject binding(cx, JS_NewPlainObject(cx));
+  JS::RootedObject runtime(cx, Runtime(cx));
+  JS::RootedObject exports(cx, GetCurrentContextExports(cx, runtime));
+  JS::RootedObject setter(cx, Function(cx, state, RegisterMessagingDeserializer, 0,
+                                     "setDeserializerCreateObjectFunction"));
+  JS::RootedObject clone(cx, Function(cx, state, UnavailableStructuredClone, 0,
+                                    "structuredClone"));
+  if (!binding || !exports || !setter || !clone) return nullptr;
+  JS::RootedValue dom(cx), quota(cx);
+  if (!JS_GetProperty(cx, exports, "DOMException", &dom)) return nullptr;
+  MOZ_RELEASE_ASSERT(dom.isObject() && JS::IsCallable(&dom.toObject()),
+                     "DOMException must be a Function");
+  if (!JS_GetProperty(cx, exports, "QuotaExceededError", &quota) ||
+      !JS_SetProperty(cx, binding, "DOMException", dom) ||
+      !JS_SetProperty(cx, binding, "QuotaExceededError", quota) ||
+      !JS_DefineProperty(cx, binding, "setDeserializerCreateObjectFunction", setter, JSPROP_ENUMERATE) ||
+      !JS_DefineProperty(cx, binding, "structuredClone", clone, JSPROP_ENUMERATE)) return nullptr;
+  JS::SetReservedSlot(state, Messaging, JS::ObjectValue(*binding));
+  return binding;
+}
+bool InternalBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject state(cx, Owner(cx, args)); if (!state) return false;
+  JS::UniqueChars bytes; std::string_view name;
+  if (!StringView(cx, args.get(0), bytes, &name)) return false;
+  JS::RootedObject runtime(cx, Runtime(cx));
+  JS::RootedObject binding(cx);
+  if (name == "builtins") binding = BuiltinsBinding(cx, state);
+  else if (name == "config") binding = ConfigBinding(cx, state);
+  else if (name == "constants") {
+    JS::Value cached = JS::GetReservedSlot(state, Constants);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = CreateConstantsBinding(cx);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, Constants, JS::ObjectValue(*binding));
+    }
+  }
+  else if (name == "types") {
+    JS::Value cached = JS::GetReservedSlot(state, Types);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = CreateTypesBinding(cx, state);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, Types, JS::ObjectValue(*binding));
+    }
+  }
+  else if (name == "options") {
+    JS::Value cached = JS::GetReservedSlot(state, Options);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = CreateOptionsBinding(cx, state);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, Options, JS::ObjectValue(*binding));
+    }
+  }
+  else if (name == "async_context_frame") {
+    JS::Value cached=JS::GetReservedSlot(state,Continuation);
+    if(cached.isObject())binding=&cached.toObject();
+    else {binding=CreateContinuationBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,Continuation,JS::ObjectValue(*binding));}
+  }
+  else if (name == "trace_events") {
+    JS::Value cached=JS::GetReservedSlot(state,TraceEvents);
+    if(cached.isObject())binding=&cached.toObject();
+    else {binding=CreateTraceBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,TraceEvents,JS::ObjectValue(*binding));}
+  }
+  else if (name == "icu") {
+    JS::Value cached=JS::GetReservedSlot(state,Icu);
+    if (cached.isObject()) binding=&cached.toObject();
+    else {
+      binding=CreateIcuBinding(cx,state);if (!binding) return false;
+      JS::SetReservedSlot(state,Icu,JS::ObjectValue(*binding));
+    }
+  }
+  else if (name == "buffer") {
+    JS::Value cached=JS::GetReservedSlot(state,Buffer);
+    if(cached.isObject())binding=&cached.toObject();
+    else {binding=CreateBufferBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,Buffer,JS::ObjectValue(*binding));}
+  }
+  else if (name == "mksnapshot") {
+    JS::Value cached=JS::GetReservedSlot(state,Snapshot);
+    if(cached.isObject())binding=&cached.toObject();
+    else {binding=CreateSnapshotBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,Snapshot,JS::ObjectValue(*binding));}
+  }
+  else if (name == "string_decoder") {
+    JS::Value cached = JS::GetReservedSlot(state, StringDecoder);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = CreateStringDecoderBinding(cx, state);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, StringDecoder, JS::ObjectValue(*binding));
+    }
+  }
+  else if (name == "timers") {
+    JS::Value cached = JS::GetReservedSlot(state, Timers);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      JS::RootedObject process(cx, &JS::GetReservedSlot(state, Process).toObject());
+      binding = CreateTimersBinding(cx, runtime, state, process);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, Timers, JS::ObjectValue(*binding));
+    }
+  }
+  else if (name == "task_queue") {
+    JS::Value cached = JS::GetReservedSlot(state, TaskQueue);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = CreateTaskQueueBinding(cx, runtime, state);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, TaskQueue, JS::ObjectValue(*binding));
+    }
+  }
+  else if (name == "async_wrap" || name == "symbols") {
+    unsigned slot = name == "async_wrap" ? AsyncWrap : Symbols;
+    JS::Value cached = JS::GetReservedSlot(state, slot);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = name == "async_wrap" ? CreateAsyncWrapBinding(cx, runtime, state)
+                                    : CreateRuntimeSymbolsBinding(cx, runtime);
+      if (!binding) return false;
+      JS::SetReservedSlot(state, slot, JS::ObjectValue(*binding));
+    }
+  }
+  else if (name == "messaging") binding = MessagingBinding(cx, state);
+  else if (name == "diagnostics_channel") {
+    const auto cached=JS::GetReservedSlot(state,Diagnostics);
+    if(cached.isObject())binding=&cached.toObject();
+    else {binding=CreateDiagnosticsBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,Diagnostics,JS::ObjectValue(*binding));}
+  }
+  else if (name == "process_methods") {
+    const auto cached=JS::GetReservedSlot(state,ProcessMethods);
+    if(cached.isObject())binding=&cached.toObject();
+    else {binding=CreateProcessMethodsBinding(cx,state);if(!binding)return false;JS::SetReservedSlot(state,ProcessMethods,JS::ObjectValue(*binding));}
+  }
+  else if (name == "module_wrap") binding = GetCurrentContextModuleWrapBinding(cx, runtime);
+  else if (name == "errors") binding = GetErrorStackBinding(cx);
+  else if (name == "util") {
+    JS::Value cached = JS::GetReservedSlot(state, Util);
+    if (cached.isObject()) binding = &cached.toObject();
+    else {
+      binding = JS_NewPlainObject(cx);
+      JS::RootedObject symbols(cx, CreateRuntimePrivateSymbolTable(cx, runtime));
+      JS::RootedObject constants(cx, JS_NewPlainObject(cx));
+      if (!binding || !symbols || !constants ||
+          !JS_DefineProperty(cx, binding, "privateSymbols", symbols, JSPROP_ENUMERATE) ||
+          !JS_DefineProperty(cx, binding, "constants", constants, JSPROP_ENUMERATE)) return false;
+      static constexpr std::pair<const char*, int32_t> constantRows[] = {
+          {"kExiting", kExiting}, {"kExitCode", kExitCode},
+          {"kHasExitCode", kHasExitCode}, {"kDisallowCloneAndTransfer", 0},
+          {"kTransferable", 1}, {"kCloneable", 2}};
+      for (const auto& entry : constantRows)
+        if (!JS_DefineProperty(cx, constants, entry.first, entry.second, JSPROP_ENUMERATE)) return false;
+      JS::RootedObject lazy(cx,Function(cx,state,DefineLazyProperties,0,"defineLazyProperties"));
+      if(!lazy||!JS_DefineProperty(cx,binding,"defineLazyProperties",lazy,JSPROP_ENUMERATE))return false;
+      JS::SetReservedSlot(state, Util, JS::ObjectValue(*binding));
+    }
+  } else {
+    JS_ReportErrorASCII(cx, "Native Node binding '%s' is not implemented", bytes.get());
+    return PendingCode(cx, "ERR_KANDELO_NOT_IMPLEMENTED");
+  }
+  if (!binding) return false;
+  args.rval().setObject(*binding); return true;
+}
+bool LinkedBinding(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  JS::RootedObject state(cx, Owner(cx, args)); if (!state) return false;
+  JS::UniqueChars bytes; std::string_view name;
+  if (!StringView(cx, args.get(0), bytes, &name)) return false;
+  // The source admission declares no embedder-added linked external modules.
+  JS_ReportErrorASCII(cx, "No such binding was linked: %s", bytes.get());
+  return PendingCode(cx, "ERR_INVALID_MODULE");
+}
+bool ParentPid(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp); auto pid = getppid();
+  if (pid < 0) return Report(cx, "Guest getppid failed");
+  args.rval().setNumber(pid); return true;
+}
+bool ProcessConstructor(JSContext* cx, unsigned argc, JS::Value* vp) {
+  auto args = JS::CallArgsFromVp(argc, vp);
+  if (!args.isConstructing()) {
+    // An empty FunctionTemplate callback returns its effective receiver, with
+    // global substitution and primitive boxing, rather than undefined.
+    JS::RootedObject receiver(cx, args.thisv().isNullOrUndefined()
+        ? js::ToWindowProxyIfWindow(JS::CurrentGlobalOrNull(cx))
+        : JS::ToObject(cx, args.thisv()));
+    if (!receiver) return false;
+    args.rval().setObject(*receiver); return true;
+  }
+  JS::RootedObject instance(cx, JS_NewObjectForConstructor(cx, &kProcess, args));
+  if (!instance) return false;
+  // The original FunctionTemplate constructor creates an empty instance;
+  // CreateProcessObject initializes metadata only on the actual realm process.
+  args.rval().setObject(*instance); return true;
+}
+JSObject* ProcessObject(JSContext* cx, JS::HandleObject runtime) {
+  struct utsname data;
+  if (uname(&data) != 0) { JS_ReportErrorASCII(cx, "Guest uname failed: %s", std::strerror(errno)); return nullptr; }
+  auto pid = getpid();
+  if (pid < 0) { Report(cx, "Guest getpid failed"); return nullptr; }
+  JS::RootedObject prototype(cx, JS_NewPlainObject(cx));
+  JS::RootedFunction function(cx, JS_NewFunction(cx, ProcessConstructor, 0, JSFUN_CONSTRUCTOR, "process"));
+  if (!prototype || !function) return nullptr;
+  JS::RootedObject constructor(cx, JS_GetFunctionObject(function));
+  if (!JS_DefineProperty(cx, prototype, "constructor", constructor, 0) ||
+      !JS_DefineProperty(cx, constructor, "prototype", prototype, JSPROP_PERMANENT)) return nullptr;
+  JS::RootedObject process(cx, JS_NewObjectWithGivenProto(cx, &kProcess, prototype));
+  JS::RootedObject exitInfo(cx, GetRuntimeExitInfo(cx, runtime));
+  JS::RootedSymbol exitKey(cx, GetRuntimeSymbol(cx, runtime, "exit_info_private_symbol"));
+  JS::RootedString platform(cx, JS_NewStringCopyZ(cx, data.sysname));
+  JS::RootedString machine(cx, JS_NewStringCopyZ(cx, data.machine));
+  if (!process || !exitInfo || !exitKey || !platform || !machine) return nullptr;
+  JS::RootedId key(cx, JS::PropertyKey::Symbol(exitKey));
+  if (!JS_DefinePropertyById(cx, process, key, exitInfo, 0) ||
+      !JS_DefineProperty(cx, process, "platform", platform, JSPROP_ENUMERATE | JSPROP_READONLY) ||
+      !JS_DefineProperty(cx, process, "arch", machine, JSPROP_ENUMERATE | JSPROP_READONLY) ||
+      !JS_DefineProperty(cx, process, "pid", int32_t(pid), JSPROP_ENUMERATE | JSPROP_READONLY) ||
+      !JS_DefineProperty(cx, process, "ppid", ParentPid, nullptr, JSPROP_ENUMERATE) ||
+      !InitializeProcessVersions(cx, process)) return nullptr;
+  return process;
+}
+
+}  // namespace
+
+JSObject* AllocateRealmLibraryState(JSContext* cx) {
+  JS::RootedObject state(cx, JS_NewObject(cx, &kRealm));
+  if (!state) return nullptr;
+  JS::SetReservedSlot(state, Status, JS::Int32Value(Initializing));
+  JS::SetReservedSlot(state, NodeStatus, JS::Int32Value(NodeNotStarted));
+  JS::SetReservedSlot(state, Global, JS::ObjectValue(*JS::CurrentGlobalOrNull(cx))); return state;
+}
+bool RealmLibraryIsFailed(JSObject* state) {
+  MOZ_RELEASE_ASSERT(JS::GetClass(state) == &kRealm);
+  return JS::GetReservedSlot(state, Status) == JS::Int32Value(Failed);
+}
+bool CheckRealmLibraryActive(JSContext* cx, JS::HandleObject state) {
+  MOZ_RELEASE_ASSERT(JS::GetClass(state) == &kRealm);
+  if (JS::GetReservedSlot(state, Status) == JS::Int32Value(Failed))
+    return Report(cx, "Previous Node realm initialization failed");
+  return true;
+}
+JSObject* GetRealmRuntime(JSContext* cx, JS::HandleObject state) {
+  if (!CheckRealmLibraryActive(cx, state)) return nullptr;
+  return Runtime(cx);
+}
+JSObject* GetRealmSafeMapPrototype(JSContext* cx, JS::HandleObject state) {
+  if (!CheckRealmLibraryActive(cx, state)) return nullptr;
+  JS::RootedObject object(cx, &JS::GetReservedSlot(state, SafeMapPrototype).toObject());
+  if (!JS_WrapObject(cx, &object)) return nullptr;
+  return object;
+}
+bool HasCompletedNodeBootstrap(JSContext* cx, JS::HandleObject wrapped) {
+  JS::RootedObject state(cx, js::CheckedUnwrapDynamic(wrapped, cx, false));
+  if (!state) return false;
+  MOZ_RELEASE_ASSERT(JS::GetClass(state) == &kRealm);
+  // NodeBodyDone alone is insufficient: original web/thread/environment
+  // bootstrap stages and DoneBootstrapping invariants remain required.
+  return JS::GetReservedSlot(state, NodeStatus) == JS::Int32Value(NodeComplete);
+}
+bool RunRealmLibrary(JSContext* cx, JS::HandleObject state,
+                     JS::HandleObject primordials) {
+  MOZ_RELEASE_ASSERT(JS::GetClass(state) == &kRealm);
+  auto run = [&]() -> bool {
+    JS::SetReservedSlot(state, Primordials, JS::ObjectValue(*primordials));
+    JS::RootedValue safeMap(cx), safeMapPrototype(cx);
+    MOZ_RELEASE_ASSERT(JS_GetProperty(cx, primordials, "SafeMap", &safeMap) && safeMap.isObject(), "Original Node SafeMap constructor invariant");
+    JS::RootedObject safeMapConstructor(cx, &safeMap.toObject());
+    MOZ_RELEASE_ASSERT(JS_GetProperty(cx, safeMapConstructor, "prototype", &safeMapPrototype) && safeMapPrototype.isObject(), "Original Node SafeMap prototype invariant");
+    JS::SetReservedSlot(state, SafeMapPrototype, safeMapPrototype);
+    if (!InitializeOptionsForRealm(cx, state)) return false;
+    JS::RootedObject records(cx, JS::NewArrayObject(cx, 0));
+    JS::RootedObject runtime(cx, Runtime(cx));
+    JS::RootedObject process(cx, ProcessObject(cx, runtime));
+    JS::RootedObject linked(cx, Function(cx, state, LinkedBinding, 1, "getLinkedBinding"));
+    JS::RootedObject internal(cx, Function(cx, state, InternalBinding, 1, "getInternalBinding"));
+    if (!records || !process || !linked || !internal) return false;
+    JS::SetReservedSlot(state, CompiledIds, JS::ObjectValue(*records));
+    JS::SetReservedSlot(state, Process, JS::ObjectValue(*process));
+    JS::SetReservedSlot(state, LinkedLookup, JS::ObjectValue(*linked));
+    JS::SetReservedSlot(state, InternalLookup, JS::ObjectValue(*internal));
+    JS::RootedFunction function(cx, CompileBuiltinFunction(cx, "internal/bootstrap/realm"));
+    if (!function) return false;
+    JS::RootedString id(cx, JS_NewStringCopyZ(cx, "internal/bootstrap/realm"));
+    if (!id || !JS_DefineElement(cx, records, 0, id, JSPROP_ENUMERATE)) return false;
+    JS::RootedValue callable(cx, JS::ObjectValue(*JS_GetFunctionObject(function)));
+    JS::RootedValueArray<4> args(cx);
+    args[0].setObject(*process); args[1].setObject(*linked); args[2].setObject(*internal); args[3].setObject(*primordials);
+    JS::RootedValue result(cx);
+    if (!JS::Call(cx, JS::UndefinedHandleValue, callable, args, &result)) return false;
+    MOZ_RELEASE_ASSERT(JS::GetReservedSlot(state, InternalLoader).isObject() &&
+                       JS::GetReservedSlot(state, BuiltinRequire).isObject(), "Node realm did not register its original loaders");
+    return true;
+  };
+  bool ok = run();
+  if (ok) {
+    JS::RootedObject runtime(cx, Runtime(cx));
+    JS::RootedObject process(cx, &JS::GetReservedSlot(state, Process).toObject());
+    ok = RegisterRuntimePrincipalRealm(cx, runtime, state, process);
+  }
+  JS::SetReservedSlot(state, Status, JS::Int32Value(ok ? LibraryReady : Failed)); return ok;
+}
+bool RejectRepeatedRealmLibraryInitialization(JSContext* cx, JS::HandleObject state) {
+  int phase = JS::GetReservedSlot(state, Status).toInt32();
+  return Report(cx, phase == LibraryReady ? "Node realm is already initialized"
+      : phase == Failed ? "Previous Node realm initialization failed" : "Reentrant Node realm initialization");
+}
+bool RunNodeBootstrap(JSContext* cx, JS::HandleObject state) {
+  int phase = JS::GetReservedSlot(state, NodeStatus).toInt32();
+  if (phase != NodeNotStarted)
+    return Report(cx, phase == NodeFailed ? "Previous Node bootstrap failed"
+        : phase == NodeRunning ? "Reentrant Node bootstrap" : "Node bootstrap body already executed");
+  if (JS::GetReservedSlot(state, Status) != JS::Int32Value(LibraryReady))
+    return Report(cx, "Node realm library is not ready");
+  JS::SetReservedSlot(state, NodeStatus, JS::Int32Value(NodeRunning));
+  auto run = [&]() -> bool {
+    JS::RootedObject runtime(cx,Runtime(cx));
+    JS::RootedObject principal(cx,GetRuntimePrincipalRealm(cx,runtime));if(!principal)return false;
+    principal=js::CheckedUnwrapDynamic(principal,cx,false);if(!principal)return false;
+    // Only PrincipalRealm runs internal/bootstrap/node upstream. A secondary
+    // realm cannot install the process Buffer prototype or own this body.
+    if(principal!=state)return Report(cx,"Native Node bootstrap requires the principal realm");
+    JS::RootedFunction function(cx, CompileBuiltinFunction(cx, "internal/bootstrap/node"));
+    if (!function) return false;
+    JS::RootedObject records(cx, &JS::GetReservedSlot(state, CompiledIds).toObject());
+    JS::RootedString id(cx, JS_NewStringCopyZ(cx, "internal/bootstrap/node"));
+    uint32_t count;
+    if (!id || !JS::GetArrayLength(cx, records, &count) ||
+        !JS_DefineElement(cx, records, count, id, JSPROP_ENUMERATE)) return false;
+    JS::RootedValue callable(cx, JS::ObjectValue(*JS_GetFunctionObject(function)));
+    JS::RootedValueArray<4> args(cx);
+    args[0].set(JS::GetReservedSlot(state, Process));
+    args[1].set(JS::GetReservedSlot(state, BuiltinRequire));
+    args[2].set(JS::GetReservedSlot(state, InternalLoader));
+    args[3].set(JS::GetReservedSlot(state, Primordials));
+    JS::RootedValue result(cx);
+    return JS::Call(cx, JS::UndefinedHandleValue, callable, args, &result);
+  };
+  bool ok = run();
+  JS::SetReservedSlot(state, NodeStatus, JS::Int32Value(ok ? NodeBodyDone : NodeFailed));
+  // A failed native bootstrap cannot leave a reusable partial environment.
+  // Success here is only node.js completion, not web/switches/Realm completion.
+  if (!ok) JS::SetReservedSlot(state, Status, JS::Int32Value(Failed));
+  return ok;
+}
+JSObject* RealmLibrarySnapshot(JSContext* cx, JS::HandleObject state, bool inspect) {
+  int phase = JS::GetReservedSlot(state, Status).toInt32();
+  if (!inspect && phase != LibraryReady) {
+    Report(cx, phase == Failed ? "Previous Node realm initialization failed" : "Reentrant Node realm initialization"); return nullptr;
+  }
+  JS::RootedObject snapshot(cx, JS_NewPlainObject(cx));
+  if (!snapshot || !JS_DefineProperty(cx, snapshot, "phase", phase, JSPROP_ENUMERATE)) return nullptr;
+  JS::RootedValue nodeStatus(cx, JS::GetReservedSlot(state, NodeStatus));
+  if (!JS_DefineProperty(cx, snapshot, "nodeBootstrapPhase", nodeStatus, JSPROP_ENUMERATE)) return nullptr;
+  JS::RootedValue registered(cx, JS::BooleanValue(JS::GetReservedSlot(state, InternalLoader).isObject()));
+  if (!JS_DefineProperty(cx, snapshot, "loadersRegistered", registered, JSPROP_ENUMERATE)) return nullptr;
+  if (phase == LibraryReady) {
+    for (const auto& field : {std::pair{"process", Process}, std::pair{"require", BuiltinRequire},
+                             std::pair{"internalBinding", InternalLoader}}) {
+      JS::RootedValue value(cx, JS::GetReservedSlot(state, field.second));
+      if (!JS_DefineProperty(cx, snapshot, field.first, value, JSPROP_ENUMERATE)) return nullptr;
+    }
+  }
+  if (phase == LibraryReady || inspect) {
+    JS::Value recorded = JS::GetReservedSlot(state, CompiledIds);
+    if (!recorded.isObject()) return snapshot;
+    JS::RootedObject records(cx, &recorded.toObject());
+    uint32_t count;
+    if (!JS::GetArrayLength(cx, records, &count)) return nullptr;
+    JS::RootedObject copy(cx, JS::NewArrayObject(cx, count));
+    if (!copy) return nullptr;
+    for (uint32_t i = 0; i < count; i++) {
+      JS::RootedValue value(cx);
+      if (!JS_GetElement(cx, records, i, &value) || !JS_DefineElement(cx, copy, i, value, JSPROP_ENUMERATE)) return nullptr;
+    }
+    if (!JS_DefineProperty(cx, snapshot, "compiledBuiltinIds", copy, JSPROP_ENUMERATE)) return nullptr;
+  }
+  return snapshot;
+}
+
+}  // namespace kandelo::node
+
+namespace kandelo::node {
+bool RequireRealmBuiltin(JSContext* cx,JS::HandleObject state,JS::HandleValue id,JS::MutableHandleValue result) {
+  if(!CheckRealmLibraryActive(cx,state))return false;
+  JS::RootedValue require(cx,JS::GetReservedSlot(state,BuiltinRequire));
+  MOZ_RELEASE_ASSERT(require.isObject()&&JS::IsCallable(&require.toObject()),"Original builtin require is unavailable");
+  JS::RootedValueArray<1> arguments(cx);arguments[0].set(id);
+  return JS::Call(cx,JS::NullHandleValue,require,arguments,result);
+}
+unsigned SnapshotCallbackSlot(SnapshotCallback kind) {
+  switch(kind){case SnapshotCallback::Serialize:return SerializeCallback;case SnapshotCallback::Deserialize:return DeserializeCallback;case SnapshotCallback::Main:return DeserializeMain;}
+  MOZ_CRASH("Invalid snapshot callback kind");
+}
+bool GetSnapshotCallback(JSContext* cx,JS::HandleObject runtime,SnapshotCallback kind,JS::MutableHandleValue result) {
+  JS::RootedObject owner(cx,GetRuntimePrincipalRealm(cx,runtime));if(!owner)return false;
+  owner=js::CheckedUnwrapDynamic(owner,cx,false);if(!owner)return false;
+  MOZ_RELEASE_ASSERT(JS::GetClass(owner)==&kRealm);
+  result.set(JS::GetReservedSlot(owner,SnapshotCallbackSlot(kind)));return JS_WrapValue(cx,result);
+}
+bool SetSnapshotCallback(JSContext* cx,JS::HandleObject runtime,SnapshotCallback kind,JS::HandleValue input) {
+  JS::RootedObject owner(cx,GetRuntimePrincipalRealm(cx,runtime));if(!owner)return false;
+  owner=js::CheckedUnwrapDynamic(owner,cx,false);if(!owner)return false;
+  MOZ_RELEASE_ASSERT(JS::GetClass(owner)==&kRealm);
+  // Upstream's principal setter admits empty handles for native clearing and
+  // asserts the principal context only for nonempty assignment.
+  MOZ_ASSERT(input.isUndefined()||JS::GetObjectRealmOrNull(owner)==JS::GetCurrentRealmOrNull(cx));
+  JSAutoRealm home(cx,owner);JS::RootedValue value(cx,input);if(!JS_WrapValue(cx,&value))return false;
+  JS::SetReservedSlot(owner,SnapshotCallbackSlot(kind),value);return true;
+}
+bool ClearSnapshotCallbacks(JSContext* cx,JS::HandleObject runtime) {
+  JS::RootedObject owner(cx,GetRuntimePrincipalRealm(cx,runtime,false));
+  // Initialization can fail before a principal realm is registered. No
+  // callback slot exists in that case; preserve actual lookup failures.
+  if(!owner)return !JS_IsExceptionPending(cx);
+  owner=js::CheckedUnwrapDynamic(owner,cx,false);if(!owner)return false;
+  JSAutoRealm home(cx,owner);
+  for(auto kind:{SnapshotCallback::Serialize,SnapshotCallback::Deserialize,SnapshotCallback::Main})JS::SetReservedSlot(owner,SnapshotCallbackSlot(kind),JS::UndefinedValue());
+  return true;
+}
+bool SetRealmBufferPrototype(JSContext* cx,JS::HandleObject realm,JS::HandleObject prototype) {
+  JS::RootedObject owner(cx,js::CheckedUnwrapDynamic(realm,cx,false));if(!owner)return false;
+  JSAutoRealm home(cx,owner);JS::RootedObject wrapped(cx,prototype);if(!JS_WrapObject(cx,&wrapped))return false;
+  JS::SetReservedSlot(owner,BufferPrototype,JS::ObjectValue(*wrapped));return true;
+}
+JSObject* GetRealmBufferPrototype(JSContext* cx,JS::HandleObject realm) {
+  JS::RootedObject owner(cx,js::CheckedUnwrapDynamic(realm,cx,false));if(!owner)return nullptr;
+  auto value=JS::GetReservedSlot(owner,BufferPrototype);if(!value.isObject())return nullptr;
+  JS::RootedObject result(cx,&value.toObject());return JS_WrapObject(cx,&result)?result.get():nullptr;
+}
+}
+
+namespace kandelo::node {
+JSObject* PrincipalMessagingOwner(JSContext* cx, JS::HandleObject runtime, bool required = true) {
+  JS::RootedObject owner(cx, GetRuntimePrincipalRealm(cx, runtime, required));
+  if (!owner) return nullptr;
+  owner = js::CheckedUnwrapDynamic(owner, cx, false);
+  if (!owner) return nullptr;
+  MOZ_RELEASE_ASSERT(JS::GetClass(owner) == &kRealm);
+  return owner;
+}
+bool GetMessagingDeserializer(JSContext* cx, JS::HandleObject runtime,
+                               JS::MutableHandleValue result) {
+  JS::RootedObject owner(cx, PrincipalMessagingOwner(cx, runtime));
+  if (!owner) return false;
+  result.set(JS::GetReservedSlot(owner, MessagingDeserializer));
+  return JS_WrapValue(cx, result);
+}
+bool SetMessagingDeserializer(JSContext* cx, JS::HandleObject runtime,
+                               JS::HandleValue input) {
+  JS::RootedObject owner(cx, PrincipalMessagingOwner(cx, runtime));
+  if (!owner || !CheckRealmLibraryActive(cx, owner)) return false;
+  // Original principal value setters permit native clearing and replacement;
+  // nonempty writes require principal current context in debug builds only.
+  MOZ_ASSERT(input.isUndefined() || JS::GetObjectRealmOrNull(owner) == JS::GetCurrentRealmOrNull(cx));
+  JSAutoRealm home(cx, owner);
+  JS::RootedValue value(cx, input);
+  if (!JS_WrapValue(cx, &value)) return false;
+  JS::SetReservedSlot(owner, MessagingDeserializer, value);
+  return true;
+}
+bool ClearMessagingDeserializer(JSContext* cx, JS::HandleObject runtime) {
+  JS::RootedObject owner(cx, PrincipalMessagingOwner(cx, runtime, false));
+  if (!owner) return !JS_IsExceptionPending(cx);
+  JSAutoRealm home(cx, owner);
+  JS::SetReservedSlot(owner, MessagingDeserializer, JS::UndefinedValue());
+  return true;
+}
+bool CallMessagingDeserializer(JSContext* cx, JS::HandleObject runtime,
+                                JS::HandleString info, JS::MutableHandleValue result) {
+  JS::RootedObject owner(cx, PrincipalMessagingOwner(cx, runtime));
+  if (!owner || !CheckRealmLibraryActive(cx, owner)) return false;
+  if (&JS::GetReservedSlot(owner, Global).toObject() != JS::CurrentGlobalOrNull(cx))
+    return Throw(cx, "ERR_MESSAGE_TARGET_CONTEXT_UNAVAILABLE",
+                 "A message object could not be deserialized successfully in the target vm.Context");
+  JS::RootedValue callback(cx, JS::GetReservedSlot(owner, MessagingDeserializer));
+  MOZ_RELEASE_ASSERT(callback.isObject() && JS::IsCallable(&callback.toObject()),
+                     "Messaging deserializer is not registered");
+  JS::RootedValueArray<1> arguments(cx);
+  arguments[0].setString(info);
+  // This is the actual constructor callback call stage, not Message decoding,
+  // JSTransferable wrapping or clone/transfer completion.
+  return JS::Call(cx, JS::NullHandleValue, callback, arguments, result);
+}
+}  // namespace kandelo::node

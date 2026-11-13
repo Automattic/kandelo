@@ -1,0 +1,18 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -51,1 +51,3 @@
++    "node-upstream/process-methods-upstream.cpp",
++    "node-upstream/process-object-upstream.cpp",
+     "node-upstream/process-versions.cpp",
+@@ -211,1 +213,3 @@
+ SOURCES["node-upstream/diagnostics-upstream.cpp"].flags += ["-std=c++20", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
++SOURCES["node-upstream/process-methods-upstream.cpp"].flags += ["-std=c++20", "-ferror-limit=100", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
++SOURCES["node-upstream/process-object-upstream.cpp"].flags += ["-std=c++20", "-ferror-limit=100", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -93,1 +93,5 @@
+         "shell/node-upstream/codecs-upstream/node_diagnostics_channel.h",
++        "shell/node-upstream/codecs-upstream/node_process_methods.cc",
++        "shell/node-upstream/codecs-upstream/node_process_object.cc",
++        "shell/node-upstream/codecs-upstream/node_process.h",
++        "shell/node-upstream/codecs-upstream/node_process-inl.h",

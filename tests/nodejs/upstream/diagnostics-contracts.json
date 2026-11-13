@@ -1,0 +1,406 @@
+{
+  "schema": 1,
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Complete original diagnostics native unit integrated; bounded live binding/native channel review. Full exceptional, native producer, pointer, worker and lifecycle contracts incomplete",
+  "completeBindingContract": false,
+  "wholeNativeFiles": [
+    {
+      "path": "src/base_object_types.h",
+      "role": "provenance",
+      "bytes": 3773,
+      "sha256": "f9627f9c8e8746aea08a761475a2124062453e0becf382d66df74636b870d2b1",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_diagnostics_channel.cc",
+      "role": "provenance",
+      "bytes": 10920,
+      "sha256": "b28f81fec9a23b759640ac464609bd9f4384acdae0d85a2ecf99c3ad7ad7a4ca",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_diagnostics_channel.h",
+      "role": "provenance",
+      "bytes": 3645,
+      "sha256": "88af9b33b6eee82430a0ba6923f50aefb5a2de850e1e7b993c85ab0d9745a6ee",
+      "builtinId": null
+    },
+    {
+      "path": "src/node_snapshotable.h",
+      "role": "provenance",
+      "bytes": 6326,
+      "sha256": "ac7868b171bd9449318b25b30f05c47a6d38df21e5878d6b26cfe11cb265af6d",
+      "builtinId": null
+    }
+  ],
+  "nativeSourceReview": {
+    "archiveSha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+    "files": [
+      {
+        "path": "src/node_diagnostics_channel.cc",
+        "bytes": 10920,
+        "sha256": "b28f81fec9a23b759640ac464609bd9f4384acdae0d85a2ecf99c3ad7ad7a4ca"
+      },
+      {
+        "path": "src/node_diagnostics_channel.h",
+        "bytes": 3645,
+        "sha256": "88af9b33b6eee82430a0ba6923f50aefb5a2de850e1e7b993c85ab0d9745a6ee"
+      },
+      {
+        "path": "src/node_util.cc",
+        "bytes": 22384,
+        "sha256": "49623ce5e9712f6efd74762b439a4b0a812a96130ee638530d1128893e0d18ae"
+      },
+      {
+        "path": "src/env_properties.h",
+        "bytes": 42469,
+        "sha256": "891cb90ba1164eecc1ae5eef69ef3102369eeebc7630dccda2ca5737a2a097ad"
+      },
+      {
+        "path": "src/node_realm.h",
+        "bytes": 7461,
+        "sha256": "6f69832d201a93647cae0889091556c14015d50a23a8a7022d56746c78daa319"
+      },
+      {
+        "path": "src/node_realm.cc",
+        "bytes": 14435,
+        "sha256": "f3c7636f85409e09cc2c1a34781f51e7144aec04d1dd71e2512f01b2b1f48fda"
+      },
+      {
+        "path": "src/node_realm-inl.h",
+        "bytes": 4537,
+        "sha256": "756b6de214ee58ca5df5bd0961fcf00eb5bee7cb67548b05dd42914ff5b2b223"
+      },
+      {
+        "path": "src/env-inl.h",
+        "bytes": 31879,
+        "sha256": "f1849fd70267de7467ad49f06b67fb63bddd29f01cfc208e01c9776b54be8f41"
+      },
+      {
+        "path": "src/node_snapshotable.h",
+        "bytes": 6326,
+        "sha256": "ac7868b171bd9449318b25b30f05c47a6d38df21e5878d6b26cfe11cb265af6d"
+      },
+      {
+        "path": "src/node_snapshotable.cc",
+        "bytes": 63084,
+        "sha256": "8cf7a64854d3b55c0eb6413c4205779db1e4043c3bf63b1161825430985e99c0"
+      },
+      {
+        "path": "src/base_object.h",
+        "bytes": 14837,
+        "sha256": "cb4dbc336992f12f915adc0064c29fa116d39f00f0f9a8e1789eead796ed2655"
+      },
+      {
+        "path": "src/base_object-inl.h",
+        "bytes": 10097,
+        "sha256": "cf890bf4723cb7b9ecbeb2662e98344ae81af0937abd4b214413885f6450d6d2"
+      },
+      {
+        "path": "src/util.h",
+        "bytes": 43448,
+        "sha256": "d65bd8eb5d92565825e68925839e4899acc70b5aed1ba3b88b8abdc7bdf7416b"
+      },
+      {
+        "path": "src/node_binding.h",
+        "bytes": 9483,
+        "sha256": "f57b6edbc2eb06da020d9141d1bbb327be2df3dc3b67faa5bec04232e7607744"
+      }
+    ],
+    "absentRequestedSource": [
+      "src/node_util.h",
+      "src/node_diagnostics_channel-inl.h"
+    ]
+  },
+  "upstreamConsumers": {
+    "graph": "dependency-graph.json",
+    "binding": {
+      "name": "diagnostics_channel",
+      "siteIds": [
+        "lib/diagnostics_channel.js:788:internalBinding",
+        "lib/internal/process/pre_execution.js:23836:internalBinding"
+      ],
+      "contractStatus": "incomplete",
+      "directRequestedExportPaths": []
+    },
+    "sites": [
+      {
+        "id": "lib/diagnostics_channel.js:788:internalBinding",
+        "path": "lib/diagnostics_channel.js",
+        "start": 788,
+        "end": 826,
+        "line": 36,
+        "column": 19,
+        "builtinId": "diagnostics_channel",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "diagnostics_channel",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [],
+        "contextIds": [],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "diagnostics_channel"
+        }
+      },
+      {
+        "id": "lib/internal/process/pre_execution.js:23836:internalBinding",
+        "path": "lib/internal/process/pre_execution.js",
+        "start": 23836,
+        "end": 23874,
+        "line": 699,
+        "column": 21,
+        "builtinId": "internal/process/pre_execution",
+        "kind": "internalBinding",
+        "native": true,
+        "target": "diagnostics_channel",
+        "computed": false,
+        "phase": "loader-call",
+        "requestedExportPaths": [],
+        "contextIds": [
+          "lib/internal/process/pre_execution.js:23504:FunctionDeclaration:"
+        ],
+        "resolution": {
+          "kind": "native-binding",
+          "name": "diagnostics_channel"
+        }
+      }
+    ],
+    "nativeCallerSyntax": {
+      "method": "Literal native caller syntax only; aliases/computed/macro domains unresolved",
+      "completeNativeDataflow": false,
+      "files": [
+        {
+          "path": "src/crypto/crypto_util.cc",
+          "bytes": 41913,
+          "sha256": "78f87b6979b666fb49d74698333e79c40aef549dfa362e3a040caeebf8edde3c",
+          "hits": [
+            {
+              "line": 268,
+              "context": "    CHECK(env->owns_process_state());\n    auto channel =\n        diagnostics_channel::Channel::Get(env, kFipsIndicatorChannel);\n    if (!channel) return;\n\n    Realm* realm = env->principal_realm();\n    auto* binding = realm->GetBindingData<diagnostics_channel::BindingData>();"
+            },
+            {
+              "line": 284,
+              "context": "    }\n    env->AddCleanupHook(Cleanup, this);\n    binding->SetChannelStatusCallback(\n        index, [this](bool active) { SetActive(active); });\n    SetActive(channel->HasSubscribers());\n  }\n"
+            }
+          ]
+        },
+        {
+          "path": "src/node_diagnostics_channel.cc",
+          "bytes": 10920,
+          "sha256": "b28f81fec9a23b759640ac464609bd9f4384acdae0d85a2ecf99c3ad7ad7a4ca",
+          "hits": [
+            {
+              "line": 130,
+              "context": "}\n\nvoid BindingData::SetChannelStatusCallback(uint32_t index,\n                                           ChannelStatusCallback cb) {\n  channel_status_callbacks_[index] = std::move(cb);\n}\n"
+            }
+          ]
+        },
+        {
+          "path": "src/node_diagnostics_channel.h",
+          "bytes": 3645,
+          "sha256": "88af9b33b6eee82430a0ba6923f50aefb5a2de850e1e7b993c85ab0d9745a6ee",
+          "hits": [
+            {
+              "line": 57,
+              "context": "\n  using ChannelStatusCallback = std::function<void(bool is_active)>;\n  void SetChannelStatusCallback(uint32_t index, ChannelStatusCallback cb);\n\n  static void NotifyChannelActive(\n      const v8::FunctionCallbackInfo<v8::Value>& args);\n  static void NotifyChannelInactive("
+            }
+          ]
+        },
+        {
+          "path": "src/node_sqlite.cc",
+          "bytes": 184688,
+          "sha256": "04842a02b6a6d10d14d56549e992a6f8bf9658fc5be66345b2ee0dd9fe4df327",
+          "hits": [
+            {
+              "line": 1708,
+              "context": "  }\n\n  trace_channel_ = diagnostics_channel::Channel::Get(env(), \"sqlite.db.query\");\n  if (trace_channel_ && trace_channel_->HasSubscribers()) {\n    sqlite3_trace_v2(\n        connection_.get(), SQLITE_TRACE_PROFILE, TraceCallback, this);\n  }"
+            },
+            {
+              "line": 1731,
+              "context": "  if (!trace_channel_) {\n    trace_channel_ =\n        diagnostics_channel::Channel::Get(env(), \"sqlite.db.query\");\n  }\n  sqlite3_trace_v2(\n      connection_.get(), SQLITE_TRACE_PROFILE, TraceCallback, this);\n}"
+            },
+            {
+              "line": 5347,
+              "context": "    uint32_t idx = diag_binding->GetOrCreateChannelIndex(\"sqlite.db.query\");\n    BaseObjectPtr<BindingData> bd_ptr(sqlite_bd);\n    diag_binding->SetChannelStatusCallback(idx, [bd_ptr](bool is_active) {\n      BindingData* bd = bd_ptr.get();\n      if (bd == nullptr) return;\n      for (Database* db : bd->open_databases) {\n        if (is_active)"
+            }
+          ]
+        },
+        {
+          "path": "src/permission/permission.cc",
+          "bytes": 14232,
+          "sha256": "51807a26057db8dde6ac8f5d152d6cdca7c415885a6ae1fca58a6307af75ff9c",
+          "hits": [
+            {
+              "line": 356,
+              "context": "  if (ptr) return ptr;\n  auto channel_name = GetDiagnosticsChannelName(scope);\n  if (auto ch = diagnostics_channel::Channel::Get(env, channel_name)) {\n    weak_ch = BaseObjectWeakPtr<diagnostics_channel::Channel>(ch.get());\n    return ch;\n  }\n  return {};"
+            }
+          ]
+        }
+      ]
+    },
+    "completeAliasAndDynamicCoverage": false
+  },
+  "originalJavascript": {
+    "primaryConsumer": "lib/diagnostics_channel.js",
+    "registration": "Original module end registers actual link callback(name,index), resolves original Channel cache, writes _index and actual subscriber+store count into current binding.subscribers",
+    "subscriberStorage": "Original JS always reads current binding.subscribers; native growth replaces the actual typed array",
+    "activationOrder": "Original markActive notifies before first count increment; unsubscribe decrements before notifyInactive",
+    "weakReference": "Original internal/util.js WeakReference uses actual SafeWeakRef plus strong reference count; no rewritten or native substitute class",
+    "publicAlgorithmsUnchanged": true,
+    "asyncContextAndFatalRouting": "Active stores/continuation windows and subscriber throw->nextTick/triggerUncaughtException paths are not established by these controls"
+  },
+  "nativeBinding": {
+    "exportedMethods": {
+      "linkNativeChannel": {
+        "arity": 0,
+        "requiredArgument": "Function, source CHECK",
+        "returns": "undefined",
+        "effects": "Replace strong callback; call it for actual existing unlinked native channels with undefined receiver and two actual values: name String and uint32 index; object result links channel, nonobject leaves it unlinked",
+        "errors": "Real JS exception remains pending; no substitute result or fake channel"
+      },
+      "notifyChannelActive": {
+        "arity": 0,
+        "requiredArgument": "Uint32, source CHECK",
+        "returns": "undefined",
+        "effects": "If current Realm BindingData exists, call actual native per-index callback(true) if registered. Does not mutate subscriber count"
+      },
+      "notifyChannelInactive": {
+        "arity": 0,
+        "requiredArgument": "Uint32, source CHECK",
+        "returns": "undefined",
+        "effects": "If current Realm BindingData exists, call actual native per-index callback(false) if registered. Does not mutate subscriber count"
+      }
+    },
+    "subscribers": {
+      "type": "Actual AliasedUint32Array",
+      "initialCapacity": 1024,
+      "byteOffset": 0,
+      "initialBytes": 4096,
+      "attributes": {
+        "writable": true,
+        "enumerable": true,
+        "configurable": true
+      },
+      "growth": "Original GetOrCreateChannelIndex reserves double capacity, publishes replacement view, then makes it weak; retains actual counts and stable name/index map"
+    },
+    "bindingObjectMutable": true,
+    "methodAttributes": {
+      "writable": true,
+      "enumerable": true,
+      "configurable": true
+    }
+  },
+  "nativeClasses": {
+    "BindingData": {
+      "base": "SnapshotableObject, live constructor with null InternalFieldInfo",
+      "source": "src/node_diagnostics_channel.cc:29-177; src/node_diagnostics_channel.h:21-81",
+      "state": [
+        "AliasedUint32Array subscribers_, weak JS view backed by actual retained native allocation",
+        "next_channel_index_ uint32 starts0 and unordered name->index map",
+        "strong Global<Function> link_callback_ and Global<FunctionTemplate> channel_wrap_template_",
+        "vector of actual detached BaseObjectPtr<Channel> channels_",
+        "per-index std::function<void(bool)> native channel_status_callbacks_",
+        "snapshot InternalFieldInfo pointer, unused during live constructor"
+      ],
+      "methods": [
+        "GetOrCreateChannelIndex(name): stable lookup, allocate index and grow real storage as needed",
+        "SetChannelStatusCallback(index,cb): actual native callback replacement",
+        "MemoryInfo: native heap traversal unavailable in current engine bridge",
+        "PrepareForSerialization/Serialize/Deserialize: whole original bodies compile; heap snapshot construction/restoration is unsupported",
+        "CreatePerIsolateProperties/CreatePerContextProperties: original full initialization and source assertions"
+      ],
+      "owner": "Actual current native Realm; weak binding-data lookup, wrapper traced from original JS cache; explicit Realm cleanup releases callbacks and owned channels"
+    },
+    "Channel": {
+      "base": "Actual native BaseObject with real JS wrapper",
+      "source": "src/node_diagnostics_channel.cc:179-308; src/node_diagnostics_channel.h:83-123",
+      "state": [
+        "native BindingData pointer and uint32 index",
+        "actual name bytes",
+        "strong JS channel and cached publish Function once linked"
+      ],
+      "methods": [
+        "Get(Environment*,string_view): principal Realm binding lookup, stable index, real lazy wrapper template/instance and detached native object, then actual JS linking when callback exists",
+        "HasSubscribers(): reads real native aliased uint32 counter",
+        "Link(Isolate*,JSobject): retain object and eagerly cache publish if it already has subscribers",
+        "Unlink(): release linked object and cached publish roots",
+        "CachePublishFn(): actual current-context property read, cache only a Function",
+        "Publish(Environment*,message): check real counter and link, refuse stopped JS admission, enter principal context and call cached method with actual channel receiver/message; real result Promise is not awaited by the native void API and real exception propagates",
+        "MemoryInfo: native heap snapshot traversal unavailable"
+      ],
+      "owner": "Original BindingData channels vector owns actual detached native references; wrapper stays rooted while native owner exists; native destruction clears its private pointer even when JS wrapper remains"
+    }
+  },
+  "owningImplementation": {
+    "wholeNativeUnit": "packages/registry/spidermonkey/node-upstream/diagnostics-upstream.cpp compiles unchanged original node_diagnostics_channel.cc",
+    "enginePrimitives": "native-object-api.h/native-object-codecs-inl.h and codec-native-api.h/codecs.cpp",
+    "actualRealmIdentity": "GetCurrentRealmOwner returns actual canonical NodeRealmLibrary. GetCurrentRealmLibrary diagnostic snapshots are never identity tokens",
+    "gc": "Actual weak edges updated by SpiderMonkey weak-zone callback; strong roots retained through nursery promotion; weak binding records unregister on native GC destruction",
+    "detachedReferences": "Actual detached object ownership with wrapper rooting; existing-object sharing pointer form remains unavailable and must reject rather than create a second deleting owner",
+    "shutdown": "Foreground Environment enters real Realm cleanup before clearing weak-zone registry, removes native callbacks/channels and clears private pointers. Outstanding external detached references cannot be force-freed; producer shutdown ordering remains a prerequisite",
+    "threading": "Current JSContext/native Frame and foreground Environment authority required; cross-thread producer admission/cancellation not established",
+    "hostBoundary": "Same guest engine bytes on Node/Chromium/Firefox/WebKit; host adapters/kernel/libc/ABI/memory ceilings unchanged",
+    "snapshotBoundary": "Whole original serialization declarations/bodies compile over explicit unavailable snapshot interfaces; no V8 heap generation, wire layout or success placeholder",
+    "nodeCppBodiesRewrittenOrExcerpted": false,
+    "javascriptRewritten": false
+  },
+  "prerequisites": [
+    "Whole original AliasedBuffer allocation/alias/reserve and real backing retention",
+    "Actual strong/weak native handles and foreground GC cleanup",
+    "Actual current/principal contexts, native binding-data ownership and constructor templates",
+    "Original builtin require/cache, primordials, WeakRef and FinalizationRegistry",
+    "Original errors and validators for public module errors"
+  ],
+  "archivedReuse": {
+    "index": ".context/davao-handoff/BACKEND-SALVAGE.md",
+    "survey": "backend-binding-survey.json",
+    "families": 19,
+    "prReuseRecords": 33,
+    "selection": "Use real native roots, callback recovery and reentrant disposal mechanisms only where they satisfy source contracts; no old public JS shims"
+  },
+  "validation": {
+    "nativeReference": "diagnostics-native-reference.json",
+    "engineEvidence": "diagnostics-engine-check.json",
+    "sharedGroups": 12,
+    "engineControlsPerHost": 27,
+    "driversPerHost": 10,
+    "hosts": [
+      "Node",
+      "Chromium",
+      "Firefox",
+      "WebKit"
+    ],
+    "boundedNativeProof": [
+      "early channel creation then original JS linking",
+      "stable real native wrappers, actual subscriber counters and activation notification ordering",
+      "GC/replacement roots and actual status/link/publish exception identity",
+      "cached real publish method and source Unlink/relink",
+      "UTF8 names and actual storage growth1024->2048 with retained values",
+      "source assertions, Promise draining and rooted normal/explicit/error exit and foreground cleanup"
+    ],
+    "fullNativeProducerDifferential": false,
+    "fullModuleCompatibility": false
+  },
+  "remaining": [
+    "Complete native producer paths: crypto FIPS indicators, SQLite trace/status and permission channels",
+    "Non-detached existing-object BaseObject pointer sharing and full weak pointer-cell forms",
+    "External native reference retirement, producer cleanup hooks, worker/cancellation/concurrency/OOM/security and can_call_into_js GC admission",
+    "Full reentrant linker vector/status-map mutation and exception behavior with multiple native channels",
+    "Active AsyncLocalStorage/continuation windows, stores, bounded/tracing channels and subscriber error fatal routing",
+    "Snapshot serialization/restoration/external references and heap traversal remain unavailable",
+    "Full cross-context/ShadowRealm and malformed native-name/array-mutation/detachment trust boundaries"
+  ],
+  "currentFailure": {
+    "binding": "process_methods",
+    "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+    "message": "Native Node binding 'process_methods' is not implemented",
+    "location": "node:internal/process/per_thread:68; node:internal/bootstrap/node:152",
+    "evidence": "diagnostics-engine-check.json",
+    "startupAccepted": false
+  },
+  "normalNodeMode": "legacy",
+  "upstreamStartup": false,
+  "roadmapExecutionAuthorized": false
+}

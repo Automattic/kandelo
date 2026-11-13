@@ -1,0 +1,173 @@
+{
+  "scope": "Authenticated native V8 function-body compilation through original Node vm/contextify; reference only, not guest backend/startup support",
+  "native": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixtures": [
+    {
+      "path": "tests/nodejs/upstream/function-compiler-native-prefix.cjs",
+      "bytes": 814,
+      "sha256": "4fd94025320208dc7b3007ef6d2dd8c973ed2d4a5d397a40c8cb339df55c47b9"
+    },
+    {
+      "path": "tests/nodejs/upstream/function-compiler-shared-controls.js",
+      "bytes": 7254,
+      "sha256": "206a595715c7d5a0a687c5e2af691bbd10dfd87a2651cb0c1d3c96ddfba8afcd"
+    }
+  ],
+  "sourceSha256": "ddab9dd3c6505056ec9929c8980748577ad59b8caea863307d8b8809997918f7",
+  "flags": [
+    "--no-warnings",
+    "--no-node-snapshot",
+    "--expose-gc"
+  ],
+  "result": {
+    "exitCode": 0,
+    "stdout": "{\"cases\":21,\"failures\":0,\"observations\":[{\"name\":\"actual-function-metadata-and-native-known-formals\",\"status\":\"pass\",\"detail\":{\"name\":\"\",\"length\":3,\"called\":4}},{\"name\":\"actual-arguments-receiver-and-return-values\",\"status\":\"pass\",\"detail\":[23,\"filename\",\"directory\",3,17]},{\"name\":\"global-property-lookups-remain-live\",\"status\":\"pass\",\"detail\":true},{\"name\":\"actual-target-global-lexical-environment-is-used\",\"status\":\"pass\",\"detail\":true},{\"name\":\"native-compilation-does-not-capture-caller-lexicals\",\"status\":\"pass\",\"detail\":true},{\"name\":\"foreign-function-and-returned-intrinsics-belong-to-target-realm\",\"status\":\"pass\",\"detail\":true},{\"name\":\"replacing-public-function-does-not-intercept-native-compiler\",\"status\":\"pass\",\"detail\":true},{\"name\":\"complete-unicode-body-and-identifier-semantics-are-preserved\",\"status\":\"pass\",\"detail\":[\"\u00e9\ud83d\ude00\",3]},{\"name\":\"embedded-nul-in-source-literal-is-not-truncated\",\"status\":\"pass\",\"detail\":[97,0,98]},{\"name\":\"unpaired-utf16-source-unit-is-not-replaced\",\"status\":\"pass\",\"detail\":55296},{\"name\":\"compiled-source-outlives-original-rope-and-full-gc\",\"status\":\"pass\",\"detail\":true},{\"name\":\"nested-closures-retain-real-arguments-and-live-object-identity\",\"status\":\"pass\",\"detail\":true},{\"name\":\"reentrant-full-gc-preserves-running-function-and-arguments\",\"status\":\"pass\",\"detail\":[61,\"f\",\"d\"]},{\"name\":\"strict-and-sloppy-receiver-rules-use-real-engine-semantics\",\"status\":\"pass\",\"detail\":true},{\"name\":\"actual-constructor-prototype-and-new-target-semantics\",\"status\":\"pass\",\"detail\":true},{\"name\":\"syntax-errors-are-real-parser-exceptions\",\"status\":\"pass\",\"detail\":4},{\"name\":\"foreign-parser-exceptions-preserve-target-prototype-and-restore-caller\",\"status\":\"pass\",\"detail\":{\"name\":\"SyntaxError\",\"targetRealm\":true}},{\"name\":\"thrown-values-retain-identity\",\"status\":\"pass\",\"detail\":true},{\"name\":\"body-line-and-unicode-diagnostic-origin-are-real\",\"status\":\"pass\",\"detail\":{\"file\":\"fixture:\u00e9\ud83d\ude00.js\",\"line\":3}},{\"name\":\"actual-promise-and-await-jobs-retain-function-environment\",\"status\":\"pass\",\"detail\":[71,\"f\",\"d\"]},{\"name\":\"compiler-does-not-cache-otherwise-unreachable-function-objects\",\"status\":\"pass\",\"detail\":true}]}\n",
+    "stderr": ""
+  },
+  "detail": {
+    "cases": 21,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "actual-function-metadata-and-native-known-formals",
+        "status": "pass",
+        "detail": {
+          "name": "",
+          "length": 3,
+          "called": 4
+        }
+      },
+      {
+        "name": "actual-arguments-receiver-and-return-values",
+        "status": "pass",
+        "detail": [
+          23,
+          "filename",
+          "directory",
+          3,
+          17
+        ]
+      },
+      {
+        "name": "global-property-lookups-remain-live",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "actual-target-global-lexical-environment-is-used",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "native-compilation-does-not-capture-caller-lexicals",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "foreign-function-and-returned-intrinsics-belong-to-target-realm",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "replacing-public-function-does-not-intercept-native-compiler",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "complete-unicode-body-and-identifier-semantics-are-preserved",
+        "status": "pass",
+        "detail": [
+          "\u00e9\ud83d\ude00",
+          3
+        ]
+      },
+      {
+        "name": "embedded-nul-in-source-literal-is-not-truncated",
+        "status": "pass",
+        "detail": [
+          97,
+          0,
+          98
+        ]
+      },
+      {
+        "name": "unpaired-utf16-source-unit-is-not-replaced",
+        "status": "pass",
+        "detail": 55296
+      },
+      {
+        "name": "compiled-source-outlives-original-rope-and-full-gc",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "nested-closures-retain-real-arguments-and-live-object-identity",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "reentrant-full-gc-preserves-running-function-and-arguments",
+        "status": "pass",
+        "detail": [
+          61,
+          "f",
+          "d"
+        ]
+      },
+      {
+        "name": "strict-and-sloppy-receiver-rules-use-real-engine-semantics",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "actual-constructor-prototype-and-new-target-semantics",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "syntax-errors-are-real-parser-exceptions",
+        "status": "pass",
+        "detail": 4
+      },
+      {
+        "name": "foreign-parser-exceptions-preserve-target-prototype-and-restore-caller",
+        "status": "pass",
+        "detail": {
+          "name": "SyntaxError",
+          "targetRealm": true
+        }
+      },
+      {
+        "name": "thrown-values-retain-identity",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "body-line-and-unicode-diagnostic-origin-are-real",
+        "status": "pass",
+        "detail": {
+          "file": "fixture:\u00e9\ud83d\ude00.js",
+          "line": 3
+        }
+      },
+      {
+        "name": "actual-promise-and-await-jobs-retain-function-environment",
+        "status": "pass",
+        "detail": [
+          71,
+          "f",
+          "d"
+        ]
+      },
+      {
+        "name": "compiler-does-not-cache-otherwise-unreachable-function-objects",
+        "status": "pass",
+        "detail": true
+      }
+    ]
+  }
+}

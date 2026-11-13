@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "completedAt": "2026-11-11T01:21:18.897097+00:00",
+  "scope": "Exact pinned native Node internal dynamic import callback only; no guest/browser/startup evidence",
+  "executableSha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "controlPath": "tests/nodejs/upstream/dynamic-import-native-controls.cjs",
+  "controlSha256": "e12aadd283a5be8aaab402a5eff4063154e3170261d8ebefc47c463edd5622e4",
+  "environmentKeys": [
+    "PATH",
+    "LANG",
+    "TZ"
+  ],
+  "exit": 0,
+  "stderr": "(node:55854) internal/test/binding: These APIs are for internal testing only. Do not use them.\n(Use `native-node --trace-warnings ...` to show where the warning was created)\n",
+  "nativeResult": {
+    "kind": "native-dynamic-import-reference-only",
+    "version": "v26.13.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "v8": "14.6.202.34-node.40",
+    "execArgv": [
+      "--expose-internals"
+    ],
+    "cases": 12,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "five-original-arguments-and-complete-frozen-attributes",
+        "status": "pass"
+      },
+      {
+        "name": "ordinary-values-and-referrer-promise",
+        "status": "pass"
+      },
+      {
+        "name": "thenable-adoption-is-asynchronous-and-once",
+        "status": "pass"
+      },
+      {
+        "name": "pending-promise-has-real-settlement",
+        "status": "pass"
+      },
+      {
+        "name": "promise-rejection-preserves-original-value",
+        "status": "pass"
+      },
+      {
+        "name": "throwing-then-getter-preserves-original-value",
+        "status": "pass"
+      },
+      {
+        "name": "synchronous-callback-exception-stops-importing-module",
+        "status": "pass"
+      },
+      {
+        "name": "invalid-options-reject-before-callback",
+        "status": "pass"
+      },
+      {
+        "name": "specifier-options-order-and-numeric-attributes",
+        "status": "pass"
+      },
+      {
+        "name": "actual-namespace-and-top-level-await",
+        "status": "pass"
+      },
+      {
+        "name": "top-level-await-waits-for-callback-completion",
+        "status": "pass"
+      },
+      {
+        "name": "foreign-promise-is-adopted-in-referrer-realm",
+        "status": "pass"
+      }
+    ],
+    "limits": [
+      "Exact native internal binding reference only",
+      "No guest/browser/startup proof",
+      "No full security/OOM/lifecycle differential"
+    ]
+  }
+}

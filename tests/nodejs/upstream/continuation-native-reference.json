@@ -1,0 +1,192 @@
+{
+  "scope": "Native20raw plus4active original consumers after real native bootstrap; guest source consumers remain guarded before startup",
+  "program": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixtureSha256": "5112031978cc530c17e395765f14dc4d6a8429f1cb50ff4c4416c3503cb97a5d",
+  "detail": {
+    "cases": 24,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "complete-original-binding-exports-engine-intrinsics",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "engine-intrinsic-property-shape-and-receiver-independence",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "native-storage-retains-arbitrary-values-without-coercion",
+        "status": "pass",
+        "detail": 12
+      },
+      {
+        "name": "missing-setter-argument-clears-the-real-value",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "pending-reactions-capture-registration-rather-than-resolver-context",
+        "status": "pass",
+        "detail": [
+          "registered-a",
+          "registered-b"
+        ]
+      },
+      {
+        "name": "undefined-registration-never-inherits-resolver-context",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "nested-reactions-capture-their-own-registration-state",
+        "status": "pass",
+        "detail": [
+          "parent",
+          "child"
+        ]
+      },
+      {
+        "name": "missing-reaction-handlers-retain-real-forwarding",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "thenable-getter-and-assimilation-job-use-resolving-context",
+        "status": "pass",
+        "detail": [
+          [
+            "getter",
+            "thenable"
+          ],
+          [
+            "call",
+            "thenable"
+          ]
+        ]
+      },
+      {
+        "name": "thenable-throw-keeps-error-identity-and-rejection-handler-context",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "actual-await-primitive-and-settled-promise-capture-current-data",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "actual-await-pending-promise-ignores-resolver-context",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "actual-await-rejection-restores-catch-and-finally-context",
+        "status": "pass",
+        "detail": [
+          "await-reject",
+          "await-reject"
+        ]
+      },
+      {
+        "name": "async-function-synchronous-prefix-and-continuation-stay-distinct",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "async-generator-uses-each-resumption-context",
+        "status": "pass",
+        "detail": [
+          "first",
+          "first",
+          "second"
+        ]
+      },
+      {
+        "name": "promise-combinators-preserve-final-handler-context",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "finally-callback-and-following-handler-have-separate-contexts",
+        "status": "pass",
+        "detail": [
+          "finally"
+        ]
+      },
+      {
+        "name": "native-microtask-enqueue-captures-context",
+        "status": "pass",
+        "detail": [
+          "microtask"
+        ]
+      },
+      {
+        "name": "microtask-local-mutation-does-not-leak-to-sibling-jobs",
+        "status": "pass",
+        "detail": [
+          "first",
+          "second"
+        ]
+      },
+      {
+        "name": "last-job-await-optimization-preserves-data-through-repeated-await",
+        "status": "pass",
+        "detail": 50
+      },
+      {
+        "name": "complete-original-frame-map-exchange-and-disable-use-native-data",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "original-async-local-storage-propagates-through-real-await",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "original-async-local-storage-nesting-and-throw-restore-prior-store",
+        "status": "pass",
+        "detail": true
+      },
+      {
+        "name": "original-run-scope-disposes-once-and-restores-real-frame",
+        "status": "pass",
+        "detail": true
+      }
+    ]
+  },
+  "runs": [
+    {
+      "name": "shared",
+      "flags": [],
+      "sourceSha256": "137df6c74f500d9ff9c10f2204ad18eab5c2e5ed0d78cdb79a6dd360293f5230",
+      "exitCode": 0,
+      "stdout": "{\"cases\":24,\"failures\":0,\"observations\":[{\"name\":\"complete-original-binding-exports-engine-intrinsics\",\"status\":\"pass\",\"detail\":true},{\"name\":\"engine-intrinsic-property-shape-and-receiver-independence\",\"status\":\"pass\",\"detail\":true},{\"name\":\"native-storage-retains-arbitrary-values-without-coercion\",\"status\":\"pass\",\"detail\":12},{\"name\":\"missing-setter-argument-clears-the-real-value\",\"status\":\"pass\",\"detail\":true},{\"name\":\"pending-reactions-capture-registration-rather-than-resolver-context\",\"status\":\"pass\",\"detail\":[\"registered-a\",\"registered-b\"]},{\"name\":\"undefined-registration-never-inherits-resolver-context\",\"status\":\"pass\",\"detail\":true},{\"name\":\"nested-reactions-capture-their-own-registration-state\",\"status\":\"pass\",\"detail\":[\"parent\",\"child\"]},{\"name\":\"missing-reaction-handlers-retain-real-forwarding\",\"status\":\"pass\",\"detail\":true},{\"name\":\"thenable-getter-and-assimilation-job-use-resolving-context\",\"status\":\"pass\",\"detail\":[[\"getter\",\"thenable\"],[\"call\",\"thenable\"]]},{\"name\":\"thenable-throw-keeps-error-identity-and-rejection-handler-context\",\"status\":\"pass\",\"detail\":true},{\"name\":\"actual-await-primitive-and-settled-promise-capture-current-data\",\"status\":\"pass\",\"detail\":true},{\"name\":\"actual-await-pending-promise-ignores-resolver-context\",\"status\":\"pass\",\"detail\":true},{\"name\":\"actual-await-rejection-restores-catch-and-finally-context\",\"status\":\"pass\",\"detail\":[\"await-reject\",\"await-reject\"]},{\"name\":\"async-function-synchronous-prefix-and-continuation-stay-distinct\",\"status\":\"pass\",\"detail\":true},{\"name\":\"async-generator-uses-each-resumption-context\",\"status\":\"pass\",\"detail\":[\"first\",\"first\",\"second\"]},{\"name\":\"promise-combinators-preserve-final-handler-context\",\"status\":\"pass\",\"detail\":true},{\"name\":\"finally-callback-and-following-handler-have-separate-contexts\",\"status\":\"pass\",\"detail\":[\"finally\"]},{\"name\":\"native-microtask-enqueue-captures-context\",\"status\":\"pass\",\"detail\":[\"microtask\"]},{\"name\":\"microtask-local-mutation-does-not-leak-to-sibling-jobs\",\"status\":\"pass\",\"detail\":[\"first\",\"second\"]},{\"name\":\"last-job-await-optimization-preserves-data-through-repeated-await\",\"status\":\"pass\",\"detail\":50},{\"name\":\"complete-original-frame-map-exchange-and-disable-use-native-data\",\"status\":\"pass\",\"detail\":true},{\"name\":\"original-async-local-storage-propagates-through-real-await\",\"status\":\"pass\",\"detail\":true},{\"name\":\"original-async-local-storage-nesting-and-throw-restore-prior-store\",\"status\":\"pass\",\"detail\":true},{\"name\":\"original-run-scope-disposes-once-and-restores-real-frame\",\"status\":\"pass\",\"detail\":true}]}\n",
+      "stderr": ""
+    },
+    {
+      "name": "disabled-option",
+      "flags": [
+        "--no-async-context-frame"
+      ],
+      "sourceSha256": "8e3c6314267e7e1e48080791e66368656d9c7b091619aacb0a66f67d6fe8dbea",
+      "exitCode": 0,
+      "stdout": "{\"enabled\":false,\"captured\":\"raw\",\"outside\":\"root\"}\n",
+      "stderr": ""
+    },
+    {
+      "name": "uncaught-microtask-context",
+      "flags": [],
+      "sourceSha256": "45c2301f5cbf84a0bb42e13de63400fec87f958299d06073e0b4213528c42acf",
+      "exitCode": 0,
+      "stdout": "{\"message\":\"CPED_ERROR_REFERENCE\",\"framePresent\":true,\"frame\":\"captured\"}\n",
+      "stderr": ""
+    }
+  ]
+}

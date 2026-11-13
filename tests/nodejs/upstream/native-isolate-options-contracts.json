@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "scope": "Actual IsolateData identity and shared original native process/isolate/environment options prerequisites; private diagnostics only",
+  "packageRevision": 68,
+  "owningLayers": [
+    "native codec State and IsolateData ownership",
+    "existing per-runtime native options owner",
+    "whole original node_options.h classes and node_options.cc parser",
+    "canonical original libuv-backed native mutex and process options storage"
+  ],
+  "originalConsumers": [
+    {
+      "path": "third_party/nodejs/upstream/src/node_options.h",
+      "bytes": 30788,
+      "sha256": "4241ccbfddad1f227888204f998427fa79e8c8332e9ea3f19b93b7a433ea3046"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_options.cc",
+      "bytes": 99186,
+      "sha256": "99dffa14343a36dc136160d50d244edfc5c1ac96c33317059fd4af3148c6c279"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_options-inl.h",
+      "bytes": 19877,
+      "sha256": "1d3b7cd2dc488d09ad583f3df71cdbe40f71bcaa104191e7abe3b9a4fdbfb516"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_mutex.h",
+      "bytes": 8585,
+      "sha256": "13208fe79bf345733d992eb7e1c598817fdab79ab859a2b81cec92b0e1763572"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_errors.cc",
+      "bytes": 45641,
+      "sha256": "09d0d26f8363fc468f84f5682d27d05307b9ad23ab5e8f4e705161b45718744d"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_buffer.cc",
+      "bytes": 76513,
+      "sha256": "3dbd33621e0175ac6d8edb4071bf148d818fc8354b39d44e2c449ea77dc108e2"
+    },
+    {
+      "path": "third_party/nodejs/upstream/src/node_env_var.cc",
+      "bytes": 23835,
+      "sha256": "9b3bfe0143640e9e8ce00ff982385162c288e1361742d250384a515b88958b66"
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "IsolateData identity",
+      "contract": "Each codec State owns an IsolateData bound to its actual Isolate. Environment returns that stable instance rather than a thread-local facade. Stack initializer adapters bind to the actual current Isolate. Access validates the current native frame owner and foreground thread; copying the native identity is forbidden.",
+      "limits": "Full multi-isolate/worker/fork/retirement conformance is not established by these selected controls."
+    },
+    {
+      "name": "IsolateData.options/Environment.options",
+      "contract": "Return shared_ptrs to the original parsed PerIsolateOptions/EnvironmentOptions objects retained by the actual runtime options owner. Native getters select the principal environment context, preserve native record identity/lifetime and observe configuration replacement on subsequent reads. Failed profiles retain the existing pending exception; no default record is manufactured. Owner-local pointer borrowing does not reacquire the process mutex, so native callers may already hold it.",
+      "limits": "Healthy initialized runtime is the normal native caller precondition. Full failed-bootstrap/fatal cleanup remains unvalidated."
+    },
+    {
+      "name": "Native process/fatal options and mutex aliases",
+      "contract": "Native process/fatal aliases reference the original parser shared_ptr variable and actual canonical libuv-backed Mutex. Buffer, environment/error consumers read the same original records. The handwritten Buffer/environment/fatal value structures and snapshot accessor are removed.",
+      "limits": "Parsing/storing an option does not implement its behavior. Complete engine/config/security/reporting/permission flag adoption remains unavailable or partial."
+    },
+    {
+      "name": "Original option type sharing",
+      "contract": "Whole unchanged node_options.h supplies the same actual classes to both native marshalling adapters. Scoped macro preservation keeps each caller marshalling/assertion owner. Both adapters use the same original canonical Mutex type; no V8 heap or serialization data is used."
+    }
+  ],
+  "validationObligations": [
+    "Native identity and parsed process/isolate/environment record/mutex pointer identity before and after genuine parser configuration.",
+    "Original retained record remains alive and unchanged while the configured owner is replaced, including native callback reentry and full GC. Native record reads also execute while the actual process mutex is held.",
+    "Foreign active global is restored after native principal-context reads.",
+    "Failed profile retains error and cannot produce default options; original guarded queries remain rejected before real bootstrap.",
+    "Complete original14-group options fixture plus existing5 profile-error and2 source-assertion drivers, with prior55 unchanged runtime driver source strings, on four hosts.",
+    "Targeted normal link delta; exact785 declared inputs/100 actual native copies, original source identity and unchanged VM patches."
+  ],
+  "implementationGaps": [
+    "IsolateData.node_allocator and actual original allocation/free bodies remain unimplemented/unlinked.",
+    "Heap statistics, guest memory/libuv accounting, process exit/stdio/at-exit, real request/handle producer queues, signal/permission/report/native loading remain incomplete.",
+    "Full isolate settings/callback/scheduling/heap/serialization interfaces, Private factories/internal fields/constructor metadata and Message compiler-origin/end-range/text/options/security/lifetime remain incomplete.",
+    "Whole source-policy review, genuine startup/CJS/ESM and complete backend catalog/roadmap remain unfinished."
+  ],
+  "currentEvidence": "native-isolate-options-engine-check.json: private66 drivers/host pass on four hosts; targeted normal23 unresolved, no startup",
+  "sourcePolicySatisfied": false,
+  "sourcePinChanged": false,
+  "upstreamJavaScriptChanged": false,
+  "upstreamNodeAlgorithmsRewritten": false,
+  "functionExcerptsImported": false,
+  "nativeV8HeapOrSerializationUsed": false,
+  "startupAccepted": false,
+  "wholeGoalComplete": false,
+  "currentRuntimeValidated": true,
+  "normalLinkRemainder": [
+    "kandelo_node_codec_api::HeapStatistics::HeapStatistics()",
+    "kandelo_node_codec_api::HeapStatistics::external_memory() const",
+    "kandelo_node_codec_api::HeapStatistics::total_heap_size() const",
+    "kandelo_node_codec_api::HeapStatistics::used_heap_size() const",
+    "kandelo_node_codec_api::HeapStatistics::~HeapStatistics()",
+    "kandelo_node_codec_api::Isolate::GetHeapStatistics(kandelo_node_codec_api::HeapStatistics*)",
+    "kandelo_node_codec_api::Object::GetConstructorName()",
+    "kandelo_node_codec_impl::CheckProcessPermission(kandelo_node_codec_impl::Environment*, kandelo_node_codec_impl::permission::PermissionScope, std::__1::basic_string_view<char, std::__1::char_traits<char>>)",
+    "kandelo_node_codec_impl::Environment::Exit(kandelo_node_codec_impl::ExitCode)",
+    "kandelo_node_codec_impl::Environment::handle_wrap_queue()",
+    "kandelo_node_codec_impl::Environment::req_wrap_queue()",
+    "kandelo_node_codec_impl::HandleWrap::HasRef(kandelo_node_codec_impl::HandleWrap*)",
+    "kandelo_node_codec_impl::HasSignalJSHandler(int)",
+    "kandelo_node_codec_impl::IsolateData::node_allocator()",
+    "kandelo_node_codec_impl::ReqWrapBase::GetAsyncWrap()",
+    "kandelo_node_codec_impl::ResetStdio()",
+    "kandelo_node_codec_impl::RunAtExit(kandelo_node_codec_impl::Environment*)",
+    "kandelo_node_codec_impl::TriggerNodeReport(kandelo_node_codec_impl::Environment*, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&, char const*, char const*, kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>)",
+    "kandelo_node_codec_impl::binding::DLOpen(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+    "kandelo_node_codec_impl::binding::DLOpenBinary(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&)",
+    "uv_get_available_memory",
+    "uv_get_constrained_memory",
+    "uv_resident_set_memory"
+  ]
+}

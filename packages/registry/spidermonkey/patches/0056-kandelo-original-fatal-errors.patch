@@ -1,0 +1,24 @@
+--- a/js/src/shell/moz.build
++++ b/js/src/shell/moz.build
+@@ -44,6 +44,7 @@
+     "node-upstream/env-var-upstream.cpp",
+     "node-upstream/error-stack.cpp",
+     "node-upstream/exceptions-upstream.cpp",
++    "node-upstream/fatal-errors-upstream.cpp",
+     "node-upstream/icu-upstream.cpp",
+     "node-upstream/module-wrap.cpp",
+     "node-upstream/options-upstream.cpp",
+@@ -212 +213,3 @@
+ SOURCES["node-upstream/exceptions-upstream.cpp"].flags += ["-std=c++20", "-ferror-limit=100", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
++
++SOURCES["node-upstream/fatal-errors-upstream.cpp"].flags += ["-std=c++20", "-ferror-limit=100", "-I%s/node-upstream/tracing-upstream" % SRCDIR]
+--- a/config/check_spidermonkey_style.py
++++ b/config/check_spidermonkey_style.py
+@@ -102,6 +102,7 @@
+         "shell/node-upstream/codecs-upstream/node_env_var.cc",
+         "shell/node-upstream/codecs-upstream/ada.h",
+         "shell/node-upstream/codecs-upstream/exceptions.cc",
++        "shell/node-upstream/codecs-upstream/node_errors.cc",
+         "shell/node-upstream/codecs-upstream/node_buffer.cc",
+         "shell/node-upstream/codecs-upstream/encoding.cc",
+         "shell/node-upstream/codecs-upstream/node_i18n.cc",

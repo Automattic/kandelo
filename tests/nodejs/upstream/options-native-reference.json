@@ -1,0 +1,51 @@
+{
+  "program": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "fixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/options-native-controls.cjs",
+    "bytes": 779,
+    "sha256": "b57445749834833e72aea66633c56146c36326de816d84898080b420376660a9"
+  },
+  "sharedFixture": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/options-shared-controls.js",
+    "bytes": 3077,
+    "sha256": "1a9bec3768d3d8c8738301d35cd47f156b23543c5a96219364dd0e40d7864b50"
+  },
+  "exitCode": 0,
+  "stdout": "{\"kind\":\"native-options-reference\",\"cases\":6,\"failures\":0,\"observations\":[{\"name\":\"native-method-names-lengths-and-export-descriptors\",\"status\":\"pass\"},{\"name\":\"native-setting-and-type-enums-have-original-readonly-descriptors\",\"status\":\"pass\"},{\"name\":\"whole-original-env-parser-retains-quote-escape-and-empty-token-semantics\",\"status\":\"pass\"},{\"name\":\"whole-original-env-parser-preserves-errors\",\"status\":\"pass\"},{\"name\":\"native-env-string-coercion-calls-user-code-once-and-ignores-extra-arguments\",\"status\":\"pass\"},{\"name\":\"native-env-coercion-preserves-exception-identity-and-survives-reentrancy-gc\",\"status\":\"pass\"}]}\n",
+  "stderr": "",
+  "detail": {
+    "kind": "native-options-reference",
+    "cases": 6,
+    "failures": 0,
+    "observations": [
+      {
+        "name": "native-method-names-lengths-and-export-descriptors",
+        "status": "pass"
+      },
+      {
+        "name": "native-setting-and-type-enums-have-original-readonly-descriptors",
+        "status": "pass"
+      },
+      {
+        "name": "whole-original-env-parser-retains-quote-escape-and-empty-token-semantics",
+        "status": "pass"
+      },
+      {
+        "name": "whole-original-env-parser-preserves-errors",
+        "status": "pass"
+      },
+      {
+        "name": "native-env-string-coercion-calls-user-code-once-and-ignores-extra-arguments",
+        "status": "pass"
+      },
+      {
+        "name": "native-env-coercion-preserves-exception-identity-and-survives-reentrancy-gc",
+        "status": "pass"
+      }
+    ]
+  }
+}

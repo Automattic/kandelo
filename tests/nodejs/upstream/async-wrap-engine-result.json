@@ -1,0 +1,395 @@
+{
+  "rawReport": {
+    "path": ".context/node-async-wrap/engine-result.json",
+    "bytes": 102173,
+    "sha256": "c7f5610cef962387ebc77fcd88dbf595cc1345584a485375c4720c158c68b679"
+  },
+  "report": {
+    "schema": 1,
+    "completedAt": "2026-11-11T08:44:58.904Z",
+    "scope": "Focused SpiderMonkey guest-engine async-wrap controls on the Node host; no upstream Node startup",
+    "host": {
+      "version": "v24.15.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    },
+    "program": {
+      "path": "/Users/brandon/.cache/kandelo/programs/spidermonkey-140.11.0esr-rev29-wasm32-abi56-23e1598840be69d5b6b3efc0ca9a33353308aba87c954cfac9d5f8c4a4b945f4/js.wasm",
+      "bytes": 51346403,
+      "sha256": "9e788036c7f199471af759f0061299e4af72d1edf04f6a131ef14daeb93284fd"
+    },
+    "kernel": {
+      "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
+      "bytes": 2958224,
+      "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
+    },
+    "fixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/async-wrap-engine-controls.js",
+      "bytes": 7637,
+      "sha256": "b35f711fa8bf08e36ea78b168f00e4f47da003f6edff07d0599eca8f8f514659"
+    },
+    "runner": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/scripts/run-nodejs-private-key-controls.ts",
+      "bytes": 18330,
+      "sha256": "c8e8e7f67d2a33b350b94b25f38818939eb0b486a88c129d18694f425066c97c"
+    },
+    "sharedFixture": {
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/tests/nodejs/upstream/async-wrap-shared-controls.js",
+      "bytes": 5962,
+      "sha256": "085efa299943bf60348c90c953151d09bb4727c07265c63857b436f53bf1c8dc"
+    },
+    "executedFixtureSha256": "c7f7500fcbacec084d1728c59b4a0098dbfd6cb4d8c4e394181b311a4cf04db5",
+    "runs": [
+      {
+        "name": "ordinary-shell-does-not-expose-native-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "UPSTREAM_TEST_API_ABSENT\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "node-mode-refuses-native-test-controls",
+        "status": "pass",
+        "exitCode": 3,
+        "stdout": "",
+        "stderr": "Error: upstream test controls require JS-shell mode\n",
+        "hostDiagnostics": []
+      },
+      {
+        "name": "async-wrap-controls",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "{\"kind\":\"native-async-wrap-controls\",\"cases\":20,\"failures\":0,\"observations\":[{\"name\":\"native-constructor-state-comes-from-real-environment-initialization\",\"status\":\"pass\"},{\"name\":\"binding-cache-methods-and-native-property-attributes\",\"status\":\"pass\"},{\"name\":\"all-source-enum-constants-and-provider-names-are-readonly\",\"status\":\"pass\"},{\"name\":\"canonical-symbol-binding-uses-original-description-names\",\"status\":\"pass\"},{\"name\":\"whole-original-internal-module-registers-trampoline-when-hooks-are-enabled\",\"status\":\"pass\"},{\"name\":\"native-stack-push-pop-restores-live-ids\",\"status\":\"pass\"},{\"name\":\"native-stack-growth-publishes-three-times-the-backing\",\"status\":\"pass\"},{\"name\":\"native-id-conversion-and-disabled-checks-use-live-fields\",\"status\":\"pass\"},{\"name\":\"native-resource-vector-has-no-array-prototype-fallback\",\"status\":\"pass\"},{\"name\":\"clear-resets-stack-resources-without-resetting-counter-or-default\",\"status\":\"pass\"},{\"name\":\"unchanged-internal-module-allocates-ids-and-restores-default-scope\",\"status\":\"pass\"},{\"name\":\"unchanged-internal-module-uses-js-and-native-growing-stack\",\"status\":\"pass\"},{\"name\":\"promise-hook-empty-registration-is-an-actual-fresh-array\",\"status\":\"pass\"},{\"name\":\"assigned-promise-rejections-enter-actual-ids-and-resource\",\"status\":\"pass\"},{\"name\":\"cross-realm-bindings-share-state-and-symbol-identities\",\"status\":\"pass\"},{\"name\":\"native-stack-uses-protected-backing-after-public-property-replacement\",\"status\":\"pass\"},{\"name\":\"assigned-promise-callback-reset-skips-obsolete-pop\",\"status\":\"pass\"},{\"name\":\"unsupported-promise-hooks-and-destroy-observers-remain-errors\",\"status\":\"pass\"},{\"name\":\"actual-hook-and-trampoline-owners-survive-moving-gc\",\"status\":\"pass\"},{\"name\":\"whole-bootstrap-preserves-next-real-backend-failure\",\"status\":\"pass\"}],\"bootstrapFailure\":{\"code\":\"ERR_KANDELO_NOT_IMPLEMENTED\",\"message\":\"Native Node binding 'constants' is not implemented\",\"compiledBuiltinIds\":[\"internal/bootstrap/realm\",\"internal/errors\",\"internal/assert\",\"internal/bootstrap/node\",\"internal/timers\",\"internal/async_hooks\",\"internal/validators\",\"internal/util\"]},\"constants\":{\"kInit\":0,\"kBefore\":1,\"kAfter\":2,\"kDestroy\":3,\"kPromiseResolve\":4,\"kTotals\":5,\"kCheck\":6,\"kExecutionAsyncId\":0,\"kTriggerAsyncId\":1,\"kAsyncIdCounter\":2,\"kDefaultTriggerAsyncId\":3,\"kUsesExecutionAsyncResource\":8,\"kStackLength\":7},\"providers\":{\"NONE\":0,\"DIRHANDLE\":1,\"DNSCHANNEL\":2,\"ELDHISTOGRAM\":3,\"FILEHANDLE\":4,\"FILEHANDLECLOSEREQ\":5,\"BLOBREADER\":6,\"FSEVENTWRAP\":7,\"FSREQCALLBACK\":8,\"FSREQPROMISE\":9,\"GETADDRINFOREQWRAP\":10,\"GETNAMEINFOREQWRAP\":11,\"HEAPSNAPSHOT\":12,\"HTTP2SESSION\":13,\"HTTP2STREAM\":14,\"HTTP2PING\":15,\"HTTP2SETTINGS\":16,\"HTTPINCOMINGMESSAGE\":17,\"HTTPCLIENTREQUEST\":18,\"LOCKS\":19,\"DTLS_ENDPOINT\":20,\"DTLS_SESSION\":21,\"JSSTREAM\":22,\"MESSAGEPORT\":23,\"PIPECONNECTWRAP\":24,\"PIPESERVERWRAP\":25,\"PIPEWRAP\":26,\"PROCESSWRAP\":27,\"PROMISE\":28,\"QUERYWRAP\":29,\"QUIC_ENDPOINT\":30,\"QUIC_LOGSTREAM\":31,\"QUIC_SESSION\":32,\"QUIC_STREAM\":33,\"QUIC_UDP\":34,\"SHUTDOWNWRAP\":35,\"SIGNALWRAP\":36,\"STATWATCHER\":37,\"STREAMPIPE\":38,\"TCPCONNECTWRAP\":39,\"TCPSERVERWRAP\":40,\"TCPWRAP\":41,\"TTYWRAP\":42,\"UDPSENDWRAP\":43,\"UDPWRAP\":44,\"SIGINTWATCHDOG\":45,\"WORKER\":46,\"WORKERCPUPROFILE\":47,\"WORKERCPUUSAGE\":48,\"WORKERHEAPPROFILE\":49,\"WORKERHEAPSNAPSHOT\":50,\"WORKERHEAPSTATISTICS\":51,\"WRITEWRAP\":52,\"ZLIB\":53,\"CHECKPRIMEREQUEST\":54,\"PBKDF2REQUEST\":55,\"KEYPAIRGENREQUEST\":56,\"KEYGENREQUEST\":57,\"KEYEXPORTREQUEST\":58,\"ARGON2REQUEST\":59,\"CIPHERREQUEST\":60,\"DERIVEBITSREQUEST\":61,\"HASHREQUEST\":62,\"RANDOMBYTESREQUEST\":63,\"RANDOMPRIMEREQUEST\":64,\"SCRYPTREQUEST\":65,\"SIGNREQUEST\":66,\"TLSWRAP\":67,\"VERIFYREQUEST\":68},\"limits\":[\"Partial native async state and original internal module; not successful Node startup\",\"Promise lifecycle hooks, GC destroy delivery, continuation frames and common callback scopes remain incomplete\"]}\n",
+        "stderr": "",
+        "hostDiagnostics": [],
+        "detail": {
+          "kind": "native-async-wrap-controls",
+          "cases": 20,
+          "failures": 0,
+          "observations": [
+            {
+              "name": "native-constructor-state-comes-from-real-environment-initialization",
+              "status": "pass"
+            },
+            {
+              "name": "binding-cache-methods-and-native-property-attributes",
+              "status": "pass"
+            },
+            {
+              "name": "all-source-enum-constants-and-provider-names-are-readonly",
+              "status": "pass"
+            },
+            {
+              "name": "canonical-symbol-binding-uses-original-description-names",
+              "status": "pass"
+            },
+            {
+              "name": "whole-original-internal-module-registers-trampoline-when-hooks-are-enabled",
+              "status": "pass"
+            },
+            {
+              "name": "native-stack-push-pop-restores-live-ids",
+              "status": "pass"
+            },
+            {
+              "name": "native-stack-growth-publishes-three-times-the-backing",
+              "status": "pass"
+            },
+            {
+              "name": "native-id-conversion-and-disabled-checks-use-live-fields",
+              "status": "pass"
+            },
+            {
+              "name": "native-resource-vector-has-no-array-prototype-fallback",
+              "status": "pass"
+            },
+            {
+              "name": "clear-resets-stack-resources-without-resetting-counter-or-default",
+              "status": "pass"
+            },
+            {
+              "name": "unchanged-internal-module-allocates-ids-and-restores-default-scope",
+              "status": "pass"
+            },
+            {
+              "name": "unchanged-internal-module-uses-js-and-native-growing-stack",
+              "status": "pass"
+            },
+            {
+              "name": "promise-hook-empty-registration-is-an-actual-fresh-array",
+              "status": "pass"
+            },
+            {
+              "name": "assigned-promise-rejections-enter-actual-ids-and-resource",
+              "status": "pass"
+            },
+            {
+              "name": "cross-realm-bindings-share-state-and-symbol-identities",
+              "status": "pass"
+            },
+            {
+              "name": "native-stack-uses-protected-backing-after-public-property-replacement",
+              "status": "pass"
+            },
+            {
+              "name": "assigned-promise-callback-reset-skips-obsolete-pop",
+              "status": "pass"
+            },
+            {
+              "name": "unsupported-promise-hooks-and-destroy-observers-remain-errors",
+              "status": "pass"
+            },
+            {
+              "name": "actual-hook-and-trampoline-owners-survive-moving-gc",
+              "status": "pass"
+            },
+            {
+              "name": "whole-bootstrap-preserves-next-real-backend-failure",
+              "status": "pass"
+            }
+          ],
+          "bootstrapFailure": {
+            "code": "ERR_KANDELO_NOT_IMPLEMENTED",
+            "message": "Native Node binding 'constants' is not implemented",
+            "compiledBuiltinIds": [
+              "internal/bootstrap/realm",
+              "internal/errors",
+              "internal/assert",
+              "internal/bootstrap/node",
+              "internal/timers",
+              "internal/async_hooks",
+              "internal/validators",
+              "internal/util"
+            ]
+          },
+          "constants": {
+            "kInit": 0,
+            "kBefore": 1,
+            "kAfter": 2,
+            "kDestroy": 3,
+            "kPromiseResolve": 4,
+            "kTotals": 5,
+            "kCheck": 6,
+            "kExecutionAsyncId": 0,
+            "kTriggerAsyncId": 1,
+            "kAsyncIdCounter": 2,
+            "kDefaultTriggerAsyncId": 3,
+            "kUsesExecutionAsyncResource": 8,
+            "kStackLength": 7
+          },
+          "providers": {
+            "NONE": 0,
+            "DIRHANDLE": 1,
+            "DNSCHANNEL": 2,
+            "ELDHISTOGRAM": 3,
+            "FILEHANDLE": 4,
+            "FILEHANDLECLOSEREQ": 5,
+            "BLOBREADER": 6,
+            "FSEVENTWRAP": 7,
+            "FSREQCALLBACK": 8,
+            "FSREQPROMISE": 9,
+            "GETADDRINFOREQWRAP": 10,
+            "GETNAMEINFOREQWRAP": 11,
+            "HEAPSNAPSHOT": 12,
+            "HTTP2SESSION": 13,
+            "HTTP2STREAM": 14,
+            "HTTP2PING": 15,
+            "HTTP2SETTINGS": 16,
+            "HTTPINCOMINGMESSAGE": 17,
+            "HTTPCLIENTREQUEST": 18,
+            "LOCKS": 19,
+            "DTLS_ENDPOINT": 20,
+            "DTLS_SESSION": 21,
+            "JSSTREAM": 22,
+            "MESSAGEPORT": 23,
+            "PIPECONNECTWRAP": 24,
+            "PIPESERVERWRAP": 25,
+            "PIPEWRAP": 26,
+            "PROCESSWRAP": 27,
+            "PROMISE": 28,
+            "QUERYWRAP": 29,
+            "QUIC_ENDPOINT": 30,
+            "QUIC_LOGSTREAM": 31,
+            "QUIC_SESSION": 32,
+            "QUIC_STREAM": 33,
+            "QUIC_UDP": 34,
+            "SHUTDOWNWRAP": 35,
+            "SIGNALWRAP": 36,
+            "STATWATCHER": 37,
+            "STREAMPIPE": 38,
+            "TCPCONNECTWRAP": 39,
+            "TCPSERVERWRAP": 40,
+            "TCPWRAP": 41,
+            "TTYWRAP": 42,
+            "UDPSENDWRAP": 43,
+            "UDPWRAP": 44,
+            "SIGINTWATCHDOG": 45,
+            "WORKER": 46,
+            "WORKERCPUPROFILE": 47,
+            "WORKERCPUUSAGE": 48,
+            "WORKERHEAPPROFILE": 49,
+            "WORKERHEAPSNAPSHOT": 50,
+            "WORKERHEAPSTATISTICS": 51,
+            "WRITEWRAP": 52,
+            "ZLIB": 53,
+            "CHECKPRIMEREQUEST": 54,
+            "PBKDF2REQUEST": 55,
+            "KEYPAIRGENREQUEST": 56,
+            "KEYGENREQUEST": 57,
+            "KEYEXPORTREQUEST": 58,
+            "ARGON2REQUEST": 59,
+            "CIPHERREQUEST": 60,
+            "DERIVEBITSREQUEST": 61,
+            "HASHREQUEST": 62,
+            "RANDOMBYTESREQUEST": 63,
+            "RANDOMPRIMEREQUEST": 64,
+            "SCRYPTREQUEST": 65,
+            "SIGNREQUEST": 66,
+            "TLSWRAP": 67,
+            "VERIFYREQUEST": 68
+          },
+          "limits": [
+            "Partial native async state and original internal module; not successful Node startup",
+            "Promise lifecycle hooks, GC destroy delivery, continuation frames and common callback scopes remain incomplete"
+          ]
+        }
+      },
+      {
+        "name": "setup-object-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: args.get(0).isObject() (Node async hooks object invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/async-wrap.cpp:195\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3def8e:wasm-function[91]:0x57dc3\n    at wasm://wasm/0c3def8e:wasm-function[7424]:0x53f5df\n    at wasm://wasm/0c3def8e:wasm-function[7423]:0x52cfb0\n    at wasm://wasm/0c3def8e:wasm-function[7432]:0x54156d\n    at wasm://wasm/0c3def8e:wasm-function[7433]:0x5417da\n    at wasm://wasm/0c3def8e:wasm-function[8286]:0x60fa4a\n    at wasm://wasm/0c3def8e:wasm-function[87]:0x519c5\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "setup-callable-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: value.isObject() && JS::IsCallable(&value.toObject()) (Node async hook function invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/async-wrap.cpp:203\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3def8e:wasm-function[91]:0x57e7f\n    at wasm://wasm/0c3def8e:wasm-function[7424]:0x53f5df\n    at wasm://wasm/0c3def8e:wasm-function[7423]:0x52cfb0\n    at wasm://wasm/0c3def8e:wasm-function[7432]:0x54156d\n    at wasm://wasm/0c3def8e:wasm-function[7433]:0x5417da\n    at wasm://wasm/0c3def8e:wasm-function[8286]:0x60fa4a\n    at wasm://wasm/0c3def8e:wasm-function[87]:0x519c5\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "setup-once-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: JS::GetReservedSlot(state, HookOwner).isUndefined() (Node async hooks once invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/async-wrap.cpp:197\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3def8e:wasm-function[91]:0x57df2\n    at wasm://wasm/0c3def8e:wasm-function[7424]:0x53f5df\n    at wasm://wasm/0c3def8e:wasm-function[7423]:0x52cfb0\n    at wasm://wasm/0c3def8e:wasm-function[7432]:0x54156d\n    at wasm://wasm/0c3def8e:wasm-function[7433]:0x5417da\n    at wasm://wasm/0c3def8e:wasm-function[8286]:0x60fa4a\n    at wasm://wasm/0c3def8e:wasm-function[87]:0x519c5\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "push-id-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: !check || (id >= -1 && trigger >= -1) (Node async IDs invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/async-wrap.cpp:109\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3def8e:wasm-function[98]:0x59a46\n    at wasm://wasm/0c3def8e:wasm-function[97]:0x58df3\n    at wasm://wasm/0c3def8e:wasm-function[7424]:0x53f5df\n    at wasm://wasm/0c3def8e:wasm-function[7423]:0x52cfb0\n    at wasm://wasm/0c3def8e:wasm-function[7432]:0x54156d\n    at wasm://wasm/0c3def8e:wasm-function[7433]:0x5417da\n    at wasm://wasm/0c3def8e:wasm-function[8286]:0x60fa4a\n    at wasm://wasm/0c3def8e:wasm-function[87]:0x519c5\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "push-conversion-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: JS::ToNumber(cx, args.get(0), &id) && JS::ToNumber(cx, args.get(1), &trigger) (Node async ID conversion invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/async-wrap.cpp:146\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3def8e:wasm-function[97]:0x58e8e\n    at wasm://wasm/0c3def8e:wasm-function[7424]:0x53f5df\n    at wasm://wasm/0c3def8e:wasm-function[7423]:0x52cfb0\n    at wasm://wasm/0c3def8e:wasm-function[7432]:0x54156d\n    at wasm://wasm/0c3def8e:wasm-function[7433]:0x5417da\n    at wasm://wasm/0c3def8e:wasm-function[8286]:0x60fa4a\n    at wasm://wasm/0c3def8e:wasm-function[87]:0x519c5\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "pop-corruption-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: !check || current == expected (Node async stack corruption invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/async-wrap.cpp:129\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3def8e:wasm-function[100]:0x5a449\n    at wasm://wasm/0c3def8e:wasm-function[99]:0x59ed6\n    at wasm://wasm/0c3def8e:wasm-function[7424]:0x53f5df\n    at wasm://wasm/0c3def8e:wasm-function[7423]:0x52cfb0\n    at wasm://wasm/0c3def8e:wasm-function[7432]:0x54156d\n    at wasm://wasm/0c3def8e:wasm-function[7433]:0x5417da\n    at wasm://wasm/0c3def8e:wasm-function[8286]:0x60fa4a\n    at wasm://wasm/0c3def8e:wasm-function[87]:0x519c5\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "destroy-id-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: args.get(0).isNumber() (Node destroy async ID invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/async-wrap.cpp:244\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3def8e:wasm-function[103]:0x5b2d6\n    at wasm://wasm/0c3def8e:wasm-function[7424]:0x53f5df\n    at wasm://wasm/0c3def8e:wasm-function[7423]:0x52cfb0\n    at wasm://wasm/0c3def8e:wasm-function[7432]:0x54156d\n    at wasm://wasm/0c3def8e:wasm-function[7433]:0x5417da\n    at wasm://wasm/0c3def8e:wasm-function[8286]:0x60fa4a\n    at wasm://wasm/0c3def8e:wasm-function[87]:0x519c5\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "destroy-registration-invariant",
+        "status": "pass",
+        "exitCode": 132,
+        "stdout": "",
+        "stderr": "[100] Assertion failure: args.get(0).isObject() && args.get(1).isNumber() && (args.length() == 2 || args.get(2).isObject()) (Node GC destroy registration invariant), at /usr/src/kandelo-build/spidermonkey/spidermonkey-source/js/src/shell/node-upstream/async-wrap.cpp:255\nMOZ_REALLY_CRASH\n",
+        "hostDiagnostics": [
+          {
+            "pid": 100,
+            "source": "worker-main error message",
+            "message": "[process-worker] Kernel worker failed: unreachable\nRuntimeError: unreachable\n    at wasm://wasm/0c3def8e:wasm-function[107]:0x5bd3c\n    at wasm://wasm/0c3def8e:wasm-function[7424]:0x53f5df\n    at wasm://wasm/0c3def8e:wasm-function[7423]:0x52cfb0\n    at wasm://wasm/0c3def8e:wasm-function[7432]:0x54156d\n    at wasm://wasm/0c3def8e:wasm-function[7433]:0x5417da\n    at wasm://wasm/0c3def8e:wasm-function[8286]:0x60fa4a\n    at wasm://wasm/0c3def8e:wasm-function[87]:0x519c5\n    at centralizedWorkerMain (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-main.ts:4257:13)\n    at async runWithProcessWorkerQuiescence (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-quiescence.ts:39:5)\n    at async run (/private/Users/brandon/conductor/workspaces/kandelo/port-vila/host/src/worker-entry.ts:40:7)",
+            "status": 132
+          }
+        ]
+      },
+      {
+        "name": "detached-native-async-state-is-an-error",
+        "status": "pass",
+        "exitCode": 0,
+        "stdout": "DETACHED_ASYNC_STATE_REJECTED\n",
+        "stderr": "",
+        "hostDiagnostics": []
+      }
+    ],
+    "failures": 0,
+    "limits": [
+      "No Chromium/Firefox/WebKit execution",
+      "No upstream startup or module compatibility evidence",
+      "No complete native-V8 differential proof",
+      "No security-wrapper/OOM or complete symbol-owner teardown/finalization proof"
+    ]
+  }
+}

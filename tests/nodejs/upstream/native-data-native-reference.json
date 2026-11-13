@@ -1,0 +1,197 @@
+{
+  "scope": "Twelve bounded genuine live native data property comparisons, not full native interface compatibility",
+  "completedAt": "2026-11-12T08:08:05.893560+00:00",
+  "binary": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.scratch/node-synthetic.nBdKzX/native-node",
+    "bytes": 147346864,
+    "sha256": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4"
+  },
+  "args": [
+    "--no-warnings",
+    "--no-node-snapshot"
+  ],
+  "environment": {
+    "PATH": "/usr/bin:/bin",
+    "LANG": "C",
+    "TZ": "UTC"
+  },
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "fixtureSha256": "94e1f4874cc891516afca816973d46ee1be24c3119aaa7c70fe1a6273c898461",
+  "fixtures": [
+    {
+      "path": "tests/nodejs/upstream/native-data-native-prefix.cjs",
+      "bytes": 240,
+      "sha256": "7db1d236405d92493225a5b974f264e7b420a50cd7d4dc09cff6a0ecc8c92187"
+    },
+    {
+      "path": "tests/nodejs/upstream/native-data-shared-controls.js",
+      "bytes": 5674,
+      "sha256": "94e1f4874cc891516afca816973d46ee1be24c3119aaa7c70fe1a6273c898461"
+    }
+  ],
+  "runner": {
+    "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/scripts/run-nodejs-native-data-native-controls.py",
+    "bytes": 2264,
+    "sha256": "150269dad5b3260882836e4a521bbc1dc7b852ae200f72a300e2bc0b145b0d9f"
+  },
+  "runs": [
+    {
+      "index": 0,
+      "sourceSha256": "609bfd20e8936be718023efe4db4c6a00573ee66069111de26500b1434e4048a",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"native-data-descriptor-and-repeated-writes\",\"status\":\"pass\",\"detail\":true}\n",
+      "stderr": ""
+    },
+    {
+      "index": 1,
+      "sourceSha256": "05da6948fad945495c4cbe38a3edcbf564f460dda38d39a6e5da54da3ffa69ce",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"inherited-write-creates-ordinary-receiver-property\",\"status\":\"pass\",\"detail\":true}\n",
+      "stderr": ""
+    },
+    {
+      "index": 2,
+      "sourceSha256": "0893cfa7a21dc715131dc1bcbb923f3f97c6f8eadb6ee57c4fee143bfbf02243",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"reflect-write-with-distinct-receiver\",\"status\":\"pass\",\"detail\":true}\n",
+      "stderr": ""
+    },
+    {
+      "index": 3,
+      "sourceSha256": "b8bbdadf8bb4f1ffdb33da6928e35eef190b13b6600a6d356fdfcf66f52b5c36",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"define-value-keeps-native-setter\",\"status\":\"pass\",\"detail\":\"native-setter-sentinel\"}\n",
+      "stderr": ""
+    },
+    {
+      "index": 4,
+      "sourceSha256": "0c548cb1745e24e2b3ff8459e01a87768393e7ab37e01d7ba3364b89cb38d0ba",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"attribute-only-definition-keeps-native-setter\",\"status\":\"pass\",\"detail\":\"native-setter-sentinel\"}\n",
+      "stderr": ""
+    },
+    {
+      "index": 5,
+      "sourceSha256": "77139e52f8b4a95f1eedb39716094e378666d394f20aa579254100e58e738aad",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"read-only-configurable-data-still-accepts-value-definition\",\"status\":\"pass\",\"detail\":true}\n",
+      "stderr": ""
+    },
+    {
+      "index": 6,
+      "sourceSha256": "94600165b056aec68e4618d39c995f9f6705d7f62d534d56496e42a12fc1a7d4",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"sealed-writable-native-setter-remains-live\",\"status\":\"pass\",\"detail\":\"native-setter-sentinel\"}\n",
+      "stderr": ""
+    },
+    {
+      "index": 7,
+      "sourceSha256": "b5e99bb67455962825c25097758167469b0c8017015ff37201a4b6073e531797",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"frozen-data-same-and-different-definitions\",\"status\":\"pass\",\"detail\":true}\n",
+      "stderr": ""
+    },
+    {
+      "index": 8,
+      "sourceSha256": "045b451993a232cff0fd488cf03ba8d49b5cdbed77e7d1d3136f3adab4a6e882",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"attributes-apply-before-throwing-native-setter\",\"status\":\"pass\",\"detail\":true}\n",
+      "stderr": ""
+    },
+    {
+      "index": 9,
+      "sourceSha256": "2cb8f7b3322b3c38923563822076e5b1730e2ff7bc71cf4721d29e7a15983dfb",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"native-setter-deletion-stays-deleted\",\"status\":\"pass\",\"detail\":true}\n",
+      "stderr": ""
+    },
+    {
+      "index": 10,
+      "sourceSha256": "d8b8e74b4fc14a668f856623fe43ebdd2ad29154a4b4e1d374461bd996fec4bd",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"native-setter-replacement-is-not-overwritten\",\"status\":\"pass\",\"detail\":true}\n",
+      "stderr": ""
+    },
+    {
+      "index": 11,
+      "sourceSha256": "ff072fe19fd6982cb435ce29206111172fb07711fab7c5d21bc3c037ce7b5ce0",
+      "nativeSha256VerifiedImmediatelyBeforeChild": "533bd644c5ae0e0ea3a80e433aad16b817447ccba1e1eea701875eac80cb75d4",
+      "exitCode": 0,
+      "stdout": "{\"name\":\"setterless-native-data-assignment-becomes-ordinary\",\"status\":\"pass\",\"detail\":true}\n",
+      "stderr": ""
+    }
+  ],
+  "observations": [
+    {
+      "name": "native-data-descriptor-and-repeated-writes",
+      "status": "pass",
+      "detail": true
+    },
+    {
+      "name": "inherited-write-creates-ordinary-receiver-property",
+      "status": "pass",
+      "detail": true
+    },
+    {
+      "name": "reflect-write-with-distinct-receiver",
+      "status": "pass",
+      "detail": true
+    },
+    {
+      "name": "define-value-keeps-native-setter",
+      "status": "pass",
+      "detail": "native-setter-sentinel"
+    },
+    {
+      "name": "attribute-only-definition-keeps-native-setter",
+      "status": "pass",
+      "detail": "native-setter-sentinel"
+    },
+    {
+      "name": "read-only-configurable-data-still-accepts-value-definition",
+      "status": "pass",
+      "detail": true
+    },
+    {
+      "name": "sealed-writable-native-setter-remains-live",
+      "status": "pass",
+      "detail": "native-setter-sentinel"
+    },
+    {
+      "name": "frozen-data-same-and-different-definitions",
+      "status": "pass",
+      "detail": true
+    },
+    {
+      "name": "attributes-apply-before-throwing-native-setter",
+      "status": "pass",
+      "detail": true
+    },
+    {
+      "name": "native-setter-deletion-stays-deleted",
+      "status": "pass",
+      "detail": true
+    },
+    {
+      "name": "native-setter-replacement-is-not-overwritten",
+      "status": "pass",
+      "detail": true
+    },
+    {
+      "name": "setterless-native-data-assignment-becomes-ordinary",
+      "status": "pass",
+      "detail": true
+    }
+  ]
+}
