@@ -652,8 +652,11 @@ package) and add `ranlib`, `objdump`, `objcopy`, `llvm-readobj` (also
 `readelf`. The shell also carries `wasm-tools`. "Inspecting build output"
 in [the SDK guide](sdk-guide.md#inspecting-build-output) says which tool
 reads which file, why there is no `readelf`, and how the two `strip`
-commands differ. The rows below for those four describe images that carry
-only the base rootfs.
+commands differ. They also replace its `gettext`, `ngettext`, `msgfmt` and
+`xgettext` with GNU gettext's, alongside the other GNU build tools (see
+"GNU build tools" in the SDK guide). The rows below for `ar`, `nm`,
+`strip`, `strings`, `msgfmt` and `xgettext` describe images that carry only
+the base rootfs.
 
 | Utility | What it actually does |
 |---|---|

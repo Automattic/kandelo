@@ -47,6 +47,23 @@ describe("kandelo-build-image package", () => {
       ...dependsOn("packages/registry/rootfs/package.toml"),
       "kandelo-sdk-browser-bundle@21.1.7",
       "clang@21.1.7",
+      "perl-browser-bundle@5.40.3",
+      // BUILD_IMAGE_ARCHIVE_TOOL_IDS.
+      "tar@1.35",
+      "gzip@1.13",
+      "bzip2@1.0.8",
+      "xz@5.6.2",
+      // The GNU build tools, one entry per images/vfs/lib/init/dev-tools.ts package.
+      "autoconf@2.73",
+      "automake@1.20",
+      "libtool@2.6.2",
+      "autoconf-archive@2026.11.11",
+      "gettext@1.0",
+      "help2man@1.49.3",
+      "texinfo@7.3",
+      "pkgconf@3.0.10",
+      "bison@3.8.2",
+      "gperf@3.3",
     ]);
   });
 });

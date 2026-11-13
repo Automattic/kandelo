@@ -4,6 +4,7 @@ inputs = [
   "images/rootfs/etc/group",
   "images/vfs/scripts/filesystem-layout.ts",
   "images/vfs/lib/init/shell-binaries.ts",
+  "images/vfs/lib/init/dev-tools.ts",
 
   "host/src/native-artifact-identity.ts",
   "packages/registry/mariadb-test/build-mariadb-test.sh",

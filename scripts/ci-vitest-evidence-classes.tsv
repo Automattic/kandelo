@@ -213,6 +213,9 @@ host/test/glib-smoke.test.ts	prepared-product
 host/test/gobject-callback-contract.test.ts	prepared-product
 host/test/graphics-fork-metadata-mutex.test.ts	prepared-product
 host/test/gtk3-smoke.test.ts	prepared-product
+host/test/guest-autotools.test.ts	prepared-product
+host/test/guest-bash-subshells.test.ts	prepared-product
+host/test/guest-binutils.test.ts	prepared-product
 host/test/guest-build-make.test.ts	prepared-product
 host/test/guest-build-run.test.ts	prepared-product
 host/test/guest-program-preparation.test.ts	prepared-product
@@ -777,6 +780,7 @@ tests/package-system/build-input-import-closure.test.ts	prepared-product
 tests/package-system/composer-package.test.ts	source-only
 tests/package-system/configure-prefix-paths.test.ts	source-only
 tests/package-system/dev-lazy-assets.test.ts	source-only
+tests/package-system/dev-tools.test.ts	source-only
 tests/package-system/espeak-ng-package.test.ts	prepared-product
 tests/package-system/game-import.test.ts	source-only
 tests/package-system/host-package-projection-contract.test.ts	prepared-product
