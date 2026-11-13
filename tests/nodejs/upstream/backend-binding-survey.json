@@ -9,12 +9,12 @@
     {
       "path": "tests/nodejs/upstream/dependency-graph.json",
       "bytes": 3006060,
-      "sha256": "92e17372f0723b0b24d219f355a5c176404b415d9a962decda9e9f32b6e6d519"
+      "sha256": "f26c453ceca8aea253a6e713b407dafcc69324d645aa7a4bcb1f0a56af1124c6"
     },
     {
       "path": "tests/nodejs/upstream/native-registration-index.json",
-      "bytes": 188947,
-      "sha256": "f75c40f0d6cfa94a8fa984e580b703e76c4fe3962e53dd5b276084e381b02c56"
+      "bytes": 188945,
+      "sha256": "b50cdd5cde04062d5fa59f6ad6a90d14475e4b9c16a87026f1b3e5f41a091823"
     },
     {
       "path": "tests/nodejs/upstream/backend-binding-reviews.json",
@@ -29,12 +29,12 @@
     {
       "path": "tests/nodejs/upstream/binding-index.json",
       "bytes": 1536646,
-      "sha256": "777049a123e7c4ce4fc3c658eb8adb0753b528736762dc6d8287d41ad770f628"
+      "sha256": "ed3529f57b5ede33432f91de09924ca54280025bc40217af649360f62f97a0f5"
     },
     {
       "path": "third_party/nodejs/sources.json",
-      "bytes": 135353,
-      "sha256": "717e5bd66db7aba6126467e44356a9384c919abd3040b81c7c529b1245cc5431"
+      "bytes": 135761,
+      "sha256": "a4cf878c34e8a253769c7b7bd990064665ff7dd611c4e2150007fc2acd996234"
     }
   ],
   "counts": {

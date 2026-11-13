@@ -196,5 +196,11 @@
     "historicalEvidenceIsCurrentConformance": false
   },
   "currentSourceRevision": 57,
-  "currentPrivateEvidence": "async-resource-engine-check.json"
+  "currentPrivateEvidence": "async-resource-engine-check.json",
+  "requestHeaderFollowup": {
+    "packageRevision": 71,
+    "catalog": "request-owners-contracts.json",
+    "evidence": "request-owners-engine-check.json",
+    "scope": "Complete original request headers and real environment intrusive head now compile; prior79drivers perhost are regression evidence only. Positive request dispatch/cancellation/shutdown and HandleWrap remain unimplemented/unvalidated."
+  }
 }

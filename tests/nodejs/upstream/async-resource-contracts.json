@@ -198,5 +198,11 @@
   "scopedCatchPrerequisiteCatalog": "scoped-catch-contracts.json",
   "scopedCatchPrerequisiteEvidence": "scoped-catch-engine-check.json",
   "errorPolicyCatalog": "error-policy-contracts.json",
-  "errorPolicyEvidence": "error-policy-engine-check.json"
+  "errorPolicyEvidence": "error-policy-engine-check.json",
+  "requestHeaderFollowup": {
+    "packageRevision": 71,
+    "catalog": "request-owners-contracts.json",
+    "evidence": "request-owners-engine-check.json",
+    "scope": "Complete original request headers and real environment intrusive head now compile; prior79drivers perhost are regression evidence only. Positive request dispatch/cancellation/shutdown and HandleWrap remain unimplemented/unvalidated."
+  }
 }

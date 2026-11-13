@@ -90,6 +90,7 @@ struct EnvironmentData {
   const std::vector<std::string>* execArguments=nullptr;
   std::string executablePath;
   CleanableQueue cleanables;
+  Environment::RequestQueue requests;
   api::ExternalMemoryAccounter external{false};
   std::atomic<size_t> posted{0},executed{0},ownerChecks{0},payloadBytes{0};
   size_t probesCreated=0,probesCleaned=0,probeBytes=0,weakThreadReleases=0;
@@ -123,6 +124,9 @@ void CleanableQueue::CleanAll() {
   while(first_){auto* item=first_->item_;Remove(first_);item->Clean();}
 }
 CleanableQueue* Environment::cleanable_queue() { AssertForeground();return &data_->cleanables; }
+Environment::RequestQueue* Environment::req_wrap_queue() {
+  AssertForeground();CHECK(data_->initialized&&!data_->closed);return &data_->requests;
+}
 ExternalMemoryAccounter* Environment::external_memory_accounter() { AssertForeground();return &data_->external; }
 JSObject* Environment::memory_owner(JSContext* cx) {
   AssertForeground();CHECK(data_->runtime&&data_->cx==cx);
@@ -271,6 +275,9 @@ void Environment::Shutdown(JSContext* cx) {
   CHECK(cx==data_->cx&&!data_->draining);
   JS::AutoSaveExceptionState preserve(cx);
   data_->stopping=true;
+  // Request cancellation/completion must retire every intrusive node before
+  // the owning environment closes. Full request shutdown remains unavailable.
+  CHECK(data_->requests.IsEmpty());
   auto state=isolate_->owner.lock();CHECK(state);
   JS::RootedObject runtime(cx,*data_->runtime);
   JSAutoRealm runtimeHome(cx,runtime);

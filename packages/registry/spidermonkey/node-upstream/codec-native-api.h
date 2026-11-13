@@ -731,7 +731,9 @@ class Environment {
   void ThrowUVException(int,const char*,const char* = nullptr,const char* = nullptr,const char* = nullptr);
   void ThrowErrnoException(int,const char*,const char* = nullptr,const char* = nullptr);
   uv_loop_t* event_loop();
-  std::list<ReqWrapBase*>* req_wrap_queue();
+  struct RequestQueue;
+  RequestQueue* req_wrap_queue();
+  void IncreaseWaitingRequestCounter();void DecreaseWaitingRequestCounter();
   std::list<HandleWrap*>* handle_wrap_queue();
   const int32_t* timeout_info();ProcessImmediateInfo* immediate_info();
   void Exit(ExitCode);void set_process_emit_warning_sync(Local<Function>);

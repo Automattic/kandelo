@@ -3943,6 +3943,20 @@
       "builtinId": null
     },
     {
+      "path": "src/req_wrap-inl.h",
+      "role": "provenance",
+      "bytes": 5621,
+      "sha256": "ede34e6a3f999856a62284d1045deb2a6a2a578a321faf402c432a8605df75b1",
+      "builtinId": null
+    },
+    {
+      "path": "src/req_wrap.h",
+      "role": "provenance",
+      "bytes": 2315,
+      "sha256": "571212e6b7000aad7256fc3ad81398d3e75cb69c036bf87f4a6965b226bac5de",
+      "builtinId": null
+    },
+    {
       "path": "src/string_bytes.cc",
       "role": "provenance",
       "bytes": 29594,

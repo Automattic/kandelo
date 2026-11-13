@@ -18,6 +18,7 @@
 #include "shell/node-upstream/codecs-upstream/permission/permission_base.h"
 #undef node
 #include "shell/node-upstream/internals-native-api.h"
+#include "shell/node-upstream/request-native-api.h"
 namespace kandelo_node_codec_impl {
 std::string GetProcessTitle(const char*);
 namespace tracing=::node::tracing;
@@ -43,7 +44,6 @@ class ProcessImmediateInfo {
   explicit ProcessImmediateInfo(Environment* environment):environment_(environment) {}
   uint32_t ref_count() const;
 };
-class ReqWrapBase {public:AsyncWrap* GetAsyncWrap();};
 class HandleWrap : public AsyncWrap {public:static bool HasRef(HandleWrap*);};
 void RunAtExit(Environment*);bool HasSignalJSHandler(int);
 bool CheckProcessPermission(Environment*,permission::PermissionScope,std::string_view);

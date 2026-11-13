@@ -17,7 +17,7 @@ def prepare(manifest,output):
  # Compile complete resource bodies in their own include directory. Their
  # binding is not activated while consumed backends remain unavailable.
  resource=output.parent/'resource-upstream';resource.mkdir(parents=True,exist_ok=True)
- for name in ['async_wrap.cc','async_wrap.h','async_wrap-inl.h','async_context_frame.h']:
+ for name in ['async_wrap.cc','async_wrap.h','async_wrap-inl.h','async_context_frame.h','req_wrap.h','req_wrap-inl.h']:
   (resource/name).write_bytes(verified('src/'+name))
  for name in ['base_object.h','base_object-inl.h','node_internals.h','v8.h']:
   (resource/name).write_text('#include "shell/node-upstream/codec-native-api.h"\n')

@@ -18,10 +18,10 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 70 source connects the original process initializer,
+The current revision 71 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
-still fails final linking on 22 symbols and has no normal runnable artifact.
+still fails final linking on 20 symbols and has no normal runnable artifact.
 Complete original AsyncWrap owner traversal now exposes the original catch-scope
 and exception/reporting dependency closure; its binding is not activated.
 Canonical native reference ownership has separate four-host diagnostic evidence;
@@ -92,7 +92,7 @@ The initial `third_party/nodejs/sources.json` import recorded 494 unchanged arch
 427 library JavaScript files, 16 dependency JavaScript files, one library
 support file, 37 dependency license files and thirteen provenance files. Its
 443 builtin source records cover more than the public module list. The current
-manifest has 581 files after complete native source/header additions; every
+manifest has 583 files after complete native source/header additions; every
 original JavaScript record and all 10,993,403 JavaScript bytes remain unchanged.
 The original `src/env_properties.h` now supplies the native symbol inventory;
 its bytes are verified before staging into Mozilla's source tree. The complete
@@ -2854,3 +2854,16 @@ The identified private artifact passes 79 drivers on each of Node, Chromium, Fir
 The normal targeted build has zero C++ compile errors and 22 unresolved native symbols, removing only Object.GetConstructorName from the previous 23. It has no normal runnable artifact. Initial compile/link/style failures and runtime Array mismatches are retained separately; Array allocation bypassed the generic native-object hook and now records its actual receiver path. The final identified artifact is independently rerun. Broader construction classes/API paths, other JIT configurations, workers/fork, security, fault-injected OOM, full exceptional shutdown and compaction-specific proof remain incomplete. All 581 imported identities and 443 JavaScript files/10,993,403 bytes are unchanged. Genuine startup, CJS/ESM, the complete backend catalog and ordered roadmap remain unfinished; full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
 
 See the [constructor-name engine contracts](../tests/nodejs/upstream/constructor-name-engine-contracts.json) and [identified-artifact receipt](../tests/nodejs/upstream/constructor-name-engine-check.json).
+
+
+## Original request headers and intrusive queue (revision 71)
+
+The complete, unchanged req_wrap.h and req_wrap-inl.h are now imported and compiled over the existing real AsyncWrap/native-owner interfaces. The native environment owns the original intrusive ListHead keyed by the original ReqWrapBase member; the declaration-only class and separate std::list request type are removed. Original request construction registers nodes, original ListNode destruction removes them, and the process utility walks the actual head and original virtual AsyncWrap accessor. Foreground/initialized/closed owner checks guard access. Shutdown rejects an outstanding actual request head before retiring its roots; full request cancellation and completion during shutdown remains unfinished.
+
+This is compile integration, not positive request lifecycle validation. The original bootstrap assertion is preserved. The private diagnostic profile cannot finish principal bootstrap and no test fabricates that state. Original dispatch/cancel/completion bodies remain intact, but the consumed waiting-counter methods are still declarations and require real implementation before activation. HandleWrap/ref/close and the real handle queue remain separate unfinished work.
+
+The identified private artifact passes all 79 previous drivers on each of Node, Chromium, Firefox and WebKit, 316 guest runs, with every driver source byte-identical. These are regression results for the new artifact; no request dispatch, cancellation or shutdown success is inferred. The normal targeted build has zero C++ compile errors and 20 unresolved symbols, removing the request queue and declaration-only GetAsyncWrap symbols from the previous 22 with no additions. It still cannot produce a normal startup executable.
+
+All 581 previously imported identities are unchanged. The two complete authenticated request headers bring the total to 583; all 443 JavaScript files/10,993,403 bytes remain unchanged. Canonical source inventories are regenerated for the new manifest identity. The first command failed because my recipe-preparation check used the wrong spacing for build.toml and left the recipe absent; that harness failure is retained. The first actual build compiled/linked but failed Mozilla include checks; inline definitions now enter through a separate owned inline adapter, and a strict patch recognizes exactly the two new generated upstream header paths under the existing source classification. No upstream Node source is patched or excerpted. Full startup/CJS/ESM/catalog/roadmap and full source-policy acceptance remain incomplete. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred.
+
+See the [request-owner contracts](../tests/nodejs/upstream/request-owners-contracts.json) and [build/regression receipt](../tests/nodejs/upstream/request-owners-engine-check.json).

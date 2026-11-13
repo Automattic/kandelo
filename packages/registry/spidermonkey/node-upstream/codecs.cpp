@@ -1029,6 +1029,7 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 #include "shell/node-upstream/native-object-codecs-inl.h"
 #include "shell/node-upstream/native-owner-probe-inl.h"
 #include "shell/node-upstream/property-codecs-inl.h"
+#include "shell/node-upstream/request-codecs-inl.h"
 #include "shell/node-upstream/snapshot-codecs-inl.h"
 #include "shell/node-upstream/stack-codecs-inl.h"
 #include "shell/node-upstream/template-codecs-inl.h"

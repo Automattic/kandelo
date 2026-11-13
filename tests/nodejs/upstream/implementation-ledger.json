@@ -10,7 +10,7 @@
     "literalBindingNames": 72,
     "computedReferences": 14,
     "completeBindingContractCatalog": false,
-    "importedFiles": 581,
+    "importedFiles": 583,
     "taskQueuePartialCatalog": "task-queue-contracts.json",
     "asyncWrapPartialCatalog": "async-wrap-contracts.json",
     "constantsPartialCatalog": "constants-contracts.json",
@@ -111,7 +111,9 @@
     "constructionIdentityPartialCatalog": "construction-identity-contracts.json",
     "constructionIdentityEngineEvidence": "construction-identity-engine-check.json",
     "constructorNameEnginePartialCatalog": "constructor-name-engine-contracts.json",
-    "constructorNameEngineEvidence": "constructor-name-engine-check.json"
+    "constructorNameEngineEvidence": "constructor-name-engine-check.json",
+    "requestOwnersPartialCatalog": "request-owners-contracts.json",
+    "requestOwnersCompileEvidence": "request-owners-engine-check.json"
   },
   "implementation": [
     {
@@ -451,6 +453,12 @@
       "status": "Real engine receiver provenance, protected intrinsic ownership and pure data-only naming; actual type/JSON/primitive detail operations. Original whole-unit utility consumer and79 drivers perhost pass on four hosts, prior72 sources unchanged.",
       "evidence": "constructor-name-engine-check.json",
       "remaining": "Full native util wrapper, object detail formatting and broader construction/lifecycle coverage incomplete; normal22 interfaces remain unresolved"
+    },
+    {
+      "area": "whole original request headers and native intrusive queue",
+      "status": "Complete unchanged ReqWrapBase/ReqWrap templates compile over real environment-owned original ListHead/ListNode storage; original virtual AsyncWrap accessor replaces a declaration-only stand-in. Prior79 drivers pass on four hosts, all driver sources unchanged.",
+      "evidence": "request-owners-engine-check.json",
+      "remaining": "Positive dispatch/cancellation/GC/request shutdown not proven; original bootstrap assertion preserved, waiting-counter methods remain unimplemented declarations. HandleWrap and normal20 native dependencies remain."
     }
   ],
   "runtimeConformance": {
@@ -1236,8 +1244,8 @@
       "originalUtilityIntegrationComplete": false
     },
     "nativeUtilities": {
-      "status": "Original utility/internals/error units and actual ownership/options/constructor naming prerequisites validated in private79 drivers perhost; normal22 unlinked",
-      "evidence": "constructor-name-engine-check.json",
+      "status": "Original utilities/constructor naming plus whole request headers and actual intrusive storage compile; private79 previous regressions perhost pass; normal20 unlinked",
+      "evidence": "request-owners-engine-check.json",
       "currentRuntimeValidated": true,
       "unmodifiedSourcePolicySatisfied": false
     }
@@ -1744,7 +1752,7 @@
     }
   },
   "nextWork": [
-    "Resolve the remaining22 real normal native startup interfaces: actual heap/allocator/guest memory, process lifecycle/permission/request-handle ownership/ref/signal/report/native loading. GetConstructorName is now implemented and selected original consumers validated; full util binding, no-effects object detail formatting and broader engine construction coverage remain incomplete. Then genuine startup/CJS/ESM on four hosts, complete backend catalog/dependency-ordered roadmap and explicit review before broader implementation.",
+    "Resolve remaining20 actual normal startup interfaces, prioritizing complete original HandleWrap/ref/close/handle queue integration and real heap/allocator/guest memory/lifecycle/permission/signal/report/native loading. Request headers and intrusive storage now compile, but waiting counters/positive dispatch/cancellation/shutdown remain missing; preserve original bootstrap assertion and do not fake ready state. Then genuine startup/CJS/ESM on four hosts, complete backend catalog/dependency-ordered roadmap and explicit review before broader implementation.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1753,17 +1761,17 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 70,
+    "packageRevision": 71,
     "status": "failed final link in targeted original recipe operations over verified prepared source",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
-    "undefinedSymbols": 22,
-    "evidence": "constructor-name-engine-check.json",
+    "undefinedSymbols": 20,
+    "evidence": "request-owners-engine-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
     "buildCacheKey": null,
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-constructor-lookup-normal-final-1112-230454-e55f",
+    "buildJob": "node-request-owners-normal-final-1112-232631-e317",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1796,8 +1804,8 @@
     ],
     "persistentHandleLayoutPrerequisitesCompile": true,
     "wholeOriginalUtilitiesCompile": true,
-    "sourceIdentityRecords": 581,
-    "previousCompileEvidence": "construction-identity-engine-check.json",
+    "sourceIdentityRecords": 583,
+    "previousCompileEvidence": "constructor-name-engine-check.json",
     "removedSinceRevision62": [
       "kandelo_node_codec_api::FunctionTemplate::New(kandelo_node_codec_api::Isolate*, void (*)(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&), kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Signature>, int, kandelo_node_codec_api::ConstructorBehavior, kandelo_node_codec_api::SideEffectType, kandelo_node_codec_api::CFunction const*)",
       "kandelo_node_codec_api::FunctionTemplate::PrototypeTemplate()",
@@ -1870,7 +1878,14 @@
     "removedSinceRevision69": [
       "kandelo_node_codec_api::Object::GetConstructorName()"
     ],
-    "addedSinceRevision69": []
+    "addedSinceRevision69": [],
+    "wholeOriginalRequestHeadersCompile": true,
+    "actualRequestQueueCompiles": true,
+    "removedSinceRevision70": [
+      "kandelo_node_codec_impl::Environment::req_wrap_queue()",
+      "kandelo_node_codec_impl::ReqWrapBase::GetAsyncWrap()"
+    ],
+    "addedSinceRevision70": []
   },
   "currentLibuvExecutablePath": {
     "packageRevision": 5,
@@ -1888,8 +1903,8 @@
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   },
   "currentNativeOwnerDiagnostic": {
-    "evidence": "constructor-name-engine-check.json",
-    "packageRevision": 70,
+    "evidence": "request-owners-engine-check.json",
+    "packageRevision": 71,
     "normalPackageArtifact": false,
     "startupAccepted": false,
     "normalEngineLinked": false,
@@ -1897,11 +1912,11 @@
     "linked": true,
     "currentRuntimeValidated": true,
     "currentDriversPerHost": 79,
-    "lastRuntimeValidatedRevision": 70,
+    "lastRuntimeValidatedRevision": 71,
     "historicalDriversPerHost": 32,
     "undefinedSymbols": 0,
     "historicalEvidence": "persistent-handle-engine-check.json",
-    "buildJob": "node-constructor-lookup-api-views-1112-230150-cc1a",
+    "buildJob": "node-request-owners-style-1112-232438-770e",
     "intendedDriversPerHost": 79,
     "newDriversNotExecuted": 0,
     "hosts": [
@@ -1911,25 +1926,29 @@
       "webkit"
     ],
     "program": {
-      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-constructor-lookup/native-owner-probe.wasm",
-      "bytes": 59981054,
-      "sha256": "187d2cc03df73710032e6dc0e996f88bcf144005bc536becc0f83e186a29007a"
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-request-owners/native-owner-probe.wasm",
+      "bytes": 59981424,
+      "sha256": "a28691b17ec73d088cbccffdcb9ae1f2ebca3198c1507c6543d7a5f0e29963e1"
     },
     "kernel": {
       "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
       "bytes": 2958224,
       "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
     },
-    "newStackDrivers": 4,
-    "newTemplateDrivers": 4,
-    "previousDrivers": 72,
-    "newMessageDrivers": 5,
-    "newStateDrivers": 8,
-    "newInternalsDrivers": 2,
-    "newNativeIsolateDrivers": 3,
-    "addedOptionsRegressionDrivers": 8,
-    "newConstructionDrivers": 6,
-    "newConstructorDrivers": 7
+    "previousDrivers": 79,
+    "historicalFeatureDriverCounts": {
+      "newStackDrivers": 4,
+      "newTemplateDrivers": 4,
+      "newMessageDrivers": 5,
+      "newStateDrivers": 8,
+      "newInternalsDrivers": 2,
+      "newNativeIsolateDrivers": 3,
+      "addedOptionsRegressionDrivers": 8,
+      "newConstructionDrivers": 6,
+      "newConstructorDrivers": 7
+    },
+    "newRequestDrivers": 0,
+    "requestLifecycleValidated": false
   },
   "historicalNativeOwnerDiagnostic": {
     "evidence": "persistent-handle-engine-check.json",
