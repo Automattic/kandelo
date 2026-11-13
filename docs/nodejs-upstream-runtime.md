@@ -18,7 +18,7 @@ original `buffer.js`. It now reads real build configuration and the original
 body freezes `process.config` and registers the original messaging constructor
 callback and completes original diagnostics setup, then the last runnable revision stops at missing
 `process_methods` in `internal/process/per_thread:68`, via bootstrap:152.
-The current revision 73 source connects the original process initializer,
+The current revision 74 source connects the original process initializer,
 native invocation state, complete original dotenv/environment/path units and
 the original system-error factories and errno-name unit. Its targeted build
 still fails final linking on 18 symbols and has no normal runnable artifact.
@@ -2897,3 +2897,18 @@ Full original HandleWrap/AsyncWrap constructor factories and callback activation
 The fresh normal build still has zero C++ errors and the same 18 unresolved symbols. Its linker set does not exercise every constructor factory and is not a complete backend-gap inventory. All 585 imported identities, including 443 JavaScript files/10,993,403 bytes, remain unchanged. All 20 prepared VM/build files and 74 declared patch inputs (71 SpiderMonkey and three libuv) are unchanged. The first browser command selected the wrong Playwright installation and failed before any tests; the retained harness failure was corrected by invoking the browser project's existing runner, without changing tests or timeouts. No full products, images, kernel, successor ABI or overall conformance suites were built. Startup, separate CommonJS/ESM entrypaths and the full catalog/ordered-roadmap review milestone remain incomplete.
 
 See the [template inheritance contracts](../tests/nodejs/upstream/template-inheritance-contracts.json) and [identified four-host receipt](../tests/nodejs/upstream/template-inheritance-engine-check.json).
+
+
+## Native internal fields (revision 74)
+
+The SpiderMonkey embedding now supplies actual variable-count internal fields for native template instances and standalone object templates. Existing hidden owner/realm slots, the private template brand and the API field store have separate storage. The original zero-or-two-field limit is removed; field counts come from actual template configuration and instance allocation. Generic controls exercise counts 0/1/2/3/7/17/65, independent instances, JavaScript subclasses, frozen wrappers and prototype mutation. API fields do not appear as ordinary JavaScript properties and cannot overwrite the native finalizer's owner pointer or signature brand.
+
+Data fields trace the actual payload in private engine records and retain only native root-factory/type information outside the traced graph. GetInternalField recreates the concrete C++ wrapper, preserving Value, Private, FunctionTemplate, ObjectTemplate and Signature kinds and identity. Values wrap to the active context; opaque Data records retain canonical identity. Tagged pointer fields retain the actual caller-owned aligned pointer or null and require the matching tag. They do not own or delete the pointee. Matching setters must precede getters; invalid field/type/tag/alignment uses remain checked native failures. General negative-assertion and injected allocation-failure coverage remains incomplete.
+
+The identified private artifact passes 93 controls on each of Node, Chromium, Firefox and WebKit, 372 guest runs: five new field controls and 88 byte-identical prior driver sources. Controls cover GC retention and release after overwrite/wrapper collection, typed opaque Data, real pointer aliasing/mutation/null/owner release, foreign values, reentrant GC and exact exceptions. A hostile public Array.prototype does not intercept hidden field storage. These are engine controls using real guest workers with an empty rootfs; the private profile rejects process_methods and cannot establish startup or original resource lifecycle.
+
+The full original BaseObject integration remains unfinished. The authenticated source defines API field 0 as the tagged embedder type and field 1 as the native BaseObject pointer; the existing adapter still uses separate hidden owner 0/realm 1 slots. This change supplies independent general field storage and does not replace original SetInternalFields, manufacture an embedder identifier or claim those original native methods are active. Whole original BaseObject class/inlines/unit, genuine owner integration, AsyncWrap/HandleWrap factories, InternalMakeCallback and further async-context prerequisites remain necessary. AsyncWrap's additional field 2 can now have distinct Data storage, but its complete producer/callback path is unvalidated.
+
+The fresh normal build still has zero C++ errors and the same 18 unresolved symbols; there is no normal executable. All 585 imported identities and 443 JavaScript files/10,993,403 bytes remain unchanged. All 20 prepared engine/build files and 74 declared patch inputs are unchanged. The new owned header is copied by the actual recipe and covered by normal style checking, with no new ignore rule or source patch. Exact 796 declared inputs, 103 staged native inputs and the private configuration are retained. Full products/images, kernel/successor-ABI rebuilds and overall suites remain deferred. Startup, separate CommonJS/ESM entrypaths and the complete catalog/ordered-roadmap review milestone remain incomplete.
+
+See the [internal-field contracts](../tests/nodejs/upstream/internal-field-contracts.json) and [identified four-host receipt](../tests/nodejs/upstream/internal-field-engine-check.json).

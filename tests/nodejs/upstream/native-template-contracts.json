@@ -100,7 +100,8 @@
     },
     {
       "area": "native field layouts",
-      "detail": "Only zero or two native fields are implemented; other counts fail the existing assertion seam. This is an implementation gap, not a SpiderMonkey/platform maximum."
+      "detail": "General per-instance field counts and concrete Data/tagged-pointer storage implemented in revision74, independent of private native owner/brand slots. Complete original BaseObject field0/type and field 1/pointer integration remains unfinished; see internal-field-contracts.json.",
+      "status": "engine field interface implemented; original owner integration incomplete"
     },
     {
       "area": "generic Data surface",
@@ -168,5 +169,11 @@
     "catalog": "template-inheritance-contracts.json",
     "evidence": "template-inheritance-engine-check.json",
     "scope": "Actual traced native inheritance, same-context parent prototypes and inherited receiver signatures validated with generic native fixtures on four hosts. Full original factories, AsyncWrap field layout and callback dependencies remain unfinished."
+  },
+  "internalFieldFollowup": {
+    "packageRevision": 74,
+    "catalog": "internal-field-contracts.json",
+    "evidence": "internal-field-engine-check.json",
+    "scope": "Actual independent per-instance field storage, traced concrete Data kinds and tagged native pointers validated with generic native fixtures on four hosts. Whole original BaseObject class/unit and its field layout, full resource factories and callback graph remain incomplete."
   }
 }

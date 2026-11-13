@@ -95,7 +95,7 @@ Local<Object> Context::GetExtrasBindingObject() {
 }
 }
 namespace kandelo_node_codec_impl {
-const JSClass categoryClass={"CategorySet",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount+1)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
+const JSClass categoryClass={"CategorySet",JSCLASS_HAS_RESERVED_SLOTS(api::NativeWrapperSlotCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
 namespace {
 struct TraceObserver final : public v8::TracingController::TraceStateObserver {
   bool armed=false;

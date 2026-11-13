@@ -87,8 +87,8 @@ Local<Integer> Integer::NewFromUnsigned(Isolate* isolate,uint32_t value) {
 }
 }
 namespace kandelo_node_codec_impl {
-const JSClass nativeBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
-const JSClass nativeChannelClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount+1)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
+const JSClass nativeBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(api::NativeWrapperSlotCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
+const JSClass nativeChannelClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(api::NativeWrapperSlotCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
 struct NativeRealmData {
   Isolate* isolate;
   Global<Object> owner;

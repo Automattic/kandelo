@@ -53,7 +53,7 @@ class HeapStatistics {
   HeapStatistics();~HeapStatistics();
   size_t total_heap_size() const;size_t used_heap_size() const;size_t external_memory() const;
 };
-enum class EmbedderDataTag { kDefault };
+enum class EmbedderDataTag : uint16_t { kDefault, kEmbedderType, kPerContextData };
 [[noreturn]] void Crash(const char*);
 class Data;
 bool SameLocal(Data*,Data*);
@@ -144,6 +144,7 @@ class Data {
   virtual ~Data();
   Cell& cell() const;
   std::unique_ptr<Data> CloneRoot(std::unique_ptr<Cell>) const;
+  RootFactory RootFactoryForStorage()const{return rootFactory_;}
   virtual bool IsValue()const=0;virtual bool IsPrivate()const=0;
 };
 class Value:public Data {
@@ -297,7 +298,9 @@ class Object : public Value {
   MaybeLocal<Value> GetPrivate(Local<Context>,Local<Private>);
   Local<String> GetConstructorName();
   Maybe<bool> DefineOwnProperty(Local<Context>,Local<Name>,Local<Value>,PropertyAttribute=None);
+  int InternalFieldCount()const;
   void* GetAlignedPointerFromInternalField(int,EmbedderDataTag);
+  void SetAlignedPointerInInternalField(int,void*,EmbedderDataTag);
   Local<Data> GetInternalField(int);void SetInternalField(int,Local<Data>);
   Maybe<bool> Set(Local<Context>,Local<Value>,Local<Value>);
   Maybe<bool> Has(Local<Context>,Local<Value>);
@@ -400,6 +403,7 @@ class ObjectTemplate : public Template {
   void SetHandler(const NamedPropertyHandlerConfiguration&);
   void SetHandler(const IndexedPropertyHandlerConfiguration&);
   void SetInternalFieldCount(int);
+  int InternalFieldCount()const;
   MaybeLocal<Object> NewInstance(Local<Context>);
 };
 class FunctionTemplate : public Template {

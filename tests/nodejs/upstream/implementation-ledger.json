@@ -118,7 +118,9 @@
     "handleOwnersEngineEvidence": "handle-owners-engine-check.json",
     "templateInheritanceConsumerCandidates": "template-inheritance-consumers.json",
     "templateInheritancePartialCatalog": "template-inheritance-contracts.json",
-    "templateInheritanceEngineEvidence": "template-inheritance-engine-check.json"
+    "templateInheritanceEngineEvidence": "template-inheritance-engine-check.json",
+    "internalFieldPartialCatalog": "internal-field-contracts.json",
+    "internalFieldEngineEvidence": "internal-field-engine-check.json"
   },
   "implementation": [
     {
@@ -476,6 +478,12 @@
       "status": "Actual SpiderMonkey traced parent metadata, selected-context parent prototype materialization and genuine native ancestry implemented. Five new controls plus83unchanged regressions pass on each of four hosts.",
       "evidence": "template-inheritance-engine-check.json",
       "remaining": "Full original HandleWrap/AsyncWrap factory and callback activation, variable native-field layout and full template API/lifetime/exceptional coverage remain incomplete."
+    },
+    {
+      "area": "native internal Data/pointer fields and independent private wrapper storage",
+      "status": "Actual variable-count per-instance field stores with traced Data payloads and concrete root factories; exact tagged caller-owned native pointers; five new controls plus88unchanged regressions pass on each of four hosts.",
+      "evidence": "internal-field-engine-check.json",
+      "remaining": "Whole original BaseObject class/unit/type-tag layout and resource owner integration, full factory/callback graph and complete negative/OOM/lifecycle coverage remain unfinished."
     }
   ],
   "runtimeConformance": {
@@ -1261,8 +1269,8 @@
       "originalUtilityIntegrationComplete": false
     },
     "nativeUtilities": {
-      "status": "Original units and actual queue storage compile; native template inheritance and88private controls perhost pass; normal18 unlinked",
-      "evidence": "template-inheritance-engine-check.json",
+      "status": "Original units compile; native inheritance/internal-field primitives and93private controls perhost pass; normal18 unlinked; original BaseObject integration incomplete",
+      "evidence": "internal-field-engine-check.json",
       "currentRuntimeValidated": true,
       "unmodifiedSourcePolicySatisfied": false
     }
@@ -1769,7 +1777,7 @@
     }
   },
   "nextWork": [
-    "Resolve remaining18 real normal startup dependencies: HeapStatistics6, selected allocator, permission/signal, Environment.Exit, ResetStdio/RunAtExit, report, native loading and libuv memory. Native template inheritance is implemented, but full original constructor factories, AsyncWrap field layout, InternalMakeCallback/async context, positive request/handle producers and shutdown remain incomplete. Then genuine startup/CJS/ESM/fourhosts, complete catalog/dependency-ordered roadmap and explicit user review before broader execution.",
+    "Resolve remaining18 real normal startup dependencies: HeapStatistics6, selected allocator, permission/signal, Environment.Exit, ResetStdio/RunAtExit, report, native loading and libuv memory. Engine template inheritance and general internal fields are implemented, but complete original BaseObject class/unit/type-tag layout and native ownership, full resource factories and InternalMakeCallback/async context remain unfinished. Then genuine startup/CJS/ESM/fourhosts, full backend catalog/dependency-ordered roadmap and explicit user review before broader execution.",
     "Use dependency-graph.json/native-registration-index.json/backend-binding-survey.json to continue full native contract review; no broader backend roadmap implementation before review gate",
     "Complete the remaining Buffer exceptional/ownership audit alongside startup; whole original native binding now integrated with selected four-host controls and retained native discrepancy",
     "Complete automatic snapshot callback beforeExit/entrypath lifecycle and positive preload/options integration when startup requires it; preserve explicit unavailable heap serialization boundary",
@@ -1778,17 +1786,17 @@
     "Reconcile full public/internal/lazy/conditional/worker/exceptional backend catalog and dependency-ordered roadmap; nested guest Wasm last unless startup requires it; stop for explicit user review before broader roadmap"
   ],
   "currentSourceBuild": {
-    "packageRevision": 73,
+    "packageRevision": 74,
     "status": "failed final link in targeted original recipe operations over verified prepared source",
     "wholeOriginalProcessUnitsCompile": true,
     "runtimeArtifact": null,
     "undefinedSymbols": 18,
-    "evidence": "template-inheritance-engine-check.json",
+    "evidence": "internal-field-engine-check.json",
     "lastVerifiedRuntimeEvidence": "property-callback-engine-check.json",
     "sourceRoutePresenceDoesNotProveSupport": true,
     "buildCacheKey": null,
     "wholeOriginalFormattingHeadersCompile": true,
-    "buildJob": "node-template-inheritance-normal-1113-004252-0210",
+    "buildJob": "node-internal-fields-normal-1113-011245-540a",
     "runtimeValidation": false,
     "wholeOriginalProcessFilesCompile": true,
     "wholeOriginalExceptionFactoryUnitCompiles": true,
@@ -1822,7 +1830,7 @@
     "persistentHandleLayoutPrerequisitesCompile": true,
     "wholeOriginalUtilitiesCompile": true,
     "sourceIdentityRecords": 585,
-    "previousCompileEvidence": "handle-owners-engine-check.json",
+    "previousCompileEvidence": "template-inheritance-engine-check.json",
     "removedSinceRevision62": [
       "kandelo_node_codec_api::FunctionTemplate::New(kandelo_node_codec_api::Isolate*, void (*)(kandelo_node_codec_api::FunctionCallbackInfo<kandelo_node_codec_api::Value> const&), kandelo_node_codec_api::Local<kandelo_node_codec_api::Value>, kandelo_node_codec_api::Local<kandelo_node_codec_api::Signature>, int, kandelo_node_codec_api::ConstructorBehavior, kandelo_node_codec_api::SideEffectType, kandelo_node_codec_api::CFunction const*)",
       "kandelo_node_codec_api::FunctionTemplate::PrototypeTemplate()",
@@ -1913,7 +1921,11 @@
     "addedSinceRevision71": [],
     "nativeTemplateInheritanceImplemented": true,
     "removedSinceRevision72": [],
-    "addedSinceRevision72": []
+    "addedSinceRevision72": [],
+    "nativeInternalFieldsImplemented": true,
+    "originalBaseObjectIntegrationComplete": false,
+    "removedSinceRevision73": [],
+    "addedSinceRevision73": []
   },
   "currentLibuvExecutablePath": {
     "packageRevision": 5,
@@ -1931,21 +1943,21 @@
     "browserStorageCleanup": "EACCES warning retained separately from guest verdicts"
   },
   "currentNativeOwnerDiagnostic": {
-    "evidence": "template-inheritance-engine-check.json",
-    "packageRevision": 73,
+    "evidence": "internal-field-engine-check.json",
+    "packageRevision": 74,
     "normalPackageArtifact": false,
     "startupAccepted": false,
     "normalEngineLinked": false,
     "privateProfileRejectsProcessMethods": true,
     "linked": true,
     "currentRuntimeValidated": true,
-    "currentDriversPerHost": 88,
-    "lastRuntimeValidatedRevision": 73,
+    "currentDriversPerHost": 93,
+    "lastRuntimeValidatedRevision": 74,
     "historicalDriversPerHost": 32,
     "undefinedSymbols": 0,
     "historicalEvidence": "persistent-handle-engine-check.json",
-    "buildJob": "node-template-inheritance-private-1113-004033-072e",
-    "intendedDriversPerHost": 88,
+    "buildJob": "node-internal-fields-private-1113-010930-b4ef",
+    "intendedDriversPerHost": 93,
     "newDriversNotExecuted": 0,
     "hosts": [
       "node",
@@ -1954,16 +1966,16 @@
       "webkit"
     ],
     "program": {
-      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-template-inheritance/native-owner-probe.wasm",
-      "bytes": 59998444,
-      "sha256": "1b336e7aa32a04a01e1ca402ec5b5364f1a6e04a0cabc81d25664d84d4fee442"
+      "path": "/Users/brandon/conductor/workspaces/kandelo/port-vila/.context/node-internal-fields/native-owner-probe.wasm",
+      "bytes": 60026671,
+      "sha256": "3bc726774f4d423badee9f35493a4c60aa952c23cb19db518e6ef6a20d1e72ff"
     },
     "kernel": {
       "path": "/Users/brandon/.cache/kandelo/programs/kernel-0.1.0-rev3-wasm32-abi56-df873c1433c668a294b98d544c1e2a9a79fe42d646b6167c449b683761bd6d2f/kandelo-kernel.wasm",
       "bytes": 2958224,
       "sha256": "f95a67c3145da9977e726fab170e2e526ba5974b61c17e5fa324b09011dfdf2c"
     },
-    "previousDrivers": 83,
+    "previousDrivers": 88,
     "historicalFeatureDriverCounts": {
       "newStackDrivers": 4,
       "newTemplateDrivers": 4,
@@ -1975,11 +1987,13 @@
       "newConstructionDrivers": 6,
       "newConstructorDrivers": 7,
       "newHandlePrimitiveDrivers": 4,
-      "newRequestDrivers": 0
+      "newRequestDrivers": 0,
+      "newTemplateInheritanceDrivers": 5
     },
     "requestLifecycleValidated": false,
     "positiveHandleLifecycleValidated": false,
-    "newTemplateInheritanceDrivers": 5
+    "newInternalFieldDrivers": 5,
+    "originalBaseObjectIntegrationComplete": false
   },
   "historicalNativeOwnerDiagnostic": {
     "evidence": "persistent-handle-engine-check.json",

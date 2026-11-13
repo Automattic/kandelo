@@ -7,6 +7,7 @@ import {constructionIdentityCases} from './construction-identity-controls';
 import {constructorNameCases,constructorNameFixtureFiles} from './constructor-name-engine-controls';
 import {handleOwnerCases} from './handle-owner-controls';
 import {templateInheritanceCases} from './template-inheritance-controls';
+import {internalFieldCases} from './internal-field-controls';
 import {nativeInternalsCases} from './native-internals-controls';
 import {nativeStateCases} from './native-state-controls';
 import {persistentHandleCases} from './persistent-handle-controls';
@@ -27,9 +28,11 @@ nativeOwnerSourceFiles.push('tests/nodejs/upstream/construction-identity-control
 nativeOwnerSourceFiles.push(...constructorNameFixtureFiles);
 nativeOwnerSourceFiles.push('tests/nodejs/upstream/handle-owner-controls.ts');
 nativeOwnerSourceFiles.push('tests/nodejs/upstream/template-inheritance-controls.ts');
+nativeOwnerSourceFiles.push('tests/nodejs/upstream/internal-field-controls.ts');
 const source=readFileSync(nativeOwnerFixture,'utf8');
 const setup=`const api=__kandeloUpstreamTest;api.initializeContext();const realm=api.initializeRealm();const op=(name,...args)=>api.nativeOwners(name,...args);`;
 export const nativeOwnerCases=[
+ ...internalFieldCases,
  ...templateInheritanceCases,
  ...handleOwnerCases,
  ...constructorNameCases,

@@ -29,7 +29,7 @@ const JSClass templateClass={"NodeEngineTemplate",JSCLASS_HAS_RESERVED_SLOTS(Tem
 const JSClass invocationClass={"NodeTemplateInvocation",JSCLASS_HAS_RESERVED_SLOTS(2)};
 const JSClass templateRealmClass={"NodeTemplateRealm",JSCLASS_GLOBAL_FLAGS,&JS::DefaultGlobalClassOps};
 const JSClass signatureClass={"NodeEngineSignature",JSCLASS_HAS_RESERVED_SLOTS(1)};
-const JSClass templateInstanceClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(native::BaseObject::kInternalFieldCount+1)|JSCLASS_FOREGROUND_FINALIZE,&native::converterOps};
+const JSClass templateInstanceClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(NativeWrapperSlotCount)|JSCLASS_FOREGROUND_FINALIZE,&native::converterOps};
 NativeTemplateInfo& TemplateInfo(JSObject* object){
   CHECK(JS::GetClass(object)==&templateClass);
   return *static_cast<NativeTemplateInfo*>(JS::GetReservedSlot(object,TemplateConfig).toPrivate());
@@ -58,7 +58,7 @@ JSObject* NewTemplateRecord(Frame& frame,NativeTemplateKind kind,NativeObjectRol
 bool ApplyTemplateProperties(Frame&,JS::HandleObject,JS::HandleObject,Local<Context>);
 bool InvokeNativeTemplate(JSContext*,unsigned,JS::Value*);
 const JSClass* InstanceClass(NativeTemplateInfo& info){
-  CHECK(info.fieldCount==0||info.fieldCount==native::BaseObject::kInternalFieldCount);
+  CHECK_GE(info.fieldCount,0);
   if(!info.fieldCount)return &templateInstanceClass;
   if(info.domain==Domain::Trace)return &native::categoryClass;
   if(info.domain==Domain::Icu)return &native::converterClass;
@@ -69,7 +69,7 @@ bool ReceiverMatches(Frame& frame,JS::HandleValue value,JS::HandleObject expecte
   JS::RootedObject object(frame.cx,UnwrapTemplateObject(frame.cx,value));if(!object)return false;
   const JSClass* clasp=JS::GetClass(object);
   if(clasp!=&templateInstanceClass&&clasp!=&native::categoryClass&&clasp!=&native::converterClass&&clasp!=&native::nativeChannelClass)return false;
-  JS::RootedObject brand(frame.cx,UnwrapTemplateObject(frame.cx,JS::GetReservedSlot(object,native::BaseObject::kInternalFieldCount)));
+  JS::RootedObject brand(frame.cx,UnwrapTemplateObject(frame.cx,JS::GetReservedSlot(object,NativeTemplateBrand)));
   // Native ancestry is independent of mutable public prototype properties.
   while(brand){
     CHECK(JS::GetClass(brand)==&templateClass);
@@ -104,7 +104,8 @@ bool InvokeNativeTemplate(JSContext* cx,unsigned argc,JS::Value* vp){
     JS::RootedObject object(cx,JS_NewObjectForConstructor(cx,InstanceClass(allocation),args));if(!object)return false;
     if(callee==&args.newTarget().toObject()&&!js::ObjectRealm::get(object).recordConstructorIdentity(cx,object,callee))return false;
     JS::RootedObject brand(cx,record);if(!JS_WrapObject(cx,&brand))return false;
-    JS::SetReservedSlot(object,native::BaseObject::kInternalFieldCount,JS::ObjectValue(*brand));
+    JS::SetReservedSlot(object,NativeTemplateBrand,JS::ObjectValue(*brand));
+    if(!InitializeNativeInternalFields(frame,object,allocation.fieldCount))return false;
     receiver.setObject(*object);
     if(instanceTemplate&&!ApplyTemplateProperties(frame,instanceTemplate,object,state->isolate.GetCurrentContext()))return false;
   }else{
@@ -208,8 +209,13 @@ void FunctionTemplate::Inherit(Local<FunctionTemplate> parent){
   JS::SetReservedSlot(record,TemplateParent,JS::ObjectValue(*ancestor));
 }
 void ObjectTemplate::SetInternalFieldCount(int count){
-  CHECK(count==0||count==native::BaseObject::kInternalFieldCount);auto& frame=*Frame::current;
+  CHECK_GE(count,0);auto& frame=*Frame::current;
   JS::RootedObject record(frame.cx,TemplateRecord(frame,Local<ObjectTemplate>(this)));auto& info=TemplateInfo(record);CHECK(!info.used);info.fieldCount=count;
+}
+int ObjectTemplate::InternalFieldCount()const{
+  auto& frame=*Frame::current;
+  JS::RootedObject record(frame.cx,TemplateRecord(frame,Local<ObjectTemplate>(const_cast<ObjectTemplate*>(this))));
+  return TemplateInfo(record).fieldCount;
 }
 void Template::Set(Local<Name> name,Local<Data> data){
   auto& frame=*Frame::current;JS::RootedObject record(frame.cx,TemplateRecord(frame,Local<Template>(this)));CHECK(!TemplateInfo(record).used);
@@ -273,11 +279,14 @@ MaybeLocal<Object> ObjectTemplate::NewInstance(Local<Context> context){
     if(!frame.Own<FunctionTemplate>(value)->GetFunction(context).ToLocal(&function))return {};return function->NewInstance(context);
   }
   Context::Scope home(context);JS::RootedObject object(frame.cx,info.fieldCount?JS_NewObject(frame.cx,InstanceClass(info)):JS_NewPlainObject(frame.cx));if(!object)return {};
+  if(info.fieldCount&&!InitializeNativeInternalFields(frame,object,info.fieldCount))return {};
   if(!ApplyTemplateProperties(frame,record,object,context))return {};JS::RootedValue value(frame.cx,JS::ObjectValue(*object));return frame.Own<Object>(value);
 }
 bool ApplyNativeTemplate(Frame& frame,Local<ObjectTemplate> input,JS::HandleObject target){
   if(input.IsEmpty()||JS_IsExceptionPending(frame.cx))return false;JS::RootedObject record(frame.cx,TemplateRecord(frame,input));
-  CHECK(TemplateInfo(record).kind==NativeTemplateKind::Object);return ApplyTemplateProperties(frame,record,target,frame.state->isolate.GetCurrentContext());
+  CHECK(TemplateInfo(record).kind==NativeTemplateKind::Object);
+  if(TemplateInfo(record).fieldCount&&!InitializeNativeInternalFields(frame,target,TemplateInfo(record).fieldCount))return false;
+  return ApplyTemplateProperties(frame,record,target,frame.state->isolate.GetCurrentContext());
 }
 Local<FunctionTemplate> CreateNativeWrapperTemplate(Isolate* isolate,int count){
   auto output=FunctionTemplate::New(isolate);if(!output.IsEmpty())output->InstanceTemplate()->SetInternalFieldCount(count);return output;

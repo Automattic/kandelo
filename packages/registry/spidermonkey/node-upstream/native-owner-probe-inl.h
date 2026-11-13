@@ -9,6 +9,7 @@ struct NativeOwnerProbeState {
   std::map<uint64_t,native::BaseObjectPtr<native::BaseObject>> references;
   std::map<uint64_t,Global<Value>> persistents;
   std::map<uint64_t,Global<FunctionTemplate>> templates;
+  std::map<uint64_t,std::unique_ptr<uint64_t>> fieldPointers;
   uint64_t next=1,created=0,destroyed=0,closeRequests=0,closed=0,retired=0,callbacks=0;
 };
 }
@@ -67,13 +68,17 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
   JSAutoRealm home(cx,realm);api::Frame frame(cx,realm,state,&args,api::Domain::Diagnostics);
   if(!state->ownerProbe)state->ownerProbe=std::make_shared<api::NativeOwnerProbeState>();
   auto counters=state->ownerProbe;args.rval().setUndefined();
-  if(!std::strcmp(operation.get(),"templateInherit")||!std::strcmp(operation.get(),"templateSetData")){
+  if(!std::strcmp(operation.get(),"templateInherit")||!std::strcmp(operation.get(),"templateSetData")||!std::strcmp(operation.get(),"templateFields")){
     const auto get=[&](const JS::Value& input)->api::Local<api::FunctionTemplate>{
       const double token=input.isNumber()?input.toNumber():0;
       if(!std::isfinite(token)||token<1||token>9007199254740991.0||std::floor(token)!=token){JS_ReportErrorASCII(cx,"Invalid inheritance template token");return {};}
       auto it=counters->templates.find(uint64_t(token));if(it==counters->templates.end()){JS_ReportErrorASCII(cx,"Unknown inheritance template token");return {};}return it->second.Get(&state->isolate);
     };
     auto child=get(args.get(1));if(child.IsEmpty())return false;
+    if(!std::strcmp(operation.get(),"templateFields")){
+      if(!args.get(2).isInt32()||args[2].toInt32()<0){JS_ReportErrorASCII(cx,"Field count must be a nonnegative int32");return false;}
+      child->InstanceTemplate()->SetInternalFieldCount(args[2].toInt32());args.rval().setInt32(child->InstanceTemplate()->InternalFieldCount());return true;
+    }
     if(!std::strcmp(operation.get(),"templateSetData")){
       if(!args.get(2).isString()&&!args.get(2).isSymbol()){JS_ReportErrorASCII(cx,"Template property control requires String or Symbol");return false;}
       api::Local<api::Template> target=child;
@@ -87,6 +92,72 @@ bool NativeOwnerControl(JSContext* cx,unsigned argc,JS::Value* vp){
     }
     auto parent=get(args.get(2));if(parent.IsEmpty())return false;
     child->Inherit(parent);return true;
+  }
+  if(!std::strncmp(operation.get(),"field",5)){
+    const char* name=operation.get();
+    const auto token=[&](const JS::Value& value)->uint64_t{
+      if(!value.isNumber()||!std::isfinite(value.toNumber())||value.toNumber()<1||value.toNumber()>9007199254740991.0||std::floor(value.toNumber())!=value.toNumber())return 0;
+      return uint64_t(value.toNumber());
+    };
+    if(!std::strcmp(name,"fieldAllocatePointer")){
+      if(!args.get(1).isInt32()||args[1].toInt32()<0){JS_ReportErrorASCII(cx,"Pointer control requires nonnegative int32 payload");return false;}
+      const auto id=counters->next++;counters->fieldPointers.emplace(id,std::make_unique<uint64_t>(uint64_t(args[1].toInt32())));args.rval().setNumber(double(id));return true;
+    }
+    if(!std::strcmp(name,"fieldReleasePointer")){
+      if(counters->fieldPointers.erase(token(args.get(1)))!=1){JS_ReportErrorASCII(cx,"Unknown pointer owner token");return false;}return true;
+    }
+    if(!std::strcmp(name,"fieldNewObject")){
+      if(!args.get(1).isInt32()||args[1].toInt32()<0){JS_ReportErrorASCII(cx,"Object field count requires nonnegative int32");return false;}
+      auto value=api::ObjectTemplate::New(&state->isolate,{});value->SetInternalFieldCount(args[1].toInt32());
+      api::Local<api::Object> object;if(!value->NewInstance(state->isolate.GetCurrentContext()).ToLocal(&object))return false;args.rval().set(api::Input(object));return true;
+    }
+    if(!args.get(1).isObject()){JS_ReportErrorASCII(cx,"Internal field control requires Object");return false;}
+    auto object=frame.Own<api::Object>(args[1]);
+    if(!std::strcmp(name,"fieldCount")){args.rval().setInt32(object->InternalFieldCount());return true;}
+    if(!args.get(2).isInt32()||args[2].toInt32()<0||args[2].toInt32()>=object->InternalFieldCount()){JS_ReportErrorASCII(cx,"Invalid internal field index");return false;}
+    const int index=args[2].toInt32();
+    if(!std::strcmp(name,"fieldSet")){object->SetInternalField(index,frame.OwnValue(args.get(3)));return true;}
+    if(!std::strcmp(name,"fieldSetPrivate")){object->SetInternalField(index,state->environment.empty_context_frame_sentinel_symbol());return !JS_IsExceptionPending(cx);}
+    if(!std::strcmp(name,"fieldSetObjectTemplate")){
+      auto value=api::ObjectTemplate::New(&state->isolate,{});auto key=api::String::NewFromUtf8(&state->isolate,"stored",api::NewStringType::kNormal,-1).ToLocalChecked();
+      value->Set(key,frame.OwnValue(args.get(3)));object->SetInternalField(index,value);return true;
+    }
+    if(!std::strcmp(name,"fieldSetTemplate")||!std::strcmp(name,"fieldSetSignature")){
+      auto found=counters->templates.find(token(args.get(3)));if(found==counters->templates.end()){JS_ReportErrorASCII(cx,"Unknown field template token");return false;}
+      auto value=found->second.Get(&state->isolate);
+      if(!std::strcmp(name,"fieldSetSignature"))object->SetInternalField(index,api::Signature::New(&state->isolate,value));else object->SetInternalField(index,value);return true;
+    }
+    if(!std::strncmp(name,"fieldPointer",12)){
+      if(!args.get(4).isInt32()||args[4].toInt32()<0||args[4].toInt32()>2){JS_ReportErrorASCII(cx,"Pointer tag control requires0,1or2");return false;}
+      auto tag=static_cast<api::EmbedderDataTag>(args[4].toInt32());
+      if(!std::strcmp(name,"fieldPointerSet")){
+        void* pointer=nullptr;
+        if(!args.get(3).isNull()){auto found=counters->fieldPointers.find(token(args.get(3)));if(found==counters->fieldPointers.end()){JS_ReportErrorASCII(cx,"Unknown field pointer token");return false;}pointer=found->second.get();}
+        object->SetAlignedPointerInInternalField(index,pointer,tag);return true;
+      }
+      auto* pointer=static_cast<uint64_t*>(object->GetAlignedPointerFromInternalField(index,tag));
+      if(!std::strcmp(name,"fieldPointerGet")){if(pointer)args.rval().setNumber(double(*pointer));else args.rval().setNull();return true;}
+      if(!std::strcmp(name,"fieldPointerWrite")&&pointer&&args.get(3).isInt32()&&args[3].toInt32()>=0){*pointer=uint64_t(args[3].toInt32());return true;}
+      JS_ReportErrorASCII(cx,"Unknown pointer field operation");return false;
+    }
+    auto data=object->GetInternalField(index);if(data.IsEmpty())return false;
+    if(!std::strcmp(name,"fieldGet")){CHECK(data->IsValue());args.rval().set(api::Input(data));return true;}
+    if(!std::strcmp(name,"fieldPrivateIdentity")){args.rval().setBoolean(data->IsPrivate()&&api::SameLocal(data.operator->(),state->environment.empty_context_frame_sentinel_symbol().operator->()));return !JS_IsExceptionPending(cx);}
+    if(!std::strcmp(name,"fieldGetFunction")){
+      CHECK(!data->IsValue()&&!data->IsPrivate());api::Local<api::Function> function;
+      if(!data.As<api::FunctionTemplate>()->GetFunction(state->isolate.GetCurrentContext()).ToLocal(&function))return false;args.rval().set(api::Input(function));return true;
+    }
+    if(!std::strcmp(name,"fieldGetObject")){
+      CHECK(!data->IsValue()&&!data->IsPrivate());api::Local<api::Object> value;
+      if(!data.As<api::ObjectTemplate>()->NewInstance(state->isolate.GetCurrentContext()).ToLocal(&value))return false;args.rval().set(api::Input(value));return true;
+    }
+    if(!std::strcmp(name,"fieldGetSignedFunction")){
+      CHECK(!data->IsValue()&&!data->IsPrivate());
+      auto callback=[](const api::FunctionCallbackInfo<api::Value>& call){auto* isolate=call.GetIsolate();auto key=api::String::NewFromUtf8(isolate,"payload",api::NewStringType::kNormal,-1).ToLocalChecked();api::Local<api::Value> value;if(call.This()->Get(isolate->GetCurrentContext(),key).ToLocal(&value))call.GetReturnValue().Set(value);};
+      auto value=api::FunctionTemplate::New(&state->isolate,callback,{},data.As<api::Signature>(),0,api::ConstructorBehavior::kThrow);api::Local<api::Function> function;
+      if(!value->GetFunction(state->isolate.GetCurrentContext()).ToLocal(&function))return false;args.rval().set(api::Input(function));return true;
+    }
+    JS_ReportErrorASCII(cx,"Unknown internal field operation");return false;
   }
   if(!std::strcmp(operation.get(),"objectHas")){
     if(!args.get(1).isObject()){JS_ReportErrorASCII(cx,"Native property existence control requires Object");return false;}

@@ -94,5 +94,11 @@
   "nativeV8HeapOrSerializationUsed": false,
   "sourcePolicySatisfied": false,
   "startupAccepted": false,
-  "wholeGoalComplete": false
+  "wholeGoalComplete": false,
+  "internalFieldFollowup": {
+    "packageRevision": 74,
+    "catalog": "internal-field-contracts.json",
+    "evidence": "internal-field-engine-check.json",
+    "scope": "Actual independent per-instance field storage, traced concrete Data kinds and tagged native pointers validated with generic native fixtures on four hosts. Whole original BaseObject class/unit and its field layout, full resource factories and callback graph remain incomplete."
+  }
 }

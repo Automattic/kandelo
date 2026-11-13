@@ -92,6 +92,9 @@ namespace kandelo_node_codec_impl { extern const JSClass categoryClass,nativeBin
 namespace api = kandelo_node_codec_api;
 namespace native = kandelo_node_codec_impl;
 namespace kandelo_node_codec_api {
+// Native ownership, realm and signature branding never alias API data fields.
+enum NativeWrapperSlot {NativeOwnerPointer,NativeOwnerRealm,NativeTemplateBrand,
+  NativeInternalFields,NativeWrapperSlotCount};
 const JSClass icuBindingClass={"Object",JSCLASS_HAS_RESERVED_SLOTS(1)};
 struct NativeOwnerProbeState;
 struct State {
@@ -846,7 +849,7 @@ void FinalizeConverter(JS::GCContext*,JSObject* object) {
   }
 }
 const JSClassOps converterOps={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,FinalizeConverter};
-const JSClass converterClass={"Converter",JSCLASS_HAS_RESERVED_SLOTS(BaseObject::kInternalFieldCount+1)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
+const JSClass converterClass={"Converter",JSCLASS_HAS_RESERVED_SLOTS(api::NativeWrapperSlotCount)|JSCLASS_FOREGROUND_FINALIZE,&converterOps};
 BaseObject::BaseObject(Environment* environment,Local<Object> input) {
   auto& f=*Frame::current;JS::RootedObject object(f.cx,UnwrapObject(f.cx,Input(input)));
   CHECK(environment==&f.state->environment);
@@ -1045,6 +1048,7 @@ bool SetCodecGcStress(JSContext* cx,JS::HandleObject runtime,bool enabled) {
 #include "shell/node-upstream/buffer-codecs-inl.h"
 #include "shell/node-upstream/continuation-codecs-inl.h"
 #include "shell/node-upstream/environment-codecs-inl.h"
+#include "shell/node-upstream/internal-field-codecs-inl.h"
 #include "shell/node-upstream/message-codecs-inl.h"
 #include "shell/node-upstream/native-object-codecs-inl.h"
 #include "shell/node-upstream/native-owner-probe-inl.h"
