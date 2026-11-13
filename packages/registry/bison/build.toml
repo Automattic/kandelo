@@ -1,0 +1,10 @@
+script_path = "packages/registry/bison/build-bison.sh"
+inputs = [
+  "packages/registry/bison/build-bison.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
