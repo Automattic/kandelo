@@ -81,6 +81,7 @@ depends_on = [
   "tar-docs@1.35",
   "termchat-docs@1.3.1",
   "tmux-docs@3.8",
+  "toybox-docs@0.8.15",
   "tyrquake-docs@0.71.0",
   "unzip-docs@6.0",
   "vim-docs@9.1.0900",

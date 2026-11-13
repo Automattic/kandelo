@@ -133,6 +133,7 @@ const UPSTREAM_MAN_PAGE_ARCHIVES = [
   ["tar-docs", "share/man/man1/tar.1"],
   ["termchat-docs", "share/man/man1/termchat.1"],
   ["tmux-docs", "share/man/man1/tmux.1"],
+  ["toybox-docs", "share/man/man1/dmesg.1"],
   ["tyrquake-docs", "share/man/man1/quake.1"],
   ["unzip-docs", "share/man/man1/unzip.1"],
   ["vim-docs", "share/man/man1/vim.1"],

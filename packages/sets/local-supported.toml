@@ -1095,6 +1095,10 @@ name = "toybox"
 class = "platform"
 
 [[packages]]
+name = "toybox-docs"
+class = "browser-product"
+
+[[packages]]
 name = "termchat"
 class = "user-software"
 
