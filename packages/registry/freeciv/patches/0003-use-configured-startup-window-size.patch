@@ -1,0 +1,31 @@
+diff --git a/client/gui-sdl2/graphics.c b/client/gui-sdl2/graphics.c
+index 79a12678a..9850ab8f1 100644
+--- a/client/gui-sdl2/graphics.c
++++ b/client/gui-sdl2/graphics.c
+@@ -633,6 +633,8 @@ void quit_sdl(void)
+ **************************************************************************/
+ bool set_video_mode(unsigned width, unsigned height, unsigned flags_in)
+ {
++  int window_width, window_height;
++
+   main_data.screen = SDL_CreateWindow(_("SDL2 Client for Freeciv"),
+                                       SDL_WINDOWPOS_UNDEFINED,
+                                       SDL_WINDOWPOS_UNDEFINED,
+@@ -654,7 +656,16 @@ bool set_video_mode(unsigned width, unsigned height, unsigned flags_in)
+     height = mode.h;
+   }
+ 
+-  if (!create_surfaces(width, height)) {
++  /* The window manager may have configured a different size. Use window
++   * coordinates, like SDL mouse events, rather than drawable pixels. */
++  SDL_GetWindowSize(main_data.screen, &window_width, &window_height);
++  if (window_width <= 0 || window_height <= 0) {
++    log_fatal(_("Invalid main window size: %d x %d"),
++              window_width, window_height);
++    return FALSE;
++  }
++
++  if (!create_surfaces(window_width, window_height)) {
+     return FALSE;
+   }
+ 

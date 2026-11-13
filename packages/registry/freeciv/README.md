@@ -69,12 +69,55 @@ gallery currently uses that direct-display path.
 
 Wayland can centralize window focus, keyboard mapping, pointer routing,
 cursor ownership, and output scale behind the same protocols used by other
-desktop applications. Freeciv has not yet been acceptance-tested through
-that path. In particular, Kandelo's current `wlcompositor` ignores client
-cursor surfaces and relies on the browser pointer. Client cursors need a
-shared compositor implementation before this can preserve Freeciv's
-contextual cursors. Switching backends alone does not establish correct
+desktop applications. Startup menu hover and click checks pass through
+Cage and Sway in Chromium; this does not establish full-game acceptance.
+Kandelo's separate `wlcompositor` ignores client cursor surfaces and relies
+on the browser pointer. Switching backends alone does not establish correct
 bitmap UI scaling or fix Freeciv widget defects.
+
+## Wayland startup geometry and temporary workaround
+
+When launching an older, uncorrected Freeciv inside Cage, run:
+
+```sh
+freeciv -- --fullscreen
+```
+
+This is a temporary, verified user workaround. Native Linux ARM64 testing
+with Freeciv 3.2.6, Cage 0.3.1 and upstream SDL 2.32.10 reproduced a
+640×480 scene inside a window configured as 1366×764: the picture stretched
+and visible controls disagreed with mouse hit testing. Explicit fullscreen
+aligned the scene and visible controls. Kandelo's wrapper preserves this
+explicit GUI argument block; it does not force fullscreen inside Wayland.
+Ordinary Wayland windows and tiled launches remain the intended behavior.
+
+The Freeciv package carries
+[`0003-use-configured-startup-window-size.patch`](patches/0003-use-configured-startup-window-size.patch)
+as a portable correction for an upstream application defect. It queries
+`SDL_GetWindowSize` after creating/configuring the window, before allocating
+the initial scene. Scene surfaces and widget coordinates use logical window
+dimensions, like SDL mouse events; drawable pixel dimensions can differ on
+high-density displays. It contains no Kandelo conditionals or input offsets.
+The normal patch loop applies it and revision 24 invalidates the package;
+the existing declared `patches` directory covers this new build input.
+
+As checked on 2026-11-11, the same defective allocation remains in upstream
+3.2.7, stable `S3_2`, and `main`. No upstream report or pull request has been
+submitted. Remove the carried patch after upgrading to a release containing
+this correction or an equivalent verified fix, and repeat initial-launch
+checks under Cage and Sway. No fixed upstream release is identified yet.
+
+This corrects **startup only**. Live resizing after startup, including Sway
+adding/removing neighboring tiles, remains a separate follow-up requiring
+surface recreation and UI reflow on subsequent size events. Do not infer
+complete resizing support from a correct initial tiled launch. The separate
+queued-release Quit correction remains independently reviewable.
+
+Qualified native fullscreen coverage is Cage only. Ordinary Sway startup
+uses its centered, non-resizable 640×480 window. An additional native Sway
+fullscreen attempt showed a centered 640×480 image with a larger scene and
+failed readiness; fullscreen under Sway and forced initial tiling remain
+unqualified. The cause of that result has not been established.
 
 ## Audio
 
@@ -375,6 +418,7 @@ The package keeps bounded corrections for upstream Freeciv defects:
 - Migrate first-run defaults before command-line overrides, preserving
   the explicitly requested fullscreen mode.
 - Use SDL color cursors instead of manually painting cursor sprites.
+- Allocate the startup scene from SDL's actual configured window size.
 - Apply Screen resolution through SDL instead of only repositioning widgets;
   retire the old map surface when replacing the rendering surfaces.
 - Preserve a callback's quit result while draining queued input.
@@ -389,7 +433,9 @@ The package keeps bounded corrections for upstream Freeciv defects:
 
 These application semantics cannot be repaired by changing the platform's
 input stream or SDL API behavior. Their source-level causes are independent
-of display density. An unpatched native Freeciv comparison has not been run.
+of display density. The startup geometry defect above has an independent
+unpatched native Freeciv comparison; the other corrections have not all
+received native comparisons.
 The port preserves upstream's right-button minimap control and edit behavior:
 a click outside an active text editor commits and leaves the editor; click
 again to activate the target control. In particular, dismiss the repeating
@@ -436,6 +482,7 @@ also enumerated loopback. This identifies a local test route boundary; it
 does not establish Internet connectivity or explain why this machine's LAN
 route failed. The fixture records descriptions actually published, candidate
 arrival times, and live candidate-pair statistics so failures retain evidence.
-Internet NAT traversal, Firefox, WebKit, and Freeciv inside Wayland have not
-been verified for this port. See the PR for the exact validation performed
+Internet NAT traversal, Firefox, and WebKit have not been verified for
+this port. Wayland evidence covers the startup menu checks above, not full
+gameplay or live resizing. See the PR for the exact validation performed
 against its current head; earlier results do not prove a later revision.
