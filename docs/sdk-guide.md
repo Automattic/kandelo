@@ -900,8 +900,9 @@ headers, musl and libc++ sysroot, syscall glue, the SDK driver
 LLVM tools live in `/usr/lib/llvm/bin`. The driver lives in `/usr/bin`
 under every SDK tool name (`wasm32posix-cc`, `wasm32posix-c++`,
 `wasm32posix-ar`, ..., `wasm32posix-configure`) and as `cc`, `c89`, `c99`
-and `c++`. This delivery uses the base shell's existing lazy archive
-mechanism and requires no separate compiler image.
+and `c++`; `ld` runs `wasm-ld` (see [GNU build tools](#gnu-build-tools)).
+This delivery uses the base shell's existing lazy archive mechanism and
+requires no separate compiler image.
 
 In a shell session:
 
