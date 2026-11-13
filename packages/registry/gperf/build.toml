@@ -1,0 +1,9 @@
+script_path = "packages/registry/gperf/build-gperf.sh"
+inputs = [
+  "packages/registry/gperf/build-gperf.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

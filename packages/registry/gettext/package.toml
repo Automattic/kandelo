@@ -1,0 +1,139 @@
+kind = "program"
+name = "gettext"
+version = "1.0"
+kernel_abi = 56
+depends_on = []
+
+# GNU gettext's tools: msgfmt, xgettext, msgmerge and the other msg*
+# programs, gettext, ngettext and envsubst, each a separate output so a
+# shell fetches only the programs it runs; and gettext-data.zip (at /usr)
+# with autopoint, gettextize, gettext.sh and the macros and infrastructure
+# archive they install into projects. musl provides the libintl functions,
+# so libintl is not built. gnulib needs a patch to read locale names on
+# Kandelo (patches/).
+[source]
+url = "https://ftpmirror.gnu.org/gettext/gettext-1.0.tar.xz"
+sha256 = "71132a3fb71e68245b8f2ac4e9e97137d3e5c02f415636eb508ae607bc01add7"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/gettext.git/tree/COPYING?h=v1.0"
+
+[build]
+script_path = "packages/registry/gettext/build-gettext.sh"
+
+[[outputs]]
+name = "gettext-data"
+wasm = "gettext-data.zip"
+fork_instrumentation = "disabled"
+
+[[outputs]]
+name = "envsubst"
+wasm = "envsubst.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gettext"
+wasm = "gettext.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "ngettext"
+wasm = "ngettext.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "printf_gettext"
+wasm = "printf_gettext.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "printf_ngettext"
+wasm = "printf_ngettext.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgattrib"
+wasm = "msgattrib.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgcat"
+wasm = "msgcat.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgcmp"
+wasm = "msgcmp.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgcomm"
+wasm = "msgcomm.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgconv"
+wasm = "msgconv.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgen"
+wasm = "msgen.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgexec"
+wasm = "msgexec.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgfilter"
+wasm = "msgfilter.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgfmt"
+wasm = "msgfmt.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msggrep"
+wasm = "msggrep.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msginit"
+wasm = "msginit.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgmerge"
+wasm = "msgmerge.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgpre"
+wasm = "msgpre.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msgunfmt"
+wasm = "msgunfmt.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "msguniq"
+wasm = "msguniq.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "recode-sr-latin"
+wasm = "recode-sr-latin.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "xgettext"
+wasm = "xgettext.wasm"
+fork_instrumentation = "auto"
