@@ -289,11 +289,15 @@ if [ ! -f "$RAW_PYTHON" ]; then
     exit 1
 fi
 
-OPTIMIZED_PYTHON="$WORK_DIR/python.optimized.wasm"
 FINAL_PYTHON="$WORK_DIR/python.wasm"
-wasm-opt -O2 "$RAW_PYTHON" -o "$OPTIMIZED_PYTHON"
+# Instrument the binary as wasm-ld wrote it, then optimize. Fork
+# instrumentation reads the compiler facts the SDK recorded for the code as
+# linked; running wasm-opt first changes that code, so the instrumenter would
+# discard the facts and instrument a larger, more conservative set of
+# functions. The instrumenter runs wasm-opt -O2 over its output instead
+# (docs/sdk-guide.md, "Fork instrumentation").
 bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
-    "$OPTIMIZED_PYTHON" -o "$FINAL_PYTHON"
+    "$RAW_PYTHON" -o "$FINAL_PYTHON" --post-optimize O2
 chmod 0755 "$FINAL_PYTHON"
 
 # Validate the exact bytes that leave the source-build realm.

@@ -421,17 +421,16 @@ fi
 
 cp "$JS_BIN" "$BIN_DIR/js.wasm"
 
-WASM_OPT="${WASM_OPT:-wasm-opt}"
-if command -v "$WASM_OPT" >/dev/null 2>&1; then
-    echo "==> Optimizing js.wasm with wasm-opt -O2..."
-    "$WASM_OPT" -O2 "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm"
-else
-    echo "WARNING: wasm-opt not found; leaving unoptimized js.wasm." >&2
-fi
-
+# Do not run wasm-opt before instrumenting. Fork instrumentation reads the
+# compiler facts the SDK recorded for the code as linked; optimizing first
+# changes that code, so the instrumenter would discard the facts and
+# instrument a larger, more conservative set of functions. The instrumenter
+# runs wasm-opt -O2 over its output instead (docs/sdk-guide.md, "Fork
+# instrumentation").
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
-echo "==> Applying fork instrumentation to js.wasm..."
-"$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm.instr"
+echo "==> Applying fork instrumentation and wasm-opt -O2 to js.wasm..."
+"$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm.instr" \
+    --post-optimize O2
 mv "$BIN_DIR/js.wasm.instr" "$BIN_DIR/js.wasm"
 
 JS_SIZE="$(wc -c < "$BIN_DIR/js.wasm" | tr -d ' ')"

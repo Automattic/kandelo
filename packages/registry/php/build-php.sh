@@ -1396,27 +1396,27 @@ cp sapi/fpm/php-fpm "$BIN_DIR/php-fpm.wasm"
 
 # CLI and FPM both retain libc paths that can reach kernel_fork
 # (system/popen/fork wrappers for CLI, worker forks for FPM), so both
-# must be fork-instrumented. wasm-opt runs first so instrumentation covers
-# the smaller, inlined call graph; wasm-fork-instrument then runs its own
-# wasm-opt pass over the code it adds. It auto-discovers fork paths via
-# call-graph analysis; no onlylist file is required.
+# must be fork-instrumented. It auto-discovers fork paths via call-graph
+# analysis; no onlylist file is required. Do not run wasm-opt before
+# instrumenting: fork instrumentation reads the compiler facts the SDK
+# recorded for the code as linked, and optimizing first changes that code,
+# so the instrumenter would discard the facts and instrument a larger,
+# more conservative set of functions. The instrumenter runs wasm-opt -O2
+# over its output instead (docs/sdk-guide.md, "Fork instrumentation").
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -z "$WASM_OPT" ]; then
     echo "ERROR: wasm-opt is required for deterministic PHP package outputs" >&2
     exit 1
 fi
-echo "==> Optimizing CLI binary with wasm-opt -O2..."
-"$WASM_OPT" -O2 "$BIN_DIR/php.wasm" -o "$BIN_DIR/php.wasm"
 
-echo "==> Optimizing FPM binary with wasm-opt -O2..."
-"$WASM_OPT" -O2 "$BIN_DIR/php-fpm.wasm" -o "$BIN_DIR/php-fpm.wasm"
-
-echo "==> Applying fork instrumentation to CLI..."
-"$FORK_INSTRUMENT" "$BIN_DIR/php.wasm" -o "$BIN_DIR/php.wasm.instr"
+echo "==> Applying fork instrumentation and wasm-opt -O2 to CLI..."
+"$FORK_INSTRUMENT" "$BIN_DIR/php.wasm" -o "$BIN_DIR/php.wasm.instr" \
+    --post-optimize O2
 mv "$BIN_DIR/php.wasm.instr" "$BIN_DIR/php.wasm"
 
-echo "==> Applying fork instrumentation to FPM..."
-"$FORK_INSTRUMENT" "$BIN_DIR/php-fpm.wasm" -o "$BIN_DIR/php-fpm.wasm.instr"
+echo "==> Applying fork instrumentation and wasm-opt -O2 to FPM..."
+"$FORK_INSTRUMENT" "$BIN_DIR/php-fpm.wasm" -o "$BIN_DIR/php-fpm.wasm.instr" \
+    --post-optimize O2
 mv "$BIN_DIR/php-fpm.wasm.instr" "$BIN_DIR/php-fpm.wasm"
 
 chmod 0755 "$BIN_DIR/php.wasm" "$BIN_DIR/php-fpm.wasm"
