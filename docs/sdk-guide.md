@@ -1033,6 +1033,15 @@ run `/usr/bin/perl` and `/usr/bin/m4`. Texinfo's Perl runs without its
 optional XS modules: Kandelo's Perl is built without dynamic loading, and a
 package patch keeps Texinfo from requiring `DynaLoader` when XS is off.
 
+Each package's manual pages are a `<package>-docs` lazy archive in the
+shell (`man autoreconf`, `man msgfmt`, `man pkg-config`); the build image
+carries no manual pages. Libtool's pages are made from what `libtool`,
+`libtoolize` and `libtool-next-version` print running inside Kandelo,
+because upstream's describe the maintainer's x86_64 Linux build. The
+Autoconf Archive installs macros, not commands, and has none.
+`/usr/bin/gettext.sh` is a function library, not a command, so it has no
+page either (`packages/registry/gettext/README.md`).
+
 **Build identity.** Inside Kandelo, `uname` reports `wasm32`,
 `wasm-posix` and `kandelo`, which upstream `config.guess` does not know.
 The `config.guess` that Automake and Libtool install, and `autoreconf -fi`

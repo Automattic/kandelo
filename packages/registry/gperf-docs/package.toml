@@ -1,0 +1,28 @@
+kind = "program"
+name = "gperf-docs"
+version = "3.3"
+kernel_abi = 56
+depends_on = []
+
+# Upstream manual pages for the `gperf` package.
+# The source, SHA-256 and version are the `gperf` package's own, so the
+# pages describe the release that built the installed program;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://ftpmirror.gnu.org/gperf/gperf-3.3.tar.gz"
+sha256 = "fd87e0aba7e43ae054837afd6cd4db03a3f2693deb3619085e6ed9d8d9604ad8"
+provider = "archive"
+
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/gperf.git/tree/COPYING?h=v3.3"
+
+[build]
+toolchain = "none"
+script_path = "packages/registry/gperf-docs/build-gperf-docs.sh"
+
+[[outputs]]
+name = "gperf-docs"
+wasm = "gperf-docs.zip"
+fork_instrumentation = "disabled"

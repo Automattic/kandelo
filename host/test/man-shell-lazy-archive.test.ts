@@ -272,6 +272,14 @@ describe.skipIf(!available)(
         ["1 ar", /LLVM\s+archiver/],
         ["1 wasm-tools", /Validate\s+a\s+WebAssembly\s+binary/],
         ["1 dmesg", /Print\s+or\s+control\s+the\s+kernel\s+ring\s+buffer/],
+        ["1 autoreconf", /Update\s+generated\s+configuration\s+files/],
+        // A ".so" page: automake(1) is automake-1.20(1).
+        ["1 automake", /Generate\s+Makefile\.in\s+files\s+for\s+configure/],
+        // Captured inside Kandelo, so it names Kandelo's configuration.
+        ["1 libtool", /wasm32-unknown-linux-musl/],
+        ["1 pkg-config", /pkgconf/],
+        ["1 msgfmt", /compile\s+message\s+catalog\s+to\s+binary\s+format/],
+        ["1 makeinfo", /translate\s+Texinfo\s+documents/],
         ["1 cc", /Kandelo\s+SDK\s+driver/],
         // An alias page: retro-nes is fceumm under a shorter name.
         ["1 retro-nes", /FCEUmm\s+libretro\s+core/],
