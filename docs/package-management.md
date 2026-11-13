@@ -185,6 +185,16 @@ an earlier cache key usually has the same size. The finalizer then leaves the
 published projection untouched only when it already records this run's exact
 package set, cache keys, and receipts.
 
+When it does publish, the finalizer derives the program index and checks every
+package's receipt against its current cache key. Within that pass each
+package's own inputs are read again at every check, but the keys of its
+dependencies are derived once and shared, because a key covers the package's
+whole dependency closure and deriving every closure from scratch repeated the
+same hashing for each package. Before the new projection goes live, every key is
+derived once more from scratch; if any package's inputs changed while the
+finalizer ran, publication fails instead of recording a key that no longer
+matches.
+
 The machine-readable result contains every selected node and whether it was
 newly published or reused from cache. If a node fails, independent work drains
 and the command exits nonzero after printing failed and blocked counts. Fix the
