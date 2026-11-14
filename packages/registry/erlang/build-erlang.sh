@@ -658,13 +658,39 @@ echo "==> Build complete. Creating release..."
 make release RELEASE_ROOT="$INSTALL_DIR" BOOTSTRAP_ROOT="$HOST_BOOTSTRAP_ROOT" \
     2>&1 | tail -20
 
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+
+# Strip debug info and other custom sections from a linked module, keeping
+# what fork instrumentation reads. A plain wasm-strip also removes
+# kandelo.calltypes (the SDK's compiler facts), its code hash and the name
+# section the instrumenter binds the facts to functions through. A module
+# stripped that way is instrumented with the conservative plan that uses no
+# facts, and nothing reports it. The instrumenter removes the facts from its
+# output and its own wasm-opt pass drops the name section, so the shipped
+# module carries neither. Modules it will not instrument (no fork import)
+# are stripped completely, as before.
+strip_linked_wasm() {
+    local artifact="$1"
+    if wasm_imports_kernel_fork "$artifact"; then
+        wasm-strip --keep-section=name \
+            --keep-section=kandelo.calltypes \
+            --keep-section=kandelo.calltypes.code-sha256 "$artifact"
+    else
+        wasm-strip "$artifact"
+    fi
+}
+
 # Find the BEAM emulator
 BEAM_BIN=$(find "$INSTALL_DIR" -type f \( -name "beam.smp" -o -name "beam" \) -print -quit 2>/dev/null)
 if [ -n "$BEAM_BIN" ]; then
     echo "==> Erlang/OTP built successfully!"
     ls -lh "$BEAM_BIN"
     cp "$BEAM_BIN" "$ARTIFACT_DIR/erlang.wasm"
-    wasm-strip "$ARTIFACT_DIR/erlang.wasm"
+    strip_linked_wasm "$ARTIFACT_DIR/erlang.wasm"
     echo "==> BEAM emulator: $ARTIFACT_DIR/erlang.wasm"
 else
     echo "==> Looking for BEAM in build tree..."
@@ -679,11 +705,6 @@ echo "==> Install directory: $INSTALL_DIR"
 # Validate and, when the real OTP forker imports fork(), instrument the final
 # BEAM module through Kandelo's normal continuation pipeline. The retired
 # wasm32 patch that disabled the forker is deliberately not applied.
-if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
-    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
-fi
-source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary erlang "$ARTIFACT_DIR/erlang.wasm"
 
 CURRENT_ABI=$(wasm_current_abi_version "$REPO_ROOT")
@@ -692,7 +713,7 @@ prepare_runtime_wasm() {
     local instrumented
     local artifact_abi
 
-    wasm-strip "$artifact"
+    strip_linked_wasm "$artifact"
     if wasm_imports_kernel_fork "$artifact" && ! wasm_has_complete_fork_instrumentation "$artifact"; then
         if wasm_has_any_fork_instrumentation "$artifact"; then
             wasm_require_fork_instrumentation_if_needed "$artifact"

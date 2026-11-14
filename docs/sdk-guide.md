@@ -335,7 +335,13 @@ linked module:
 - A module that imports `kernel.kernel_fork` (it can fork) keeps its
   `kandelo.calltypes` section and is left as wasm-ld wrote it. It must be
   fork-instrumented next; the instrumenter runs `wasm-opt -O2` itself after
-  instrumenting.
+  instrumenting. Do not strip it before then: the instrumenter binds the
+  facts to functions through the `name` section, and a plain `wasm-strip`
+  removes both, so the module is instrumented without facts and nothing
+  reports it. To drop debug information first, keep those sections
+  (`wasm-strip --keep-section=name --keep-section=kandelo.calltypes
+  --keep-section=kandelo.calltypes.code-sha256`, or `llvm-strip
+  --strip-debug`); the instrumenter's output carries neither.
 - Any other module loses the section and then gets exactly the `wasm-opt`
   command clang scheduled.
 
