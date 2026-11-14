@@ -78,17 +78,39 @@ fn production_facts_options_and_selected_sets_preserve_expected_results() {
 }
 
 #[test]
-fn unreadable_or_stale_facts_use_native_baselines_and_can_be_ignored() {
+fn unreadable_facts_use_native_baselines_and_can_be_ignored() {
     let plain = wat::parse_str(include_str!("fixtures/typed_dispatch.wat")).unwrap();
+    let input = linked("malformed facts", Some(facts::code_sha256(&plain).unwrap()));
+    let decision = compare(&input, &Options::default());
+    assert_eq!(decision.source, PlanSource::Builtin);
+    assert!(decision.facts_error.is_some());
+    let ignored = compare(
+        &input,
+        &Options {
+            facts: false,
+            ..Default::default()
+        },
+    );
+    assert!(ignored.facts_error.is_none());
+}
+
+#[test]
+fn facts_not_bound_to_the_code_are_an_error_unless_ignored() {
     let text = include_str!("fixtures/typed_dispatch.calltypes");
-    for input in [
-        linked(text, None),
-        linked(text, Some([0; 32])),
-        linked("malformed facts", Some(facts::code_sha256(&plain).unwrap())),
+    for (input, expected) in [
+        (linked(text, None), "no kandelo.calltypes.code-sha256 section"),
+        (linked(text, Some([0; 32])), "changed after linking"),
     ] {
-        let decision = compare(&input, &Options::default());
-        assert_eq!(decision.source, PlanSource::Builtin);
-        assert!(decision.facts_error.is_some());
+        let error = native::analyze(&input, &Options::default(), Default::default())
+            .err()
+            .expect("facts that do not match the code are an error");
+        let message = format!("{error:#}");
+        assert!(message.contains(expected), "{message}");
+        assert!(
+            message.contains("before") && message.contains("optimiz"),
+            "the error says how to fix the build: {message}"
+        );
+        // Diagnosis can still compare against the analysis without facts.
         let ignored = compare(
             &input,
             &Options {
@@ -98,6 +120,26 @@ fn unreadable_or_stale_facts_use_native_baselines_and_can_be_ignored() {
         );
         assert!(ignored.facts_error.is_none());
     }
+}
+
+#[test]
+fn stale_facts_are_not_an_error_when_no_own_code_reaches_fork() {
+    // The fork import is present but nothing the module defines calls it, so
+    // no plan depends on the facts.
+    let source = r#"(module
+  (import "kernel" "kernel_fork" (func $kernel_fork (param i32) (result i32)))
+  (memory 1)
+  (func $_start (export "_start")))"#;
+    let mut input = wat::parse_str(source).unwrap();
+    append(
+        &mut input,
+        facts::SECTION,
+        b"#kandelo-calltypes\t5\nM\tx.c\nF\t_start\t0\tE\t0\t_start\nD\t_start\t0\t0\n",
+    );
+    append(&mut input, facts::CODE_HASH_SECTION, &[0; 32]);
+    let native = native::analyze(&input, &Options::default(), Default::default()).unwrap();
+    assert!(native.decision.participates);
+    assert!(native.decision.facts_error.is_some());
 }
 
 #[test]

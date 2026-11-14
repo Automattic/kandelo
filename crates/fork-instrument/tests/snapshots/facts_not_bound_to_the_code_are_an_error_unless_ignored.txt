@@ -1,0 +1,25 @@
+=== sinks-true-facts-false-effective-true 63a56ef02546 ===
+(
+    [
+        "_start",
+        "forker",
+        "main",
+    ],
+    [],
+    Builtin,
+    None,
+    false,
+)
+
+=== sinks-true-facts-false-effective-true bd6eb242ac08 ===
+(
+    [
+        "_start",
+        "forker",
+        "main",
+    ],
+    [],
+    Builtin,
+    None,
+    false,
+)

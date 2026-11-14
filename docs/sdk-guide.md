@@ -333,9 +333,14 @@ describe the wrong code. So the SDK holds that step back and inspects the
 linked module:
 
 - A module that imports `kernel.kernel_fork` (it can fork) keeps its
-  `kandelo.calltypes` section and is left as wasm-ld wrote it. It must be
-  fork-instrumented next; the instrumenter runs `wasm-opt -O2` itself after
-  instrumenting.
+  `kandelo.calltypes` section, gains a `kandelo.calltypes.code-sha256`
+  section binding the facts to its code, and is otherwise left as wasm-ld
+  wrote it. It must be fork-instrumented next; the instrumenter runs
+  `wasm-opt` itself after instrumenting (`-Os` unless `--post-optimize`
+  names another level). Running `wasm-opt`, or anything else that rewrites
+  the code, before instrumenting makes the facts describe the wrong code:
+  the instrumenter then refuses the module with an error that says so,
+  rather than instrumenting it without the facts.
 - Any other module loses the section and then gets exactly the `wasm-opt`
   command clang scheduled.
 
@@ -783,8 +788,9 @@ wasm32posix-cc program.c -o program.wasm
 
 # Apply fork instrumentation. Auto-discovers fork-path functions via
 # call-graph analysis from the kernel.kernel_fork import — no onlylist
-# file needed — then runs wasm-opt -O2 over the result. The wrapper builds
-# the tool on demand if tools/bin is absent.
+# file needed — then runs wasm-opt -Os over the result (--post-optimize
+# selects another level). The wrapper builds the tool on demand if
+# tools/bin is absent.
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm.instr
 mv program.wasm.instr program.wasm
 ```

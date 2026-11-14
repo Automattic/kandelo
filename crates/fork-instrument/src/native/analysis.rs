@@ -86,6 +86,9 @@ fn refine(analysis: &mut Analysis<'_>, options: &Options, limits: AnalysisLimits
             .next()
             .is_some()
     {
+        if forks_through_own_code(analysis) {
+            require_facts_bound_to_code(&analysis.scan)?;
+        }
         match facts_plan(analysis, seed, options, limits) {
             Ok((plan, report, mode)) => {
                 if analysis.decision.dynamic_linker {
@@ -126,6 +129,46 @@ fn refine(analysis: &mut Analysis<'_>, options: &Options, limits: AnalysisLimits
         analysis.decision.source = PlanSource::Builtin;
     }
     Ok(())
+}
+
+/// Whether a function the module defines lies on a path to the fork import,
+/// so the facts would decide what gets instrumented.
+fn forks_through_own_code(analysis: &Analysis<'_>) -> bool {
+    analysis
+        .reaching
+        .activations
+        .iter()
+        .any(|&function| function >= analysis.scan.imported_functions)
+}
+
+/// Compiler facts that are not bound to the code they come with are a build
+/// error. WHY: they mean a build step rewrote the code after the link (a
+/// recipe's own wasm-opt run, typically). Falling back silently gave such a
+/// module the larger plan of the analysis without facts (the full closure
+/// for a module that can dlopen), and the only sign was a note on stderr, so
+/// the build order was a convention nothing checked. Bound facts that cannot
+/// be used (unreadable, wasm64, an analysis limit) still fall back with a
+/// note.
+fn require_facts_bound_to_code(scan: &Scan<'_>) -> Result<()> {
+    use crate::facts::{CODE_HASH_SECTION, SECTION};
+    if scan.verify_facts_hash().is_ok() {
+        return Ok(());
+    }
+    if scan.custom_data(CODE_HASH_SECTION).next().is_some() {
+        anyhow::bail!(
+            "compiler facts do not match this module's code: {CODE_HASH_SECTION} does not \
+             match the code section, so the code changed after linking, usually because \
+             wasm-opt ran before fork instrumentation. Instrument the module as the linker \
+             wrote it and optimize afterwards; wasm-fork-instrument runs wasm-opt over its \
+             output (--post-optimize selects the level)"
+        );
+    }
+    anyhow::bail!(
+        "compiler facts are not bound to this module's code: it has a {SECTION} section \
+         but no {CODE_HASH_SECTION} section. The SDK compiler driver (wasm32posix-cc, \
+         wasm64posix-cc) records that hash when it links a module that can fork; link \
+         through it, and instrument the module before running any optimizer"
+    )
 }
 
 fn facts_plan(

@@ -1,6 +1,7 @@
 //! Compiler facts (`kandelo.calltypes`) in the default sink path: they are
-//! used when they describe the module's code, ignored (with the analysis
-//! without facts as the fallback) otherwise, and never shipped. See
+//! used when they describe the module's code, an error when they are not
+//! bound to it, ignored (with the analysis without facts as the fallback)
+//! when they cannot be read, and never shipped. See
 //! `src/facts/` and `docs/fork-instrumentation.md`.
 
 #[path = "support/snapshot.rs"]
@@ -315,35 +316,41 @@ fn instrumented_output_carries_no_facts() {
 }
 
 #[test]
-fn code_changed_after_linking_ignores_the_facts() {
+fn code_changed_after_linking_is_an_error() {
     // As if wasm-opt had rewritten the code and kept both custom sections.
     let (_, with) = linked(TYPED_DISPATCH, FACTS, Some(Some([0u8; 32])));
-    let report = sink_report(&with, &Options::default()).unwrap();
-    assert_eq!(report.source, PlanSource::Builtin);
-    assert!(
-        report
-            .facts_error
-            .as_deref()
-            .unwrap()
-            .contains("changed after linking")
+    for error in [
+        sink_report(&with, &Options::default()).err(),
+        instrument(&with, &Options::default()).err(),
+    ] {
+        let message = format!("{:#}", error.expect("stale facts are an error"));
+        assert!(message.contains("changed after linking"), "{message}");
+        assert!(message.contains("optimize afterwards"), "{message}");
+    }
+    // `--no-facts` still instruments, for diagnosis.
+    let no_facts = Options {
+        facts: false,
+        ..Options::default()
+    };
+    assert_eq!(
+        sink_report(&with, &no_facts).unwrap().source,
+        PlanSource::Builtin
     );
-    assert!(report.instrumented.contains(&"main".to_string()));
-    let out = instrument(&with, &Options::default()).unwrap();
+    let out = instrument(&with, &no_facts).unwrap();
     assert!(!has_section(&out, SECTION) && !has_section(&out, CODE_HASH_SECTION));
 }
 
 #[test]
-fn facts_without_a_code_hash_are_ignored() {
+fn facts_without_a_code_hash_are_an_error() {
     let (_, with) = linked(TYPED_DISPATCH, FACTS, Some(None));
-    let report = sink_report(&with, &Options::default()).unwrap();
-    assert_eq!(report.source, PlanSource::Builtin);
-    assert!(
-        report
-            .facts_error
-            .as_deref()
-            .unwrap()
-            .contains(CODE_HASH_SECTION)
+    let message = format!(
+        "{:#}",
+        sink_report(&with, &Options::default())
+            .err()
+            .expect("unbound facts are an error")
     );
+    assert!(message.contains(CODE_HASH_SECTION), "{message}");
+    assert!(message.contains("SDK compiler driver"), "{message}");
 }
 
 #[test]

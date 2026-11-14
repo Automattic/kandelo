@@ -791,8 +791,10 @@ can be emitted again. Descriptor budgets are checked before writing a header.
 It seeds every matching fork import, every side-module function import, raw
 loader imports and conservative dynamic dispatch. It rejects previous private
 runtime imports, exports and metadata. Valid compiler facts use private SQLite
-relations with the requested effective-type policy; unreadable facts fall back
-to the bounded native baseline. Dlopen facts preserve the explicit side-module
+relations with the requested effective-type policy; facts not bound to the
+module's code are an error (see [Fork sinks and compiler
+facts](#fork-sinks-and-compiler-facts)), and unreadable facts fall back to the
+bounded native baseline. Dlopen facts preserve the explicit side-module
 contract, including automatic full-entry planning for returning function
 pointers. No facts database survives into helper or source emission.
 
@@ -1665,11 +1667,15 @@ with that backend.
 
 A fork-using program goes through Binaryen's `wasm-opt` twice:
 
-1. **Before instrumentation.** The SDK's `-O` link runs `wasm-opt` (clang
-   schedules it after `wasm-ld`), and some recipes run their own pass.
+1. **Before instrumentation** (historical). Clang schedules `wasm-opt`
+   after `wasm-ld` for an `-O` link, and some recipes ran their own pass.
    Inlining, dead-function removal and identical-function merging shrink
    the call graph the instrumenter has to cover. Quickshell's raw link has
    108,860 functions on the fork path; after `wasm-opt -O2` it has 51,960.
+   The SDK now holds that pass back for a module that can fork, and
+   instrumenting a module that such a pass rewrote after the link is an
+   error, because its compiler facts then describe the wrong code ([Fork sinks and compiler
+   facts](#fork-sinks-and-compiler-facts)).
 2. **After instrumentation.** The CLI runs `wasm-opt -Os` over its own
    output (`--post-optimize`; `$WASM_OPT`, else `wasm-opt` on PATH). This
    pass simplifies the dispatch and frame code the transform adds, merges
@@ -2213,8 +2219,16 @@ The analysis resolves each `call_indirect` in one of two ways.
   facts only when that hash matches the code it receives; a tool that
   rewrites code after linking (a `wasm-opt` run in a package build, for
   example) keeps unknown custom sections but changes the code, and the facts
-  would then describe the wrong functions. A mismatch or a missing hash
-  prints one line and falls back to the analysis without facts.
+  would then describe the wrong functions. When a function the module
+  defines reaches fork, a mismatch or a missing hash is an error: the build
+  step that rewrote the code is the defect. Instrumenting without the facts
+  gives a larger, more conservative plan (the full closure for a module
+  that can dlopen), and a note on stderr was the only sign of it. The
+  error says to instrument the module as linked and optimize afterwards,
+  which the instrumenter does itself (`--post-optimize`).
+  `--no-facts` still instruments such a module without the facts, for
+  diagnosis only. A module whose own code does not reach fork keeps the
+  one-line note; no plan depends on its facts.
 - **Without facts**, call sites match by Wasm signature (plus the musl
   registry, parameter and constant-slot refinements).
 
@@ -2260,7 +2274,8 @@ Which analysis runs:
 | Module | Analysis |
 |---|---|
 | wasm32 main module, `kernel.kernel_fork` entry, facts with a matching hash | with facts |
-| main module that cannot dlopen, facts absent, unreadable, unhashed or stale, or wasm64 | without facts |
+| main module whose own code reaches fork, facts unhashed or stale | error |
+| main module that cannot dlopen, facts absent or unreadable, or wasm64 | without facts |
 | main module that can dlopen, no usable facts | none (full closure) |
 | side module (`dylink.0` or `--entry env.fork`) | none (full closure) |
 
@@ -2291,8 +2306,8 @@ about side modules is chosen with `--side-modules`:
   boundary. The contract section says so and the hosts impose no
   restriction. Use it for a program that must load arbitrary plugins.
 
-Facts that cannot be read, or an
-internal error in the facts analysis, fall back to the analysis without
+Facts that are bound to the code but cannot be read, wasm64 modules, and an
+internal error in the facts analysis fall back to the analysis without
 facts with a one-line message, never to anything less conservative. The
 `kandelo.calltypes` and `kandelo.calltypes.code-sha256` sections are removed
 from every output, including a module the instrumenter otherwise returns
