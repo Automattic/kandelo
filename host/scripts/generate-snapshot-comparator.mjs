@@ -87,7 +87,8 @@ try {
           throw new Error("Forbidden comparator operation: " + key);
         const input = join(directory, key + ".wat"), output = join(directory, key + ".wasm");
         await writeFile(input, wat);
-        const compiled = spawnSync("wat2wasm", ["--enable-all", input, "-o", output],
+        // WHY: wabt 1.0.41's --enable-all includes --enable-compact-imports, which V8 rejects.
+        const compiled = spawnSync("wat2wasm", ["--enable-threads", "--enable-memory64", "--enable-multi-memory", input, "-o", output],
           { encoding: "utf8", timeout: 30000, maxBuffer: 1024 * 1024 });
         if (compiled.error || compiled.status !== 0)
           throw new Error(`wat2wasm ${key}: ${compiled.error?.message ?? compiled.signal ?? compiled.status}\n${compiled.stdout ?? ""}${compiled.stderr ?? ""}`);
