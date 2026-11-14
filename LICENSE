@@ -79,6 +79,11 @@ libc/glue/:
       Linux UAPI header. Copyright Vojtech Pavlik and Hans de Goede.
       GPL-2.0-only WITH Linux-syscall-note. The syscall note lets user-space
       programs include the header without the GPL applying to them.
+  libc/glue/compiler_rt.c, mul_64x64 (used by __multi3)
+      Adapted from __mulddi3 in LLVM compiler-rt lib/builtins/multi3.c.
+      Copyright the LLVM Project contributors. Apache-2.0 WITH
+      LLVM-exception. The exception lets programs carry the compiled
+      builtin without Apache-2.0's attribution requirement.
   libc/glue/wayland-egl-include/
       wayland-egl headers from the Wayland project. Copyright Kristian
       Høgsberg and Benjamin Franzke. MIT (license text in each file).
