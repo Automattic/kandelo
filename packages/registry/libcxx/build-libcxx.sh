@@ -17,7 +17,7 @@ set -euo pipefail
 # the resolver:
 #
 #     WASM_POSIX_DEP_OUT_DIR        # where to install (lib/, include/c++/v1/)
-#     WASM_POSIX_DEP_VERSION        # exact LLVM version from flake.nix (e.g. "21.1.7")
+#     WASM_POSIX_DEP_VERSION        # exact LLVM version from flake.nix (e.g. "23.1.3")
 #     WASM_POSIX_DEP_TARGET_ARCH    # "wasm32" or "wasm64"
 #
 # Prerequisites:
@@ -92,13 +92,13 @@ if [ ! -f "$NIX_LIBCXX_SOURCE/runtimes/CMakeLists.txt" ] ||
         [ ! -d "$NIX_LIBCXX_SOURCE/libcxx" ] ||
         [ ! -d "$NIX_LIBCXX_SOURCE/libcxxabi" ]; then
     echo "ERROR: Nix libcxx source is incomplete at $NIX_LIBCXX_SOURCE" >&2
-    echo "       Expected runtimes/, libcxx/, and libcxxabi/ from flake.nix's llvmPackages_21.libcxx.src." >&2
+    echo "       Expected runtimes/, libcxx/, and libcxxabi/ from flake.nix's llvmPackages_23.libcxx.src." >&2
     exit 1
 fi
 
 if [ ! -d "$NIX_LIBUNWIND_SOURCE/libunwind" ]; then
     echo "ERROR: Nix libunwind source is incomplete at $NIX_LIBUNWIND_SOURCE" >&2
-    echo "       Expected libunwind/ from flake.nix's llvmPackages_21.libunwind.src." >&2
+    echo "       Expected libunwind/ from flake.nix's llvmPackages_23.libunwind.src." >&2
     exit 1
 fi
 
@@ -168,7 +168,7 @@ rm -rf "$LLVM_SRC_DIR"
 # CMake checks siblings via runtimes/../libunwind, and if runtimes is a symlink
 # that `..` resolves inside the Nix libcxx source instead of this overlay tree.
 mkdir -p "$LLVM_SRC_DIR"
-for entry in cmake libc libcxx libcxxabi llvm third-party; do
+for entry in cmake libc libcxxabi llvm third-party; do
     if [ -e "$NIX_LIBCXX_SOURCE/$entry" ]; then
         ln -s "$NIX_LIBCXX_SOURCE/$entry" "$LLVM_SRC_DIR/$entry"
     fi
@@ -178,15 +178,29 @@ for entry in "$NIX_LIBCXX_SOURCE/runtimes"/*; do
     [ -e "$entry" ] || continue
     ln -s "$entry" "$LLVM_SRC_DIR/runtimes/$(basename "$entry")"
 done
-# This source receives the target-selection patch below. Dereference it into
-# writable private files rather than patching the immutable Nix derivation.
+# libcxx and libunwind receive the patches below. Dereference them into
+# writable private files rather than patching the immutable Nix derivations.
+# libcxx is copied whole so CMake's relative paths (src/../include) resolve
+# inside the patched copy. Only its test suite, which this recipe never
+# configures (LIBCXX_INCLUDE_TESTS=OFF), stays a link to the Nix source.
+mkdir -p "$LLVM_SRC_DIR/libcxx"
+for entry in "$NIX_LIBCXX_SOURCE/libcxx"/* "$NIX_LIBCXX_SOURCE/libcxx"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    if [ "$(basename "$entry")" = test ]; then
+        ln -s "$entry" "$LLVM_SRC_DIR/libcxx/test"
+    else
+        cp -RL "$entry" "$LLVM_SRC_DIR/libcxx/"
+    fi
+done
+chmod -R u+w "$LLVM_SRC_DIR/libcxx"
 cp -RL "$NIX_LIBUNWIND_SOURCE/libunwind" "$LLVM_SRC_DIR/libunwind"
 chmod -R u+w "$LLVM_SRC_DIR/libunwind"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 
-# Select the VM unwinder backend without native register assembly. Patch only
-# the private source copy; source derivations and the checkout stay immutable.
+# Select the VM unwinder backend without native register assembly, and the
+# musl locale support for libc++ (see patches/README.md). Patch only the
+# private source copies; source derivations and the checkout stay immutable.
 for patch_file in "$SCRIPT_DIR"/patches/*.patch; do
     patch --fuzz=0 -p1 -d "$LLVM_SRC_DIR" < "$patch_file"
 done

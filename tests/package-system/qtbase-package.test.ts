@@ -138,7 +138,7 @@ describe("qtbase package contract", () => {
     // registry; PCRE2 stays bundled because QRegularExpression needs the
     // 16-bit build and the registry package ships only libpcre2-8.a.
     for (const dep of [
-      "libcxx@21.1.7",
+      "libcxx@23.1.3",
       "zlib@1.3.1",
       "freetype@2.13.3",
       "fontconfig@2.15.0",

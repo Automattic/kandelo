@@ -8793,9 +8793,9 @@ where
             target.spec()
         ));
     }
-    if target.version != "21.1.7" {
+    if target.version != "23.1.3" {
         return Err(format!(
-            "{}: dev-shell libcxx identity supports exact LLVM version 21.1.7",
+            "{}: dev-shell libcxx identity supports exact LLVM version 23.1.3",
             target.spec()
         ));
     }
@@ -34475,7 +34475,7 @@ libs = ["lib/libF3b.a"]
             package.join("package.toml"),
             r#"kind = "library"
 name = "libcxx"
-version = "21.1.7"
+version = "23.1.3"
 depends_on = []
 [source]
 url = "https://github.com/llvm/llvm-project"
@@ -34500,10 +34500,10 @@ libs = ["lib/libc++.a"]
         std::fs::create_dir_all(libunwind.join("libunwind")).unwrap();
         std::fs::write(libcxx.join("runtimes/CMakeLists.txt"), "cmake").unwrap();
         let clang = prefix.join("bin/clang");
-        std::fs::write(&clang, "#!/bin/sh\nprintf 'clang version 21.1.7 base\\n'\n").unwrap();
+        std::fs::write(&clang, "#!/bin/sh\nprintf 'clang version 23.1.3 base\\n'\n").unwrap();
         std::fs::set_permissions(&clang, std::fs::Permissions::from_mode(0o755)).unwrap();
         let environment = BTreeMap::from([
-            ("LLVM_VERSION".to_string(), "21.1.7".into()),
+            ("LLVM_VERSION".to_string(), "23.1.3".into()),
             ("LLVM_PREFIX".to_string(), prefix.as_os_str().to_owned()),
             (
                 "WASM_POSIX_LLVM_LIBCXX_SOURCE".to_string(),
@@ -34585,7 +34585,7 @@ libs = ["lib/libc++.a"]
 
         std::fs::write(
             &clang,
-            "#!/bin/sh\nprintf 'clang version 21.1.7 changed\\n'\n",
+            "#!/bin/sh\nprintf 'clang version 23.1.3 changed\\n'\n",
         )
         .unwrap();
         let compiler_changed =
@@ -34594,14 +34594,14 @@ libs = ["lib/libc++.a"]
 
         std::fs::write(
             &clang,
-            "#!/bin/sh\nprintf 'clang version 21.1.7 changed\\n'; printf 'stderr one\\n' >&2\n",
+            "#!/bin/sh\nprintf 'clang version 23.1.3 changed\\n'; printf 'stderr one\\n' >&2\n",
         )
         .unwrap();
         let stderr_one =
             dev_shell_source_identity_with_environment(&manifest, &environment, &store).unwrap();
         std::fs::write(
             &clang,
-            "#!/bin/sh\nprintf 'clang version 21.1.7 changed\\n'; printf 'stderr two\\n' >&2\n",
+            "#!/bin/sh\nprintf 'clang version 23.1.3 changed\\n'; printf 'stderr two\\n' >&2\n",
         )
         .unwrap();
         let stderr_two =
@@ -34609,7 +34609,7 @@ libs = ["lib/libc++.a"]
         assert_ne!(stderr_one, stderr_two, "compiler stderr is identity");
         std::fs::write(
             &clang,
-            "#!/bin/sh\nprintf 'clang version 21.1.7 changed\\n'\n",
+            "#!/bin/sh\nprintf 'clang version 23.1.3 changed\\n'\n",
         )
         .unwrap();
 
@@ -34671,7 +34671,7 @@ libs = ["lib/libc++.a"]
             );
         }
         let mut invalid_environment = environment.clone();
-        invalid_environment.insert("LLVM_VERSION".to_string(), "21.1.8".into());
+        invalid_environment.insert("LLVM_VERSION".to_string(), "23.1.4".into());
         assert!(dev_shell_source_identity_with_environment(
             &manifest,
             &invalid_environment,
@@ -34832,7 +34832,7 @@ libs = ["lib/libc++.a"]
         );
         std::fs::rename(&missing_clang, &clang).unwrap();
 
-        std::fs::write(&clang, "#!/bin/sh\nprintf 'clang version 21.1.8\\n'\n").unwrap();
+        std::fs::write(&clang, "#!/bin/sh\nprintf 'clang version 23.1.4\\n'\n").unwrap();
         assert!(
             dev_shell_source_identity_with_environment(&manifest, &environment, &store)
                 .unwrap_err()
@@ -34840,7 +34840,7 @@ libs = ["lib/libc++.a"]
         );
         std::fs::write(
             &clang,
-            "#!/bin/sh\nprintf 'clang version 21.1.7\\n' >&2\nexit 7\n",
+            "#!/bin/sh\nprintf 'clang version 23.1.3\\n' >&2\nexit 7\n",
         )
         .unwrap();
         assert!(

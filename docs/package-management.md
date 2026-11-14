@@ -719,7 +719,7 @@ files = ["share/runtime-data.bin"]                   # other runtime data
   the declared `build.toml.inputs` closure from the current repository, not a
   Git branch, `HEAD`, or `build.toml.commit`.
 - `dev-shell` requires the all-zero SHA sentinel. It is currently used only by
-  `libcxx`, whose identity binds the exact LLVM 21.1.7 compiler and Nix source
+  `libcxx`, whose identity binds the exact LLVM 23.1.3 compiler and Nix source
   paths supplied by the repository dev shell.
 
 ## Schema: `package.toml` (recipe) + `build.toml` (project view)
@@ -788,7 +788,7 @@ files = ["share/runtime-data.bin"]                   # other runtime data
   the declared `build.toml.inputs` closure from the current repository, not a
   Git branch, `HEAD`, or `build.toml.commit`.
 - `dev-shell` requires the all-zero SHA sentinel. It is currently used only by
-  `libcxx`, whose identity binds the exact LLVM 21.1.7 compiler and Nix source
+  `libcxx`, whose identity binds the exact LLVM 23.1.3 compiler and Nix source
   paths supplied by the repository dev shell.
 
 The checked-in local-supported authority must spell the provider explicitly.
@@ -1362,7 +1362,7 @@ unchanged.
 Repository identities therefore follow declared bytes across Git checkouts and
 ignore project refs and informational commits. The `libcxx` dev-shell identity
 binds the locked `flake.nix` and `flake.lock` bytes through declared build
-inputs. It also length-binds the exact LLVM 21.1.7 version, canonical compiler
+inputs. It also length-binds the exact LLVM 23.1.3 version, canonical compiler
 prefix, complete bounded `clang --version` output, and canonical
 libcxx/libcxxabi/libunwind Nix source roots. Missing, mismatched, symlinked,
 non-store, non-UTF-8, oversized, or failing compiler/source inputs fail before
@@ -2104,7 +2104,7 @@ target terminfo privately from the declared `ncurses-source` dependency on both
 architectures; it does not substitute libc or a host library for curses.
 
 ```toml
-depends_on = ["pcre2-source@10.44", "ncurses-source@6.5", "libcxx@21.1.7"]
+depends_on = ["pcre2-source@10.44", "ncurses-source@6.5", "libcxx@23.1.3"]
 ```
 
 The MariaDB build script (`packages/registry/mariadb/build-mariadb.sh`,

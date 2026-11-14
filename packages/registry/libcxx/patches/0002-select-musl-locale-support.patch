@@ -1,0 +1,26 @@
+# libc++ portability boundary: musl locale support on a non-Linux target
+#
+# libc++ 23 removed its musl locale shim (locale_base_api/musl.h). musl is
+# now served by support/linux.h, which is selected only by __linux__.
+# Kandelo uses musl but is not Linux, so libc++ fell through to the
+# legacy IBM shim (locale_base_api/ibm.h). That shim redefines strtod_l,
+# strtof_l, strtold_l and vasprintf as inline hidden-ABI functions,
+# which conflicts with musl's own declarations and does not build.
+# support/linux.h only calls POSIX 2008 locale functions and the musl
+# extensions (strtod_l, wcsnrtombs, mbsnrtowcs, nl_langinfo_l, vasprintf)
+# that Kandelo's musl provides. Select it by the libc capability that
+# libc++ already records, _LIBCPP_HAS_MUSL_LIBC, instead of defining
+# __linux__.
+#
+# Upstream: llvm-project, tag llvmorg-23.1.3 (LLVM 23.1.3).
+--- a/libcxx/include/__locale_dir/locale_base_api.h
++++ b/libcxx/include/__locale_dir/locale_base_api.h
+@@ -122,7 +122,7 @@
+ #    include <__locale_dir/support/fuchsia.h>
+ #  elif _LIBCPP_LIBC_LLVM_LIBC
+ #    include <__locale_dir/support/llvm_libc.h>
+-#  elif defined(__linux__)
++#  elif defined(__linux__) || _LIBCPP_HAS_MUSL_LIBC
+ #    include <__locale_dir/support/linux.h>
+ #  elif _LIBCPP_LIBC_NEWLIB
+ #    include <__locale_dir/support/newlib.h>
