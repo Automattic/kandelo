@@ -7,7 +7,7 @@
 import * as React from "react";
 import { useKernelHost, useDmesg, useLazyDownloadSummaries, useStatus } from "../kernel-host/react";
 import type {
-  DmesgLine, ProcessEvent, ProcessInfo, MountInfo, KernelStateKV,
+  DmesgLine, ProcessEvent, ProcessInspectionInfo, ProcessMemoryGroupAccounting, MountInfo, KernelStateKV,
   MemMapEntry, SyscallEvent, VfsDirent, LazyDownloadEvent, LazyDownloadSummary,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
@@ -93,7 +93,7 @@ const SyslogTable: React.FC<{ lines: DmesgLine[] }> = ({ lines }) => {
 
 type LoadState<T> =
   | { kind: "loading" }
-  | { kind: "ready"; value: T }
+  | { kind: "ready"; value: T; refreshing?: boolean }
   | { kind: "missing"; message: string }
   | { kind: "error"; message: string };
 
@@ -119,11 +119,17 @@ function useProcessEventBump(match?: (event: ProcessEvent) => boolean): number {
   return n;
 }
 
-function useAsyncOnce<T>(load: () => Promise<T>, deps: React.DependencyList): LoadState<T> {
+function useAsyncOnce<T>(load: () => Promise<T>, deps: React.DependencyList, retainFor?: object): LoadState<T> {
   const [state, setState] = React.useState<LoadState<T>>({ kind: "loading" });
+  const previousOwner = React.useRef<object | undefined>(undefined);
   React.useEffect(() => {
     let cancelled = false;
-    setState({ kind: "loading" });
+    const retain = retainFor !== undefined && previousOwner.current === retainFor;
+    previousOwner.current = retainFor;
+    // Process events must not unmount a user's open diagnostic breakdown.
+    // Keep the last sample visibly marked as updating; errors still replace it.
+    setState(previous => retain && previous.kind === "ready"
+      ? { ...previous, refreshing: true } : { kind: "loading" });
     void load().then(
       (value) => { if (!cancelled) setState({ kind: "ready", value }); },
       (err) => {
@@ -187,30 +193,44 @@ const ProcsTab: React.FC = () => {
   // knows when these happen (kernel-worker posts exit messages, spawn
   // resolves on the main thread); we just re-run the snapshot loader.
   const bump = useProcessEventBump();
+  const [refresh, setRefresh] = React.useState(0);
   const [expandedPid, setExpandedPid] = React.useState<number | null>(null);
-  const state = useAsyncOnce<ProcessInfo[]>(() => host.enumProcs(), [host, bump]);
+  const state = useAsyncOnce<ProcessInspectionInfo>(() => host.inspectProcesses(), [host, bump, refresh], host);
 
   React.useEffect(() => {
     if (state.kind !== "ready" || expandedPid === null) return;
-    if (!state.value.some((p) => p.pid === expandedPid)) setExpandedPid(null);
+    if (!state.value.processes.some((p) => p.pid === expandedPid)) setExpandedPid(null);
   }, [state, expandedPid]);
 
   if (state.kind === "loading") return <Loading />;
   if (state.kind === "missing") return <MissingEndpoint label="Procs" detail={state.message} />;
   if (state.kind === "error") return <ErrorBox message={state.message} />;
   return (
-    <table className="ktable">
+    <div className="kprocess-accounting" aria-busy={state.refreshing === true}>
+      <div className="kprocess-accounting-note">
+        <span>Guest backing, not resident RAM. Attributed = private + a share of shared backing.</span>
+        {state.refreshing && <span role="status">Updating…</span>}
+        <button type="button" className="kbtn" disabled={state.refreshing} onClick={() => setRefresh(value => value + 1)}>Refresh</button>
+      </div>
+      {state.value.memoryGroups === undefined
+        ? <p className="kprocess-accounting-note">Memory accounting is unavailable from this runtime.</p>
+        : <ProcessMemoryGroups groups={state.value.memoryGroups} />}
+    <div style={{ overflowX: "auto" }}>
+    <table className="ktable" aria-label="Processes">
       <thead>
         <tr>
           <th className="num">PID</th>
           <th className="num">PPID</th>
           <th>USER</th>
-          <th className="num">MEMORY</th>
+          <th className="num" title="Private backing plus shared backing divided among the listed processes mapping each page">ATTRIBUTED</th>
+          <th className="num" title="Backing mapped by only one listed process">PRIVATE</th>
+          <th className="num" title="Full backing mapped by this process and at least one other listed process; do not sum this column">SHARED</th>
+          <th className="num" title="Logical address-space size, including unmapped ranges">VIRTUAL</th>
           <th>COMMAND</th>
         </tr>
       </thead>
       <tbody>
-        {state.value.map((p) => {
+        {state.value.processes.map((p) => {
           const expanded = expandedPid === p.pid;
           return (
             <React.Fragment key={p.pid}>
@@ -237,12 +257,17 @@ const ProcsTab: React.FC = () => {
                 </td>
                 <td className="num dim">{p.ppid}</td>
                 <td>{p.user}</td>
-                <td className="num">{p.memory}</td>
-                <td style={{ color: p.cmdline.startsWith("[") ? "var(--k-text-faint)" : "var(--k-text)" }}>{p.cmdline}</td>
+                <td className="num">{memoryBytes(p.memoryAccounting?.attributedBytes)}</td>
+                <td className="num">{memoryBytes(p.memoryAccounting?.privateBytes)}</td>
+                <td className="num">{memoryBytes(p.memoryAccounting?.sharedBytes)}</td>
+                <td className="num">{memoryBytes(p.memoryAccounting?.virtualBytes)}</td>
+                <td className="kprocess-command" title={p.cmdline} style={{ color: p.cmdline.startsWith("[") ? "var(--k-text-faint)" : "var(--k-text)" }}>{p.cmdline}</td>
               </tr>
               {expanded && (
                 <tr>
-                  <td colSpan={5} style={{ padding: 0, background: "var(--k-surface-sunk)" }}>
+                  <td colSpan={8} style={{ padding: 0, background: "var(--k-surface-sunk)" }}>
+                    <p className="kprocess-accounting-note" style={{ overflowWrap: "anywhere" }}>{p.cmdline}</p>
+                    {p.memoryAccounting && <p className="kprocess-accounting-note">Backing group: {p.memoryAccounting.groupId}</p>}
                     <ProcessMemoryDetails pid={p.pid} bump={bump} />
                   </td>
                 </tr>
@@ -252,8 +277,39 @@ const ProcsTab: React.FC = () => {
         })}
       </tbody>
     </table>
+    </div>
+    </div>
   );
 };
+
+function memoryBytes(bytes: number | undefined): string {
+  if (bytes === undefined) return "—";
+  if (bytes < 1024) return `${Number(bytes.toFixed(2))} B`;
+  const unit = bytes >= 1024 ** 3 ? "GiB" : bytes >= 1024 ** 2 ? "MiB" : "KiB";
+  const divisor = unit === "GiB" ? 1024 ** 3 : unit === "MiB" ? 1024 ** 2 : 1024;
+  return `${Number((bytes / divisor).toFixed(2))} ${unit}`;
+}
+
+const ProcessMemoryGroups: React.FC<{ groups: ProcessMemoryGroupAccounting[] }> = ({ groups }) => (
+  <details className="kprocess-groups">
+    <summary>Unique mapped: {memoryBytes(groups.reduce((sum, group) => sum + group.uniqueMappedBytes, 0))} · {groups.length} backing groups</summary>
+    <p className="kprocess-accounting-note">Shared pages count once in group totals. Samples do not pause guest execution. JavaScript heaps, compiled code and other host costs are excluded.</p>
+    {[...groups].sort((a, b) => Number(b.kind === "shared-group") - Number(a.kind === "shared-group")).map(group => <details key={group.id} className="kprocess-group" open={group.kind === "shared-group"} aria-label={`Backing group ${group.id}`}>
+      <summary>{group.id} · {group.kind === "linear" ? "linear memory" : "shared group"} · {group.processCount} {group.processCount === 1 ? "process" : "processes"} · {memoryBytes(group.uniqueMappedBytes)} mapped</summary>
+      <dl>
+        <dt>Unique mapped</dt><dd>{memoryBytes(group.uniqueMappedBytes)}</dd>
+        <dt>Runtime overhead</dt><dd>{memoryBytes(group.runtimeOverheadBytes)}</dd>
+        <dt>Retained backing</dt><dd>{memoryBytes(group.retainedBytes)}</dd>
+        <dt>Reusable backing</dt><dd>{memoryBytes(group.reusableBytes)}</dd>
+        <dt>Unaccounted allocations</dt><dd>{memoryBytes(group.unaccountedBytes)}</dd>
+        <dt>Not yet allocated</dt><dd>{memoryBytes(group.unallocatedBytes)}</dd>
+        <dt>Backing buffer size</dt><dd>{memoryBytes(group.backingBufferBytes)}</dd>
+        <dt>Allocator high-water extent</dt><dd>{memoryBytes(group.allocationExtentBytes)}</dd>
+        <dt>Maximum backing size</dt><dd>{memoryBytes(group.maximumBytes)}</dd>
+      </dl>
+    </details>)}
+  </details>
+);
 
 const ProcessMemoryDetails: React.FC<{ pid: number; bump: number }> = ({ pid, bump }) => {
   const host = useKernelHost();

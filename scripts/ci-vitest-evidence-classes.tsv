@@ -57,6 +57,7 @@ host/test/clipboard-device.test.ts	prepared-product
 host/test/clock-id-validation.test.ts	prepared-product
 host/test/clone-tid-authority.test.ts	source-only
 host/test/closed-lazy-assets.test.ts	source-only
+host/test/common-memory-page-ownership.test.ts	source-only
 host/test/compiled-worker-entry.test.ts	prepared-product
 host/test/composer-file.test.ts	source-only
 host/test/concurrent-launch.test.ts	prepared-product
@@ -112,6 +113,7 @@ host/test/egl-fork-reinitialize.test.ts	prepared-product
 host/test/egl-image-ownership.test.ts	prepared-product
 host/test/egl-native-display.test.ts	prepared-product
 host/test/egress-link.test.ts	source-only
+host/test/enosys-report.test.ts	prepared-product
 host/test/environment-lifecycle.test.ts	prepared-product
 host/test/epoll-pwait-sigmask.test.ts	prepared-product
 host/test/epoll-semantics.test.ts	prepared-product
@@ -127,6 +129,7 @@ host/test/exec-memory-refusal.test.ts	prepared-product
 host/test/exec-retirement-marker.test.ts	source-only
 host/test/exec-state-tracking.test.ts	prepared-product
 host/test/exec.test.ts	prepared-product
+host/test/fast-clock-control.test.ts	source-only
 host/test/fetch-backend.test.ts	source-only
 host/test/fifo-lifecycle-guest.test.ts	prepared-product
 host/test/file-read-buffer.test.ts	source-only
@@ -217,6 +220,7 @@ host/test/guest-spawn-overlay-program.test.ts	prepared-product
 host/test/guest-yacc-lex.test.ts	prepared-product
 host/test/harper-smoke.test.ts	prepared-product
 host/test/heap-safepoint.test.ts	prepared-product
+host/test/honest-stub-returns.test.ts	prepared-product
 host/test/host-adapter-manifest.test.ts	source-only
 host/test/host-diagnostic-routing.test.ts	source-only
 host/test/host-directory-readdir-inode.test.ts	source-only
@@ -284,6 +288,8 @@ host/test/kernel-wasm-input-snapshot.test.ts	source-only
 host/test/kernel-worker-copyback.test.ts	source-only
 host/test/kernel-worker-entry-root-contract.test.ts	source-only
 host/test/kernel.test.ts	prepared-product
+host/test/klogctl.test.ts	prepared-product
+host/test/kmsg-poll.test.ts	prepared-product
 host/test/labwc-smoke.test.ts	prepared-product
 host/test/lazy-fetch-bytes.test.ts	source-only
 host/test/lazy-url.test.ts	source-only
@@ -327,7 +333,7 @@ host/test/nethack-special-levels.test.ts	prepared-product
 host/test/network-hostname.test.ts	source-only
 host/test/network-readiness-generation.test.ts	source-only
 host/test/node-compat-builtin-exports.test.ts	prepared-product
-host/test/node-guest-build.test.ts	source-only
+host/test/node-guest-build.test.ts	prepared-product
 host/test/node-host-mounts.test.ts	prepared-product
 host/test/node-host-vfs-only-metadata.test.ts	source-only
 host/test/node-input-source.test.ts	source-only
@@ -343,6 +349,7 @@ host/test/node-platform-io-uid-gid.test.ts	source-only
 host/test/node-process-teardown-ordering.test.ts	source-only
 host/test/node-rootfs-export.test.ts	prepared-product
 host/test/node-rootfs-lazy-cohort.test.ts	prepared-product
+host/test/node-syscall-trace-retirement.test.ts	prepared-product
 host/test/node-worker-adapter.test.ts	prepared-product
 host/test/non-pty-stdio.test.ts	prepared-product
 host/test/nosuid-exec.test.ts	source-only
@@ -401,10 +408,12 @@ host/test/proc-maps.test.ts	prepared-product
 host/test/proc-self-exe.test.ts	prepared-product
 host/test/process-generation-detach-host-parity.test.ts	source-only
 host/test/process-generation-detach.test.ts	source-only
-host/test/process-generation-observation.test.ts	source-only
+host/test/process-generation-observation.test.ts	prepared-product
 host/test/process-group-leader-timer.test.ts	prepared-product
+host/test/process-memory-accounting.test.ts	source-only
 host/test/process-memory-allocator.test.ts	source-only
 host/test/process-memory-async-allocation.test.ts	source-only
+host/test/process-memory-backing.test.ts	source-only
 host/test/process-memory-creator-gate.test.ts	source-only
 host/test/process-memory-reclamation-rss.test.ts	prepared-product
 host/test/process-memory-retained-wrapper.test.ts	source-only
@@ -520,6 +529,8 @@ host/test/suite-health-reporter.test.ts	source-only
 host/test/supported-program-baseline.test.ts	prepared-product
 host/test/sway-smoke.test.ts	prepared-product
 host/test/syscall-cp-offset.test.ts	prepared-product
+host/test/syslog-client.test.ts	prepared-product
+host/test/syslog-end-to-end.test.ts	prepared-product
 host/test/sysv-ipc.test.ts	prepared-product
 host/test/sysv-shm-departed-peer.test.ts	prepared-product
 host/test/tar.test.ts	source-only
@@ -538,8 +549,11 @@ host/test/timerfd-wake-latency.test.ts	prepared-product
 host/test/tls-network-backend-real-client.test.ts	prepared-product
 host/test/transfer-kernel-wait.test.ts	prepared-product
 host/test/trap-signals.test.ts	source-only
+host/test/ts05-clock-extension-contract.test.ts	prepared-product
+host/test/unix-dgram-cross-process.test.ts	prepared-product
 host/test/unix-listener-exec.test.ts	prepared-product
 host/test/utf8proc-smoke.test.ts	prepared-product
+host/test/var-log-image-contract.test.ts	prepared-product
 host/test/vfork-lifecycle-guest.test.ts	prepared-product
 host/test/vfork-lifetime.test.ts	source-only
 host/test/vfork-mechanism-trace.test.ts	source-only
@@ -782,7 +796,7 @@ tests/package-system/resolve-binary.test.ts	prepared-product
 tests/package-system/rootfs-package-manifest.test.ts	prepared-product
 tests/package-system/rootfs-verified-source-contract.test.ts	prepared-product
 tests/package-system/rust-package-workspace.test.ts	source-only
-tests/package-system/scummvm-play-download.test.ts	source-only
+tests/package-system/scummvm-play-download.test.ts	prepared-product
 tests/package-system/sdl-dsp-packages.test.ts	source-only
 tests/package-system/shell-lazy-url-resolution.test.ts	prepared-product
 tests/package-system/source-only-vite-assets.test.ts	prepared-product

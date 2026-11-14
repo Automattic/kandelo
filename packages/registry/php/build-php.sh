@@ -18,9 +18,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/scripts/package-build-roots.sh"
-kandelo_package_load_source_metadata "$SCRIPT_DIR"
+PACKAGE_NAME=php
+RECIPE_DIR="$SCRIPT_DIR"
+COMMON_MEMORY_CFLAGS=""
+if [ "${1:-}" = --common-memory ] && [ "$#" -eq 1 ]; then
+    PACKAGE_NAME=php-common-memory
+    RECIPE_DIR="$SCRIPT_DIR/../php-common-memory"
+    COMMON_MEMORY_CFLAGS="-DKANDELO_EXPERIMENTAL_COMMON_MEMORY=1 --experimental-clock-query-v1"
+elif [ "$#" -ne 0 ]; then
+    echo "ERROR: unsupported PHP build arguments" >&2
+    exit 2
+fi
+if [ -n "${WASM_POSIX_DEP_NAME:-}" ] && [ "$WASM_POSIX_DEP_NAME" != "$PACKAGE_NAME" ]; then
+    echo "ERROR: PHP build mode disagrees with resolver package $WASM_POSIX_DEP_NAME" >&2
+    exit 2
+fi
+kandelo_package_load_source_metadata "$RECIPE_DIR"
 # shellcheck source=/dev/null
-kandelo_package_prepare_build_roots "$SCRIPT_DIR/php-work" wasm32
+kandelo_package_prepare_build_roots "$RECIPE_DIR/php-work" wasm32
 PHP_VERSION="$WASM_POSIX_DEP_VERSION"
 SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
 SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
@@ -46,7 +61,7 @@ cleanup() {
 trap cleanup EXIT
 SRC_DIR="$WORK_DIR/source"
 BIN_DIR="${WASM_POSIX_DEP_OUT_DIR:+$WORK_DIR/bin}"
-BIN_DIR="${BIN_DIR:-$SCRIPT_DIR/bin}"
+BIN_DIR="${BIN_DIR:-$RECIPE_DIR/bin}"
 CONFIG_CACHE="$WORK_DIR/config.cache"
 GUEST_PREFIX="/usr"
 
@@ -689,7 +704,7 @@ from pathlib import Path
 p = Path("ext/opcache/ZendAccelerator.c")
 s = p.read_text()
 marker = "\tfile_cache_only = ZCG(accel_directives).file_cache_only;\n"
-guard = """#if defined(__wasm__) /* kandelo-opcache-file-cache-only */
+guard = """#if defined(__wasm__) && !defined(KANDELO_EXPERIMENTAL_COMMON_MEMORY) /* kandelo-opcache-file-cache-only */
 \tif (!ZCG(accel_directives).file_cache_only) {
 \t\taccel_startup_ok = false;
 \t\tzend_accel_error_noreturn(
@@ -1088,7 +1103,7 @@ if [ ! -f Makefile ]; then
         --localstatedir=/var \
         --with-config-file-path=/etc \
         --with-config-file-scan-dir=/etc/php.d \
-        CFLAGS="-O2 -gline-tables-only $REPRODUCIBLE_PREFIX_MAPS -DZEND_USE_ASM_ARITHMETIC=0"
+        CFLAGS="-O2 -gline-tables-only $REPRODUCIBLE_PREFIX_MAPS -DZEND_USE_ASM_ARITHMETIC=0 $COMMON_MEMORY_CFLAGS"
     # CFLAGS includes -gline-tables-only for debug stack traces.
     # The debug-trace value is worth keeping. CLI inherits the same
     # flags; it just produces a slightly larger binary.
@@ -1249,6 +1264,7 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 # Build ext/curl as a normal shared PHP extension. libcurl.a is PIC and is
 # absorbed into curl.so; libc, zlib, and OpenSSL remain imports from php.wasm
 # so dlopen does not create duplicate process-global library state.
+if [ "$PACKAGE_NAME" = php ]; then
 echo "==> Building curl.so (extension)..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
     EXTRA_CFLAGS="$EXTRA_INC_LIBXML -I$LIBCURL_PREFIX/include -DCURL_STATICLIB" \
@@ -1389,6 +1405,7 @@ echo "==> intl.so: $(wc -c < "$BIN_DIR/intl.so") bytes"
 # file without inspecting the library cache.
 cp "$ICU_PREFIX/share/icu.dat" "$BIN_DIR/icu.dat"
 chmod 0644 "$BIN_DIR/icu.dat"
+fi
 
 # Copy to bin/ with .wasm extension (needed for Vite browser demos)
 cp sapi/cli/php "$BIN_DIR/php.wasm"
@@ -1422,6 +1439,24 @@ mv "$BIN_DIR/php-fpm.wasm.instr" "$BIN_DIR/php-fpm.wasm"
 chmod 0755 "$BIN_DIR/php.wasm" "$BIN_DIR/php-fpm.wasm"
 
 ls -la "$BIN_DIR/php.wasm" "$BIN_DIR/php-fpm.wasm"
+
+if [ "$PACKAGE_NAME" = php-common-memory ]; then
+    # This separate recipe permits SHM only in executables that are translated
+    # before installation. It ships no untranslated dynamic extensions.
+    host_target="$(rustc -vV | sed -n 's/^host: //p')"
+    (cd "$REPO_ROOT" && cargo run --locked --quiet -p xtask --target "$host_target" -- \
+        stamp-abi-contract "$BIN_DIR/php.wasm" "$BIN_DIR/php-fpm.wasm")
+    source "$REPO_ROOT/scripts/install-local-binary.sh"
+    for artifact in php.wasm php-fpm.wasm; do
+        "$REPO_ROOT/sdk/bin/wasm32posix-common-memory" "$BIN_DIR/$artifact" \
+            -o "$BIN_DIR/$artifact.virtual" > "$WORK_DIR/$artifact.translation.json"
+        mv "$BIN_DIR/$artifact.virtual" "$BIN_DIR/$artifact"
+        WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
+            install_local_binary "$PACKAGE_NAME" "$BIN_DIR/$artifact" "$artifact"
+    done
+    exit 0
+fi
 
 # Publish through the resolver-owned output without mutating the checkout.
 # Direct developer builds preserve the existing local-binaries mirror.

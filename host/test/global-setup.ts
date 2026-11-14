@@ -82,6 +82,10 @@ const RESOLVED_PROGRAM_FIXTURES = [
     out: join(repoRoot, "local-binaries/programs/wasm32/audiotest.wasm"),
   },
   ...[
+    // The source-only demo-login image policy checks these local compiler
+    // fixtures separately from the resolver-owned privileged products.
+    "login",
+    "sudo-lite",
     "persistence-overwrite",
     "persistence-boot-counter",
     "persistence-mapping-memory",

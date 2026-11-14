@@ -244,6 +244,26 @@ allow an older host adapter to instantiate the new kernel; they do not
 bypass that program/kernel digest check. Cross-version host checks must
 use guest artifacts stamped for the kernel being tested.
 
+### Optional experimental process-memory and clock capabilities
+
+The opt-in common-memory prototype adds two indefinitely optional kernel
+exports: `kernel_configure_process_memory_model(pid: u32, generation: u64,
+model: u32, commit: u32) -> i32` and `kernel_direct_clock_eligible(pid: u32,
+tid: u32) -> i32`. Model 0 is ordinary separate memory; model 1 is the trusted
+memory32 shared group. Admission phase 0 preflights without mutation, and phase
+1 commits in the same kernel entry for the exact execution generation. Refusal
+is a negative errno. A group host requires this capability before guest code;
+an ordinary host does not require it. Clock eligibility returns 0 only for a
+running main task without secondary threads or a deliverable signal, and 1
+otherwise; it does not certify a buffer or provider by itself.
+
+These additions preserve the frozen base program digest. The separately
+versioned [clock import](program-extensions.md#experimental-clock-query-version-1)
+is a required declaration only in executables linked with that explicit
+extension. Prototype artifact markers and the matching profile remain an
+additional admission boundary; they do not relax ABI checks for ordinary
+executables. See [prototype limits](experimental-common-memory.md).
+
 ### Changes that require a version bump
 
 There are two versions, one per audience (see [Which changes force a

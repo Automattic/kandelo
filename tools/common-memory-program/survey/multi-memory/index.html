@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>Multi-memory mechanism</title>
+<script type="module">
+window.runProbe=async()=>{
+ const worker=new Worker('./worker-browser.mjs',{type:'module'});
+ try{return await new Promise((resolve,reject)=>{
+  worker.onmessage=e=>resolve(e.data);worker.onerror=e=>reject(Error(e.message));
+ });}finally{worker.terminate();}
+};
+</script>

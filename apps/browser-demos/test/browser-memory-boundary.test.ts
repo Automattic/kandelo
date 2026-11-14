@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { persistentRealmMemoryFailures } from "./support/browser-memory-boundary";
+import { runInNewContext } from "node:vm";
+import { installBrowserMemoryBoundaryProbe, persistentRealmMemoryFailures } from "./support/browser-memory-boundary";
 import { auditBrowserMessageTypes } from "./support/audit-browser-message-types";
 import { repositoryRuntimeSourceFiles } from "../../../host/test/support/wasm-memory-write-audit";
 
@@ -75,4 +76,20 @@ test("memory probe rejects oversized, growable, and disguised shared pixel buffe
   assert.equal(persistentRealmMemoryFailures({
     type: "response", result: { pixels: new SharedArrayBuffer(16) },
   }).length, 1);
+});
+
+
+test("allocation probe preserves native Memory intrinsics and still catches shared allocations", async () => {
+  let source = "";
+  await installBrowserMemoryBoundaryProbe({
+    addInitScript: async (script: { content: string }) => { source = script.content; },
+  } as never);
+  const realm = { Memory: WebAssembly.Memory };
+  const window = { Worker: class {}, __browserMemoryBoundaryFailures: [] as string[] };
+  runInNewContext(source, { window, WebAssembly: realm, crypto: globalThis.crypto });
+  assert.equal(realm.Memory.prototype, WebAssembly.Memory.prototype);
+  const getBuffer = Object.getOwnPropertyDescriptor(realm.Memory.prototype, "buffer")!.get!;
+  const memory = new realm.Memory({ initial: 1, maximum: 1, shared: true });
+  assert.ok(getBuffer.call(memory) instanceof SharedArrayBuffer);
+  assert.deepEqual(Array.from(window.__browserMemoryBoundaryFailures), ["browser main allocated shared Wasm memory"]);
 });

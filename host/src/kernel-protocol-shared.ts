@@ -69,6 +69,12 @@ export interface EnumProcsRequestMessage {
   requestId: number;
 }
 
+/** Numeric backing accounting and process table from the same worker turn. */
+export interface InspectProcessesRequestMessage {
+  type: "inspect_processes";
+  requestId: number;
+}
+
 /** Read `/proc/[pid]/maps` for a foreign process via the host. The kernel-
  * worker forwards to `CentralizedKernelWorker.readProcMaps(pid)`; response
  * carries a string (Linux smaps-ish text) or `null` if the pid is gone. */

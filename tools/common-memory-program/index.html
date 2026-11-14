@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>Common-memory program checks</title>
+<script type="module">
+window.run = (options = {}) => new Promise((resolve, reject) => {
+  const worker = new Worker('./browser-worker.mjs', { type: 'module' });
+  const timeout = setTimeout(() => { worker.terminate(); reject(Error('program checks timed out')); }, 120000);
+  const finish = () => { clearTimeout(timeout); worker.terminate(); };
+  worker.onerror = error => { finish(); reject(Error(error.message)); };
+  worker.onmessage = ({ data }) => {
+    finish();
+    if (data.error) reject(Error(data.error)); else resolve({ ...data.result, crossOriginIsolated });
+  };
+  worker.postMessage(options);
+});
+</script>

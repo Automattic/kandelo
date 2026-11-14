@@ -3449,6 +3449,24 @@
 .ktable .num { text-align: right; }
 .ktable .dim { color: var(--k-text-faint); }
 
+.kprocess-accounting .num { white-space: nowrap; }
+.kprocess-command { width: 100%; max-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kprocess-accounting-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  margin: 0;
+  color: var(--k-text-muted);
+  font-size: 11px;
+}
+.kprocess-groups { padding: 8px 10px; font-size: 11px; }
+.kprocess-groups summary { cursor: pointer; }
+.kprocess-group { padding: 10px 0; border-bottom: 1px solid var(--k-border); }
+.kprocess-group dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; }
+.kprocess-group dd { margin: 0; font-family: var(--k-font-mono); text-align: right; }
+
 /* ── VFS tree ───────────────────────────────────────────────────────────── */
 
 .kvfs-row {

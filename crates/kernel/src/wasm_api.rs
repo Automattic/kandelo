@@ -3373,6 +3373,46 @@ pub extern "C" fn kernel_set_main_channel_addr(pid: u32, addr: u64) -> i32 {
     }
 }
 
+/// Bind a host memory implementation to the exact image during registration.
+/// Phase 0 preflights without mutation; phase 1 commits in the same kernel
+/// entry. Ordinary hosts/kernels may omit this optional experimental surface.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_configure_process_memory_model(pid: u32, generation: u64, model: u32, commit: u32) -> i32 {
+    if commit > 1 { return -(Errno::EINVAL as i32); }
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else { return -(Errno::ESRCH as i32); };
+    match proc.configure_memory_model(generation, model, commit == 1) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Optional capability required by the source-built shared-group host.
+/// Ordinary process memory does not use this stop/commit protocol.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_group_stop_protocol_version() -> u32 { 1 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_pending_signal_termination(pid: u32, generation: u64) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else { return -(Errno::ESRCH as i32); };
+    if proc.exec_generation != generation { return -(Errno::EAGAIN as i32); }
+    proc.pending_signal_termination().map_or(0, |(_, signal)| signal as i32)
+}
+
+/// A host execution fence authorizes signal cleanup for this exact image.
+/// No descriptor, lock, SIGCHLD or wait status is published before this call.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_commit_signal_termination_stopped(pid: u32, generation: u64) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match lifecycle::run(table, &mut WasmHostIO, LifecycleRequest::ConfirmSignalStop { pid, generation }) {
+        Ok(LifecycleCompletion::SignalStopCommitted(status)) => status,
+        Ok(_) => unreachable!("signal stop lifecycle completion"),
+        Err(error) => -(error as i32),
+    }
+}
+
 /// `brk(0)` returns a value above the program's data section and stack
 /// region. Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
@@ -8823,6 +8863,19 @@ pub extern "C" fn kernel_blocking_retry_release(pid: u32, tid: u32, token: i64) 
 
 /// Validate a host channel's exact task identity without installing a
 /// one-shot dispatch binding.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_direct_clock_eligible(pid: u32, tid: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if table.validate_task(pid, tid).is_err() { return 1; }
+    let Some(proc) = table.get(pid) else { return 1; };
+    if proc.state != crate::process::ProcessState::Running || !proc.threads.is_empty()
+        || proc.pending_signal_termination().is_some()
+        || !proc.is_main_thread(tid) || proc.next_deliverable_signal(tid).is_some() { return 1; }
+    0
+}
+
+/// Validate an exact task without changing dispatch binding.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_validate_task(pid: u32, tid: u32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };

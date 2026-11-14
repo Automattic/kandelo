@@ -116,7 +116,20 @@ Service Worker ──MessagePort──> Kernel Worker       │
   for UI code to fall back to; a kernel without these methods makes the call
   fail with an error naming the missing method. A missing path resolves
   `null` from the worker and surfaces as `ENOENT`, not as empty bytes or an
-  empty listing. The process list comes from `enumProcs`; directory and
+  empty listing. The Internals Procs list uses `inspectProcesses` for numeric
+  guest-backing accounting alongside the process table. Its default memory
+  column is Attributed (private backing plus a proportional share of shared
+  pages), with Private, Shared and Virtual columns and an expandable backing
+  group breakdown. Groups count shared pages once and distinguish runtime
+  overhead, retained and reusable backing, unknown allocations, current buffer
+  size and allocator extent. The display explicitly excludes host resident RAM.
+  Process events refresh the sample; Refresh also captures growth or mapping
+  changes without a process event. Refresh retains the displayed sample and
+  open breakdowns while marking them as updating; a failed refresh shows the
+  error. Missing accounting is shown as unavailable,
+  not inferred from the old linear-memory-size field. See
+  [guest memory accounting](architecture.md#guest-memory-accounting).
+  `enumProcs` remains available for lightweight enumeration; directory and
   metadata inspection also expose live `/proc` and `/dev` entries.
   Files, directory snapshots and path metadata come from native inspection
   exports, using the same component-wise namespace walker as guest syscalls.
@@ -273,6 +286,12 @@ pipe pair.
   equivalent packaged-netcat virtual-network path remains covered on Node.js.
 - Service worker cookie jar for session persistence (WordPress)
 - nginx serves static files and proxies to PHP-FPM via loopback TCP
+
+For single-pool PHP-FPM images, browser composition preserves the image's
+`pm.max_children` request up to the host memory profile's pre-fork worker
+limit. A two-worker image stays at two on a host that can admit six; a host
+limited to one clamps it to one. Invalid or ambiguous worker requests fail
+composition rather than silently selecting a larger pool.
 
 ### Filesystem
 - The in-kernel root filesystem and tmpfs hold `/`, the scratch mounts and `/dev/shm`; the browser host mounts no filesystem of its own beneath them (`resolveForBrowser` refuses a scratch mount the tmpfs does not serve).
@@ -4825,6 +4844,16 @@ Its slot is still reclaimed when the thread exits, and workers are never
 reused. The cost is one idle worker per thread a process has created, held
 until that process ends. Chromium, Firefox and Node.js terminate thread
 workers as soon as the thread exits.
+
+The opt-in common-memory PHP-FPM experiment also shares backing across
+different process Workers. A process ending while its peers grow the group
+can reach the same defect; process-local instance retention alone does not
+cover the group's lifetime. Its separate `--pregrow-group` diagnostic
+profile allocates the common backing to its existing ceiling before
+instances bind, avoiding later positive physical growth at the cost of a
+larger initial buffer. The default profile and interactive preview remain
+unchanged. See the [optimization catalog](measurements/2026-11-11-common-memory-optimization-catalog.md)
+for measured scope and retained failures.
 
 ### Firefox crash when a Worker ends a starting classic Worker
 

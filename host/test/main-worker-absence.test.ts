@@ -7,6 +7,7 @@ import { DeferredWorkerHandle, createWorkerAbsence } from "../src/deferred-worke
 import { createWorkerQuiescence, prepareProcessWorkerAbsence, sealProcessWorkerAbsence,
   processWorkerRetirementProven, waitForProcessWorkerRetirement } from "../src/worker-quiescence";
 import { MockWorkerHandle, type WorkerHandle } from "../src/worker-adapter";
+import { processBackingMemoryModel } from "../src/process-memory-backing";
 import { ProcessMemoryAllocator, acquireForkMemoryClone, FORK_SAVE_BUFFER_SIZE } from "../src/process-memory";
 import { ProcessGenerationObservations, type ProcessGenerationEventData } from "../src/process-generation-observation";
 import { ForkReplayGateCoordinator, observeForkReplayWorker } from "../src/fork-replay-gate";
@@ -90,6 +91,8 @@ function actualMainLaunchControl(host: Host, ptrWidth: 4 | 8, vfork: boolean, mo
     retryKernelEntryResult: async (operation: () => unknown) => operation(), waitForProcessTeardowns: async () => {},
     CH_TOTAL_SIZE, FORK_SAVE_BUFFER_SIZE, WASM_PAGE_SIZE: PAGE, PAGE_SIZE: PAGE, PAGES_PER_THREAD: 1, PROCESS_FORK_MODE_VFORK: 1, SIGSEGV: 11,
     kernelWorker: {
+      // This fixture exercises the ordinary, direct-clock-disabled profile.
+      prepareDirectClockInit: () => undefined,
       shouldLaunchPendingChild: () => true, registerProcess() {}, inheritProcessSharedMappings() {}, reserveHostRegionAt() {},
       processSecureExec: () => false, getKernelAbiVersion: () => 56, getKernelAbiContractDigest: () => "source-control",
       finalizePendingChildTermination: () => 0, killBlockedProcessForTeardown: async () => {},
@@ -122,7 +125,7 @@ function actualMainLaunchControl(host: Host, ptrWidth: 4 | 8, vfork: boolean, mo
     detachExactProcessGeneration: detach, reportRetainedProcessGeneration() {throw Error("unexpected retained generation");},
     releaseMainFramebufferGeneration: async () => true, awaitFinalizedProcessTeardown: awaitTeardown,
     finishVforkDisposition: async (_disposition: unknown, info: any) => [info.channelOffset],
-    signalExitStatus, signalFromExitStatus,
+    signalExitStatus, signalFromExitStatus, processBackingMemoryModel,
   };
   actual = new Function(...Object.keys(deps), code + "\nreturn {fork:handleOrdinaryFork,vfork:handleVfork,terminate:terminateTrackedWorker,finish:finishProcessExit};")(...Object.values(deps));
   const continuation = {kind: "main", forkBufAddr: 3 * PAGE + 32};

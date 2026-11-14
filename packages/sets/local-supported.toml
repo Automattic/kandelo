@@ -1126,3 +1126,11 @@ reason = "experimental guest Rust SDK bundle"
 [[exclusions]]
 name = "rust-native-fixtures"
 reason = "optional guest Rust native-dependency acceptance inputs"
+
+[[exclusions]]
+name = "php-common-memory"
+reason = "opt-in trusted memory32 prefork prototype; not a default package"
+
+[[exclusions]]
+name = "wordpress-common-memory"
+reason = "opt-in shared-OPcache prototype image; not a gallery product"

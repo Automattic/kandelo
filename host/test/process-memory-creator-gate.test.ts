@@ -12,6 +12,18 @@ function deferred() {
 }
 
 describe("process memory creator destroy gate", () => {
+  it("mints a pending cancellation only after its own admission closes", async () => {
+    const gate = new ProcessMemoryCreatorGate();
+    const cancel = vi.fn();
+    expect(() => gate.cancelPendingCreation("construction", cancel)).toThrow("before closing admission");
+    expect(cancel).not.toHaveBeenCalled();
+    await gate.closeAndWait();
+    gate.cancelPendingCreation("construction", cancel);
+    expect(cancel).toHaveBeenCalledOnce();
+    const reason = cancel.mock.calls[0][0];
+    expect(isProcessMemoryCreatorAdmissionClosed(reason)).toBe(true);
+    expect(isProcessMemoryCreatorAdmissionClosed(new Error(reason.message))).toBe(false);
+  });
   it("brands only an actual terminal admission refusal, never copied error text", async () => {
     const gate = new ProcessMemoryCreatorGate();
     await gate.closeAndWait();

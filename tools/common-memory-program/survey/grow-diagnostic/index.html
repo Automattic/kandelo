@@ -1,0 +1,100 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Standalone shared memory growth diagnostic</title>
+<script>
+// Standalone Web APIs only. Guest/Kandelo runtime code is not loaded here.
+function childMain() {
+  let stopped = false, module, memory, width, retained = [], batches = 0;
+  function churn() {
+    if (stopped) { postMessage({kind:'stopped',batches}); return; }
+    try {
+      for (let i=0;i<width;i++) {
+        const instance=new WebAssembly.Instance(module,{env:{memory}});
+        const value=instance.exports.touch((i&63)*4);
+        if (!Number.isInteger(value)) throw Error('noninteger Wasm result');
+        retained.push(instance);
+        if(retained.length>2)retained.shift();
+      }
+      batches++;
+      postMessage({kind:'batch',batches});
+      setTimeout(churn,0);
+    } catch(error) { postMessage({kind:'error',error:String(error.stack||error)}); }
+  }
+  onmessage=({data})=>{
+    if(data.kind==='init') {
+      ({module,memory,width}=data);
+      const instance=new WebAssembly.Instance(module,{env:{memory}});
+      instance.exports.touch(0);
+      retained.push(instance);
+      postMessage({kind:'ready'});
+    } else if(data.kind==='start')churn();
+    else if(data.kind==='stop')stopped=true;
+  };
+}
+function controllerMain() {
+  const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  onmessage=async({data:{options,childSource,bytes}})=>{
+    const result={options,groups:[],passed:false},live=new Set();
+    const url=URL.createObjectURL(new Blob([`(${childSource})()`],{type:'text/javascript'}));
+    try {
+      if(options.groups>24||options.workers>8||options.width>128||options.durationMs>1000)
+        throw Error('diagnostic bounds exceeded');
+      const module=await WebAssembly.compile(new Uint8Array(bytes));
+      for(let group=0;group<options.groups;group++) {
+        const memory=new WebAssembly.Memory({initial:16,maximum:256,shared:true});
+        const row={group,ready:0,batches:0,stopped:0,retired:0,grows:0,failures:[]};
+        const workers=[],stops=[];
+        const ready=[];
+        for(let i=0;i<options.workers;i++) {
+          const worker=new Worker(url);live.add(worker);workers.push(worker);
+          let stop;stops.push(new Promise(resolve=>{stop=resolve;}));
+          ready.push(new Promise((resolve,reject)=>{
+            worker.onerror=event=>{row.failures.push(event.message);reject(Error(event.message));stop();};
+            worker.onmessage=({data})=>{
+              if(data.kind==='ready'){row.ready++;resolve();}
+              else if(data.kind==='batch')row.batches++;
+              else if(data.kind==='stopped'){row.stopped++;stop();}
+              else if(data.kind==='error'){row.failures.push(data.error);reject(Error(data.error));stop();}
+            };
+          }));
+          worker.postMessage({kind:'init',module,memory,width:options.width});
+        }
+        await Promise.race([Promise.all(ready),pause(10000).then(()=>{throw Error('worker readiness deadline');})]);
+        const initialBuffer=memory.buffer;
+        for(const worker of workers)worker.postMessage({kind:'start'});
+        const deadline=performance.now()+options.durationMs;
+        while(performance.now()<deadline&&row.grows<200) {
+          const old=memory.grow(1);
+          if(old!==16+row.grows)throw Error('memory.grow returned unexpected old size');
+          row.grows++;
+          await pause(2);
+        }
+        if(!options.retireWhileActive) {
+          for(const worker of workers)worker.postMessage({kind:'stop'});
+          await Promise.race([Promise.all(stops),pause(10000).then(()=>{throw Error('stop deadline');})]);
+        }
+        for(const worker of workers){worker.terminate();live.delete(worker);row.retired++;}
+        // Legal growth immediately after termination, whose API has no join.
+        memory.grow(1);row.grows++;
+        if(initialBuffer.byteLength!==16*65536||memory.buffer.byteLength!==(16+row.grows)*65536)
+          throw Error('shared buffer growth length contract failed');
+        if(row.ready!==options.workers||!row.batches||!row.grows||row.failures.length)
+          throw Error('incomplete group workload');
+        result.groups.push(row);
+      }
+      result.passed=true;
+    } catch(error) { result.error=String(error.stack||error); }
+    finally {for(const worker of live)worker.terminate();URL.revokeObjectURL(url);postMessage(result);close();}
+  };
+}
+window.runDiagnostic=async options=>{
+  const bytes=Uint8Array.from(atob('AGFzbQEAAAABBgFgAX8BfwIRAQNlbnYGbWVtb3J5AgMBgAIDAgEABwkBBXRvdWNoAAAKDAEKACAAKAIAPwBzCw=='),c=>c.charCodeAt(0));
+  const url=URL.createObjectURL(new Blob([`(${controllerMain.toString()})()`],{type:'text/javascript'}));
+  const worker=new Worker(url);
+  try{return await new Promise((resolve,reject)=>{
+    worker.onmessage=event=>resolve(event.data);
+    worker.onerror=event=>reject(Error(event.message));
+    worker.postMessage({options,childSource:childMain.toString(),bytes});
+  });} finally {worker.terminate();URL.revokeObjectURL(url);}
+};
+</script>

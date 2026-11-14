@@ -1,3 +1,4 @@
+import{describeFastClockProvider}from'../fast-clock-provider';
 import type {
   AppendOutcome,
   HostFileOffset,
@@ -755,6 +756,8 @@ export class VirtualPlatformIO implements PlatformIO {
   }
 
   // --- Time operations ---
+
+  directClockDescriptor(logical:boolean):unknown{return describeFastClockProvider(this.time,logical);}
 
   clockGettime(clockId: number): { sec: number; nsec: number } {
     return this.time.clockGettime(clockId);

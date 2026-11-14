@@ -48,7 +48,7 @@ import type {
 } from "./node-kernel-protocol";
 import type { OwnedJobRead } from "./owned-jobs";
 import { createOwnedJobLifetime } from "./owned-job-lifetime";
-import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
+import type { ProcessInspection, ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
@@ -1008,6 +1008,11 @@ export class NodeKernelHost {
    * Snapshot the kernel's process table — one row per live process. Used
    * by Kandelo's Inspector → Procs tab. Mirrors `BrowserKernel.enumProcs`.
    */
+  async inspectProcesses(): Promise<ProcessInspection> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, { type: "inspect_processes", requestId }) as ProcessInspection;
+  }
+
   async enumProcs(): Promise<ProcessSnapshot[]> {
     const requestId = this._nextRequestId++;
     const result = await this.request(requestId, {
@@ -1402,6 +1407,9 @@ export class NodeKernelHost {
 
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
+    // A trace subscription owns a polling interval even when no guest is left.
+    // Cancel it before the early return and before terminating its worker.
+    this.stopSyscallPoll();
     this.attachedInputSource?.stop();
     this.attachedInputSource = null;
     if (!this.workerStarted) return;

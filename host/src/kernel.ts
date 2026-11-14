@@ -1,3 +1,5 @@
+import {EXPERIMENTAL_DIRECT_CLOCK_ENABLED} from './experimental-direct-clock';
+import {type ClockEpochAuthority,createClockEpochAuthority} from './fast-clock-control';
 import {prepareScalarState} from "./webgl/scalar-state.js";
 import {validProgramJournalRequest,validProgramJournalBarrierRequest} from "./webgl/program-journal-query.js";
 import { QOP_GET_ERROR } from "./webgl/ops.js";
@@ -123,6 +125,7 @@ export type KernelPointer = number | bigint;
 
 interface WasmPosixKernelRuntimeAccess {
   readonly gate: KernelEntryGate;
+  readonly clockEpoch: ClockEpochAuthority|undefined;
   readonly instance: () => WebAssembly.Instance | null;
   readonly memory: () => WebAssembly.Memory | null;
 }
@@ -944,7 +947,8 @@ export class WasmPosixKernel {
   #instance: WebAssembly.Instance | null = null;
   #memory: WebAssembly.Memory | null = null;
   #memoryGeneration: object = intrinsicObjectFreeze({});
-  readonly #kernelEntryGate = new KernelEntryGate();
+  readonly #directClockEpoch=EXPERIMENTAL_DIRECT_CLOCK_ENABLED?createClockEpochAuthority():undefined;
+  readonly #kernelEntryGate = new KernelEntryGate(undefined,this.#directClockEpoch);
   #kernelPtrWidth: 4 | 8 = 4;
   #testEngine: WasmPosixKernelTestHarnessOptions["engine"] | undefined;
   /**
@@ -1925,6 +1929,7 @@ export class WasmPosixKernel {
         this,
         {
           gate: this.#kernelEntryGate,
+          clockEpoch: this.#directClockEpoch,
           instance: () => this.#instance,
           memory: () => this.#memory,
         },

@@ -1,0 +1,12 @@
+import {Worker} from 'node:worker_threads';
+import {resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {writeFileSync} from 'node:fs';
+const root=resolve(process.argv[2]);
+const worker=new Worker(pathToFileURL(resolve(root,'worker-node.mjs')),{workerData:{path:resolve(root,'probe.wasm')}});
+let result;
+worker.on('message',r=>result=r);
+await new Promise((resolve,reject)=>{worker.on('exit',code=>code===0?resolve():reject(Error(`worker exit ${code}`)));worker.on('error',reject);});
+result={...result,runtime:process.version,flags:process.execArgv,workerExited:true};
+writeFileSync(resolve(root,'node-result.json'),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result));
+if(!result.passed)throw Error('multi-memory capability/mechanism failed');

@@ -1,0 +1,23 @@
+script_path = "packages/registry/php-common-memory/build-php-common-memory.sh"
+inputs = [
+  "packages/registry/php-common-memory/build-php-common-memory.sh",
+  "packages/registry/php/build-php.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/package-source-metadata.py",
+  "scripts/wasm-artifact-guards.sh",
+  "sdk/bin/wasm32posix-common-memory",
+  "tools/common-memory-program/build-helpers.sh",
+  "tools/common-memory-program/helpers.c",
+  "tools/common-memory-program/instrument/Cargo.toml",
+  "tools/common-memory-program/instrument/Cargo.lock",
+  "tools/common-memory-program/instrument/src",
+  "tools/common-memory-program/feasibility/Cargo.toml",
+  "tools/common-memory-program/feasibility/Cargo.lock",
+  "tools/common-memory-program/feasibility/src",
+  "abi/snapshot.json",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 3
+publication_state = "pending"

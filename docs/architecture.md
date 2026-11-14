@@ -2380,6 +2380,54 @@ compile one thread module between them.
 
 Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus the main-thread control pages, then grows it after successful guest allocation syscalls or after dynamically reserving a pthread control slot.
 
+### Guest memory accounting
+
+`NodeKernelHost.inspectProcesses()` and `BrowserKernel.inspectProcesses()` return
+the process table with numeric `memoryAccounting` records and a `memoryGroups`
+breakdown. `enumProcs()` remains the lightweight process-table API. These are
+guest-backing measurements, not host resident RAM, Linux RSS/PSS, or PHP's live
+heap allocations. Inspection samples state in one kernel-worker turn without
+pausing guest execution, and sends only numbers and strings to the UI.
+
+Each process reports virtual bytes, private bytes, shared bytes and attributed
+bytes. Private/shared classification counts the listed processes referencing
+each backing page, independently of mapping flags. Multiple aliases within one
+process count once. Attributed bytes divide each page's cost equally among its
+listed process sharers; summing attribution within a group gives its unique
+mapped bytes, subject to floating-point and display rounding. Shared bytes
+report the full shared mappings visible to a process and must not be summed.
+Virtual size is the logical address-space span, including unmapped ranges.
+
+Ordinary linear memories count their entire current buffer as mapped backing;
+two listed processes borrowing the same memory share its charge. This does not
+measure malloc usage or imply every byte is resident. The experimental common
+memory profile supplies actual page identities and allocator ownership through
+the internal diagnostic source in `host/src/process-memory-accounting.ts`.
+Its group IDs are stable for an owner's lifetime, scoped to the kernel Worker.
+Diagnostic registration uses weak references and does not own a retirement
+lease or extend a backing's lifetime.
+
+Group accounting partitions the backing buffer into these disjoint categories:
+
+| Category | Meaning |
+|---|---|
+| Unique mapped | Backing referenced by listed processes, counted once |
+| Runtime overhead | Explicitly tracked group metadata and scratch pages |
+| Retained backing | Other owned payload, including unlisted/quarantined roots and fork pins, excluding pages already counted above |
+| Reusable backing | Allocator free pages available for reuse |
+| Unaccounted allocations | Allocator extent not explained by the tracked categories |
+| Not yet allocated | Buffer space beyond the allocator's high-water extent |
+
+The categories sum to backing buffer size. The allocator high-water extent and
+maximum backing size are separate diagnostics; neither is live usage. Unknown
+maximums remain unavailable because standard `WebAssembly.Memory` objects do
+not expose their declared maximum. Common-group accounting includes allocator
+backing after the last listed process exits, while that allocator still owns
+it. Attribution's sharing scope is the listed processes; references retained
+outside that list are recorded at group level. Kernel memory, JavaScript heaps,
+compiled code, Worker stacks and other embedding costs require separate host
+measurements and are excluded from this report.
+
 ```
 Address           Region
 0x00000000        Wasm data segment (globals, static data)

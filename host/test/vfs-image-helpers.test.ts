@@ -247,6 +247,26 @@ describe("walkAndWrite", () => {
 });
 
 describe("VFS artifact publication inspection", () => {
+  it("rejects an unknown common-memory policy format before publishing", async () => {
+    const root=mkdtempSync(join(tmpdir(),"vfs-prototype-policy-")),output=join(root,"guarded.vfs.zst");
+    try {
+      await expect(saveImage(artifactFileSystem(),output,{wasmArtifactPolicies:[{
+        path:"/ordinary.bin",forkInstrumentation:"auto",experimentalCommonMemory:"prototype-v99" as "prototype-v1",
+      }]})).rejects.toThrow(/unsupported common-memory format/);
+      expect(existsSync(output)).toBe(false);
+    } finally {rmSync(root,{recursive:true,force:true});}
+  });
+
+  it("keeps ordinary artifact validation for an explicitly declared prototype path", async () => {
+    const root=mkdtempSync(join(tmpdir(),"vfs-prototype-policy-")),output=join(root,"guarded.vfs.zst");
+    try {
+      await expect(saveImage(artifactFileSystem(),output,{wasmArtifactPolicies:[{
+        path:"/ordinary.bin",forkInstrumentation:"auto",experimentalCommonMemory:"prototype-v1",
+      }]})).rejects.toThrow(/declared Wasm artifact policy names a non-Wasm file/);
+      expect(existsSync(output)).toBe(false);
+    } finally {rmSync(root,{recursive:true,force:true});}
+  });
+
   it("skips only an explicitly deferred path while inspecting ordinary files", async () => {
     const fs = artifactFileSystem();
     fs.registerLazyFile(

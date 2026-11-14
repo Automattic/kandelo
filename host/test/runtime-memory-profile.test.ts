@@ -14,6 +14,27 @@ import {
   selectRootfsMetadataBytes,
 } from "../src/runtime-memory-profile";
 import { DEFAULT_KERNEL_MAX_PAGES, DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "../src/constants";
+import { cappedPhpFpmWorkerCount } from "../../apps/browser-demos/lib/init/php-fpm-worker-count";
+
+describe("image-owned PHP-FPM worker requests", () => {
+  it.each([[2, 6, 2], [6, 1, 1], [12, 6, 6]])(
+    "caps image request %i at host limit %i to %i", (requested, limit, expected) => {
+      expect(cappedPhpFpmWorkerCount(`[www]\npm.max_children = ${requested}\n`, limit)).toBe(expected);
+    },
+  );
+  it("ignores comments without expanding the image's actual request", () => {
+    expect(cappedPhpFpmWorkerCount("; pm.max_children = 8\n pm.max_children = 2 ; small pool\n", 6)).toBe(2);
+  });
+  it.each(["", "pm.max_children = 0", "pm.max_children = 1.5", "pm.max_children = nope",
+    "pm.max_children = 2\npm.max_children = 3", "pm.max_children = 9007199254740992"])(
+    "refuses an invalid or ambiguous image configuration: %s", config => {
+      expect(() => cappedPhpFpmWorkerCount(config, 6)).toThrow();
+    },
+  );
+  it.each([0, -1, NaN, Infinity, 1.5])("refuses host worker limit %s", limit => {
+    expect(() => cappedPhpFpmWorkerCount("pm.max_children = 2", limit)).toThrow();
+  });
+});
 
 describe("rootfs I/O budget", () => {
   it("admits retained mapping/fork state independently of namespace and journal state", () => {

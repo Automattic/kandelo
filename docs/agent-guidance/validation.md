@@ -191,7 +191,8 @@ as `prepared-product`; use `source-only` only when source and the current ABI
 test fixtures are sufficient. A `source-only` test must not import
 `host/src/binary-resolver.ts` or a `prepared-product` test, even indirectly.
 This keeps a passing source check from being mistaken for validation of an
-older package binary.
+older package binary. The import-closure audit follows parsed module syntax;
+import-looking text inside a fixture string is data, not a dependency.
 
 `bash scripts/check-vitest-evidence-classes.sh` checks the registry in both
 directions: every row names an existing test file, and every file a

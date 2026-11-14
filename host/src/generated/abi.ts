@@ -938,12 +938,17 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_clipboard_guest_read",
   "kernel_clipboard_offer",
   "kernel_clipboard_stage",
+  "kernel_commit_signal_termination_stopped",
+  "kernel_configure_process_memory_model",
+  "kernel_direct_clock_eligible",
   "kernel_epoll_wait_retry_state",
+  "kernel_get_pending_signal_termination",
   "kernel_owned_mapping_finish",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
   "kernel_set_max_addr",
   "kernel_set_mmap_base",
+  "kernel_shared_group_stop_protocol_version",
   "kernel_wait_park_followup",
 ] as const;
 

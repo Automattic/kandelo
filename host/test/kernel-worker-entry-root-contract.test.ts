@@ -9,6 +9,7 @@ const ENTRY_SOURCES = [
 ] as const;
 
 const REQUIRED_KERNEL_CALLBACKS = [
+  "onChildLaunchRolledBack",
   "onClone",
   "onExec",
   "onExit",
@@ -16,6 +17,7 @@ const REQUIRED_KERNEL_CALLBACKS = [
   "onHostDiagnostic",
   "onKernelFatal",
   "onProcessMemoryTarget",
+  "onSignalTerminationRequested",
   "onSpawn",
   "onThreadExit",
 ] as const;

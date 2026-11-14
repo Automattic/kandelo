@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>Synthetic loop and arena cost screen</title>
+<script type="module">
+window.runBreadthProbe = async () => {
+  const worker = new Worker('./worker-browser.mjs', { type: 'module' });
+  let timeout;
+  try {
+    return await new Promise((resolve, reject) => {
+      timeout = setTimeout(() => reject(Error('cost screen timed out')), 60000);
+      worker.onmessage = event => resolve(event.data);
+      worker.onerror = event => reject(Error(event.message));
+    });
+  } finally { clearTimeout(timeout); worker.terminate(); }
+};
+</script>

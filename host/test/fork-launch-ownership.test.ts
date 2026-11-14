@@ -99,6 +99,24 @@ const removed = (h: ReturnType<typeof makeHarness>) =>
 // continuation. Mock Rust exports model only its PID/image ledger; replacing
 // a mailbox or image exercises the production ownership checks, not a copy.
 describe("fork allocation ownership across asynchronous admission", () => {
+  it.each(widths)("%s rolls back an admitted construction cancelled by its closed gate", async (_name, width) => {
+    const gate = new ProcessMemoryCreatorGate();
+    const allocation = Promise.withResolvers<number[]>();
+    const h = makeHarness(() => gate.run("a fork process Worker", () => allocation.promise), width);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch(); await started(h);
+      const drained = gate.closeAndWait();
+      gate.cancelPendingCreation("pending process memory construction", reason => allocation.reject(reason));
+      await removed(h); await drained;
+      expect(h.removed).toHaveBeenCalledExactlyOnceWith(CHILD);
+      expect(h.generations.has(CHILD)).toBe(false);
+      expect(h.completion()).toEqual({status: CHANNEL_STATUS_COMPLETE, result: -1, errno: 12});
+      expect(error).not.toHaveBeenCalled();
+      expect(h.onKernelFatal).not.toHaveBeenCalled();
+    } finally { error.mockRestore(); }
+  });
+
   it.each(widths)("%s rolls back before classifying privately closed admission", async (_name, width) => {
     const gate = new ProcessMemoryCreatorGate(); await gate.closeAndWait();
     const creator = vi.fn(async () => [] as number[]);

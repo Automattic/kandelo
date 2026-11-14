@@ -20,6 +20,7 @@
 set -euo pipefail
 
 SRC_ROOT="$(cd "$(dirname "$0")" && pwd)"
+REPOSITORY_ROOT="$(cd "$SRC_ROOT/../../.." && pwd)"
 # stb_truetype.h and the Inconsolata .ttf are vendored once, in the
 # repository-root third_party/ (see third_party/NOTICE.md), and shared
 # with the SDL2 playground rather than copied here.
@@ -61,6 +62,9 @@ CFLAGS=(
     --sysroot="$SYSROOT"
     -nostdlib
     -O2
+    # Keep stb assertion paths independent of checkout and build roots.
+    "-ffile-prefix-map=$REPOSITORY_ROOT=."
+    "-ffile-prefix-map=$WORK=/kandelo/build/wpkdraw"
     -matomics -mbulk-memory
     -fno-trapping-math
     -I"$SRC_ROOT/include"

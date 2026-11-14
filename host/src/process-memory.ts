@@ -1,4 +1,5 @@
 import { recordComparisonMemoryShape } from "./process-snapshot-comparator";
+import { admitProcessBacking, disposeProcessForkSnapshot, prepareProcessBackingRetirement, rejectUnpublishedProcessBacking } from "./process-memory-backing";
 import {
   CH_TOTAL_SIZE,
   DEFAULT_MAX_PAGES,
@@ -1126,7 +1127,8 @@ export class ProcessMemoryAllocator {
         this.copyForkAddressSpace(snapshot, source);
       }
     } catch (error) {
-      this.releaseAllocationReservation(reservedBytes);
+      try { disposeProcessForkSnapshot(snapshot); }
+      finally { this.releaseAllocationReservation(reservedBytes); }
       throw error;
     }
     return this.finishAsyncAllocation(admitted, reservedBytes, snapshot);
@@ -1137,10 +1139,13 @@ export class ProcessMemoryAllocator {
     reservedBytes: number,
     snapshot?: ArrayBuffer,
   ): Promise<ProcessMemoryLease> {
+    let constructedMemory: WebAssembly.Memory | undefined;
+    let registered = false;
     try {
       let memory: WebAssembly.Memory;
       try {
         memory = await this.options.createMemoryAsync!(request);
+        constructedMemory = memory;
       } catch (error) {
         this.rethrowNativeConstructionFailure(error, reservedBytes);
       }
@@ -1161,17 +1166,23 @@ export class ProcessMemoryAllocator {
         );
       }
       const lease = this.registerFreshMemory(request, memory, "callback");
+      registered = true;
       try {
         if (snapshot !== undefined) {
           this.copyForkAddressSpace(memory.buffer, snapshot);
         }
+        disposeProcessForkSnapshot(snapshot);
         return lease;
       } catch (error) {
         lease.release();
         throw error;
       }
+    } catch (error) {
+      if (constructedMemory && !registered) rejectUnpublishedProcessBacking(constructedMemory);
+      throw error;
     } finally {
-      this.releaseAllocationReservation(reservedBytes);
+      try { disposeProcessForkSnapshot(snapshot); }
+      finally { this.releaseAllocationReservation(reservedBytes); }
     }
   }
 
@@ -1204,6 +1215,7 @@ export class ProcessMemoryAllocator {
       telemetryQueued: false,
       pendingTargets: new Map(),
     };
+    admitProcessBacking(memory);
     this.records.set(record.allocationId, record);
     this.recordsByMemory.set(memory, record);
     this.liveMemories += 1;
@@ -1353,16 +1365,21 @@ export class ProcessMemoryAllocator {
     if (actualBytes < record.accountedBytes) {
       throw new Error("WebAssembly.Memory unexpectedly shrank");
     }
-    this.liveBytes = this.safeAdd(
+    const refreshedLiveBytes = this.safeAdd(
       this.liveBytes,
       actualBytes - record.accountedBytes,
     );
+    const retirementBacklogBytes = this.safeAdd(this.retirementBacklogBytes, actualBytes);
+    const backingRetirement = prepareProcessBackingRetirement(
+      memory, record.forcedTerminationObserved ? "forced" : "quiescent",
+    );
+    backingRetirement?.();
     // Publish the final token consumption only after every fallible backing
     // check. If an integrity check throws, the caller still owns a retryable
     // lease rather than leaving a leased record with zero aliases.
     record.activeAliases = 0;
     record.accountedBytes = actualBytes;
-    this.liveBytes = Math.max(0, this.liveBytes - actualBytes);
+    this.liveBytes = Math.max(0, refreshedLiveBytes - actualBytes);
     this.liveMemories = Math.max(0, this.liveMemories - 1);
     this.recordsByMemory.delete(memory);
     record.state = "retiring";
@@ -1373,10 +1390,7 @@ export class ProcessMemoryAllocator {
     record.retirementBackpressureActive = true;
     record.memory = undefined;
     this.retirementBacklogMemories += 1;
-    this.retirementBacklogBytes = this.safeAdd(
-      this.retirementBacklogBytes,
-      actualBytes,
-    );
+    this.retirementBacklogBytes = retirementBacklogBytes;
     this.observedRetirements += 1;
     const notice: ProcessMemoryRetirementNotice = Object.freeze({
       retirementId: record.allocationId,

@@ -2539,12 +2539,17 @@
       "kernel_clipboard_guest_read",
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
+      "kernel_commit_signal_termination_stopped",
+      "kernel_configure_process_memory_model",
+      "kernel_direct_clock_eligible",
       "kernel_epoll_wait_retry_state",
+      "kernel_get_pending_signal_termination",
       "kernel_owned_mapping_finish",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
       "kernel_set_mmap_base",
+      "kernel_shared_group_stop_protocol_version",
       "kernel_wait_park_followup"
     ],
     "optional_kernel_features": 0,
@@ -4016,6 +4021,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_commit_signal_termination_stopped",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_configure_process_memory_model",
+      "signature": "(i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_create_process",
       "signature": "() -> (i32)"
     },
@@ -4028,6 +4043,11 @@
       "kind": "func",
       "name": "kernel_dequeue_signal",
       "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_direct_clock_eligible",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -4363,6 +4383,11 @@
       "kind": "func",
       "name": "kernel_get_parent_pid",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_pending_signal_termination",
+      "signature": "(i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -5138,6 +5163,11 @@
       "kind": "func",
       "name": "kernel_setuid",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_group_stop_protocol_version",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",

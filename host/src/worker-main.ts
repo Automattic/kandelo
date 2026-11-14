@@ -1,3 +1,4 @@
+import{createWorkerClockQuery}from'./fast-clock-worker';
 /**
  * Kernel worker entry points.
  *
@@ -146,6 +147,9 @@ import { trapProcessWorker } from "./fork-worker-import-exceptions";
 import { createHeapSafepointImport } from "./heap-safepoint";
 import { createStackCaptureImport } from "./wasm-stack-capture";
 import {
+  CLOCK_FALLBACK,
+  CLOCK_IMPORT,
+  CLOCK_MODULE,
   KLOG_IMPORT,
   KLOG_INVALID_ARGUMENT,
   KLOG_MODULE,
@@ -1160,6 +1164,7 @@ export function buildDlopenImports(
   memoryOwnership: "copied" | "borrowed" = "copied",
   forkSideModuleContract?: ForkSideModuleContract,
   stackProgramBytes?: ArrayBuffer | (() => ArrayBuffer),
+  clockQuery?: (output: number | bigint, clockId: number, format: number) => number,
 ): DlopenSupport {
   if (
     !Number.isInteger(workerIdentity) ||
@@ -1187,6 +1192,12 @@ export function buildDlopenImports(
     return errno !== 0 ? -errno : result;
   };
   const extensionImports: WebAssembly.Imports = {
+    // Capability absence preserves the original libc syscall and its flags.
+    // Borrowed vfork workers must not use another worker's clock authority.
+    [CLOCK_MODULE]: { [CLOCK_IMPORT]: (
+      output: number | bigint, clockId: number, format: number,
+    ): number => memoryOwnership === "borrowed" || clockQuery === undefined
+      ? CLOCK_FALLBACK : clockQuery(output, clockId, format) },
     [KLOG_MODULE]: { [KLOG_IMPORT]: klogImport },
     ...(stackProgramBytes === undefined ? {} : {
       [STACK_MODULE]: {
@@ -3794,6 +3805,7 @@ export async function centralizedWorkerMain(
         forkMemoryOwnership,
         readForkSideModuleContract(module),
         programBytes,
+ createWorkerClockQuery(initData.directClock,memory,pid,pid,initData.externrefGenerationId,ptrWidth),
       );
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
@@ -4350,6 +4362,7 @@ export async function centralizedWorkerMain(
         undefined,
         readForkSideModuleContract(module),
         programBytes,
+ createWorkerClockQuery(initData.directClock,memory,pid,pid,initData.externrefGenerationId,ptrWidth),
       );
       const importObject = buildImportObject(
         module,
@@ -5781,6 +5794,7 @@ export async function centralizedThreadWorkerMain(
       undefined,
       readForkSideModuleContract(module),
       () => programBytes ?? patchWasmForThread(initData.programBytes),
+ createWorkerClockQuery(initData.directClock,memory,pid,tid,initData.externrefGenerationId,ptrWidth),
     );
     if (threadActivationRegistry) {
       threadTableReplication = createProcessTableReplicationOwner({

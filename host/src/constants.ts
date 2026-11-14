@@ -2527,6 +2527,8 @@ export function describeWasmArtifactPolicyFailures(
     forbiddenExports?: readonly string[];
     requireForkInstrumentation?: boolean;
     forbidForkInstrumentation?: boolean;
+    /** Only an explicitly constructed experimental group host may opt in. */
+    experimentalCommonMemory?: "prototype-v1" | "prototype-v2";
   } = {},
 ): string[] {
   const failures: string[] = [];
@@ -2599,6 +2601,38 @@ export function describeWasmArtifactPolicyFailures(
     }
   }
   const customSections = readWasmCustomSectionNames(programBytes);
+  const commonMemoryContracts = customSections.filter(
+    name => name === "kandelo.common-memory.prototype",
+  ).length;
+  if (commonMemoryContracts > 0) {
+    if (options.experimentalCommonMemory !== "prototype-v1"
+      && options.experimentalCommonMemory !== "prototype-v2") {
+      failures.push("requires the opt-in common-memory prototype host");
+    }
+    if (commonMemoryContracts !== 1) {
+      failures.push("duplicate common-memory prototype contracts");
+    }
+    if (options.experimentalCommonMemory === "prototype-v2") {
+      try {
+        const payload = readWasmCustomSectionPayload(programBytes, "kandelo.common-memory.prototype");
+        if (!payload || payload.byteLength > 16 * 1024) throw new Error("missing or oversized contract");
+        const contract = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
+        if (contract?.format !== 2 || contract.cooperativeStop !== 1
+          || !Number.isInteger(contract.initialPages) || contract.initialPages < 0
+          || !Number.isInteger(contract.maximumPages) || contract.maximumPages > 65536
+          || contract.maximumPages < contract.initialPages) {
+          throw new Error("requires format 2 and cooperative stop v1");
+        }
+      } catch (error) {
+        failures.push(`invalid common-memory stop contract: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const missingBindings = ["__vm_root", "__vm_scratch", "__vm_initialize"]
+      .filter(name => !exports.has(name));
+    if (missingBindings.length > 0) {
+      failures.push(`missing common-memory bindings: ${missingBindings.join(", ")}`);
+    }
+  }
   const presentWpkImports = WPK_FORK_REQUIRED_IMPORTS.filter(({ module, name }) =>
     importNames.includes(`${module}.${name}`)
   );

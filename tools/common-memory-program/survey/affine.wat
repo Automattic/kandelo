@@ -1,0 +1,11 @@
+(module
+ (import "env" "memory" (memory 2 65536 shared))
+ (func (export "load32") (param i32) (result i32) local.get 0 i32.load)
+ (func (export "store32") (param i32 i32) local.get 0 local.get 1 i32.store)
+ (func (export "load32_small") (param i32) (result i32) local.get 0 i32.load offset=16)
+ (func (export "load8_max") (param i32) (result i32) local.get 0 i32.load8_u offset=4294967295)
+ (func (export "load_vector_byte") (param i32) (result i32) local.get 0 v128.load i8x16.extract_lane_u 0)
+ (func (export "atomic_add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.atomic.rmw.add)
+ (func (export "float64") (param i32 f64) (result f64) local.get 0 local.get 1 f64.store local.get 0 f64.load)
+ (func (export "grow") (param i32) (result i32) local.get 0 memory.grow)
+)

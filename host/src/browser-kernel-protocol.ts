@@ -20,6 +20,7 @@ export type {
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
+  InspectProcessesRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
   DrainSyscallTraceMessage,
@@ -65,6 +66,7 @@ import type {
   GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   EnumProcsRequestMessage,
+  InspectProcessesRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
   DrainSyscallTraceMessage,
@@ -511,6 +513,7 @@ export type MainToKernelMessage =
   | { type: "pcm_output_failed" }
   | { type: "audio_snapshot"; requestId: number }
   | EnumProcsRequestMessage
+  | InspectProcessesRequestMessage
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
   | DrainSyscallTraceMessage

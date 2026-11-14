@@ -132,6 +132,14 @@ wasm32posix-cc foo.o bar.o -o program.wasm
 wasm32posix-cc -O2 program.c -o program.wasm
 ```
 
+### Experimental common-memory programs
+
+The source checkout also provides an opt-in memory32 post-link command,
+`wasm32posix-common-memory`, for trusted prefork experiments. Its separate host
+profile and optional `--experimental-clock-query-v1` compiler flag are described
+in [experimental common-memory groups](experimental-common-memory.md). These
+are not default compilation options or packaged standalone SDK binaries.
+
 ### C++ programs
 
 ```bash
