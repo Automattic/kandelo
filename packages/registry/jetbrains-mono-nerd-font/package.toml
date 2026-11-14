@@ -1,0 +1,38 @@
+kind = "program"
+
+# JetBrainsMono Nerd Font, the font Omarchy 4 sets for its terminal, bar,
+# menus and notifications. Nerd Fonts patches the icon glyphs Omarchy's
+# widgets and menu entries draw into JetBrains Mono, so one family covers
+# the text and the icons.
+#
+# The archive ships the four styles a terminal and a bar reach (regular,
+# bold, italic, bold italic) and the license. It mounts at
+# /usr/share/fonts/jetbrains-mono-nerd-font.
+name = "jetbrains-mono-nerd-font"
+version = "3.4.0"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = []
+
+[[host_tools]]
+name = "zip"
+version_constraint = ">=3.0"
+probe = { args = ["-v"], version_regex = "Zip (\\d+\\.\\d+)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[source]
+url = "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/JetBrainsMono.tar.xz"
+sha256 = "ef552a3e638f25125c6ad4c51176a6adcdce295ab1d2ffacf0db060caf8c1582"
+provider = "archive"
+
+[license]
+spdx = "OFL-1.1"
+url = "https://github.com/ryanoasis/nerd-fonts/blob/v3.4.0/patched-fonts/JetBrainsMono/Ligatures/OFL.txt"
+
+[build]
+script_path = "packages/registry/jetbrains-mono-nerd-font/build-jetbrains-mono-nerd-font.sh"
+
+[[outputs]]
+name = "jetbrains-mono-nerd-font"
+wasm = "jetbrains-mono-nerd-font.zip"
+fork_instrumentation = "disabled"

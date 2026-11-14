@@ -105,6 +105,10 @@ export interface SourceRootfsShellInputs {
   xkeyboardConfigPath?: string;
   /** Required when espeak-ng is selected. */
   espeakNgDataPath?: string;
+  /** Required when omarchy is selected. */
+  omarchyPath?: string;
+  /** Required when jetbrains-mono-nerd-font is selected. */
+  jetbrainsMonoNerdFontPath?: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
   /** The checked-in eager-content budget (packages/registry/shell/eager-budget.json). */
@@ -1795,6 +1799,18 @@ export async function buildSourceRootfsShellImage(
   if (espeakNgDataPath !== null) {
     requireRegularInput(espeakNgDataPath, "espeak-ng data dependency");
   }
+  const omarchyPath = includes("omarchy")
+    ? requiredInput(inputs.omarchyPath, "the omarchy archive")
+    : null;
+  if (omarchyPath !== null) {
+    requireRegularInput(omarchyPath, "omarchy dependency");
+  }
+  const jetbrainsMonoNerdFontPath = includes("jetbrains-mono-nerd-font")
+    ? requiredInput(inputs.jetbrainsMonoNerdFontPath, "the jetbrains-mono-nerd-font archive")
+    : null;
+  if (jetbrainsMonoNerdFontPath !== null) {
+    requireRegularInput(jetbrainsMonoNerdFontPath, "jetbrains-mono-nerd-font dependency");
+  }
 
   // WHY: Bash remains the ordinary account shell and is therefore eager after
   // login. Opening its canonical alias follows a symlink when present,
@@ -1839,6 +1855,8 @@ export async function buildSourceRootfsShellImage(
       : null,
     "ca-certificates": inputs.caBundlePath,
     "desktop-data": desktop?.dataPath ?? null,
+    "omarchy": omarchyPath,
+    "jetbrains-mono-nerd-font": jetbrainsMonoNerdFontPath,
     "espeak-ng-data": espeakNgDataPath,
     // libxkbcommon and GTK use the compiled-in /usr/share/X11/xkb root.
     "xkeyboard-config": desktop?.xkeyboardConfigPath ?? null,
@@ -2067,6 +2085,8 @@ const SELECTED_INPUT_FLAGS: ReadonlyArray<{ flag: string; pkg: string }> = [
   { flag: "--libinput-quirks", pkg: "wayland-demo" },
   { flag: "--xkeyboard-config", pkg: "wayland-demo" },
   { flag: "--espeak-ng-data", pkg: "espeak-ng" },
+  { flag: "--omarchy", pkg: "omarchy" },
+  { flag: "--jetbrains-mono-nerd-font", pkg: "jetbrains-mono-nerd-font" },
 ];
 
 /**
@@ -2110,6 +2130,8 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
           "--wldesktop <wldesktop> " +
           "--omarchydesktop <omarchydesktop> " +
           "--desktop-data <kandelo-desktop-data.zip> " +
+          "--omarchy <omarchy.zip> " +
+          "--jetbrains-mono-nerd-font <jetbrains-mono-nerd-font.zip> " +
           "--libinput-quirks <libinput-quirks.zip> " +
           "--xkeyboard-config <xkeyboard-config.zip> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +
@@ -2153,6 +2175,8 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     wldesktopPath: values.get("--wldesktop"),
     omarchydesktopPath: values.get("--omarchydesktop"),
     desktopDataPath: values.get("--desktop-data"),
+    omarchyPath: values.get("--omarchy"),
+    jetbrainsMonoNerdFontPath: values.get("--jetbrains-mono-nerd-font"),
     libinputQuirksPath: values.get("--libinput-quirks"),
     xkeyboardConfigPath: values.get("--xkeyboard-config"),
     espeakNgDataPath: values.get("--espeak-ng-data"),

@@ -4,18 +4,25 @@
 kind = "library"
 
 name = "fcft"
-version = "3.1.9"
+version = "3.3.3"
 kernel_abi = 17
-depends_on = ["freetype@2.13.3", "fontconfig@2.15.0", "pixman@0.46.4", "tllist@1.1.0"]
+depends_on = [
+  "freetype@2.13.3",
+  "fontconfig@2.15.0",
+  "pixman@0.46.4",
+  "tllist@1.1.0",
+  "harfbuzz@10.1.0",
+  "utf8proc@2.9.0",
+]
 
 [source]
-url = "https://codeberg.org/dnkl/fcft/releases/download/3.1.9/fcft-3.1.9.tar.gz"
-sha256 = "ec5fdb9368725f773ed1d32fc67728f121dc209a255b24dc5248529d6e783ac6"
+url = "https://codeberg.org/dnkl/fcft/releases/download/3.3.3/fcft-3.3.3.tar.gz"
+sha256 = "bb298772d625e7d917373d541456f34f1957a9e22b16f17f64158b2c3816563c"
 provider = "archive"
 
 [license]
 spdx = "MIT"
-url = "https://codeberg.org/dnkl/fcft/src/tag/3.1.9/LICENSE"
+url = "https://codeberg.org/dnkl/fcft/src/tag/3.3.3/LICENSE"
 
 [build]
 script_path = "packages/registry/fcft/build-fcft.sh"

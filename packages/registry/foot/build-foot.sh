@@ -4,10 +4,11 @@
 #
 # Honors the dep-resolver build-script contract (see
 # docs/package-management.md). foot is meson-only upstream, so we
-# bypass it like fcft: run the two upstream generators (version.h and
-# the builtin terminfo header, both plain python/sh — no tic), generate
-# the client glue for the eleven protocol XMLs with wayland-scanner,
-# and compile the meson TU list directly.
+# bypass it like fcft: run the four upstream generators (version.h, the
+# builtin terminfo header, the emoji variation sequences and the sRGB
+# tables, all plain python/sh — no tic), generate the client glue for
+# the seventeen protocol XMLs with wayland-scanner, and compile the
+# meson TU list directly.
 #
 # wl_shm uses upstream memfd pools. The remaining patch serializes font
 # loading while the concurrent FcFontMatch race is investigated.
@@ -48,6 +49,10 @@ FREETYPE_PREFIX="${WASM_POSIX_DEP_FREETYPE_DIR:?WASM_POSIX_DEP_FREETYPE_DIR not 
 PIXMAN_PREFIX="${WASM_POSIX_DEP_PIXMAN_DIR:?WASM_POSIX_DEP_PIXMAN_DIR not set}"
 TLLIST_PREFIX="${WASM_POSIX_DEP_TLLIST_DIR:?WASM_POSIX_DEP_TLLIST_DIR not set}"
 UTF8PROC_PREFIX="${WASM_POSIX_DEP_UTF8PROC_DIR:?WASM_POSIX_DEP_UTF8PROC_DIR not set}"
+HARFBUZZ_PREFIX="${WASM_POSIX_DEP_HARFBUZZ_DIR:?WASM_POSIX_DEP_HARFBUZZ_DIR not set}"
+GLIB_PREFIX="${WASM_POSIX_DEP_GLIB_DIR:?WASM_POSIX_DEP_GLIB_DIR not set}"
+PCRE2_PREFIX="${WASM_POSIX_DEP_PCRE2_DIR:?WASM_POSIX_DEP_PCRE2_DIR not set}"
+LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:?WASM_POSIX_DEP_LIBCXX_DIR not set}"
 LIBWAYLAND_PREFIX="${WASM_POSIX_DEP_LIBWAYLAND_DIR:?WASM_POSIX_DEP_LIBWAYLAND_DIR not set}"
 LIBXKBCOMMON_PREFIX="${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?WASM_POSIX_DEP_LIBXKBCOMMON_DIR not set}"
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set}"
@@ -82,10 +87,13 @@ fi
 GEN="$BUILD_DIR/gen"
 mkdir -p "$GEN" "$INSTALL_DIR"
 
-echo "==> Generating version.h + builtin terminfo + protocol glue..."
+echo "==> Generating version.h + builtin terminfo + unicode/sRGB tables + protocol glue..."
 LC_ALL=C sh "$SRC_DIR/generate-version.sh" "$FOOT_VERSION" "$SRC_DIR" "$GEN/version.h"
 python3 "$SRC_DIR/scripts/generate-builtin-terminfo.py" \
     '@default_terminfo@' "$SRC_DIR/foot.info" foot "$GEN/foot-terminfo.h"
+python3 "$SRC_DIR/scripts/generate-emoji-variation-sequences.py" \
+    "$SRC_DIR/unicode/emoji-variation-sequences.txt" "$GEN/emoji-variation-sequences.h"
+python3 "$SRC_DIR/scripts/srgb.py" "$GEN/srgb.c" "$GEN/srgb.h"
 
 PROTOCOLS=(
     stable/xdg-shell/xdg-shell
@@ -99,6 +107,12 @@ PROTOCOLS=(
     staging/fractional-scale/fractional-scale-v1
     unstable/tablet/tablet-unstable-v2
     staging/cursor-shape/cursor-shape-v1
+    staging/single-pixel-buffer/single-pixel-buffer-v1
+    staging/xdg-toplevel-icon/xdg-toplevel-icon-v1
+    staging/xdg-system-bell/xdg-system-bell-v1
+    staging/color-management/color-management-v1
+    staging/xdg-toplevel-tag/xdg-toplevel-tag-v1
+    staging/ext-background-effect/ext-background-effect-v1
 )
 PROTO_OBJS=()
 for proto in "${PROTOCOLS[@]}"; do
@@ -113,6 +127,10 @@ CFLAGS=(
     '-DFOOT_DEFAULT_TERM="foot"'
     -DFOOT_IME_ENABLED=1
     -DFOOT_GRAPHEME_CLUSTERING=1
+    -DEXECVPE
+    -DHAVE_PIXMAN_RGBA_16
+    -DHAVE_XDG_TOPLEVEL_TAG=1
+    -DHAVE_EXT_BACKGROUND_EFFECT=1
     "-I$SRC_DIR"
     "-I$GEN"
     "-I$FCFT_PREFIX/include"
@@ -123,6 +141,7 @@ CFLAGS=(
     "-I$LIBWAYLAND_PREFIX/include"
     "-I$LIBXKBCOMMON_PREFIX/include"
     -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable
+    -Wno-c2y-extensions
 )
 
 TUS=(
@@ -130,7 +149,8 @@ TUS=(
     hsl.c misc.c uri.c
     base64.c composed.c cursor-shape.c csi.c dcs.c osc.c sixel.c vt.c
     grid.c selection.c terminal.c
-    async.c box-drawing.c config.c commands.c extract.c fdm.c ime.c
+    async.c box-drawing.c config.c commands.c extract.c fdm.c
+    foot-features.c ime.c
     input.c key-binding.c main.c notify.c quirks.c reaper.c render.c
     search.c server.c shm.c slave.c spawn.c tokenize.c unicode-mode.c
     url-mode.c user-notification.c wayland.c
@@ -143,6 +163,8 @@ for tu in "${TUS[@]}"; do
     wasm32posix-cc -c "${CFLAGS[@]}" "$SRC_DIR/$tu" -o "$obj"
     OBJS+=("$obj")
 done
+wasm32posix-cc -c "${CFLAGS[@]}" "$GEN/srgb.c" -o "$BUILD_DIR/srgb.o"
+OBJS+=("$BUILD_DIR/srgb.o")
 for proto in "${PROTOCOLS[@]}"; do
     base="$(basename "$proto")"
     obj="$BUILD_DIR/proto-$base.o"
@@ -155,9 +177,14 @@ done
 # wlcompositor pass).
 # libiconv follows libxml2: fontconfig parses its configuration with
 # libxml2, and this libxml2 converts encodings through GNU libiconv.
+# fcft shapes text with harfbuzz (C++, libc++) on its glib unicode
+# callbacks; glib needs pcre2.
 echo "==> Linking foot.wasm..."
 wasm32posix-cc "${OBJS[@]}" \
     "$FCFT_PREFIX/lib/libfcft.a" \
+    "$HARFBUZZ_PREFIX/lib/libharfbuzz.a" \
+    "$GLIB_PREFIX/lib/libglib-2.0.a" \
+    "$PCRE2_PREFIX/lib/libpcre2-8.a" \
     "$FONTCONFIG_PREFIX/lib/libfontconfig.a" \
     "$FREETYPE_PREFIX/lib/libfreetype.a" \
     "$LIBXML2_PREFIX/lib/libxml2.a" \
@@ -168,6 +195,7 @@ wasm32posix-cc "${OBJS[@]}" \
     "$LIBWAYLAND_PREFIX/lib/libwayland-cursor.a" \
     "$LIBWAYLAND_PREFIX/lib/libwayland-client.a" \
     "$LIBXKBCOMMON_PREFIX/lib/libxkbcommon.a" \
+    "$LIBCXX_PREFIX/lib/libc++.a" "$LIBCXX_PREFIX/lib/libc++abi.a" \
     "$LIBFFI_PREFIX/lib/libffi.a" \
     -o "$BUILD_DIR/foot.wasm"
 

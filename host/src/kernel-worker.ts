@@ -22394,6 +22394,7 @@ export class CentralizedKernelWorker {
       argv,
       envp,
       expectedAbi: this.getKernelAbiVersion(),
+      expectedAbiContractDigest: this.getKernelAbiContractDigest(),
       prepareInitialTarget: () => this.execTargetPrepare(pid, pid, AT_FDCWD, path, 0),
       prepareInterpreterTarget: (interpreter) => this.execTargetPrepare(pid, pid, AT_FDCWD, interpreter, 0),
       commitTarget: (target, size, consumed) => this.kernelInitialExecCommit(pid, target, size, consumed),
@@ -22424,6 +22425,7 @@ export class CentralizedKernelWorker {
         argv,
         envp,
         expectedAbi: this.getKernelAbiVersion(),
+        expectedAbiContractDigest: this.getKernelAbiContractDigest(),
         prepareInitialTarget: () =>
           this.spawnExecTargetPrepare(parentPid, childPid, authorityPath),
         prepareInterpreterTarget: (interpreterPath) =>
@@ -22482,6 +22484,7 @@ export class CentralizedKernelWorker {
         argv,
         envp,
         expectedAbi: this.getKernelAbiVersion(),
+        expectedAbiContractDigest: this.getKernelAbiContractDigest(),
         prepareInitialTarget: () =>
           this.execTargetPrepare(
             pid,

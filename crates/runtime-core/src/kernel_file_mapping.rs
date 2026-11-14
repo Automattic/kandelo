@@ -20,8 +20,16 @@
 //! writer of these files runs in the kernel, comparing it detects descriptor
 //! I/O. Truncation also notifies the mapping table at publication so a later
 //! growth cannot conceal an intervening shrink from pending dirty bytes.
+//!
+//! Before any of those writes changes a mapped file, its storage layer calls
+//! [`prepare_overwrite`] or [`prepare_truncate`] with the bytes about to
+//! change, because the file is the shared part of what every mapping of it
+//! last observed (see `SharedMapping::overlay`). A write that skips them
+//! makes the generation move unannounced, which the table treats as a fatal
+//! fault rather than let a mapping republish the old bytes over the write.
 
 use alloc::string::String;
+use core::sync::atomic::{AtomicBool, Ordering};
 use wasm_posix_shared::Errno;
 
 use crate::descriptor_backing::with_memfds;
@@ -128,16 +136,72 @@ pub fn pread(
             host.exchange_source_read(source, source_offset, bytes)
         }),
         Object::MemFd(index) => with_memfds(|table| {
-            let backing = table.get(index).ok_or(Errno::EBADF)?;
-            let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
-            if start >= backing.data.len() {
-                return Ok(0);
-            }
-            let count = dst.len().min(backing.data.len() - start);
-            dst[..count].copy_from_slice(&backing.data[start..start + count]);
-            Ok(count)
+            table.get(index).ok_or(Errno::EBADF)?.read_at(offset as u64, dst)
         }),
     }
+}
+
+/// Set while [`pwrite`] writes a publication of the mapping table. The table
+/// prepared the mappings for that change itself, and is borrowed up the
+/// stack, so the storage hook must not reach it.
+static PUBLISHING: AtomicBool = AtomicBool::new(false);
+
+/// Fill `page` with the file's bytes at `offset` through `read`, a positional
+/// reader of the storage layer, zero past EOF.
+pub(crate) fn read_old_page(
+    page: &mut [u8; crate::memory::FILE_PAGE_SIZE],
+    offset: u64,
+    mut read: impl FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
+) -> Result<(), Errno> {
+    page.fill(0);
+    let mut done = 0;
+    while done < page.len() {
+        let count = read(offset + done as u64, &mut page[done..])?;
+        if count == 0 {
+            break;
+        }
+        done += count;
+    }
+    Ok(())
+}
+
+/// Hook for the storage layers: descriptor I/O is about to change bytes
+/// `[start, end)` of the file behind `(file_type, host_handle)`. `read_old`
+/// reads a page of the file as it is now ([`read_old_page`]). An error
+/// (`ENOMEM`) must fail the write before the storage changes anything.
+pub(crate) fn prepare_overwrite(
+    file_type: FileType,
+    host_handle: i64,
+    start: u64,
+    end: u64,
+    read_old: &mut dyn FnMut(u64, &mut [u8; crate::memory::FILE_PAGE_SIZE]) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    let Some(handle) = mapping_handle_for(file_type, host_handle) else {
+        return Ok(());
+    };
+    if PUBLISHING.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    unsafe { crate::memory::global_shared_mapping_table() }.prepare_overwrite(handle, start, end, read_old)
+}
+
+/// Hook for the storage layers: the file behind `(file_type, host_handle)`
+/// is about to be truncated or extended to `size`, or emptied by an
+/// `O_TRUNC` open. Only a page straddling `size` keeps bytes, so only it is
+/// read through `read_old`; see `SharedMappingTable::prepare_truncate`.
+pub(crate) fn prepare_truncate(
+    file_type: FileType,
+    host_handle: i64,
+    size: u64,
+    read_old: &mut dyn FnMut(u64, &mut [u8; crate::memory::FILE_PAGE_SIZE]) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    let Some(handle) = mapping_handle_for(file_type, host_handle) else {
+        return Ok(());
+    };
+    if PUBLISHING.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    unsafe { crate::memory::global_shared_mapping_table() }.prepare_truncate(handle, size, read_old)
 }
 
 /// Positional write. The mapping table clamps every writeback to the file's
@@ -147,6 +211,13 @@ pub fn pread(
 /// descriptor write: POSIX marks a shared writable mapping's file for an
 /// mtime/ctime update between a store and the next `msync`.
 pub fn pwrite(handle: i64, offset: u64, src: &[u8], host: &mut dyn HostIO) -> Result<usize, Errno> {
+    PUBLISHING.store(true, Ordering::Relaxed);
+    let written = pwrite_publication(handle, offset, src, host);
+    PUBLISHING.store(false, Ordering::Relaxed);
+    written
+}
+
+fn pwrite_publication(handle: i64, offset: u64, src: &[u8], host: &mut dyn HostIO) -> Result<usize, Errno> {
     let offset_i64 = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
     let object = decode(handle)?;
     if matches!(object, Object::Executable(_)) { return Err(Errno::EPERM); }

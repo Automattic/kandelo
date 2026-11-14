@@ -249,6 +249,13 @@ fn parse_retains_the_original_order_of_forwarded_linker_inputs_and_controls() {
 }
 
 #[test]
+fn parse_detects_a_relocatable_link_and_forwards_r() {
+    let parsed = parsed(&["-r", "foo.o", "bar.o", "-o", "built-in.o"]);
+    assert!(parsed.relocatable);
+    assert_eq!(parsed.forwarded_args, strings(&["-r", "foo.o", "bar.o"]));
+}
+
+#[test]
 fn parse_handles_output_without_a_space() {
     let parsed = parsed(&["-c", "foo.c", "-ofoo.o"]);
     assert_eq!(parsed.output_file.as_deref(), Some("foo.o"));

@@ -1,0 +1,25 @@
+From: mho22 <yannick@capsules.codes>
+Subject: [PATCH] trylink: probe the information options before the final link
+
+The final link always passes -Wl,--warn-common, -Wl,-Map and
+-Wl,--verbose, which are GNU ld options. trylink already probes
+--sort-common and --sort-section with check_cc before it uses them, but
+not these three, so a linker without --warn-common (wasm-ld) fails the
+final link.
+
+Probe each information option with check_cc and pass only the ones the
+linker accepts.
+
+--- a/scripts/trylink
++++ b/scripts/trylink
+@@ -96,7 +96,9 @@
+ START_GROUP="-Wl,--start-group"
+ END_GROUP="-Wl,--end-group"
+ INFO_OPTS() {
+-	echo "-Wl,--warn-common -Wl,-Map,$EXE.map -Wl,--verbose"
++	for opt in -Wl,--warn-common -Wl,-Map,$EXE.map -Wl,--verbose; do
++		check_cc "$opt" && printf '%s ' "$opt"
++	done
+ }
+ 
+ # gold may not support --sort-common (yet)

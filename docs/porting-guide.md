@@ -1258,7 +1258,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | freetype | `packages/registry/freetype/build-freetype.sh` | autoconf | png/harfbuzz/brotli/bzip2 disabled |
 | fontconfig | `packages/registry/fontconfig/build-fontconfig.sh` | autoconf | libxml2 backend, gperf host tool, `ac_cv_*` RNG/statfs overrides |
 | tllist | `packages/registry/tllist/build-tllist.sh` | header-only | Staged, nothing compiles |
-| fcft | `packages/registry/fcft/build-fcft.sh` | meson bypass | Two TUs + three generated headers, no harfbuzz/SVG |
+| fcft | `packages/registry/fcft/build-fcft.sh` | meson bypass | Two TUs + three generated headers, harfbuzz + utf8proc shaping, no SVG |
 | foot | `packages/registry/foot/build-foot.sh` | meson bypass | Stock upstream Wayland client with ordinary shared-memory pools; the remaining patch serializes font loading while its concurrency defect is investigated |
 | libffi | `packages/registry/libffi/build-libffi.sh` | in-tree | Kandelo implementation, not the upstream library: gen-dispatch.sh emits a finite set of ffi_call signatures and static closure trampolines. Coverage and admission remain incomplete; see the callback section below. |
 | glib | `packages/registry/glib/build-glib.sh` | meson bypass | 2.84.4: glib/gmodule/gobject/gio incl. the gdbus client core and the GApplication/GAction/GMenu family (GtkApplication's parent types), hand-curated config.h + glibconfig.h, three patches (no dbus built-ins, wasm callback signatures, wasm credentials backend); GRegex is in, compiled against the pcre2 package — glibmm's `Glib::Error::register_init()` calls `g_regex_error_quark` at startup, so every glibmm consumer needs it |

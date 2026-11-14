@@ -502,7 +502,7 @@ fn build_clang_args_internal(
         args.push("-o".into());
         args.push(output.to_string());
     }
-    let defer_executable_inputs = linking && !classify_link && !parsed.shared;
+    let defer_executable_inputs = linking && !classify_link && !parsed.shared && !parsed.relocatable;
     // Static link semantics depend on the caller's exact ordering of objects,
     // archives, -l flags, and linker group controls. Parsed classifications
     // are for SDK decisions only; forwarding must never rebuild the command in
@@ -543,6 +543,10 @@ fn build_clang_args_internal(
         if parsed.shared {
             // Shared library build: no CRT, no libc, no syscall glue.
             args.extend(shared_link_flags());
+        } else if parsed.relocatable {
+            // Relocatable link: the output is an object for a later link,
+            // which adds the CRT, libc, glue and executable flags.
+            args.push("-nostdlib".into());
         } else {
             let Some(lld_major) = toolchain.lld_major else {
                 return Err("wasm-ld version is unresolved; call prepare_executable_linker() before building \
@@ -685,7 +689,7 @@ pub fn compile_executable_glue(
         return Ok(None);
     }
     let parsed = parse_args(&filter_args(user_args, arch).filtered)?;
-    if parsed.shared {
+    if parsed.shared || parsed.relocatable {
         return Ok(None);
     }
     let define = executable_thread_slot_define(user_args, arch)?;
@@ -733,7 +737,7 @@ pub fn prepare_executable_linker(
     compiler: &str,
 ) -> Result<Option<LinkerPreparation>> {
     let parsed = parse_args(&filter_args(user_args, arch).filtered)?;
-    if !needs_linking(&parsed) || parsed.shared {
+    if !needs_linking(&parsed) || parsed.shared || parsed.relocatable {
         return Ok(None);
     }
 
@@ -987,7 +991,11 @@ pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -
         glue.as_ref().map(|(objects, _)| objects.as_slice()),
     )?;
     let parsed = parse_args(&filter_args(user_args, arch).filtered)?;
-    let linking = needs_linking(&parsed) && executable_linker != Some(LinkerPreparation::NoLink);
+    // A relocatable output is an object for a later link, like a `-c`
+    // output: it keeps its call-type facts, which that link reads.
+    let linking = needs_linking(&parsed)
+        && !parsed.relocatable
+        && executable_linker != Some(LinkerPreparation::NoLink);
     let result = run_compiler_driver(&compiler, &args, linking);
     drop(glue);
     result

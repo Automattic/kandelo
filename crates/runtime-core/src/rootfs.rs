@@ -4593,6 +4593,8 @@ fn open_unmarked(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Resu
                     // The case that genuinely needs the old bytes is a PARTIAL
                     // write, which does not set `O_TRUNC` and still reaches the
                     // materialization path that cannot serve them.
+                    crate::kernel_file_mapping::prepare_truncate(crate::ofd::FileType::Regular,
+                        inode_to_file_handle(existing), 0, &mut |_, _| Err(Errno::EIO))?;
                     if let Some(node) = state.get_mut(existing) {
                         let shrank = match &node.kind {
                             InodeKind::Regular(d) => !d.is_empty(),
@@ -5257,6 +5259,11 @@ where
         return Err(Errno::EINVAL);
     }
     let buf = var_log_clamp_write(idx, offset as u64, buf)?;
+    if !buf.is_empty() {
+        let end = (offset as u64).checked_add(buf.len() as u64).ok_or(Errno::EFBIG)?;
+        crate::kernel_file_mapping::prepare_overwrite(crate::ofd::FileType::Regular, handle, offset as u64, end,
+            &mut |at, page| read_old_page(handle, at, page, &mut byte_source))?;
+    }
     if fixed_persistence_enabled() {
         if declares_digest(idx) {
             return Err(Errno::EROFS);
@@ -5631,15 +5638,35 @@ where
     }
 }
 
+/// Read the page of `handle` at `offset` for a mapping-table hook
+/// ([`crate::kernel_file_mapping::read_old_page`]), through the caller's
+/// byte source for bytes not resident yet.
+fn read_old_page<F>(
+    handle: i64,
+    offset: u64,
+    page: &mut [u8; crate::memory::FILE_PAGE_SIZE],
+    byte_source: &mut F,
+) -> Result<(), Errno>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    crate::kernel_file_mapping::read_old_page(page, offset, |at, dst| {
+        read(handle, i64::try_from(at).map_err(|_| Errno::EOVERFLOW)?, dst, &mut *byte_source)
+    })
+}
+
 /// Truncate an open rootfs regular file to `length`, zero-filling any growth.
 /// Truncating to 0 needs no base bytes (a `LazyMember` truncated to 0 needs no
 /// archive fetch either); a non-zero truncate copies the base file or lazy-
 /// archive member into the overlay first. The caller enforces access mode and
 /// RLIMIT_FSIZE.
-pub fn truncate_handle<F>(handle: i64, length: i64, byte_source: F) -> Result<(), Errno>
+pub fn truncate_handle<F>(handle: i64, length: i64, mut byte_source: F) -> Result<(), Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
+    let size = u64::try_from(length).map_err(|_| Errno::EINVAL)?;
+    crate::kernel_file_mapping::prepare_truncate(crate::ofd::FileType::Regular, handle, size,
+        &mut |at, page| read_old_page(handle, at, page, &mut byte_source))?;
     truncate_handle_inner(handle, length, byte_source)?;
     crate::kernel_file_mapping::notify_truncated(crate::ofd::FileType::Regular, handle, length as u64);
     Ok(())

@@ -103,6 +103,53 @@ export function shellLazyPlaceholderUrl(spec: VfsBinarySpec): string {
   return `${SHELL_LAZY_URL_PREFIX}${spec.resolverPath}`;
 }
 
+/** Each Omarchy theme's backgrounds, the omarchy package's runtime files. */
+const OMARCHY_BACKGROUNDS: Readonly<Record<string, readonly string[]>> = {
+  "catppuccin-latte": ["1-color-fade.png", "omarchy.png"],
+  "catppuccin": ["1-totoro.png", "2-waves.png", "3-blue-eye.png", "omarchy.png"],
+  "ethereal": ["1-cosmic.jpg", "2-meadow.jpg", "omarchy.png"],
+  "everforest": ["1-tree-tops.jpg", "omarchy.png"],
+  "flexoki-light": ["1-orb.png", "2-omarchy.png"],
+  "gruvbox": [
+    "1-the-backwater.jpg", "2-flower-basket.jpg", "3-village-square.jpg",
+    "4-idyllic-procession.jpg", "5-leaves.jpg", "omarchy.png",
+  ],
+  "hackerman": ["1-synth-scape.jpg", "2-geometric.jpg", "omarchy.png"],
+  "kanagawa": ["1-kanagawa.jpg", "omarchy.png"],
+  "last-horizon": ["1-eyes-wide.jpg", "2-blink.jpg", "3-bokeh.jpg", "4-new-horizons.jpg"],
+  "lumon": ["01-united-in-severance.jpg", "02-opinions-equally.jpg", "omarchy.png"],
+  "lupine": [
+    "01-cherry-blossom-bokeh.jpg", "02-cherry-blossom-white.jpg", "03-pastel-clouds.jpg",
+    "04-elegant-blue-wave.jpg", "05-abstract-wave.jpg", "06-omarchy.png",
+  ],
+  "matte-black": ["0-ship-at-sea.jpg", "1-dark-waters.jpg", "2-dot-hands.jpg", "omarchy.png"],
+  "miasma": ["01-nature-of-fear.jpg", "02-crowned.jpg", "omarchy.png"],
+  "nord": ["0-black-moon.jpg", "1-city-view.png", "2-night-hawks.png", "omarchy.png"],
+  "osaka-jade": [
+    "1-glowing-city.jpg", "2-shaded-entrance.jpg", "3-mountain-moon.jpg", "omarchy.png",
+  ],
+  "retro-82": [
+    "1-in-the-groove.jpg", "2-dusk-guardian.jpg", "3-glassy-lines.jpg", "4-gateway.jpg",
+    "5-zen-boat.jpg", "6-abstract-pyramids.jpg", "7-the-journey.jpg", "8-glitter-glass.jpg",
+    "omarchy.png",
+  ],
+  "ristretto": [
+    "0-launch.png", "1-color-curves.jpg", "2-coffee-beans.jpg", "3-industrial-moon.jpg",
+    "omarchy.png",
+  ],
+  "rose-pine": ["1-funky-shapes.jpg", "2-dot-map.png", "3-omarchy-plants.png", "omarchy.png"],
+  "solitude": ["1-on-pole.jpg", "2-wreakage.jpg", "3-climb.jpg", "4-ether.jpg", "5-eyed.jpg"],
+  "tokyo-night": [
+    "0-winding-road.jpg", "1-quattro.jpg", "2-swirl-buck.jpg", "3-sunset-lake.png", "4-omakub.jpg",
+    "5-oma-cityscape.jpg", "6-oma.jpg", "omarchy.png",
+  ],
+  "vantablack": [
+    "0-dot-hands.jpg", "1-twisted-stairs.jpg", "2-layers-deep.jpg", "3-layers-stacked.jpg",
+    "omarchy.png",
+  ],
+  "white": ["1-white.jpg", "2-white.jpg", "3-white.jpg", "omarchy.png"],
+};
+
 /**
  * The LLVM binary tools, from the clang package's outputs. They answer to
  * their binutils names by argv[0] (llvm-ar as ranlib, llvm-objcopy as strip,
@@ -454,6 +501,62 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "game-play", dependency: "game-import", resolverPath: "programs/game-import/game-play", vfsPath: "/usr/bin/game-play", symlinks: [], mode: 0o755 },
   { id: "game-import", dependency: "game-import", resolverPath: "programs/game-import/game-import", vfsPath: "/usr/libexec/kandelo/game-import", symlinks: [], mode: 0o755 },
   { id: "game-import-py", dependency: "game-import", resolverPath: "programs/game-import/game-import.py", vfsPath: "/usr/libexec/kandelo/game-import.py", symlinks: [], mode: 0o644 },
+  // The Omarchy desktop's programs on sway (omarchydesktop and Omarchy's
+  // scripts exec them by name): fuzzel draws the menus and the app
+  // launcher, swaylock locks (set-user-ID root, so it can read /etc/shadow),
+  // swayidle locks on idle, Waybar draws the bar, mako shows notifications,
+  // and basu's basuctl answers Omarchy's busctl calls. busybox's pgrep,
+  // pkill and flock take the options Omarchy uses (pgrep -x, flock -n) that
+  // posix-utils-lite's pgrep does not. lua runs omarchy-sway-bindings, and
+  // xkbcli names keys in the keybindings menu.
+  { id: "fuzzel", resolverPath: "programs/fuzzel.wasm", vfsPath: "/usr/bin/fuzzel", symlinks: [] },
+  {
+    id: "swaylock",
+    resolverPath: "programs/swaylock.wasm",
+    vfsPath: "/usr/bin/swaylock",
+    symlinks: [],
+    mode: 0o4755,
+  },
+  { id: "swayidle", resolverPath: "programs/swayidle.wasm", vfsPath: "/usr/bin/swayidle", symlinks: [] },
+  { id: "waybar", resolverPath: "programs/waybar.wasm", vfsPath: "/usr/bin/waybar", symlinks: [] },
+  { id: "mako", resolverPath: "programs/mako/mako.wasm", vfsPath: "/usr/bin/mako", symlinks: [] },
+  {
+    id: "makoctl",
+    dependency: "mako",
+    resolverPath: "programs/mako/makoctl.wasm",
+    vfsPath: "/usr/bin/makoctl",
+    symlinks: [],
+  },
+  // Omarchy's theme backgrounds. Each theme's backgrounds/ entries in the
+  // omarchy archive link here, so a machine downloads only the backgrounds
+  // swaybg and swaylock draw.
+  ...Object.entries(OMARCHY_BACKGROUNDS).flatMap(([theme, files]) => files.map((file) => ({
+    id: `omarchy-background-${theme}-${file}`, dependency: "omarchy",
+    resolverPath: `programs/omarchy/backgrounds/${theme}/${file}`,
+    vfsPath: `/usr/share/backgrounds/omarchy/${theme}/${file}`, symlinks: [] as string[], mode: 0o644,
+  }))),
+  {
+    id: "basuctl",
+    resolverPath: "programs/basuctl.wasm",
+    vfsPath: "/usr/bin/basuctl",
+    symlinks: ["/usr/bin/busctl"],
+  },
+  {
+    id: "busybox",
+    resolverPath: "programs/busybox.wasm",
+    vfsPath: "/usr/bin/busybox",
+    symlinks: ["/usr/bin/flock", "/usr/bin/pgrep", "/usr/bin/pkill"],
+    displaces: ["/usr/bin/pgrep"],
+  },
+  { id: "lua-cli", resolverPath: "programs/lua.wasm", vfsPath: "/usr/bin/lua", symlinks: [] },
+  { id: "xkbcli", resolverPath: "programs/xkbcli/xkbcli.wasm", vfsPath: "/usr/bin/xkbcli", symlinks: [] },
+  {
+    id: "xkbcli-compile-keymap",
+    dependency: "xkbcli",
+    resolverPath: "programs/xkbcli/xkbcli-compile-keymap.wasm",
+    vfsPath: "/usr/libexec/xkbcommon/xkbcli-compile-keymap",
+    symlinks: [],
+  },
   // ScummVM: the engine and the GUI data it reads from /usr/share/scummvm
   // (the package's declared runtime_files). /usr/bin/scummvm is the
   // image's launch wrapper, which execs this engine.
@@ -562,7 +665,6 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // The Omarchy shell (omarchydesktop starts it) and the Qt client the
   // launcher offers. quickshell.wasm alone is 82 MB.
   { id: "quickshell", resolverPath: "programs/quickshell.wasm", vfsPath: "/usr/bin/quickshell", symlinks: [] },
-  { id: "qtgallery", resolverPath: "programs/qtgallery.wasm", vfsPath: "/usr/bin/qtgallery", symlinks: [] },
   {
     id: "dbus",
     resolverPath: "programs/dbus/dbus-daemon.wasm",

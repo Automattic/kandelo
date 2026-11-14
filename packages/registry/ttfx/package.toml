@@ -1,0 +1,26 @@
+kind = "program"
+# ttfx, the Rust port of TerminalTextEffects that Omarchy's screensaver
+# runs. Rust dependencies are pinned by upstream Cargo.lock and verified by
+# Cargo; the SDK supplies musl.
+name = "ttfx"
+version = "0.5.1"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = []
+
+[source]
+url = "https://github.com/omacom/ttfx/archive/refs/tags/v0.5.1.tar.gz"
+sha256 = "3f10b987b7690aa3caa2fa4f1749d8c7904e177380eff3e000d3422da8eb0134"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/omacom/ttfx/blob/v0.5.1/LICENSE"
+
+[build]
+script_path = "packages/registry/ttfx/build-ttfx.sh"
+
+[[outputs]]
+name = "ttfx"
+wasm = "ttfx.wasm"
+fork_instrumentation = "disabled"

@@ -843,6 +843,8 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                     return Err(Errno::ENOTDIR);
                 }
                 if flags & O_TRUNC != 0 && !inode.is_dir() && flags & O_ACCMODE != O_RDONLY {
+                    crate::kernel_file_mapping::prepare_truncate(crate::ofd::FileType::Regular,
+                        inode_to_file_handle(existing), 0, &mut |_, _| Err(Errno::EIO))?;
                     let freed = match state.get(existing).map(|node| (&node.kind, node.st_dev)) {
                         Some((InodeKind::Regular(data), st_dev)) => Some((st_dev, data.len() as u64)),
                         _ => None,
@@ -1148,6 +1150,11 @@ pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
+    if !buf.is_empty() {
+        let end = (offset as u64).checked_add(buf.len() as u64).ok_or(Errno::EFBIG)?;
+        crate::kernel_file_mapping::prepare_overwrite(crate::ofd::FileType::Regular, handle, offset as u64, end,
+            &mut |at, page| read_old_page(handle, at, page))?;
+    }
     TMPFS.with(|state| {
         let (st_dev, growth) = {
             let inode = state.get(idx).ok_or(Errno::EBADF)?;
@@ -1268,9 +1275,21 @@ fn grow_file_bytes(data: &mut Vec<u8>, new_len: usize, err: Errno) -> Result<(),
     Ok(())
 }
 
+/// Read the page of `handle` at `offset` for a mapping-table hook
+/// ([`crate::kernel_file_mapping::read_old_page`]). A host-backed file is
+/// never written, so no source is needed.
+fn read_old_page(handle: i64, offset: u64, page: &mut [u8; crate::memory::FILE_PAGE_SIZE]) -> Result<(), Errno> {
+    crate::kernel_file_mapping::read_old_page(page, offset, |at, dst| {
+        read(handle, i64::try_from(at).map_err(|_| Errno::EOVERFLOW)?, dst, &mut no_source)
+    })
+}
+
 /// Truncate an open tmpfs regular file to `length`, zero-filling any growth.
 /// The caller enforces access mode and RLIMIT_FSIZE.
 pub fn truncate_handle(handle: i64, length: i64) -> Result<(), Errno> {
+    let size = u64::try_from(length).map_err(|_| Errno::EINVAL)?;
+    crate::kernel_file_mapping::prepare_truncate(crate::ofd::FileType::Regular, handle, size,
+        &mut |at, page| read_old_page(handle, at, page))?;
     truncate_handle_inner(handle, length)?;
     crate::kernel_file_mapping::notify_truncated(crate::ofd::FileType::Regular, handle, length as u64);
     Ok(())

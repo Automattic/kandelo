@@ -108,6 +108,27 @@ fn ldl_selects_the_functional_dynamic_loading_glue() {
 }
 
 #[test]
+fn relocatable_link_forwards_r_without_glue_crt_libc_or_executable_flags() {
+    let args = build_clang_args(
+        &strings(&["-r", "foo.o", "bar.o", "-o", "built-in.o"]),
+        &toolchain(),
+        WasmArch::Wasm32,
+        Language::C,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(has(&args, "-r"));
+    assert!(has(&args, "-nostdlib"));
+    assert!(has(&args, "-fuse-ld=/opt/llvm/bin/wasm-ld"));
+    assert!(!joined_contains(&args, "channel_syscall.c"));
+    assert!(!joined_contains(&args, "crt1.o"));
+    assert!(!joined_contains(&args, "libc.a"));
+    assert!(!has(&args, "-Wl,--export-table"));
+    assert!(!has(&args, "-Wl,--import-memory"));
+}
+
+#[test]
 fn uses_the_8_mib_stack_floor_for_default_and_smaller_requests() {
     // The prepared size is what links; the caller's smaller -z request is
     // forwarded but followed by the prepared value.

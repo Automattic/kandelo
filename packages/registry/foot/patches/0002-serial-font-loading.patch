@@ -1,7 +1,7 @@
 --- a/terminal.c
 +++ b/terminal.c
-@@ -1030,25 +1030,13 @@
-         {count_bold_italic, names_bold_italic, attrs[3], &fonts[3]},
+@@ -1103,27 +1103,13 @@
+         {count_bold_italic, names_bold_italic, attrs[3], options, &fonts[3]},
      };
  
 -    thrd_t tids[4] = {0};
@@ -22,13 +22,15 @@
 -    for (size_t i = 0; i < 4; i++) {
 -        if (tids[i] != 0) {
 -            int ret;
--            thrd_join(tids[i], &ret);
--            success = success && ret;
+-            if (thrd_join(tids[i], &ret) != thrd_success)
+-                success = false;
+-            else
+-                success = success && ret;
 -        } else
 -            success = false;
 -    }
 +    for (size_t i = 0; i < 4; i++)
 +        success = font_loader_thread(&data[i]) && success;
  
-     for (size_t i = 0; i < 4; i++) {
-         for (size_t j = 0; j < counts[i]; j++)
+     fcft_font_options_destroy(options);
+ 

@@ -184,6 +184,7 @@ host/test/framebuffer-registry.test.ts	source-only
 host/test/fstatat-empty-path.test.ts	prepared-product
 host/test/futex-deadlines.test.ts	prepared-product
 host/test/futex-kernel-wait.test.ts	prepared-product
+host/test/fuzzel-smoke.test.ts	prepared-product
 host/test/gallery-descriptor.test.ts	source-only
 host/test/gbm-coherence-cache.test.ts	source-only
 host/test/gbm-cpu-map.test.ts	prepared-product
@@ -432,9 +433,9 @@ host/test/pthread.test.ts	prepared-product
 host/test/pty-ownership.test.ts	prepared-product
 host/test/pty-readiness.test.ts	prepared-product
 host/test/putenv.test.ts	prepared-product
+host/test/qsort-stable.test.ts	prepared-product
 host/test/qt-gui-smoke.test.ts	prepared-product
 host/test/qt-qml-smoke.test.ts	prepared-product
-host/test/qtgallery-smoke.test.ts	prepared-product
 host/test/qtwaylandscanner-host-tool.test.ts	prepared-product
 host/test/quake-constrained-heap.test.ts	prepared-product
 host/test/quickshell-shell-smoke.test.ts	prepared-product
@@ -527,6 +528,8 @@ host/test/sudo-lite.test.ts	prepared-product
 host/test/suite-health-reporter.test.ts	source-only
 host/test/supported-program-baseline.test.ts	prepared-product
 host/test/sway-smoke.test.ts	prepared-product
+host/test/swayidle-smoke.test.ts	prepared-product
+host/test/swaylock-smoke.test.ts	prepared-product
 host/test/syscall-cp-offset.test.ts	prepared-product
 host/test/syslog-client.test.ts	prepared-product
 host/test/syslog-end-to-end.test.ts	prepared-product
@@ -712,6 +715,8 @@ host/test/wpkdraw-smoke.test.ts	prepared-product
 host/test/xattr-unsupported.test.ts	prepared-product
 host/test/zip.test.ts	source-only
 packages/registry/bash/test/bash.test.ts	prepared-product
+packages/registry/basuctl/test/basuctl.test.ts	prepared-product
+packages/registry/busybox/test/busybox.test.ts	prepared-product
 packages/registry/bzip2/test/bzip2.test.ts	prepared-product
 packages/registry/composer/test/composer-shell.test.ts	prepared-product
 packages/registry/coreutils/test/coreutils.test.ts	prepared-product
@@ -734,8 +739,10 @@ packages/registry/grep/test/grep.test.ts	prepared-product
 packages/registry/gzip/test/gzip.test.ts	prepared-product
 packages/registry/librsvg/test/librsvg.test.ts	prepared-product
 packages/registry/libxml2/test/libxml2-layout.test.ts	prepared-product
+packages/registry/lua-cli/test/lua-cli.test.ts	prepared-product
 packages/registry/mandoc/test/mandoc-smoke.test.ts	prepared-product
 packages/registry/nginx/test/nginx.test.ts	prepared-product
+packages/registry/omarchy/test/omarchy.test.ts	prepared-product
 packages/registry/openssl/test/certificates.test.ts	prepared-product
 packages/registry/openssl/test/ssl-basic.test.ts	prepared-product
 packages/registry/php/test/php-concurrent-sqlite.test.ts	prepared-product
@@ -755,12 +762,14 @@ packages/registry/spidermonkey/test/spidermonkey-tls-source.test.ts	source-only
 packages/registry/spidermonkey/test/spidermonkey.test.ts	prepared-product
 packages/registry/termchat/test/termchat.test.ts	prepared-product
 packages/registry/tmux/test/tmux.test.ts	prepared-product
+packages/registry/ttfx/test/ttfx.test.ts	prepared-product
 packages/registry/unzip/test/unzip.test.ts	prepared-product
 packages/registry/wordpress/test/php-sanity.test.ts	prepared-product
 packages/registry/wordpress/test/service-vfs-demo.test.ts	prepared-product
 packages/registry/wordpress/test/wordpress-boot.test.ts	prepared-product
 packages/registry/wordpress/test/wordpress-server.test.ts	prepared-product
 packages/registry/wordpress/test/wordpress-site-editor.test.ts	prepared-product
+packages/registry/xkbcli/test/xkbcli.test.ts	prepared-product
 packages/registry/xz/test/xz.test.ts	prepared-product
 packages/registry/zip/test/zip.test.ts	prepared-product
 packages/registry/zstd/test/zstd.test.ts	prepared-product
