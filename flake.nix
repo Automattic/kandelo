@@ -2,7 +2,13 @@
   description = "kandelo dev environment";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    # A locked nixpkgs-unstable revision. The clang, libcxx, qtbase,
+    # qtdeclarative, qtshadertools and libwayland guest recipes must match
+    # versions from it, so move it (`nix flake update nixpkgs`) only with
+    # them, after checking cache.nixos.org has the new revision for every
+    # system below. Update other inputs by name (`nix flake update
+    # rust-overlay`), never with a bare `nix flake update`.
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -13,7 +19,6 @@
   outputs = { self, nixpkgs, rust-overlay, flake-utils }:
     flake-utils.lib.eachSystem [
       "aarch64-darwin"
-      "x86_64-darwin"
       "x86_64-linux"
       "aarch64-linux"
     ] (system:
@@ -25,7 +30,7 @@
 
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
-        llvmPkg = pkgs.llvmPackages_21;
+        llvmPkg = pkgs.llvmPackages_23;
         llvmVersion = llvmPkg.llvm.version;
 
         # Combined tree so LLVM_PREFIX/bin contains clang + llvm-* + wasm-ld,
@@ -176,9 +181,10 @@
             # libwayland), so it is darwin+linux clean — unlike the full
             # `wayland` library, whose meta.badPlatforms includes darwin
             # and which we therefore do NOT add here (it is Linux-only and
-            # would break `nix develop` on the team's Macs). Pinned to
-            # 1.24.0 via nixpkgs-25.11; PR3's libwayland must pin the same
-            # wayland version so its runtime matches the generated glue.
+            # would break `nix develop` on the team's Macs). Its version
+            # comes from the locked nixpkgs; the libwayland recipe
+            # (`packages/registry/libwayland`) must pin the same wayland
+            # version so its runtime matches the generated glue.
             # Consumers declare it as a `[[host_tools]]` prerequisite.
             pkgs.wayland-scanner
             # hwdata — build-machine data (pnp.ids) that libdisplay-info
@@ -195,8 +201,9 @@
             #
             # Qt cross-builds require a host Qt of the *same* version as the
             # target: CMake reads it through QT_HOST_PATH and refuses a
-            # mismatch. So nixpkgs' 6.10.2 fixes the version the qtbase and
-            # qtdeclarative recipes pin. Bumping nixpkgs moves both.
+            # mismatch. So the locked nixpkgs' Qt fixes the version the
+            # qtbase and qtdeclarative recipes pin. Bumping nixpkgs moves
+            # both.
             #
             # Taken from nixpkgs rather than built from the qtbase recipe's
             # own source: a host build would compile Qt twice per cold cache,
@@ -330,7 +337,7 @@
             # tarball ships no pre-generated configure, so
             # build-libepoxy.sh runs autoreconf and aclocal needs the
             # macro definitions. Host-side m4 only, no X libraries.
-            pkgs.xorg.utilmacros
+            pkgs.util-macros
             # Host glib dev tools — glib-compile-resources and
             # glib-compile-schemas are compiled C programs (not
             # scripts), so the wasm32 glib port cannot provide them.
@@ -351,7 +358,7 @@
             # cross-build under packages/registry/sqlite/ — that's the
             # target binary, this is the host CLI used by tests.
             pkgs.sqlite
-        ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+        ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
             # Mozilla's host configure invokes xcrun directly on Darwin to
             # discover the macOS SDK. Use nixpkgs' implementation so exact
             # package-build PATHs do not fall back to /usr/bin or ambient
@@ -375,7 +382,7 @@
         # 15.5 and not the newest available: the failure this replaced was a
         # too-NEW SDK (see packages/registry/spidermonkey/build-spidermonkey.sh),
         # so the oldest version Mozilla accepts is the safest point to sit.
-        macosSdk = pkgs.lib.optionalString pkgs.stdenv.isDarwin
+        macosSdk = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin
           "${pkgs.apple-sdk_15}";
       in {
         devShells.default = pkgs.mkShell {
@@ -414,7 +421,7 @@
             export KANDELO_CLANG_LIB=${llvmPkg.clang-unwrapped.lib}
             export WASM_POSIX_LLVM_LIBCXX_SOURCE=${llvmPkg.libcxx.src}
             export WASM_POSIX_LLVM_LIBUNWIND_SOURCE=${llvmPkg.libunwind.src}
-            ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+            ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
             # The newer-than-default macOS SDK described at `macosSdk` above.
             # Only the SpiderMonkey recipe reads these; the shell's own
             # SDKROOT/DEVELOPER_DIR stay on the nixpkgs default so no other
