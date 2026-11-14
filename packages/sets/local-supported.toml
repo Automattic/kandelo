@@ -343,6 +343,10 @@ name = "fuzzel"
 class = "user-software"
 
 [[packages]]
+name = "fuzzel-docs"
+class = "browser-product"
+
+[[packages]]
 name = "fribidi"
 class = "platform"
 
@@ -631,6 +635,10 @@ name = "xkbcli"
 class = "user-software"
 
 [[packages]]
+name = "xkbcli-docs"
+class = "browser-product"
+
+[[packages]]
 name = "libxml2"
 class = "platform"
 
@@ -673,6 +681,10 @@ class = "browser-product"
 [[packages]]
 name = "mako"
 class = "user-software"
+
+[[packages]]
+name = "mako-docs"
+class = "browser-product"
 
 [[packages]]
 name = "mandoc"
@@ -1031,8 +1043,16 @@ name = "swayidle"
 class = "user-software"
 
 [[packages]]
+name = "swayidle-docs"
+class = "browser-product"
+
+[[packages]]
 name = "swaylock"
 class = "user-software"
+
+[[packages]]
+name = "swaylock-docs"
+class = "browser-product"
 
 [[packages]]
 name = "sdl2-mixer-playwave"
@@ -1183,6 +1203,10 @@ name = "waybar"
 class = "user-software"
 
 [[packages]]
+name = "waybar-docs"
+class = "browser-product"
+
+[[packages]]
 name = "wget"
 class = "user-software"
 
@@ -1241,6 +1265,10 @@ class = "platform"
 [[packages]]
 name = "lua-cli"
 class = "user-software"
+
+[[packages]]
+name = "lua-cli-docs"
+class = "browser-product"
 
 [[products]]
 id = "platform-rootfs"

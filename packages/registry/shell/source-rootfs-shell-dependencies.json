@@ -597,6 +597,41 @@
       "role": "lazy-archive"
     },
     {
+      "name": "fuzzel-docs",
+      "version": "1.15.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "lua-cli-docs",
+      "version": "5.2.4",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "mako-docs",
+      "version": "1.10.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "swayidle-docs",
+      "version": "1.9.1",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "swaylock-docs",
+      "version": "1.8.6",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "waybar-docs",
+      "version": "0.14.0",
+      "role": "lazy-archive"
+    },
+    {
+      "name": "xkbcli-docs",
+      "version": "1.13.2",
+      "role": "lazy-archive"
+    },
+    {
       "name": "man-index",
       "version": "1.14.6",
       "role": "lazy-file"

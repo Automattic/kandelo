@@ -1,0 +1,32 @@
+kind = "program"
+name = "waybar-docs"
+version = "0.14.0"
+kernel_abi = 56
+depends_on = []
+
+[[host_tools]]
+name = "scdoc"
+version_constraint = ">=1.11"
+probe = { args = ["-v"], version_regex = "scdoc (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh" }
+
+# Upstream manual pages for the `waybar` package.
+# The source, SHA-256 and version are the `waybar` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/Alexays/Waybar/archive/refs/tags/0.14.0.tar.gz"
+sha256 = "7f3859779bb3a5028a7215b2000c2e476c03453a52289164ba60a4bf1bb3772f"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/Alexays/Waybar/blob/0.14.0/LICENSE"
+
+[build]
+script_path = "packages/registry/waybar-docs/build-waybar-docs.sh"
+
+[[outputs]]
+name = "waybar-docs"
+wasm = "waybar-docs.zip"
+fork_instrumentation = "disabled"

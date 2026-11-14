@@ -1,0 +1,32 @@
+kind = "program"
+name = "swaylock-docs"
+version = "1.8.6"
+kernel_abi = 56
+depends_on = []
+
+[[host_tools]]
+name = "scdoc"
+version_constraint = ">=1.11"
+probe = { args = ["-v"], version_regex = "scdoc (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.scdoc); enter scripts/dev-shell.sh" }
+
+# Upstream manual page for the `swaylock` package.
+# The source, SHA-256 and version are the `swaylock` package's own, so the
+# pages describe the release that built the installed binary;
+# tests/package-system/package-docs-source-parity.test.ts keeps them equal.
+[source]
+url = "https://github.com/swaywm/swaylock/releases/download/v1.8.6/swaylock-1.8.6.tar.gz"
+sha256 = "a15154348fef852fdb224112d137c393c826478b777f63479beb15e8d3812eaf"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/swaywm/swaylock/blob/v1.8.6/LICENSE"
+
+[build]
+script_path = "packages/registry/swaylock-docs/build-swaylock-docs.sh"
+
+[[outputs]]
+name = "swaylock-docs"
+wasm = "swaylock-docs.zip"
+fork_instrumentation = "disabled"
